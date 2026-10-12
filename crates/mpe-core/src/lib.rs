@@ -19,7 +19,7 @@ mod text;
 pub use doc::{Info, Pdf};
 pub use edit::{PathStyle, Shape, TextEdit};
 pub use fonts::{Family, FontChoice};
-pub use imgs::image_dimensions;
+pub use imgs::{image_dimensions, ImageImport};
 pub use objects::{ObjectKind, PageObject};
 pub use overlay::{text_width, Bates, HeaderFooter, Watermark};
 pub use pagerange::parse_page_range;

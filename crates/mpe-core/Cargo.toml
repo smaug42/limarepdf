@@ -12,3 +12,7 @@ thiserror.workspace = true
 rayon.workspace = true
 rand.workspace = true
 image.workspace = true
+tiff.workspace = true
+
+[dev-dependencies]
+fax = "0.2"
