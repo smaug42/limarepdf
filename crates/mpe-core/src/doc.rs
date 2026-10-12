@@ -37,9 +37,15 @@ impl Pdf {
     }
 
     pub fn from_bytes(bytes: &[u8], password: Option<&str>) -> Result<Self> {
-        let doc = Document::load_from_with_options(Cursor::new(bytes), lopdf::LoadOptions::with_password(password.unwrap_or("")))
-            .map_err(|e| anyhow!("cannot open PDF: {e}"))?;
-        Ok(Self { doc, encryption: None })
+        let doc = Document::load_from_with_options(
+            Cursor::new(bytes),
+            lopdf::LoadOptions::with_password(password.unwrap_or("")),
+        )
+        .map_err(|e| anyhow!("cannot open PDF: {e}"))?;
+        Ok(Self {
+            doc,
+            encryption: None,
+        })
     }
 
     /// A new empty document with no pages.
@@ -52,7 +58,10 @@ impl Pdf {
             "Type" => "Catalog", "Pages" => pages_id,
         });
         doc.trailer.set("Root", catalog_id);
-        Self { doc, encryption: None }
+        Self {
+            doc,
+            encryption: None,
+        }
     }
 
     fn write_to<W: Write>(&mut self, w: &mut W) -> Result<()> {
@@ -94,7 +103,8 @@ impl Pdf {
 
     pub fn save(&mut self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
-        let f = std::fs::File::create(path).with_context(|| format!("creating {}", path.display()))?;
+        let f =
+            std::fs::File::create(path).with_context(|| format!("creating {}", path.display()))?;
         let mut w = BufWriter::with_capacity(1 << 20, f);
         self.write_to(&mut w)?;
         w.flush()?;
@@ -111,7 +121,7 @@ impl Pdf {
         self.doc.get_pages().into_values().collect()
     }
 
-    fn inherited(&self, id: ObjectId, key: &[u8]) -> Option<Object> {
+    pub(crate) fn inherited(&self, id: ObjectId, key: &[u8]) -> Option<Object> {
         let mut cur = id;
         for _ in 0..64 {
             let d = self.doc.get_dictionary(cur).ok()?;
@@ -123,7 +133,7 @@ impl Pdf {
         None
     }
 
-    fn num(&self, o: &Object) -> Option<f32> {
+    pub(crate) fn num(&self, o: &Object) -> Option<f32> {
         let (_, o) = self.doc.dereference(o).ok()?;
         o.as_float().ok()
     }
@@ -134,8 +144,17 @@ impl Pdf {
         if a.len() < 4 {
             return None;
         }
-        let v: Vec<f32> = a.iter().take(4).map(|x| self.num(x)).collect::<Option<_>>()?;
-        Some([v[0].min(v[2]), v[1].min(v[3]), v[0].max(v[2]), v[1].max(v[3])])
+        let v: Vec<f32> = a
+            .iter()
+            .take(4)
+            .map(|x| self.num(x))
+            .collect::<Option<_>>()?;
+        Some([
+            v[0].min(v[2]),
+            v[1].min(v[3]),
+            v[0].max(v[2]),
+            v[1].max(v[3]),
+        ])
     }
 
     /// Visible box (CropBox, else MediaBox, else Letter) of a page in user space.
@@ -149,17 +168,29 @@ impl Pdf {
     pub(crate) fn page_rotation(&self, id: ObjectId) -> i64 {
         let r = self
             .inherited(id, b"Rotate")
-            .and_then(|o| self.doc.dereference(&o).ok().and_then(|(_, o)| o.as_i64().ok()))
+            .and_then(|o| {
+                self.doc
+                    .dereference(&o)
+                    .ok()
+                    .and_then(|(_, o)| o.as_i64().ok())
+            })
             .unwrap_or(0);
         r.rem_euclid(360)
     }
 
     /// Displayed size in points, after applying the page rotation.
     pub fn page_size(&self, index: usize) -> Result<(f32, f32)> {
-        let id = *self.page_ids().get(index).ok_or_else(|| anyhow!("no page {}", index + 1))?;
+        let id = *self
+            .page_ids()
+            .get(index)
+            .ok_or_else(|| anyhow!("no page {}", index + 1))?;
         let [x0, y0, x1, y1] = self.page_box(id);
         let (w, h) = (x1 - x0, y1 - y0);
-        Ok(if matches!(self.page_rotation(id), 90 | 270) { (h, w) } else { (w, h) })
+        Ok(if matches!(self.page_rotation(id), 90 | 270) {
+            (h, w)
+        } else {
+            (w, h)
+        })
     }
 
     /// Push inherited page attributes down onto each page and flatten the page tree.
@@ -187,12 +218,19 @@ impl Pdf {
         {
             let d = self.doc.get_dictionary_mut(root)?;
             d.set("Type", "Pages");
-            d.set("Kids", ids.iter().map(|i| Object::Reference(*i)).collect::<Vec<_>>());
+            d.set(
+                "Kids",
+                ids.iter()
+                    .map(|i| Object::Reference(*i))
+                    .collect::<Vec<_>>(),
+            );
             d.set("Count", ids.len() as i64);
             d.remove(b"Parent");
         }
         for &id in ids {
-            self.doc.get_dictionary_mut(id)?.set("Parent", Object::Reference(root));
+            self.doc
+                .get_dictionary_mut(id)?
+                .set("Parent", Object::Reference(root));
         }
         Ok(())
     }
@@ -209,8 +247,12 @@ impl Pdf {
         self.check_indices(idx)?;
         let del: HashSet<usize> = idx.iter().copied().collect();
         let ids = self.page_ids();
-        let keep: Vec<ObjectId> =
-            ids.iter().enumerate().filter(|(i, _)| !del.contains(i)).map(|(_, id)| *id).collect();
+        let keep: Vec<ObjectId> = ids
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !del.contains(i))
+            .map(|(_, id)| *id)
+            .collect();
         if keep.is_empty() {
             bail!("cannot delete every page");
         }
@@ -242,7 +284,9 @@ impl Pdf {
         let ids = self.page_ids();
         for &i in idx {
             let cur = self.page_rotation(ids[i]);
-            self.doc.get_dictionary_mut(ids[i])?.set("Rotate", (cur + degrees).rem_euclid(360));
+            self.doc
+                .get_dictionary_mut(ids[i])?
+                .set("Rotate", (cur + degrees).rem_euclid(360));
         }
         Ok(())
     }
@@ -253,7 +297,9 @@ impl Pdf {
             bail!("position {after} is beyond the end of the document");
         }
         self.flatten()?;
-        let contents = self.doc.add_object(Stream::new(Dictionary::new(), Vec::new()));
+        let contents = self
+            .doc
+            .add_object(Stream::new(Dictionary::new(), Vec::new()));
         let page = self.doc.add_object(dictionary! {
             "Type" => "Page",
             "MediaBox" => vec![0.into(), 0.into(), width.into(), height.into()],
@@ -281,7 +327,11 @@ impl Pdf {
     pub fn reorder(&mut self, order: &[usize]) -> Result<()> {
         let n = self.page_count();
         let mut seen = vec![false; n];
-        if order.len() != n || order.iter().any(|&i| i >= n || std::mem::replace(&mut seen[i], true)) {
+        if order.len() != n
+            || order
+                .iter()
+                .any(|&i| i >= n || std::mem::replace(&mut seen[i], true))
+        {
             bail!("order must list each of the {n} pages exactly once");
         }
         self.flatten()?;
@@ -321,7 +371,11 @@ impl Pdf {
             bail!("part size must be at least 1");
         }
         let total = self.page_count();
-        let chunks: Vec<Vec<usize>> = (0..total).collect::<Vec<_>>().chunks(n).map(|c| c.to_vec()).collect();
+        let chunks: Vec<Vec<usize>> = (0..total)
+            .collect::<Vec<_>>()
+            .chunks(n)
+            .map(|c| c.to_vec())
+            .collect();
         chunks.par_iter().map(|c| self.extract(c)).collect()
     }
 
@@ -333,7 +387,11 @@ impl Pdf {
 
     pub fn info(&self) -> Info {
         let dict = match self.doc.trailer.get(b"Info") {
-            Ok(o) => self.doc.dereference(o).ok().and_then(|(_, o)| o.as_dict().ok()),
+            Ok(o) => self
+                .doc
+                .dereference(o)
+                .ok()
+                .and_then(|(_, o)| o.as_dict().ok()),
             Err(_) => None,
         };
         let get = |k: &[u8]| -> Option<String> {
@@ -374,7 +432,10 @@ impl Pdf {
                 if v.is_empty() {
                     d.remove(key.as_bytes());
                 } else {
-                    d.set(key, Object::String(encode_text(v), lopdf::StringFormat::Literal));
+                    d.set(
+                        key,
+                        Object::String(encode_text(v), lopdf::StringFormat::Literal),
+                    );
                 }
             }
         }
@@ -391,7 +452,10 @@ impl Default for Pdf {
 /// Decode a PDF text string (UTF-16BE with BOM, UTF-8 with BOM, or PDFDocEncoding ~ Latin-1).
 pub(crate) fn decode_text(b: &[u8]) -> String {
     if b.starts_with(&[0xFE, 0xFF]) {
-        let u: Vec<u16> = b[2..].chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+        let u: Vec<u16> = b[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .collect();
         String::from_utf16_lossy(&u)
     } else if b.starts_with(&[0xEF, 0xBB, 0xBF]) {
         String::from_utf8_lossy(&b[3..]).into_owned()
@@ -456,7 +520,10 @@ mod tests {
         let re = Pdf::from_bytes(&bytes, None).unwrap();
         assert_eq!(re.page_count(), 5);
         let parts = re.split_every(2).unwrap();
-        assert_eq!(parts.iter().map(|p| p.page_count()).collect::<Vec<_>>(), vec![2, 2, 1]);
+        assert_eq!(
+            parts.iter().map(|p| p.page_count()).collect::<Vec<_>>(),
+            vec![2, 2, 1]
+        );
     }
 
     #[test]
@@ -465,7 +532,12 @@ mod tests {
         p.reorder(&[2, 1, 0]).unwrap();
         assert_eq!(p.page_size(0).unwrap().0, 202.0);
         assert!(p.reorder(&[0, 0, 1]).is_err());
-        p.set_info(&Info { title: Some("Tést".into()), author: Some("A".into()), ..Default::default() }).unwrap();
+        p.set_info(&Info {
+            title: Some("Tést".into()),
+            author: Some("A".into()),
+            ..Default::default()
+        })
+        .unwrap();
         let i = p.info();
         assert_eq!(i.title.as_deref(), Some("Tést"));
         assert_eq!(i.author.as_deref(), Some("A"));

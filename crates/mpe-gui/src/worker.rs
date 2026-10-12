@@ -26,10 +26,20 @@ pub struct Worker {
 
 impl Worker {
     pub fn spawn(ctx: eframe::egui::Context, bytes: Vec<u8>) -> Self {
-        let shared = Arc::new((Mutex::new(Queue { items: Vec::new(), closed: false }), Condvar::new()));
+        let shared = Arc::new((
+            Mutex::new(Queue {
+                items: Vec::new(),
+                closed: false,
+            }),
+            Condvar::new(),
+        ));
         let (tx, rx) = channel::<Response>();
         let parsed = Arc::new(render::load(bytes, None).map_err(|e| e.to_string()));
-        let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).saturating_sub(1).clamp(1, 6);
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(2)
+            .saturating_sub(1)
+            .clamp(1, 6);
         for _ in 0..threads {
             let shared = shared.clone();
             let tx: Sender<Response> = tx.clone();
@@ -58,9 +68,11 @@ impl Worker {
                     let bitmap = match (&renderer, &*parsed) {
                         (Some(r), _) => {
                             // A malformed page must not take the whole viewer down.
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| r.render(key.0, scale)))
-                                .map_err(|_| "renderer panicked on this page".to_string())
-                                .and_then(|r| r.map_err(|e| e.to_string()))
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                r.render(key.0, scale)
+                            }))
+                            .map_err(|_| "renderer panicked on this page".to_string())
+                            .and_then(|r| r.map_err(|e| e.to_string()))
                         }
                         (None, Err(e)) => Err(e.clone()),
                         _ => Err("renderer unavailable".into()),

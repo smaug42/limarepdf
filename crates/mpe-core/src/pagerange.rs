@@ -16,8 +16,16 @@ pub fn parse_page_range(spec: &str, total: usize) -> Result<Vec<usize>> {
         }
         let (a, b) = match part.split_once('-') {
             Some((a, b)) => {
-                let a = if a.trim().is_empty() { 1 } else { a.trim().parse::<usize>()? };
-                let b = if b.trim().is_empty() { total } else { b.trim().parse::<usize>()? };
+                let a = if a.trim().is_empty() {
+                    1
+                } else {
+                    a.trim().parse::<usize>()?
+                };
+                let b = if b.trim().is_empty() {
+                    total
+                } else {
+                    b.trim().parse::<usize>()?
+                };
                 (a, b)
             }
             None => {

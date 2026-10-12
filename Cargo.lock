@@ -1119,6 +1119,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui-phosphor"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f4299551488dddaa8f757727e1eb4ffdaf277ffe6e30b413403468f5ecf4634"
+dependencies = [
+ "egui",
+]
+
+[[package]]
 name = "egui-wgpu"
 version = "0.36.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2283,7 +2292,7 @@ dependencies = [
 
 [[package]]
 name = "mpe-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2294,10 +2303,11 @@ dependencies = [
 
 [[package]]
 name = "mpe-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "hayro",
+ "image",
  "lopdf",
  "rand 0.9.5",
  "rayon",
@@ -2306,10 +2316,11 @@ dependencies = [
 
 [[package]]
 name = "mpe-gui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "eframe",
+ "egui-phosphor",
  "mpe-core",
  "rayon",
  "rfd",
