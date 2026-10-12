@@ -87,12 +87,63 @@ impl Pdf {
         Ok(())
     }
 
-    /// Serialise without pruning, compressing or encrypting. Used for undo snapshots and
-    /// live rendering, where speed matters more than size.
+    /// Serialise without pruning, compressing or encrypting. Used for undo snapshots, where
+    /// speed matters more than size.
     pub fn snapshot(&mut self) -> Result<Vec<u8>> {
         let mut out = Vec::new();
         self.doc.save_to(&mut out)?;
         Ok(out)
+    }
+
+    /// Like [`Pdf::snapshot`], for on-screen rendering. hayro honours the Hidden annotation
+    /// flag but not NoView, so annotations flagged NoView are marked Hidden in the copy that
+    /// is serialised. The document itself is not changed.
+    pub fn render_snapshot(&mut self) -> Result<Vec<u8>> {
+        let noview = self.noview_annots();
+        if noview.is_empty() {
+            return self.snapshot();
+        }
+        let mut doc = self.doc.clone();
+        for (id, flags) in noview {
+            if let Ok(a) = doc.get_dictionary_mut(id) {
+                a.set("F", flags | 2);
+            }
+        }
+        let mut out = Vec::new();
+        doc.save_to(&mut out)?;
+        Ok(out)
+    }
+
+    /// Annotations flagged NoView (bit 6) and not Hidden (bit 2), with their flags.
+    fn noview_annots(&self) -> Vec<(ObjectId, i64)> {
+        let mut out = Vec::new();
+        for page in self.page_ids() {
+            let Some(annots) = self
+                .doc
+                .get_dictionary(page)
+                .ok()
+                .and_then(|d| d.get(b"Annots").ok())
+            else {
+                continue;
+            };
+            let Ok((_, Object::Array(annots))) = self.doc.dereference(annots) else {
+                continue;
+            };
+            for r in annots {
+                let Ok(id) = r.as_reference() else { continue };
+                let flags = self
+                    .doc
+                    .get_dictionary(id)
+                    .ok()
+                    .and_then(|d| d.get(b"F").ok())
+                    .and_then(|f| self.num(f))
+                    .unwrap_or(0.0) as i64;
+                if flags & 32 != 0 && flags & 2 == 0 {
+                    out.push((id, flags));
+                }
+            }
+        }
+        out
     }
 
     pub fn to_bytes(&mut self) -> Result<Vec<u8>> {

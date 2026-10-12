@@ -52,7 +52,7 @@ impl Tab {
         mut pdf: Pdf,
         path: Option<PathBuf>,
     ) -> Result<Self, String> {
-        let bytes = pdf.snapshot().map_err(|e| e.to_string())?;
+        let bytes = pdf.render_snapshot().map_err(|e| e.to_string())?;
         let sizes = sizes_of(&pdf);
         Ok(Self {
             id,
@@ -174,7 +174,7 @@ impl Tab {
     }
 
     fn soft_refresh(&mut self, ctx: &egui::Context, pages: &[usize]) {
-        match self.pdf.snapshot() {
+        match self.pdf.render_snapshot() {
             Ok(bytes) => {
                 self.worker = Worker::spawn(ctx.clone(), bytes);
                 self.pending.clear();
@@ -294,7 +294,7 @@ impl Tab {
 
     /// Re-render from the current document state.
     pub fn refresh(&mut self, ctx: &egui::Context) {
-        match self.pdf.snapshot() {
+        match self.pdf.render_snapshot() {
             Ok(bytes) => {
                 self.worker = Worker::spawn(ctx.clone(), bytes);
                 self.sizes = sizes_of(&self.pdf);

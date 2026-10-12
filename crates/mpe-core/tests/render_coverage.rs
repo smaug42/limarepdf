@@ -96,7 +96,15 @@ impl Shot {
 }
 
 fn shot(p: &mut Pdf) -> Shot {
-    let bytes = p.snapshot().unwrap();
+    shot_of(p.snapshot().unwrap())
+}
+
+/// Rendered the way the GUI does, from [`Pdf::render_snapshot`].
+fn display_shot(p: &mut Pdf) -> Shot {
+    shot_of(p.render_snapshot().unwrap())
+}
+
+fn shot_of(bytes: Vec<u8>) -> Shot {
     let hp = render::load(bytes, None).unwrap();
     Shot(render::Renderer::new(&hp).render(0, 1.0).unwrap())
 }
@@ -589,6 +597,40 @@ fn annot_noview_flag_is_respected() {
     // NoView (bit 6): not displayed on screen, may be printed.
     let s = shot(&mut annotated("Stamp", dictionary! { "F" => 32 | 4 }, true));
     assert_eq!(s.marked(RECT), 0, "NoView annotation was drawn on screen");
+}
+
+#[test]
+fn render_snapshot_hides_noview_annotations() {
+    let mut p = annotated("Stamp", dictionary! { "F" => 32 | 4 }, true);
+    let s = display_shot(&mut p);
+    assert_eq!(s.marked(RECT), 0, "NoView annotation was drawn on screen");
+    let page = p.page_ids()[0];
+    let id = p
+        .doc
+        .get_dictionary(page)
+        .unwrap()
+        .get(b"Annots")
+        .unwrap()
+        .as_array()
+        .unwrap()[0]
+        .as_reference()
+        .unwrap();
+    let flags = p
+        .doc
+        .get_dictionary(id)
+        .unwrap()
+        .get(b"F")
+        .unwrap()
+        .as_i64()
+        .unwrap();
+    assert_eq!(flags, 32 | 4, "document flags were changed");
+}
+
+#[test]
+fn render_snapshot_keeps_other_annotations() {
+    let s = display_shot(&mut annotated("Stamp", stamp_extra(), true));
+    let (x, y) = mid();
+    s.expect(x, y, MAGENTA, "Print-flagged annotation");
 }
 
 // Without /AP the viewer is expected to generate an appearance from the
