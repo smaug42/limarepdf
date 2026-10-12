@@ -81,7 +81,7 @@ Labels: **Done** = implemented and exercised by tests or by running it. **Partia
 | Tabbed multi-document window, thumbnails, drag-and-drop open | Done | |
 | Zoom, fit width, continuous scrolling, page navigation | Done | Single-page / facing-page layouts: No |
 | Command line `file.pdf --page N` | Done | |
-| Rendering | Partial | hayro: very broad coverage, but lacks blending and isolation groups, knockout groups, colour-key masking; annotation drawing is incomplete (hayro's own list) |
+| Rendering | Partial | hayro 0.8, checked by pixel on small synthetic pages in `crates/mpe-core/tests/render_coverage.rs`. Correct: all 16 blend modes; isolated transparency groups; a blend mode applied to a whole group; colour-key image masks (`/Mask [..]`); annotations that have an `/AP` appearance stream (Text, Highlight, Link, Stamp, FreeText, Widget tested), including Widget `/AS` state selection and the Hidden flag; password-protected files with all four ciphers. Wrong: non-isolated groups render as isolated; knockout groups render as non-knockout; annotations with the NoView flag are drawn; annotations without `/AP` are not drawn at all (tested: Text, Highlight, Link, Stamp, FreeText, Widget). Other PDF features are untested by MPE |
 | Text search | Partial | Page-level hits with snippets. No highlight on the page. Extraction is lopdf's and can miss text in some CID/embedded-font encodings. Scanned pages have no text without OCR |
 | Page operations: insert blank, delete, rotate, extract, reorder, crop box | Done | Reorder and crop are in the core library and the CLI, not yet in the GUI (no drag-to-reorder) |
 | Merge / append, split by page count | Done | Bookmarks, form fields and named destinations of appended files are not carried over (not tested with such files). Split by file size: No |
@@ -96,7 +96,7 @@ Labels: **Done** = implemented and exercised by tests or by running it. **Partia
 | Content editing: edit text, images, vector objects | Partial | See "Content editing" below |
 | Object inspector (position, size, text, fill, outline) | Partial | Properties listed above only; no layers, no colour replacement across the page |
 | Links, layers, attachments, bookmarks | No | |
-| Annotations, comments, stamps, measurement tools | No | Existing annotations are drawn by the renderer to the extent hayro supports them |
+| Annotations, comments, stamps, measurement tools | No | Existing annotations are drawn only if they have an `/AP` appearance stream; see Rendering |
 | Form editing, form data import/export, barcodes, document JavaScript | No | |
 | Redaction | No | |
 | OCR (Tesseract), scanning (SANE), optimise scanned pages | No | |
