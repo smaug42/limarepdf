@@ -12,7 +12,9 @@ impl Pdf {
     /// Extract text of one page (0-based). Returns an empty string when the page
     /// has no extractable text (scanned page, unsupported font encoding).
     pub fn page_text(&self, index: usize) -> String {
-        self.doc.extract_text(&[index as u32 + 1]).unwrap_or_default()
+        self.doc
+            .extract_text(&[index as u32 + 1])
+            .unwrap_or_default()
     }
 
     /// Case-insensitive text search across all pages, in parallel.

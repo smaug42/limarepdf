@@ -1,5 +1,6 @@
 mod app;
 mod dialogs;
+mod editor;
 mod tab;
 mod worker;
 
@@ -22,5 +23,9 @@ fn main() -> eframe::Result {
             .with_drag_and_drop(true),
         ..Default::default()
     };
-    eframe::run_native("MPE", options, Box::new(move |cc| Ok(Box::new(app::App::new(cc, files, page)))))
+    eframe::run_native(
+        "MPE",
+        options,
+        Box::new(move |cc| Ok(Box::new(app::App::new(cc, files, page)))),
+    )
 }

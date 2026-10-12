@@ -29,7 +29,15 @@ pub struct Restrictions {
 
 impl Default for Restrictions {
     fn default() -> Self {
-        Self { print: true, print_high_quality: true, modify: true, copy: true, annotate: true, fill_forms: true, assemble: true }
+        Self {
+            print: true,
+            print_high_quality: true,
+            modify: true,
+            copy: true,
+            annotate: true,
+            fill_forms: true,
+            assemble: true,
+        }
     }
 }
 
@@ -37,7 +45,10 @@ impl Restrictions {
     fn flags(&self) -> Permissions {
         let mut p = Permissions::empty();
         p.set(Permissions::PRINTABLE, self.print);
-        p.set(Permissions::PRINTABLE_IN_HIGH_QUALITY, self.print && self.print_high_quality);
+        p.set(
+            Permissions::PRINTABLE_IN_HIGH_QUALITY,
+            self.print && self.print_high_quality,
+        );
         p.set(Permissions::MODIFIABLE, self.modify);
         p.set(Permissions::COPYABLE, self.copy);
         p.set(Permissions::ANNOTABLE, self.annotate);
@@ -60,7 +71,12 @@ impl Encryption {
         let perms = self.restrictions.flags();
         let (u, o) = (self.user_password.as_str(), self.owner_password.as_str());
         let version = match self.cipher {
-            Cipher::Rc4_40 => EncryptionVersion::V1 { document: doc, owner_password: o, user_password: u, permissions: perms },
+            Cipher::Rc4_40 => EncryptionVersion::V1 {
+                document: doc,
+                owner_password: o,
+                user_password: u,
+                permissions: perms,
+            },
             Cipher::Rc4_128 => EncryptionVersion::V2 {
                 document: doc,
                 owner_password: o,

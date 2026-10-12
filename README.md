@@ -4,8 +4,9 @@ A fast PDF viewer and editor written entirely in Rust, with no C or C++ dependen
 functional specification of an existing Qt/C++ editor. This is a from-scratch implementation: it contains
 none of that product's code, strings, stamps, fonts or other assets.
 
-**Status: 0.1, for testing.** Viewing, page operations, overlays (headers, footers, Bates, watermark), metadata and
-password security are in. Content editing, annotation, forms, signatures, OCR and most export formats are not started.
+**Status: 0.2, for testing.** Viewing, page operations, overlays (headers, footers, Bates, watermark), metadata,
+password security and basic content editing (text, images, vector shapes) are in. Annotation, forms, signatures, OCR
+and most export formats are not started.
 The coverage table below is the complete list.
 
 | Part | What it is |
@@ -16,7 +17,9 @@ The coverage table below is the complete list.
 
 Engines: [`lopdf`](https://crates.io/crates/lopdf) for the document structure and encryption,
 [`hayro`](https://crates.io/crates/hayro) for rasterisation (CPU, pure Rust), [`egui`](https://crates.io/crates/egui)
-for the UI, [`rfd`](https://crates.io/crates/rfd) for file dialogs.
+for the UI, [`rfd`](https://crates.io/crates/rfd) for file dialogs, [`image`](https://crates.io/crates/image) to decode
+PNG/JPEG for insertion, and [Phosphor Icons](https://phosphoricons.com) (MIT, via
+[`egui-phosphor`](https://crates.io/crates/egui-phosphor)) for the toolbar.
 
 ## Build
 
@@ -53,8 +56,16 @@ mpe encrypt in.pdf -o out.pdf --owner-password OWN --user-password USR --cipher 
 mpe decrypt in.pdf -o out.pdf --password USR
 mpe search in.pdf "invoice"
 mpe text in.pdf --pages 1-2
+mpe objects in.pdf --pages 1        # list editable objects with their boxes
 mpe render in.pdf --dpi 150 --out-dir pngs
 ```
+
+Editing in the GUI: pick a tool in the toolbar (hand = read only, arrow = select). With the arrow, click an object to
+select it, drag to move, drag the handles to resize (Shift keeps proportions), arrow keys nudge (Shift = 10 pt),
+Delete removes it. The right-hand panel shows position and size, and for text the string, font, size and colour; for
+shapes fill, outline and width; for images "Replace image". The other tools add text (click, type, Enter), rectangles,
+ellipses, lines (drag, or click for a default size) and images (choose a PNG/JPEG, then drag a box). Everything is
+undoable with Ctrl+Z.
 
 GUI keys: Ctrl+O/S/W, Ctrl+Shift+S, Ctrl+Z / Ctrl+Y, Ctrl+F, Ctrl+= / Ctrl+- / Ctrl+0 (fit width) / Ctrl+1,
 Ctrl+scroll or pinch to zoom, PageUp/PageDown/Home/End. Click thumbnails (Ctrl/Shift for multi-select) to choose
@@ -82,7 +93,9 @@ Labels: **Done** = implemented and exercised by tests or by running it. **Partia
 | Opening password-protected files | Done | User password |
 | Certificate encryption | No | |
 | Digital signatures, signature validation, certificate manager, PKCS#11 tokens | No | |
-| Content editing: edit text, images, vector objects, object inspector, colour replacement, links, layers, attachments, bookmarks | No | |
+| Content editing: edit text, images, vector objects | Partial | See "Content editing" below |
+| Object inspector (position, size, text, fill, outline) | Partial | Properties listed above only; no layers, no colour replacement across the page |
+| Links, layers, attachments, bookmarks | No | |
 | Annotations, comments, stamps, measurement tools | No | Existing annotations are drawn by the renderer to the extent hayro supports them |
 | Form editing, form data import/export, barcodes, document JavaScript | No | |
 | Redaction | No | |
@@ -94,6 +107,34 @@ Labels: **Done** = implemented and exercised by tests or by running it. **Partia
 | Sessions, autosave, backup on save, custom keyboard shortcuts, preferences dialog, 42 translations, toolbars customisation | No | Unsaved-changes prompts on close are in |
 | XFA forms, XPS documents | No | |
 | Licence activation, update checks, OCR language downloads | Not applicable | MPE makes no network connections and has no licence mechanism |
+
+## Content editing
+
+How it works: the page's content stream is parsed into objects (one object per text line, per painted path, per
+image or form XObject, per inline image). Moving or resizing wraps the object's operators in `q <matrix> cm … Q`.
+Text edits rewrite the string in place when the font is a plain, non-subset, standard-encoded simple font and the new
+text is ASCII; otherwise the old line is removed and the new text is added in one of the 12 standard fonts at the same
+position, size and colour. Insertions are appended on top of the page. Every edit is checked to re-parse before it is
+applied, and a failed edit leaves the document unchanged.
+
+Limits (stated, not hidden):
+
+- Text objects are lines recovered by heuristics from the content stream, not paragraphs. There is no re-flow and no
+  multi-line editing. Text boxes are estimated from font metrics, so they can be slightly off for unusual fonts.
+- Text in embedded subset fonts, and in CID (Type 0) fonts, cannot keep its font when edited: it becomes Helvetica,
+  Times or Courier (the inspector says so). Text edited into a new font is limited to WinAnsi characters; others
+  print as `?`.
+- Editing text does not change its width constraints: longer text can overlap neighbours.
+- A clip region set before an object stays where it was, so a moved or enlarged object can be cut off by its old
+  clip. A path that is itself used as a clip (`W n`) is not selectable.
+- Shading and pattern fills are selectable but their colour cannot be changed in the inspector (it may apply a flat
+  colour instead). Colour readout for non-RGB/Gray/CMYK colour spaces is approximate.
+- Inline images can be moved, resized and deleted, not replaced. Pages whose inline images cannot be located safely
+  are refused rather than risk losing them.
+- Replacing an image fits the new picture inside the old box, centred. JPEG EXIF rotation is not applied; CMYK
+  JPEGs are not supported.
+- Rotation of objects, grouping, z-order changes, and copy/paste between pages are not implemented.
+- Moving an object does not update links or annotations over it (the annotations stay where they were).
 
 ## Performance
 
@@ -125,7 +166,10 @@ small size; edits re-serialise without compressing and undo uses plain snapshots
 | Windows, macOS (Intel and Apple Silicon) | Not built or run by the author: the build machine could not install those targets. The code has no platform-specific parts and all dependencies are Rust, so it is expected to build. `.github/workflows/ci.yml` builds, tests and packages all four on GitHub Actions |
 
 GUI checked by scripted input: mouse-wheel scrolling, thumbnail selection, View > Zoom in, Document menu, Rotate
-(including the unsaved marker and thumbnail refresh). Not exercised in the GUI: keyboard shortcuts (the virtual display
+(including the unsaved marker and thumbnail refresh), selecting, moving and resizing a shape, editing a text line
+(typing into the inspector with keyboard focus set by hand), the text, rectangle and ellipse tools, and undo of those.
+Not exercised in the GUI: the image tool and "Replace image" (they open a native file dialog); the core functions
+behind them are covered by tests. Not exercised in the GUI: keyboard shortcuts (the virtual display
 had no window manager to give it focus), file dialogs, the unsaved-changes prompts, and the Watermark, Header/Footer,
 Security, Metadata, Split and Insert-blank dialogs. The operations behind those dialogs are covered by the core tests
 and the CLI run.
@@ -142,6 +186,7 @@ and the CLI run.
 ## Licence
 
 Dual-licensed under MIT or Apache-2.0, at your option. See `LICENSE-MIT` and `LICENSE-APACHE`.
+The toolbar icons are Phosphor Icons (MIT, © Phosphor Icons), embedded as a font by `egui-phosphor`.
 Dependencies carry their own licences. A scan of the dependency metadata for all platforms found only permissive
 licences (MIT, Apache-2.0, BSD, Zlib, Unicode, ISC, Unlicense, BSL-1.0 and similar), plus the SIL OFL 1.1 and Ubuntu
 Font Licence for the UI fonts bundled with egui. A few crates are dual-licensed with LGPL or GPL as one option;

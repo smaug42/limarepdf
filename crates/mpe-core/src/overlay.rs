@@ -7,15 +7,15 @@ use lopdf::dictionary;
 use lopdf::{Dictionary, Object, ObjectId, Stream};
 
 /// Helvetica advance widths (1/1000 em) for ASCII 32..=126.
-const HELV: [u16; 95] = [
+pub(crate) const HELV: [u16; 95] = [
     278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278, // 32-47
     556, 556, 556, 556, 556, 556, 556, 556, 556, 556, // 0-9
     278, 278, 584, 584, 584, 556, 1015, // : ; < = > ? @
-    667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833, 722, 778, 667, 778, 722, 667, 611, 722, 667,
-    944, 667, 667, 611, // A-Z
+    667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833, 722, 778, 667, 778, 722, 667,
+    611, 722, 667, 944, 667, 667, 611, // A-Z
     278, 278, 278, 469, 556, 333, // [ \ ] ^ _ `
-    556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500, 222, 833, 556, 556, 556, 556, 333, 500, 278, 556, 500,
-    722, 500, 500, 500, // a-z
+    556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500, 222, 833, 556, 556, 556, 556, 333, 500,
+    278, 556, 500, 722, 500, 500, 500, // a-z
     334, 260, 334, 584, // { | } ~
 ];
 
@@ -66,7 +66,14 @@ pub struct Watermark {
 
 impl Default for Watermark {
     fn default() -> Self {
-        Self { text: "DRAFT".into(), font_size: 96.0, opacity: 0.25, rotation: 45.0, color: (0.6, 0.0, 0.0), foreground: true }
+        Self {
+            text: "DRAFT".into(),
+            font_size: 96.0,
+            opacity: 0.25,
+            rotation: 45.0,
+            color: (0.6, 0.0, 0.0),
+            foreground: true,
+        }
     }
 }
 
@@ -80,7 +87,12 @@ pub struct Bates {
 
 impl Default for Bates {
     fn default() -> Self {
-        Self { prefix: String::new(), suffix: String::new(), digits: 6, start: 1 }
+        Self {
+            prefix: String::new(),
+            suffix: String::new(),
+            digits: 6,
+            start: 1,
+        }
     }
 }
 
@@ -128,7 +140,7 @@ impl Pdf {
 
     /// Matrix mapping a bottom-left, y-up "visual page" space to page user space,
     /// plus the visual width and height.
-    fn visual_matrix(&self, page: ObjectId) -> ([f32; 6], f32, f32) {
+    pub(crate) fn visual_matrix(&self, page: ObjectId) -> ([f32; 6], f32, f32) {
         let [x0, y0, x1, y1] = self.page_box(page);
         let (w, h) = (x1 - x0, y1 - y0);
         match self.page_rotation(page) {
@@ -140,7 +152,9 @@ impl Pdf {
     }
 
     fn page_content_refs(&self, page: ObjectId) -> Vec<Object> {
-        let Ok(d) = self.doc.get_dictionary(page) else { return vec![] };
+        let Ok(d) = self.doc.get_dictionary(page) else {
+            return vec![];
+        };
         match d.get(b"Contents") {
             Ok(Object::Reference(id)) => match self.doc.get_object(*id) {
                 Ok(Object::Array(a)) => a.clone(),
@@ -151,7 +165,7 @@ impl Pdf {
         }
     }
 
-    fn resolved_dict(&self, o: Option<&Object>) -> Dictionary {
+    pub(crate) fn resolved_dict(&self, o: Option<&Object>) -> Dictionary {
         o.and_then(|o| self.doc.dereference(o).ok())
             .and_then(|(_, o)| o.as_dict().ok())
             .cloned()
@@ -171,13 +185,29 @@ impl Pdf {
         let existing = self.page_content_refs(page);
         let mut contents: Vec<Object> = Vec::with_capacity(existing.len() + 4);
         if let Some(b) = below {
-            contents.push(self.doc.add_object(Stream::new(Dictionary::new(), b)).into());
+            contents.push(
+                self.doc
+                    .add_object(Stream::new(Dictionary::new(), b))
+                    .into(),
+            );
         }
-        contents.push(self.doc.add_object(Stream::new(Dictionary::new(), b"q\n".to_vec())).into());
+        contents.push(
+            self.doc
+                .add_object(Stream::new(Dictionary::new(), b"q\n".to_vec()))
+                .into(),
+        );
         contents.extend(existing);
-        contents.push(self.doc.add_object(Stream::new(Dictionary::new(), b"\nQ\n".to_vec())).into());
+        contents.push(
+            self.doc
+                .add_object(Stream::new(Dictionary::new(), b"\nQ\n".to_vec()))
+                .into(),
+        );
         if let Some(a) = above {
-            contents.push(self.doc.add_object(Stream::new(Dictionary::new(), a)).into());
+            contents.push(
+                self.doc
+                    .add_object(Stream::new(Dictionary::new(), a))
+                    .into(),
+            );
         }
 
         let pd = self.doc.get_dictionary(page)?;
@@ -222,7 +252,11 @@ impl Pdf {
                 escape(&wm.text),
             )
             .into_bytes();
-            let (below, above) = if wm.foreground { (None, Some(stream)) } else { (Some(stream), None) };
+            let (below, above) = if wm.foreground {
+                (None, Some(stream))
+            } else {
+                (Some(stream), None)
+            };
             self.add_layers(page, below, above, font, Some(gs))?;
         }
         Ok(())
@@ -241,7 +275,13 @@ impl Pdf {
             let page = ids[i];
             let (m, vw, vh) = self.visual_matrix(page);
             let bates = hf.bates.as_ref().map(|b| {
-                format!("{}{:0w$}{}", b.prefix, b.start + seq as u64, b.suffix, w = b.digits)
+                format!(
+                    "{}{:0w$}{}",
+                    b.prefix,
+                    b.start + seq as u64,
+                    b.suffix,
+                    w = b.digits
+                )
             });
             let expand = |t: &str| {
                 t.replace("{page}", &(i + 1).to_string())
@@ -264,7 +304,12 @@ impl Pdf {
                     1 => (vw - tw) / 2.0,
                     _ => vw - hf.margin - tw,
                 };
-                s.push_str(&format!("1 0 0 1 {:.3} {:.3} Tm ({}) Tj\n", x, y, escape(&t)));
+                s.push_str(&format!(
+                    "1 0 0 1 {:.3} {:.3} Tm ({}) Tj\n",
+                    x,
+                    y,
+                    escape(&t)
+                ));
             };
             for slot in 0..3 {
                 put(&hf.header[slot], slot, vh - hf.margin);
@@ -273,7 +318,11 @@ impl Pdf {
             s.push_str("ET\nQ\n");
             // Bates numbers with no explicit slot go bottom-right if the user did not use {bates}.
             if hf.bates.is_some()
-                && !hf.header.iter().chain(hf.footer.iter()).any(|t| t.contains("{bates}"))
+                && !hf
+                    .header
+                    .iter()
+                    .chain(hf.footer.iter())
+                    .any(|t| t.contains("{bates}"))
             {
                 let t = bates.clone().unwrap_or_default();
                 let tw = text_width(&t, hf.font_size);
@@ -329,14 +378,19 @@ mod tests {
         let all = [0, 1, 2];
         p.add_watermark(&all, &Watermark::default()).unwrap();
         let hf = HeaderFooter {
-            bates: Some(Bates { prefix: "ABC".into(), digits: 4, ..Default::default() }),
+            bates: Some(Bates {
+                prefix: "ABC".into(),
+                digits: 4,
+                ..Default::default()
+            }),
             ..Default::default()
         };
         p.add_header_footer(&all, &hf).unwrap();
         let bytes = p.to_bytes().unwrap();
         let re = Pdf::from_bytes(&bytes, None).unwrap();
         assert_eq!(re.page_count(), 3);
-        let content = String::from_utf8_lossy(&re.doc.get_page_content(re.page_ids()[2])).to_string();
+        let content =
+            String::from_utf8_lossy(&re.doc.get_page_content(re.page_ids()[2])).to_string();
         assert!(content.contains("Page 3 of 3"));
         assert!(content.contains("ABC0003"));
         assert!(content.contains("DRAFT"));
