@@ -1,0 +1,13 @@
+[package]
+name = "mpe-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lopdf.workspace = true
+hayro.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+rayon.workspace = true
+rand.workspace = true

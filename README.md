@@ -1,0 +1,149 @@
+# MPE
+
+A fast PDF viewer and editor written entirely in Rust, with no C or C++ dependencies. It started from a
+functional specification of an existing Qt/C++ editor. This is a from-scratch implementation: it contains
+none of that product's code, strings, stamps, fonts or other assets.
+
+**Status: 0.1, for testing.** Viewing, page operations, overlays (headers, footers, Bates, watermark), metadata and
+password security are in. Content editing, annotation, forms, signatures, OCR and most export formats are not started.
+The coverage table below is the complete list.
+
+| Part | What it is |
+| --- | --- |
+| `mpe-core` | Library: page operations, overlays, metadata, encryption, text search, rendering |
+| `mpe` | Command-line tool for scripting and batch work |
+| `mpe-gui` | Desktop app (egui): tabs, thumbnails, continuous scrolling, undo/redo, dialogs |
+
+Engines: [`lopdf`](https://crates.io/crates/lopdf) for the document structure and encryption,
+[`hayro`](https://crates.io/crates/hayro) for rasterisation (CPU, pure Rust), [`egui`](https://crates.io/crates/egui)
+for the UI, [`rfd`](https://crates.io/crates/rfd) for file dialogs.
+
+## Build
+
+Requires a recent stable Rust toolchain (developed on 1.97).
+
+```
+cargo build --release
+# binaries: target/release/mpe  and  target/release/mpe-gui
+cargo test --workspace
+```
+
+Linux needs a working OpenGL driver and an X11 or Wayland session at run time. Nothing else is required at
+build or run time. Windows and macOS builds use the same code; see "Platform status".
+
+## Use
+
+```
+mpe-gui file.pdf --page 3            # open at page 3; or File > Open, or drop files on the window
+
+mpe info file.pdf
+mpe merge a.pdf b.pdf -o out.pdf
+mpe split big.pdf --every 50 --out-dir parts
+mpe extract in.pdf -o out.pdf --pages 1-3,7
+mpe delete in.pdf -o out.pdf --pages 2
+mpe rotate in.pdf -o out.pdf --pages all --degrees 90
+mpe reorder in.pdf -o out.pdf --order 3,1,2
+mpe crop in.pdf -o out.pdf --page 1 --rect 50,600,400,780
+mpe insert-blank in.pdf -o out.pdf --after 0
+mpe watermark in.pdf -o out.pdf --text CONFIDENTIAL --opacity 0.3
+mpe header-footer in.pdf -o out.pdf --footer-center "Page {page} of {pages}" --header-right "{date}"
+mpe bates in.pdf -o out.pdf --prefix ACME- --digits 6
+mpe set-info in.pdf -o out.pdf --title "Report" --author "Me"
+mpe encrypt in.pdf -o out.pdf --owner-password OWN --user-password USR --cipher aes256 --no-copy
+mpe decrypt in.pdf -o out.pdf --password USR
+mpe search in.pdf "invoice"
+mpe text in.pdf --pages 1-2
+mpe render in.pdf --dpi 150 --out-dir pngs
+```
+
+GUI keys: Ctrl+O/S/W, Ctrl+Shift+S, Ctrl+Z / Ctrl+Y, Ctrl+F, Ctrl+= / Ctrl+- / Ctrl+0 (fit width) / Ctrl+1,
+Ctrl+scroll or pinch to zoom, PageUp/PageDown/Home/End. Click thumbnails (Ctrl/Shift for multi-select) to choose
+the pages that Document-menu operations apply to.
+
+## Coverage against the specification
+
+Labels: **Done** = implemented and exercised by tests or by running it. **Partial** = works with the stated limits.
+**No** = not implemented.
+
+| Specification area | Status | Notes |
+| --- | --- | --- |
+| Tabbed multi-document window, thumbnails, drag-and-drop open | Done | |
+| Zoom, fit width, continuous scrolling, page navigation | Done | Single-page / facing-page layouts: No |
+| Command line `file.pdf --page N` | Done | |
+| Rendering | Partial | hayro: very broad coverage, but lacks blending and isolation groups, knockout groups, colour-key masking; annotation drawing is incomplete (hayro's own list) |
+| Text search | Partial | Page-level hits with snippets. No highlight on the page. Extraction is lopdf's and can miss text in some CID/embedded-font encodings. Scanned pages have no text without OCR |
+| Page operations: insert blank, delete, rotate, extract, reorder, crop box | Done | Reorder and crop are in the core library and the CLI, not yet in the GUI (no drag-to-reorder) |
+| Merge / append, split by page count | Done | Bookmarks, form fields and named destinations of appended files are not carried over (not tested with such files). Split by file size: No |
+| Undo / redo | Done | 20 levels, by snapshots |
+| Headers, footers, page numbers, date, Bates numbering | Done | Standard Helvetica, Latin-1 characters only. No saved presets, no multi-file manager |
+| Watermark | Partial | Text only, any angle, opacity, above or below content. No image / PDF / page-number sources |
+| Document properties (title, author, subject, keywords, creator, producer) | Done | |
+| Password security: open and permissions passwords, RC4-40, RC4-128, AES-128, AES-256, permission flags | Done | Round-trip tested for all four. Saving a file you opened with a password removes protection unless you set it again in Document > Password security |
+| Opening password-protected files | Done | User password |
+| Certificate encryption | No | |
+| Digital signatures, signature validation, certificate manager, PKCS#11 tokens | No | |
+| Content editing: edit text, images, vector objects, object inspector, colour replacement, links, layers, attachments, bookmarks | No | |
+| Annotations, comments, stamps, measurement tools | No | Existing annotations are drawn by the renderer to the extent hayro supports them |
+| Form editing, form data import/export, barcodes, document JavaScript | No | |
+| Redaction | No | |
+| OCR (Tesseract), scanning (SANE), optimise scanned pages | No | |
+| PDF/A conversion, Save Optimized | No | Output is pruned and stream-compressed; that is all |
+| Export to Word, Excel, CSV, images | Partial | Page text and PNG render via the CLI only. Word, Excel, CSV: No |
+| Compare documents | No | |
+| Printing dialog | No | |
+| Sessions, autosave, backup on save, custom keyboard shortcuts, preferences dialog, 42 translations, toolbars customisation | No | Unsaved-changes prompts on close are in |
+| XFA forms, XPS documents | No | |
+| Licence activation, update checks, OCR language downloads | Not applicable | MPE makes no network connections and has no licence mechanism |
+
+## Performance
+
+Measured on this project's build machine (2 cores, Linux), release profile (LTO, one codegen unit), 300-page
+text-and-graphics test file, 538 KB:
+
+| Task | Time |
+| --- | --- |
+| Render 300 pages at 100 dpi to PNG files (both cores) | 3.5 s |
+| Full-text search of 300 pages | 0.05 s |
+| Watermark 300 pages | 0.03 s |
+| Merge 3 × 300 pages into 900 pages | 0.03 s |
+| Split 900 pages into 18 files | 0.14 s |
+| AES-256 encrypt 300 pages | 0.02 s |
+
+These are single runs on small, simple pages, not a benchmark suite. No comparison against other software was made.
+Pages with large images, heavy transparency or many fonts will be slower, and hayro's own documentation says
+its renderer has not yet been performance-tuned.
+
+How the GUI stays responsive: pages are rendered lazily on a pool of worker threads, newest request first,
+with one page of prefetch either side; textures outside the viewport are dropped; thumbnails render at their own
+small size; edits re-serialise without compressing and undo uses plain snapshots.
+
+## Platform status
+
+| Platform | Status |
+| --- | --- |
+| Linux x86_64 | Built, tested (unit and integration tests), CLI run on real PDFs, GUI run under a virtual X server with software GL and checked by screenshot |
+| Windows, macOS (Intel and Apple Silicon) | Not built or run by the author: the build machine could not install those targets. The code has no platform-specific parts and all dependencies are Rust, so it is expected to build. `.github/workflows/ci.yml` builds, tests and packages all four on GitHub Actions |
+
+GUI checked by scripted input: mouse-wheel scrolling, thumbnail selection, View > Zoom in, Document menu, Rotate
+(including the unsaved marker and thumbnail refresh). Not exercised in the GUI: keyboard shortcuts (the virtual display
+had no window manager to give it focus), file dialogs, the unsaved-changes prompts, and the Watermark, Header/Footer,
+Security, Metadata, Split and Insert-blank dialogs. The operations behind those dialogs are covered by the core tests
+and the CLI run.
+
+## Known limits
+
+- Header/footer, Bates and watermark text use Helvetica and Latin-1 only; other characters print as `?`.
+- Overlays are added as extra content on the page. They are not annotations and cannot be removed individually
+  (use Undo before saving).
+- Saving rewrites the whole file; incremental save is not implemented.
+- Files hayro cannot parse show "Rendering…" on those pages; editing may still work if lopdf can read them.
+- Digitally signed documents lose their signature validity when saved, as with any rewrite.
+
+## Licence
+
+Dual-licensed under MIT or Apache-2.0, at your option. See `LICENSE-MIT` and `LICENSE-APACHE`.
+Dependencies carry their own licences. A scan of the dependency metadata for all platforms found only permissive
+licences (MIT, Apache-2.0, BSD, Zlib, Unicode, ISC, Unlicense, BSL-1.0 and similar), plus the SIL OFL 1.1 and Ubuntu
+Font Licence for the UI fonts bundled with egui. A few crates are dual-licensed with LGPL or GPL as one option;
+the permissive option applies. If you redistribute binaries, keep the licence texts of the dependencies with them
+(`cargo about` or `cargo license` can generate the list).

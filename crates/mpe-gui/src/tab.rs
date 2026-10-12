@@ -1,0 +1,374 @@
+use crate::worker::{Key, Worker};
+use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptions, Vec2};
+use mpe_core::{Encryption, Pdf, SearchHit};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::PathBuf;
+
+const GAP: f32 = 14.0;
+const THUMB_W: f32 = 120.0;
+const MAX_UNDO: usize = 20;
+/// egui points at zoom 1.0 per PDF point (96 dpi logical).
+const BASE: f32 = 96.0 / 72.0;
+
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub enum Side {
+    Pages,
+    Search,
+}
+
+pub struct Tab {
+    pub id: u64,
+    pub pdf: Pdf,
+    pub path: Option<PathBuf>,
+    pub dirty: bool,
+    pub encryption: Option<Encryption>,
+    worker: Worker,
+    pub sizes: Vec<(f32, f32)>,
+    pages: HashMap<usize, (u32, TextureHandle)>,
+    thumbs: HashMap<usize, TextureHandle>,
+    pending: HashSet<Key>,
+    pub zoom: f32,
+    pub current: usize,
+    pub selected: BTreeSet<usize>,
+    anchor: usize,
+    goto: Option<usize>,
+    undo: Vec<Vec<u8>>,
+    redo: Vec<Vec<u8>>,
+    pub side: Side,
+    pub query: String,
+    pub hits: Vec<SearchHit>,
+    pub hit_idx: usize,
+    pub error: Option<String>,
+}
+
+impl Tab {
+    pub fn new(ctx: &egui::Context, id: u64, mut pdf: Pdf, path: Option<PathBuf>) -> Result<Self, String> {
+        let bytes = pdf.snapshot().map_err(|e| e.to_string())?;
+        let sizes = sizes_of(&pdf);
+        Ok(Self {
+            id,
+            pdf,
+            path,
+            dirty: false,
+            encryption: None,
+            worker: Worker::spawn(ctx.clone(), bytes),
+            sizes,
+            pages: HashMap::new(),
+            thumbs: HashMap::new(),
+            pending: HashSet::new(),
+            zoom: 1.0,
+            current: 0,
+            selected: BTreeSet::new(),
+            anchor: 0,
+            goto: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            side: Side::Pages,
+            query: String::new(),
+            hits: Vec::new(),
+            hit_idx: 0,
+            error: None,
+        })
+    }
+
+    pub fn title(&self) -> String {
+        let name = self
+            .path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Untitled".into());
+        if self.dirty { format!("{name} *") } else { name }
+    }
+
+    pub fn page_count(&self) -> usize {
+        self.sizes.len()
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
+    /// Pages an operation applies to: the selection, else the current page.
+    pub fn targets(&self) -> Vec<usize> {
+        if self.selected.is_empty() {
+            vec![self.current.min(self.page_count().saturating_sub(1))]
+        } else {
+            self.selected.iter().copied().collect()
+        }
+    }
+
+    pub fn go_to(&mut self, page: usize) {
+        let p = page.min(self.page_count().saturating_sub(1));
+        self.current = p;
+        self.goto = Some(p);
+    }
+
+    // ------------------------------------------------------------ editing
+
+    /// Run an edit with undo support. On failure the document is left unchanged.
+    pub fn edit(&mut self, ctx: &egui::Context, f: impl FnOnce(&mut Pdf) -> mpe_core::Result<()>) {
+        let before = match self.pdf.snapshot() {
+            Ok(b) => b,
+            Err(e) => return self.error = Some(e.to_string()),
+        };
+        if let Err(e) = f(&mut self.pdf) {
+            if let Ok(p) = Pdf::from_bytes(&before, None) {
+                self.pdf = p;
+            }
+            return self.error = Some(e.to_string());
+        }
+        self.undo.push(before);
+        if self.undo.len() > MAX_UNDO {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+        self.dirty = true;
+        self.refresh(ctx);
+    }
+
+    pub fn undo(&mut self, ctx: &egui::Context) {
+        if let (Some(prev), Ok(cur)) = (self.undo.pop(), self.pdf.snapshot()) {
+            if let Ok(p) = Pdf::from_bytes(&prev, None) {
+                self.pdf = p;
+                self.redo.push(cur);
+                self.dirty = true;
+                self.refresh(ctx);
+            }
+        }
+    }
+
+    pub fn redo(&mut self, ctx: &egui::Context) {
+        if let (Some(next), Ok(cur)) = (self.redo.pop(), self.pdf.snapshot()) {
+            if let Ok(p) = Pdf::from_bytes(&next, None) {
+                self.pdf = p;
+                self.undo.push(cur);
+                self.dirty = true;
+                self.refresh(ctx);
+            }
+        }
+    }
+
+    /// Re-render from the current document state.
+    pub fn refresh(&mut self, ctx: &egui::Context) {
+        match self.pdf.snapshot() {
+            Ok(bytes) => {
+                self.worker = Worker::spawn(ctx.clone(), bytes);
+                self.sizes = sizes_of(&self.pdf);
+                self.pages.clear();
+                self.thumbs.clear();
+                self.pending.clear();
+                self.hits.clear();
+                let n = self.page_count();
+                self.selected.retain(|&p| p < n);
+                self.current = self.current.min(n.saturating_sub(1));
+                self.goto = Some(self.current);
+            }
+            Err(e) => self.error = Some(e.to_string()),
+        }
+    }
+
+    pub fn run_search(&mut self) {
+        self.hit_idx = 0;
+        match self.pdf.search(&self.query) {
+            Ok(h) => self.hits = h,
+            Err(e) => self.error = Some(e.to_string()),
+        }
+        if let Some(h) = self.hits.first() {
+            let p = h.page;
+            self.go_to(p);
+        }
+    }
+
+    pub fn step_hit(&mut self, delta: isize) {
+        if self.hits.is_empty() {
+            return;
+        }
+        let n = self.hits.len() as isize;
+        self.hit_idx = ((self.hit_idx as isize + delta).rem_euclid(n)) as usize;
+        let p = self.hits[self.hit_idx].page;
+        self.go_to(p);
+    }
+
+    // ------------------------------------------------------------ drawing
+
+    fn collect(&mut self, ctx: &egui::Context) {
+        while let Ok(r) = self.worker.rx.try_recv() {
+            self.pending.remove(&r.key);
+            let Ok(b) = r.bitmap else { continue };
+            let img = egui::ColorImage::from_rgba_premultiplied([b.width, b.height], &b.rgba);
+            let tex = ctx.load_texture(format!("p{}-{}-{}", self.id, r.key.0, r.key.1), img, TextureOptions::LINEAR);
+            if r.key.1 == 0 {
+                self.thumbs.insert(r.key.0, tex);
+            } else {
+                self.pages.insert(r.key.0, (r.key.1, tex));
+            }
+        }
+    }
+
+    /// Change zoom and keep the current page at the top of the view.
+    pub fn set_zoom(&mut self, z: f32) {
+        self.zoom = z.clamp(0.1, 8.0);
+        self.goto = Some(self.current);
+    }
+
+    pub fn fit_width(&mut self, avail: f32) {
+        if let Some(&(w, _)) = self.sizes.get(self.current) {
+            self.set_zoom((avail - 40.0) / (w * BASE));
+        }
+    }
+
+    pub fn show_pages(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        self.collect(&ctx);
+        let ppp = ctx.pixels_per_point();
+
+        let zd = ui.input(|i| i.zoom_delta());
+        if zd != 1.0 {
+            self.set_zoom(self.zoom * zd);
+        }
+
+        let page_w: Vec<f32> = self.sizes.iter().map(|s| s.0 * BASE * self.zoom).collect();
+        let page_h: Vec<f32> = self.sizes.iter().map(|s| s.1 * BASE * self.zoom).collect();
+        let mut tops = Vec::with_capacity(page_h.len());
+        let mut y = GAP;
+        for h in &page_h {
+            tops.push(y);
+            y += h + GAP;
+        }
+        let total_h = y;
+        let content_w = page_w.iter().cloned().fold(0.0, f32::max) + 2.0 * GAP;
+
+        let mut area = egui::ScrollArea::both().id_salt(("pages", self.id)).auto_shrink([false, false]);
+        if let Some(p) = self.goto.take() {
+            area = area.vertical_scroll_offset((tops.get(p).copied().unwrap_or(0.0) - GAP).max(0.0));
+        }
+        let mut wanted: Vec<(Key, f32)> = Vec::new();
+        let mut visible = (usize::MAX, 0usize);
+        let mut probe = self.current;
+        let out = area.show_viewport(ui, |ui, vp| {
+            let avail_w = ui.available_width().max(content_w);
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(avail_w, total_h), Sense::hover());
+            let painter = ui.painter();
+            let first = tops.partition_point(|&t| t < vp.min.y).saturating_sub(1);
+            for i in first..tops.len() {
+                if tops[i] > vp.max.y {
+                    break;
+                }
+                visible.0 = visible.0.min(i);
+                visible.1 = i;
+                let x = rect.min.x + (avail_w - page_w[i]) / 2.0;
+                let r = Rect::from_min_size(Pos2::new(x, rect.min.y + tops[i]), Vec2::new(page_w[i], page_h[i]));
+                painter.rect_filled(r.translate(Vec2::new(2.0, 2.0)), 0.0, Color32::from_black_alpha(50));
+                painter.rect_filled(r, 0.0, Color32::WHITE);
+                let scale = self.zoom * BASE * ppp;
+                let key = (i, ((scale * 20.0).round() as u32).max(1));
+                match self.pages.get(&i) {
+                    Some((_, tex)) => {
+                        painter.image(tex.id(), r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                    }
+                    None => {
+                        painter.text(r.center(), egui::Align2::CENTER_CENTER, "Rendering…", egui::FontId::proportional(14.0), Color32::GRAY);
+                    }
+                }
+                if self.pages.get(&i).map(|(k, _)| *k) != Some(key.1) {
+                    wanted.push((key, key.1 as f32 / 20.0));
+                }
+            }
+            let mid = vp.min.y + vp.height() / 3.0;
+            probe = tops.partition_point(|&t| t <= mid).saturating_sub(1).min(tops.len().saturating_sub(1));
+        });
+        let _ = out;
+        if self.goto.is_none() {
+            self.current = probe;
+        }
+        for (key, scale) in wanted {
+            if self.pending.insert(key) {
+                self.worker.request(key, scale);
+            }
+        }
+        // Prefetch one page either side.
+        if visible.0 != usize::MAX {
+            let n = self.page_count();
+            for i in [visible.0.saturating_sub(1), (visible.1 + 1).min(n.saturating_sub(1))] {
+                let scale = self.zoom * BASE * ppp;
+                let key = (i, ((scale * 20.0).round() as u32).max(1));
+                if i < n && self.pages.get(&i).map(|(k, _)| *k) != Some(key.1) && self.pending.insert(key) {
+                    self.worker.request(key, key.1 as f32 / 20.0);
+                }
+            }
+            // Evict textures far from the viewport.
+            let (lo, hi) = (visible.0.saturating_sub(6), visible.1 + 6);
+            self.pages.retain(|&p, _| p >= lo && p <= hi);
+            let keep = |k: &Key| k.1 == 0 || (k.0 + 3 >= lo && k.0 <= hi + 3);
+            self.worker.retain(keep);
+            self.pending.retain(keep);
+        }
+    }
+
+    pub fn show_thumbs(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let ppp = ctx.pixels_per_point();
+        let mut click: Option<(usize, egui::Modifiers)> = None;
+        egui::ScrollArea::vertical().id_salt(("thumbs", self.id)).auto_shrink([false, false]).show(ui, |ui| {
+            for i in 0..self.sizes.len() {
+                let (w, h) = self.sizes[i];
+                let th = THUMB_W * h / w.max(1.0);
+                let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), th + 22.0), Sense::click());
+                if !ui.is_rect_visible(rect) {
+                    continue;
+                }
+                let img = Rect::from_center_size(Pos2::new(rect.center().x, rect.min.y + 4.0 + th / 2.0), Vec2::new(THUMB_W, th));
+                let sel = self.selected.contains(&i);
+                if sel || i == self.current {
+                    let c = if sel { ui.visuals().selection.bg_fill } else { ui.visuals().faint_bg_color };
+                    ui.painter().rect_filled(rect, 4.0, c);
+                }
+                ui.painter().rect_filled(img, 0.0, Color32::WHITE);
+                match self.thumbs.get(&i) {
+                    Some(t) => {
+                        ui.painter().image(t.id(), img, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                    }
+                    None => {
+                        let key = (i, 0u32);
+                        if self.pending.insert(key) {
+                            self.worker.request(key, THUMB_W * ppp / w.max(1.0));
+                        }
+                    }
+                }
+                ui.painter().text(
+                    Pos2::new(rect.center().x, rect.max.y - 9.0),
+                    egui::Align2::CENTER_CENTER,
+                    (i + 1).to_string(),
+                    egui::FontId::proportional(12.0),
+                    ui.visuals().text_color(),
+                );
+                if resp.clicked() {
+                    click = Some((i, ui.input(|s| s.modifiers)));
+                }
+            }
+        });
+        if let Some((i, m)) = click {
+            if m.shift {
+                let (a, b) = (self.anchor.min(i), self.anchor.max(i));
+                self.selected = (a..=b).collect();
+            } else if m.command {
+                if !self.selected.remove(&i) {
+                    self.selected.insert(i);
+                }
+                self.anchor = i;
+            } else {
+                self.selected = BTreeSet::from([i]);
+                self.anchor = i;
+            }
+            self.go_to(i);
+        }
+    }
+}
+
+fn sizes_of(pdf: &Pdf) -> Vec<(f32, f32)> {
+    (0..pdf.page_count()).map(|i| pdf.page_size(i).unwrap_or((612.0, 792.0))).collect()
+}

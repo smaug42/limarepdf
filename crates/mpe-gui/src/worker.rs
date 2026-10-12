@@ -1,0 +1,96 @@
+//! Background page rendering. One parsed document is shared by several threads;
+//! each thread owns its own (non-Send) render cache. Newest requests are served first
+//! so scrolling stays responsive.
+
+use mpe_core::render::{self, Bitmap, Renderer};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Condvar, Mutex};
+
+/// (page index, quantised scale)
+pub type Key = (usize, u32);
+
+pub struct Response {
+    pub key: Key,
+    pub bitmap: Result<Bitmap, String>,
+}
+
+struct Queue {
+    items: Vec<(Key, f32)>,
+    closed: bool,
+}
+
+pub struct Worker {
+    shared: Arc<(Mutex<Queue>, Condvar)>,
+    pub rx: Receiver<Response>,
+}
+
+impl Worker {
+    pub fn spawn(ctx: eframe::egui::Context, bytes: Vec<u8>) -> Self {
+        let shared = Arc::new((Mutex::new(Queue { items: Vec::new(), closed: false }), Condvar::new()));
+        let (tx, rx) = channel::<Response>();
+        let parsed = Arc::new(render::load(bytes, None).map_err(|e| e.to_string()));
+        let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).saturating_sub(1).clamp(1, 6);
+        for _ in 0..threads {
+            let shared = shared.clone();
+            let tx: Sender<Response> = tx.clone();
+            let parsed = parsed.clone();
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                let renderer = match &*parsed {
+                    Ok(pdf) => Some(Renderer::new(pdf)),
+                    Err(_) => None,
+                };
+                loop {
+                    let job = {
+                        let (lock, cv) = &*shared;
+                        let mut q = lock.lock().unwrap();
+                        loop {
+                            if q.closed {
+                                return;
+                            }
+                            if let Some(j) = q.items.pop() {
+                                break j;
+                            }
+                            q = cv.wait(q).unwrap();
+                        }
+                    };
+                    let (key, scale) = job;
+                    let bitmap = match (&renderer, &*parsed) {
+                        (Some(r), _) => {
+                            // A malformed page must not take the whole viewer down.
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| r.render(key.0, scale)))
+                                .map_err(|_| "renderer panicked on this page".to_string())
+                                .and_then(|r| r.map_err(|e| e.to_string()))
+                        }
+                        (None, Err(e)) => Err(e.clone()),
+                        _ => Err("renderer unavailable".into()),
+                    };
+                    if tx.send(Response { key, bitmap }).is_err() {
+                        return;
+                    }
+                    ctx.request_repaint();
+                }
+            });
+        }
+        Self { shared, rx }
+    }
+
+    pub fn request(&self, key: Key, scale: f32) {
+        let (lock, cv) = &*self.shared;
+        lock.lock().unwrap().items.push((key, scale));
+        cv.notify_one();
+    }
+
+    /// Drop queued jobs that are no longer wanted.
+    pub fn retain(&self, keep: impl Fn(&Key) -> bool) {
+        self.shared.0.lock().unwrap().items.retain(|(k, _)| keep(k));
+    }
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        let (lock, cv) = &*self.shared;
+        lock.lock().unwrap().closed = true;
+        cv.notify_all();
+    }
+}

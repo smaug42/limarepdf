@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["crates/mpe-core", "crates/mpe-cli", "crates/mpe-gui"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+rust-version = "1.80"
+
+[workspace.dependencies]
+lopdf = "0.45"
+hayro = { version = "0.8", features = ["embed-fonts"] }
+anyhow = "1"
+thiserror = "2"
+rayon = "1"
+rand = "0.9"
+clap = { version = "4", features = ["derive"] }
+eframe = "0.36"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+rfd = "0.17"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
