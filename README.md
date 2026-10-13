@@ -99,7 +99,7 @@ Labels: **Done** = implemented and exercised by tests or by running it. **Partia
 | Headers, footers, page numbers, date, Bates numbering | Done | Standard Helvetica, Latin-1 characters only. No saved presets, no multi-file manager |
 | Watermark | Partial | Text only, any angle, opacity, above or below content. No image / PDF / page-number sources |
 | Document properties (title, author, subject, keywords, creator, producer) | Done | |
-| Password security: open and permissions passwords, RC4-40, RC4-128, AES-128, AES-256, permission flags | Done | Round-trip tested for all four. Saving a file you opened with a password removes protection unless you set it again in Document > Password security |
+| Password security: open and permissions passwords, RC4-40, RC4-128, AES-128, AES-256, permission flags | Done | Round-trip tested for all four; files from this version also checked in poppler (pdftoppm) and Ghostscript. AES-256 files saved by MPE 0.2.0 and earlier show blank or garbled pages in poppler-based viewers such as Okular and Evince (a missing key length); to fix one, open it in MPE, set the password again and save. Saving a file you opened with a password removes protection unless you set it again in Document > Password security |
 | Opening password-protected files | Done | User password |
 | Certificate encryption | No | |
 | Digital signatures, signature validation, certificate manager, PKCS#11 tokens | No | |

@@ -80,6 +80,7 @@ impl Pdf {
                 }
                 let state = enc.state(&d)?;
                 d.encrypt(&state)?;
+                fix_encrypted(&mut d, enc.cipher);
                 d.save_to(w)?;
             }
             None => self.doc.save_to(w)?,
@@ -524,6 +525,45 @@ pub(crate) fn encode_text(s: &str) -> Vec<u8> {
             v.extend_from_slice(&u.to_be_bytes());
         }
         v
+    }
+}
+
+/// Adjust what lopdf writes for an encrypted document so other readers open it:
+/// - Strings become hexadecimal. Ciphertext and password hashes are binary, and hayro 0.8
+///   reads two line feeds in a row inside a literal string as one, so about one file in
+///   2,500 failed its password check there.
+/// - AES-256 gets `/Length 256`, which lopdf leaves out; without it poppler uses a short
+///   key and shows the pages as garbage.
+fn fix_encrypted(d: &mut Document, cipher: crate::Cipher) {
+    for o in d.objects.values_mut() {
+        hex_strings(o);
+    }
+    for (_, o) in d.trailer.iter_mut() {
+        hex_strings(o);
+    }
+    if cipher == crate::Cipher::Aes256 {
+        let id = d.trailer.get(b"Encrypt").and_then(Object::as_reference);
+        let dict = match id {
+            Ok(id) => d.get_dictionary_mut(id).ok(),
+            Err(_) => d
+                .trailer
+                .get_mut(b"Encrypt")
+                .and_then(Object::as_dict_mut)
+                .ok(),
+        };
+        if let Some(e) = dict {
+            e.set("Length", 256);
+        }
+    }
+}
+
+fn hex_strings(o: &mut Object) {
+    match o {
+        Object::String(_, f) => *f = lopdf::StringFormat::Hexadecimal,
+        Object::Array(a) => a.iter_mut().for_each(hex_strings),
+        Object::Dictionary(d) => d.iter_mut().for_each(|(_, v)| hex_strings(v)),
+        Object::Stream(s) => s.dict.iter_mut().for_each(|(_, v)| hex_strings(v)),
+        _ => {}
     }
 }
 
