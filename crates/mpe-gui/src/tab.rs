@@ -1,4 +1,5 @@
 use crate::editor::{Action, Editor, Tool};
+use crate::selection::Selection;
 use crate::theme;
 use crate::worker::{Key, Worker};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptions, Vec2};
@@ -34,7 +35,6 @@ pub struct Tab {
     pending: HashSet<Key>,
     pub zoom: f32,
     pub current: usize,
-    pub selected: BTreeSet<usize>,
     anchor: usize,
     goto: Option<usize>,
     undo: Vec<Vec<u8>>,
@@ -76,7 +76,6 @@ impl Tab {
             pending: HashSet::new(),
             zoom: 1.0,
             current: 0,
-            selected: BTreeSet::new(),
             anchor: 0,
             goto: None,
             undo: Vec::new(),
@@ -129,10 +128,9 @@ impl Tab {
 
     /// Pages an operation applies to: the selection, else the current page.
     pub fn targets(&self) -> Vec<usize> {
-        if self.selected.is_empty() {
-            vec![self.current.min(self.page_count().saturating_sub(1))]
-        } else {
-            self.selected.iter().copied().collect()
+        match self.ed.selection.pages() {
+            Some(s) => s.iter().copied().collect(),
+            None => vec![self.current.min(self.page_count().saturating_sub(1))],
         }
     }
 
@@ -221,7 +219,7 @@ impl Tab {
                 }
                 Action::Delete(p, id) => {
                     if self.edit_pages(ctx, &[p], |pdf| pdf.delete_object(p, id)) {
-                        self.ed.sel = None;
+                        self.ed.selection.clear_object();
                     }
                 }
                 Action::AddShape(p, shape, rect) => {
@@ -260,7 +258,7 @@ impl Tab {
                             .as_deref()
                             == Some(want.as_str());
                         if same {
-                            self.ed.sel = Some((p, id));
+                            self.ed.select_object(p, id);
                         } else {
                             self.ed.select_last(&self.pdf, p);
                         }
@@ -327,12 +325,12 @@ impl Tab {
                 self.pending.clear();
                 self.stale.clear();
                 self.ed.invalidate();
-                self.ed.sel = None;
+                self.ed.selection.clear_object();
                 self.ed.new_text = None;
                 self.hits.clear();
                 self.matches.clear();
                 let n = self.page_count();
-                self.selected.retain(|&p| p < n);
+                self.ed.selection.retain_pages(n);
                 self.current = self.current.min(n.saturating_sub(1));
                 self.goto = Some(self.current);
             }
@@ -574,7 +572,7 @@ impl Tab {
                         Pos2::new(rect.center().x, rect.min.y + 4.0 + th / 2.0),
                         Vec2::new(THUMB_W, th),
                     );
-                    let sel = self.selected.contains(&i);
+                    let sel = self.ed.selection.pages().is_some_and(|s| s.contains(&i));
                     if sel || i == self.current {
                         let c = if sel {
                             ui.visuals().selection.bg_fill
@@ -613,18 +611,22 @@ impl Tab {
                 }
             });
         if let Some((i, m)) = click {
+            // Shift adds a range from the last click, Ctrl/Cmd toggles one page; either
+            // way a selected object or words give way to the pages.
+            let mut set = self.ed.selection.pages().cloned().unwrap_or_default();
             if m.shift {
                 let (a, b) = (self.anchor.min(i), self.anchor.max(i));
-                self.selected = (a..=b).collect();
+                set = (a..=b).collect();
             } else if m.command {
-                if !self.selected.remove(&i) {
-                    self.selected.insert(i);
+                if !set.remove(&i) {
+                    set.insert(i);
                 }
                 self.anchor = i;
             } else {
-                self.selected = BTreeSet::from([i]);
+                set = BTreeSet::from([i]);
                 self.anchor = i;
             }
+            self.ed.selection = Selection::pages_from(set);
             self.go_to(i);
         }
     }
