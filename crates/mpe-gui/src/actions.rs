@@ -3,7 +3,8 @@
 //! does is in `App::act`.
 
 use crate::editor::Tool;
-use eframe::egui::{Key, KeyboardShortcut, Modifiers, ThemePreference};
+use crate::selection::{ObjKind, Selection};
+use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, ThemePreference};
 use egui_phosphor::regular as icon;
 
 /// A command. Running one goes through `App::act`.
@@ -22,6 +23,8 @@ pub enum Act {
     Redo,
     Copy,
     SelectAllText,
+    /// Copy the text of the selected text object.
+    CopyObjectText,
     DeleteObject,
     /// Move the selected object by this many points (×10 with Shift).
     Nudge(i8, i8),
@@ -103,6 +106,8 @@ pub struct Ctx {
     pub words: bool,
     /// An object is selected with the arrow tool.
     pub object: bool,
+    /// What the selected object is.
+    pub obj_kind: Option<ObjKind>,
     pub tool: Option<Tool>,
     pub side: bool,
     pub hidden_text: bool,
@@ -152,6 +157,9 @@ fn words(c: &Ctx) -> bool {
 }
 fn object(c: &Ctx) -> bool {
     c.object
+}
+fn text_object(c: &Ctx) -> bool {
+    c.object && matches!(c.obj_kind, Some(ObjKind::Text | ObjKind::HiddenText))
 }
 fn text_tool(c: &Ctx) -> bool {
     c.tool == Some(Tool::SelectText)
@@ -297,6 +305,15 @@ pub static ACTIONS: &[Action] = &[
         label: "Select all text on the page",
         keys: &[k(C, Key::A)],
         enabled: text_tool,
+        ..BASE
+    },
+    Action {
+        act: Act::CopyObjectText,
+        group: Group::Edit,
+        label: "Copy the object's text",
+        icon: icon::COPY,
+        enabled: text_object,
+        menu: false,
         ..BASE
     },
     Action {
@@ -682,6 +699,69 @@ pub fn matches(a: &Action, query: &str) -> bool {
         .all(|w| hay.contains(w))
 }
 
+/// What a right-click menu offers, in groups separated by a line, for what is selected
+/// after the click (right-clicking selects what is under the pointer first).
+pub fn context_items(sel: &Selection) -> &'static [&'static [Act]] {
+    match sel {
+        Selection::Words { .. } => &[&[Act::Copy, Act::SelectAllText]],
+        Selection::Object { .. } => &[&[Act::CopyObjectText, Act::DeleteObject]],
+        Selection::None | Selection::Pages(_) => &[
+            &[Act::RotR, Act::RotL],
+            &[Act::Blank, Act::InsertImages, Act::Extract, Act::Delete],
+        ],
+    }
+}
+
+/// Fill a right-click menu: only the commands that are available now.
+pub fn context_menu(ui: &mut egui::Ui, sel: &Selection, c: &Ctx, acts: &mut Vec<Act>) {
+    let mut first = true;
+    for group in context_items(sel) {
+        let items: Vec<&Action> = group
+            .iter()
+            .map(|&a| get(a))
+            .filter(|a| (a.enabled)(c))
+            .collect();
+        if items.is_empty() {
+            continue;
+        }
+        if !first {
+            ui.separator();
+        }
+        first = false;
+        for a in items {
+            menu_item(ui, a, c, acts);
+        }
+    }
+}
+
+/// One menu entry: a checkbox for on/off commands, else a button with its shortcut.
+/// A click queues the command in `acts`.
+pub fn menu_item(ui: &mut egui::Ui, a: &Action, c: &Ctx, acts: &mut Vec<Act>) {
+    let enabled = (a.enabled)(c);
+    let r = match a.checked {
+        Some(on) => {
+            let mut v = on(c);
+            ui.add_enabled(enabled, egui::Checkbox::new(&mut v, a.label))
+        }
+        None => {
+            let key = a.keys.first().map(|k| ui.ctx().format_shortcut(k));
+            let b = egui::Button::new(a.label).shortcut_text(key.unwrap_or_default());
+            ui.add_enabled(enabled, b)
+        }
+    };
+    let r = if a.hint.is_empty() {
+        r
+    } else {
+        r.on_hover_text(a.hint)
+    };
+    if r.clicked() {
+        acts.push(a.act);
+        if a.checked.is_none() {
+            ui.close();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -710,6 +790,27 @@ mod tests {
         let save_as = all.iter().position(|(a, _)| a.act == Act::SaveAs).unwrap();
         let save = all.iter().position(|(a, _)| a.act == Act::Save).unwrap();
         assert!(save_as < save);
+    }
+
+    #[test]
+    fn context_menus_list_registered_commands() {
+        let object = Selection::Object {
+            page: 0,
+            id: 0,
+            kind: ObjKind::Path,
+        };
+        let words = Selection::Words {
+            page: 0,
+            first: 0,
+            last: 0,
+        };
+        for sel in [Selection::None, object, words] {
+            for group in context_items(&sel) {
+                for &a in *group {
+                    get(a);
+                }
+            }
+        }
     }
 
     #[test]

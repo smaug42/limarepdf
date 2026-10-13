@@ -1,4 +1,4 @@
-use crate::actions::{self, Act, Action, Ctx, Group, ACTIONS};
+use crate::actions::{self, menu_item, Act, Action, Ctx, Group, ACTIONS};
 use crate::dialogs::{self as dlg, Outcome};
 use crate::editor::Tool;
 use crate::tab::{Side, Tab};
@@ -532,6 +532,13 @@ impl App {
                     self.status = "Copied the selected text.".into();
                 }
             }
+            Act::CopyObjectText => {
+                let o = self.tabs[self.active].ed.selected_object();
+                if let Some(text) = o.and_then(|o| o.text.clone()) {
+                    ctx.copy_text(text);
+                    self.status = "Copied the object's text.".into();
+                }
+            }
             Act::Find => {
                 self.show_side = true;
                 self.tabs[self.active].side = Side::Search;
@@ -984,19 +991,16 @@ impl App {
 
     /// The state the commands' conditions are checked against.
     fn state(&self, ctx: &egui::Context) -> Ctx {
-        let t = self.tabs.get(self.active);
-        Ctx {
-            doc: t.is_some(),
+        let mut c = Ctx {
             busy: self.busy,
-            can_undo: t.is_some_and(|t| t.can_undo()),
-            can_redo: t.is_some_and(|t| t.can_redo()),
-            words: t.is_some_and(|t| t.ed.selected_text().is_some()),
-            object: t.is_some_and(|t| t.ed.has_object()),
-            tool: t.map(|t| t.ed.tool),
             side: self.show_side,
-            hidden_text: t.is_some_and(|t| t.ed.show_hidden),
             theme: ctx.options(|o| o.theme_preference),
+            ..Default::default()
+        };
+        if let Some(t) = self.tabs.get(self.active) {
+            t.fill_ctx(&mut c);
         }
+        c
     }
 
     /// The menu: one submenu per group, built from the registry.
@@ -1132,33 +1136,6 @@ impl App {
         });
         for a in acts {
             self.act(ctx, a);
-        }
-    }
-}
-
-/// One menu entry: a checkbox for on/off commands, else a button with its shortcut.
-fn menu_item(ui: &mut egui::Ui, a: &Action, c: &Ctx, acts: &mut Vec<Act>) {
-    let enabled = (a.enabled)(c);
-    let r = match a.checked {
-        Some(on) => {
-            let mut v = on(c);
-            ui.add_enabled(enabled, egui::Checkbox::new(&mut v, a.label))
-        }
-        None => {
-            let key = a.keys.first().map(|k| ui.ctx().format_shortcut(k));
-            let b = egui::Button::new(a.label).shortcut_text(key.unwrap_or_default());
-            ui.add_enabled(enabled, b)
-        }
-    };
-    let r = if a.hint.is_empty() {
-        r
-    } else {
-        r.on_hover_text(a.hint)
-    };
-    if r.clicked() {
-        acts.push(a.act);
-        if a.checked.is_none() {
-            ui.close();
         }
     }
 }
@@ -1437,7 +1414,7 @@ impl eframe::App for App {
                     });
                     ui.separator();
                     match t.side {
-                        Side::Pages => t.show_thumbs(ui),
+                        Side::Pages => t.show_thumbs(ui, &c),
                         Side::Search => {
                             let r = ui.text_edit_singleline(&mut t.query);
                             let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
@@ -1489,7 +1466,7 @@ impl eframe::App for App {
             .inner_margin(0);
         egui::CentralPanel::default().frame(canvas).show(ui, |ui| {
             if let Some(t) = self.tabs.get_mut(self.active) {
-                t.show_pages(ui);
+                t.show_pages(ui, &c);
             } else {
                 empty_state(ui, &mut acts);
             }
@@ -1502,6 +1479,10 @@ impl eframe::App for App {
             }
         }
 
+        // Commands chosen from right-click menus on pages and thumbnails.
+        if let Some(t) = self.tabs.get_mut(self.active) {
+            acts.append(&mut t.requested);
+        }
         self.palette_ui(&ctx, &c, &mut acts);
         for a in acts {
             self.act(&ctx, a);

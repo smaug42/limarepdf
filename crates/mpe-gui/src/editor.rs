@@ -423,7 +423,8 @@ impl Editor {
     }
 
     /// Handle pointer interaction and draw overlays for one visible page. `r` is the page's screen rectangle
-    /// and `k` the screen size of one PDF point.
+    /// and `k` the screen size of one PDF point. Returns the page's response, for its
+    /// right-click menu.
     pub fn page_ui(
         &mut self,
         ui: &mut egui::Ui,
@@ -432,21 +433,28 @@ impl Editor {
         page: usize,
         r: Rect,
         k: f32,
-    ) {
-        if self.tool == Tool::View {
-            return;
-        }
-        self.objects(pdf, page);
-        let painter = ui.painter().clone();
+    ) -> egui::Response {
         let to_screen = |x: f32, y: f32| Pos2::new(r.min.x + x * k, r.min.y + y * k);
         let to_pt = |p: Pos2| Pos2::new((p.x - r.min.x) / k, (p.y - r.min.y) / k);
         let screen_rect =
             |b: [f32; 4]| Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3]));
-        let resp = ui.interact(
-            r,
-            ui.id().with(("page-edit", tab_id, page)),
-            Sense::click_and_drag(),
-        );
+        // Reading only: clicks (for the right-click menu) but no drags, so dragging
+        // still scrolls the view.
+        let sense = if self.tool == Tool::View {
+            Sense::click()
+        } else {
+            Sense::click_and_drag()
+        };
+        let resp = ui.interact(r, ui.id().with(("page-edit", tab_id, page)), sense);
+        if resp.secondary_clicked() {
+            let p = resp.interact_pointer_pos().map(to_pt);
+            self.select_for_menu(pdf, page, p, 3.0 / k);
+        }
+        if self.tool == Tool::View {
+            return resp;
+        }
+        self.objects(pdf, page);
+        let painter = ui.painter().clone();
         let accent = ui.visuals().selection.bg_fill;
         let accent_strong = ui.visuals().selection.stroke.color;
         let hover_pt = resp.hover_pos().map(to_pt);
@@ -720,6 +728,50 @@ impl Editor {
                     Stroke::new(1.0, accent_strong),
                 );
             }
+        }
+        resp
+    }
+
+    /// Before a right-click menu opens: select what is under the pointer `p` (page
+    /// points), as most apps do. With the arrow, an object; with the text tool, a word
+    /// (keeping a word selection the click falls inside); otherwise, or over nothing,
+    /// the page (keeping a page selection that includes it).
+    fn select_for_menu(&mut self, pdf: &mpe_core::Pdf, page: usize, p: Option<Pos2>, tol: f32) {
+        match (self.tool, p) {
+            (Tool::Select, Some(p)) => {
+                self.objects(pdf, page);
+                if let Some(i) = self.hit(page, p, tol) {
+                    if self.sel() != Some((page, i)) {
+                        self.select_object(page, i);
+                    }
+                    return;
+                }
+            }
+            (Tool::SelectText, Some(p)) => {
+                let words = self.words(pdf, page);
+                let under = words.iter().position(|w| {
+                    let b = w.bbox;
+                    p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3]
+                });
+                if let Some(i) = under {
+                    let within = |(sp, a, b): (usize, usize, usize)| {
+                        sp == page && (a.min(b)..=a.max(b)).contains(&i)
+                    };
+                    let inside = self.selection.words().is_some_and(within);
+                    if !inside {
+                        self.selection = Selection::Words {
+                            page,
+                            first: i,
+                            last: i,
+                        };
+                    }
+                    return;
+                }
+            }
+            _ => {}
+        }
+        if !self.selection.pages().is_some_and(|s| s.contains(&page)) {
+            self.selection = Selection::pages_from([page].into());
         }
     }
 

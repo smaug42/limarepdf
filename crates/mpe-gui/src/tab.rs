@@ -1,3 +1,4 @@
+use crate::actions::{self, Act, Ctx};
 use crate::editor::{Action, Editor, Tool};
 use crate::selection::Selection;
 use crate::theme;
@@ -51,6 +52,8 @@ pub struct Tab {
     pub ed: Editor,
     /// Pages whose texture is out of date but still shown until the new render arrives.
     stale: HashSet<usize>,
+    /// Commands chosen from a right-click menu, run by the app after the frame.
+    pub requested: Vec<Act>,
 }
 
 impl Tab {
@@ -88,6 +91,7 @@ impl Tab {
             goto_y: None,
             error: None,
             ed: Editor::default(),
+            requested: Vec::new(),
             stale: HashSet::new(),
         })
     }
@@ -419,7 +423,32 @@ impl Tab {
         }
     }
 
-    pub fn show_pages(&mut self, ui: &mut egui::Ui) {
+    /// The command state for this tab's part: document, undo, selection and tool.
+    pub fn fill_ctx(&self, c: &mut Ctx) {
+        c.doc = true;
+        c.can_undo = self.can_undo();
+        c.can_redo = self.can_redo();
+        c.words = self.ed.selected_text().is_some();
+        c.object = self.ed.has_object();
+        c.obj_kind = match self.ed.selection {
+            Selection::Object { kind, .. } => Some(kind),
+            _ => None,
+        };
+        c.tool = Some(self.ed.tool);
+        c.hidden_text = self.ed.show_hidden;
+    }
+
+    /// A right-click menu for what is selected, its commands queued in `requested`. The
+    /// state is `base` updated for this tab, since the click may just have changed the
+    /// selection.
+    fn context_menu(&mut self, resp: &egui::Response, base: &Ctx) {
+        let mut c = *base;
+        self.fill_ctx(&mut c);
+        let sel = self.ed.selection.clone();
+        resp.context_menu(|ui| actions::context_menu(ui, &sel, &c, &mut self.requested));
+    }
+
+    pub fn show_pages(&mut self, ui: &mut egui::Ui, base: &Ctx) {
         let ctx = ui.ctx().clone();
         self.collect(&ctx);
         let ppp = ctx.pixels_per_point();
@@ -502,8 +531,10 @@ impl Tab {
                 let cur = current.filter(|c| c.0 == i).map(|c| c.1);
                 self.ed
                     .overlay(ui, &self.pdf, i, r, self.zoom * BASE, matches, cur);
-                self.ed
+                let resp = self
+                    .ed
                     .page_ui(ui, &self.pdf, self.id, i, r, self.zoom * BASE);
+                self.context_menu(&resp, base);
                 if self.pages.get(&i).map(|(k, _)| *k) != Some(key.1) || self.stale.contains(&i) {
                     wanted.push((key, key.1 as f32 / 20.0));
                 }
@@ -550,7 +581,7 @@ impl Tab {
         }
     }
 
-    pub fn show_thumbs(&mut self, ui: &mut egui::Ui) {
+    pub fn show_thumbs(&mut self, ui: &mut egui::Ui, base: &Ctx) {
         let ctx = ui.ctx().clone();
         let ppp = ctx.pixels_per_point();
         let mut click: Option<(usize, egui::Modifiers)> = None;
@@ -608,6 +639,14 @@ impl Tab {
                     if resp.clicked() {
                         click = Some((i, ui.input(|s| s.modifiers)));
                     }
+                    // Right-click acts on this page, or on the selected pages if it is
+                    // one of them.
+                    let picked = self.ed.selection.pages().is_some_and(|s| s.contains(&i));
+                    if resp.secondary_clicked() && !picked {
+                        self.ed.selection = Selection::pages_from([i].into());
+                        self.anchor = i;
+                    }
+                    self.context_menu(&resp, base);
                 }
             });
         if let Some((i, m)) = click {
