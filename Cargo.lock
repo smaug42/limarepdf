@@ -2306,7 +2306,6 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
- "image",
  "mpe-core",
  "rayon",
 ]
@@ -2321,12 +2320,14 @@ dependencies = [
  "image",
  "lopdf",
  "ocrs",
+ "png",
  "rand 0.9.5",
  "rayon",
  "rten",
  "rten-imageproc",
  "thiserror 2.0.21",
  "tiff",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

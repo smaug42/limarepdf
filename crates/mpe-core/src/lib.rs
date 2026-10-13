@@ -13,6 +13,9 @@ mod objects;
 mod ocr;
 mod overlay;
 mod pagerange;
+pub mod print;
+#[cfg(windows)]
+mod print_win;
 pub mod render;
 mod scan;
 mod security;

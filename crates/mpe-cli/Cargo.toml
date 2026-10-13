@@ -12,5 +12,4 @@ path = "src/main.rs"
 mpe-core = { path = "../mpe-core" }
 anyhow.workspace = true
 clap.workspace = true
-image.workspace = true
 rayon.workspace = true
