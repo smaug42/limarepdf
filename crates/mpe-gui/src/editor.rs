@@ -813,6 +813,28 @@ impl Editor {
             || self.selection.words().is_some()
     }
 
+    /// The page and box (page points) of the selected object or words, for placing the
+    /// floating toolbar.
+    pub fn selection_box(&self) -> Option<(usize, [f32; 4])> {
+        if let Some(o) = self.selected_object() {
+            return Some((self.sel()?.0, o.bbox));
+        }
+        let (page, a, b) = self.selection.words()?;
+        let words = self.words.get(&page)?;
+        let run = words.get(a.min(b)..=a.max(b).min(words.len().checked_sub(1)?))?;
+        let join = |u: [f32; 4], b: [f32; 4]| {
+            let (lo, hi) = (|i: usize| u[i].min(b[i]), |i: usize| u[i].max(b[i]));
+            [lo(0), lo(1), hi(2), hi(3)]
+        };
+        let union = run.iter().map(|w| w.bbox).reduce(join)?;
+        Some((page, union))
+    }
+
+    /// The pointer is moving, resizing, drawing or selecting something.
+    pub fn dragging(&self) -> bool {
+        self.drag.is_some() || self.draw.is_some() || self.text_drag
+    }
+
     /// Put the keyboard in the inspector's text box for the selected text object.
     pub fn focus_text_field(&mut self) {
         self.focus_text = true;

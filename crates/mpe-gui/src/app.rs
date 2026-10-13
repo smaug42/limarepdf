@@ -1,4 +1,4 @@
-use crate::actions::{self, menu_item, Act, Action, Ctx, Group, ACTIONS};
+use crate::actions::{self, menu_item, tooltip, Act, Action, Ctx, Group, ACTIONS};
 use crate::dialogs::{self as dlg, Outcome};
 use crate::editor::{Action as EdAction, Tool};
 use crate::inspector::{self, Apply, Section};
@@ -539,6 +539,13 @@ impl App {
                 t.ed.select_all_words(&t.pdf, t.current);
             }
             Act::DeleteObject => self.tabs[self.active].ed.delete_selected(),
+            Act::DeleteSelection => {
+                if self.tabs[self.active].ed.has_object() {
+                    self.act(ctx, Act::DeleteObject);
+                } else if self.tabs[self.active].ed.selection.pages().is_some() {
+                    self.act(ctx, Act::Delete);
+                }
+            }
             Act::Nudge(dx, dy) => {
                 let shift = ctx.input(|i| i.modifiers.shift);
                 let step = if shift { 10.0 } else { 1.0 };
@@ -1311,14 +1318,6 @@ fn empty_state(ui: &mut egui::Ui, acts: &mut Vec<Act>) {
     ));
     if r.clicked() {
         acts.push(Act::Open);
-    }
-}
-
-/// Tooltip for a command: its label and first shortcut.
-fn tooltip(ctx: &egui::Context, a: &Action) -> String {
-    match a.keys.first() {
-        Some(k) => format!("{} ({})", a.label, ctx.format_shortcut(k)),
-        None => a.label.to_string(),
     }
 }
 
