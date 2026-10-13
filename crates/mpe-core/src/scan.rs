@@ -463,35 +463,80 @@ fn auto_mode(img: &Img) -> ScanMode {
     }
 }
 
-/// Otsu threshold: pixels at or below it become black.
+/// Black and white by Sauvola's local threshold, so shadows and uneven lighting (phone
+/// photos of paper) do not turn whole regions black or white. A pixel is black when it
+/// is darker than `mean * (1 + K * (sd / 128 - 1))` of its neighbourhood, about a
+/// sixteenth of the image's long side across. The local mean and standard deviation are
+/// computed on a coarse grid and interpolated, which keeps memory small on big pages.
 pub(crate) fn binarise(g: &GrayImage) -> GrayImage {
-    let mut hist = [0u64; 256];
-    for p in g.pixels() {
-        hist[p.0[0] as usize] += 1;
+    // K = 0.4 measured best across the OCR test pages (0.2 to 0.7 tried); higher values
+    // leave less texture and fewer specks.
+    const K: f32 = 0.4;
+    const GRID: u32 = 512;
+    const RADIUS: usize = 16;
+    let (w, h) = g.dimensions();
+    let f = w.max(h).div_ceil(GRID).max(1);
+    let (sw, sh) = (w.div_ceil(f) as usize, h.div_ceil(f) as usize);
+    // Per cell: sum, sum of squares, count.
+    let mut cells = vec![(0f64, 0f64, 0f64); sw * sh];
+    for (x, y, p) in g.enumerate_pixels() {
+        let v = p.0[0] as f64;
+        let c = &mut cells[(y / f) as usize * sw + (x / f) as usize];
+        c.0 += v;
+        c.1 += v * v;
+        c.2 += 1.0;
     }
-    let total: u64 = hist.iter().sum();
-    let sum: f64 = hist
-        .iter()
-        .enumerate()
-        .map(|(i, &c)| i as f64 * c as f64)
-        .sum();
-    let (mut w0, mut sum0, mut best, mut t) = (0u64, 0f64, -1f64, 127u8);
-    for (i, &c) in hist.iter().enumerate() {
-        w0 += c;
-        if w0 == 0 || w0 == total {
-            continue;
-        }
-        sum0 += i as f64 * c as f64;
-        let (m0, m1) = (sum0 / w0 as f64, (sum - sum0) / (total - w0) as f64);
-        let between = w0 as f64 * (total - w0) as f64 * (m0 - m1).powi(2);
-        if between > best {
-            best = between;
-            t = i as u8;
+    // Box-filter the cells with a summed-area table.
+    let mut sat = vec![(0f64, 0f64, 0f64); (sw + 1) * (sh + 1)];
+    for y in 0..sh {
+        for x in 0..sw {
+            let c = cells[y * sw + x];
+            let (a, b, d) = (
+                sat[y * (sw + 1) + x + 1],
+                sat[(y + 1) * (sw + 1) + x],
+                sat[y * (sw + 1) + x],
+            );
+            sat[(y + 1) * (sw + 1) + x + 1] = (
+                c.0 + a.0 + b.0 - d.0,
+                c.1 + a.1 + b.1 - d.1,
+                c.2 + a.2 + b.2 - d.2,
+            );
         }
     }
-    GrayImage::from_fn(g.width(), g.height(), |x, y| {
-        image::Luma([if g.get_pixel(x, y).0[0] <= t { 0 } else { 255 }])
-    })
+    let mut thresh = vec![0f32; sw * sh];
+    for y in 0..sh {
+        for x in 0..sw {
+            let (x0, x1) = (x.saturating_sub(RADIUS), (x + RADIUS + 1).min(sw));
+            let (y0, y1) = (y.saturating_sub(RADIUS), (y + RADIUS + 1).min(sh));
+            let at = |xx: usize, yy: usize| sat[yy * (sw + 1) + xx];
+            let (a, b, c, d) = (at(x1, y1), at(x0, y1), at(x1, y0), at(x0, y0));
+            let n = a.2 - b.2 - c.2 + d.2;
+            let mean = (a.0 - b.0 - c.0 + d.0) / n;
+            let var = ((a.1 - b.1 - c.1 + d.1) / n - mean * mean).max(0.0);
+            thresh[y * sw + x] = (mean as f32) * (1.0 + K * (var.sqrt() as f32 / 128.0 - 1.0));
+        }
+    }
+    // Interpolate the threshold between cell centres.
+    let t_at = |x: u32, y: u32| -> f32 {
+        let fx = ((x as f32 + 0.5) / f as f32 - 0.5).clamp(0.0, (sw - 1) as f32);
+        let fy = ((y as f32 + 0.5) / f as f32 - 0.5).clamp(0.0, (sh - 1) as f32);
+        let (x0, y0) = (fx as usize, fy as usize);
+        let (x1, y1) = ((x0 + 1).min(sw - 1), (y0 + 1).min(sh - 1));
+        let (ax, ay) = (fx - x0 as f32, fy - y0 as f32);
+        let t = |xx: usize, yy: usize| thresh[yy * sw + xx];
+        (t(x0, y0) * (1.0 - ax) + t(x1, y0) * ax) * (1.0 - ay)
+            + (t(x0, y1) * (1.0 - ax) + t(x1, y1) * ax) * ay
+    };
+    let mut out = GrayImage::new(w, h);
+    let rows = out.par_chunks_mut(w as usize).enumerate();
+    rows.for_each(|(y, row)| {
+        for (x, px) in row.iter_mut().enumerate() {
+            let v = g.get_pixel(x as u32, y as u32).0[0] as f32;
+            let black = v <= t_at(x as u32, y as u32);
+            *px = if black { 0 } else { 255 };
+        }
+    });
+    out
 }
 
 /// Slope of text lines in radians (y grows downwards), found by the projection-profile
