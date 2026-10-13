@@ -105,6 +105,11 @@ fn decode_jpeg(bytes: &[u8]) -> Result<Raster> {
     })
 }
 
+/// Number of colour components in a JPEG file's frame header.
+pub(crate) fn jpeg_components(bytes: &[u8]) -> Option<u8> {
+    jpeg_info(bytes).map(|i| i.components)
+}
+
 struct JpegInfo {
     w: u32,
     h: u32,

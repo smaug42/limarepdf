@@ -9,8 +9,8 @@ macro_rules! out {
 }
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use mpe_core::{
-    parse_page_range, render, Bates, Cipher, Encryption, HeaderFooter, Info, Pdf, Restrictions,
-    Watermark,
+    parse_page_range, render, Bates, Cipher, Encryption, HeaderFooter, ImageImport, Info, Pdf,
+    Restrictions, ScanMode, ScanOptions, ScanResult, Watermark,
 };
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
@@ -105,6 +105,48 @@ enum Cmd {
         width: f32,
         #[arg(long, default_value_t = 792.0)]
         height: f32,
+    },
+    /// Make a PDF with one page per image (PNG, JPEG, TIFF; every page of a TIFF)
+    Images {
+        #[arg(required = true)]
+        inputs: Vec<PathBuf>,
+        #[arg(short, long)]
+        output: PathBuf,
+        #[command(flatten)]
+        size: ImageSize,
+    },
+    /// Shrink and clean up scanned pages (pages that are one image): black and white
+    /// becomes CCITT G4, greyscale and colour become JPEG
+    OptimizeScans {
+        #[command(flatten)]
+        io: Io,
+        #[arg(long, default_value = "all")]
+        pages: String,
+        #[arg(long, value_enum, default_value = "auto")]
+        mode: ScanModeArg,
+        /// Greyscale and colour images above this resolution are downsampled to it
+        #[arg(long, default_value_t = 200.0)]
+        max_dpi: f32,
+        /// JPEG quality for greyscale and colour images, 1 to 100
+        #[arg(long, default_value_t = 75)]
+        quality: u8,
+        /// Do not straighten tilted pages
+        #[arg(long)]
+        no_deskew: bool,
+        /// Do not remove specks from black-and-white pages
+        #[arg(long)]
+        no_despeckle: bool,
+    },
+    /// Insert images as pages after page N (0 = at the start)
+    InsertImages {
+        #[command(flatten)]
+        io: Io,
+        #[arg(long)]
+        after: usize,
+        #[arg(long, required = true, num_args = 1..)]
+        images: Vec<PathBuf>,
+        #[command(flatten)]
+        size: ImageSize,
     },
     /// Set a page's crop box in points: left,bottom,right,top
     Crop {
@@ -243,6 +285,46 @@ enum CipherArg {
     Aes256,
 }
 
+#[derive(Copy, Clone, ValueEnum)]
+enum ScanModeArg {
+    /// Per page: black and white for text, else greyscale or colour
+    Auto,
+    Bw,
+    Gray,
+    Color,
+}
+
+fn kb(bytes: usize) -> String {
+    format!("{:.0} kB", bytes as f64 / 1000.0)
+}
+
+/// Page size for imported images.
+#[derive(Args, Clone)]
+struct ImageSize {
+    /// Resolution in dots per inch, overriding the one stored in the files
+    #[arg(long)]
+    dpi: Option<f32>,
+    /// Resolution assumed for files that state none
+    #[arg(long, default_value_t = 150.0)]
+    fallback_dpi: f32,
+}
+
+impl ImageSize {
+    fn opts(&self) -> ImageImport {
+        ImageImport {
+            dpi: self.dpi,
+            fallback_dpi: self.fallback_dpi,
+        }
+    }
+}
+
+fn read_all(paths: &[PathBuf]) -> Result<Vec<Vec<u8>>> {
+    paths
+        .iter()
+        .map(|p| std::fs::read(p).with_context(|| format!("reading {}", p.display())))
+        .collect()
+}
+
 fn open(p: &Path, pw: &Option<String>) -> Result<Pdf> {
     Pdf::open(p, pw.as_deref())
 }
@@ -354,6 +436,80 @@ fn main() -> Result<()> {
             width,
             height,
         } => run_edit(&io, |p| p.insert_blank(after, width, height))?,
+        Cmd::Images {
+            inputs,
+            output,
+            size,
+        } => {
+            let mut p = Pdf::from_images(&read_all(&inputs)?, &size.opts())?;
+            p.save(&output)?;
+            out!("wrote {} ({} pages)", output.display(), p.page_count());
+        }
+        Cmd::OptimizeScans {
+            io,
+            pages,
+            mode,
+            max_dpi,
+            quality,
+            no_deskew,
+            no_despeckle,
+        } => run_edit(&io, |p| {
+            let idx = parse_page_range(&pages, p.page_count())?;
+            let opts = ScanOptions {
+                mode: match mode {
+                    ScanModeArg::Auto => ScanMode::Auto,
+                    ScanModeArg::Bw => ScanMode::BlackWhite,
+                    ScanModeArg::Gray => ScanMode::Gray,
+                    ScanModeArg::Color => ScanMode::Color,
+                },
+                max_dpi,
+                jpeg_quality: quality,
+                deskew: !no_deskew,
+                despeckle: !no_despeckle,
+            };
+            let (mut before_all, mut after_all) = (0, 0);
+            for (i, r) in p.optimize_scans(&idx, &opts)? {
+                match r {
+                    ScanResult::Optimized {
+                        mode,
+                        before,
+                        after,
+                        deskewed,
+                    } => {
+                        let kind = match mode {
+                            ScanMode::BlackWhite => "black and white",
+                            ScanMode::Gray => "greyscale",
+                            _ => "colour",
+                        };
+                        let tilt = deskewed
+                            .map(|a| format!(", straightened {a:.1}°"))
+                            .unwrap_or_default();
+                        out!(
+                            "page {}: {kind}, {} -> {}{tilt}",
+                            i + 1,
+                            kb(before),
+                            kb(after)
+                        );
+                        before_all += before;
+                        after_all += after;
+                    }
+                    ScanResult::Skipped(why) => out!("page {}: skipped: {why}", i + 1),
+                }
+            }
+            out!("images: {} -> {}", kb(before_all), kb(after_all));
+            Ok(())
+        })?,
+        Cmd::InsertImages {
+            io,
+            after,
+            images,
+            size,
+        } => {
+            let files = read_all(&images)?;
+            run_edit(&io, |p| {
+                p.insert_image_pages(after, &files, &size.opts()).map(drop)
+            })?
+        }
         Cmd::Crop { io, page, rect } => run_edit(&io, |p| {
             let v: Vec<f32> = rect
                 .split(',')

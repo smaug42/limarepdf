@@ -3,9 +3,29 @@ use crate::editor::Tool;
 use crate::tab::{Side, Tab};
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers};
 use egui_phosphor::regular as icon;
-use mpe_core::{parse_page_range, Bates, Encryption, HeaderFooter, Pdf, Watermark};
-use std::path::PathBuf;
+use mpe_core::{
+    parse_page_range, Bates, Encryption, HeaderFooter, ImageImport, Pdf, ScanResult, Watermark,
+};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
+
+const IMAGE_EXTS: [&str; 5] = ["png", "jpg", "jpeg", "tif", "tiff"];
+
+fn is_image(p: &Path) -> bool {
+    p.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| IMAGE_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+}
+
+/// Insert image files as pages at `at`, in the order given, naming the file that fails.
+fn insert_images(p: &mut Pdf, mut at: usize, files: &[(PathBuf, Vec<u8>)]) -> mpe_core::Result<()> {
+    for (path, bytes) in files {
+        at += p
+            .insert_image_pages(at, std::slice::from_ref(bytes), &ImageImport::default())
+            .map_err(|e| e.context(path.display().to_string()))?;
+    }
+    Ok(())
+}
 
 enum Loaded {
     Ok {
@@ -18,6 +38,49 @@ enum Loaded {
         error: Option<String>,
     },
     Err(String),
+    /// Scanned pages optimised in the background, from tab `tab` at `revision`.
+    Scans {
+        tab: u64,
+        revision: u64,
+        result: Result<(Pdf, Vec<(usize, ScanResult)>), String>,
+    },
+}
+
+/// Summary of a scan optimisation for the user, and whether any page changed.
+fn scan_summary(report: &[(usize, ScanResult)]) -> (bool, String) {
+    let (mut n, mut before, mut after) = (0, 0, 0);
+    let mut skipped = Vec::new();
+    for (p, r) in report {
+        match r {
+            ScanResult::Optimized {
+                before: b,
+                after: a,
+                ..
+            } => {
+                n += 1;
+                before += b;
+                after += a;
+            }
+            ScanResult::Skipped(why) => skipped.push(format!("Page {}: {why}", p + 1)),
+        }
+    }
+    let mb = |b: usize| b as f64 / 1e6;
+    let mut text = format!(
+        "{n} page(s) optimised: images {:.1} MB -> {:.1} MB.",
+        mb(before),
+        mb(after)
+    );
+    if !skipped.is_empty() {
+        text.push_str(&format!("\n\n{} page(s) left as they were:", skipped.len()));
+        for s in skipped.iter().take(12) {
+            text.push('\n');
+            text.push_str(s);
+        }
+        if skipped.len() > 12 {
+            text.push_str("\n…");
+        }
+    }
+    (n > 0, text)
 }
 
 enum Dialog {
@@ -28,6 +91,7 @@ enum Dialog {
     Security(dlg::Sec),
     Range(dlg::Range),
     Blank(dlg::Blank),
+    Scan(dlg::Scan),
     Password(dlg::Password),
     Message(String, String),
     ConfirmClose(usize),
@@ -38,6 +102,9 @@ enum Dialog {
 #[derive(Clone, Copy)]
 enum Act {
     Open,
+    NewFromImages,
+    InsertImages,
+    Scans,
     Save,
     SaveAs,
     CloseTab,
@@ -75,6 +142,8 @@ pub struct App {
     status: String,
     last_title: String,
     quit_ok: bool,
+    /// A scan optimisation is running in the background.
+    scanning: bool,
 }
 
 impl App {
@@ -83,7 +152,7 @@ impl App {
         egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
         cc.egui_ctx.set_fonts(fonts);
         let (tx, rx) = channel();
-        let app = Self {
+        let mut app = Self {
             tabs: Vec::new(),
             active: 0,
             next_id: 1,
@@ -94,9 +163,14 @@ impl App {
             status: String::new(),
             last_title: String::new(),
             quit_ok: false,
+            scanning: false,
         };
-        for f in files {
+        let (images, pdfs): (Vec<_>, Vec<_>) = files.into_iter().partition(|p| is_image(p));
+        for f in pdfs {
             app.spawn_open(&cc.egui_ctx, f, None, page);
+        }
+        if !images.is_empty() {
+            app.new_from_images(&cc.egui_ctx, &images);
         }
         app
     }
@@ -164,12 +238,88 @@ impl App {
                     });
                 }
                 Loaded::Err(e) => self.dialog = Dialog::Message("Cannot open file".into(), e),
+                Loaded::Scans {
+                    tab,
+                    revision,
+                    result,
+                } => {
+                    self.scanning = false;
+                    self.status.clear();
+                    let title = "Optimise scanned pages";
+                    let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
+                        continue;
+                    };
+                    let (pdf, report) = match result {
+                        Ok(r) => r,
+                        Err(e) => {
+                            self.dialog = Dialog::Message(title.into(), e);
+                            continue;
+                        }
+                    };
+                    if t.revision != revision {
+                        self.dialog = Dialog::Message(
+                            title.into(),
+                            "The document changed while its pages were being optimised, so \
+                             the result was discarded. Run it again."
+                                .into(),
+                        );
+                        continue;
+                    }
+                    let (changed, text) = scan_summary(&report);
+                    if changed {
+                        t.edit(ctx, move |p| {
+                            *p = pdf;
+                            Ok(())
+                        });
+                    }
+                    self.dialog = Dialog::Message(title.into(), text);
+                }
             }
         }
     }
 
     fn pdf_dialog() -> rfd::FileDialog {
         rfd::FileDialog::new().add_filter("PDF documents", &["pdf"])
+    }
+
+    /// Ask for image files. Returned sorted by path, since scans are usually numbered.
+    fn pick_images() -> Option<Vec<PathBuf>> {
+        let mut files = rfd::FileDialog::new()
+            .add_filter("Images (PNG, JPEG, TIFF)", &IMAGE_EXTS)
+            .pick_files()?;
+        files.sort();
+        Some(files)
+    }
+
+    /// Read image files, reporting the first that cannot be read.
+    fn read_images(&mut self, files: &[PathBuf]) -> Option<Vec<(PathBuf, Vec<u8>)>> {
+        let mut out = Vec::new();
+        for f in files {
+            match std::fs::read(f) {
+                Ok(b) => out.push((f.clone(), b)),
+                Err(e) => {
+                    self.dialog = Dialog::Message(
+                        "Cannot read image".into(),
+                        format!("{}: {e}", f.display()),
+                    );
+                    return None;
+                }
+            }
+        }
+        Some(out)
+    }
+
+    fn new_from_images(&mut self, ctx: &egui::Context, files: &[PathBuf]) {
+        let Some(data) = self.read_images(files) else {
+            return;
+        };
+        let mut pdf = Pdf::new();
+        match insert_images(&mut pdf, 0, &data) {
+            Ok(()) => self.add_tab(ctx, pdf, None, None, true),
+            Err(e) => {
+                self.dialog = Dialog::Message("Cannot import images".into(), format!("{e:#}"))
+            }
+        }
     }
 
     fn save(&mut self, as_new: bool) {
@@ -212,6 +362,11 @@ impl App {
                     for f in files {
                         self.spawn_open(ctx, f, None, None);
                     }
+                }
+            }
+            Act::NewFromImages => {
+                if let Some(files) = Self::pick_images() {
+                    self.new_from_images(ctx, &files);
                 }
             }
             Act::Save => self.save(false),
@@ -305,6 +460,21 @@ impl App {
                 }
                 self.tabs[self.active].edit(ctx, |p| p.append(docs));
             }
+            Act::InsertImages => {
+                let Some(files) = Self::pick_images() else {
+                    return;
+                };
+                let Some(data) = self.read_images(&files) else {
+                    return;
+                };
+                let t = &mut self.tabs[self.active];
+                let (at, before) = (t.current + 1, t.page_count());
+                t.edit(ctx, |p| insert_images(p, at, &data));
+                if t.page_count() > before {
+                    t.go_to(at);
+                }
+            }
+            Act::Scans => self.dialog = Dialog::Scan(dlg::Scan::default()),
             Act::HeaderFooter => self.dialog = Dialog::HeaderFooter(dlg::Hf::default()),
             Act::Watermark => self.dialog = Dialog::Watermark(dlg::Wm::default()),
             Act::Props => self.dialog = Dialog::Meta(dlg::Meta(self.tabs[self.active].pdf.info())),
@@ -496,6 +666,36 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
+            Dialog::Scan(s) => match dlg::scan(ctx, s) {
+                Outcome::Apply => {
+                    let t = &mut self.tabs[self.active];
+                    match parse_page_range(&s.pages, t.page_count()) {
+                        Ok(idx) => {
+                            let (tab, revision, opts) = (t.id, t.revision, s.o);
+                            let mut pdf = t.pdf.clone();
+                            let (tx, ctx2) = (self.tx.clone(), ctx.clone());
+                            std::thread::spawn(move || {
+                                let result = pdf
+                                    .optimize_scans(&idx, &opts)
+                                    .map(|report| (pdf, report))
+                                    .map_err(|e| format!("{e:#}"));
+                                let _ = tx.send(Loaded::Scans {
+                                    tab,
+                                    revision,
+                                    result,
+                                });
+                                ctx2.request_repaint();
+                            });
+                            self.scanning = true;
+                            self.status = "Optimising scanned pages…".into();
+                            done = true;
+                        }
+                        Err(e) => t.error = Some(e.to_string()),
+                    }
+                }
+                Outcome::Cancel => done = true,
+                Outcome::Open => {}
+            },
             Dialog::Range(s) => match dlg::range(ctx, s) {
                 Outcome::Apply => {
                     done = self.apply_range(ctx, s.kind, &s.text);
@@ -636,8 +836,13 @@ impl eframe::App for App {
                 .map(|f| f.path().to_path_buf())
                 .collect()
         });
-        for p in dropped {
+        let (mut images, pdfs): (Vec<_>, Vec<_>) = dropped.into_iter().partition(|p| is_image(p));
+        for p in pdfs {
             self.spawn_open(&ctx, p, None, None);
+        }
+        if !images.is_empty() {
+            images.sort();
+            self.new_from_images(&ctx, &images);
         }
 
         // Guard against closing the window with unsaved work.
@@ -671,6 +876,7 @@ impl eframe::App for App {
                     };
                 ui.menu_button("File", |ui| {
                     item(ui, "Open…", "Ctrl+O", true, Act::Open);
+                    item(ui, "New from images…", "", true, Act::NewFromImages);
                     item(ui, "Save", "Ctrl+S", has, Act::Save);
                     item(ui, "Save As…", "Ctrl+Shift+S", has, Act::SaveAs);
                     item(ui, "Close tab", "Ctrl+W", has, Act::CloseTab);
@@ -720,6 +926,9 @@ impl eframe::App for App {
                     item(ui, "Delete pages…", "", has, Act::Delete);
                     item(ui, "Extract pages to new tab…", "", has, Act::Extract);
                     item(ui, "Insert blank page…", "", has, Act::Blank);
+                    item(ui, "Insert images…", "", has, Act::InsertImages);
+                    let can_scan = has && !self.scanning;
+                    item(ui, "Optimise scanned pages…", "", can_scan, Act::Scans);
                     item(ui, "Append PDFs…", "", has, Act::Merge);
                     item(ui, "Split into files…", "", has, Act::Split);
                     ui.separator();

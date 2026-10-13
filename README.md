@@ -23,7 +23,7 @@ PNG/JPEG for insertion, and [Phosphor Icons](https://phosphoricons.com) (MIT, vi
 
 ## Build
 
-Requires a recent stable Rust toolchain (developed on 1.97).
+Requires Rust 1.95 or newer, the minimum set by egui 0.36 (developed on 1.97 and 1.99).
 
 ```
 cargo build --release
@@ -38,6 +38,7 @@ build or run time. Windows and macOS builds use the same code; see "Platform sta
 
 ```
 mpe-gui file.pdf --page 3            # open at page 3; or File > Open, or drop files on the window
+mpe-gui scan.tif photo.jpg           # image files open as a new document, one page per image
 
 mpe info file.pdf
 mpe merge a.pdf b.pdf -o out.pdf
@@ -48,6 +49,9 @@ mpe rotate in.pdf -o out.pdf --pages all --degrees 90
 mpe reorder in.pdf -o out.pdf --order 3,1,2
 mpe crop in.pdf -o out.pdf --page 1 --rect 50,600,400,780
 mpe insert-blank in.pdf -o out.pdf --after 0
+mpe images scan.tif photo.jpg -o out.pdf            # one page per image; --dpi overrides the file's resolution
+mpe insert-images in.pdf -o out.pdf --after 2 --images a.png b.jpg
+mpe optimize-scans in.pdf -o out.pdf --mode auto --max-dpi 200 --quality 75   # also --no-deskew, --no-despeckle
 mpe watermark in.pdf -o out.pdf --text CONFIDENTIAL --opacity 0.3
 mpe header-footer in.pdf -o out.pdf --footer-center "Page {page} of {pages}" --header-right "{date}"
 mpe bates in.pdf -o out.pdf --prefix ACME- --digits 6
@@ -64,7 +68,7 @@ Editing in the GUI: pick a tool in the toolbar (hand = read only, arrow = select
 select it, drag to move, drag the handles to resize (Shift keeps proportions), arrow keys nudge (Shift = 10 pt),
 Delete removes it. The right-hand panel shows position and size, and for text the string, font, size and colour; for
 shapes fill, outline and width; for images "Replace image". The other tools add text (click, type, Enter), rectangles,
-ellipses, lines (drag, or click for a default size) and images (choose a PNG/JPEG, then drag a box). Everything is
+ellipses, lines (drag, or click for a default size) and images (choose a PNG, JPEG or TIFF, then drag a box). Everything is
 undoable with Ctrl+Z.
 
 GUI keys: Ctrl+O/S/W, Ctrl+Shift+S, Ctrl+Z / Ctrl+Y, Ctrl+F, Ctrl+= / Ctrl+- / Ctrl+0 (fit width) / Ctrl+1,
@@ -99,7 +103,7 @@ Labels: **Done** = implemented and exercised by tests or by running it. **Partia
 | Annotations, comments, stamps, measurement tools | No | Existing annotations are drawn only if they have an `/AP` appearance stream; see Rendering |
 | Form editing, form data import/export, barcodes, document JavaScript | No | |
 | Redaction | No | |
-| OCR (Tesseract), scanning (SANE), optimise scanned pages | No | |
+| OCR (Tesseract), scanning (SANE), optimise scanned pages | Partial | Importing images as pages works: PNG, JPEG and TIFF (multi-page, 1-bit, CCITT G4), sized from the file's resolution (else 150 dpi), turned upright from EXIF or TIFF orientation, JPEG embedded without recompression. CLI `images` and `insert-images`; GUI File > New from images, Document > Insert images, drag and drop. Tested in `crates/mpe-core/tests/import.rs` and by hand with ImageMagick-made files (including CMYK JPEG and 300 dpi G4 TIFF); the two GUI menu items were not clicked in testing. Scanning: No, and not planned: Tesseract and SANE are C/C++, so scan with the system's own tool and import the images. OCR: No (planned: ocrs, pure Rust, Latin script only). Optimising scanned pages works on pages that are one image covering the page: black and white is stored as CCITT G4, greyscale and colour as JPEG (downsampled to 200 dpi by default); automatic choice per page, straightening of tilts up to 5°, speck removal. Reads raw/Flate, greyscale and RGB JPEG, and CCITT G4 images; skips CMYK JPEG, JBIG2, JPEG 2000, masked images and pages with other content, and says why. An image is only replaced when it gets smaller or was straightened or cleaned. Pages with text (such as an OCR layer) are not straightened. CLI `optimize-scans`; GUI Document > Optimise scanned pages (runs in the background, undoable). Tested in `crates/mpe-core/tests/scan.rs` and by hand on ImageMagick-made 300 dpi scans (5.3 MB to 0.5 MB, 1.2° tilt corrected); the black-and-white/greyscale choice is a heuristic not yet tried on real scanner output, and the GUI dialog was not clicked in testing |
 | PDF/A conversion, Save Optimized | No | Output is pruned and stream-compressed; that is all |
 | Export to Word, Excel, CSV, images | Partial | Page text and PNG render via the CLI only. Word, Excel, CSV: No |
 | Compare documents | No | |
