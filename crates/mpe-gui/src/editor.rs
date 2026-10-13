@@ -1,6 +1,7 @@
 //! Content editing state and interaction: selecting, moving and resizing objects, inserting text, images
 //! and shapes, and the inspector panel.
 
+use crate::theme;
 use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use egui_phosphor::regular as icon;
 use mpe_core::{
@@ -1099,7 +1100,7 @@ impl Editor {
                 if obj.inline {
                     ui.weak("Inline image: it can be moved, resized or deleted, but not replaced.");
                 } else if ui
-                    .button(format!("{}  Replace image…", icon::IMAGE))
+                    .button((theme::icon(icon::IMAGE), "Replace image…"))
                     .clicked()
                 {
                     if let Some(bytes) = pick_image() {
@@ -1114,7 +1115,7 @@ impl Editor {
             }
         }
         ui.add_space(6.0);
-        if ui.button(format!("{}  Delete", icon::TRASH)).clicked() {
+        if ui.button((theme::icon(icon::TRASH), "Delete")).clicked() {
             self.actions.push(Action::Delete(page, id));
         }
     }

@@ -2,6 +2,7 @@ mod app;
 mod dialogs;
 mod editor;
 mod tab;
+mod theme;
 mod worker;
 
 fn main() -> eframe::Result {

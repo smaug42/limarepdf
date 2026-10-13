@@ -1,6 +1,7 @@
 use crate::dialogs::{self as dlg, Outcome};
 use crate::editor::Tool;
 use crate::tab::{Side, Tab};
+use crate::theme;
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers};
 use egui_phosphor::regular as icon;
 use mpe_core::render::{image_names, ImageFormat};
@@ -196,13 +197,13 @@ pub struct App {
     quit_ok: bool,
     /// A background job (scan optimisation, OCR) is running.
     busy: bool,
+    /// Put the keyboard focus in the top bar's search field (Ctrl+F).
+    focus_search: bool,
 }
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, files: Vec<PathBuf>, page: Option<usize>) -> Self {
-        let mut fonts = egui::FontDefinitions::default();
-        egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
-        cc.egui_ctx.set_fonts(fonts);
+        theme::install(&cc.egui_ctx);
         let (tx, rx) = channel();
         let mut app = Self {
             tabs: Vec::new(),
@@ -216,6 +217,7 @@ impl App {
             last_title: String::new(),
             quit_ok: false,
             busy: false,
+            focus_search: false,
         };
         let (images, pdfs): (Vec<_>, Vec<_>) = files.into_iter().partition(|p| is_image(p));
         for f in pdfs {
@@ -528,6 +530,7 @@ impl App {
             Act::Find => {
                 self.show_side = true;
                 self.tabs[self.active].side = Side::Search;
+                self.focus_search = true;
             }
             Act::ZoomIn => {
                 let t = &mut self.tabs[self.active];
@@ -678,7 +681,7 @@ impl App {
                 done = dlg::message(
                     ctx,
                     "About MPE",
-                    "MPE - a fast, pure-Rust PDF viewer and editor.\nLicensed under MIT OR Apache-2.0.\nRendering: hayro. Document engine: lopdf. UI: egui.\n\nOCR uses the ocrs text recognition model by Robert Knight\n(huggingface.co/robertknight/ocrs), licensed CC BY-SA 4.0\n(creativecommons.org/licenses/by-sa/4.0), included unmodified.",
+                    "MPE - a fast, pure-Rust PDF viewer and editor.\nLicensed under MIT OR Apache-2.0.\nRendering: hayro. Document engine: lopdf. UI: egui.\n\nOCR uses the ocrs text recognition model by Robert Knight\n(huggingface.co/robertknight/ocrs), licensed CC BY-SA 4.0\n(creativecommons.org/licenses/by-sa/4.0), included unmodified.\n\nText font: Inter by The Inter Project Authors (rsms.me/inter),\nlicensed under the SIL Open Font License 1.1, included unmodified.",
                 ) != Outcome::Open;
             }
             Dialog::Message(title, text) => done = dlg::message(ctx, title, text) != Outcome::Open,
@@ -974,6 +977,90 @@ impl App {
         }
     }
 
+    /// The former menu bar, as submenus of the top bar's menu button. `can` is undo,
+    /// redo and copy.
+    fn menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        acts: &mut Vec<Act>,
+        has: bool,
+        idle: bool,
+        can: (bool, bool, bool),
+    ) {
+        let (can_undo, can_redo, can_copy) = can;
+        let mut item = |ui: &mut egui::Ui, label: &str, key: &str, enabled: bool, act: Act| {
+            let b = egui::Button::new(label).shortcut_text(key);
+            if ui.add_enabled(enabled, b).clicked() {
+                acts.push(act);
+                ui.close();
+            }
+        };
+        ui.menu_button("File", |ui| {
+            item(ui, "Open…", "Ctrl+O", true, Act::Open);
+            item(ui, "New from images…", "", true, Act::NewFromImages);
+            item(ui, "Save", "Ctrl+S", has, Act::Save);
+            item(ui, "Save As…", "Ctrl+Shift+S", has, Act::SaveAs);
+            ui.separator();
+            item(ui, "Export pages as images…", "", idle, Act::ExportImages);
+            item(ui, "Export text…", "", has, Act::ExportText);
+            item(ui, "Print…", "Ctrl+P", idle, Act::Print);
+            ui.separator();
+            item(ui, "Close tab", "Ctrl+W", has, Act::CloseTab);
+            ui.separator();
+            item(ui, "Quit", "", true, Act::Quit);
+        });
+        ui.menu_button("Edit", |ui| {
+            item(ui, "Undo", "Ctrl+Z", can_undo, Act::Undo);
+            item(ui, "Redo", "Ctrl+Y", can_redo, Act::Redo);
+            ui.separator();
+            item(ui, "Copy text", "Ctrl+C", can_copy, Act::Copy);
+            item(ui, "Find…", "Ctrl+F", has, Act::Find);
+        });
+        ui.menu_button("View", |ui| {
+            item(ui, "Zoom in", "Ctrl+=", has, Act::ZoomIn);
+            item(ui, "Zoom out", "Ctrl+-", has, Act::ZoomOut);
+            item(ui, "Fit width", "Ctrl+0", has, Act::FitWidth);
+            item(ui, "Actual size", "Ctrl+1", has, Act::Actual);
+            ui.separator();
+            ui.checkbox(&mut self.show_side, "Side panel");
+            if let Some(t) = self.tabs.get_mut(self.active) {
+                ui.checkbox(&mut t.ed.show_hidden, "Show recognised text")
+                    .on_hover_text(
+                        "Outline the invisible text added by OCR. Hover to read it; \
+                         select it with the arrow tool to correct it.",
+                    );
+            }
+            ui.menu_button("Theme", |ui| {
+                for (label, pref) in [
+                    ("System", egui::ThemePreference::System),
+                    ("Light", egui::ThemePreference::Light),
+                    ("Dark", egui::ThemePreference::Dark),
+                ] {
+                    item(ui, label, "", true, Act::Theme(pref));
+                }
+            });
+        });
+        ui.menu_button("Document", |ui| {
+            item(ui, "Rotate clockwise", "", has, Act::RotR);
+            item(ui, "Rotate counter-clockwise", "", has, Act::RotL);
+            item(ui, "Delete pages…", "", has, Act::Delete);
+            item(ui, "Extract pages to new tab…", "", has, Act::Extract);
+            item(ui, "Insert blank page…", "", has, Act::Blank);
+            item(ui, "Insert images…", "", has, Act::InsertImages);
+            item(ui, "Optimise scanned pages…", "", idle, Act::Scans);
+            item(ui, "Recognise text (OCR)…", "", idle, Act::Ocr);
+            item(ui, "Append PDFs…", "", has, Act::Merge);
+            item(ui, "Split into files…", "", has, Act::Split);
+            ui.separator();
+            item(ui, "Headers, footers, Bates…", "", has, Act::HeaderFooter);
+            item(ui, "Watermark…", "", has, Act::Watermark);
+            ui.separator();
+            item(ui, "Properties…", "", has, Act::Props);
+            item(ui, "Password security…", "", has, Act::Security);
+        });
+        ui.menu_button("Help", |ui| item(ui, "About", "", true, Act::About));
+    }
+
     fn shortcuts(&mut self, ctx: &egui::Context) {
         let mut acts = Vec::new();
         ctx.input_mut(|i| {
@@ -1075,119 +1162,43 @@ impl eframe::App for App {
             .get(self.active)
             .is_some_and(|t| t.ed.selected_text().is_some());
 
-        egui::Panel::top("menu").show(ui, |ui| {
-            egui::MenuBar::new().ui(ui, |ui| {
-                let mut item =
-                    |ui: &mut egui::Ui, label: &str, key: &str, enabled: bool, act: Act| {
-                        let b = egui::Button::new(label).shortcut_text(key);
-                        if ui.add_enabled(enabled, b).clicked() {
-                            acts.push(act);
-                            ui.close();
-                        }
-                    };
-                ui.menu_button("File", |ui| {
-                    item(ui, "Open…", "Ctrl+O", true, Act::Open);
-                    item(ui, "New from images…", "", true, Act::NewFromImages);
-                    item(ui, "Save", "Ctrl+S", has, Act::Save);
-                    item(ui, "Save As…", "Ctrl+Shift+S", has, Act::SaveAs);
-                    ui.separator();
-                    let idle = has && !self.busy;
-                    item(ui, "Export pages as images…", "", idle, Act::ExportImages);
-                    item(ui, "Export text…", "", has, Act::ExportText);
-                    item(ui, "Print…", "Ctrl+P", idle, Act::Print);
-                    ui.separator();
-                    item(ui, "Close tab", "Ctrl+W", has, Act::CloseTab);
-                    ui.separator();
-                    item(ui, "Quit", "", true, Act::Quit);
-                });
-                ui.menu_button("Edit", |ui| {
-                    item(ui, "Undo", "Ctrl+Z", can_undo, Act::Undo);
-                    item(ui, "Redo", "Ctrl+Y", can_redo, Act::Redo);
-                    ui.separator();
-                    item(ui, "Copy text", "Ctrl+C", can_copy, Act::Copy);
-                    item(ui, "Find…", "Ctrl+F", has, Act::Find);
-                });
-                ui.menu_button("View", |ui| {
-                    item(ui, "Zoom in", "Ctrl+=", has, Act::ZoomIn);
-                    item(ui, "Zoom out", "Ctrl+-", has, Act::ZoomOut);
-                    item(ui, "Fit width", "Ctrl+0", has, Act::FitWidth);
-                    item(ui, "Actual size", "Ctrl+1", has, Act::Actual);
-                    ui.separator();
-                    ui.checkbox(&mut self.show_side, "Side panel");
-                    if let Some(t) = self.tabs.get_mut(self.active) {
-                        ui.checkbox(&mut t.ed.show_hidden, "Show recognised text")
-                            .on_hover_text(
-                                "Outline the invisible text added by OCR. Hover to read it; \
-                                 select it with the arrow tool to correct it.",
-                            );
-                    }
-                    ui.menu_button("Theme", |ui| {
-                        item(
-                            ui,
-                            "System",
-                            "",
-                            true,
-                            Act::Theme(egui::ThemePreference::System),
-                        );
-                        item(
-                            ui,
-                            "Light",
-                            "",
-                            true,
-                            Act::Theme(egui::ThemePreference::Light),
-                        );
-                        item(
-                            ui,
-                            "Dark",
-                            "",
-                            true,
-                            Act::Theme(egui::ThemePreference::Dark),
-                        );
-                    });
-                });
-                ui.menu_button("Document", |ui| {
-                    item(ui, "Rotate clockwise", "", has, Act::RotR);
-                    item(ui, "Rotate counter-clockwise", "", has, Act::RotL);
-                    item(ui, "Delete pages…", "", has, Act::Delete);
-                    item(ui, "Extract pages to new tab…", "", has, Act::Extract);
-                    item(ui, "Insert blank page…", "", has, Act::Blank);
-                    item(ui, "Insert images…", "", has, Act::InsertImages);
-                    let idle = has && !self.busy;
-                    item(ui, "Optimise scanned pages…", "", idle, Act::Scans);
-                    item(ui, "Recognise text (OCR)…", "", idle, Act::Ocr);
-                    item(ui, "Append PDFs…", "", has, Act::Merge);
-                    item(ui, "Split into files…", "", has, Act::Split);
-                    ui.separator();
-                    item(ui, "Headers, footers, Bates…", "", has, Act::HeaderFooter);
-                    item(ui, "Watermark…", "", has, Act::Watermark);
-                    ui.separator();
-                    item(ui, "Properties…", "", has, Act::Props);
-                    item(ui, "Password security…", "", has, Act::Security);
-                });
-                ui.menu_button("Help", |ui| item(ui, "About", "", true, Act::About));
-            });
-        });
+        let idle = has && !self.busy;
+        // Toolbar icon: no frame until hovered, except when `on` (the active tool).
+        let icon_btn = |ui: &mut egui::Ui, glyph: &str, tip: &str, on: bool, enabled: bool| {
+            let b = egui::Button::new(theme::icon(glyph).size(18.0))
+                .selected(on)
+                .frame_when_inactive(on)
+                .min_size(egui::vec2(28.0, 28.0));
+            ui.add_enabled(enabled, b).on_hover_text(tip).clicked()
+        };
+        let menu_icon = |glyph: &str| theme::icon(glyph).size(18.0);
 
-        if has {
-            egui::Panel::top("toolbar").show(ui, |ui| {
+        egui::Panel::top("topbar")
+            .frame(theme::bar_frame(ui.style()))
+            .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    let icon_btn = |ui: &mut egui::Ui,
-                                        glyph: &str,
-                                        tip: &str,
-                                        on: bool,
-                                        enabled: bool|
-                     -> bool {
-                        let b = egui::Button::new(egui::RichText::new(glyph).size(18.0))
-                            .selected(on)
-                            .min_size(egui::vec2(30.0, 28.0));
-                        ui.add_enabled(enabled, b).on_hover_text(tip).clicked()
+                    // Every command, until the action registry replaces this menu.
+                    ui.menu_button(menu_icon(icon::LIST), |ui| {
+                        self.menu(ui, &mut acts, has, idle, (can_undo, can_redo, can_copy));
+                    })
+                    .response
+                    .on_hover_text("Menu");
+
+                    let title = match self.tabs.get(self.active) {
+                        Some(t) => t.title(),
+                        None => "MPE".into(),
                     };
-                    if icon_btn(ui, icon::FOLDER_OPEN, "Open (Ctrl+O)", false, true) {
-                        acts.push(Act::Open);
+                    let title = egui::RichText::new(title).family(theme::semibold());
+                    ui.allocate_ui(egui::vec2(240.0, 28.0), |ui| {
+                        ui.add(egui::Label::new(title).truncate())
+                    });
+                    if !has {
+                        return;
                     }
                     if icon_btn(ui, icon::FLOPPY_DISK, "Save (Ctrl+S)", false, true) {
                         acts.push(Act::Save);
                     }
+                    ui.separator();
                     if icon_btn(
                         ui,
                         icon::ARROW_COUNTER_CLOCKWISE,
@@ -1201,28 +1212,7 @@ impl eframe::App for App {
                         acts.push(Act::Redo);
                     }
                     ui.separator();
-                    if icon_btn(
-                        ui,
-                        icon::MAGNIFYING_GLASS_MINUS,
-                        "Zoom out (Ctrl+-)",
-                        false,
-                        true,
-                    ) {
-                        acts.push(Act::ZoomOut);
-                    }
-                    if icon_btn(
-                        ui,
-                        icon::MAGNIFYING_GLASS_PLUS,
-                        "Zoom in (Ctrl+=)",
-                        false,
-                        true,
-                    ) {
-                        acts.push(Act::ZoomIn);
-                    }
-                    if icon_btn(ui, icon::ARROWS_OUT, "Fit width (Ctrl+0)", false, true) {
-                        acts.push(Act::FitWidth);
-                    }
-                    ui.separator();
+                    let wide = ui.available_width() > 640.0;
                     let t = &mut self.tabs[self.active];
                     let cur = t.ed.tool;
                     for (tool, glyph, tip) in [
@@ -1245,9 +1235,75 @@ impl eframe::App for App {
                     if icon_btn(ui, icon::IMAGE, "Add image…", cur == Tool::Image, true) {
                         t.choose_image();
                     }
+
+                    // Right-hand side, laid out from the right edge.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.menu_button(menu_icon(icon::EXPORT), |ui| {
+                            for (label, key, enabled, act) in [
+                                ("Export pages as images…", "", idle, Act::ExportImages),
+                                ("Export text…", "", true, Act::ExportText),
+                                ("Print…", "Ctrl+P", idle, Act::Print),
+                            ] {
+                                let b = egui::Button::new(label).shortcut_text(key);
+                                if ui.add_enabled(enabled, b).clicked() {
+                                    acts.push(act);
+                                    ui.close();
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text("Export and print");
+                        let t = &mut self.tabs[self.active];
+                        if wide {
+                            let r = ui.add(
+                                egui::TextEdit::singleline(&mut t.query)
+                                    .hint_text("Search")
+                                    .desired_width(180.0),
+                            );
+                            // Laid out right to left, so this lands left of the field.
+                            ui.label(theme::icon(icon::MAGNIFYING_GLASS).weak());
+                            if std::mem::take(&mut self.focus_search) {
+                                r.request_focus();
+                            }
+                            if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                                t.run_search();
+                                t.side = Side::Search;
+                                self.show_side = true;
+                            }
+                        } else if icon_btn(ui, icon::MAGNIFYING_GLASS, "Find (Ctrl+F)", false, true)
+                        {
+                            acts.push(Act::Find);
+                        }
+                        ui.separator();
+                        if icon_btn(ui, icon::ARROWS_OUT, "Fit width (Ctrl+0)", false, true) {
+                            acts.push(Act::FitWidth);
+                        }
+                        if icon_btn(
+                            ui,
+                            icon::MAGNIFYING_GLASS_PLUS,
+                            "Zoom in (Ctrl+=)",
+                            false,
+                            true,
+                        ) {
+                            acts.push(Act::ZoomIn);
+                        }
+                        let pct = format!("{:.0}%", t.zoom * 100.0);
+                        let b = egui::Button::new(pct).frame_when_inactive(false);
+                        if ui.add(b).on_hover_text("Actual size (Ctrl+1)").clicked() {
+                            acts.push(Act::Actual);
+                        }
+                        if icon_btn(
+                            ui,
+                            icon::MAGNIFYING_GLASS_MINUS,
+                            "Zoom out (Ctrl+-)",
+                            false,
+                            true,
+                        ) {
+                            acts.push(Act::ZoomOut);
+                        }
+                    });
                 });
             });
-        }
 
         if has {
             egui::Panel::top("tabs").show(ui, |ui| {
@@ -1351,7 +1407,10 @@ impl eframe::App for App {
                 });
         }
 
-        egui::CentralPanel::default().show(ui, |ui| {
+        let canvas = egui::Frame::central_panel(ui.style())
+            .fill(theme::canvas(ui.visuals().dark_mode))
+            .inner_margin(0);
+        egui::CentralPanel::default().frame(canvas).show(ui, |ui| {
             if let Some(t) = self.tabs.get_mut(self.active) {
                 t.show_pages(ui);
             } else {
