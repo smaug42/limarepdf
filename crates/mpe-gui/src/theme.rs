@@ -201,6 +201,20 @@ fn style(dark: bool) -> Style {
     s
 }
 
+/// The accent colour.
+pub fn accent(dark: bool) -> Color32 {
+    palette(dark).accent
+}
+
+/// A button for the main thing to do on a screen: white text on the light theme's
+/// accent in both themes (the dark theme's lighter accent is too pale for white text).
+pub fn primary_button(text: &str) -> egui::Button<'static> {
+    let label = RichText::new(text.to_owned())
+        .color(Color32::WHITE)
+        .family(semibold());
+    egui::Button::new(label).fill(LIGHT.accent)
+}
+
 /// Background behind the pages.
 pub fn canvas(dark: bool) -> Color32 {
     palette(dark).canvas

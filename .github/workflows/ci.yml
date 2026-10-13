@@ -29,6 +29,8 @@ jobs:
           cp README.md LICENSE-MIT LICENSE-APACHE dist/
           # Attribution and licence for the OCR model built into the binaries.
           cp crates/mpe-core/models/README.md dist/OCR-MODEL.md
+          # Licence for the Inter font built into mpe-gui.
+          cp crates/mpe-gui/assets/fonts/OFL.txt dist/FONT-LICENSE-Inter.txt
       - uses: actions/upload-artifact@v4
         with:
           name: mpe-${{ matrix.name }}

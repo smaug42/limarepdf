@@ -1,8 +1,11 @@
+use crate::actions::{self, menu_item, Act, Action, Ctx, Group, ACTIONS};
 use crate::dialogs::{self as dlg, Outcome};
-use crate::editor::Tool;
+use crate::editor::{Action as EdAction, Tool};
+use crate::inspector::{self, Apply, Section};
+use crate::selection::Selection;
 use crate::tab::{Side, Tab};
 use crate::theme;
-use eframe::egui::{self, Key, KeyboardShortcut, Modifiers};
+use eframe::egui::{self, Key};
 use egui_phosphor::regular as icon;
 use mpe_core::render::{image_names, ImageFormat};
 use mpe_core::{
@@ -127,16 +130,9 @@ struct ImageExport {
     stem: String,
 }
 
+/// The dialogs left: settings live in the inspector.
 enum Dialog {
     None,
-    Watermark(dlg::Wm),
-    HeaderFooter(dlg::Hf),
-    Meta(dlg::Meta),
-    Security(dlg::Sec),
-    Range(dlg::Range),
-    Blank(dlg::Blank),
-    Scan(dlg::Scan),
-    Export(dlg::Export),
     Password(dlg::Password),
     Message(String, String),
     ConfirmClose(usize),
@@ -147,41 +143,22 @@ enum Dialog {
     About,
 }
 
-#[derive(Clone, Copy)]
-enum Act {
-    Open,
-    NewFromImages,
-    InsertImages,
-    Scans,
-    Ocr,
-    Save,
-    SaveAs,
-    ExportImages,
-    ExportText,
-    Print,
-    CloseTab,
-    Quit,
-    Undo,
-    Redo,
-    Find,
-    Copy,
-    ZoomIn,
-    ZoomOut,
-    FitWidth,
-    Actual,
-    RotL,
-    RotR,
-    Delete,
-    Extract,
-    Blank,
-    Merge,
-    Split,
-    HeaderFooter,
-    Watermark,
-    Props,
-    Security,
-    About,
-    Theme(egui::ThemePreference),
+/// How long the undo toast stays, in seconds.
+const TOAST_SECONDS: f64 = 6.0;
+
+/// A brief notice at the bottom of the window with an Undo button.
+struct Toast {
+    text: String,
+    /// When it goes away (egui input time).
+    until: f64,
+}
+
+/// The command palette (Ctrl+K) while it is open.
+#[derive(Default)]
+struct Palette {
+    query: String,
+    /// Highlighted row among the matches.
+    row: usize,
 }
 
 pub struct App {
@@ -199,6 +176,9 @@ pub struct App {
     busy: bool,
     /// Put the keyboard focus in the top bar's search field (Ctrl+F).
     focus_search: bool,
+    palette: Option<Palette>,
+    show_inspector: bool,
+    toast: Option<Toast>,
 }
 
 impl App {
@@ -218,6 +198,9 @@ impl App {
             quit_ok: false,
             busy: false,
             focus_search: false,
+            palette: None,
+            show_inspector: true,
+            toast: None,
         };
         let (images, pdfs): (Vec<_>, Vec<_>) = files.into_iter().partition(|p| is_image(p));
         for f in pdfs {
@@ -493,11 +476,16 @@ impl App {
             }
             Act::Save => self.save(false),
             Act::SaveAs => self.save(true),
-            Act::ExportImages if has => self.dialog = Dialog::Export(dlg::Export::default()),
+            Act::ExportImages if has => self.reveal(Section::Export),
             Act::ExportText if has => self.export_text(),
             Act::Print if has && !self.busy => {
+                let selected = self.tabs[self.active].ed.selection.pages();
+                let pages = selected.map_or("all".into(), inspector::range_text);
                 self.dialog = match print::printers() {
-                    Ok(list) => Dialog::Print(dlg::Print::new(list)),
+                    Ok(list) => Dialog::Print(dlg::Print {
+                        pages,
+                        ..dlg::Print::new(list)
+                    }),
                     Err(e) => Dialog::Message("Print".into(), format!("{e:#}")),
                 }
             }
@@ -518,13 +506,52 @@ impl App {
             }
             Act::About => self.dialog = Dialog::About,
             Act::Theme(p) => ctx.set_theme(p),
+            Act::ToggleSide => self.show_side = !self.show_side,
+            Act::ToggleInspector => self.show_inspector = !self.show_inspector,
+            Act::Palette => self.palette = Some(Palette::default()),
             _ if !has => {}
+            Act::ToggleHidden => {
+                let ed = &mut self.tabs[self.active].ed;
+                ed.show_hidden = !ed.show_hidden;
+            }
+            Act::Tool(Tool::Image) => self.tabs[self.active].choose_image(),
+            Act::Tool(tool) => self.tabs[self.active].ed.set_tool(tool),
+            Act::SelectAllText => {
+                let t = &mut self.tabs[self.active];
+                t.ed.select_all_words(&t.pdf, t.current);
+            }
+            Act::DeleteObject => self.tabs[self.active].ed.delete_selected(),
+            Act::Nudge(dx, dy) => {
+                let shift = ctx.input(|i| i.modifiers.shift);
+                let step = if shift { 10.0 } else { 1.0 };
+                let (dx, dy) = (dx as f32 * step, dy as f32 * step);
+                self.tabs[self.active].ed.nudge(dx, dy);
+            }
+            Act::Escape => self.tabs[self.active].ed.escape(),
+            Act::NextPage | Act::PrevPage | Act::FirstPage | Act::LastPage => {
+                let t = &mut self.tabs[self.active];
+                let last = t.page_count().saturating_sub(1);
+                let to = match a {
+                    Act::NextPage => (t.current + 1).min(last),
+                    Act::PrevPage => t.current.saturating_sub(1),
+                    Act::FirstPage => 0,
+                    _ => last,
+                };
+                t.go_to(to);
+            }
             Act::Undo => self.tabs[self.active].undo(ctx),
             Act::Redo => self.tabs[self.active].redo(ctx),
             Act::Copy => {
                 if let Some(text) = self.tabs[self.active].ed.selected_text() {
                     ctx.copy_text(text);
                     self.status = "Copied the selected text.".into();
+                }
+            }
+            Act::CopyObjectText => {
+                let o = self.tabs[self.active].ed.selected_object();
+                if let Some(text) = o.and_then(|o| o.text.clone()) {
+                    ctx.copy_text(text);
+                    self.status = "Copied the object's text.".into();
                 }
             }
             Act::Find => {
@@ -542,7 +569,13 @@ impl App {
             }
             Act::Actual => self.tabs[self.active].set_zoom(1.0),
             Act::FitWidth => {
-                let w = ctx.content_rect().width() - if self.show_side { 190.0 } else { 0.0 };
+                let mut w = ctx.content_rect().width();
+                if self.show_side {
+                    w -= 190.0;
+                }
+                if self.show_inspector {
+                    w -= 250.0;
+                }
                 self.tabs[self.active].fit_width(w);
             }
             Act::RotL | Act::RotR => {
@@ -552,31 +585,33 @@ impl App {
                 t.edit(ctx, |p| p.rotate_pages(&idx, deg));
             }
             Act::Delete => {
-                self.dialog = Dialog::Range(dlg::Range {
-                    kind: dlg::RangeKind::Delete,
-                    text: self.default_range(),
-                })
+                let t = &mut self.tabs[self.active];
+                let idx = t.targets();
+                let before = t.revision;
+                t.edit(ctx, |p| p.delete_pages(&idx));
+                if t.revision != before {
+                    let n = idx.len();
+                    let what = if n == 1 {
+                        format!("page {}", idx[0] + 1)
+                    } else {
+                        format!("{n} pages")
+                    };
+                    self.notify(ctx, format!("Deleted {what}"));
+                }
             }
             Act::Extract => {
-                self.dialog = Dialog::Range(dlg::Range {
-                    kind: dlg::RangeKind::Extract,
-                    text: self.default_range(),
-                })
+                let t = &mut self.tabs[self.active];
+                match t.pdf.extract(&t.targets()) {
+                    Ok(p) => self.add_tab(ctx, p, None, None, true),
+                    Err(e) => t.error = Some(format!("{e:#}")),
+                }
             }
-            Act::Split => {
-                self.dialog = Dialog::Range(dlg::Range {
-                    kind: dlg::RangeKind::SplitEvery,
-                    text: "1".into(),
-                })
-            }
+            Act::Split => self.reveal(Section::Split),
             Act::Blank => {
                 let t = &self.tabs[self.active];
-                let (w, h) = t.sizes.get(t.current).copied().unwrap_or((612.0, 792.0));
-                self.dialog = Dialog::Blank(dlg::Blank {
-                    after: t.current + 1,
-                    w,
-                    h,
-                });
+                let after = t.targets().last().copied().unwrap_or(t.current);
+                let size = t.sizes.get(after).copied().unwrap_or((612.0, 792.0));
+                self.insert_blank(ctx, after, size);
             }
             Act::Merge => {
                 let Some(files) = Self::pdf_dialog().pick_files() else {
@@ -605,59 +640,271 @@ impl App {
                     return;
                 };
                 let t = &mut self.tabs[self.active];
-                let (at, before) = (t.current + 1, t.page_count());
+                // After the selected pages, or the current page.
+                let after = t.targets().last().copied().unwrap_or(t.current);
+                let (at, before) = (after + 1, t.page_count());
                 t.edit(ctx, |p| insert_images(p, at, &data));
                 if t.page_count() > before {
                     t.go_to(at);
                 }
             }
-            Act::Scans => self.dialog = Dialog::Scan(dlg::Scan::default()),
-            Act::Ocr => {
-                self.dialog = Dialog::Range(dlg::Range {
-                    kind: dlg::RangeKind::Ocr,
-                    text: "all".into(),
-                })
+            Act::Scans => self.reveal(Section::Scans),
+            Act::Ocr => self.reveal(Section::Ocr),
+            Act::HeaderFooter => self.reveal(Section::HeaderFooter),
+            Act::Watermark => self.reveal(Section::Watermark),
+            Act::Props => self.reveal(Section::Properties),
+            Act::Security => self.reveal(Section::Security),
+            Act::EditObjectText => {
+                self.show_inspector = true;
+                self.tabs[self.active].ed.focus_text_field();
             }
-            Act::HeaderFooter => self.dialog = Dialog::HeaderFooter(dlg::Hf::default()),
-            Act::Watermark => self.dialog = Dialog::Watermark(dlg::Wm::default()),
-            Act::Props => self.dialog = Dialog::Meta(dlg::Meta(self.tabs[self.active].pdf.info())),
-            Act::Security => {
-                let mut s = dlg::Sec::default();
-                if let Some(e) = &self.tabs[self.active].encryption {
-                    s = dlg::Sec {
-                        enabled: true,
-                        user: e.user_password.clone(),
-                        owner: e.owner_password.clone(),
-                        cipher: e.cipher,
-                        r: e.restrictions,
-                    };
+            Act::ReplaceImage => {
+                let t = &mut self.tabs[self.active];
+                let Some((page, id)) = t.ed.sel() else {
+                    return;
+                };
+                if t.ed.selected_object().is_some_and(|o| o.inline) {
+                    t.error = Some(
+                        "This image is stored inside the page's content (an inline image): \
+                         it can be moved, resized or deleted, but not replaced."
+                            .into(),
+                    );
+                } else if let Some(bytes) = crate::editor::pick_image() {
+                    t.ed.actions.push(EdAction::ReplaceImage(page, id, bytes));
                 }
-                self.dialog = Dialog::Security(s);
             }
             _ => {}
         }
     }
 
-    fn default_range(&self) -> String {
-        let t = &self.tabs[self.active];
-        let mut v = t.targets();
-        v.sort_unstable();
-        // Collapse consecutive runs into a-b.
-        let mut out: Vec<String> = Vec::new();
-        let mut i = 0;
-        while i < v.len() {
-            let mut j = i;
-            while j + 1 < v.len() && v[j + 1] == v[j] + 1 {
-                j += 1;
-            }
-            out.push(if i == j {
-                format!("{}", v[i] + 1)
-            } else {
-                format!("{}-{}", v[i] + 1, v[j] + 1)
-            });
-            i = j + 1;
+    /// Open section `s` of the inspector and scroll to it. The panel must show the page
+    /// or document sections, so an object or word selection is dropped and a tool that
+    /// adds content gives way to the arrow; document-only sections also drop a page
+    /// selection.
+    fn reveal(&mut self, s: Section) {
+        self.show_inspector = true;
+        let ed = &mut self.tabs[self.active].ed;
+        ed.selection.clear_object();
+        ed.selection.clear_words();
+        if ed.owns_panel() {
+            ed.set_tool(Tool::Select);
         }
-        out.join(",")
+        if s.document_only() {
+            ed.selection = Selection::None;
+        }
+        self.tabs[self.active].forms.reveal = Some(s);
+    }
+
+    /// The undo toast, bottom centre above the status bar, until it times out, is
+    /// dismissed, or Undo is pressed.
+    fn toast_ui(&mut self, ctx: &egui::Context, acts: &mut Vec<Act>) {
+        let Some(toast) = &self.toast else {
+            return;
+        };
+        let now = ctx.input(|i| i.time);
+        if now >= toast.until || self.tabs.is_empty() {
+            self.toast = None;
+            return;
+        }
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(toast.until - now));
+        let mut close = false;
+        egui::Area::new(egui::Id::new("toast"))
+            .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -40.0])
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style())
+                    .inner_margin(egui::Margin::symmetric(12, 8))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(&toast.text);
+                            ui.add_space(8.0);
+                            let undo = actions::get(Act::Undo);
+                            let b = egui::Button::new(egui::RichText::new("Undo").strong());
+                            let tip = tooltip(ctx, undo);
+                            if ui.add(b).on_hover_text(tip).clicked() {
+                                acts.push(Act::Undo);
+                                close = true;
+                            }
+                            let x = egui::Button::new(theme::icon(icon::X));
+                            let x = x.frame_when_inactive(false);
+                            if ui.add(x).on_hover_text("Dismiss").clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+            });
+        if close {
+            self.toast = None;
+        }
+    }
+
+    /// Show the undo toast for something that just happened.
+    fn notify(&mut self, ctx: &egui::Context, text: String) {
+        let until = ctx.input(|i| i.time) + TOAST_SECONDS;
+        self.toast = Some(Toast { text, until });
+    }
+
+    /// Insert a blank page of `size` points after page `after` (0-based) and go to it.
+    fn insert_blank(&mut self, ctx: &egui::Context, after: usize, size: (f32, f32)) {
+        let t = &mut self.tabs[self.active];
+        let before = t.page_count();
+        t.edit(ctx, |p| p.insert_blank(after + 1, size.0, size.1));
+        if t.page_count() > before {
+            t.go_to(after + 1);
+        }
+    }
+
+    /// Carry out a button pressed in the inspector's page or document section.
+    fn apply_panel(&mut self, ctx: &egui::Context, apply: Apply) {
+        let active = self.active;
+        let n = self.tabs[active].page_count();
+        match apply {
+            Apply::Act(a) => self.act(ctx, a),
+            Apply::Blank(after) => {
+                let size = self.tabs[active].forms.blank;
+                self.insert_blank(ctx, after, size);
+            }
+            Apply::Props => {
+                let t = &mut self.tabs[active];
+                let info = t.forms.meta.clone();
+                t.edit(ctx, |p| p.set_info(&info));
+            }
+            Apply::Security => {
+                let t = &mut self.tabs[active];
+                let s = &t.forms.sec;
+                t.encryption = s.enabled.then(|| Encryption {
+                    user_password: s.user.clone(),
+                    owner_password: if s.owner.is_empty() {
+                        s.user.clone()
+                    } else {
+                        s.owner.clone()
+                    },
+                    cipher: s.cipher,
+                    restrictions: s.r,
+                });
+                t.dirty = true;
+                self.status = "Security settings apply when you save.".into();
+            }
+            Apply::Watermark => {
+                let t = &mut self.tabs[active];
+                let s = &t.forms.wm;
+                match parse_page_range(&s.range, n) {
+                    Ok(idx) => {
+                        let wm = Watermark {
+                            text: s.text.clone(),
+                            font_size: s.size,
+                            opacity: s.opacity,
+                            rotation: s.rotation,
+                            color: (s.color[0], s.color[1], s.color[2]),
+                            foreground: s.foreground,
+                        };
+                        t.edit(ctx, |p| p.add_watermark(&idx, &wm));
+                    }
+                    Err(e) => t.error = Some(e.to_string()),
+                }
+            }
+            Apply::HeaderFooter => {
+                let t = &mut self.tabs[active];
+                let s = &t.forms.hf;
+                match parse_page_range(&s.range, n) {
+                    Ok(idx) => {
+                        let hf = HeaderFooter {
+                            header: s.header.clone(),
+                            footer: s.footer.clone(),
+                            font_size: s.size,
+                            margin: s.margin,
+                            color: (0.0, 0.0, 0.0),
+                            bates: s.bates.then(|| Bates {
+                                prefix: s.prefix.clone(),
+                                suffix: s.suffix.clone(),
+                                digits: s.digits as usize,
+                                start: s.start,
+                            }),
+                        };
+                        t.edit(ctx, |p| p.add_header_footer(&idx, &hf));
+                    }
+                    Err(e) => t.error = Some(e.to_string()),
+                }
+            }
+            Apply::Ocr => match parse_page_range(&self.tabs[active].forms.ocr, n) {
+                Ok(idx) => self.spawn_job(ctx, "Recognise text", move |p| {
+                    let ocr = mpe_core::Ocr::bundled()?;
+                    Ok(ocr_summary(&p.ocr_pages(&idx, &ocr)?))
+                }),
+                Err(e) => self.tabs[active].error = Some(e.to_string()),
+            },
+            Apply::Scans => {
+                let f = &self.tabs[active].forms;
+                let opts = f.scan;
+                match parse_page_range(&f.scan_pages, n) {
+                    Ok(idx) => self.spawn_job(ctx, "Optimise scanned pages", move |p| {
+                        Ok(scan_summary(&p.optimize_scans(&idx, &opts)?))
+                    }),
+                    Err(e) => self.tabs[active].error = Some(e.to_string()),
+                }
+            }
+            Apply::Export => {
+                let t = &mut self.tabs[active];
+                let s = &t.forms.export;
+                let (format, dpi) = (s.format(), s.dpi);
+                let pages = match parse_page_range(&s.pages, n) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        t.error = Some(e.to_string());
+                        return;
+                    }
+                };
+                let stem = t.stem("page");
+                let Some(dir) = rfd::FileDialog::new()
+                    .set_title("Choose a folder for the images")
+                    .pick_folder()
+                else {
+                    return;
+                };
+                let e = ImageExport {
+                    stem,
+                    format,
+                    dpi,
+                    pages,
+                    dir,
+                };
+                let existing = image_names(&e.pages, &e.stem, e.format)
+                    .iter()
+                    .filter(|n| e.dir.join(n).exists())
+                    .count();
+                if existing > 0 {
+                    self.dialog = Dialog::ConfirmReplace(e, existing);
+                } else {
+                    self.start_export(ctx, e);
+                }
+            }
+            Apply::Split => {
+                let every = self.tabs[active].forms.split.max(1);
+                let Some(dir) = rfd::FileDialog::new()
+                    .set_title("Choose output folder")
+                    .pick_folder()
+                else {
+                    return;
+                };
+                let t = &mut self.tabs[active];
+                let stem = t.stem("part");
+                match t.pdf.split_every(every) {
+                    Ok(parts) => {
+                        let count = parts.len();
+                        for (i, mut part) in parts.into_iter().enumerate() {
+                            let path = dir.join(format!("{stem}-{:03}.pdf", i + 1));
+                            if let Err(e) = part.save(path) {
+                                let text = format!("{e:#}");
+                                self.dialog = Dialog::Message("Split failed".into(), text);
+                                return;
+                            }
+                        }
+                        self.status = format!("Wrote {count} files to {}", dir.display());
+                    }
+                    Err(e) => t.error = Some(format!("{e:#}")),
+                }
+            }
+        }
     }
 
     fn close_tab(&mut self, i: usize) {
@@ -669,11 +916,6 @@ impl App {
 
     fn dialogs(&mut self, ctx: &egui::Context) {
         let mut dialog = std::mem::replace(&mut self.dialog, Dialog::None);
-        let n = self
-            .tabs
-            .get(self.active)
-            .map(|t| t.page_count())
-            .unwrap_or(0);
         let mut done = false;
         match &mut dialog {
             Dialog::None => done = true,
@@ -722,145 +964,6 @@ impl App {
                 Outcome::Open => {}
             },
             _ if self.tabs.is_empty() => done = true,
-            Dialog::Watermark(s) => match dlg::watermark(ctx, s) {
-                Outcome::Apply => {
-                    let t = &mut self.tabs[self.active];
-                    match parse_page_range(&s.range, t.page_count()) {
-                        Ok(idx) => {
-                            let wm = Watermark {
-                                text: s.text.clone(),
-                                font_size: s.size,
-                                opacity: s.opacity,
-                                rotation: s.rotation,
-                                color: (s.color[0], s.color[1], s.color[2]),
-                                foreground: s.foreground,
-                            };
-                            t.edit(ctx, |p| p.add_watermark(&idx, &wm));
-                            done = true;
-                        }
-                        Err(e) => t.error = Some(e.to_string()),
-                    }
-                }
-                Outcome::Cancel => done = true,
-                Outcome::Open => {}
-            },
-            Dialog::HeaderFooter(s) => match dlg::header_footer(ctx, s) {
-                Outcome::Apply => {
-                    let t = &mut self.tabs[self.active];
-                    match parse_page_range(&s.range, t.page_count()) {
-                        Ok(idx) => {
-                            let hf = HeaderFooter {
-                                header: s.header.clone(),
-                                footer: s.footer.clone(),
-                                font_size: s.size,
-                                margin: s.margin,
-                                color: (0.0, 0.0, 0.0),
-                                bates: s.bates.then(|| Bates {
-                                    prefix: s.prefix.clone(),
-                                    suffix: s.suffix.clone(),
-                                    digits: s.digits as usize,
-                                    start: s.start,
-                                }),
-                            };
-                            t.edit(ctx, |p| p.add_header_footer(&idx, &hf));
-                            done = true;
-                        }
-                        Err(e) => t.error = Some(e.to_string()),
-                    }
-                }
-                Outcome::Cancel => done = true,
-                Outcome::Open => {}
-            },
-            Dialog::Meta(s) => match dlg::metadata(ctx, s) {
-                Outcome::Apply => {
-                    let info = s.0.clone();
-                    self.tabs[self.active].edit(ctx, |p| p.set_info(&info));
-                    done = true;
-                }
-                Outcome::Cancel => done = true,
-                Outcome::Open => {}
-            },
-            Dialog::Security(s) => match dlg::security(ctx, s) {
-                Outcome::Apply => {
-                    let t = &mut self.tabs[self.active];
-                    t.encryption = s.enabled.then(|| Encryption {
-                        user_password: s.user.clone(),
-                        owner_password: if s.owner.is_empty() {
-                            s.user.clone()
-                        } else {
-                            s.owner.clone()
-                        },
-                        cipher: s.cipher,
-                        restrictions: s.r,
-                    });
-                    t.dirty = true;
-                    self.status = "Security settings apply when you save.".into();
-                    done = true;
-                }
-                Outcome::Cancel => done = true,
-                Outcome::Open => {}
-            },
-            Dialog::Blank(s) => match dlg::blank(ctx, s, n) {
-                Outcome::Apply => {
-                    let (after, w, h) = (s.after, s.w, s.h);
-                    self.tabs[self.active].edit(ctx, |p| p.insert_blank(after, w, h));
-                    done = true;
-                }
-                Outcome::Cancel => done = true,
-                Outcome::Open => {}
-            },
-            Dialog::Scan(s) => match dlg::scan(ctx, s) {
-                Outcome::Apply => {
-                    let t = &mut self.tabs[self.active];
-                    match parse_page_range(&s.pages, t.page_count()) {
-                        Ok(idx) => {
-                            let opts = s.o;
-                            self.spawn_job(ctx, "Optimise scanned pages", move |p| {
-                                Ok(scan_summary(&p.optimize_scans(&idx, &opts)?))
-                            });
-                            done = true;
-                        }
-                        Err(e) => t.error = Some(e.to_string()),
-                    }
-                }
-                Outcome::Cancel => done = true,
-                Outcome::Open => {}
-            },
-            Dialog::Export(s) => match dlg::export(ctx, s) {
-                Outcome::Apply => {
-                    let t = &mut self.tabs[self.active];
-                    match parse_page_range(&s.pages, t.page_count()) {
-                        Ok(pages) => {
-                            // Cancelling the folder choice leaves the dialog open.
-                            if let Some(dir) = rfd::FileDialog::new()
-                                .set_title("Choose a folder for the images")
-                                .pick_folder()
-                            {
-                                let e = ImageExport {
-                                    stem: t.stem("page"),
-                                    format: s.format(),
-                                    dpi: s.dpi,
-                                    pages,
-                                    dir,
-                                };
-                                let existing = image_names(&e.pages, &e.stem, e.format)
-                                    .iter()
-                                    .filter(|n| e.dir.join(n).exists())
-                                    .count();
-                                if existing > 0 {
-                                    self.dialog = Dialog::ConfirmReplace(e, existing);
-                                } else {
-                                    self.start_export(ctx, e);
-                                }
-                                done = true;
-                            }
-                        }
-                        Err(e) => t.error = Some(e.to_string()),
-                    }
-                }
-                Outcome::Cancel => done = true,
-                Outcome::Open => {}
-            },
             Dialog::ConfirmReplace(e, n) => match dlg::confirm(
                 ctx,
                 "Replace files?",
@@ -905,215 +1008,276 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
-            Dialog::Range(s) => match dlg::range(ctx, s) {
-                Outcome::Apply => {
-                    done = self.apply_range(ctx, s.kind, &s.text);
-                }
-                Outcome::Cancel => done = true,
-                Outcome::Open => {}
-            },
         }
         if !done {
             self.dialog = dialog;
         }
     }
 
-    /// Returns true when the dialog should close.
-    fn apply_range(&mut self, ctx: &egui::Context, kind: dlg::RangeKind, text: &str) -> bool {
-        let t = &mut self.tabs[self.active];
-        match kind {
-            dlg::RangeKind::SplitEvery => {
-                let Ok(every) = text.trim().parse::<usize>() else {
-                    t.error = Some("Enter a whole number of pages per file.".into());
-                    return false;
-                };
-                let Some(dir) = rfd::FileDialog::new()
-                    .set_title("Choose output folder")
-                    .pick_folder()
-                else {
-                    return true;
-                };
-                let stem = t.stem("part");
-                match t.pdf.split_every(every) {
-                    Ok(parts) => {
-                        let count = parts.len();
-                        for (i, mut part) in parts.into_iter().enumerate() {
-                            if let Err(e) = part.save(dir.join(format!("{stem}-{:03}.pdf", i + 1)))
-                            {
-                                self.dialog =
-                                    Dialog::Message("Split failed".into(), format!("{e:#}"));
-                                return true;
-                            }
+    /// The state the commands' conditions are checked against.
+    fn state(&self, ctx: &egui::Context) -> Ctx {
+        let mut c = Ctx {
+            busy: self.busy,
+            side: self.show_side,
+            inspector: self.show_inspector,
+            theme: ctx.options(|o| o.theme_preference),
+            ..Default::default()
+        };
+        if let Some(t) = self.tabs.get(self.active) {
+            t.fill_ctx(&mut c);
+        }
+        c
+    }
+
+    /// The menu: one submenu per group, built from the registry.
+    fn menu(ui: &mut egui::Ui, c: &Ctx, acts: &mut Vec<Act>) {
+        for g in Group::MENUS {
+            ui.menu_button(g.name(), |ui| {
+                let items: Vec<&Action> =
+                    ACTIONS.iter().filter(|a| a.group == g && a.menu).collect();
+                let mut i = 0;
+                while i < items.len() {
+                    let a = items[i];
+                    if a.sep && i > 0 {
+                        ui.separator();
+                    }
+                    if a.submenu.is_empty() {
+                        menu_item(ui, a, c, acts);
+                        i += 1;
+                        continue;
+                    }
+                    // A run of items with the same submenu becomes one submenu.
+                    let n = items[i..]
+                        .iter()
+                        .take_while(|b| b.submenu == a.submenu)
+                        .count();
+                    ui.menu_button(a.submenu, |ui| {
+                        for b in &items[i..i + n] {
+                            menu_item(ui, b, c, acts);
                         }
-                        self.status = format!("Wrote {count} files to {}", dir.display());
-                    }
-                    Err(e) => t.error = Some(format!("{e:#}")),
-                }
-                true
-            }
-            _ => {
-                let idx = match parse_page_range(text, t.page_count()) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        t.error = Some(e.to_string());
-                        return false;
-                    }
-                };
-                if kind == dlg::RangeKind::Ocr {
-                    self.spawn_job(ctx, "Recognise text", move |p| {
-                        let ocr = mpe_core::Ocr::bundled()?;
-                        Ok(ocr_summary(&p.ocr_pages(&idx, &ocr)?))
                     });
-                } else if kind == dlg::RangeKind::Delete {
-                    t.edit(ctx, |p| p.delete_pages(&idx));
-                } else {
-                    match t.pdf.extract(&idx) {
-                        Ok(p) => self.add_tab(ctx, p, None, None, true),
-                        Err(e) => t.error = Some(format!("{e:#}")),
-                    }
+                    i += n;
                 }
-                true
-            }
+            });
         }
     }
 
-    /// The former menu bar, as submenus of the top bar's menu button. `can` is undo,
-    /// redo and copy.
-    fn menu(
-        &mut self,
-        ui: &mut egui::Ui,
-        acts: &mut Vec<Act>,
-        has: bool,
-        idle: bool,
-        can: (bool, bool, bool),
-    ) {
-        let (can_undo, can_redo, can_copy) = can;
-        let mut item = |ui: &mut egui::Ui, label: &str, key: &str, enabled: bool, act: Act| {
-            let b = egui::Button::new(label).shortcut_text(key);
-            if ui.add_enabled(enabled, b).clicked() {
-                acts.push(act);
-                ui.close();
-            }
+    /// The command palette (Ctrl+K): type to filter the commands, Up and Down to move,
+    /// Enter or a click to run, Esc or a click outside to close.
+    fn palette_ui(&mut self, ctx: &egui::Context, c: &Ctx, acts: &mut Vec<Act>) {
+        let Some(p) = self.palette.as_mut() else {
+            return;
         };
-        ui.menu_button("File", |ui| {
-            item(ui, "Open…", "Ctrl+O", true, Act::Open);
-            item(ui, "New from images…", "", true, Act::NewFromImages);
-            item(ui, "Save", "Ctrl+S", has, Act::Save);
-            item(ui, "Save As…", "Ctrl+Shift+S", has, Act::SaveAs);
-            ui.separator();
-            item(ui, "Export pages as images…", "", idle, Act::ExportImages);
-            item(ui, "Export text…", "", has, Act::ExportText);
-            item(ui, "Print…", "Ctrl+P", idle, Act::Print);
-            ui.separator();
-            item(ui, "Close tab", "Ctrl+W", has, Act::CloseTab);
-            ui.separator();
-            item(ui, "Quit", "", true, Act::Quit);
+        let items: Vec<&Action> = ACTIONS
+            .iter()
+            .filter(|a| a.palette && actions::matches(a, &p.query))
+            .collect();
+        let (up, down, enter) = ctx.input_mut(|i| {
+            let none = egui::Modifiers::NONE;
+            (
+                i.consume_key(none, Key::ArrowUp),
+                i.consume_key(none, Key::ArrowDown),
+                i.consume_key(none, Key::Enter),
+            )
         });
-        ui.menu_button("Edit", |ui| {
-            item(ui, "Undo", "Ctrl+Z", can_undo, Act::Undo);
-            item(ui, "Redo", "Ctrl+Y", can_redo, Act::Redo);
-            ui.separator();
-            item(ui, "Copy text", "Ctrl+C", can_copy, Act::Copy);
-            item(ui, "Find…", "Ctrl+F", has, Act::Find);
-        });
-        ui.menu_button("View", |ui| {
-            item(ui, "Zoom in", "Ctrl+=", has, Act::ZoomIn);
-            item(ui, "Zoom out", "Ctrl+-", has, Act::ZoomOut);
-            item(ui, "Fit width", "Ctrl+0", has, Act::FitWidth);
-            item(ui, "Actual size", "Ctrl+1", has, Act::Actual);
-            ui.separator();
-            ui.checkbox(&mut self.show_side, "Side panel");
-            if let Some(t) = self.tabs.get_mut(self.active) {
-                ui.checkbox(&mut t.ed.show_hidden, "Show recognised text")
-                    .on_hover_text(
-                        "Outline the invisible text added by OCR. Hover to read it; \
-                         select it with the arrow tool to correct it.",
-                    );
+        let last = items.len().saturating_sub(1);
+        if up {
+            p.row = p.row.saturating_sub(1);
+        }
+        if down {
+            p.row = (p.row + 1).min(last);
+        }
+        p.row = p.row.min(last);
+        let mut run = None;
+        let modal = egui::Modal::new(egui::Id::new("palette")).show(ctx, |ui| {
+            ui.set_width(480.0);
+            let field = egui::TextEdit::singleline(&mut p.query)
+                .hint_text("Type a command")
+                .desired_width(f32::INFINITY);
+            let r = ui.add(field);
+            r.request_focus();
+            if r.changed() {
+                p.row = 0;
             }
-            ui.menu_button("Theme", |ui| {
-                for (label, pref) in [
-                    ("System", egui::ThemePreference::System),
-                    ("Light", egui::ThemePreference::Light),
-                    ("Dark", egui::ThemePreference::Dark),
-                ] {
-                    item(ui, label, "", true, Act::Theme(pref));
+            ui.separator();
+            let list = egui::ScrollArea::vertical().max_height(360.0);
+            list.show(ui, |ui| {
+                if items.is_empty() {
+                    ui.weak("No matching command.");
+                }
+                for (n, a) in items.iter().enumerate() {
+                    let on = n == p.row;
+                    let r = palette_row(ui, a, n, on, (a.enabled)(c));
+                    if on && (up || down) {
+                        r.scroll_to_me(None);
+                    }
+                    if r.clicked() {
+                        run = Some(a.act);
+                    }
                 }
             });
         });
-        ui.menu_button("Document", |ui| {
-            item(ui, "Rotate clockwise", "", has, Act::RotR);
-            item(ui, "Rotate counter-clockwise", "", has, Act::RotL);
-            item(ui, "Delete pages…", "", has, Act::Delete);
-            item(ui, "Extract pages to new tab…", "", has, Act::Extract);
-            item(ui, "Insert blank page…", "", has, Act::Blank);
-            item(ui, "Insert images…", "", has, Act::InsertImages);
-            item(ui, "Optimise scanned pages…", "", idle, Act::Scans);
-            item(ui, "Recognise text (OCR)…", "", idle, Act::Ocr);
-            item(ui, "Append PDFs…", "", has, Act::Merge);
-            item(ui, "Split into files…", "", has, Act::Split);
-            ui.separator();
-            item(ui, "Headers, footers, Bates…", "", has, Act::HeaderFooter);
-            item(ui, "Watermark…", "", has, Act::Watermark);
-            ui.separator();
-            item(ui, "Properties…", "", has, Act::Props);
-            item(ui, "Password security…", "", has, Act::Security);
-        });
-        ui.menu_button("Help", |ui| item(ui, "About", "", true, Act::About));
+        if enter {
+            if let Some(a) = items.get(p.row).filter(|a| (a.enabled)(c)) {
+                run = Some(a.act);
+            }
+        }
+        if run.is_some() || modal.should_close() {
+            self.palette = None;
+        }
+        acts.extend(run);
     }
 
+    /// Keyboard shortcuts, from the registry. Ctrl/Cmd shortcuts work anywhere and are
+    /// consumed. Plain keys (Delete, arrows, Esc, PageUp…), Ctrl+A and Ctrl+C act only
+    /// when no text field has focus, so they never take over typing, and are not
+    /// consumed, as before (Esc also closes menus). Nothing runs while the palette is
+    /// open; it handles its own keys.
     fn shortcuts(&mut self, ctx: &egui::Context) {
+        if self.palette.is_some() {
+            return;
+        }
+        let c = self.state(ctx);
+        let typing = ctx.egui_wants_keyboard_input();
         let mut acts = Vec::new();
         ctx.input_mut(|i| {
-            let c = |k| KeyboardShortcut::new(Modifiers::COMMAND, k);
-            let cs = |k| KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, k);
-            for (sc, a) in [
-                (c(Key::O), Act::Open),
-                (c(Key::P), Act::Print),
-                (cs(Key::S), Act::SaveAs),
-                (c(Key::S), Act::Save),
-                (c(Key::W), Act::CloseTab),
-                (cs(Key::Z), Act::Redo),
-                (c(Key::Z), Act::Undo),
-                (c(Key::Y), Act::Redo),
-                (c(Key::F), Act::Find),
-                (c(Key::Num0), Act::FitWidth),
-                (c(Key::Num1), Act::Actual),
-                (c(Key::Equals), Act::ZoomIn),
-                (c(Key::Minus), Act::ZoomOut),
-            ] {
-                if i.consume_shortcut(&sc) {
-                    acts.push(a);
+            for (a, k) in actions::shortcuts() {
+                let page_only = matches!(a.act, Act::Copy | Act::SelectAllText);
+                let global = k.modifiers.command && !page_only;
+                if (typing && !global) || !(a.enabled)(&c) {
+                    continue;
+                }
+                let hit = if a.act == Act::Copy {
+                    // Ctrl+C arrives as a Copy event, not as a key press.
+                    i.events.iter().any(|e| matches!(e, egui::Event::Copy))
+                } else if global {
+                    i.consume_shortcut(&k)
+                } else {
+                    i.modifiers.matches_logically(k.modifiers) && i.key_pressed(k.logical_key)
+                };
+                if hit {
+                    acts.push(a.act);
                 }
             }
         });
         for a in acts {
             self.act(ctx, a);
         }
-        if ctx.egui_wants_keyboard_input() || self.tabs.is_empty() {
-            return;
+    }
+}
+
+/// The tools as one menu button showing the current tool, for narrow windows.
+fn tool_menu(
+    ui: &mut egui::Ui,
+    tools: Vec<&Action>,
+    is_on: &dyn Fn(&Action) -> bool,
+    acts: &mut Vec<Act>,
+) {
+    let on = tools.iter().find(|a| is_on(a));
+    let current = on.map_or(icon::HAND, |a| a.icon);
+    let label = (
+        theme::icon(current).size(18.0),
+        theme::icon(icon::CARET_DOWN).size(10.0),
+    );
+    ui.menu_button(label, |ui| {
+        for a in tools {
+            let b = egui::Button::new((theme::icon(a.icon).size(16.0), a.label)).selected(is_on(a));
+            if ui.add(b).clicked() {
+                acts.push(a.act);
+                ui.close();
+            }
         }
-        let (down, up, home, end) = ctx.input(|i| {
-            (
-                i.key_pressed(Key::PageDown),
-                i.key_pressed(Key::PageUp),
-                i.key_pressed(Key::Home),
-                i.key_pressed(Key::End),
-            )
-        });
-        let t = &mut self.tabs[self.active];
-        let last = t.page_count().saturating_sub(1);
-        if down {
-            t.go_to((t.current + 1).min(last));
-        }
-        if up {
-            t.go_to(t.current.saturating_sub(1));
-        }
-        if home {
-            t.go_to(0);
-        }
-        if end {
-            t.go_to(last);
-        }
+    })
+    .response
+    .on_hover_text("Tools");
+}
+
+/// One row of the command palette: icon, label, then group and shortcut on the right.
+/// `n` is the row number; `on` highlights it.
+fn palette_row(ui: &mut egui::Ui, a: &Action, n: usize, on: bool, enabled: bool) -> egui::Response {
+    let glyph = if a.icon.is_empty() {
+        // Keeps labels aligned with the rows that have an icon.
+        egui::Atom::custom(egui::Id::new(("palette-icon", n)), [18.0, 18.0])
+    } else {
+        theme::icon(a.icon).size(16.0).into()
+    };
+    let right = match a.keys.first() {
+        Some(k) => format!("{}    {}", a.group.name(), ui.ctx().format_shortcut(k)),
+        None => a.group.name().to_string(),
+    };
+    let b = egui::Button::new((glyph, a.label))
+        .shortcut_text(right)
+        .selected(on)
+        .frame_when_inactive(on)
+        .min_size(egui::vec2(ui.available_width(), 28.0));
+    ui.add_enabled(enabled, b)
+}
+
+/// The window with no document: a card to open a PDF or start from images. The card
+/// is a drop target and is clickable as a whole; it lights up while files are dragged
+/// over the window.
+fn empty_state(ui: &mut egui::Ui, acts: &mut Vec<Act>) {
+    let dragging = ui.input(|i| !i.raw.hovered_files.is_empty());
+    let room = ui.max_rect();
+    let size = egui::vec2(440.0, 280.0).min(room.size() - egui::vec2(32.0, 32.0));
+    let card = egui::Rect::from_center_size(room.center(), size.max(egui::vec2(1.0, 1.0)));
+    let id = egui::Id::new("empty-card");
+    let r = ui
+        .interact(card, id, egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let v = ui.visuals();
+    let accent = theme::accent(v.dark_mode);
+    let stroke = if dragging || r.hovered() {
+        egui::Stroke::new(2.0, accent)
+    } else {
+        egui::Stroke::new(1.0, v.widgets.noninteractive.bg_stroke.color)
+    };
+    let inside = egui::StrokeKind::Inside;
+    ui.painter().rect(card, 12, v.panel_fill, stroke, inside);
+
+    let layout = egui::Layout::top_down(egui::Align::Center);
+    let inner = card.shrink(24.0);
+    let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
+    ui.add_space(8.0);
+    ui.label(theme::icon(icon::FILE_PDF).size(44.0).color(accent));
+    ui.add_space(8.0);
+    let heading = if dragging {
+        "Drop to open"
+    } else {
+        "Open a PDF to get started"
+    };
+    ui.heading(heading);
+    ui.add_space(16.0);
+    let open = theme::primary_button("Open PDF…").min_size(egui::vec2(180.0, 32.0));
+    if ui.add(open).clicked() {
+        acts.push(Act::Open);
+    }
+    ui.add_space(4.0);
+    let images = egui::Button::new("New from images…").min_size(egui::vec2(180.0, 28.0));
+    if ui.add(images).clicked() {
+        acts.push(Act::NewFromImages);
+    }
+    ui.add_space(16.0);
+    ui.weak("or drop PDF and image files anywhere in this window");
+    let keys = |a: Act| {
+        let k = actions::get(a).keys[0];
+        ui.ctx().format_shortcut(&k)
+    };
+    ui.weak(format!(
+        "{} to open  ·  {} for all commands",
+        keys(Act::Open),
+        keys(Act::Palette)
+    ));
+    if r.clicked() {
+        acts.push(Act::Open);
+    }
+}
+
+/// Tooltip for a command: its label and first shortcut.
+fn tooltip(ctx: &egui::Context, a: &Action) -> String {
+    match a.keys.first() {
+        Some(k) => format!("{} ({})", a.label, ctx.format_shortcut(k)),
+        None => a.label.to_string(),
     }
 }
 
@@ -1152,158 +1316,125 @@ impl eframe::App for App {
 
         let mut acts: Vec<Act> = Vec::new();
         let has = !self.tabs.is_empty();
-        let (can_undo, can_redo) = self
-            .tabs
-            .get(self.active)
-            .map(|t| (t.can_undo(), t.can_redo()))
-            .unwrap_or((false, false));
-        let can_copy = self
-            .tabs
-            .get(self.active)
-            .is_some_and(|t| t.ed.selected_text().is_some());
+        let c = self.state(&ctx);
 
-        let idle = has && !self.busy;
-        // Toolbar icon: no frame until hovered, except when `on` (the active tool).
-        let icon_btn = |ui: &mut egui::Ui, glyph: &str, tip: &str, on: bool, enabled: bool| {
-            let b = egui::Button::new(theme::icon(glyph).size(18.0))
+        // A top-bar button for a command: its icon, no frame until hovered except when
+        // `on` (the active tool), its label and shortcut as the tooltip.
+        let bar = |ui: &mut egui::Ui, act: Act, on: bool, acts: &mut Vec<Act>| {
+            let a = actions::get(act);
+            let b = egui::Button::new(theme::icon(a.icon).size(18.0))
                 .selected(on)
                 .frame_when_inactive(on)
                 .min_size(egui::vec2(28.0, 28.0));
-            ui.add_enabled(enabled, b).on_hover_text(tip).clicked()
+            let tip = tooltip(ui.ctx(), a);
+            let r = ui.add_enabled((a.enabled)(&c), b);
+            if r.on_hover_text(tip).clicked() {
+                acts.push(act);
+            }
         };
         let menu_icon = |glyph: &str| theme::icon(glyph).size(18.0);
+
+        let mut right_acts: Vec<Act> = Vec::new();
 
         egui::Panel::top("topbar")
             .frame(theme::bar_frame(ui.style()))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    // Every command, until the action registry replaces this menu.
+                // Width budget, so the two ends never overlap: on narrower windows the
+                // search field becomes an icon, and then the tools fold into one menu.
+                // (The file name is on the tab and in the window title.)
+                let sp = ui.spacing();
+                let btn = (18.0 + 2.0 * sp.button_padding.x).max(28.0) + sp.item_spacing.x;
+                let sep = 2.0 * sp.item_spacing.x;
+                // Search field with its icon, and the zoom percentage.
+                let (field, pct) = (180.0 + 18.0 + 2.0 * sp.item_spacing.x, 64.0);
+                let right = |with_field: bool| {
+                    let search = if with_field { field } else { btn };
+                    btn + search + sep + 3.0 * btn + pct
+                };
+                // Menu, Open, Save, Undo, Redo and three separators, then the tools.
+                let left = |tools: f32| 5.0 * btn + 3.0 * sep + tools;
+                let inline = 8.0 * btn;
+                let w = ui.available_width() - 16.0;
+                let search_field = w >= left(inline) + right(true);
+                let tools_inline = w >= left(inline) + right(search_field);
+
+                let left_side = |ui: &mut egui::Ui| {
                     ui.menu_button(menu_icon(icon::LIST), |ui| {
-                        self.menu(ui, &mut acts, has, idle, (can_undo, can_redo, can_copy));
+                        Self::menu(ui, &c, &mut acts);
                     })
                     .response
                     .on_hover_text("Menu");
-
-                    let title = match self.tabs.get(self.active) {
-                        Some(t) => t.title(),
-                        None => "MPE".into(),
-                    };
-                    let title = egui::RichText::new(title).family(theme::semibold());
-                    ui.allocate_ui(egui::vec2(240.0, 28.0), |ui| {
-                        ui.add(egui::Label::new(title).truncate())
-                    });
+                    bar(ui, Act::Open, false, &mut acts);
                     if !has {
                         return;
                     }
-                    if icon_btn(ui, icon::FLOPPY_DISK, "Save (Ctrl+S)", false, true) {
-                        acts.push(Act::Save);
-                    }
                     ui.separator();
-                    if icon_btn(
-                        ui,
-                        icon::ARROW_COUNTER_CLOCKWISE,
-                        "Undo (Ctrl+Z)",
-                        false,
-                        can_undo,
-                    ) {
-                        acts.push(Act::Undo);
-                    }
-                    if icon_btn(ui, icon::ARROW_CLOCKWISE, "Redo (Ctrl+Y)", false, can_redo) {
-                        acts.push(Act::Redo);
-                    }
+                    bar(ui, Act::Save, false, &mut acts);
                     ui.separator();
-                    let wide = ui.available_width() > 640.0;
+                    bar(ui, Act::Undo, false, &mut acts);
+                    bar(ui, Act::Redo, false, &mut acts);
+                    ui.separator();
+                    let tools = ACTIONS.iter().filter(|a| a.group == Group::Tools);
+                    let is_on = |a: &Action| matches!(a.act, Act::Tool(t) if c.tool == Some(t));
+                    if tools_inline {
+                        for a in tools {
+                            bar(ui, a.act, is_on(a), &mut acts);
+                        }
+                    } else {
+                        tool_menu(ui, tools.collect(), &is_on, &mut acts);
+                    }
+                };
+                let right_side = |ui: &mut egui::Ui| {
+                    if !has {
+                        return;
+                    }
+                    let acts = &mut right_acts;
+                    ui.menu_button(menu_icon(icon::EXPORT), |ui| {
+                        for act in [Act::ExportImages, Act::ExportText, Act::Print] {
+                            menu_item(ui, actions::get(act), &c, acts);
+                        }
+                    })
+                    .response
+                    .on_hover_text("Export and print");
                     let t = &mut self.tabs[self.active];
-                    let cur = t.ed.tool;
-                    for (tool, glyph, tip) in [
-                        (Tool::View, icon::HAND, "Read only (no editing)"),
-                        (
-                            Tool::Select,
-                            icon::CURSOR,
-                            "Select, move and resize objects",
-                        ),
-                        (Tool::SelectText, icon::CURSOR_TEXT, "Select and copy text"),
-                        (Tool::Text, icon::TEXT_T, "Add text"),
-                        (Tool::Rect, icon::SQUARE, "Add rectangle"),
-                        (Tool::Ellipse, icon::CIRCLE, "Add ellipse"),
-                        (Tool::Line, icon::LINE_SEGMENT, "Add line"),
-                    ] {
-                        if icon_btn(ui, glyph, tip, cur == tool, true) {
-                            t.ed.set_tool(tool);
+                    if search_field {
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut t.query)
+                                .hint_text("Search")
+                                .desired_width(180.0),
+                        );
+                        // Laid out right to left, so this lands left of the field.
+                        ui.label(theme::icon(icon::MAGNIFYING_GLASS).weak());
+                        if std::mem::take(&mut self.focus_search) {
+                            r.request_focus();
                         }
+                        if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                            t.run_search();
+                            t.side = Side::Search;
+                            self.show_side = true;
+                        }
+                    } else {
+                        bar(ui, Act::Find, false, acts);
                     }
-                    if icon_btn(ui, icon::IMAGE, "Add image…", cur == Tool::Image, true) {
-                        t.choose_image();
+                    ui.separator();
+                    bar(ui, Act::FitWidth, false, acts);
+                    bar(ui, Act::ZoomIn, false, acts);
+                    // The zoom level; clicking it resets to actual size.
+                    let level = format!("{:.0}%", t.zoom * 100.0);
+                    let b = egui::Button::new(level).frame_when_inactive(false);
+                    let tip = tooltip(ui.ctx(), actions::get(Act::Actual));
+                    if ui.add(b).on_hover_text(tip).clicked() {
+                        acts.push(Act::Actual);
                     }
-
-                    // Right-hand side, laid out from the right edge.
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.menu_button(menu_icon(icon::EXPORT), |ui| {
-                            for (label, key, enabled, act) in [
-                                ("Export pages as images…", "", idle, Act::ExportImages),
-                                ("Export text…", "", true, Act::ExportText),
-                                ("Print…", "Ctrl+P", idle, Act::Print),
-                            ] {
-                                let b = egui::Button::new(label).shortcut_text(key);
-                                if ui.add_enabled(enabled, b).clicked() {
-                                    acts.push(act);
-                                    ui.close();
-                                }
-                            }
-                        })
-                        .response
-                        .on_hover_text("Export and print");
-                        let t = &mut self.tabs[self.active];
-                        if wide {
-                            let r = ui.add(
-                                egui::TextEdit::singleline(&mut t.query)
-                                    .hint_text("Search")
-                                    .desired_width(180.0),
-                            );
-                            // Laid out right to left, so this lands left of the field.
-                            ui.label(theme::icon(icon::MAGNIFYING_GLASS).weak());
-                            if std::mem::take(&mut self.focus_search) {
-                                r.request_focus();
-                            }
-                            if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                                t.run_search();
-                                t.side = Side::Search;
-                                self.show_side = true;
-                            }
-                        } else if icon_btn(ui, icon::MAGNIFYING_GLASS, "Find (Ctrl+F)", false, true)
-                        {
-                            acts.push(Act::Find);
-                        }
-                        ui.separator();
-                        if icon_btn(ui, icon::ARROWS_OUT, "Fit width (Ctrl+0)", false, true) {
-                            acts.push(Act::FitWidth);
-                        }
-                        if icon_btn(
-                            ui,
-                            icon::MAGNIFYING_GLASS_PLUS,
-                            "Zoom in (Ctrl+=)",
-                            false,
-                            true,
-                        ) {
-                            acts.push(Act::ZoomIn);
-                        }
-                        let pct = format!("{:.0}%", t.zoom * 100.0);
-                        let b = egui::Button::new(pct).frame_when_inactive(false);
-                        if ui.add(b).on_hover_text("Actual size (Ctrl+1)").clicked() {
-                            acts.push(Act::Actual);
-                        }
-                        if icon_btn(
-                            ui,
-                            icon::MAGNIFYING_GLASS_MINUS,
-                            "Zoom out (Ctrl+-)",
-                            false,
-                            true,
-                        ) {
-                            acts.push(Act::ZoomOut);
-                        }
-                    });
-                });
+                    bar(ui, Act::ZoomOut, false, acts);
+                };
+                // The right side is laid out first; the left gets what remains.
+                egui::Sides::new()
+                    .shrink_left()
+                    .height(28.0)
+                    .show(ui, left_side, right_side);
             });
+        acts.append(&mut right_acts);
 
         if has {
             egui::Panel::top("tabs").show(ui, |ui| {
@@ -1360,7 +1491,7 @@ impl eframe::App for App {
                     });
                     ui.separator();
                     match t.side {
-                        Side::Pages => t.show_thumbs(ui),
+                        Side::Pages => t.show_thumbs(ui, &c),
                         Side::Search => {
                             let r = ui.text_edit_singleline(&mut t.query);
                             let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
@@ -1395,16 +1526,28 @@ impl eframe::App for App {
                 });
         }
 
-        if has && self.tabs[self.active].ed.tool != Tool::View {
-            let active = self.active;
+        // The inspector: the editor's section for a selected object or words or a tool
+        // that adds content; otherwise the selected pages or the document.
+        let mut panel_apply = None;
+        if has && self.show_inspector {
+            let t = &mut self.tabs[self.active];
             egui::Panel::right("inspector")
                 .resizable(true)
-                .default_size(240.0)
+                .default_size(250.0)
                 .show(ui, |ui| {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
-                        .show(ui, |ui| self.tabs[active].ed.inspector(ui));
+                        .show(ui, |ui| {
+                            if t.ed.owns_panel() {
+                                t.ed.inspector(ui);
+                            } else {
+                                panel_apply = inspector::show(ui, t, &c);
+                            }
+                        });
                 });
+        }
+        if let Some(apply) = panel_apply {
+            self.apply_panel(&ctx, apply);
         }
 
         let canvas = egui::Frame::central_panel(ui.style())
@@ -1412,11 +1555,9 @@ impl eframe::App for App {
             .inner_margin(0);
         egui::CentralPanel::default().frame(canvas).show(ui, |ui| {
             if let Some(t) = self.tabs.get_mut(self.active) {
-                t.show_pages(ui);
+                t.show_pages(ui, &c);
             } else {
-                ui.centered_and_justified(|ui| {
-                    ui.label("Open a PDF with File ▸ Open, Ctrl+O, or drop a file here.");
-                });
+                empty_state(ui, &mut acts);
             }
         });
 
@@ -1427,6 +1568,18 @@ impl eframe::App for App {
             }
         }
 
+        // Commands chosen from right-click menus on pages and thumbnails, and undoable
+        // changes the editor reports.
+        let mut notice = None;
+        if let Some(t) = self.tabs.get_mut(self.active) {
+            acts.append(&mut t.requested);
+            notice = t.notice.take();
+        }
+        if let Some(text) = notice {
+            self.notify(&ctx, text);
+        }
+        self.toast_ui(&ctx, &mut acts);
+        self.palette_ui(&ctx, &c, &mut acts);
         for a in acts {
             self.act(&ctx, a);
         }
