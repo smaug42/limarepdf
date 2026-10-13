@@ -803,6 +803,21 @@ impl Editor {
         }
     }
 
+    /// Whether the inspector shows the editor's section: a selected object or words, or
+    /// a tool that adds content (its options). Otherwise it shows pages or the document.
+    pub fn owns_panel(&self) -> bool {
+        matches!(
+            self.tool,
+            Tool::Text | Tool::Image | Tool::Rect | Tool::Ellipse | Tool::Line
+        ) || self.sel().is_some()
+            || self.selection.words().is_some()
+    }
+
+    /// Put the keyboard in the inspector's text box for the selected text object.
+    pub fn focus_text_field(&mut self) {
+        self.focus_text = true;
+    }
+
     /// Whether an object is selected and can be deleted or moved.
     pub fn has_object(&self) -> bool {
         self.sel().is_some() && !matches!(self.tool, Tool::View | Tool::SelectText)

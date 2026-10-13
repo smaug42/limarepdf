@@ -25,6 +25,10 @@ pub enum Act {
     SelectAllText,
     /// Copy the text of the selected text object.
     CopyObjectText,
+    /// Put the keyboard in the inspector's text box for the selected text object.
+    EditObjectText,
+    /// Replace the selected image with one from a file.
+    ReplaceImage,
     DeleteObject,
     /// Move the selected object by this many points (×10 with Shift).
     Nudge(i8, i8),
@@ -40,6 +44,7 @@ pub enum Act {
     FirstPage,
     LastPage,
     ToggleSide,
+    ToggleInspector,
     ToggleHidden,
     Theme(ThemePreference),
     Palette,
@@ -110,6 +115,7 @@ pub struct Ctx {
     pub obj_kind: Option<ObjKind>,
     pub tool: Option<Tool>,
     pub side: bool,
+    pub inspector: bool,
     pub hidden_text: bool,
     pub theme: ThemePreference,
 }
@@ -160,6 +166,9 @@ fn object(c: &Ctx) -> bool {
 }
 fn text_object(c: &Ctx) -> bool {
     c.object && matches!(c.obj_kind, Some(ObjKind::Text | ObjKind::HiddenText))
+}
+fn image_object(c: &Ctx) -> bool {
+    c.object && c.obj_kind == Some(ObjKind::Image)
 }
 fn text_tool(c: &Ctx) -> bool {
     c.tool == Some(Tool::SelectText)
@@ -305,6 +314,24 @@ pub static ACTIONS: &[Action] = &[
         label: "Select all text on the page",
         keys: &[k(C, Key::A)],
         enabled: text_tool,
+        ..BASE
+    },
+    Action {
+        act: Act::EditObjectText,
+        group: Group::Edit,
+        label: "Edit text",
+        icon: icon::PENCIL_SIMPLE,
+        enabled: text_object,
+        menu: false,
+        ..BASE
+    },
+    Action {
+        act: Act::ReplaceImage,
+        group: Group::Edit,
+        label: "Replace image…",
+        icon: icon::IMAGE,
+        enabled: image_object,
+        menu: false,
         ..BASE
     },
     Action {
@@ -459,6 +486,17 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::ToggleInspector,
+        group: Group::View,
+        label: "Inspector",
+        icon: icon::SLIDERS_HORIZONTAL,
+        enabled: always,
+        checked: Some(|c| c.inspector),
+        hint: "The panel on the right: options for what is selected, or for the \
+               document when nothing is.",
+        ..BASE
+    },
+    Action {
         act: Act::ToggleHidden,
         group: Group::View,
         label: "Show recognised text",
@@ -588,25 +626,33 @@ pub static ACTIONS: &[Action] = &[
     Action {
         act: Act::Delete,
         group: Group::Document,
-        label: "Delete pages…",
+        label: "Delete pages",
+        icon: icon::TRASH,
+        hint: "The selected pages, or the current page. Undo brings them back.",
         ..BASE
     },
     Action {
         act: Act::Extract,
         group: Group::Document,
-        label: "Extract pages to new tab…",
+        label: "Extract pages to a new tab",
+        icon: icon::ARROW_SQUARE_OUT,
+        hint: "The selected pages, or the current page.",
         ..BASE
     },
     Action {
         act: Act::Blank,
         group: Group::Document,
-        label: "Insert blank page…",
+        label: "Insert blank page",
+        icon: icon::FILE_PLUS,
+        hint: "After the selected pages, or the current page, at its size.",
         ..BASE
     },
     Action {
         act: Act::InsertImages,
         group: Group::Document,
         label: "Insert images…",
+        icon: icon::IMAGES,
+        hint: "After the selected pages, or the current page.",
         ..BASE
     },
     Action {
@@ -627,6 +673,7 @@ pub static ACTIONS: &[Action] = &[
         act: Act::Merge,
         group: Group::Document,
         label: "Append PDFs…",
+        icon: icon::STACK_PLUS,
         ..BASE
     },
     Action {
@@ -704,7 +751,10 @@ pub fn matches(a: &Action, query: &str) -> bool {
 pub fn context_items(sel: &Selection) -> &'static [&'static [Act]] {
     match sel {
         Selection::Words { .. } => &[&[Act::Copy, Act::SelectAllText]],
-        Selection::Object { .. } => &[&[Act::CopyObjectText, Act::DeleteObject]],
+        Selection::Object { .. } => &[
+            &[Act::EditObjectText, Act::ReplaceImage, Act::CopyObjectText],
+            &[Act::DeleteObject],
+        ],
         Selection::None | Selection::Pages(_) => &[
             &[Act::RotR, Act::RotL],
             &[Act::Blank, Act::InsertImages, Act::Extract, Act::Delete],

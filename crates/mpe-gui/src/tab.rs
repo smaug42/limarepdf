@@ -1,5 +1,6 @@
 use crate::actions::{self, Act, Ctx};
 use crate::editor::{Action, Editor, Tool};
+use crate::inspector::Forms;
 use crate::selection::Selection;
 use crate::theme;
 use crate::worker::{Key, Worker};
@@ -54,6 +55,10 @@ pub struct Tab {
     stale: HashSet<usize>,
     /// Commands chosen from a right-click menu, run by the app after the frame.
     pub requested: Vec<Act>,
+    /// State of the inspector's page and document forms.
+    pub forms: Forms,
+    /// Something undoable just happened, for the undo toast.
+    pub notice: Option<String>,
 }
 
 impl Tab {
@@ -92,6 +97,8 @@ impl Tab {
             error: None,
             ed: Editor::default(),
             requested: Vec::new(),
+            forms: Forms::default(),
+            notice: None,
             stale: HashSet::new(),
         })
     }
@@ -224,6 +231,7 @@ impl Tab {
                 Action::Delete(p, id) => {
                     if self.edit_pages(ctx, &[p], |pdf| pdf.delete_object(p, id)) {
                         self.ed.selection.clear_object();
+                        self.notice = Some("Deleted the object".into());
                     }
                 }
                 Action::AddShape(p, shape, rect) => {

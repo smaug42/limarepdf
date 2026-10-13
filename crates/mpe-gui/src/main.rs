@@ -2,6 +2,7 @@ mod actions;
 mod app;
 mod dialogs;
 mod editor;
+mod inspector;
 mod selection;
 mod tab;
 mod theme;
