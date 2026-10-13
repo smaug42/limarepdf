@@ -1,6 +1,6 @@
 # Features and status
 
-**Status: 0.2, for testing.** Most testing has been on Linux. Annotations, forms, digital signatures and redaction
+**Status: 0.3, for testing.** Most testing has been on Linux. Annotations, forms, digital signatures and redaction
 are not started.
 
 ## What MPE does
