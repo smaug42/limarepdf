@@ -1140,6 +1140,32 @@ impl App {
     }
 }
 
+/// The tools as one menu button showing the current tool, for narrow windows.
+fn tool_menu(
+    ui: &mut egui::Ui,
+    tools: Vec<&Action>,
+    is_on: &dyn Fn(&Action) -> bool,
+    acts: &mut Vec<Act>,
+) {
+    let on = tools.iter().find(|a| is_on(a));
+    let current = on.map_or(icon::HAND, |a| a.icon);
+    let label = (
+        theme::icon(current).size(18.0),
+        theme::icon(icon::CARET_DOWN).size(10.0),
+    );
+    ui.menu_button(label, |ui| {
+        for a in tools {
+            let b = egui::Button::new((theme::icon(a.icon).size(16.0), a.label)).selected(is_on(a));
+            if ui.add(b).clicked() {
+                acts.push(a.act);
+                ui.close();
+            }
+        }
+    })
+    .response
+    .on_hover_text("Tools");
+}
+
 /// One row of the command palette: icon, label, then group and shortcut on the right.
 /// `n` is the row number; `on` highlights it.
 fn palette_row(ui: &mut egui::Ui, a: &Action, n: usize, on: bool, enabled: bool) -> egui::Response {
@@ -1282,82 +1308,107 @@ impl eframe::App for App {
         };
         let menu_icon = |glyph: &str| theme::icon(glyph).size(18.0);
 
+        let mut right_acts: Vec<Act> = Vec::new();
+
         egui::Panel::top("topbar")
             .frame(theme::bar_frame(ui.style()))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
+                // Width budget, so the two ends never overlap: on narrower windows the
+                // search field becomes an icon, and then the tools fold into one menu.
+                // (The file name is on the tab and in the window title.)
+                let sp = ui.spacing();
+                let btn = (18.0 + 2.0 * sp.button_padding.x).max(28.0) + sp.item_spacing.x;
+                let sep = 2.0 * sp.item_spacing.x;
+                // Search field with its icon, and the zoom percentage.
+                let (field, pct) = (180.0 + 18.0 + 2.0 * sp.item_spacing.x, 64.0);
+                let right = |with_field: bool| {
+                    let search = if with_field { field } else { btn };
+                    btn + search + sep + 3.0 * btn + pct
+                };
+                // Menu, Open, Save, Undo, Redo and three separators, then the tools.
+                let left = |tools: f32| 5.0 * btn + 3.0 * sep + tools;
+                let inline = 8.0 * btn;
+                let w = ui.available_width() - 16.0;
+                let search_field = w >= left(inline) + right(true);
+                let tools_inline = w >= left(inline) + right(search_field);
+
+                let left_side = |ui: &mut egui::Ui| {
                     ui.menu_button(menu_icon(icon::LIST), |ui| {
                         Self::menu(ui, &c, &mut acts);
                     })
                     .response
                     .on_hover_text("Menu");
                     bar(ui, Act::Open, false, &mut acts);
-
-                    let title = match self.tabs.get(self.active) {
-                        Some(t) => t.title(),
-                        None => "MPE".into(),
-                    };
-                    let title = egui::RichText::new(title).family(theme::semibold());
-                    ui.allocate_ui(egui::vec2(240.0, 28.0), |ui| {
-                        ui.add(egui::Label::new(title).truncate())
-                    });
                     if !has {
                         return;
                     }
+                    ui.separator();
                     bar(ui, Act::Save, false, &mut acts);
                     ui.separator();
                     bar(ui, Act::Undo, false, &mut acts);
                     bar(ui, Act::Redo, false, &mut acts);
                     ui.separator();
-                    let wide = ui.available_width() > 640.0;
-                    for a in ACTIONS.iter().filter(|a| a.group == Group::Tools) {
-                        let on = matches!(a.act, Act::Tool(t) if c.tool == Some(t));
-                        bar(ui, a.act, on, &mut acts);
+                    let tools = ACTIONS.iter().filter(|a| a.group == Group::Tools);
+                    let is_on = |a: &Action| matches!(a.act, Act::Tool(t) if c.tool == Some(t));
+                    if tools_inline {
+                        for a in tools {
+                            bar(ui, a.act, is_on(a), &mut acts);
+                        }
+                    } else {
+                        tool_menu(ui, tools.collect(), &is_on, &mut acts);
                     }
-
-                    // Right-hand side, laid out from the right edge.
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.menu_button(menu_icon(icon::EXPORT), |ui| {
-                            for act in [Act::ExportImages, Act::ExportText, Act::Print] {
-                                menu_item(ui, actions::get(act), &c, &mut acts);
-                            }
-                        })
-                        .response
-                        .on_hover_text("Export and print");
-                        let t = &mut self.tabs[self.active];
-                        if wide {
-                            let r = ui.add(
-                                egui::TextEdit::singleline(&mut t.query)
-                                    .hint_text("Search")
-                                    .desired_width(180.0),
-                            );
-                            // Laid out right to left, so this lands left of the field.
-                            ui.label(theme::icon(icon::MAGNIFYING_GLASS).weak());
-                            if std::mem::take(&mut self.focus_search) {
-                                r.request_focus();
-                            }
-                            if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                                t.run_search();
-                                t.side = Side::Search;
-                                self.show_side = true;
-                            }
-                        } else {
-                            bar(ui, Act::Find, false, &mut acts);
+                };
+                let right_side = |ui: &mut egui::Ui| {
+                    if !has {
+                        return;
+                    }
+                    let acts = &mut right_acts;
+                    ui.menu_button(menu_icon(icon::EXPORT), |ui| {
+                        for act in [Act::ExportImages, Act::ExportText, Act::Print] {
+                            menu_item(ui, actions::get(act), &c, acts);
                         }
-                        ui.separator();
-                        bar(ui, Act::FitWidth, false, &mut acts);
-                        bar(ui, Act::ZoomIn, false, &mut acts);
-                        // The zoom level; clicking it resets to actual size.
-                        let pct = format!("{:.0}%", t.zoom * 100.0);
-                        let b = egui::Button::new(pct).frame_when_inactive(false);
-                        let tip = tooltip(ui.ctx(), actions::get(Act::Actual));
-                        if ui.add(b).on_hover_text(tip).clicked() {
-                            acts.push(Act::Actual);
+                    })
+                    .response
+                    .on_hover_text("Export and print");
+                    let t = &mut self.tabs[self.active];
+                    if search_field {
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut t.query)
+                                .hint_text("Search")
+                                .desired_width(180.0),
+                        );
+                        // Laid out right to left, so this lands left of the field.
+                        ui.label(theme::icon(icon::MAGNIFYING_GLASS).weak());
+                        if std::mem::take(&mut self.focus_search) {
+                            r.request_focus();
                         }
-                        bar(ui, Act::ZoomOut, false, &mut acts);
-                    });
-                });
+                        if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                            t.run_search();
+                            t.side = Side::Search;
+                            self.show_side = true;
+                        }
+                    } else {
+                        bar(ui, Act::Find, false, acts);
+                    }
+                    ui.separator();
+                    bar(ui, Act::FitWidth, false, acts);
+                    bar(ui, Act::ZoomIn, false, acts);
+                    // The zoom level; clicking it resets to actual size.
+                    let level = format!("{:.0}%", t.zoom * 100.0);
+                    let b = egui::Button::new(level).frame_when_inactive(false);
+                    let tip = tooltip(ui.ctx(), actions::get(Act::Actual));
+                    if ui.add(b).on_hover_text(tip).clicked() {
+                        acts.push(Act::Actual);
+                    }
+                    bar(ui, Act::ZoomOut, false, acts);
+                };
+                // The right side is laid out first; the left gets what remains.
+                egui::Sides::new()
+                    .shrink_left()
+                    .height(28.0)
+                    .show(ui, left_side, right_side);
             });
+        acts.append(&mut right_acts);
 
         if has {
             egui::Panel::top("tabs").show(ui, |ui| {

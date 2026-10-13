@@ -1,8 +1,7 @@
 # MPE
 
-A fast PDF viewer and editor written entirely in Rust, with no C or C++ dependencies. It started from a
-functional specification of an existing Qt/C++ editor. This is a from-scratch implementation: it contains
-none of that product's code, strings, stamps, fonts or other assets.
+A fast PDF viewer and editor written entirely in Rust, with no C or C++ dependencies.
+This is a from-scratch implementation (with AI assistance): it contains no other product's code, strings, stamps, fonts or other assets.
 
 **Status: 0.2, for testing.** Viewing, page operations, overlays (headers, footers, Bates, watermark), metadata,
 password security, basic content editing (text, images, vector shapes), image import, scan optimisation, OCR
