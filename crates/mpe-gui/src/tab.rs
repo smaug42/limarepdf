@@ -92,6 +92,15 @@ impl Tab {
         })
     }
 
+    /// The file name without extension, for naming files made from the document.
+    pub fn stem(&self, fallback: &str) -> String {
+        self.path
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| fallback.into())
+    }
+
     pub fn title(&self) -> String {
         let name = self
             .path

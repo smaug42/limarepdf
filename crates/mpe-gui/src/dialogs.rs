@@ -1,4 +1,5 @@
 use eframe::egui::{self, Align2, Context, Ui};
+use mpe_core::render::{ImageFormat, MAX_DPI};
 use mpe_core::{Cipher, Info, Restrictions, ScanMode, ScanOptions};
 use std::path::PathBuf;
 
@@ -401,6 +402,62 @@ pub fn scan(ctx: &Context, s: &mut Scan) -> Outcome {
         ui.checkbox(&mut s.o.deskew, "Straighten tilted pages");
         ui.checkbox(&mut s.o.despeckle, "Remove specks (black and white)");
         buttons(ui, "Optimise")
+    })
+}
+
+// ---------------------------------------------------------- export images
+
+pub struct Export {
+    pub pages: String,
+    pub jpeg: bool,
+    pub dpi: f32,
+    pub quality: u8,
+}
+impl Default for Export {
+    fn default() -> Self {
+        Self {
+            pages: "all".into(),
+            jpeg: false,
+            dpi: 150.0,
+            quality: 90,
+        }
+    }
+}
+impl Export {
+    pub fn format(&self) -> ImageFormat {
+        if self.jpeg {
+            ImageFormat::Jpeg(self.quality)
+        } else {
+            ImageFormat::Png
+        }
+    }
+}
+pub fn export(ctx: &Context, s: &mut Export) -> Outcome {
+    modal(ctx, "Export pages as images", |ui| {
+        ui.label("One file per page, named after the document and the page number.");
+        range_field(ui, &mut s.pages);
+        egui::Grid::new("export")
+            .num_columns(2)
+            .spacing([10.0, 6.0])
+            .show(ui, |ui| {
+                ui.label("Format");
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut s.jpeg, false, "PNG");
+                    ui.radio_value(&mut s.jpeg, true, "JPEG");
+                });
+                ui.end_row();
+                ui.label("Resolution");
+                ui.add(
+                    egui::DragValue::new(&mut s.dpi)
+                        .range(36.0..=MAX_DPI)
+                        .suffix(" dpi"),
+                );
+                ui.end_row();
+                ui.label("JPEG quality");
+                ui.add_enabled(s.jpeg, egui::Slider::new(&mut s.quality, 10..=100));
+                ui.end_row();
+            });
+        buttons(ui, "Choose folder…")
     })
 }
 

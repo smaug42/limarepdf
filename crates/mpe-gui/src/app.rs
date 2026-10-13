@@ -3,6 +3,7 @@ use crate::editor::Tool;
 use crate::tab::{Side, Tab};
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers};
 use egui_phosphor::regular as icon;
+use mpe_core::render::{image_names, ImageFormat};
 use mpe_core::{
     parse_page_range, Bates, Encryption, HeaderFooter, ImageImport, OcrResult, Pdf, ScanResult,
     Watermark,
@@ -115,6 +116,16 @@ fn scan_summary(report: &[(usize, ScanResult)]) -> (bool, String) {
     (n > 0, text)
 }
 
+/// Page images to write, once the folder is chosen.
+#[derive(Clone)]
+struct ImageExport {
+    pages: Vec<usize>,
+    dpi: f32,
+    format: ImageFormat,
+    dir: PathBuf,
+    stem: String,
+}
+
 enum Dialog {
     None,
     Watermark(dlg::Wm),
@@ -124,10 +135,13 @@ enum Dialog {
     Range(dlg::Range),
     Blank(dlg::Blank),
     Scan(dlg::Scan),
+    Export(dlg::Export),
     Password(dlg::Password),
     Message(String, String),
     ConfirmClose(usize),
     ConfirmQuit,
+    /// Export would replace this many files.
+    ConfirmReplace(ImageExport, usize),
     About,
 }
 
@@ -140,6 +154,8 @@ enum Act {
     Ocr,
     Save,
     SaveAs,
+    ExportImages,
+    ExportText,
     CloseTab,
     Quit,
     Undo,
@@ -290,7 +306,7 @@ impl App {
                             continue;
                         }
                     };
-                    if t.revision != revision {
+                    if changed && t.revision != revision {
                         self.dialog = Dialog::Message(
                             title.into(),
                             "The document changed while this was running, so the result \
@@ -369,6 +385,48 @@ impl App {
         self.status = format!("{title}…");
     }
 
+    /// Write page images on a background thread; the document is not changed.
+    fn start_export(&mut self, ctx: &egui::Context, e: ImageExport) {
+        self.spawn_job(ctx, "Export pages as images", move |p| {
+            let files = p.export_images(&e.pages, e.dpi, e.format, &e.dir, &e.stem)?;
+            let n = files.len();
+            Ok((false, format!("Wrote {n} image(s) to {}.", e.dir.display())))
+        });
+    }
+
+    /// Write the text of every page to a file, pages separated by form feeds.
+    fn export_text(&mut self) {
+        let t = &self.tabs[self.active];
+        let all: Vec<usize> = (0..t.page_count()).collect();
+        let text = t.pdf.pages_text(&all);
+        if text.trim_matches(|c: char| c.is_whitespace()).is_empty() {
+            self.dialog = Dialog::Message(
+                "Export text".into(),
+                "This document has no text to export. Scanned pages need \
+                 Document > Recognise text (OCR) first."
+                    .into(),
+            );
+            return;
+        }
+        let Some(mut path) = rfd::FileDialog::new()
+            .add_filter("Text", &["txt"])
+            .set_file_name(format!("{}.txt", t.stem("document")))
+            .save_file()
+        else {
+            return;
+        };
+        if path.extension().is_none() {
+            path.set_extension("txt");
+        }
+        match std::fs::write(&path, text) {
+            Ok(()) => self.status = format!("Wrote the text to {}", path.display()),
+            Err(e) => {
+                self.dialog =
+                    Dialog::Message("Export failed".into(), format!("{}: {e}", path.display()))
+            }
+        }
+    }
+
     fn new_from_images(&mut self, ctx: &egui::Context, files: &[PathBuf]) {
         let Some(data) = self.read_images(files) else {
             return;
@@ -431,6 +489,8 @@ impl App {
             }
             Act::Save => self.save(false),
             Act::SaveAs => self.save(true),
+            Act::ExportImages if has => self.dialog = Dialog::Export(dlg::Export::default()),
+            Act::ExportText if has => self.export_text(),
             Act::CloseTab if has => {
                 if self.tabs[self.active].dirty {
                     self.dialog = Dialog::ConfirmClose(self.active);
@@ -755,6 +815,58 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
+            Dialog::Export(s) => match dlg::export(ctx, s) {
+                Outcome::Apply => {
+                    let t = &mut self.tabs[self.active];
+                    match parse_page_range(&s.pages, t.page_count()) {
+                        Ok(pages) => {
+                            // Cancelling the folder choice leaves the dialog open.
+                            if let Some(dir) = rfd::FileDialog::new()
+                                .set_title("Choose a folder for the images")
+                                .pick_folder()
+                            {
+                                let e = ImageExport {
+                                    stem: t.stem("page"),
+                                    format: s.format(),
+                                    dpi: s.dpi,
+                                    pages,
+                                    dir,
+                                };
+                                let existing = image_names(&e.pages, &e.stem, e.format)
+                                    .iter()
+                                    .filter(|n| e.dir.join(n).exists())
+                                    .count();
+                                if existing > 0 {
+                                    self.dialog = Dialog::ConfirmReplace(e, existing);
+                                } else {
+                                    self.start_export(ctx, e);
+                                }
+                                done = true;
+                            }
+                        }
+                        Err(e) => t.error = Some(e.to_string()),
+                    }
+                }
+                Outcome::Cancel => done = true,
+                Outcome::Open => {}
+            },
+            Dialog::ConfirmReplace(e, n) => match dlg::confirm(
+                ctx,
+                "Replace files?",
+                &format!(
+                    "{n} file(s) in {} already have the names these images would get. \
+                     Replace them?",
+                    e.dir.display()
+                ),
+                "Replace",
+            ) {
+                Outcome::Apply => {
+                    self.start_export(ctx, e.clone());
+                    done = true;
+                }
+                Outcome::Cancel => done = true,
+                Outcome::Open => {}
+            },
             Dialog::Range(s) => match dlg::range(ctx, s) {
                 Outcome::Apply => {
                     done = self.apply_range(ctx, s.kind, &s.text);
@@ -783,12 +895,7 @@ impl App {
                 else {
                     return true;
                 };
-                let stem = t
-                    .path
-                    .as_ref()
-                    .and_then(|p| p.file_stem())
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "part".into());
+                let stem = t.stem("part");
                 match t.pdf.split_every(every) {
                     Ok(parts) => {
                         let count = parts.len();
@@ -947,6 +1054,11 @@ impl eframe::App for App {
                     item(ui, "New from images…", "", true, Act::NewFromImages);
                     item(ui, "Save", "Ctrl+S", has, Act::Save);
                     item(ui, "Save As…", "Ctrl+Shift+S", has, Act::SaveAs);
+                    ui.separator();
+                    let idle = has && !self.busy;
+                    item(ui, "Export pages as images…", "", idle, Act::ExportImages);
+                    item(ui, "Export text…", "", has, Act::ExportText);
+                    ui.separator();
                     item(ui, "Close tab", "Ctrl+W", has, Act::CloseTab);
                     ui.separator();
                     item(ui, "Quit", "", true, Act::Quit);

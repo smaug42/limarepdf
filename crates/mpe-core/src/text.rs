@@ -17,6 +17,13 @@ impl Pdf {
             .unwrap_or_default()
     }
 
+    /// Text of `pages` (0-based) in the order given, separated by form feeds as pdftotext
+    /// does. Pages are extracted in parallel.
+    pub fn pages_text(&self, pages: &[usize]) -> String {
+        let texts: Vec<String> = pages.par_iter().map(|&p| self.page_text(p)).collect();
+        texts.join("\u{c}")
+    }
+
     /// Case-insensitive text search across all pages, in parallel.
     pub fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
         let q = query.trim().to_lowercase();
