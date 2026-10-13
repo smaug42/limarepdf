@@ -123,7 +123,12 @@ impl Ocr {
                     })
                     .collect(),
             })
-            .filter(|l: &OcrLine| !l.words.is_empty())
+            // Lines with fewer than two letters or digits are almost always marks that
+            // are not text (logos, texture, stray specks).
+            .filter(|l: &OcrLine| {
+                let alnum = l.words.iter().flat_map(|w| w.text.chars());
+                alnum.filter(|c| c.is_alphanumeric()).count() >= 2
+            })
             .collect())
     }
 }
@@ -247,6 +252,8 @@ struct Comp {
     x1: u32,
     y1: u32,
     pixels: usize,
+    /// Index of one of its pixels.
+    seed: usize,
 }
 
 impl Comp {
@@ -278,6 +285,7 @@ fn components(b: &GrayImage) -> Vec<Comp> {
             x1: sx + 1,
             y1: sy + 1,
             pixels: 0,
+            seed: start,
         };
         while let Some(i) = stack.pop() {
             let (x, y) = (i % w, i / w);
@@ -301,18 +309,89 @@ fn components(b: &GrayImage) -> Vec<Comp> {
     out
 }
 
+/// Whiten the group of touching black pixels that contains pixel `seed`.
+fn erase(b: &mut GrayImage, seed: usize, stack: &mut Vec<usize>) {
+    let (w, h) = (b.width() as usize, b.height() as usize);
+    let raw: &mut [u8] = b;
+    if raw[seed] != 0 {
+        return;
+    }
+    raw[seed] = 255;
+    stack.push(seed);
+    while let Some(i) = stack.pop() {
+        let (x, y) = (i % w, i / w);
+        for ny in y.saturating_sub(1)..=(y + 1).min(h - 1) {
+            for nx in x.saturating_sub(1)..=(x + 1).min(w - 1) {
+                let j = ny * w + nx;
+                if raw[j] == 0 {
+                    raw[j] = 255;
+                    stack.push(j);
+                }
+            }
+        }
+    }
+}
+
+/// Median of `heights`.
+fn median(mut heights: Vec<u32>) -> Option<f32> {
+    heights.sort_unstable();
+    heights.get(heights.len() / 2).map(|&h| h as f32)
+}
+
 /// Word boxes (left, top, right, bottom, in pixels), padded for recognition.
 fn find_words(g: &GrayImage) -> Vec<[f32; 4]> {
     let (w, h) = g.dimensions();
     let mut bits = binarise(g);
-    let letters = components(&bits);
-    // Typical letter height: the median of everything bigger than a speck.
-    let mut heights: Vec<u32> = letters.iter().map(|c| c.h()).filter(|&h| h >= 4).collect();
-    if heights.len() < 5 {
+    let comps: Vec<Comp> = components(&bits);
+    let not_page_sized =
+        |c: &Comp| (c.h() as f32) < 0.15 * h as f32 && (c.w() as f32) < 0.6 * w as f32;
+    // Typical letter height, in two steps. First the ink-weighted median height, which
+    // many specks (dust, photocopy texture) cannot drag down; then the plain median of the
+    // groups at least a quarter of that, so that large bold headings, which hold much of
+    // the ink, do not make body text look like specks.
+    let mut sized: Vec<&Comp> = comps
+        .iter()
+        .filter(|c| c.h() >= 4 && not_page_sized(c))
+        .collect();
+    sized.sort_unstable_by_key(|c| c.h());
+    let ink: usize = sized.iter().map(|c| c.pixels).sum();
+    let mut acc = 0;
+    let Some(heavy) = sized.iter().find(|c| {
+        acc += c.pixels;
+        acc * 2 >= ink
+    }) else {
+        return Vec::new();
+    };
+    let floor = 0.25 * heavy.h() as f32;
+    let Some(th) = median(
+        sized
+            .iter()
+            .map(|c| c.h())
+            .filter(|&ch| ch as f32 >= floor)
+            .collect(),
+    ) else {
+        return Vec::new();
+    };
+    // Erase frames and outlines: groups whose box is nearly empty. Size alone is not a
+    // reason, since blurred letters on neighbouring lines can touch and form big groups.
+    // Small marks stay: they are punctuation, dots, accents and pieces of broken letters.
+    let mut stack = Vec::new();
+    let mut letters = 0;
+    for c in &comps {
+        let (cw, ch) = (c.w() as f32, c.h() as f32);
+        if ch < 0.4 * th {
+            continue;
+        }
+        let fill = c.pixels as f32 / (cw * ch);
+        if fill >= 0.06 {
+            letters += 1;
+        } else {
+            erase(&mut bits, c.seed, &mut stack);
+        }
+    }
+    if letters < 3 {
         return Vec::new();
     }
-    heights.sort_unstable();
-    let th = heights[heights.len() / 2] as f32;
     // Join the letters of a word: fill gaps along each row up to this width. Letter gaps
     // are around a fifth of the median letter height, word spaces about half of it.
     let gap = (0.4 * th).round().max(1.0) as usize;
@@ -329,11 +408,62 @@ fn find_words(g: &GrayImage) -> Vec<[f32; 4]> {
             }
         }
     }
-    // Words, without page-sized things (borders, rules, pictures).
-    let (mut words, small): (Vec<Comp>, Vec<Comp>) = components(&bits)
+    // Words, without page-sized things. `th` is effectively the x-height (most letters are
+    // lower case), so any word is at least about that tall; flatter groups are dotted rules
+    // and specks.
+    // Very wide groups are texture or rules, not words: even long words are well under 15
+    // x-heights across.
+    let joined_up = components(&bits);
+    // Small marks left after joining: dots and accents to join to the word below.
+    let small: Vec<Comp> = joined_up
+        .iter()
+        .filter(|c| (c.h() as f32) < 0.4 * th && (c.w() as f32) < 0.6 * th)
+        .copied()
+        .collect();
+    let mut words: Vec<Comp> = joined_up
         .into_iter()
-        .filter(|c| (c.h() as f32) < 0.15 * h as f32 && (c.w() as f32) < 0.6 * w as f32)
-        .partition(|c| c.h() as f32 >= 0.4 * th);
+        .filter(|c| not_page_sized(c) && c.h() as f32 >= 0.7 * th)
+        .collect();
+    // Join boxes of about the same height that touch or overlap on the same row (widely
+    // spaced letters, as in logos). Measuring the overlap against the taller box keeps a
+    // group spanning several lines (blurred letters that touch) from swallowing words.
+    words.sort_unstable_by_key(|c| c.x0);
+    let mut joined: Vec<Comp> = Vec::with_capacity(words.len());
+    for c in words {
+        let near = joined.iter_mut().rev().find(|j| {
+            let overlap_y = j.y1.min(c.y1).saturating_sub(j.y0.max(c.y0)) as f32;
+            c.x0 as f32 <= j.x1 as f32 + 0.1 * th && overlap_y >= 0.6 * c.h().max(j.h()) as f32
+        });
+        match near {
+            Some(j) => {
+                j.x0 = j.x0.min(c.x0);
+                j.y0 = j.y0.min(c.y0);
+                j.x1 = j.x1.max(c.x1);
+                j.y1 = j.y1.max(c.y1);
+                j.pixels += c.pixels;
+            }
+            None => joined.push(c),
+        }
+    }
+    // Scanner edges: nothing touching the outermost 1% of the image is read.
+    let (mx, my) = (w / 100, h / 100);
+    joined.retain(|c| c.x0 > mx && c.y0 > my && c.x1 < w - mx && c.y1 < h - my);
+    // Thin upright slivers with nothing beside them are pieces of borders and rules.
+    let sliver = |c: &Comp| (c.w() as f32) < 0.35 * th && (c.h() as f32) > 1.3 * th;
+    let alone: Vec<bool> = joined
+        .iter()
+        .map(|c| {
+            sliver(c)
+                && !joined.iter().any(|o| {
+                    !std::ptr::eq(o, c)
+                        && o.y1.min(c.y1) > o.y0.max(c.y0)
+                        && (o.x0 as f32 - c.x1 as f32).max(c.x0 as f32 - o.x1 as f32) < 1.5 * th
+                })
+        })
+        .collect();
+    let mut keep = alone.iter().map(|a| !a);
+    joined.retain(|_| keep.next().unwrap());
+    let mut words = joined;
     // Dots and accents: join them to the word just below. Other small marks are specks.
     for s in small {
         let below = words.iter_mut().find(|wd| {

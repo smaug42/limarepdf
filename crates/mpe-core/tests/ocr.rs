@@ -2,7 +2,7 @@
 
 use image::{DynamicImage, GrayImage, Luma};
 use lopdf::{dictionary, Dictionary, Stream};
-use mpe_core::{render, ImageImport, ObjectKind, Ocr, OcrResult, Pdf};
+use mpe_core::{render, ImageImport, ObjectKind, Ocr, OcrResult, PageObject, Pdf, TextEdit};
 use std::io::Cursor;
 
 const LINES: [&str; 6] = [
@@ -93,25 +93,22 @@ fn adds_an_invisible_searchable_layer() {
     assert!(recall(&again.page_text(0)) > 0.9);
 }
 
-/// Box of the topmost text line, in points from the top-left of the displayed page.
-/// The layer is made visible first, since page_objects lists visible text only.
-fn first_line_box(p: &mut Pdf) -> [f32; 4] {
-    let ids: Vec<_> = p.doc.objects.keys().copied().collect();
-    for id in ids {
-        if let Ok(s) = p.doc.get_object_mut(id).and_then(|o| o.as_stream_mut()) {
-            if s.content.windows(4).any(|w| w == b"3 Tr") {
-                let text = String::from_utf8_lossy(&s.content).replace("3 Tr", "0 Tr");
-                s.set_content(text.into_bytes());
-            }
-        }
-    }
-    p.page_objects(0)
+/// The OCR (hidden) text lines of page 1, top to bottom.
+fn hidden_lines(p: &Pdf) -> Vec<PageObject> {
+    let mut v: Vec<PageObject> = p
+        .page_objects(0)
         .unwrap()
         .into_iter()
         .filter(|o| o.kind == ObjectKind::Text)
-        .min_by(|a, b| a.bbox[1].total_cmp(&b.bbox[1]))
-        .expect("no text objects")
-        .bbox
+        .collect();
+    assert!(v.iter().all(|o| o.hidden), "OCR text should be hidden");
+    v.sort_by(|a, b| a.bbox[1].total_cmp(&b.bbox[1]));
+    v
+}
+
+/// Box of the topmost text line, in points from the top-left of the displayed page.
+fn first_line_box(p: &mut Pdf) -> [f32; 4] {
+    hidden_lines(p).first().expect("no text objects").bbox
 }
 
 #[test]
@@ -162,4 +159,72 @@ fn blank_page_has_no_text() {
     let r = p.ocr_pages(&[0], &ocr).unwrap();
     let none = matches!(&r[0].1, OcrResult::Skipped(w) if w.contains("no text"));
     assert!(none, "{r:?}");
+}
+
+#[test]
+fn search_boxes_cover_recognised_words() {
+    let ocr = Ocr::bundled().unwrap();
+    let mut p = scanned(text_image());
+    p.ocr_pages(&[0], &ocr).unwrap();
+    // Line 3, "The committee met on Tuesday morning.", has its baseline at 136 pt from
+    // the bottom of a 216 pt page: 80 pt from the top. "committee" starts after "The ",
+    // about 38 pt from the left.
+    let b = p.find_text_boxes(0, "COMMITTEE").unwrap();
+    assert_eq!(b.len(), 1, "{b:?}");
+    let b = b[0];
+    assert!((b[0] - 38.0).abs() < 6.0, "{b:?}");
+    assert!(b[1] > 64.0 && b[1] < 76.0, "{b:?}");
+    assert!(b[3] > 78.0 && b[3] < 88.0, "{b:?}");
+    assert!(p.find_text_boxes(0, "zebra").unwrap().is_empty());
+}
+
+#[test]
+fn recognised_words_can_be_selected() {
+    let ocr = Ocr::bundled().unwrap();
+    let mut p = scanned(text_image());
+    p.ocr_pages(&[0], &ocr).unwrap();
+    let words = p.page_words(0).unwrap();
+    let want: usize = LINES.iter().map(|l| l.split_whitespace().count()).sum();
+    let found = words.len();
+    assert!(found * 10 >= want * 9, "{found} of {want} words");
+    let text = mpe_core::words_text(&words);
+    assert_eq!(text.lines().count(), 6, "{text}");
+    assert!(recall(&text) > 0.9, "{text}");
+    // The first word starts the first line: x = 16 pt, about 32..46 pt from the top.
+    let first = &words[0];
+    assert!((first.bbox[0] - 16.0).abs() < 4.0, "{first:?}");
+    assert!(first.bbox[1] > 26.0 && first.bbox[3] < 52.0, "{first:?}");
+}
+
+#[test]
+fn correcting_recognised_text_keeps_it_invisible_and_in_place() {
+    let ocr = Ocr::bundled().unwrap();
+    let mut p = scanned(text_image());
+    p.ocr_pages(&[0], &ocr).unwrap();
+    let before = gray(&mut p, 1.0);
+    let line = hidden_lines(&p)
+        .into_iter()
+        .find(|o| o.text.as_deref().unwrap_or("").contains("Tuesday"))
+        .expect("no line with Tuesday");
+    // Non-ASCII text would take the "append new visible text" path for normal text.
+    let edit = TextEdit {
+        text: "The committee met on Wednesday morning, café.".into(),
+        font: None,
+        size: None,
+        color: None,
+    };
+    p.edit_text(0, line.id, &edit).unwrap();
+    let after = gray(&mut p, 1.0);
+    assert_eq!(before.as_raw(), after.as_raw(), "text became visible");
+    assert!(p.page_text(0).contains("Wednesday"));
+    let lines = hidden_lines(&p);
+    assert_eq!(lines.len(), 6);
+    let w = p.find_text_boxes(0, "wednesday").unwrap();
+    assert_eq!(w.len(), 1);
+    // Still on the same line, and within the line's original extent.
+    let (old, new) = (line.bbox, w[0]);
+    let ends_inside = new[0] >= old[0] - 1.0 && new[2] <= old[2] + 1.0;
+    assert!(ends_inside, "{old:?} {new:?}");
+    let same_row = (new[1] + new[3] - old[1] - old[3]).abs() < 6.0;
+    assert!(same_row, "{old:?} {new:?}");
 }

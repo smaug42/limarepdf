@@ -37,6 +37,9 @@ pub struct PageObject {
     pub inline: bool,
     /// For text: the font can be reused for plain ASCII edits (otherwise edits are re-set in a standard font).
     pub font_reusable: bool,
+    /// Invisible text (render mode 3 or 7), such as an OCR layer. It is not drawn, but it
+    /// is searched and can be selected and copied in viewers.
+    pub hidden: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -67,6 +70,18 @@ pub(crate) struct TextData {
     pub dir: (f32, f32),
     pub fill: Option<[f32; 3]>,
     pub reuse: bool,
+    /// Every show of the line is invisible (see [`PageObject::hidden`]).
+    pub hidden: bool,
+    /// Where each show's characters are, for locating matches within the line.
+    pub pieces: Vec<Piece>,
+}
+
+/// The characters `chars.0..chars.1` of a line's text, shown by one operator, and the
+/// corners of their box in page user space: start-bottom, end-bottom, end-top, start-top.
+#[derive(Clone, Debug)]
+pub(crate) struct Piece {
+    pub chars: (usize, usize),
+    pub corners: [(f32, f32); 4],
 }
 
 #[derive(Clone, Debug)]
@@ -103,8 +118,7 @@ pub(crate) struct Parsed {
 }
 
 impl Parsed {
-    /// Whether the page content shows any text, visible or not. `objs` leaves out
-    /// invisible text, such as an OCR layer.
+    /// Whether the page content shows any text, visible or not.
     pub fn shows_text(&self) -> bool {
         self.ops
             .iter()
@@ -601,8 +615,10 @@ impl Pdf {
                     has_stroke: false,
                     inline: o.inline,
                     font_reusable: false,
+                    hidden: false,
                 };
                 if let Some(t) = &o.text {
+                    po.hidden = t.hidden;
                     po.text = Some(t.text.clone());
                     po.font_name = Some(t.base.clone());
                     po.font_size = Some(t.size);
@@ -622,6 +638,129 @@ impl Pdf {
     }
 }
 
+impl Pdf {
+    /// Boxes of the places on a page (0-based) where `query` occurs, ignoring case, in
+    /// displayed-page points (y down), like [`PageObject::bbox`]. Visible and invisible
+    /// (OCR) text both count. Matches are found within one text line; a phrase broken
+    /// across lines is not found.
+    pub fn find_text_boxes(&self, page_index: usize, query: &str) -> Result<Vec<[f32; 4]>> {
+        let fold = |s: &str| -> Vec<char> {
+            s.chars()
+                .map(|c| c.to_lowercase().next().unwrap_or(c))
+                .collect()
+        };
+        let q = fold(query.trim());
+        if q.is_empty() {
+            return Ok(Vec::new());
+        }
+        let page = self.page_id_at(page_index)?;
+        let parsed = self.parse_page(page_index)?;
+        let (vd, _, _) = self.vis_down(page);
+        let to_vis = mx::inv(vd).ok_or_else(|| anyhow!("degenerate page transform"))?;
+        let mut out = Vec::new();
+        for t in parsed.objs.iter().filter_map(|o| o.text.as_ref()) {
+            let text = fold(&t.text);
+            let mut from = 0;
+            while from + q.len() <= text.len() {
+                let Some(pos) = text[from..].windows(q.len()).position(|w| w == q) else {
+                    break;
+                };
+                let (a, b) = (from + pos, from + pos + q.len());
+                for bb in span_boxes(&t.pieces, a, b) {
+                    out.push(mx::transform_rect(to_vis, bb));
+                }
+                from = b;
+            }
+        }
+        Ok(out)
+    }
+
+    /// The words of a page (0-based), visible and invisible (OCR), in content order, which
+    /// is usually reading order. Boxes are in displayed-page points (y down).
+    pub fn page_words(&self, page_index: usize) -> Result<Vec<PageWord>> {
+        let page = self.page_id_at(page_index)?;
+        let parsed = self.parse_page(page_index)?;
+        let (vd, _, _) = self.vis_down(page);
+        let to_vis = mx::inv(vd).ok_or_else(|| anyhow!("degenerate page transform"))?;
+        let mut out = Vec::new();
+        let texts = parsed.objs.iter().filter_map(|o| o.text.as_ref());
+        for (line, t) in texts.enumerate() {
+            let chars: Vec<char> = t.text.chars().collect();
+            let mut i = 0;
+            while i < chars.len() {
+                if chars[i].is_whitespace() {
+                    i += 1;
+                    continue;
+                }
+                let start = i;
+                while i < chars.len() && !chars[i].is_whitespace() {
+                    i += 1;
+                }
+                let boxes = span_boxes(&t.pieces, start, i);
+                if boxes.is_empty() {
+                    continue;
+                }
+                let bb = mx::aabb(boxes.iter().flat_map(|b| [(b[0], b[1]), (b[2], b[3])]));
+                out.push(PageWord {
+                    text: chars[start..i].iter().collect(),
+                    bbox: mx::transform_rect(to_vis, bb),
+                    line,
+                });
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// A word on a page: its text, its box in displayed-page points (y down), and the index
+/// of the text line it belongs to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PageWord {
+    pub text: String,
+    pub bbox: [f32; 4],
+    pub line: usize,
+}
+
+/// Text of a run of words, as for copying: spaces within a line, a line break between
+/// lines.
+pub fn words_text(words: &[PageWord]) -> String {
+    let mut out = String::new();
+    for (i, w) in words.iter().enumerate() {
+        if i > 0 {
+            let same_line = words[i - 1].line == w.line;
+            out.push(if same_line { ' ' } else { '\n' });
+        }
+        out.push_str(&w.text);
+    }
+    out
+}
+
+/// User-space boxes covering characters `a..b` of a line, one per piece they touch.
+/// Within a piece, positions are interpolated by character index.
+fn span_boxes(pieces: &[Piece], a: usize, b: usize) -> Vec<[f32; 4]> {
+    let lerp =
+        |p: (f32, f32), q: (f32, f32), f: f32| (p.0 + (q.0 - p.0) * f, p.1 + (q.1 - p.1) * f);
+    let mut out = Vec::new();
+    for p in pieces {
+        let (s, e) = p.chars;
+        let (lo, hi) = (a.max(s), b.min(e));
+        if lo >= hi {
+            continue;
+        }
+        let n = (e - s) as f32;
+        let (f0, f1) = ((lo - s) as f32 / n, (hi - s) as f32 / n);
+        let c = p.corners;
+        let pts = [
+            lerp(c[0], c[1], f0),
+            lerp(c[0], c[1], f1),
+            lerp(c[3], c[2], f1),
+            lerp(c[3], c[2], f0),
+        ];
+        out.push(mx::aabb(pts));
+    }
+    out
+}
+
 /// Turn the show operations of one BT..ET block into line objects.
 fn group_runs(runs: Vec<RunInfo>, out: &mut Vec<Obj>) {
     let mut cur: Vec<RunInfo> = Vec::new();
@@ -635,9 +774,21 @@ fn group_runs(runs: Vec<RunInfo>, out: &mut Vec<Obj>) {
             .map(|r| r.text.as_str())
             .collect::<Vec<_>>()
             .join("");
-        if text.trim().is_empty() || !group.iter().any(|r| r.visible) {
+        if text.trim().is_empty() {
             return;
         }
+        let mut at = 0;
+        let pieces = group
+            .iter()
+            .map(|r| {
+                let n = r.text.chars().count();
+                at += n;
+                Piece {
+                    chars: (at - n, at),
+                    corners: r.corners,
+                }
+            })
+            .collect();
         let first = &group[0];
         let bb = mx::aabb(group.iter().flat_map(|r| r.corners));
         out.push(Obj {
@@ -657,6 +808,8 @@ fn group_runs(runs: Vec<RunInfo>, out: &mut Vec<Obj>) {
                 dir: first.dir,
                 fill: first.fill,
                 reuse: first.reuse,
+                hidden: !group.iter().any(|r| r.visible),
+                pieces,
             }),
             path: None,
             inline: false,

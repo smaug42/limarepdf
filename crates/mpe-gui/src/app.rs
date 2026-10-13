@@ -63,6 +63,12 @@ fn ocr_summary(report: &[(usize, OcrResult)]) -> (bool, String) {
         }
     }
     let mut text = format!("Text added to {pages} page(s): {words} words.");
+    if pages > 0 {
+        text.push_str(
+            "\n\nThe text is invisible. To see it, search for a word, or turn on \
+             View > Show recognised text; misread words can be corrected with the arrow tool.",
+        );
+    }
     push_skipped(&mut text, &skipped);
     (pages > 0, text)
 }
@@ -139,6 +145,7 @@ enum Act {
     Undo,
     Redo,
     Find,
+    Copy,
     ZoomIn,
     ZoomOut,
     FitWidth,
@@ -444,6 +451,12 @@ impl App {
             _ if !has => {}
             Act::Undo => self.tabs[self.active].undo(ctx),
             Act::Redo => self.tabs[self.active].redo(ctx),
+            Act::Copy => {
+                if let Some(text) = self.tabs[self.active].ed.selected_text() {
+                    ctx.copy_text(text);
+                    self.status = "Copied the selected text.".into();
+                }
+            }
             Act::Find => {
                 self.show_side = true;
                 self.tabs[self.active].side = Side::Search;
@@ -914,6 +927,10 @@ impl eframe::App for App {
             .get(self.active)
             .map(|t| (t.can_undo(), t.can_redo()))
             .unwrap_or((false, false));
+        let can_copy = self
+            .tabs
+            .get(self.active)
+            .is_some_and(|t| t.ed.selected_text().is_some());
 
         egui::Panel::top("menu").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
@@ -938,6 +955,7 @@ impl eframe::App for App {
                     item(ui, "Undo", "Ctrl+Z", can_undo, Act::Undo);
                     item(ui, "Redo", "Ctrl+Y", can_redo, Act::Redo);
                     ui.separator();
+                    item(ui, "Copy text", "Ctrl+C", can_copy, Act::Copy);
                     item(ui, "Find…", "Ctrl+F", has, Act::Find);
                 });
                 ui.menu_button("View", |ui| {
@@ -947,6 +965,13 @@ impl eframe::App for App {
                     item(ui, "Actual size", "Ctrl+1", has, Act::Actual);
                     ui.separator();
                     ui.checkbox(&mut self.show_side, "Side panel");
+                    if let Some(t) = self.tabs.get_mut(self.active) {
+                        ui.checkbox(&mut t.ed.show_hidden, "Show recognised text")
+                            .on_hover_text(
+                                "Outline the invisible text added by OCR. Hover to read it; \
+                                 select it with the arrow tool to correct it.",
+                            );
+                    }
                     ui.menu_button("Theme", |ui| {
                         item(
                             ui,
@@ -1058,6 +1083,7 @@ impl eframe::App for App {
                             icon::CURSOR,
                             "Select, move and resize objects",
                         ),
+                        (Tool::SelectText, icon::CURSOR_TEXT, "Select and copy text"),
                         (Tool::Text, icon::TEXT_T, "Add text"),
                         (Tool::Rect, icon::SQUARE, "Add rectangle"),
                         (Tool::Ellipse, icon::CIRCLE, "Add ellipse"),

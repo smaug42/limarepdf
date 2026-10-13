@@ -302,9 +302,49 @@ impl Pdf {
             .text
             .clone()
             .ok_or_else(|| anyhow!("object {id} is not text"))?;
+        let mut out = Vec::with_capacity(parsed.ops.len() + 8);
+        if t.hidden {
+            // Invisible text (an OCR layer): replace the line with one invisible show of
+            // the new text, stretched over the line's original extent, so that it stays
+            // invisible and lines up with the image. Style changes do not apply. Empty text
+            // removes the line.
+            for (i, o) in parsed.ops.iter().enumerate() {
+                match t.runs.iter().find(|r| r.op == i) {
+                    Some(run) => out.extend(move_only(run.show)),
+                    None => out.push(o.clone()),
+                }
+            }
+            for _ in 0..parsed.depth_left {
+                out.push(op("Q", vec![]));
+            }
+            if !e.text.trim().is_empty() {
+                let (first, last) = (&t.pieces[0], &t.pieces[t.pieces.len() - 1]);
+                let (s, f) = (first.corners[0], last.corners[1]);
+                let (dx, dy) = t.dir;
+                let width = ((f.0 - s.0) * dx + (f.1 - s.1) * dy).max(0.1);
+                let size = t.size.max(1.0);
+                let tz = (100.0 * width / crate::text_width(&e.text, size).max(0.1))
+                    .clamp(1.0, 10_000.0);
+                let fname = self.standard_font(page, FontChoice::from_name("Helvetica"))?;
+                out.extend([
+                    op("q", vec![]),
+                    op("BT", vec![]),
+                    op("Tr", vec![Object::Integer(3)]),
+                    op("Tf", vec![name(&fname), r(size)]),
+                    op("Tz", vec![r(tz)]),
+                    op(
+                        "Tm",
+                        [dx, dy, -dy, dx, s.0, s.1].iter().map(|&x| r(x)).collect(),
+                    ),
+                    op("Tj", vec![lit(winansi_bytes(&e.text))]),
+                    op("ET", vec![]),
+                    op("Q", vec![]),
+                ]);
+            }
+            return self.commit(page, out, 0, &parsed.inline);
+        }
         let ascii = e.text.chars().all(|c| (' '..='~').contains(&c));
         let keep_style = e.font.is_none() && e.size.is_none() && e.color.is_none();
-        let mut out = Vec::with_capacity(parsed.ops.len() + 8);
         if keep_style && t.reuse && ascii {
             let first_run = t.runs[0].op;
             for (i, o) in parsed.ops.iter().enumerate() {

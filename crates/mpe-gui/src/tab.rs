@@ -42,6 +42,10 @@ pub struct Tab {
     pub query: String,
     pub hits: Vec<SearchHit>,
     pub hit_idx: usize,
+    /// Boxes of the search matches on each page with hits (displayed-page points).
+    matches: HashMap<usize, Vec<[f32; 4]>>,
+    /// Scroll to this height on the `goto` page (points from its top), with `goto`.
+    goto_y: Option<f32>,
     pub error: Option<String>,
     pub ed: Editor,
     /// Pages whose texture is out of date but still shown until the new render arrives.
@@ -80,6 +84,8 @@ impl Tab {
             query: String::new(),
             hits: Vec::new(),
             hit_idx: 0,
+            matches: HashMap::new(),
+            goto_y: None,
             error: None,
             ed: Editor::default(),
             stale: HashSet::new(),
@@ -188,6 +194,7 @@ impl Tab {
                     self.thumbs.remove(&p);
                 }
                 self.hits.clear();
+                self.matches.clear();
                 self.ed.invalidate();
             }
             Err(e) => self.error = Some(e.to_string()),
@@ -313,6 +320,7 @@ impl Tab {
                 self.ed.sel = None;
                 self.ed.new_text = None;
                 self.hits.clear();
+                self.matches.clear();
                 let n = self.page_count();
                 self.selected.retain(|&p| p < n);
                 self.current = self.current.min(n.saturating_sub(1));
@@ -324,13 +332,19 @@ impl Tab {
 
     pub fn run_search(&mut self) {
         self.hit_idx = 0;
+        self.matches.clear();
         match self.pdf.search(&self.query) {
             Ok(h) => self.hits = h,
             Err(e) => self.error = Some(e.to_string()),
         }
-        if let Some(h) = self.hits.first() {
-            let p = h.page;
-            self.go_to(p);
+        let pages: BTreeSet<usize> = self.hits.iter().map(|h| h.page).collect();
+        for p in pages {
+            if let Ok(b) = self.pdf.find_text_boxes(p, &self.query) {
+                self.matches.insert(p, b);
+            }
+        }
+        if !self.hits.is_empty() {
+            self.show_hit();
         }
     }
 
@@ -340,8 +354,28 @@ impl Tab {
         }
         let n = self.hits.len() as isize;
         self.hit_idx = ((self.hit_idx as isize + delta).rem_euclid(n)) as usize;
-        let p = self.hits[self.hit_idx].page;
-        self.go_to(p);
+        self.show_hit();
+    }
+
+    /// The current hit's page, and which of that page's match boxes it is (search finds
+    /// hits in the extracted text and boxes in the page objects, so the counts can differ).
+    fn current_match(&self) -> Option<(usize, usize)> {
+        let h = self.hits.get(self.hit_idx)?;
+        let nth = self.hits[..self.hit_idx]
+            .iter()
+            .filter(|o| o.page == h.page)
+            .count();
+        let n = self.matches.get(&h.page).map_or(0, |v| v.len());
+        Some((h.page, nth.min(n.saturating_sub(1))))
+    }
+
+    /// Scroll to the current hit's match box, or to its page when it has none.
+    fn show_hit(&mut self) {
+        let Some((page, k)) = self.current_match() else {
+            return;
+        };
+        self.go_to(page);
+        self.goto_y = self.matches.get(&page).and_then(|v| v.get(k)).map(|b| b[1]);
     }
 
     // ------------------------------------------------------------ drawing
@@ -383,7 +417,7 @@ impl Tab {
         let ppp = ctx.pixels_per_point();
 
         if !ctx.egui_wants_keyboard_input() {
-            self.ed.keys(&ctx);
+            self.ed.keys(&ctx, &self.pdf, self.current);
         }
         let zd = ui.input(|i| i.zoom_delta());
         if zd != 1.0 {
@@ -405,9 +439,15 @@ impl Tab {
             .id_salt(("pages", self.id))
             .auto_shrink([false, false]);
         if let Some(p) = self.goto.take() {
-            area =
-                area.vertical_scroll_offset((tops.get(p).copied().unwrap_or(0.0) - GAP).max(0.0));
+            // Within the page, keep a little context above the target.
+            let within = self
+                .goto_y
+                .take()
+                .map_or(0.0, |y| (y * BASE * self.zoom - 80.0).max(0.0));
+            let top = tops.get(p).copied().unwrap_or(0.0) - GAP + within;
+            area = area.vertical_scroll_offset(top.max(0.0));
         }
+        let current = self.current_match();
         let mut wanted: Vec<(Key, f32)> = Vec::new();
         let mut visible = (usize::MAX, 0usize);
         let mut probe = self.current;
@@ -454,6 +494,10 @@ impl Tab {
                         );
                     }
                 }
+                let matches = self.matches.get(&i).map_or(&[][..], |v| v.as_slice());
+                let cur = current.filter(|c| c.0 == i).map(|c| c.1);
+                self.ed
+                    .overlay(ui, &self.pdf, i, r, self.zoom * BASE, matches, cur);
                 self.ed
                     .page_ui(ui, &self.pdf, self.id, i, r, self.zoom * BASE);
                 if self.pages.get(&i).map(|(k, _)| *k) != Some(key.1) || self.stale.contains(&i) {
