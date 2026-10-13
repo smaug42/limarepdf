@@ -417,7 +417,7 @@ impl Tab {
         let ppp = ctx.pixels_per_point();
 
         if !ctx.egui_wants_keyboard_input() {
-            self.ed.keys(&ctx);
+            self.ed.keys(&ctx, &self.pdf, self.current);
         }
         let zd = ui.input(|i| i.zoom_delta());
         if zd != 1.0 {

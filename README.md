@@ -72,6 +72,11 @@ shapes fill, outline and width; for images "Replace image". The other tools add 
 ellipses, lines (drag, or click for a default size) and images (choose a PNG, JPEG or TIFF, then drag a box). Everything is
 undoable with Ctrl+Z.
 
+Copying text: the text-cursor tool selects words by dragging (in reading order), double-click selects a word, Ctrl+A the
+whole page in view, Esc clears; Ctrl+C or Edit > Copy text copies, with spaces within a line and line breaks between lines.
+It works on recognised (OCR) text as well as normal text. Selection stays on one page. Word boxes are placed by
+character position, so a highlight can be a letter off in proportional fonts.
+
 GUI keys: Ctrl+O/S/W, Ctrl+Shift+S, Ctrl+Z / Ctrl+Y, Ctrl+F, Ctrl+= / Ctrl+- / Ctrl+0 (fit width) / Ctrl+1,
 Ctrl+scroll or pinch to zoom, PageUp/PageDown/Home/End. Click thumbnails (Ctrl/Shift for multi-select) to choose
 the pages that Document-menu operations apply to.

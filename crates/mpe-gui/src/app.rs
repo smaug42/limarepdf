@@ -145,6 +145,7 @@ enum Act {
     Undo,
     Redo,
     Find,
+    Copy,
     ZoomIn,
     ZoomOut,
     FitWidth,
@@ -450,6 +451,12 @@ impl App {
             _ if !has => {}
             Act::Undo => self.tabs[self.active].undo(ctx),
             Act::Redo => self.tabs[self.active].redo(ctx),
+            Act::Copy => {
+                if let Some(text) = self.tabs[self.active].ed.selected_text() {
+                    ctx.copy_text(text);
+                    self.status = "Copied the selected text.".into();
+                }
+            }
             Act::Find => {
                 self.show_side = true;
                 self.tabs[self.active].side = Side::Search;
@@ -920,6 +927,10 @@ impl eframe::App for App {
             .get(self.active)
             .map(|t| (t.can_undo(), t.can_redo()))
             .unwrap_or((false, false));
+        let can_copy = self
+            .tabs
+            .get(self.active)
+            .is_some_and(|t| t.ed.selected_text().is_some());
 
         egui::Panel::top("menu").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
@@ -944,6 +955,7 @@ impl eframe::App for App {
                     item(ui, "Undo", "Ctrl+Z", can_undo, Act::Undo);
                     item(ui, "Redo", "Ctrl+Y", can_redo, Act::Redo);
                     ui.separator();
+                    item(ui, "Copy text", "Ctrl+C", can_copy, Act::Copy);
                     item(ui, "Find…", "Ctrl+F", has, Act::Find);
                 });
                 ui.menu_button("View", |ui| {
@@ -1071,6 +1083,7 @@ impl eframe::App for App {
                             icon::CURSOR,
                             "Select, move and resize objects",
                         ),
+                        (Tool::SelectText, icon::CURSOR_TEXT, "Select and copy text"),
                         (Tool::Text, icon::TEXT_T, "Add text"),
                         (Tool::Rect, icon::SQUARE, "Add rectangle"),
                         (Tool::Ellipse, icon::CIRCLE, "Add ellipse"),

@@ -179,6 +179,24 @@ fn search_boxes_cover_recognised_words() {
 }
 
 #[test]
+fn recognised_words_can_be_selected() {
+    let ocr = Ocr::bundled().unwrap();
+    let mut p = scanned(text_image());
+    p.ocr_pages(&[0], &ocr).unwrap();
+    let words = p.page_words(0).unwrap();
+    let want: usize = LINES.iter().map(|l| l.split_whitespace().count()).sum();
+    let found = words.len();
+    assert!(found * 10 >= want * 9, "{found} of {want} words");
+    let text = mpe_core::words_text(&words);
+    assert_eq!(text.lines().count(), 6, "{text}");
+    assert!(recall(&text) > 0.9, "{text}");
+    // The first word starts the first line: x = 16 pt, about 32..46 pt from the top.
+    let first = &words[0];
+    assert!((first.bbox[0] - 16.0).abs() < 4.0, "{first:?}");
+    assert!(first.bbox[1] > 26.0 && first.bbox[3] < 52.0, "{first:?}");
+}
+
+#[test]
 fn correcting_recognised_text_keeps_it_invisible_and_in_place() {
     let ocr = Ocr::bundled().unwrap();
     let mut p = scanned(text_image());

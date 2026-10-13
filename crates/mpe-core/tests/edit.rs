@@ -74,6 +74,23 @@ fn finds_text_boxes_in_visible_text() {
 }
 
 #[test]
+fn lists_words_for_selection() {
+    let p = make("BT /F1 24 Tf 60 150 Td (Hello world) Tj 0 -40 Td (again) Tj ET");
+    let w = p.page_words(0).unwrap();
+    let texts: Vec<&str> = w.iter().map(|w| w.text.as_str()).collect();
+    assert_eq!(texts, ["Hello", "world", "again"]);
+    assert_eq!(mpe_core::words_text(&w), "Hello world\nagain");
+    assert_eq!(mpe_core::words_text(&w[1..2]), "world");
+    // Same line: side by side. Next line: below.
+    assert!(w[1].bbox[0] > w[0].bbox[2] - 1.0, "{:?}", w);
+    assert!((w[1].bbox[1] - w[0].bbox[1]).abs() < 0.5);
+    assert!(w[2].bbox[1] > w[0].bbox[3], "{:?}", w);
+    assert!((w[0].bbox[0] - 60.0).abs() < 0.5);
+    let shapes_only = make("q 1 0 0 rg 0 0 10 10 re f Q");
+    assert!(shapes_only.page_words(0).unwrap().is_empty());
+}
+
+#[test]
 fn lists_objects_in_visual_coordinates() {
     let p = make(BASE);
     let o = p.page_objects(0).unwrap();

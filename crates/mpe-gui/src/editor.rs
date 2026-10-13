@@ -3,7 +3,9 @@
 
 use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use egui_phosphor::regular as icon;
-use mpe_core::{Family, FontChoice, ObjectKind, PageObject, PathStyle, Shape, TextEdit};
+use mpe_core::{
+    words_text, Family, FontChoice, ObjectKind, PageObject, PageWord, PathStyle, Shape, TextEdit,
+};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -11,6 +13,8 @@ pub enum Tool {
     /// Reading only: page clicks do nothing.
     View,
     Select,
+    /// Select words (visible or recognised) and copy them.
+    SelectText,
     Text,
     Image,
     Rect,
@@ -92,6 +96,10 @@ pub struct Editor {
     pub actions: Vec<Action>,
     /// Outline invisible (OCR) text and let it be selected and corrected.
     pub show_hidden: bool,
+    words: HashMap<usize, Vec<PageWord>>,
+    /// Selected words: page, and first and last word index in either order.
+    text_sel: Option<(usize, usize, usize)>,
+    text_drag: bool,
 }
 
 impl Default for Editor {
@@ -118,6 +126,9 @@ impl Default for Editor {
             insp: None,
             actions: Vec::new(),
             show_hidden: false,
+            words: HashMap::new(),
+            text_sel: None,
+            text_drag: false,
         }
     }
 }
@@ -203,12 +214,22 @@ impl Editor {
         self.drag = None;
         self.draw = None;
         self.insp = None;
+        self.words.clear();
+        self.text_sel = None;
+        self.text_drag = false;
     }
 
     pub fn set_tool(&mut self, t: Tool) {
         self.tool = t;
         self.drag = None;
         self.draw = None;
+        if t == Tool::SelectText {
+            self.sel = None;
+            self.insp = None;
+        } else {
+            self.text_sel = None;
+            self.text_drag = false;
+        }
         if t != Tool::Text {
             self.new_text = None;
         }
@@ -236,6 +257,31 @@ impl Editor {
             }
         }
         &self.objs[&page]
+    }
+
+    fn words(&mut self, pdf: &mpe_core::Pdf, page: usize) -> &[PageWord] {
+        self.words
+            .entry(page)
+            .or_insert_with(|| pdf.page_words(page).unwrap_or_default())
+    }
+
+    /// The selected words as text, if any are selected.
+    pub fn selected_text(&self) -> Option<String> {
+        let (p, a, b) = self.text_sel?;
+        let words = self.words.get(&p)?;
+        let range = words.get(a.min(b)..=a.max(b).min(words.len().checked_sub(1)?))?;
+        Some(words_text(range))
+    }
+
+    /// Index of the word nearest to `p` (page points), if the page has words.
+    fn nearest_word(words: &[PageWord], p: Pos2) -> Option<usize> {
+        let dist = |b: [f32; 4]| {
+            let dx = (b[0] - p.x).max(p.x - b[2]).max(0.0);
+            let dy = (b[1] - p.y).max(p.y - b[3]).max(0.0);
+            // Rows matter more than columns when choosing among lines.
+            dx + 3.0 * dy
+        };
+        (0..words.len()).min_by(|&i, &j| dist(words[i].bbox).total_cmp(&dist(words[j].bbox)))
     }
 
     pub fn selected_object(&self) -> Option<&PageObject> {
@@ -481,6 +527,50 @@ impl Editor {
                     }
                 }
             }
+            Tool::SelectText => {
+                let words = self.words(pdf, page).to_vec();
+                let inside =
+                    |p: Pos2, b: [f32; 4]| p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3];
+                if hover_pt.is_some_and(|p| words.iter().any(|w| inside(p, w.bbox))) {
+                    ui.ctx().set_cursor_icon(CursorIcon::Text);
+                }
+                // Drag selects the words between the press and the pointer, in reading
+                // order; a click clears; a double-click selects one word.
+                if resp.drag_started() {
+                    let p = ui.input(|i| i.pointer.press_origin()).map(to_pt);
+                    if let Some(i) = p.and_then(|p| Self::nearest_word(&words, p)) {
+                        self.text_sel = Some((page, i, i));
+                        self.text_drag = true;
+                    }
+                }
+                if resp.dragged() && self.text_drag {
+                    let p = resp.interact_pointer_pos().map(to_pt);
+                    if let (Some(sel), Some(i)) = (
+                        self.text_sel.as_mut().filter(|s| s.0 == page),
+                        p.and_then(|p| Self::nearest_word(&words, p)),
+                    ) {
+                        sel.2 = i;
+                    }
+                }
+                if resp.drag_stopped() {
+                    self.text_drag = false;
+                }
+                if resp.clicked() {
+                    self.text_sel = None;
+                }
+                if resp.double_clicked() {
+                    let p = resp.interact_pointer_pos().map(to_pt);
+                    if let Some(i) = p.and_then(|p| Self::nearest_word(&words, p)) {
+                        self.text_sel = Some((page, i, i));
+                    }
+                }
+                if let Some((_, a, b)) = self.text_sel.filter(|s| s.0 == page) {
+                    let fill = accent.gamma_multiply(0.45);
+                    for w in words.iter().take(a.max(b) + 1).skip(a.min(b)) {
+                        painter.rect_filled(screen_rect(w.bbox), 1.0, fill);
+                    }
+                }
+            }
             Tool::Text => {
                 ui.ctx().set_cursor_icon(CursorIcon::Text);
                 if resp.clicked() {
@@ -616,7 +706,30 @@ impl Editor {
     }
 
     /// Keyboard shortcuts for the selection (only called when no text field has focus).
-    pub fn keys(&mut self, ctx: &egui::Context) {
+    /// `current` is the page in view.
+    pub fn keys(&mut self, ctx: &egui::Context, pdf: &mpe_core::Pdf, current: usize) {
+        if self.tool == Tool::SelectText {
+            let (copy, all, esc) = ctx.input(|i| {
+                (
+                    i.events.iter().any(|e| matches!(e, egui::Event::Copy)),
+                    i.modifiers.command && i.key_pressed(egui::Key::A),
+                    i.key_pressed(egui::Key::Escape),
+                )
+            });
+            if copy {
+                if let Some(t) = self.selected_text() {
+                    ctx.copy_text(t);
+                }
+            }
+            if all {
+                let n = self.words(pdf, current).len();
+                self.text_sel = n.checked_sub(1).map(|last| (current, 0, last));
+            }
+            if esc {
+                self.text_sel = None;
+            }
+            return;
+        }
         if self.tool == Tool::View {
             return;
         }
@@ -814,6 +927,32 @@ impl Editor {
                 ui.separator();
             }
             Tool::Select => {}
+            Tool::SelectText => {
+                ui.strong("Select text");
+                ui.label(
+                    "Drag over words to select them, double-click a word, or press Ctrl+A for \
+                     the whole page. Ctrl+C copies. Recognised (OCR) text can be selected too.",
+                );
+                ui.separator();
+                match self.selected_text() {
+                    Some(text) => {
+                        let mut shown = text.clone();
+                        ui.add(
+                            egui::TextEdit::multiline(&mut shown)
+                                .desired_rows(6)
+                                .desired_width(f32::INFINITY)
+                                .interactive(false),
+                        );
+                        if ui.button("Copy").clicked() {
+                            ui.ctx().copy_text(text);
+                        }
+                    }
+                    None => {
+                        ui.weak("Nothing selected.");
+                    }
+                }
+                return;
+            }
         }
 
         let Some(insp) = self.insp.as_mut() else {

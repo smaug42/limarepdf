@@ -666,26 +666,7 @@ impl Pdf {
                     break;
                 };
                 let (a, b) = (from + pos, from + pos + q.len());
-                for p in &t.pieces {
-                    let (s, e) = p.chars;
-                    let (lo, hi) = (a.max(s), b.min(e));
-                    if lo >= hi {
-                        continue;
-                    }
-                    // Interpolate along the piece by character position.
-                    let n = (e - s) as f32;
-                    let (f0, f1) = ((lo - s) as f32 / n, (hi - s) as f32 / n);
-                    let c = p.corners;
-                    let lerp = |p: (f32, f32), q: (f32, f32), f: f32| {
-                        (p.0 + (q.0 - p.0) * f, p.1 + (q.1 - p.1) * f)
-                    };
-                    let pts = [
-                        lerp(c[0], c[1], f0),
-                        lerp(c[0], c[1], f1),
-                        lerp(c[3], c[2], f1),
-                        lerp(c[3], c[2], f0),
-                    ];
-                    let bb = mx::aabb(pts.iter().copied());
+                for bb in span_boxes(&t.pieces, a, b) {
                     out.push(mx::transform_rect(to_vis, bb));
                 }
                 from = b;
@@ -693,6 +674,91 @@ impl Pdf {
         }
         Ok(out)
     }
+
+    /// The words of a page (0-based), visible and invisible (OCR), in content order, which
+    /// is usually reading order. Boxes are in displayed-page points (y down).
+    pub fn page_words(&self, page_index: usize) -> Result<Vec<PageWord>> {
+        let page = self.page_id_at(page_index)?;
+        let parsed = self.parse_page(page_index)?;
+        let (vd, _, _) = self.vis_down(page);
+        let to_vis = mx::inv(vd).ok_or_else(|| anyhow!("degenerate page transform"))?;
+        let mut out = Vec::new();
+        let texts = parsed.objs.iter().filter_map(|o| o.text.as_ref());
+        for (line, t) in texts.enumerate() {
+            let chars: Vec<char> = t.text.chars().collect();
+            let mut i = 0;
+            while i < chars.len() {
+                if chars[i].is_whitespace() {
+                    i += 1;
+                    continue;
+                }
+                let start = i;
+                while i < chars.len() && !chars[i].is_whitespace() {
+                    i += 1;
+                }
+                let boxes = span_boxes(&t.pieces, start, i);
+                if boxes.is_empty() {
+                    continue;
+                }
+                let bb = mx::aabb(boxes.iter().flat_map(|b| [(b[0], b[1]), (b[2], b[3])]));
+                out.push(PageWord {
+                    text: chars[start..i].iter().collect(),
+                    bbox: mx::transform_rect(to_vis, bb),
+                    line,
+                });
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// A word on a page: its text, its box in displayed-page points (y down), and the index
+/// of the text line it belongs to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PageWord {
+    pub text: String,
+    pub bbox: [f32; 4],
+    pub line: usize,
+}
+
+/// Text of a run of words, as for copying: spaces within a line, a line break between
+/// lines.
+pub fn words_text(words: &[PageWord]) -> String {
+    let mut out = String::new();
+    for (i, w) in words.iter().enumerate() {
+        if i > 0 {
+            let same_line = words[i - 1].line == w.line;
+            out.push(if same_line { ' ' } else { '\n' });
+        }
+        out.push_str(&w.text);
+    }
+    out
+}
+
+/// User-space boxes covering characters `a..b` of a line, one per piece they touch.
+/// Within a piece, positions are interpolated by character index.
+fn span_boxes(pieces: &[Piece], a: usize, b: usize) -> Vec<[f32; 4]> {
+    let lerp =
+        |p: (f32, f32), q: (f32, f32), f: f32| (p.0 + (q.0 - p.0) * f, p.1 + (q.1 - p.1) * f);
+    let mut out = Vec::new();
+    for p in pieces {
+        let (s, e) = p.chars;
+        let (lo, hi) = (a.max(s), b.min(e));
+        if lo >= hi {
+            continue;
+        }
+        let n = (e - s) as f32;
+        let (f0, f1) = ((lo - s) as f32 / n, (hi - s) as f32 / n);
+        let c = p.corners;
+        let pts = [
+            lerp(c[0], c[1], f0),
+            lerp(c[0], c[1], f1),
+            lerp(c[3], c[2], f1),
+            lerp(c[3], c[2], f0),
+        ];
+        out.push(mx::aabb(pts));
+    }
+    out
 }
 
 /// Turn the show operations of one BT..ET block into line objects.
