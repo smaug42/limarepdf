@@ -23,6 +23,8 @@ pub enum Act {
     Redo,
     Copy,
     SelectAllText,
+    /// Delete the selected object, or the selected pages.
+    DeleteSelection,
     /// Copy the text of the selected text object.
     CopyObjectText,
     /// Put the keyboard in the inspector's text box for the selected text object.
@@ -113,6 +115,8 @@ pub struct Ctx {
     pub object: bool,
     /// What the selected object is.
     pub obj_kind: Option<ObjKind>,
+    /// Pages are selected in the thumbnails.
+    pub pages: bool,
     pub tool: Option<Tool>,
     pub side: bool,
     pub inspector: bool,
@@ -166,6 +170,9 @@ fn object(c: &Ctx) -> bool {
 }
 fn text_object(c: &Ctx) -> bool {
     c.object && matches!(c.obj_kind, Some(ObjKind::Text | ObjKind::HiddenText))
+}
+fn object_or_pages(c: &Ctx) -> bool {
+    c.object || c.pages
 }
 fn image_object(c: &Ctx) -> bool {
     c.object && c.obj_kind == Some(ObjKind::Image)
@@ -312,6 +319,7 @@ pub static ACTIONS: &[Action] = &[
         act: Act::SelectAllText,
         group: Group::Edit,
         label: "Select all text on the page",
+        icon: icon::SELECTION_ALL,
         keys: &[k(C, Key::A)],
         enabled: text_tool,
         ..BASE
@@ -344,12 +352,24 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
-        act: Act::DeleteObject,
+        act: Act::DeleteSelection,
         group: Group::Edit,
-        label: "Delete the selected object",
+        label: "Delete the selection",
         icon: icon::TRASH,
         keys: &[k(N, Key::Delete), k(N, Key::Backspace)],
+        enabled: object_or_pages,
+        hint: "The selected object, or the pages selected in the thumbnails. Undo brings \
+               them back.",
+        ..BASE
+    },
+    Action {
+        act: Act::DeleteObject,
+        group: Group::Edit,
+        label: "Delete the object",
+        icon: icon::TRASH,
         enabled: object,
+        menu: false,
+        palette: false,
         ..BASE
     },
     Action {
@@ -782,6 +802,27 @@ pub fn context_menu(ui: &mut egui::Ui, sel: &Selection, c: &Ctx, acts: &mut Vec<
             menu_item(ui, a, c, acts);
         }
     }
+}
+
+/// Tooltip for a command: its label and first shortcut.
+pub fn tooltip(ctx: &egui::Context, a: &Action) -> String {
+    match a.keys.first() {
+        Some(k) => format!("{} ({})", a.label, ctx.format_shortcut(k)),
+        None => a.label.to_string(),
+    }
+}
+
+/// The floating toolbar's buttons: the right-click menu's commands that are
+/// available now and have an icon, in groups.
+pub fn toolbar_items(sel: &Selection, c: &Ctx) -> Vec<Vec<&'static Action>> {
+    context_items(sel)
+        .iter()
+        .map(|g| {
+            let usable = |a: &&Action| (a.enabled)(c) && !a.icon.is_empty();
+            g.iter().map(|&a| get(a)).filter(usable).collect::<Vec<_>>()
+        })
+        .filter(|g| !g.is_empty())
+        .collect()
 }
 
 /// One menu entry: a checkbox for on/off commands, else a button with its shortcut.

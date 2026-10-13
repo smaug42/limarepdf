@@ -59,6 +59,8 @@ pub struct Tab {
     pub forms: Forms,
     /// Something undoable just happened, for the undo toast.
     pub notice: Option<String>,
+    /// A thumbnail drag in progress: the thumbnail it started on.
+    thumb_drag: Option<usize>,
 }
 
 impl Tab {
@@ -99,6 +101,7 @@ impl Tab {
             requested: Vec::new(),
             forms: Forms::default(),
             notice: None,
+            thumb_drag: None,
             stale: HashSet::new(),
         })
     }
@@ -442,6 +445,7 @@ impl Tab {
             Selection::Object { kind, .. } => Some(kind),
             _ => None,
         };
+        c.pages = self.ed.selection.pages().is_some();
         c.tool = Some(self.ed.tool);
         c.hidden_text = self.ed.show_hidden;
     }
@@ -454,6 +458,59 @@ impl Tab {
         self.fill_ctx(&mut c);
         let sel = self.ed.selection.clone();
         resp.context_menu(|ui| actions::context_menu(ui, &sel, &c, &mut self.requested));
+    }
+
+    /// A small bar just above the selected object or words (below, when there is no
+    /// room above), with icon buttons for the right-click menu's commands. `page` is the
+    /// page's screen rectangle, `k` the screen size of a point, `b` the selection's box
+    /// in page points. It scrolls with the page and stays inside the view.
+    fn floating_toolbar(&mut self, ui: &egui::Ui, base: &Ctx, page: Rect, k: f32, b: [f32; 4]) {
+        let at = |x: f32, y: f32| Pos2::new(page.min.x + x * k, page.min.y + y * k);
+        let sel = Rect::from_min_max(at(b[0], b[1]), at(b[2], b[3]));
+        let view = ui.clip_rect();
+        if !view.intersects(sel) {
+            return;
+        }
+        let mut c = *base;
+        self.fill_ctx(&mut c);
+        let groups = actions::toolbar_items(&self.ed.selection, &c);
+        if groups.is_empty() {
+            return;
+        }
+        // Bar height plus a gap.
+        let room_above = sel.top() - view.top() > 44.0;
+        let x = sel.center().x;
+        let (pos, pivot) = if room_above {
+            (Pos2::new(x, sel.top() - 8.0), egui::Align2::CENTER_BOTTOM)
+        } else {
+            (Pos2::new(x, sel.bottom() + 8.0), egui::Align2::CENTER_TOP)
+        };
+        egui::Area::new(egui::Id::new(("floating-toolbar", self.id)))
+            .fixed_pos(pos)
+            .pivot(pivot)
+            .constrain_to(view)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style())
+                    .inner_margin(egui::Margin::same(4))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            for (n, group) in groups.iter().enumerate() {
+                                if n > 0 {
+                                    ui.separator();
+                                }
+                                for a in group {
+                                    let b = egui::Button::new(theme::icon(a.icon).size(16.0))
+                                        .frame_when_inactive(false)
+                                        .min_size(egui::vec2(26.0, 26.0));
+                                    let tip = actions::tooltip(ui.ctx(), a);
+                                    if ui.add(b).on_hover_text(tip).clicked() {
+                                        self.requested.push(a.act);
+                                    }
+                                }
+                            }
+                        });
+                    });
+            });
     }
 
     pub fn show_pages(&mut self, ui: &mut egui::Ui, base: &Ctx) {
@@ -543,6 +600,13 @@ impl Tab {
                     .ed
                     .page_ui(ui, &self.pdf, self.id, i, r, self.zoom * BASE);
                 self.context_menu(&resp, base);
+                // The right-click menu replaces the toolbar while it is open.
+                let menu_open = resp.context_menu_opened();
+                if let Some((p, b)) = self.ed.selection_box() {
+                    if p == i && !self.ed.dragging() && !menu_open {
+                        self.floating_toolbar(ui, base, r, self.zoom * BASE, b);
+                    }
+                }
                 if self.pages.get(&i).map(|(k, _)| *k) != Some(key.1) || self.stale.contains(&i) {
                     wanted.push((key, key.1 as f32 / 20.0));
                 }
@@ -593,6 +657,9 @@ impl Tab {
         let ctx = ui.ctx().clone();
         let ppp = ctx.pixels_per_point();
         let mut click: Option<(usize, egui::Modifiers)> = None;
+        // Thumbnail rectangles, for finding where a drag drops.
+        let mut rects: Vec<Rect> = Vec::with_capacity(self.sizes.len());
+        let (mut dropped, mut target) = (false, None);
         egui::ScrollArea::vertical()
             .id_salt(("thumbs", self.id))
             .auto_shrink([false, false])
@@ -602,8 +669,22 @@ impl Tab {
                     let th = THUMB_W * h / w.max(1.0);
                     let (rect, resp) = ui.allocate_exact_size(
                         Vec2::new(ui.available_width(), th + 22.0),
-                        Sense::click(),
+                        Sense::click_and_drag(),
                     );
+                    rects.push(rect);
+                    // Dragging a thumbnail moves it, or the selected pages if it is one
+                    // of them.
+                    if resp.drag_started() {
+                        let picked = self.ed.selection.pages().is_some_and(|s| s.contains(&i));
+                        if !picked {
+                            self.ed.selection = Selection::pages_from([i].into());
+                            self.anchor = i;
+                        }
+                        self.thumb_drag = Some(i);
+                    }
+                    if resp.drag_stopped() && self.thumb_drag == Some(i) {
+                        dropped = true;
+                    }
                     if !ui.is_rect_visible(rect) {
                         continue;
                     }
@@ -656,7 +737,23 @@ impl Tab {
                     }
                     self.context_menu(&resp, base);
                 }
+                if self.thumb_drag.is_some() {
+                    let pointer = ui.input(|i| i.pointer.interact_pos());
+                    if let Some(p) = pointer {
+                        target = Some(drop_index(&rects, p.y));
+                        drag_feedback(ui, &rects, target, p, self.moving_count());
+                    }
+                }
             });
+        if dropped {
+            self.thumb_drag = None;
+            if let Some(to) = target {
+                self.move_selected_pages(&ctx, to);
+            }
+        } else if self.thumb_drag.is_some() && !ctx.input(|i| i.pointer.any_down()) {
+            // Released outside any thumbnail's response: cancel.
+            self.thumb_drag = None;
+        }
         if let Some((i, m)) = click {
             // Shift adds a range from the last click, Ctrl/Cmd toggles one page; either
             // way a selected object or words give way to the pages.
@@ -679,8 +776,122 @@ impl Tab {
     }
 }
 
+impl Tab {
+    /// How many pages a thumbnail drag moves.
+    fn moving_count(&self) -> usize {
+        self.ed.selection.pages().map_or(1, |s| s.len())
+    }
+
+    /// Move the selected pages, in order, to just before page `to` (0-based; the page
+    /// count means the end). Undoable; the pages stay selected in their new place.
+    fn move_selected_pages(&mut self, ctx: &egui::Context, to: usize) {
+        let Some(moving) = self.ed.selection.pages().cloned() else {
+            return;
+        };
+        let n = self.page_count();
+        let order = moved_order(n, &moving, to);
+        if order.iter().copied().eq(0..n) {
+            return;
+        }
+        let at = (0..to).filter(|p| !moving.contains(p)).count();
+        let before = self.revision;
+        self.edit(ctx, |p| p.reorder(&order));
+        if self.revision != before {
+            let placed: BTreeSet<usize> = (at..at + moving.len()).collect();
+            self.ed.selection = Selection::pages_from(placed);
+            self.anchor = at;
+            self.go_to(at);
+        }
+    }
+}
+
 fn sizes_of(pdf: &Pdf) -> Vec<(f32, f32)> {
     (0..pdf.page_count())
         .map(|i| pdf.page_size(i).unwrap_or((612.0, 792.0)))
         .collect()
+}
+
+/// The page order after moving `moving` to just before `to`: for each new position,
+/// the old page index.
+fn moved_order(n: usize, moving: &BTreeSet<usize>, to: usize) -> Vec<usize> {
+    let rest: Vec<usize> = (0..n).filter(|p| !moving.contains(p)).collect();
+    let at = rest.iter().filter(|&&p| p < to).count();
+    let mut order = rest[..at].to_vec();
+    order.extend(moving.iter().copied());
+    order.extend_from_slice(&rest[at..]);
+    order
+}
+
+/// Where a thumbnail dropped at height `y` goes: before the first thumbnail whose middle
+/// is below `y`, else at the end.
+fn drop_index(rects: &[Rect], y: f32) -> usize {
+    rects
+        .iter()
+        .position(|r| y < r.center().y)
+        .unwrap_or(rects.len())
+}
+
+/// While thumbnails are dragged: a line where they will land, a label at the pointer,
+/// and scrolling when the pointer nears the top or bottom of the list.
+fn drag_feedback(ui: &egui::Ui, rects: &[Rect], target: Option<usize>, p: Pos2, n: usize) {
+    let accent = ui.visuals().selection.stroke.color;
+    if let Some(t) = target {
+        let y = match rects.get(t) {
+            Some(r) => r.top() - 1.0,
+            None => rects.last().map_or(0.0, |r| r.bottom() + 1.0),
+        };
+        let span = rects.first().map(|r| r.x_range());
+        let x = span.unwrap_or(ui.max_rect().x_range());
+        ui.painter().hline(x, y, egui::Stroke::new(3.0, accent));
+    }
+    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    let view = ui.clip_rect();
+    if p.y < view.top() + 32.0 {
+        ui.scroll_with_delta(Vec2::new(0.0, 8.0));
+    } else if p.y > view.bottom() - 32.0 {
+        ui.scroll_with_delta(Vec2::new(0.0, -8.0));
+    }
+    let text = if n == 1 {
+        "Move 1 page".to_string()
+    } else {
+        format!("Move {n} pages")
+    };
+    let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("thumb-drag"));
+    let painter = ui.ctx().layer_painter(layer);
+    let font = egui::FontId::proportional(12.0);
+    let galley = painter.layout_no_wrap(text, font, ui.visuals().strong_text_color());
+    let at = p + Vec2::new(14.0, 10.0);
+    let bg = Rect::from_min_size(at, galley.size()).expand(5.0);
+    painter.rect_filled(bg, 6.0, ui.visuals().window_fill);
+    let edge = egui::Stroke::new(1.0, accent);
+    painter.rect_stroke(bg, 6.0, edge, egui::StrokeKind::Inside);
+    painter.galley(at, galley, Color32::PLACEHOLDER);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn moving_pages_keeps_their_order() {
+        let set = |v: &[usize]| v.iter().copied().collect::<BTreeSet<usize>>();
+        // Pages 2 and 4 (0-based 1, 3) to the start.
+        assert_eq!(moved_order(5, &set(&[1, 3]), 0), [1, 3, 0, 2, 4]);
+        // Page 1 to the end.
+        assert_eq!(moved_order(3, &set(&[0]), 3), [1, 2, 0]);
+        // Page 3 before page 2: a swap.
+        assert_eq!(moved_order(3, &set(&[2]), 1), [0, 2, 1]);
+        // Dropped onto itself: no change.
+        assert_eq!(moved_order(3, &set(&[1]), 1), [0, 1, 2]);
+        assert_eq!(moved_order(3, &set(&[1]), 2), [0, 1, 2]);
+    }
+
+    #[test]
+    fn drops_before_the_thumbnail_under_the_upper_half() {
+        let r = |y: f32| Rect::from_min_size(Pos2::new(0.0, y), Vec2::new(10.0, 100.0));
+        let rects = [r(0.0), r(100.0), r(200.0)];
+        assert_eq!(drop_index(&rects, 10.0), 0);
+        assert_eq!(drop_index(&rects, 60.0), 1);
+        assert_eq!(drop_index(&rects, 290.0), 3);
+    }
 }

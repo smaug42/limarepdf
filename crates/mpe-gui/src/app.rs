@@ -1,4 +1,4 @@
-use crate::actions::{self, menu_item, Act, Action, Ctx, Group, ACTIONS};
+use crate::actions::{self, menu_item, tooltip, Act, Action, Ctx, Group, ACTIONS};
 use crate::dialogs::{self as dlg, Outcome};
 use crate::editor::{Action as EdAction, Tool};
 use crate::inspector::{self, Apply, Section};
@@ -143,6 +143,12 @@ enum Dialog {
     About,
 }
 
+/// Width of the inspector panel, and of its rail when collapsed.
+const INSPECTOR_WIDTH: f32 = 250.0;
+const RAIL_WIDTH: f32 = 36.0;
+/// Below this window width the inspector collapses to its rail by itself.
+const NARROW_WIDTH: f32 = 960.0;
+
 /// How long the undo toast stays, in seconds.
 const TOAST_SECONDS: f64 = 6.0;
 
@@ -177,7 +183,12 @@ pub struct App {
     /// Put the keyboard focus in the top bar's search field (Ctrl+F).
     focus_search: bool,
     palette: Option<Palette>,
+    /// The inspector is open (else collapsed to its rail).
     show_inspector: bool,
+    /// Whether the user wants it open when the window is wide enough.
+    inspector_pref: bool,
+    /// The window was narrower than `NARROW_WIDTH` last frame.
+    narrow: bool,
     toast: Option<Toast>,
 }
 
@@ -200,6 +211,8 @@ impl App {
             focus_search: false,
             palette: None,
             show_inspector: true,
+            inspector_pref: true,
+            narrow: false,
             toast: None,
         };
         let (images, pdfs): (Vec<_>, Vec<_>) = files.into_iter().partition(|p| is_image(p));
@@ -507,7 +520,12 @@ impl App {
             Act::About => self.dialog = Dialog::About,
             Act::Theme(p) => ctx.set_theme(p),
             Act::ToggleSide => self.show_side = !self.show_side,
-            Act::ToggleInspector => self.show_inspector = !self.show_inspector,
+            Act::ToggleInspector => {
+                self.show_inspector = !self.show_inspector;
+                if !self.narrow {
+                    self.inspector_pref = self.show_inspector;
+                }
+            }
             Act::Palette => self.palette = Some(Palette::default()),
             _ if !has => {}
             Act::ToggleHidden => {
@@ -521,6 +539,13 @@ impl App {
                 t.ed.select_all_words(&t.pdf, t.current);
             }
             Act::DeleteObject => self.tabs[self.active].ed.delete_selected(),
+            Act::DeleteSelection => {
+                if self.tabs[self.active].ed.has_object() {
+                    self.act(ctx, Act::DeleteObject);
+                } else if self.tabs[self.active].ed.selection.pages().is_some() {
+                    self.act(ctx, Act::Delete);
+                }
+            }
             Act::Nudge(dx, dy) => {
                 let shift = ctx.input(|i| i.modifiers.shift);
                 let step = if shift { 10.0 } else { 1.0 };
@@ -573,9 +598,11 @@ impl App {
                 if self.show_side {
                     w -= 190.0;
                 }
-                if self.show_inspector {
-                    w -= 250.0;
-                }
+                w -= if self.show_inspector {
+                    INSPECTOR_WIDTH
+                } else {
+                    RAIL_WIDTH
+                };
                 self.tabs[self.active].fit_width(w);
             }
             Act::RotL | Act::RotR => {
@@ -1192,6 +1219,27 @@ fn tool_menu(
     .on_hover_text("Tools");
 }
 
+/// The collapsed inspector: a rail with an icon and an arrow, clickable as a whole, so
+/// it is clear that a panel slides out here. Returns true when clicked.
+fn inspector_rail(ui: &mut egui::Ui) -> bool {
+    let rect = ui.max_rect();
+    let id = egui::Id::new("inspector-rail-click");
+    let r = ui
+        .interact(rect, id, egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("Show the inspector: options for the selection or the document");
+    if r.hovered() {
+        let fill = ui.visuals().widgets.hovered.weak_bg_fill;
+        ui.painter().rect_filled(rect, 0, fill);
+    }
+    ui.vertical_centered(|ui| {
+        ui.add_space(6.0);
+        ui.label(theme::icon(icon::SLIDERS_HORIZONTAL).size(18.0));
+        ui.label(theme::icon(icon::CARET_DOUBLE_LEFT).size(12.0).weak());
+    });
+    r.clicked()
+}
+
 /// One row of the command palette: icon, label, then group and shortcut on the right.
 /// `n` is the row number; `on` highlights it.
 fn palette_row(ui: &mut egui::Ui, a: &Action, n: usize, on: bool, enabled: bool) -> egui::Response {
@@ -1273,14 +1321,6 @@ fn empty_state(ui: &mut egui::Ui, acts: &mut Vec<Act>) {
     }
 }
 
-/// Tooltip for a command: its label and first shortcut.
-fn tooltip(ctx: &egui::Context, a: &Action) -> String {
-    match a.keys.first() {
-        Some(k) => format!("{} ({})", a.label, ctx.format_shortcut(k)),
-        None => a.label.to_string(),
-    }
-}
-
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -1310,6 +1350,14 @@ impl eframe::App for App {
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.dialog = Dialog::ConfirmQuit;
+        }
+
+        // Collapse the inspector when the window becomes narrow; when it becomes wide
+        // again, restore what the user last chose at full width.
+        let narrow = ctx.content_rect().width() < NARROW_WIDTH;
+        if narrow != self.narrow {
+            self.show_inspector = !narrow && self.inspector_pref;
+            self.narrow = narrow;
         }
 
         self.shortcuts(&ctx);
@@ -1528,23 +1576,50 @@ impl eframe::App for App {
 
         // The inspector: the editor's section for a selected object or words or a tool
         // that adds content; otherwise the selected pages or the document.
+        // Collapsed, it is a thin rail at the right edge that slides the panel back out.
         let mut panel_apply = None;
-        if has && self.show_inspector {
+        if has {
             let t = &mut self.tabs[self.active];
-            egui::Panel::right("inspector")
+            let mut open = self.show_inspector;
+            let mut toggle = false;
+            let rail = egui::Panel::right("inspector-rail")
+                .resizable(false)
+                .exact_size(RAIL_WIDTH);
+            let full = egui::Panel::right("inspector")
                 .resizable(true)
-                .default_size(250.0)
-                .show(ui, |ui| {
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            if t.ed.owns_panel() {
-                                t.ed.inspector(ui);
-                            } else {
-                                panel_apply = inspector::show(ui, t, &c);
-                            }
-                        });
+                .default_size(INSPECTOR_WIDTH);
+            egui::Panel::show_switched(ui, &mut open, rail, full, |ui, expanded| {
+                if !expanded {
+                    toggle = inspector_rail(ui);
+                    return;
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                    let hide = egui::Button::new(theme::icon(icon::CARET_DOUBLE_RIGHT))
+                        .frame_when_inactive(false);
+                    if ui.add(hide).on_hover_text("Hide the inspector").clicked() {
+                        toggle = true;
+                    }
                 });
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        if t.ed.owns_panel() {
+                            t.ed.inspector(ui);
+                        } else {
+                            panel_apply = inspector::show(ui, t, &c);
+                        }
+                    });
+            });
+            if toggle {
+                open = !open;
+            }
+            // Also catches the panel being dragged closed or open.
+            if open != self.show_inspector {
+                self.show_inspector = open;
+                if !self.narrow {
+                    self.inspector_pref = open;
+                }
+            }
         }
         if let Some(apply) = panel_apply {
             self.apply_panel(&ctx, apply);
