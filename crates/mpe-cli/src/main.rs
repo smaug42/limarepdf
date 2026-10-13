@@ -275,9 +275,9 @@ enum Cmd {
         #[arg(long)]
         password: Option<String>,
     },
-    /// List the printers CUPS knows (Linux and macOS); the default is marked
+    /// List the printers; the default is marked
     Printers,
-    /// Print with CUPS (Linux and macOS)
+    /// Print (CUPS on Linux and macOS, the print spooler on Windows)
     Print {
         input: PathBuf,
         /// Printer name from `mpe printers`; default: the default printer
@@ -289,7 +289,8 @@ enum Cmd {
         copies: u32,
         #[arg(long, value_enum, default_value_t = SidesArg::One)]
         sides: SidesArg,
-        /// Send pages rendered by MPE (300 dpi images) instead of the PDF itself
+        /// Send pages rendered by MPE (300 dpi images) instead of the PDF itself. Windows
+        /// always prints pages rendered by MPE
         #[arg(long)]
         as_image: bool,
         #[arg(long)]

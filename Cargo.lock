@@ -2327,6 +2327,7 @@ dependencies = [
  "rten-imageproc",
  "thiserror 2.0.21",
  "tiff",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

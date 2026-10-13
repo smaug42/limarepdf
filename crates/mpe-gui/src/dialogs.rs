@@ -474,11 +474,14 @@ pub fn print(ctx: &Context, s: &mut Print) -> Outcome {
                 ui.end_row();
             });
         range_field(ui, &mut s.pages);
-        let tip = "MPE draws each page at 300 dpi and sends pictures of them, so the \
-                   printout matches the screen. Use this if the printout looks wrong; text \
-                   is less sharp and the job is larger.";
-        ui.checkbox(&mut s.as_image, "Print as image")
-            .on_hover_text(tip);
+        // Windows always prints pages drawn by MPE.
+        if !cfg!(windows) {
+            let tip = "MPE draws each page at 300 dpi and sends pictures of them, so the \
+                       printout matches the screen. Use this if the printout looks wrong; \
+                       text is less sharp and the job is larger.";
+            ui.checkbox(&mut s.as_image, "Print as image")
+                .on_hover_text(tip);
+        }
         buttons(ui, "Print")
     })
 }

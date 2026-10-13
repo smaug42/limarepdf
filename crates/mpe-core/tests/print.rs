@@ -4,6 +4,7 @@
 use lopdf::{dictionary, Dictionary, Object, Stream};
 use mpe_core::print::{lp_args, send, PrintOptions, Sides};
 use mpe_core::{render, Cipher, Encryption, ObjectKind, Pdf, Restrictions};
+#[cfg(unix)]
 use std::path::PathBuf;
 
 /// Pages of three widths, the first with a red square at (50, 50)-(250, 150).

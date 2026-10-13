@@ -1,8 +1,12 @@
-//! Printing through CUPS (`lp` and `lpstat`), on Linux and macOS.
+//! Printing.
 //!
-//! The selected pages go to CUPS as a PDF, which CUPS renders with its own engine. With
+//! Linux and macOS print through CUPS (`lp` and `lpstat`). The selected pages go to
+//! CUPS as a PDF, which CUPS renders with its own engine. With
 //! [`PrintOptions::as_image`], MPE renders the pages itself and sends a PDF of page
 //! images instead, so the output matches the screen.
+//!
+//! Windows prints through the print spooler and GDI: MPE always renders the pages
+//! itself and draws them on the printer (see `print_win.rs`).
 
 use crate::render::{self, ImageFormat};
 use crate::{ImageImport, Pdf, Result};
@@ -14,11 +18,11 @@ use std::process::{Command, Stdio};
 /// Resolution of pages printed as images.
 pub const IMAGE_DPI: f32 = 300.0;
 
-/// A print queue known to CUPS.
+/// A printer (a CUPS queue, or a Windows printer).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Printer {
     pub name: String,
-    /// The user's or the system's default destination.
+    /// The user's or the system's default printer.
     pub default: bool,
 }
 
@@ -50,7 +54,7 @@ pub struct PrintOptions {
     pub printer: Option<String>,
     pub copies: u32,
     pub sides: Sides,
-    /// Render the pages in MPE and send images of them.
+    /// Render the pages in MPE and send images of them. Windows always does.
     pub as_image: bool,
     /// Job name shown in the print queue.
     pub title: String,
@@ -68,14 +72,8 @@ impl Default for PrintOptions {
     }
 }
 
-fn unsupported() -> Result<()> {
-    if cfg!(windows) {
-        bail!("printing is not available on Windows yet");
-    }
-    Ok(())
-}
-
 /// Run a CUPS command with untranslated output, explaining a missing command.
+#[cfg(not(windows))]
 fn cups(program: &str, args: &[&str]) -> Result<String> {
     let out = Command::new(program)
         .args(args)
@@ -109,9 +107,16 @@ fn not_found(program: &str, e: std::io::Error) -> anyhow::Error {
     }
 }
 
-/// The printers CUPS knows, default first.
+/// The printers the system knows, default first.
 pub fn printers() -> Result<Vec<Printer>> {
-    unsupported()?;
+    #[cfg(windows)]
+    return crate::print_win::printers();
+    #[cfg(not(windows))]
+    cups_printers()
+}
+
+#[cfg(not(windows))]
+fn cups_printers() -> Result<Vec<Printer>> {
     let names = cups("lpstat", &["-e"])?;
     // "system default destination: NAME", or "no system default destination".
     let default = cups("lpstat", &["-d"]).unwrap_or_default();
@@ -204,10 +209,154 @@ impl Pdf {
         out.to_bytes()
     }
 
-    /// Print `pages` (0-based) with CUPS. Returns `lp`'s reply.
+    /// Print `pages` (0-based): with CUPS, returning `lp`'s reply, or on Windows through
+    /// the print spooler, returning the job number.
     pub fn print(&mut self, pages: &[usize], opts: &PrintOptions) -> Result<String> {
-        unsupported()?;
-        let data = self.print_data(pages, opts.as_image)?;
-        send("lp", &lp_args(opts), &data)
+        if pages.is_empty() {
+            bail!("no pages selected");
+        }
+        #[cfg(windows)]
+        return crate::print_win::print(self, pages, opts);
+        #[cfg(not(windows))]
+        {
+            let data = self.print_data(pages, opts.as_image)?;
+            send("lp", &lp_args(opts), &data)
+        }
+    }
+}
+
+/// Where a page goes on a sheet when MPE draws it on the printer itself (Windows).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) struct Placement {
+    /// Turn the page a quarter turn anticlockwise, so its top is at the sheet's left.
+    pub rotate: bool,
+    /// Box in device pixels, relative to the printable area.
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    /// Scale to render the page at: device pixels per point, at most 600 dpi.
+    pub scale: f32,
+}
+
+/// Device measurements of a printer's sheet, from GDI's GetDeviceCaps.
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) struct Sheet {
+    /// Printable area, in device pixels.
+    pub area: (i32, i32),
+    /// Whole sheet, in device pixels.
+    pub paper: (i32, i32),
+    /// Top-left of the printable area on the sheet.
+    pub offset: (i32, i32),
+    /// Device pixels per inch.
+    pub dpi: (i32, i32),
+}
+
+/// Place a page of `size` points on `sheet`: turned to match the sheet's orientation,
+/// at actual size when it fits in the printable area and shrunk to fit when not, centred
+/// on the sheet as far as the printable area allows.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn place(size: (f32, f32), sheet: &Sheet) -> Placement {
+    let (aw, ah) = (sheet.area.0.max(1) as f32, sheet.area.1.max(1) as f32);
+    let rotate = (size.0 > size.1 && aw < ah) || (size.0 < size.1 && aw > ah);
+    let (pw, ph) = if rotate { (size.1, size.0) } else { size };
+    let (pw, ph) = (pw.max(1.0), ph.max(1.0));
+    let (dx, dy) = (sheet.dpi.0.max(1) as f32, sheet.dpi.1.max(1) as f32);
+    // Device pixels at actual size.
+    let (fw, fh) = (pw / 72.0 * dx, ph / 72.0 * dy);
+    let fit = (aw / fw).min(ah / fh).min(1.0);
+    let (w, h) = ((fw * fit).round(), (fh * fit).round());
+    let centre = |paper: i32, offset: i32, area: f32, len: f32| {
+        let x = (paper as f32 - len) / 2.0 - offset as f32;
+        x.clamp(0.0, (area - len).max(0.0)).round() as i32
+    };
+    Placement {
+        rotate,
+        x: centre(sheet.paper.0, sheet.offset.0, aw, w),
+        y: centre(sheet.paper.1, sheet.offset.1, ah, h),
+        w: w as i32,
+        h: h as i32,
+        scale: (w / pw).min(600.0 / 72.0),
+    }
+}
+
+/// `rgba` (width `w`) as top-down BGRA for GDI, turned a quarter turn anticlockwise when
+/// `rotate`. Returns the pixels and their width and height.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn to_bgra(rgba: &[u8], w: usize, h: usize, rotate: bool) -> (Vec<u8>, usize, usize) {
+    let (px, _) = rgba.as_chunks::<4>();
+    let bgra = |p: &[u8; 4]| [p[2], p[1], p[0], 255];
+    if !rotate {
+        return (px.iter().flat_map(bgra).collect(), w, h);
+    }
+    // Anticlockwise: source (x, y) goes to (y, w - 1 - x) in an h-wide image.
+    let mut out = vec![0u8; w * h * 4];
+    for y in 0..h {
+        for x in 0..w {
+            let d = ((w - 1 - x) * h + y) * 4;
+            out[d..d + 4].copy_from_slice(&bgra(&px[y * w + x]));
+        }
+    }
+    (out, h, w)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// US Letter at 600 dpi with quarter-inch margins.
+    const LETTER: Sheet = Sheet {
+        area: (4800, 6300),
+        paper: (5100, 6600),
+        offset: (150, 150),
+        dpi: (600, 600),
+    };
+
+    #[test]
+    fn small_page_prints_at_actual_size_centred() {
+        // 4 x 3 inch page: 2400 x 1800 px, landscape, so turned to 1800 x 2400.
+        let p = place((288.0, 216.0), &LETTER);
+        assert!(p.rotate);
+        assert_eq!((p.w, p.h), (1800, 2400));
+        // Centred on the sheet: (5100 - 1800) / 2 - 150 = 1500.
+        assert_eq!((p.x, p.y), (1500, 1950));
+        assert!((p.scale - 600.0 / 72.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn full_page_shrinks_to_the_printable_area() {
+        let p = place((612.0, 792.0), &LETTER);
+        assert!(!p.rotate);
+        // 5100 x 6600 px at actual size; the width limits: 4800 / 5100 of it.
+        assert_eq!((p.w, p.h), (4800, 6212));
+        // Across: the whole printable width. Down: (6600 - 6212) / 2 - 150 = 44.
+        assert_eq!((p.x, p.y), (0, 44));
+    }
+
+    #[test]
+    fn render_scale_is_capped_at_600_dpi() {
+        let sheet = Sheet {
+            dpi: (1200, 1200),
+            area: (9600, 12600),
+            paper: (10200, 13200),
+            offset: (300, 300),
+        };
+        let p = place((288.0, 216.0), &sheet);
+        assert!((p.scale - 600.0 / 72.0).abs() < 1e-3, "{p:?}");
+    }
+
+    #[test]
+    fn quarter_turn_puts_the_top_on_the_left() {
+        // 2 x 1 image: red, green.
+        let rgba = [255, 0, 0, 255, 0, 255, 0, 255];
+        let (out, w, h) = to_bgra(&rgba, 2, 1, true);
+        assert_eq!((w, h), (1, 2));
+        // Green (the right end) goes to the top, red to the bottom; bytes are BGRA.
+        assert_eq!(out, [0, 255, 0, 255, 0, 0, 255, 255]);
+        let (out, w, h) = to_bgra(&rgba, 2, 1, false);
+        assert_eq!((w, h), (2, 1));
+        assert_eq!(out, [0, 0, 255, 255, 0, 255, 0, 255]);
     }
 }
