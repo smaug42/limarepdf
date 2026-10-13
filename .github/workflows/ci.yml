@@ -1,5 +1,18 @@
 name: ci
-on: [push, pull_request, workflow_dispatch]
+# Pull requests, main, and version tags; a branch push without a pull request does not
+# run CI (start one by hand with workflow_dispatch).
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+# A newer commit on the same branch or pull request cancels the older run. Tag runs are
+# never cancelled, since they make the release.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
   build:
@@ -20,18 +33,66 @@ jobs:
         run: cargo test --workspace --release
       - name: Build
         run: cargo build --workspace --release
+      # One archive per platform, made here because artifacts lose Unix file permissions:
+      # a folder mpe-<version>-<platform> holding the binaries, the docs and the licences.
       - name: Package
         shell: bash
         run: |
-          mkdir -p dist
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          name="mpe-$version-${{ matrix.name }}"
+          dir="dist/$name"
+          mkdir -p "$dir"
           ext=""; [ "${{ runner.os }}" = "Windows" ] && ext=".exe"
-          cp target/release/mpe$ext target/release/mpe-gui$ext dist/
-          cp README.md LICENSE-MIT LICENSE-APACHE dist/
+          cp target/release/mpe$ext target/release/mpe-gui$ext "$dir/"
+          cp README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE "$dir/"
+          # The README links to docs/, so the docs travel with each version.
+          cp -r docs "$dir/docs"
           # Attribution and licence for the OCR model built into the binaries.
-          cp crates/mpe-core/models/README.md dist/OCR-MODEL.md
+          cp crates/mpe-core/models/README.md "$dir/OCR-MODEL.md"
           # Licence for the Inter font built into mpe-gui.
-          cp crates/mpe-gui/assets/fonts/OFL.txt dist/FONT-LICENSE-Inter.txt
+          cp crates/mpe-gui/assets/fonts/OFL.txt "$dir/FONT-LICENSE-Inter.txt"
+          cd dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a -tzip "$name.zip" "$name" > /dev/null
+          else
+            tar -czf "$name.tar.gz" "$name"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: mpe-${{ matrix.name }}
-          path: dist
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+
+  # On a version tag (v0.3.0): a draft GitHub Release with the four archives, their
+  # checksums and this version's section of CHANGELOG.md. Publish it on GitHub.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          version="${tag#v}"
+          if ! grep -q "^version = \"$version\"" Cargo.toml; then
+            echo "Tag $tag does not match the version in Cargo.toml"; exit 1
+          fi
+          awk -v v="[$version]" '/^## /{p = index($0, v) > 0; next} p' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "CHANGELOG.md has no section for $version"; exit 1
+          fi
+          # Relative links do not work on the release page: point them at this tag.
+          sed -i "s#](docs/#](https://github.com/$GITHUB_REPOSITORY/blob/$tag/docs/#g" notes.md
+          (cd assets && sha256sum * > SHA256SUMS)
+          gh release create "$tag" --draft --verify-tag --title "MPE $version" \
+            --notes-file notes.md assets/*

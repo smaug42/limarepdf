@@ -31,4 +31,4 @@ This is a from-scratch implementation (with AI assistance): it contains no other
 - [Performance](docs/performance.md)
 - [Testing and platforms](docs/testing.md)
 
-**[Licence](docs/licence.md)**
+**[Changelog](CHANGELOG.md)** · **[Licence](docs/licence.md)**
