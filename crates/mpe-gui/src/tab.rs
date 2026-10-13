@@ -600,8 +600,10 @@ impl Tab {
                     .ed
                     .page_ui(ui, &self.pdf, self.id, i, r, self.zoom * BASE);
                 self.context_menu(&resp, base);
+                // The right-click menu replaces the toolbar while it is open.
+                let menu_open = resp.context_menu_opened();
                 if let Some((p, b)) = self.ed.selection_box() {
-                    if p == i && !self.ed.dragging() {
+                    if p == i && !self.ed.dragging() && !menu_open {
                         self.floating_toolbar(ui, base, r, self.zoom * BASE, b);
                     }
                 }
