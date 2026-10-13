@@ -5,8 +5,8 @@ functional specification of an existing Qt/C++ editor. This is a from-scratch im
 none of that product's code, strings, stamps, fonts or other assets.
 
 **Status: 0.2, for testing.** Viewing, page operations, overlays (headers, footers, Bates, watermark), metadata,
-password security, basic content editing (text, images, vector shapes), image import, scan optimisation and OCR
-(Latin script) are in. Annotation, forms, signatures and most export formats are not started.
+password security, basic content editing (text, images, vector shapes), image import, scan optimisation, OCR
+(Latin script), export to images and text, and printing on Linux and macOS are in. Annotation, forms, signatures and most export formats are not started.
 The coverage table below is the complete list.
 
 | Part | What it is |
@@ -64,6 +64,8 @@ mpe text in.pdf --pages 1-2
 mpe objects in.pdf --pages 1        # list editable objects with their boxes
 mpe render in.pdf --dpi 150 --out-dir pngs
 mpe render in.pdf --format jpeg --quality 85 --out-dir jpgs
+mpe printers                        # Linux and macOS (CUPS)
+mpe print in.pdf --printer Office --pages 1-3 --copies 2 --sides long-edge   # also --as-image
 ```
 
 Editing in the GUI: pick a tool in the toolbar (hand = read only, arrow = select). With the arrow, click an object to
@@ -78,7 +80,7 @@ whole page in view, Esc clears; Ctrl+C or Edit > Copy text copies, with spaces w
 It works on recognised (OCR) text as well as normal text. Selection stays on one page. Word boxes are placed by
 character position, so a highlight can be a letter off in proportional fonts.
 
-GUI keys: Ctrl+O/S/W, Ctrl+Shift+S, Ctrl+Z / Ctrl+Y, Ctrl+F, Ctrl+= / Ctrl+- / Ctrl+0 (fit width) / Ctrl+1,
+GUI keys: Ctrl+O/S/W/P, Ctrl+Shift+S, Ctrl+Z / Ctrl+Y, Ctrl+F, Ctrl+= / Ctrl+- / Ctrl+0 (fit width) / Ctrl+1,
 Ctrl+scroll or pinch to zoom, PageUp/PageDown/Home/End. Click thumbnails (Ctrl/Shift for multi-select) to choose
 the pages that Document-menu operations apply to.
 
@@ -114,7 +116,7 @@ Labels: **Done** = implemented and exercised by tests or by running it. **Partia
 | PDF/A conversion, Save Optimized | No | Output is pruned and stream-compressed; that is all |
 | Export to Word, Excel, CSV, images | Partial | Images: pages as PNG or JPEG files at 36–1152 dpi, one file per page (`<name>-001.png`, …), with the resolution stored in the file so they import back at the page's size. Rendered by MPE's own renderer. CLI `render --format png\|jpeg`; GUI File > Export pages as images (runs in the background; asks before replacing files). Text: GUI File > Export text writes every page's extracted text to a `.txt` file, pages separated by form feeds as pdftotext does (CLI `text` prints it). Tested in `crates/mpe-core/tests/export.rs` (sizes, content, re-import, names) and by running the CLI; the GUI menu items were not clicked in testing. Word, Excel, CSV: No |
 | Compare documents | No | |
-| Printing dialog | No | |
+| Printing dialog | Partial | Linux and macOS, through CUPS: File > Print (Ctrl+P) chooses the printer, pages, copies and two-sided printing, and runs in the background; CLI `printers` and `print`. The chosen pages are sent to `lp` as an unencrypted PDF, which CUPS renders with its own engine, so the printout can differ from MPE's screen. "Print as image" (CLI `--as-image`) sends pages rendered by MPE at 300 dpi instead, leaving out annotations not flagged for printing. No paper size, scaling, colour or printer-specific options yet; CUPS uses the printer's defaults and fits pages as it normally does. Windows: not yet. Tested in `crates/mpe-core/tests/print.rs` with a stand-in for `lp` (arguments, the document sent, errors) and against a real CUPS with no printers (error messages); no printout has been made yet, and the GUI dialog was not clicked through |
 | Sessions, autosave, backup on save, custom keyboard shortcuts, preferences dialog, 42 translations, toolbars customisation | No | Unsaved-changes prompts on close are in |
 | XFA forms, XPS documents | No | |
 | Licence activation, update checks, OCR language downloads | Not applicable | MPE makes no network connections and has no licence mechanism |

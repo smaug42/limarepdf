@@ -9,8 +9,8 @@ macro_rules! out {
 }
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use mpe_core::{
-    parse_page_range, render, Bates, Cipher, Encryption, HeaderFooter, ImageImport, Info, Ocr,
-    OcrResult, Pdf, Restrictions, ScanMode, ScanOptions, ScanResult, Watermark,
+    parse_page_range, print, render, Bates, Cipher, Encryption, HeaderFooter, ImageImport, Info,
+    Ocr, OcrResult, Pdf, Restrictions, ScanMode, ScanOptions, ScanResult, Watermark,
 };
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
@@ -275,6 +275,26 @@ enum Cmd {
         #[arg(long)]
         password: Option<String>,
     },
+    /// List the printers CUPS knows (Linux and macOS); the default is marked
+    Printers,
+    /// Print with CUPS (Linux and macOS)
+    Print {
+        input: PathBuf,
+        /// Printer name from `mpe printers`; default: the default printer
+        #[arg(long)]
+        printer: Option<String>,
+        #[arg(long, default_value = "all")]
+        pages: String,
+        #[arg(long, default_value_t = 1)]
+        copies: u32,
+        #[arg(long, value_enum, default_value_t = SidesArg::One)]
+        sides: SidesArg,
+        /// Send pages rendered by MPE (300 dpi images) instead of the PDF itself
+        #[arg(long)]
+        as_image: bool,
+        #[arg(long)]
+        password: Option<String>,
+    },
     /// Render pages to image files: out-dir/<stem>-<page>.png (or .jpg), replacing files
     /// of the same name
     Render {
@@ -300,6 +320,15 @@ enum Cmd {
 enum FormatArg {
     Png,
     Jpeg,
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum SidesArg {
+    One,
+    /// Two-sided, flipped on the long edge
+    LongEdge,
+    /// Two-sided, flipped on the short edge
+    ShortEdge,
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -732,6 +761,42 @@ fn main() -> Result<()> {
                     );
                 }
             }
+        }
+        Cmd::Printers => {
+            let list = print::printers()?;
+            if list.is_empty() {
+                out!("no printers are set up");
+            }
+            for p in list {
+                out!("{}{}", p.name, if p.default { " (default)" } else { "" });
+            }
+        }
+        Cmd::Print {
+            input,
+            printer,
+            pages,
+            copies,
+            sides,
+            as_image,
+            password,
+        } => {
+            let mut p = open(&input, &password)?;
+            let idx = parse_page_range(&pages, p.page_count())?;
+            let opts = print::PrintOptions {
+                printer,
+                copies,
+                sides: match sides {
+                    SidesArg::One => print::Sides::One,
+                    SidesArg::LongEdge => print::Sides::LongEdge,
+                    SidesArg::ShortEdge => print::Sides::ShortEdge,
+                },
+                as_image,
+                title: input
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            };
+            out!("{}", p.print(&idx, &opts)?);
         }
         Cmd::Text {
             input,

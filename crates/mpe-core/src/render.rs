@@ -175,6 +175,39 @@ pub fn write_images(
     dir: &Path,
     stem: &str,
 ) -> Result<Vec<PathBuf>> {
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let paths: Vec<PathBuf> = image_names(pages, stem, format)
+        .into_iter()
+        .map(|n| dir.join(n))
+        .collect();
+    encode_batched(pdf, pages, dpi, format, |k, bytes| {
+        let path = &paths[k];
+        std::fs::write(path, bytes).with_context(|| format!("writing {}", path.display()))
+    })?;
+    Ok(paths)
+}
+
+/// Render `pages` at `dpi` (at most [`MAX_DPI`]) and encode each as an image file, in
+/// page order, as [`write_images`] would write them.
+pub fn encode_pages(
+    pdf: &HPdf,
+    pages: &[usize],
+    dpi: f32,
+    format: ImageFormat,
+) -> Result<Vec<Vec<u8>>> {
+    encode_batched(pdf, pages, dpi, format, |_, bytes| Ok(bytes))
+}
+
+/// Render and encode `pages` in parallel, in batches that keep the bitmaps in memory to
+/// about 1 GB, passing each file and its position in `pages` to `f`. Returns the results
+/// of `f` in order.
+fn encode_batched<T: Send>(
+    pdf: &HPdf,
+    pages: &[usize],
+    dpi: f32,
+    format: ImageFormat,
+    f: impl Fn(usize, Vec<u8>) -> Result<T> + Sync,
+) -> Result<Vec<T>> {
     let dpi = dpi.clamp(0.05 * 72.0, MAX_DPI);
     // hayro truncates the pixel size, and 612 pt at 100 dpi is 849.99994 px in f32: nudge
     // the scale so whole sizes come out whole.
@@ -190,20 +223,19 @@ pub fn write_images(
     let page_bytes = (biggest * scale * scale * 8.0).max(1.0);
     let batch = ((1u64 << 30) as f32 / page_bytes) as usize;
     let batch = batch.clamp(1, rayon::current_num_threads());
-    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    let paths: Vec<PathBuf> = image_names(pages, stem, format)
-        .into_iter()
-        .map(|n| dir.join(n))
-        .collect();
-    let jobs: Vec<(usize, &PathBuf)> = pages.iter().copied().zip(&paths).collect();
+    let jobs: Vec<(usize, usize)> = pages.iter().copied().enumerate().collect();
+    let mut out = Vec::with_capacity(pages.len());
     for chunk in jobs.chunks(batch) {
-        chunk.par_iter().try_for_each(|&(i, path)| -> Result<()> {
-            let b = Renderer::new(pdf).render(i, scale)?;
-            let bytes = encode(&b, format, dpi)?;
-            std::fs::write(path, bytes).with_context(|| format!("writing {}", path.display()))
-        })?;
+        let done: Vec<T> = chunk
+            .par_iter()
+            .map(|&(k, i)| {
+                let b = Renderer::new(pdf).render(i, scale)?;
+                f(k, encode(&b, format, dpi)?)
+            })
+            .collect::<Result<_>>()?;
+        out.extend(done);
     }
-    Ok(paths)
+    Ok(out)
 }
 
 impl Pdf {

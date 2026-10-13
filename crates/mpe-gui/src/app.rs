@@ -5,8 +5,8 @@ use eframe::egui::{self, Key, KeyboardShortcut, Modifiers};
 use egui_phosphor::regular as icon;
 use mpe_core::render::{image_names, ImageFormat};
 use mpe_core::{
-    parse_page_range, Bates, Encryption, HeaderFooter, ImageImport, OcrResult, Pdf, ScanResult,
-    Watermark,
+    parse_page_range, print, Bates, Encryption, HeaderFooter, ImageImport, OcrResult, Pdf,
+    ScanResult, Watermark,
 };
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -142,6 +142,7 @@ enum Dialog {
     ConfirmQuit,
     /// Export would replace this many files.
     ConfirmReplace(ImageExport, usize),
+    Print(dlg::Print),
     About,
 }
 
@@ -156,6 +157,7 @@ enum Act {
     SaveAs,
     ExportImages,
     ExportText,
+    Print,
     CloseTab,
     Quit,
     Undo,
@@ -491,6 +493,12 @@ impl App {
             Act::SaveAs => self.save(true),
             Act::ExportImages if has => self.dialog = Dialog::Export(dlg::Export::default()),
             Act::ExportText if has => self.export_text(),
+            Act::Print if has && !self.busy => {
+                self.dialog = match print::printers() {
+                    Ok(list) => Dialog::Print(dlg::Print::new(list)),
+                    Err(e) => Dialog::Message("Print".into(), format!("{e:#}")),
+                }
+            }
             Act::CloseTab if has => {
                 if self.tabs[self.active].dirty {
                     self.dialog = Dialog::ConfirmClose(self.active);
@@ -867,6 +875,33 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
+            Dialog::Print(s) => match dlg::print(ctx, s) {
+                Outcome::Apply if s.printers.is_empty() => done = true,
+                Outcome::Apply => {
+                    let t = &mut self.tabs[self.active];
+                    match parse_page_range(&s.pages, t.page_count()) {
+                        Ok(pages) => {
+                            let printer = s.printers[s.printer].name.clone();
+                            let opts = print::PrintOptions {
+                                printer: Some(printer.clone()),
+                                copies: s.copies,
+                                sides: s.sides,
+                                as_image: s.as_image,
+                                title: t.stem("Untitled"),
+                            };
+                            self.spawn_job(ctx, "Print", move |p| {
+                                let reply = p.print(&pages, &opts)?;
+                                let n = pages.len();
+                                Ok((false, format!("Sent {n} page(s) to {printer}.\n{reply}")))
+                            });
+                            done = true;
+                        }
+                        Err(e) => t.error = Some(e.to_string()),
+                    }
+                }
+                Outcome::Cancel => done = true,
+                Outcome::Open => {}
+            },
             Dialog::Range(s) => match dlg::range(ctx, s) {
                 Outcome::Apply => {
                     done = self.apply_range(ctx, s.kind, &s.text);
@@ -946,6 +981,7 @@ impl App {
             let cs = |k| KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, k);
             for (sc, a) in [
                 (c(Key::O), Act::Open),
+                (c(Key::P), Act::Print),
                 (cs(Key::S), Act::SaveAs),
                 (c(Key::S), Act::Save),
                 (c(Key::W), Act::CloseTab),
@@ -1058,6 +1094,7 @@ impl eframe::App for App {
                     let idle = has && !self.busy;
                     item(ui, "Export pages as images…", "", idle, Act::ExportImages);
                     item(ui, "Export text…", "", has, Act::ExportText);
+                    item(ui, "Print…", "Ctrl+P", idle, Act::Print);
                     ui.separator();
                     item(ui, "Close tab", "Ctrl+W", has, Act::CloseTab);
                     ui.separator();

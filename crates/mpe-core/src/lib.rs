@@ -13,6 +13,7 @@ mod objects;
 mod ocr;
 mod overlay;
 mod pagerange;
+pub mod print;
 pub mod render;
 mod scan;
 mod security;
