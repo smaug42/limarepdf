@@ -17,6 +17,10 @@ fn doc_with_text() -> Pdf {
     p
 }
 
+fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len()).position(|w| w == needle)
+}
+
 #[test]
 fn renders_overlay_pixels() {
     let mut p = doc_with_text();
@@ -67,6 +71,18 @@ fn encryption_roundtrip_all_ciphers() {
             },
         }));
         let bytes = p.to_bytes().unwrap();
+        // Hex password hashes, as hayro misreads some binary literal strings; and the key
+        // length for AES-256, which poppler needs.
+        let at = find(&bytes, b"/Filter/Standard").expect("no encryption dictionary");
+        let end = at + find(&bytes[at..], b"endobj").unwrap();
+        let enc = &bytes[at..end];
+        for key in ["/O", "/U"] {
+            let i = find(enc, key.as_bytes()).unwrap() + key.len();
+            assert_eq!(enc[i], b'<', "{cipher:?}: {key} is not hex");
+        }
+        if cipher == Cipher::Aes256 {
+            assert!(find(enc, b"/Length 256").is_some(), "no /Length");
+        }
         assert!(
             Pdf::from_bytes(&bytes, Some("wrong")).is_err(),
             "{cipher:?}: wrong password accepted"
