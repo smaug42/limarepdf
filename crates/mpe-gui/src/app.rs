@@ -3,9 +3,30 @@ use crate::editor::Tool;
 use crate::tab::{Side, Tab};
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers};
 use egui_phosphor::regular as icon;
-use mpe_core::{parse_page_range, Bates, Encryption, HeaderFooter, Pdf, Watermark};
-use std::path::PathBuf;
+use mpe_core::{
+    parse_page_range, Bates, Encryption, HeaderFooter, ImageImport, OcrResult, Pdf, ScanResult,
+    Watermark,
+};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
+
+const IMAGE_EXTS: [&str; 5] = ["png", "jpg", "jpeg", "tif", "tiff"];
+
+fn is_image(p: &Path) -> bool {
+    p.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| IMAGE_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+}
+
+/// Insert image files as pages at `at`, in the order given, naming the file that fails.
+fn insert_images(p: &mut Pdf, mut at: usize, files: &[(PathBuf, Vec<u8>)]) -> mpe_core::Result<()> {
+    for (path, bytes) in files {
+        at += p
+            .insert_image_pages(at, std::slice::from_ref(bytes), &ImageImport::default())
+            .map_err(|e| e.context(path.display().to_string()))?;
+    }
+    Ok(())
+}
 
 enum Loaded {
     Ok {
@@ -18,6 +39,74 @@ enum Loaded {
         error: Option<String>,
     },
     Err(String),
+    /// A background job on a copy of tab `tab` at `revision` finished. On success: the
+    /// changed document, whether anything changed, and a summary for the user.
+    Job {
+        tab: u64,
+        revision: u64,
+        title: &'static str,
+        result: Result<(Pdf, bool, String), String>,
+    },
+}
+
+/// Summary of an OCR run for the user, and whether any page changed.
+fn ocr_summary(report: &[(usize, OcrResult)]) -> (bool, String) {
+    let (mut pages, mut words) = (0, 0);
+    let mut skipped = Vec::new();
+    for (p, r) in report {
+        match r {
+            OcrResult::Added { words: w, .. } => {
+                pages += 1;
+                words += w;
+            }
+            OcrResult::Skipped(why) => skipped.push(format!("Page {}: {why}", p + 1)),
+        }
+    }
+    let mut text = format!("Text added to {pages} page(s): {words} words.");
+    push_skipped(&mut text, &skipped);
+    (pages > 0, text)
+}
+
+fn push_skipped(text: &mut String, skipped: &[String]) {
+    if skipped.is_empty() {
+        return;
+    }
+    text.push_str(&format!("\n\n{} page(s) left as they were:", skipped.len()));
+    for s in skipped.iter().take(12) {
+        text.push('\n');
+        text.push_str(s);
+    }
+    if skipped.len() > 12 {
+        text.push_str("\n…");
+    }
+}
+
+/// Summary of a scan optimisation for the user, and whether any page changed.
+fn scan_summary(report: &[(usize, ScanResult)]) -> (bool, String) {
+    let (mut n, mut before, mut after) = (0, 0, 0);
+    let mut skipped = Vec::new();
+    for (p, r) in report {
+        match r {
+            ScanResult::Optimized {
+                before: b,
+                after: a,
+                ..
+            } => {
+                n += 1;
+                before += b;
+                after += a;
+            }
+            ScanResult::Skipped(why) => skipped.push(format!("Page {}: {why}", p + 1)),
+        }
+    }
+    let mb = |b: usize| b as f64 / 1e6;
+    let mut text = format!(
+        "{n} page(s) optimised: images {:.1} MB -> {:.1} MB.",
+        mb(before),
+        mb(after)
+    );
+    push_skipped(&mut text, &skipped);
+    (n > 0, text)
 }
 
 enum Dialog {
@@ -28,6 +117,7 @@ enum Dialog {
     Security(dlg::Sec),
     Range(dlg::Range),
     Blank(dlg::Blank),
+    Scan(dlg::Scan),
     Password(dlg::Password),
     Message(String, String),
     ConfirmClose(usize),
@@ -38,6 +128,10 @@ enum Dialog {
 #[derive(Clone, Copy)]
 enum Act {
     Open,
+    NewFromImages,
+    InsertImages,
+    Scans,
+    Ocr,
     Save,
     SaveAs,
     CloseTab,
@@ -75,6 +169,8 @@ pub struct App {
     status: String,
     last_title: String,
     quit_ok: bool,
+    /// A background job (scan optimisation, OCR) is running.
+    busy: bool,
 }
 
 impl App {
@@ -83,7 +179,7 @@ impl App {
         egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
         cc.egui_ctx.set_fonts(fonts);
         let (tx, rx) = channel();
-        let app = Self {
+        let mut app = Self {
             tabs: Vec::new(),
             active: 0,
             next_id: 1,
@@ -94,9 +190,14 @@ impl App {
             status: String::new(),
             last_title: String::new(),
             quit_ok: false,
+            busy: false,
         };
-        for f in files {
+        let (images, pdfs): (Vec<_>, Vec<_>) = files.into_iter().partition(|p| is_image(p));
+        for f in pdfs {
             app.spawn_open(&cc.egui_ctx, f, None, page);
+        }
+        if !images.is_empty() {
+            app.new_from_images(&cc.egui_ctx, &images);
         }
         app
     }
@@ -164,12 +265,114 @@ impl App {
                     });
                 }
                 Loaded::Err(e) => self.dialog = Dialog::Message("Cannot open file".into(), e),
+                Loaded::Job {
+                    tab,
+                    revision,
+                    title,
+                    result,
+                } => {
+                    self.busy = false;
+                    self.status.clear();
+                    let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
+                        continue;
+                    };
+                    let (pdf, changed, text) = match result {
+                        Ok(r) => r,
+                        Err(e) => {
+                            self.dialog = Dialog::Message(title.into(), e);
+                            continue;
+                        }
+                    };
+                    if t.revision != revision {
+                        self.dialog = Dialog::Message(
+                            title.into(),
+                            "The document changed while this was running, so the result \
+                             was discarded. Run it again."
+                                .into(),
+                        );
+                        continue;
+                    }
+                    if changed {
+                        t.edit(ctx, move |p| {
+                            *p = pdf;
+                            Ok(())
+                        });
+                    }
+                    self.dialog = Dialog::Message(title.into(), text);
+                }
             }
         }
     }
 
     fn pdf_dialog() -> rfd::FileDialog {
         rfd::FileDialog::new().add_filter("PDF documents", &["pdf"])
+    }
+
+    /// Ask for image files. Returned sorted by path, since scans are usually numbered.
+    fn pick_images() -> Option<Vec<PathBuf>> {
+        let mut files = rfd::FileDialog::new()
+            .add_filter("Images (PNG, JPEG, TIFF)", &IMAGE_EXTS)
+            .pick_files()?;
+        files.sort();
+        Some(files)
+    }
+
+    /// Read image files, reporting the first that cannot be read.
+    fn read_images(&mut self, files: &[PathBuf]) -> Option<Vec<(PathBuf, Vec<u8>)>> {
+        let mut out = Vec::new();
+        for f in files {
+            match std::fs::read(f) {
+                Ok(b) => out.push((f.clone(), b)),
+                Err(e) => {
+                    self.dialog = Dialog::Message(
+                        "Cannot read image".into(),
+                        format!("{}: {e}", f.display()),
+                    );
+                    return None;
+                }
+            }
+        }
+        Some(out)
+    }
+
+    /// Run `work` on a copy of the active document on a background thread. The result is
+    /// applied (undoably) when it arrives, if the document has not changed meanwhile.
+    fn spawn_job(
+        &mut self,
+        ctx: &egui::Context,
+        title: &'static str,
+        work: impl FnOnce(&mut Pdf) -> mpe_core::Result<(bool, String)> + Send + 'static,
+    ) {
+        let t = &self.tabs[self.active];
+        let (tab, revision, mut pdf) = (t.id, t.revision, t.pdf.clone());
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let result = work(&mut pdf)
+                .map(|(changed, text)| (pdf, changed, text))
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Loaded::Job {
+                tab,
+                revision,
+                title,
+                result,
+            });
+            ctx.request_repaint();
+        });
+        self.busy = true;
+        self.status = format!("{title}…");
+    }
+
+    fn new_from_images(&mut self, ctx: &egui::Context, files: &[PathBuf]) {
+        let Some(data) = self.read_images(files) else {
+            return;
+        };
+        let mut pdf = Pdf::new();
+        match insert_images(&mut pdf, 0, &data) {
+            Ok(()) => self.add_tab(ctx, pdf, None, None, true),
+            Err(e) => {
+                self.dialog = Dialog::Message("Cannot import images".into(), format!("{e:#}"))
+            }
+        }
     }
 
     fn save(&mut self, as_new: bool) {
@@ -212,6 +415,11 @@ impl App {
                     for f in files {
                         self.spawn_open(ctx, f, None, None);
                     }
+                }
+            }
+            Act::NewFromImages => {
+                if let Some(files) = Self::pick_images() {
+                    self.new_from_images(ctx, &files);
                 }
             }
             Act::Save => self.save(false),
@@ -305,6 +513,27 @@ impl App {
                 }
                 self.tabs[self.active].edit(ctx, |p| p.append(docs));
             }
+            Act::InsertImages => {
+                let Some(files) = Self::pick_images() else {
+                    return;
+                };
+                let Some(data) = self.read_images(&files) else {
+                    return;
+                };
+                let t = &mut self.tabs[self.active];
+                let (at, before) = (t.current + 1, t.page_count());
+                t.edit(ctx, |p| insert_images(p, at, &data));
+                if t.page_count() > before {
+                    t.go_to(at);
+                }
+            }
+            Act::Scans => self.dialog = Dialog::Scan(dlg::Scan::default()),
+            Act::Ocr => {
+                self.dialog = Dialog::Range(dlg::Range {
+                    kind: dlg::RangeKind::Ocr,
+                    text: "all".into(),
+                })
+            }
             Act::HeaderFooter => self.dialog = Dialog::HeaderFooter(dlg::Hf::default()),
             Act::Watermark => self.dialog = Dialog::Watermark(dlg::Wm::default()),
             Act::Props => self.dialog = Dialog::Meta(dlg::Meta(self.tabs[self.active].pdf.info())),
@@ -368,7 +597,7 @@ impl App {
                 done = dlg::message(
                     ctx,
                     "About MPE",
-                    "MPE - a fast, pure-Rust PDF viewer and editor.\nLicensed under MIT OR Apache-2.0.\nRendering: hayro. Document engine: lopdf. UI: egui.",
+                    "MPE - a fast, pure-Rust PDF viewer and editor.\nLicensed under MIT OR Apache-2.0.\nRendering: hayro. Document engine: lopdf. UI: egui.\n\nOCR uses the ocrs text recognition model by Robert Knight\n(huggingface.co/robertknight/ocrs), licensed CC BY-SA 4.0\n(creativecommons.org/licenses/by-sa/4.0), included unmodified.",
                 ) != Outcome::Open;
             }
             Dialog::Message(title, text) => done = dlg::message(ctx, title, text) != Outcome::Open,
@@ -496,6 +725,23 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
+            Dialog::Scan(s) => match dlg::scan(ctx, s) {
+                Outcome::Apply => {
+                    let t = &mut self.tabs[self.active];
+                    match parse_page_range(&s.pages, t.page_count()) {
+                        Ok(idx) => {
+                            let opts = s.o;
+                            self.spawn_job(ctx, "Optimise scanned pages", move |p| {
+                                Ok(scan_summary(&p.optimize_scans(&idx, &opts)?))
+                            });
+                            done = true;
+                        }
+                        Err(e) => t.error = Some(e.to_string()),
+                    }
+                }
+                Outcome::Cancel => done = true,
+                Outcome::Open => {}
+            },
             Dialog::Range(s) => match dlg::range(ctx, s) {
                 Outcome::Apply => {
                     done = self.apply_range(ctx, s.kind, &s.text);
@@ -555,7 +801,12 @@ impl App {
                         return false;
                     }
                 };
-                if kind == dlg::RangeKind::Delete {
+                if kind == dlg::RangeKind::Ocr {
+                    self.spawn_job(ctx, "Recognise text", move |p| {
+                        let ocr = mpe_core::Ocr::bundled()?;
+                        Ok(ocr_summary(&p.ocr_pages(&idx, &ocr)?))
+                    });
+                } else if kind == dlg::RangeKind::Delete {
                     t.edit(ctx, |p| p.delete_pages(&idx));
                 } else {
                     match t.pdf.extract(&idx) {
@@ -636,8 +887,13 @@ impl eframe::App for App {
                 .map(|f| f.path().to_path_buf())
                 .collect()
         });
-        for p in dropped {
+        let (mut images, pdfs): (Vec<_>, Vec<_>) = dropped.into_iter().partition(|p| is_image(p));
+        for p in pdfs {
             self.spawn_open(&ctx, p, None, None);
+        }
+        if !images.is_empty() {
+            images.sort();
+            self.new_from_images(&ctx, &images);
         }
 
         // Guard against closing the window with unsaved work.
@@ -671,6 +927,7 @@ impl eframe::App for App {
                     };
                 ui.menu_button("File", |ui| {
                     item(ui, "Open…", "Ctrl+O", true, Act::Open);
+                    item(ui, "New from images…", "", true, Act::NewFromImages);
                     item(ui, "Save", "Ctrl+S", has, Act::Save);
                     item(ui, "Save As…", "Ctrl+Shift+S", has, Act::SaveAs);
                     item(ui, "Close tab", "Ctrl+W", has, Act::CloseTab);
@@ -720,6 +977,10 @@ impl eframe::App for App {
                     item(ui, "Delete pages…", "", has, Act::Delete);
                     item(ui, "Extract pages to new tab…", "", has, Act::Extract);
                     item(ui, "Insert blank page…", "", has, Act::Blank);
+                    item(ui, "Insert images…", "", has, Act::InsertImages);
+                    let idle = has && !self.busy;
+                    item(ui, "Optimise scanned pages…", "", idle, Act::Scans);
+                    item(ui, "Recognise text (OCR)…", "", idle, Act::Ocr);
                     item(ui, "Append PDFs…", "", has, Act::Merge);
                     item(ui, "Split into files…", "", has, Act::Split);
                     ui.separator();

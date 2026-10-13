@@ -1,5 +1,5 @@
 use eframe::egui::{self, Align2, Context, Ui};
-use mpe_core::{Cipher, Info, Restrictions};
+use mpe_core::{Cipher, Info, Restrictions, ScanMode, ScanOptions};
 use std::path::PathBuf;
 
 #[derive(PartialEq, Eq)]
@@ -287,6 +287,7 @@ pub enum RangeKind {
     Extract,
     Delete,
     SplitEvery,
+    Ocr,
 }
 pub struct Range {
     pub kind: RangeKind,
@@ -297,6 +298,10 @@ pub fn range(ctx: &Context, s: &mut Range) -> Outcome {
         RangeKind::Extract => ("Extract pages", "Pages to extract (e.g. 1-3,7):"),
         RangeKind::Delete => ("Delete pages", "Pages to delete (e.g. 2,4-6):"),
         RangeKind::SplitEvery => ("Split document", "Pages per file:"),
+        RangeKind::Ocr => (
+            "Recognise text (OCR)",
+            "Pages (only those without text; Latin script):",
+        ),
     };
     modal(ctx, title, |ui| {
         ui.label(label);
@@ -339,6 +344,63 @@ pub fn blank(ctx: &Context, s: &mut Blank, pages: usize) -> Outcome {
             );
         });
         buttons(ui, "Insert")
+    })
+}
+
+pub struct Scan {
+    pub pages: String,
+    pub o: ScanOptions,
+}
+impl Default for Scan {
+    fn default() -> Self {
+        Self {
+            pages: "all".into(),
+            o: ScanOptions::default(),
+        }
+    }
+}
+pub fn scan(ctx: &Context, s: &mut Scan) -> Outcome {
+    modal(ctx, "Optimise scanned pages", |ui| {
+        ui.label("Applies to pages that are one image covering the page.");
+        range_field(ui, &mut s.pages);
+        egui::Grid::new("scan")
+            .num_columns(2)
+            .spacing([10.0, 6.0])
+            .show(ui, |ui| {
+                ui.label("Store as");
+                let label = |m: ScanMode| match m {
+                    ScanMode::Auto => "Automatic (per page)",
+                    ScanMode::BlackWhite => "Black and white",
+                    ScanMode::Gray => "Greyscale",
+                    ScanMode::Color => "Colour",
+                };
+                egui::ComboBox::from_id_salt("scan-mode")
+                    .selected_text(label(s.o.mode))
+                    .show_ui(ui, |ui| {
+                        for m in [
+                            ScanMode::Auto,
+                            ScanMode::BlackWhite,
+                            ScanMode::Gray,
+                            ScanMode::Color,
+                        ] {
+                            ui.selectable_value(&mut s.o.mode, m, label(m));
+                        }
+                    });
+                ui.end_row();
+                ui.label("Greyscale and colour at most");
+                ui.add(
+                    egui::DragValue::new(&mut s.o.max_dpi)
+                        .range(72.0..=600.0)
+                        .suffix(" dpi"),
+                );
+                ui.end_row();
+                ui.label("JPEG quality");
+                ui.add(egui::Slider::new(&mut s.o.jpeg_quality, 10..=100));
+                ui.end_row();
+            });
+        ui.checkbox(&mut s.o.deskew, "Straighten tilted pages");
+        ui.checkbox(&mut s.o.despeckle, "Remove specks (black and white)");
+        buttons(ui, "Optimise")
     })
 }
 

@@ -6,7 +6,7 @@ members = ["crates/mpe-core", "crates/mpe-cli", "crates/mpe-gui"]
 version = "0.2.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-rust-version = "1.80"
+rust-version = "1.95"
 
 [workspace.dependencies]
 lopdf = "0.45"
@@ -18,8 +18,27 @@ rand = "0.9"
 clap = { version = "4", features = ["derive"] }
 eframe = "0.36"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+tiff = "0.11"
 egui-phosphor = "0.14"
 rfd = "0.17"
+
+# OCR inference is about 100x slower unoptimised; optimise these even in debug builds.
+[profile.dev.package.ocrs]
+opt-level = 3
+[profile.dev.package.rten]
+opt-level = 3
+[profile.dev.package.rten-base]
+opt-level = 3
+[profile.dev.package.rten-gemm]
+opt-level = 3
+[profile.dev.package.rten-imageproc]
+opt-level = 3
+[profile.dev.package.rten-simd]
+opt-level = 3
+[profile.dev.package.rten-tensor]
+opt-level = 3
+[profile.dev.package.rten-vecmath]
+opt-level = 3
 
 [profile.release]
 opt-level = 3

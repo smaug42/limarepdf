@@ -22,6 +22,9 @@ pub struct Tab {
     pub pdf: Pdf,
     pub path: Option<PathBuf>,
     pub dirty: bool,
+    /// Bumped on every change to `pdf`, so background work can tell whether its input
+    /// is still current.
+    pub revision: u64,
     pub encryption: Option<Encryption>,
     worker: Worker,
     pub sizes: Vec<(f32, f32)>,
@@ -52,13 +55,14 @@ impl Tab {
         mut pdf: Pdf,
         path: Option<PathBuf>,
     ) -> Result<Self, String> {
-        let bytes = pdf.snapshot().map_err(|e| e.to_string())?;
+        let bytes = pdf.render_snapshot().map_err(|e| e.to_string())?;
         let sizes = sizes_of(&pdf);
         Ok(Self {
             id,
             pdf,
             path,
             dirty: false,
+            revision: 0,
             encryption: None,
             worker: Worker::spawn(ctx.clone(), bytes),
             sizes,
@@ -166,6 +170,7 @@ impl Tab {
         }
         self.redo.clear();
         self.dirty = true;
+        self.revision += 1;
         match soft {
             Some(pages) => self.soft_refresh(ctx, pages),
             None => self.refresh(ctx),
@@ -174,7 +179,7 @@ impl Tab {
     }
 
     fn soft_refresh(&mut self, ctx: &egui::Context, pages: &[usize]) {
-        match self.pdf.snapshot() {
+        match self.pdf.render_snapshot() {
             Ok(bytes) => {
                 self.worker = Worker::spawn(ctx.clone(), bytes);
                 self.pending.clear();
@@ -276,6 +281,7 @@ impl Tab {
                 self.pdf = p;
                 self.redo.push(cur);
                 self.dirty = true;
+                self.revision += 1;
                 self.refresh(ctx);
             }
         }
@@ -287,6 +293,7 @@ impl Tab {
                 self.pdf = p;
                 self.undo.push(cur);
                 self.dirty = true;
+                self.revision += 1;
                 self.refresh(ctx);
             }
         }
@@ -294,7 +301,7 @@ impl Tab {
 
     /// Re-render from the current document state.
     pub fn refresh(&mut self, ctx: &egui::Context) {
-        match self.pdf.snapshot() {
+        match self.pdf.render_snapshot() {
             Ok(bytes) => {
                 self.worker = Worker::spawn(ctx.clone(), bytes);
                 self.sizes = sizes_of(&self.pdf);

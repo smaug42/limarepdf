@@ -10,19 +10,23 @@ mod imgs;
 mod inline;
 mod matrix;
 mod objects;
+mod ocr;
 mod overlay;
 mod pagerange;
 pub mod render;
+mod scan;
 mod security;
 mod text;
 
 pub use doc::{Info, Pdf};
 pub use edit::{PathStyle, Shape, TextEdit};
 pub use fonts::{Family, FontChoice};
-pub use imgs::image_dimensions;
+pub use imgs::{image_dimensions, ImageImport};
 pub use objects::{ObjectKind, PageObject};
+pub use ocr::{Ocr, OcrLine, OcrResult, OcrWord};
 pub use overlay::{text_width, Bates, HeaderFooter, Watermark};
 pub use pagerange::parse_page_range;
+pub use scan::{ScanMode, ScanOptions, ScanResult};
 pub use security::{Cipher, Encryption, Restrictions};
 pub use text::SearchHit;
 

@@ -5,8 +5,8 @@ functional specification of an existing Qt/C++ editor. This is a from-scratch im
 none of that product's code, strings, stamps, fonts or other assets.
 
 **Status: 0.2, for testing.** Viewing, page operations, overlays (headers, footers, Bates, watermark), metadata,
-password security and basic content editing (text, images, vector shapes) are in. Annotation, forms, signatures, OCR
-and most export formats are not started.
+password security, basic content editing (text, images, vector shapes), image import, scan optimisation and OCR
+(Latin script) are in. Annotation, forms, signatures and most export formats are not started.
 The coverage table below is the complete list.
 
 | Part | What it is |
@@ -23,7 +23,7 @@ PNG/JPEG for insertion, and [Phosphor Icons](https://phosphoricons.com) (MIT, vi
 
 ## Build
 
-Requires a recent stable Rust toolchain (developed on 1.97).
+Requires Rust 1.95 or newer, the minimum set by egui 0.36 (developed on 1.97 and 1.99).
 
 ```
 cargo build --release
@@ -38,6 +38,7 @@ build or run time. Windows and macOS builds use the same code; see "Platform sta
 
 ```
 mpe-gui file.pdf --page 3            # open at page 3; or File > Open, or drop files on the window
+mpe-gui scan.tif photo.jpg           # image files open as a new document, one page per image
 
 mpe info file.pdf
 mpe merge a.pdf b.pdf -o out.pdf
@@ -48,6 +49,10 @@ mpe rotate in.pdf -o out.pdf --pages all --degrees 90
 mpe reorder in.pdf -o out.pdf --order 3,1,2
 mpe crop in.pdf -o out.pdf --page 1 --rect 50,600,400,780
 mpe insert-blank in.pdf -o out.pdf --after 0
+mpe images scan.tif photo.jpg -o out.pdf            # one page per image; --dpi overrides the file's resolution
+mpe insert-images in.pdf -o out.pdf --after 2 --images a.png b.jpg
+mpe optimize-scans in.pdf -o out.pdf --mode auto --max-dpi 200 --quality 75   # also --no-deskew, --no-despeckle
+mpe ocr in.pdf -o out.pdf --pages all    # add a searchable text layer to pages without text
 mpe watermark in.pdf -o out.pdf --text CONFIDENTIAL --opacity 0.3
 mpe header-footer in.pdf -o out.pdf --footer-center "Page {page} of {pages}" --header-right "{date}"
 mpe bates in.pdf -o out.pdf --prefix ACME- --digits 6
@@ -64,7 +69,7 @@ Editing in the GUI: pick a tool in the toolbar (hand = read only, arrow = select
 select it, drag to move, drag the handles to resize (Shift keeps proportions), arrow keys nudge (Shift = 10 pt),
 Delete removes it. The right-hand panel shows position and size, and for text the string, font, size and colour; for
 shapes fill, outline and width; for images "Replace image". The other tools add text (click, type, Enter), rectangles,
-ellipses, lines (drag, or click for a default size) and images (choose a PNG/JPEG, then drag a box). Everything is
+ellipses, lines (drag, or click for a default size) and images (choose a PNG, JPEG or TIFF, then drag a box). Everything is
 undoable with Ctrl+Z.
 
 GUI keys: Ctrl+O/S/W, Ctrl+Shift+S, Ctrl+Z / Ctrl+Y, Ctrl+F, Ctrl+= / Ctrl+- / Ctrl+0 (fit width) / Ctrl+1,
@@ -81,7 +86,7 @@ Labels: **Done** = implemented and exercised by tests or by running it. **Partia
 | Tabbed multi-document window, thumbnails, drag-and-drop open | Done | |
 | Zoom, fit width, continuous scrolling, page navigation | Done | Single-page / facing-page layouts: No |
 | Command line `file.pdf --page N` | Done | |
-| Rendering | Partial | hayro: very broad coverage, but lacks blending and isolation groups, knockout groups, colour-key masking; annotation drawing is incomplete (hayro's own list) |
+| Rendering | Partial | hayro 0.8, checked by pixel on small synthetic pages in `crates/mpe-core/tests/render_coverage.rs`. Correct: all 16 blend modes; isolated transparency groups; a blend mode applied to a whole group; colour-key image masks (`/Mask [..]`); annotations that have an `/AP` appearance stream (Text, Highlight, Link, Stamp, FreeText, Widget tested), including Widget `/AS` state selection and the Hidden flag; annotations with the NoView flag are hidden in the GUI (MPE marks them Hidden before rendering, since hayro ignores NoView); password-protected files with all four ciphers. Wrong: knockout groups render as non-knockout; non-isolated groups render as isolated; `mpe render` (CLI) draws NoView annotations; annotations without `/AP` are not drawn at all (tested: Text, Highlight, Link, Stamp, FreeText, Widget). Other PDF features are untested by MPE |
 | Text search | Partial | Page-level hits with snippets. No highlight on the page. Extraction is lopdf's and can miss text in some CID/embedded-font encodings. Scanned pages have no text without OCR |
 | Page operations: insert blank, delete, rotate, extract, reorder, crop box | Done | Reorder and crop are in the core library and the CLI, not yet in the GUI (no drag-to-reorder) |
 | Merge / append, split by page count | Done | Bookmarks, form fields and named destinations of appended files are not carried over (not tested with such files). Split by file size: No |
@@ -96,10 +101,10 @@ Labels: **Done** = implemented and exercised by tests or by running it. **Partia
 | Content editing: edit text, images, vector objects | Partial | See "Content editing" below |
 | Object inspector (position, size, text, fill, outline) | Partial | Properties listed above only; no layers, no colour replacement across the page |
 | Links, layers, attachments, bookmarks | No | |
-| Annotations, comments, stamps, measurement tools | No | Existing annotations are drawn by the renderer to the extent hayro supports them |
+| Annotations, comments, stamps, measurement tools | No | Existing annotations are drawn only if they have an `/AP` appearance stream; see Rendering |
 | Form editing, form data import/export, barcodes, document JavaScript | No | |
 | Redaction | No | |
-| OCR (Tesseract), scanning (SANE), optimise scanned pages | No | |
+| OCR (Tesseract), scanning (SANE), optimise scanned pages | Partial | Importing images as pages works: PNG, JPEG and TIFF (multi-page, 1-bit, CCITT G4), sized from the file's resolution (else 150 dpi), turned upright from EXIF or TIFF orientation, JPEG embedded without recompression. CLI `images` and `insert-images`; GUI File > New from images, Document > Insert images, drag and drop. Tested in `crates/mpe-core/tests/import.rs` and by hand with ImageMagick-made files (including CMYK JPEG and 300 dpi G4 TIFF); the two GUI menu items were not clicked in testing. Scanning: No, and not planned: Tesseract and SANE are C/C++, so scan with the system's own tool and import the images. OCR works on pages without text: adds an invisible, searchable and selectable text layer (Helvetica, WinAnsi characters; others become `?`). Latin script only. Words are found by MPE's own image processing and read by the bundled ocrs recognition model (see Licence). On test pages made with ImageMagick: 0.4–2% character errors on clean 300 dpi text in serif, sans and mono; 4–14% on deliberately blurred, noisy, tilted scans, mostly punctuation. Speed: two Letter pages in 2.2 s on a 6-core machine (about 5 s of CPU time per page; pages run in parallel). Only made-up pages have been tried, never real scanner output. Text in pictures, handwriting and vertical text are not handled. CLI `ocr`; GUI Document > Recognise text (runs in the background, undoable; not clicked in testing). Run Optimise first: it does not straighten pages that already have text. Optimising scanned pages works on pages that are one image covering the page: black and white is stored as CCITT G4, greyscale and colour as JPEG (downsampled to 200 dpi by default); automatic choice per page, straightening of tilts up to 5°, speck removal. Reads raw/Flate, greyscale and RGB JPEG, and CCITT G4 images; skips CMYK JPEG, JBIG2, JPEG 2000, masked images and pages with other content, and says why. An image is only replaced when it gets smaller or was straightened or cleaned. Pages with text (such as an OCR layer) are not straightened. CLI `optimize-scans`; GUI Document > Optimise scanned pages (runs in the background, undoable). Tested in `crates/mpe-core/tests/scan.rs` and by hand on ImageMagick-made 300 dpi scans (5.3 MB to 0.5 MB, 1.2° tilt corrected); the black-and-white/greyscale choice is a heuristic not yet tried on real scanner output, and the GUI dialog was not clicked in testing |
 | PDF/A conversion, Save Optimized | No | Output is pruned and stream-compressed; that is all |
 | Export to Word, Excel, CSV, images | Partial | Page text and PNG render via the CLI only. Word, Excel, CSV: No |
 | Compare documents | No | |
@@ -187,6 +192,10 @@ and the CLI run.
 
 Dual-licensed under MIT or Apache-2.0, at your option. See `LICENSE-MIT` and `LICENSE-APACHE`.
 The toolbar icons are Phosphor Icons (MIT, © Phosphor Icons), embedded as a font by `egui-phosphor`.
+The OCR text recognition model built into MPE (`crates/mpe-core/models/text-recognition.rten`) is by Robert Knight,
+from the [ocrs](https://github.com/robertknight/ocrs) project, licensed
+[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) and included unmodified; see
+`crates/mpe-core/models/README.md` (shipped as `OCR-MODEL.md` in release archives). With the inference code, OCR adds about 14 MB to each binary (the Linux CLI grows from 9.4 MB to 23 MB).
 Dependencies carry their own licences. A scan of the dependency metadata for all platforms found only permissive
 licences (MIT, Apache-2.0, BSD, Zlib, Unicode, ISC, Unlicense, BSL-1.0 and similar), plus the SIL OFL 1.1 and Ubuntu
 Font Licence for the UI fonts bundled with egui. A few crates are dual-licensed with LGPL or GPL as one option;

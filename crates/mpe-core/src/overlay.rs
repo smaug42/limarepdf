@@ -121,11 +121,11 @@ impl Default for HeaderFooter {
     }
 }
 
-const FONT_NAME: &str = "MPEF1";
+pub(crate) const FONT_NAME: &str = "MPEF1";
 const GS_NAME: &str = "MPEGS";
 
 impl Pdf {
-    fn make_font(&mut self) -> ObjectId {
+    pub(crate) fn make_font(&mut self) -> ObjectId {
         self.doc.add_object(dictionary! {
             "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica", "Encoding" => "WinAnsiEncoding",
         })
@@ -174,7 +174,7 @@ impl Pdf {
 
     /// Wrap the page's existing content in q/Q, add `below` and `above` streams,
     /// and register the font / graphics state in the page resources.
-    fn add_layers(
+    pub(crate) fn add_layers(
         &mut self,
         page: ObjectId,
         below: Option<Vec<u8>>,
