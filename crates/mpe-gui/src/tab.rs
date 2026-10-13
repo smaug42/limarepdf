@@ -1,11 +1,12 @@
 use crate::editor::{Action, Editor, Tool};
+use crate::theme;
 use crate::worker::{Key, Worker};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptions, Vec2};
 use mpe_core::{Encryption, Pdf, SearchHit};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
-const GAP: f32 = 14.0;
+const GAP: f32 = 16.0;
 const THUMB_W: f32 = 120.0;
 const MAX_UNDO: usize = 20;
 /// egui points at zoom 1.0 per PDF point (96 dpi logical).
@@ -424,6 +425,7 @@ impl Tab {
         let ctx = ui.ctx().clone();
         self.collect(&ctx);
         let ppp = ctx.pixels_per_point();
+        let dark = ui.visuals().dark_mode;
 
         if !ctx.egui_wants_keyboard_input() {
             self.ed.keys(&ctx, &self.pdf, self.current);
@@ -444,6 +446,8 @@ impl Tab {
         let total_h = y;
         let content_w = page_w.iter().cloned().fold(0.0, f32::max) + 2.0 * GAP;
 
+        // egui fades scroll edges towards the background, which smears grey over pages.
+        ui.style_mut().spacing.scroll.fade.strength = 0.0;
         let mut area = egui::ScrollArea::both()
             .id_salt(("pages", self.id))
             .auto_shrink([false, false]);
@@ -476,11 +480,7 @@ impl Tab {
                     Pos2::new(x, rect.min.y + tops[i]),
                     Vec2::new(page_w[i], page_h[i]),
                 );
-                painter.rect_filled(
-                    r.translate(Vec2::new(2.0, 2.0)),
-                    0.0,
-                    Color32::from_black_alpha(50),
-                );
+                painter.add(theme::page_shadow(dark).as_shape(r, 0));
                 painter.rect_filled(r, 0.0, Color32::WHITE);
                 let scale = self.zoom * BASE * ppp;
                 let key = (i, ((scale * 20.0).round() as u32).max(1));
