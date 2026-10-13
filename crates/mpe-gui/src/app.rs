@@ -4,7 +4,8 @@ use crate::tab::{Side, Tab};
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers};
 use egui_phosphor::regular as icon;
 use mpe_core::{
-    parse_page_range, Bates, Encryption, HeaderFooter, ImageImport, Pdf, ScanResult, Watermark,
+    parse_page_range, Bates, Encryption, HeaderFooter, ImageImport, OcrResult, Pdf, ScanResult,
+    Watermark,
 };
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -38,12 +39,46 @@ enum Loaded {
         error: Option<String>,
     },
     Err(String),
-    /// Scanned pages optimised in the background, from tab `tab` at `revision`.
-    Scans {
+    /// A background job on a copy of tab `tab` at `revision` finished. On success: the
+    /// changed document, whether anything changed, and a summary for the user.
+    Job {
         tab: u64,
         revision: u64,
-        result: Result<(Pdf, Vec<(usize, ScanResult)>), String>,
+        title: &'static str,
+        result: Result<(Pdf, bool, String), String>,
     },
+}
+
+/// Summary of an OCR run for the user, and whether any page changed.
+fn ocr_summary(report: &[(usize, OcrResult)]) -> (bool, String) {
+    let (mut pages, mut words) = (0, 0);
+    let mut skipped = Vec::new();
+    for (p, r) in report {
+        match r {
+            OcrResult::Added { words: w, .. } => {
+                pages += 1;
+                words += w;
+            }
+            OcrResult::Skipped(why) => skipped.push(format!("Page {}: {why}", p + 1)),
+        }
+    }
+    let mut text = format!("Text added to {pages} page(s): {words} words.");
+    push_skipped(&mut text, &skipped);
+    (pages > 0, text)
+}
+
+fn push_skipped(text: &mut String, skipped: &[String]) {
+    if skipped.is_empty() {
+        return;
+    }
+    text.push_str(&format!("\n\n{} page(s) left as they were:", skipped.len()));
+    for s in skipped.iter().take(12) {
+        text.push('\n');
+        text.push_str(s);
+    }
+    if skipped.len() > 12 {
+        text.push_str("\n…");
+    }
 }
 
 /// Summary of a scan optimisation for the user, and whether any page changed.
@@ -70,16 +105,7 @@ fn scan_summary(report: &[(usize, ScanResult)]) -> (bool, String) {
         mb(before),
         mb(after)
     );
-    if !skipped.is_empty() {
-        text.push_str(&format!("\n\n{} page(s) left as they were:", skipped.len()));
-        for s in skipped.iter().take(12) {
-            text.push('\n');
-            text.push_str(s);
-        }
-        if skipped.len() > 12 {
-            text.push_str("\n…");
-        }
-    }
+    push_skipped(&mut text, &skipped);
     (n > 0, text)
 }
 
@@ -105,6 +131,7 @@ enum Act {
     NewFromImages,
     InsertImages,
     Scans,
+    Ocr,
     Save,
     SaveAs,
     CloseTab,
@@ -142,8 +169,8 @@ pub struct App {
     status: String,
     last_title: String,
     quit_ok: bool,
-    /// A scan optimisation is running in the background.
-    scanning: bool,
+    /// A background job (scan optimisation, OCR) is running.
+    busy: bool,
 }
 
 impl App {
@@ -163,7 +190,7 @@ impl App {
             status: String::new(),
             last_title: String::new(),
             quit_ok: false,
-            scanning: false,
+            busy: false,
         };
         let (images, pdfs): (Vec<_>, Vec<_>) = files.into_iter().partition(|p| is_image(p));
         for f in pdfs {
@@ -238,18 +265,18 @@ impl App {
                     });
                 }
                 Loaded::Err(e) => self.dialog = Dialog::Message("Cannot open file".into(), e),
-                Loaded::Scans {
+                Loaded::Job {
                     tab,
                     revision,
+                    title,
                     result,
                 } => {
-                    self.scanning = false;
+                    self.busy = false;
                     self.status.clear();
-                    let title = "Optimise scanned pages";
                     let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
                         continue;
                     };
-                    let (pdf, report) = match result {
+                    let (pdf, changed, text) = match result {
                         Ok(r) => r,
                         Err(e) => {
                             self.dialog = Dialog::Message(title.into(), e);
@@ -259,13 +286,12 @@ impl App {
                     if t.revision != revision {
                         self.dialog = Dialog::Message(
                             title.into(),
-                            "The document changed while its pages were being optimised, so \
-                             the result was discarded. Run it again."
+                            "The document changed while this was running, so the result \
+                             was discarded. Run it again."
                                 .into(),
                         );
                         continue;
                     }
-                    let (changed, text) = scan_summary(&report);
                     if changed {
                         t.edit(ctx, move |p| {
                             *p = pdf;
@@ -307,6 +333,33 @@ impl App {
             }
         }
         Some(out)
+    }
+
+    /// Run `work` on a copy of the active document on a background thread. The result is
+    /// applied (undoably) when it arrives, if the document has not changed meanwhile.
+    fn spawn_job(
+        &mut self,
+        ctx: &egui::Context,
+        title: &'static str,
+        work: impl FnOnce(&mut Pdf) -> mpe_core::Result<(bool, String)> + Send + 'static,
+    ) {
+        let t = &self.tabs[self.active];
+        let (tab, revision, mut pdf) = (t.id, t.revision, t.pdf.clone());
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let result = work(&mut pdf)
+                .map(|(changed, text)| (pdf, changed, text))
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Loaded::Job {
+                tab,
+                revision,
+                title,
+                result,
+            });
+            ctx.request_repaint();
+        });
+        self.busy = true;
+        self.status = format!("{title}…");
     }
 
     fn new_from_images(&mut self, ctx: &egui::Context, files: &[PathBuf]) {
@@ -475,6 +528,12 @@ impl App {
                 }
             }
             Act::Scans => self.dialog = Dialog::Scan(dlg::Scan::default()),
+            Act::Ocr => {
+                self.dialog = Dialog::Range(dlg::Range {
+                    kind: dlg::RangeKind::Ocr,
+                    text: "all".into(),
+                })
+            }
             Act::HeaderFooter => self.dialog = Dialog::HeaderFooter(dlg::Hf::default()),
             Act::Watermark => self.dialog = Dialog::Watermark(dlg::Wm::default()),
             Act::Props => self.dialog = Dialog::Meta(dlg::Meta(self.tabs[self.active].pdf.info())),
@@ -538,7 +597,7 @@ impl App {
                 done = dlg::message(
                     ctx,
                     "About MPE",
-                    "MPE - a fast, pure-Rust PDF viewer and editor.\nLicensed under MIT OR Apache-2.0.\nRendering: hayro. Document engine: lopdf. UI: egui.",
+                    "MPE - a fast, pure-Rust PDF viewer and editor.\nLicensed under MIT OR Apache-2.0.\nRendering: hayro. Document engine: lopdf. UI: egui.\n\nOCR uses the ocrs text recognition model by Robert Knight\n(huggingface.co/robertknight/ocrs), licensed CC BY-SA 4.0\n(creativecommons.org/licenses/by-sa/4.0), included unmodified.",
                 ) != Outcome::Open;
             }
             Dialog::Message(title, text) => done = dlg::message(ctx, title, text) != Outcome::Open,
@@ -671,23 +730,10 @@ impl App {
                     let t = &mut self.tabs[self.active];
                     match parse_page_range(&s.pages, t.page_count()) {
                         Ok(idx) => {
-                            let (tab, revision, opts) = (t.id, t.revision, s.o);
-                            let mut pdf = t.pdf.clone();
-                            let (tx, ctx2) = (self.tx.clone(), ctx.clone());
-                            std::thread::spawn(move || {
-                                let result = pdf
-                                    .optimize_scans(&idx, &opts)
-                                    .map(|report| (pdf, report))
-                                    .map_err(|e| format!("{e:#}"));
-                                let _ = tx.send(Loaded::Scans {
-                                    tab,
-                                    revision,
-                                    result,
-                                });
-                                ctx2.request_repaint();
+                            let opts = s.o;
+                            self.spawn_job(ctx, "Optimise scanned pages", move |p| {
+                                Ok(scan_summary(&p.optimize_scans(&idx, &opts)?))
                             });
-                            self.scanning = true;
-                            self.status = "Optimising scanned pages…".into();
                             done = true;
                         }
                         Err(e) => t.error = Some(e.to_string()),
@@ -755,7 +801,12 @@ impl App {
                         return false;
                     }
                 };
-                if kind == dlg::RangeKind::Delete {
+                if kind == dlg::RangeKind::Ocr {
+                    self.spawn_job(ctx, "Recognise text", move |p| {
+                        let ocr = mpe_core::Ocr::bundled()?;
+                        Ok(ocr_summary(&p.ocr_pages(&idx, &ocr)?))
+                    });
+                } else if kind == dlg::RangeKind::Delete {
                     t.edit(ctx, |p| p.delete_pages(&idx));
                 } else {
                     match t.pdf.extract(&idx) {
@@ -927,8 +978,9 @@ impl eframe::App for App {
                     item(ui, "Extract pages to new tab…", "", has, Act::Extract);
                     item(ui, "Insert blank page…", "", has, Act::Blank);
                     item(ui, "Insert images…", "", has, Act::InsertImages);
-                    let can_scan = has && !self.scanning;
-                    item(ui, "Optimise scanned pages…", "", can_scan, Act::Scans);
+                    let idle = has && !self.busy;
+                    item(ui, "Optimise scanned pages…", "", idle, Act::Scans);
+                    item(ui, "Recognise text (OCR)…", "", idle, Act::Ocr);
                     item(ui, "Append PDFs…", "", has, Act::Merge);
                     item(ui, "Split into files…", "", has, Act::Split);
                     ui.separator();

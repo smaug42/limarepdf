@@ -195,7 +195,7 @@ impl Pdf {
         Ok(Target {
             id,
             dpi: width_px as f32 / width_in.max(1e-3),
-            has_text: parsed.objs.iter().any(|o| o.kind == ObjectKind::Text),
+            has_text: parsed.shows_text(),
         })
     }
 }
@@ -464,7 +464,7 @@ fn auto_mode(img: &Img) -> ScanMode {
 }
 
 /// Otsu threshold: pixels at or below it become black.
-fn binarise(g: &GrayImage) -> GrayImage {
+pub(crate) fn binarise(g: &GrayImage) -> GrayImage {
     let mut hist = [0u64; 256];
     for p in g.pixels() {
         hist[p.0[0] as usize] += 1;

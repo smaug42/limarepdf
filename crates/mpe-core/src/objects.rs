@@ -102,6 +102,16 @@ pub(crate) struct Parsed {
     pub inline: Vec<Vec<u8>>,
 }
 
+impl Parsed {
+    /// Whether the page content shows any text, visible or not. `objs` leaves out
+    /// invisible text, such as an OCR layer.
+    pub fn shows_text(&self) -> bool {
+        self.ops
+            .iter()
+            .any(|o| matches!(o.operator.as_str(), "Tj" | "TJ" | "'" | "\""))
+    }
+}
+
 #[derive(Clone)]
 struct Gs {
     ctm: M,

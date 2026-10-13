@@ -9,8 +9,8 @@ macro_rules! out {
 }
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use mpe_core::{
-    parse_page_range, render, Bates, Cipher, Encryption, HeaderFooter, ImageImport, Info, Pdf,
-    Restrictions, ScanMode, ScanOptions, ScanResult, Watermark,
+    parse_page_range, render, Bates, Cipher, Encryption, HeaderFooter, ImageImport, Info, Ocr,
+    OcrResult, Pdf, Restrictions, ScanMode, ScanOptions, ScanResult, Watermark,
 };
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
@@ -136,6 +136,14 @@ enum Cmd {
         /// Do not remove specks from black-and-white pages
         #[arg(long)]
         no_despeckle: bool,
+    },
+    /// Recognise text on pages that have none (scans) and add it as an invisible,
+    /// searchable layer. Latin script only
+    Ocr {
+        #[command(flatten)]
+        io: Io,
+        #[arg(long, default_value = "all")]
+        pages: String,
     },
     /// Insert images as pages after page N (0 = at the start)
     InsertImages {
@@ -497,6 +505,19 @@ fn main() -> Result<()> {
                 }
             }
             out!("images: {} -> {}", kb(before_all), kb(after_all));
+            Ok(())
+        })?,
+        Cmd::Ocr { io, pages } => run_edit(&io, |p| {
+            let idx = parse_page_range(&pages, p.page_count())?;
+            let ocr = Ocr::bundled()?;
+            for (i, r) in p.ocr_pages(&idx, &ocr)? {
+                match r {
+                    OcrResult::Added { lines, words } => {
+                        out!("page {}: {lines} lines, {words} words", i + 1)
+                    }
+                    OcrResult::Skipped(why) => out!("page {}: skipped: {why}", i + 1),
+                }
+            }
             Ok(())
         })?,
         Cmd::InsertImages {

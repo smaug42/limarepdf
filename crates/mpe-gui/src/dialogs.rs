@@ -287,6 +287,7 @@ pub enum RangeKind {
     Extract,
     Delete,
     SplitEvery,
+    Ocr,
 }
 pub struct Range {
     pub kind: RangeKind,
@@ -297,6 +298,10 @@ pub fn range(ctx: &Context, s: &mut Range) -> Outcome {
         RangeKind::Extract => ("Extract pages", "Pages to extract (e.g. 1-3,7):"),
         RangeKind::Delete => ("Delete pages", "Pages to delete (e.g. 2,4-6):"),
         RangeKind::SplitEvery => ("Split document", "Pages per file:"),
+        RangeKind::Ocr => (
+            "Recognise text (OCR)",
+            "Pages (only those without text; Latin script):",
+        ),
     };
     modal(ctx, title, |ui| {
         ui.label(label);

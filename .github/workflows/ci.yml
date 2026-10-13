@@ -27,6 +27,8 @@ jobs:
           ext=""; [ "${{ runner.os }}" = "Windows" ] && ext=".exe"
           cp target/release/mpe$ext target/release/mpe-gui$ext dist/
           cp README.md LICENSE-MIT LICENSE-APACHE dist/
+          # Attribution and licence for the OCR model built into the binaries.
+          cp crates/mpe-core/models/README.md dist/OCR-MODEL.md
       - uses: actions/upload-artifact@v4
         with:
           name: mpe-${{ matrix.name }}

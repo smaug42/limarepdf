@@ -22,6 +22,24 @@ tiff = "0.11"
 egui-phosphor = "0.14"
 rfd = "0.17"
 
+# OCR inference is about 100x slower unoptimised; optimise these even in debug builds.
+[profile.dev.package.ocrs]
+opt-level = 3
+[profile.dev.package.rten]
+opt-level = 3
+[profile.dev.package.rten-base]
+opt-level = 3
+[profile.dev.package.rten-gemm]
+opt-level = 3
+[profile.dev.package.rten-imageproc]
+opt-level = 3
+[profile.dev.package.rten-simd]
+opt-level = 3
+[profile.dev.package.rten-tensor]
+opt-level = 3
+[profile.dev.package.rten-vecmath]
+opt-level = 3
+
 [profile.release]
 opt-level = 3
 lto = "fat"

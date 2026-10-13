@@ -208,6 +208,33 @@ fn tilted_scan_is_straightened() {
 }
 
 #[test]
+fn scan_with_invisible_text_is_not_straightened() {
+    // An OCR layer is invisible text; straightening would move the image under it.
+    let mut p = scanned(DynamicImage::ImageLuma8(text_scan(2.0)), 300.0);
+    let page = p.page_ids()[0];
+    let old = p
+        .doc
+        .get_dictionary(page)
+        .unwrap()
+        .get(b"Contents")
+        .unwrap()
+        .clone();
+    let layer = p.doc.add_object(Stream::new(
+        Dictionary::new(),
+        b"BT 3 Tr /F1 12 Tf 10 10 Td (word) Tj ET".to_vec(),
+    ));
+    p.doc
+        .get_dictionary_mut(page)
+        .unwrap()
+        .set("Contents", vec![old, Object::Reference(layer)]);
+    let o = ScanOptions {
+        deskew: true,
+        ..opts()
+    };
+    assert_eq!(optimized(&optimize(&mut p, &o)).3, None);
+}
+
+#[test]
 fn level_scan_is_not_rotated() {
     let mut p = scanned(DynamicImage::ImageLuma8(text_scan(0.0)), 300.0);
     let o = ScanOptions {
