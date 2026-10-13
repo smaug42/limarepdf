@@ -706,70 +706,49 @@ impl Editor {
         }
     }
 
-    /// Keyboard shortcuts for the selection (only called when no text field has focus).
-    /// `current` is the page in view.
-    pub fn keys(&mut self, ctx: &egui::Context, pdf: &mpe_core::Pdf, current: usize) {
-        if self.tool == Tool::SelectText {
-            let (copy, all, esc) = ctx.input(|i| {
-                (
-                    i.events.iter().any(|e| matches!(e, egui::Event::Copy)),
-                    i.modifiers.command && i.key_pressed(egui::Key::A),
-                    i.key_pressed(egui::Key::Escape),
-                )
-            });
-            if copy {
-                if let Some(t) = self.selected_text() {
-                    ctx.copy_text(t);
-                }
-            }
-            if all {
-                let n = self.words(pdf, current).len();
-                self.text_sel = n.checked_sub(1).map(|last| (current, 0, last));
-            }
-            if esc {
-                self.text_sel = None;
-            }
-            return;
-        }
-        if self.tool == Tool::View {
-            return;
-        }
-        let (del, esc, left, right, up, down, shift) = ctx.input(|i| {
-            (
-                i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace),
-                i.key_pressed(egui::Key::Escape),
-                i.key_pressed(egui::Key::ArrowLeft),
-                i.key_pressed(egui::Key::ArrowRight),
-                i.key_pressed(egui::Key::ArrowUp),
-                i.key_pressed(egui::Key::ArrowDown),
-                i.modifiers.shift,
-            )
-        });
-        if esc {
-            self.new_text = None;
-            if self.tool != Tool::Select {
-                self.tool = Tool::Select;
-            } else {
-                self.sel = None;
-            }
-        }
-        let Some((p, id)) = self.sel else { return };
-        if del {
+    /// Select every word on page `page` (text tool).
+    pub fn select_all_words(&mut self, pdf: &mpe_core::Pdf, page: usize) {
+        let n = self.words(pdf, page).len();
+        self.text_sel = n.checked_sub(1).map(|last| (page, 0, last));
+    }
+
+    /// Whether an object is selected and can be deleted or moved.
+    pub fn has_object(&self) -> bool {
+        self.sel.is_some() && !matches!(self.tool, Tool::View | Tool::SelectText)
+    }
+
+    pub fn delete_selected(&mut self) {
+        if let Some((p, id)) = self.sel {
             self.actions.push(Action::Delete(p, id));
         }
-        let step = if shift { 10.0 } else { 1.0 };
-        let (dx, dy) = (
-            (right as i32 - left as i32) as f32 * step,
-            (down as i32 - up as i32) as f32 * step,
-        );
-        if dx != 0.0 || dy != 0.0 {
-            if let Some(o) = self.objs.get(&p).and_then(|v| v.get(id)) {
-                let b = o.bbox;
-                self.actions.push(Action::SetBox(
-                    p,
-                    id,
-                    [b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy],
-                ));
+    }
+
+    /// Move the selected object by (dx, dy) points.
+    pub fn nudge(&mut self, dx: f32, dy: f32) {
+        let Some((p, id)) = self.sel else { return };
+        if let Some(o) = self.objs.get(&p).and_then(|v| v.get(id)) {
+            let b = o.bbox;
+            self.actions.push(Action::SetBox(
+                p,
+                id,
+                [b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy],
+            ));
+        }
+    }
+
+    /// Esc: clear the word selection (text tool); otherwise drop unfinished text, leave
+    /// a drawing tool for the arrow, or with the arrow clear the selection.
+    pub fn escape(&mut self) {
+        match self.tool {
+            Tool::View => {}
+            Tool::SelectText => self.text_sel = None,
+            Tool::Select => {
+                self.new_text = None;
+                self.sel = None;
+            }
+            _ => {
+                self.new_text = None;
+                self.tool = Tool::Select;
             }
         }
     }

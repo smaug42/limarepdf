@@ -1,8 +1,9 @@
+use crate::actions::{self, Act, Action, Ctx, Group, ACTIONS};
 use crate::dialogs::{self as dlg, Outcome};
 use crate::editor::Tool;
 use crate::tab::{Side, Tab};
 use crate::theme;
-use eframe::egui::{self, Key, KeyboardShortcut, Modifiers};
+use eframe::egui::{self, Key};
 use egui_phosphor::regular as icon;
 use mpe_core::render::{image_names, ImageFormat};
 use mpe_core::{
@@ -147,41 +148,12 @@ enum Dialog {
     About,
 }
 
-#[derive(Clone, Copy)]
-enum Act {
-    Open,
-    NewFromImages,
-    InsertImages,
-    Scans,
-    Ocr,
-    Save,
-    SaveAs,
-    ExportImages,
-    ExportText,
-    Print,
-    CloseTab,
-    Quit,
-    Undo,
-    Redo,
-    Find,
-    Copy,
-    ZoomIn,
-    ZoomOut,
-    FitWidth,
-    Actual,
-    RotL,
-    RotR,
-    Delete,
-    Extract,
-    Blank,
-    Merge,
-    Split,
-    HeaderFooter,
-    Watermark,
-    Props,
-    Security,
-    About,
-    Theme(egui::ThemePreference),
+/// The command palette (Ctrl+K) while it is open.
+#[derive(Default)]
+struct Palette {
+    query: String,
+    /// Highlighted row among the matches.
+    row: usize,
 }
 
 pub struct App {
@@ -199,6 +171,7 @@ pub struct App {
     busy: bool,
     /// Put the keyboard focus in the top bar's search field (Ctrl+F).
     focus_search: bool,
+    palette: Option<Palette>,
 }
 
 impl App {
@@ -218,6 +191,7 @@ impl App {
             quit_ok: false,
             busy: false,
             focus_search: false,
+            palette: None,
         };
         let (images, pdfs): (Vec<_>, Vec<_>) = files.into_iter().partition(|p| is_image(p));
         for f in pdfs {
@@ -518,7 +492,38 @@ impl App {
             }
             Act::About => self.dialog = Dialog::About,
             Act::Theme(p) => ctx.set_theme(p),
+            Act::ToggleSide => self.show_side = !self.show_side,
+            Act::Palette => self.palette = Some(Palette::default()),
             _ if !has => {}
+            Act::ToggleHidden => {
+                let ed = &mut self.tabs[self.active].ed;
+                ed.show_hidden = !ed.show_hidden;
+            }
+            Act::Tool(Tool::Image) => self.tabs[self.active].choose_image(),
+            Act::Tool(tool) => self.tabs[self.active].ed.set_tool(tool),
+            Act::SelectAllText => {
+                let t = &mut self.tabs[self.active];
+                t.ed.select_all_words(&t.pdf, t.current);
+            }
+            Act::DeleteObject => self.tabs[self.active].ed.delete_selected(),
+            Act::Nudge(dx, dy) => {
+                let shift = ctx.input(|i| i.modifiers.shift);
+                let step = if shift { 10.0 } else { 1.0 };
+                let (dx, dy) = (dx as f32 * step, dy as f32 * step);
+                self.tabs[self.active].ed.nudge(dx, dy);
+            }
+            Act::Escape => self.tabs[self.active].ed.escape(),
+            Act::NextPage | Act::PrevPage | Act::FirstPage | Act::LastPage => {
+                let t = &mut self.tabs[self.active];
+                let last = t.page_count().saturating_sub(1);
+                let to = match a {
+                    Act::NextPage => (t.current + 1).min(last),
+                    Act::PrevPage => t.current.saturating_sub(1),
+                    Act::FirstPage => 0,
+                    _ => last,
+                };
+                t.go_to(to);
+            }
             Act::Undo => self.tabs[self.active].undo(ctx),
             Act::Redo => self.tabs[self.active].redo(ctx),
             Act::Copy => {
@@ -977,143 +982,213 @@ impl App {
         }
     }
 
-    /// The former menu bar, as submenus of the top bar's menu button. `can` is undo,
-    /// redo and copy.
-    fn menu(
-        &mut self,
-        ui: &mut egui::Ui,
-        acts: &mut Vec<Act>,
-        has: bool,
-        idle: bool,
-        can: (bool, bool, bool),
-    ) {
-        let (can_undo, can_redo, can_copy) = can;
-        let mut item = |ui: &mut egui::Ui, label: &str, key: &str, enabled: bool, act: Act| {
-            let b = egui::Button::new(label).shortcut_text(key);
-            if ui.add_enabled(enabled, b).clicked() {
-                acts.push(act);
-                ui.close();
-            }
+    /// The state the commands' conditions are checked against.
+    fn state(&self, ctx: &egui::Context) -> Ctx {
+        let t = self.tabs.get(self.active);
+        Ctx {
+            doc: t.is_some(),
+            busy: self.busy,
+            can_undo: t.is_some_and(|t| t.can_undo()),
+            can_redo: t.is_some_and(|t| t.can_redo()),
+            words: t.is_some_and(|t| t.ed.selected_text().is_some()),
+            object: t.is_some_and(|t| t.ed.has_object()),
+            tool: t.map(|t| t.ed.tool),
+            side: self.show_side,
+            hidden_text: t.is_some_and(|t| t.ed.show_hidden),
+            theme: ctx.options(|o| o.theme_preference),
+        }
+    }
+
+    /// The menu: one submenu per group, built from the registry.
+    fn menu(ui: &mut egui::Ui, c: &Ctx, acts: &mut Vec<Act>) {
+        for g in Group::MENUS {
+            ui.menu_button(g.name(), |ui| {
+                let items: Vec<&Action> =
+                    ACTIONS.iter().filter(|a| a.group == g && a.menu).collect();
+                let mut i = 0;
+                while i < items.len() {
+                    let a = items[i];
+                    if a.sep && i > 0 {
+                        ui.separator();
+                    }
+                    if a.submenu.is_empty() {
+                        menu_item(ui, a, c, acts);
+                        i += 1;
+                        continue;
+                    }
+                    // A run of items with the same submenu becomes one submenu.
+                    let n = items[i..]
+                        .iter()
+                        .take_while(|b| b.submenu == a.submenu)
+                        .count();
+                    ui.menu_button(a.submenu, |ui| {
+                        for b in &items[i..i + n] {
+                            menu_item(ui, b, c, acts);
+                        }
+                    });
+                    i += n;
+                }
+            });
+        }
+    }
+
+    /// The command palette (Ctrl+K): type to filter the commands, Up and Down to move,
+    /// Enter or a click to run, Esc or a click outside to close.
+    fn palette_ui(&mut self, ctx: &egui::Context, c: &Ctx, acts: &mut Vec<Act>) {
+        let Some(p) = self.palette.as_mut() else {
+            return;
         };
-        ui.menu_button("File", |ui| {
-            item(ui, "Open…", "Ctrl+O", true, Act::Open);
-            item(ui, "New from images…", "", true, Act::NewFromImages);
-            item(ui, "Save", "Ctrl+S", has, Act::Save);
-            item(ui, "Save As…", "Ctrl+Shift+S", has, Act::SaveAs);
-            ui.separator();
-            item(ui, "Export pages as images…", "", idle, Act::ExportImages);
-            item(ui, "Export text…", "", has, Act::ExportText);
-            item(ui, "Print…", "Ctrl+P", idle, Act::Print);
-            ui.separator();
-            item(ui, "Close tab", "Ctrl+W", has, Act::CloseTab);
-            ui.separator();
-            item(ui, "Quit", "", true, Act::Quit);
+        let items: Vec<&Action> = ACTIONS
+            .iter()
+            .filter(|a| a.palette && actions::matches(a, &p.query))
+            .collect();
+        let (up, down, enter) = ctx.input_mut(|i| {
+            let none = egui::Modifiers::NONE;
+            (
+                i.consume_key(none, Key::ArrowUp),
+                i.consume_key(none, Key::ArrowDown),
+                i.consume_key(none, Key::Enter),
+            )
         });
-        ui.menu_button("Edit", |ui| {
-            item(ui, "Undo", "Ctrl+Z", can_undo, Act::Undo);
-            item(ui, "Redo", "Ctrl+Y", can_redo, Act::Redo);
-            ui.separator();
-            item(ui, "Copy text", "Ctrl+C", can_copy, Act::Copy);
-            item(ui, "Find…", "Ctrl+F", has, Act::Find);
-        });
-        ui.menu_button("View", |ui| {
-            item(ui, "Zoom in", "Ctrl+=", has, Act::ZoomIn);
-            item(ui, "Zoom out", "Ctrl+-", has, Act::ZoomOut);
-            item(ui, "Fit width", "Ctrl+0", has, Act::FitWidth);
-            item(ui, "Actual size", "Ctrl+1", has, Act::Actual);
-            ui.separator();
-            ui.checkbox(&mut self.show_side, "Side panel");
-            if let Some(t) = self.tabs.get_mut(self.active) {
-                ui.checkbox(&mut t.ed.show_hidden, "Show recognised text")
-                    .on_hover_text(
-                        "Outline the invisible text added by OCR. Hover to read it; \
-                         select it with the arrow tool to correct it.",
-                    );
+        let last = items.len().saturating_sub(1);
+        if up {
+            p.row = p.row.saturating_sub(1);
+        }
+        if down {
+            p.row = (p.row + 1).min(last);
+        }
+        p.row = p.row.min(last);
+        let mut run = None;
+        let modal = egui::Modal::new(egui::Id::new("palette")).show(ctx, |ui| {
+            ui.set_width(480.0);
+            let field = egui::TextEdit::singleline(&mut p.query)
+                .hint_text("Type a command")
+                .desired_width(f32::INFINITY);
+            let r = ui.add(field);
+            r.request_focus();
+            if r.changed() {
+                p.row = 0;
             }
-            ui.menu_button("Theme", |ui| {
-                for (label, pref) in [
-                    ("System", egui::ThemePreference::System),
-                    ("Light", egui::ThemePreference::Light),
-                    ("Dark", egui::ThemePreference::Dark),
-                ] {
-                    item(ui, label, "", true, Act::Theme(pref));
+            ui.separator();
+            let list = egui::ScrollArea::vertical().max_height(360.0);
+            list.show(ui, |ui| {
+                if items.is_empty() {
+                    ui.weak("No matching command.");
+                }
+                for (n, a) in items.iter().enumerate() {
+                    let on = n == p.row;
+                    let r = palette_row(ui, a, n, on, (a.enabled)(c));
+                    if on && (up || down) {
+                        r.scroll_to_me(None);
+                    }
+                    if r.clicked() {
+                        run = Some(a.act);
+                    }
                 }
             });
         });
-        ui.menu_button("Document", |ui| {
-            item(ui, "Rotate clockwise", "", has, Act::RotR);
-            item(ui, "Rotate counter-clockwise", "", has, Act::RotL);
-            item(ui, "Delete pages…", "", has, Act::Delete);
-            item(ui, "Extract pages to new tab…", "", has, Act::Extract);
-            item(ui, "Insert blank page…", "", has, Act::Blank);
-            item(ui, "Insert images…", "", has, Act::InsertImages);
-            item(ui, "Optimise scanned pages…", "", idle, Act::Scans);
-            item(ui, "Recognise text (OCR)…", "", idle, Act::Ocr);
-            item(ui, "Append PDFs…", "", has, Act::Merge);
-            item(ui, "Split into files…", "", has, Act::Split);
-            ui.separator();
-            item(ui, "Headers, footers, Bates…", "", has, Act::HeaderFooter);
-            item(ui, "Watermark…", "", has, Act::Watermark);
-            ui.separator();
-            item(ui, "Properties…", "", has, Act::Props);
-            item(ui, "Password security…", "", has, Act::Security);
-        });
-        ui.menu_button("Help", |ui| item(ui, "About", "", true, Act::About));
+        if enter {
+            if let Some(a) = items.get(p.row).filter(|a| (a.enabled)(c)) {
+                run = Some(a.act);
+            }
+        }
+        if run.is_some() || modal.should_close() {
+            self.palette = None;
+        }
+        acts.extend(run);
     }
 
+    /// Keyboard shortcuts, from the registry. Ctrl/Cmd shortcuts work anywhere and are
+    /// consumed. Plain keys (Delete, arrows, Esc, PageUp…), Ctrl+A and Ctrl+C act only
+    /// when no text field has focus, so they never take over typing, and are not
+    /// consumed, as before (Esc also closes menus). Nothing runs while the palette is
+    /// open; it handles its own keys.
     fn shortcuts(&mut self, ctx: &egui::Context) {
+        if self.palette.is_some() {
+            return;
+        }
+        let c = self.state(ctx);
+        let typing = ctx.egui_wants_keyboard_input();
         let mut acts = Vec::new();
         ctx.input_mut(|i| {
-            let c = |k| KeyboardShortcut::new(Modifiers::COMMAND, k);
-            let cs = |k| KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, k);
-            for (sc, a) in [
-                (c(Key::O), Act::Open),
-                (c(Key::P), Act::Print),
-                (cs(Key::S), Act::SaveAs),
-                (c(Key::S), Act::Save),
-                (c(Key::W), Act::CloseTab),
-                (cs(Key::Z), Act::Redo),
-                (c(Key::Z), Act::Undo),
-                (c(Key::Y), Act::Redo),
-                (c(Key::F), Act::Find),
-                (c(Key::Num0), Act::FitWidth),
-                (c(Key::Num1), Act::Actual),
-                (c(Key::Equals), Act::ZoomIn),
-                (c(Key::Minus), Act::ZoomOut),
-            ] {
-                if i.consume_shortcut(&sc) {
-                    acts.push(a);
+            for (a, k) in actions::shortcuts() {
+                let page_only = matches!(a.act, Act::Copy | Act::SelectAllText);
+                let global = k.modifiers.command && !page_only;
+                if (typing && !global) || !(a.enabled)(&c) {
+                    continue;
+                }
+                let hit = if a.act == Act::Copy {
+                    // Ctrl+C arrives as a Copy event, not as a key press.
+                    i.events.iter().any(|e| matches!(e, egui::Event::Copy))
+                } else if global {
+                    i.consume_shortcut(&k)
+                } else {
+                    i.modifiers.matches_logically(k.modifiers) && i.key_pressed(k.logical_key)
+                };
+                if hit {
+                    acts.push(a.act);
                 }
             }
         });
         for a in acts {
             self.act(ctx, a);
         }
-        if ctx.egui_wants_keyboard_input() || self.tabs.is_empty() {
-            return;
+    }
+}
+
+/// One menu entry: a checkbox for on/off commands, else a button with its shortcut.
+fn menu_item(ui: &mut egui::Ui, a: &Action, c: &Ctx, acts: &mut Vec<Act>) {
+    let enabled = (a.enabled)(c);
+    let r = match a.checked {
+        Some(on) => {
+            let mut v = on(c);
+            ui.add_enabled(enabled, egui::Checkbox::new(&mut v, a.label))
         }
-        let (down, up, home, end) = ctx.input(|i| {
-            (
-                i.key_pressed(Key::PageDown),
-                i.key_pressed(Key::PageUp),
-                i.key_pressed(Key::Home),
-                i.key_pressed(Key::End),
-            )
-        });
-        let t = &mut self.tabs[self.active];
-        let last = t.page_count().saturating_sub(1);
-        if down {
-            t.go_to((t.current + 1).min(last));
+        None => {
+            let key = a.keys.first().map(|k| ui.ctx().format_shortcut(k));
+            let b = egui::Button::new(a.label).shortcut_text(key.unwrap_or_default());
+            ui.add_enabled(enabled, b)
         }
-        if up {
-            t.go_to(t.current.saturating_sub(1));
+    };
+    let r = if a.hint.is_empty() {
+        r
+    } else {
+        r.on_hover_text(a.hint)
+    };
+    if r.clicked() {
+        acts.push(a.act);
+        if a.checked.is_none() {
+            ui.close();
         }
-        if home {
-            t.go_to(0);
-        }
-        if end {
-            t.go_to(last);
-        }
+    }
+}
+
+/// One row of the command palette: icon, label, then group and shortcut on the right.
+/// `n` is the row number; `on` highlights it.
+fn palette_row(ui: &mut egui::Ui, a: &Action, n: usize, on: bool, enabled: bool) -> egui::Response {
+    let glyph = if a.icon.is_empty() {
+        // Keeps labels aligned with the rows that have an icon.
+        egui::Atom::custom(egui::Id::new(("palette-icon", n)), [18.0, 18.0])
+    } else {
+        theme::icon(a.icon).size(16.0).into()
+    };
+    let right = match a.keys.first() {
+        Some(k) => format!("{}    {}", a.group.name(), ui.ctx().format_shortcut(k)),
+        None => a.group.name().to_string(),
+    };
+    let b = egui::Button::new((glyph, a.label))
+        .shortcut_text(right)
+        .selected(on)
+        .frame_when_inactive(on)
+        .min_size(egui::vec2(ui.available_width(), 28.0));
+    ui.add_enabled(enabled, b)
+}
+
+/// Tooltip for a command: its label and first shortcut.
+fn tooltip(ctx: &egui::Context, a: &Action) -> String {
+    match a.keys.first() {
+        Some(k) => format!("{} ({})", a.label, ctx.format_shortcut(k)),
+        None => a.label.to_string(),
     }
 }
 
@@ -1152,24 +1227,21 @@ impl eframe::App for App {
 
         let mut acts: Vec<Act> = Vec::new();
         let has = !self.tabs.is_empty();
-        let (can_undo, can_redo) = self
-            .tabs
-            .get(self.active)
-            .map(|t| (t.can_undo(), t.can_redo()))
-            .unwrap_or((false, false));
-        let can_copy = self
-            .tabs
-            .get(self.active)
-            .is_some_and(|t| t.ed.selected_text().is_some());
+        let c = self.state(&ctx);
 
-        let idle = has && !self.busy;
-        // Toolbar icon: no frame until hovered, except when `on` (the active tool).
-        let icon_btn = |ui: &mut egui::Ui, glyph: &str, tip: &str, on: bool, enabled: bool| {
-            let b = egui::Button::new(theme::icon(glyph).size(18.0))
+        // A top-bar button for a command: its icon, no frame until hovered except when
+        // `on` (the active tool), its label and shortcut as the tooltip.
+        let bar = |ui: &mut egui::Ui, act: Act, on: bool, acts: &mut Vec<Act>| {
+            let a = actions::get(act);
+            let b = egui::Button::new(theme::icon(a.icon).size(18.0))
                 .selected(on)
                 .frame_when_inactive(on)
                 .min_size(egui::vec2(28.0, 28.0));
-            ui.add_enabled(enabled, b).on_hover_text(tip).clicked()
+            let tip = tooltip(ui.ctx(), a);
+            let r = ui.add_enabled((a.enabled)(&c), b);
+            if r.on_hover_text(tip).clicked() {
+                acts.push(act);
+            }
         };
         let menu_icon = |glyph: &str| theme::icon(glyph).size(18.0);
 
@@ -1177,9 +1249,8 @@ impl eframe::App for App {
             .frame(theme::bar_frame(ui.style()))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    // Every command, until the action registry replaces this menu.
                     ui.menu_button(menu_icon(icon::LIST), |ui| {
-                        self.menu(ui, &mut acts, has, idle, (can_undo, can_redo, can_copy));
+                        Self::menu(ui, &c, &mut acts);
                     })
                     .response
                     .on_hover_text("Menu");
@@ -1195,60 +1266,22 @@ impl eframe::App for App {
                     if !has {
                         return;
                     }
-                    if icon_btn(ui, icon::FLOPPY_DISK, "Save (Ctrl+S)", false, true) {
-                        acts.push(Act::Save);
-                    }
+                    bar(ui, Act::Save, false, &mut acts);
                     ui.separator();
-                    if icon_btn(
-                        ui,
-                        icon::ARROW_COUNTER_CLOCKWISE,
-                        "Undo (Ctrl+Z)",
-                        false,
-                        can_undo,
-                    ) {
-                        acts.push(Act::Undo);
-                    }
-                    if icon_btn(ui, icon::ARROW_CLOCKWISE, "Redo (Ctrl+Y)", false, can_redo) {
-                        acts.push(Act::Redo);
-                    }
+                    bar(ui, Act::Undo, false, &mut acts);
+                    bar(ui, Act::Redo, false, &mut acts);
                     ui.separator();
                     let wide = ui.available_width() > 640.0;
-                    let t = &mut self.tabs[self.active];
-                    let cur = t.ed.tool;
-                    for (tool, glyph, tip) in [
-                        (Tool::View, icon::HAND, "Read only (no editing)"),
-                        (
-                            Tool::Select,
-                            icon::CURSOR,
-                            "Select, move and resize objects",
-                        ),
-                        (Tool::SelectText, icon::CURSOR_TEXT, "Select and copy text"),
-                        (Tool::Text, icon::TEXT_T, "Add text"),
-                        (Tool::Rect, icon::SQUARE, "Add rectangle"),
-                        (Tool::Ellipse, icon::CIRCLE, "Add ellipse"),
-                        (Tool::Line, icon::LINE_SEGMENT, "Add line"),
-                    ] {
-                        if icon_btn(ui, glyph, tip, cur == tool, true) {
-                            t.ed.set_tool(tool);
-                        }
-                    }
-                    if icon_btn(ui, icon::IMAGE, "Add image…", cur == Tool::Image, true) {
-                        t.choose_image();
+                    for a in ACTIONS.iter().filter(|a| a.group == Group::Tools) {
+                        let on = matches!(a.act, Act::Tool(t) if c.tool == Some(t));
+                        bar(ui, a.act, on, &mut acts);
                     }
 
                     // Right-hand side, laid out from the right edge.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.menu_button(menu_icon(icon::EXPORT), |ui| {
-                            for (label, key, enabled, act) in [
-                                ("Export pages as images…", "", idle, Act::ExportImages),
-                                ("Export text…", "", true, Act::ExportText),
-                                ("Print…", "Ctrl+P", idle, Act::Print),
-                            ] {
-                                let b = egui::Button::new(label).shortcut_text(key);
-                                if ui.add_enabled(enabled, b).clicked() {
-                                    acts.push(act);
-                                    ui.close();
-                                }
+                            for act in [Act::ExportImages, Act::ExportText, Act::Print] {
+                                menu_item(ui, actions::get(act), &c, &mut acts);
                             }
                         })
                         .response
@@ -1270,37 +1303,20 @@ impl eframe::App for App {
                                 t.side = Side::Search;
                                 self.show_side = true;
                             }
-                        } else if icon_btn(ui, icon::MAGNIFYING_GLASS, "Find (Ctrl+F)", false, true)
-                        {
-                            acts.push(Act::Find);
+                        } else {
+                            bar(ui, Act::Find, false, &mut acts);
                         }
                         ui.separator();
-                        if icon_btn(ui, icon::ARROWS_OUT, "Fit width (Ctrl+0)", false, true) {
-                            acts.push(Act::FitWidth);
-                        }
-                        if icon_btn(
-                            ui,
-                            icon::MAGNIFYING_GLASS_PLUS,
-                            "Zoom in (Ctrl+=)",
-                            false,
-                            true,
-                        ) {
-                            acts.push(Act::ZoomIn);
-                        }
+                        bar(ui, Act::FitWidth, false, &mut acts);
+                        bar(ui, Act::ZoomIn, false, &mut acts);
+                        // The zoom level; clicking it resets to actual size.
                         let pct = format!("{:.0}%", t.zoom * 100.0);
                         let b = egui::Button::new(pct).frame_when_inactive(false);
-                        if ui.add(b).on_hover_text("Actual size (Ctrl+1)").clicked() {
+                        let tip = tooltip(ui.ctx(), actions::get(Act::Actual));
+                        if ui.add(b).on_hover_text(tip).clicked() {
                             acts.push(Act::Actual);
                         }
-                        if icon_btn(
-                            ui,
-                            icon::MAGNIFYING_GLASS_MINUS,
-                            "Zoom out (Ctrl+-)",
-                            false,
-                            true,
-                        ) {
-                            acts.push(Act::ZoomOut);
-                        }
+                        bar(ui, Act::ZoomOut, false, &mut acts);
                     });
                 });
             });
@@ -1427,6 +1443,7 @@ impl eframe::App for App {
             }
         }
 
+        self.palette_ui(&ctx, &c, &mut acts);
         for a in acts {
             self.act(&ctx, a);
         }
