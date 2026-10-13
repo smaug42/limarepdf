@@ -1184,6 +1184,66 @@ fn palette_row(ui: &mut egui::Ui, a: &Action, n: usize, on: bool, enabled: bool)
     ui.add_enabled(enabled, b)
 }
 
+/// The window with no document: a card to open a PDF or start from images. The card
+/// is a drop target and is clickable as a whole; it lights up while files are dragged
+/// over the window.
+fn empty_state(ui: &mut egui::Ui, acts: &mut Vec<Act>) {
+    let dragging = ui.input(|i| !i.raw.hovered_files.is_empty());
+    let room = ui.max_rect();
+    let size = egui::vec2(440.0, 280.0).min(room.size() - egui::vec2(32.0, 32.0));
+    let card = egui::Rect::from_center_size(room.center(), size.max(egui::vec2(1.0, 1.0)));
+    let id = egui::Id::new("empty-card");
+    let r = ui
+        .interact(card, id, egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let v = ui.visuals();
+    let accent = theme::accent(v.dark_mode);
+    let stroke = if dragging || r.hovered() {
+        egui::Stroke::new(2.0, accent)
+    } else {
+        egui::Stroke::new(1.0, v.widgets.noninteractive.bg_stroke.color)
+    };
+    let inside = egui::StrokeKind::Inside;
+    ui.painter().rect(card, 12, v.panel_fill, stroke, inside);
+
+    let layout = egui::Layout::top_down(egui::Align::Center);
+    let inner = card.shrink(24.0);
+    let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
+    ui.add_space(8.0);
+    ui.label(theme::icon(icon::FILE_PDF).size(44.0).color(accent));
+    ui.add_space(8.0);
+    let heading = if dragging {
+        "Drop to open"
+    } else {
+        "Open a PDF to get started"
+    };
+    ui.heading(heading);
+    ui.add_space(16.0);
+    let open = theme::primary_button("Open PDF…").min_size(egui::vec2(180.0, 32.0));
+    if ui.add(open).clicked() {
+        acts.push(Act::Open);
+    }
+    ui.add_space(4.0);
+    let images = egui::Button::new("New from images…").min_size(egui::vec2(180.0, 28.0));
+    if ui.add(images).clicked() {
+        acts.push(Act::NewFromImages);
+    }
+    ui.add_space(16.0);
+    ui.weak("or drop PDF and image files anywhere in this window");
+    let keys = |a: Act| {
+        let k = actions::get(a).keys[0];
+        ui.ctx().format_shortcut(&k)
+    };
+    ui.weak(format!(
+        "{} to open  ·  {} for all commands",
+        keys(Act::Open),
+        keys(Act::Palette)
+    ));
+    if r.clicked() {
+        acts.push(Act::Open);
+    }
+}
+
 /// Tooltip for a command: its label and first shortcut.
 fn tooltip(ctx: &egui::Context, a: &Action) -> String {
     match a.keys.first() {
@@ -1254,6 +1314,7 @@ impl eframe::App for App {
                     })
                     .response
                     .on_hover_text("Menu");
+                    bar(ui, Act::Open, false, &mut acts);
 
                     let title = match self.tabs.get(self.active) {
                         Some(t) => t.title(),
@@ -1430,9 +1491,7 @@ impl eframe::App for App {
             if let Some(t) = self.tabs.get_mut(self.active) {
                 t.show_pages(ui);
             } else {
-                ui.centered_and_justified(|ui| {
-                    ui.label("Open a PDF with File ▸ Open, Ctrl+O, or drop a file here.");
-                });
+                empty_state(ui, &mut acts);
             }
         });
 
