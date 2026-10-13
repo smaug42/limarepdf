@@ -90,6 +90,8 @@ pub struct Editor {
     pub pending_image: Option<(Vec<u8>, f32)>,
     insp: Option<Insp>,
     pub actions: Vec<Action>,
+    /// Outline invisible (OCR) text and let it be selected and corrected.
+    pub show_hidden: bool,
 }
 
 impl Default for Editor {
@@ -115,6 +117,7 @@ impl Default for Editor {
             pending_image: None,
             insp: None,
             actions: Vec::new(),
+            show_hidden: false,
         }
     }
 }
@@ -252,7 +255,8 @@ impl Editor {
         objs.iter()
             .enumerate()
             .filter(|(_, o)| {
-                p.x >= o.bbox[0] - tol
+                (self.show_hidden || !o.hidden)
+                    && p.x >= o.bbox[0] - tol
                     && p.x <= o.bbox[2] + tol
                     && p.y >= o.bbox[1] - tol
                     && p.y <= o.bbox[3] + tol
@@ -286,6 +290,72 @@ impl Editor {
 
     pub fn style_for_new(&self) -> PathStyle {
         self.default_style()
+    }
+
+    /// Overlays drawn whatever the tool: search matches (`current` is outlined) and, when
+    /// switched on, outlines of recognised (invisible) text, with the text of the line under
+    /// the pointer shown above it. `r` and `k` as for [`Editor::page_ui`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn overlay(
+        &mut self,
+        ui: &egui::Ui,
+        pdf: &mpe_core::Pdf,
+        page: usize,
+        r: Rect,
+        k: f32,
+        matches: &[[f32; 4]],
+        current: Option<usize>,
+    ) {
+        if !self.show_hidden && self.selected_object().is_some_and(|o| o.hidden) {
+            self.sel = None;
+            self.insp = None;
+        }
+        let painter = ui.painter();
+        let screen_rect = |b: [f32; 4]| {
+            Rect::from_min_max(
+                Pos2::new(r.min.x + b[0] * k, r.min.y + b[1] * k),
+                Pos2::new(r.min.x + b[2] * k, r.min.y + b[3] * k),
+            )
+        };
+        for (i, b) in matches.iter().enumerate() {
+            let sr = screen_rect(*b).expand(1.0);
+            painter.rect_filled(sr, 1.0, Color32::from_rgba_unmultiplied(255, 210, 0, 90));
+            if current == Some(i) {
+                let orange = Stroke::new(2.0, Color32::from_rgb(230, 120, 0));
+                painter.rect_stroke(sr, 1.0, orange, StrokeKind::Outside);
+            }
+        }
+        if !self.show_hidden {
+            return;
+        }
+        let lines: Vec<(Rect, String)> = self
+            .objects(pdf, page)
+            .iter()
+            .filter(|o| o.hidden)
+            .map(|o| (screen_rect(o.bbox), o.text.clone().unwrap_or_default()))
+            .collect();
+        let blue = Color32::from_rgb(40, 110, 230);
+        let hover = ui
+            .input(|i| i.pointer.hover_pos())
+            .filter(|p| r.contains(*p));
+        let mut tip = None;
+        for (sr, text) in &lines {
+            painter.rect_filled(*sr, 0.0, blue.gamma_multiply(0.08));
+            let edge = Stroke::new(1.0, blue.gamma_multiply(0.8));
+            painter.rect_stroke(*sr, 0.0, edge, StrokeKind::Outside);
+            if hover.is_some_and(|p| sr.contains(p)) {
+                tip = Some((*sr, text.clone()));
+            }
+        }
+        if let Some((sr, text)) = tip {
+            let font = egui::FontId::proportional(14.0);
+            let galley = painter.layout_no_wrap(text, font, ui.visuals().strong_text_color());
+            let pos = sr.left_top() - Vec2::new(0.0, galley.size().y + 6.0);
+            let bg = Rect::from_min_size(pos, galley.size()).expand(3.0);
+            painter.rect_filled(bg, 3.0, ui.visuals().extreme_bg_color);
+            painter.rect_stroke(bg, 3.0, Stroke::new(1.0, blue), StrokeKind::Inside);
+            painter.galley(pos, galley, Color32::PLACEHOLDER);
+        }
     }
 
     /// Handle pointer interaction and draw overlays for one visible page. `r` is the page's screen rectangle
@@ -757,6 +827,7 @@ impl Editor {
             return;
         };
         ui.strong(match obj.kind {
+            ObjectKind::Text if obj.hidden => "Recognised text (invisible)",
             ObjectKind::Text => "Text",
             ObjectKind::Image => "Image",
             ObjectKind::Form => "Group (form XObject)",
@@ -808,17 +879,25 @@ impl Editor {
                     r.request_focus();
                     self.focus_text = false;
                 }
-                Self::font_ui(ui, &mut insp.font);
-                ui.horizontal(|ui| {
-                    ui.label("Size");
-                    ui.add(
-                        egui::DragValue::new(&mut insp.size)
-                            .range(1.0..=400.0)
-                            .suffix(" pt"),
+                if obj.hidden {
+                    ui.weak(
+                        "Text found by OCR. It is not drawn, but it is what search, select \
+                         and copy use. Correct misread words here; the line stays invisible \
+                         and in place. Clear it to remove the line.",
                     );
-                    ui.color_edit_button_rgb(&mut insp.color);
-                });
-                if !obj.font_reusable {
+                } else {
+                    Self::font_ui(ui, &mut insp.font);
+                    ui.horizontal(|ui| {
+                        ui.label("Size");
+                        ui.add(
+                            egui::DragValue::new(&mut insp.size)
+                                .range(1.0..=400.0)
+                                .suffix(" pt"),
+                        );
+                        ui.color_edit_button_rgb(&mut insp.color);
+                    });
+                }
+                if !obj.font_reusable && !obj.hidden {
                     ui.weak(format!(
                         "Font \"{}\" is embedded or non-standard. Edited text is set in the nearest standard font.",
                         obj.font_name.as_deref().unwrap_or("?")

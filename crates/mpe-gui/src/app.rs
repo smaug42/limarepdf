@@ -63,6 +63,12 @@ fn ocr_summary(report: &[(usize, OcrResult)]) -> (bool, String) {
         }
     }
     let mut text = format!("Text added to {pages} page(s): {words} words.");
+    if pages > 0 {
+        text.push_str(
+            "\n\nThe text is invisible. To see it, search for a word, or turn on \
+             View > Show recognised text; misread words can be corrected with the arrow tool.",
+        );
+    }
     push_skipped(&mut text, &skipped);
     (pages > 0, text)
 }
@@ -947,6 +953,13 @@ impl eframe::App for App {
                     item(ui, "Actual size", "Ctrl+1", has, Act::Actual);
                     ui.separator();
                     ui.checkbox(&mut self.show_side, "Side panel");
+                    if let Some(t) = self.tabs.get_mut(self.active) {
+                        ui.checkbox(&mut t.ed.show_hidden, "Show recognised text")
+                            .on_hover_text(
+                                "Outline the invisible text added by OCR. Hover to read it; \
+                                 select it with the arrow tool to correct it.",
+                            );
+                    }
                     ui.menu_button("Theme", |ui| {
                         item(
                             ui,

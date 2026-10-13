@@ -254,6 +254,10 @@ enum Cmd {
         query: String,
         #[arg(long)]
         password: Option<String>,
+        /// Also print where each match is on its page: left, top, right, bottom in points
+        /// from the top-left of the displayed page
+        #[arg(long)]
+        boxes: bool,
     },
     /// Print extracted text
     /// List editable page objects (text lines, images, paths) with their boxes
@@ -660,6 +664,7 @@ fn main() -> Result<()> {
             input,
             query,
             password,
+            boxes,
         } => {
             let p = open(&input, &password)?;
             let hits = p.search(&query)?;
@@ -667,6 +672,22 @@ fn main() -> Result<()> {
                 out!("p{}: …{}…", h.page + 1, h.snippet);
             }
             out!("{} match(es)", hits.len());
+            if boxes {
+                let mut pages: Vec<usize> = hits.iter().map(|h| h.page).collect();
+                pages.dedup();
+                for i in pages {
+                    for b in p.find_text_boxes(i, &query)? {
+                        out!(
+                            "p{} [{:.1} {:.1} {:.1} {:.1}]",
+                            i + 1,
+                            b[0],
+                            b[1],
+                            b[2],
+                            b[3]
+                        );
+                    }
+                }
+            }
         }
         Cmd::Objects {
             input,
@@ -678,9 +699,10 @@ fn main() -> Result<()> {
                 out!("--- page {} ---", i + 1);
                 for o in p.page_objects(i)? {
                     out!(
-                        "#{:<3} {:?} [{:.1} {:.1} {:.1} {:.1}] {}",
+                        "#{:<3} {:?}{} [{:.1} {:.1} {:.1} {:.1}] {}",
                         o.id,
                         o.kind,
+                        if o.hidden { " (hidden)" } else { "" },
                         o.bbox[0],
                         o.bbox[1],
                         o.bbox[2],

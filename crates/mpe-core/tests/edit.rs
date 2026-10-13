@@ -56,6 +56,24 @@ fn png(w: u32, h: u32, c: [u8; 4]) -> Vec<u8> {
 }
 
 #[test]
+fn finds_text_boxes_in_visible_text() {
+    let p = make(BASE);
+    assert!(p.page_objects(0).unwrap().iter().all(|o| !o.hidden));
+    // "Hello" at x = 60, baseline 150 on a 200 pt page (50 from the top), 24 pt
+    // Helvetica, about 55 pt wide. "ell" is characters 1..4 of 5, placed by character
+    // position: about 71..104.
+    let b = p.find_text_boxes(0, "ELL").unwrap();
+    assert_eq!(b.len(), 1, "{b:?}");
+    let b = b[0];
+    assert!(b[0] > 68.0 && b[0] < 74.0, "{b:?}");
+    assert!(b[2] > 100.0 && b[2] < 107.0, "{b:?}");
+    assert!(b[1] > 28.0 && b[1] < 34.0, "{b:?}");
+    assert!(b[3] > 52.0 && b[3] < 58.0, "{b:?}");
+    assert_eq!(p.find_text_boxes(0, "l").unwrap().len(), 2);
+    assert!(p.find_text_boxes(0, "   ").unwrap().is_empty());
+}
+
+#[test]
 fn lists_objects_in_visual_coordinates() {
     let p = make(BASE);
     let o = p.page_objects(0).unwrap();
