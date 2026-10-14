@@ -51,8 +51,18 @@ pub enum Act {
     FirstPage,
     LastPage,
     ToggleSide,
+    /// Show the side panel's Bookmarks tab.
+    Bookmarks,
     ToggleInspector,
     ToggleHidden,
+    /// Tint every form field, and outline the required ones.
+    ToggleFields,
+    NextField,
+    PrevField,
+    /// Empty the form field with the keyboard.
+    ClearField,
+    ResetForm,
+    FlattenForm,
     Theme(ThemePreference),
     Palette,
     Tool(Tool),
@@ -129,6 +139,11 @@ pub struct Ctx {
     /// The active tab's zoom follows the width of the view.
     pub fit: bool,
     pub hidden_text: bool,
+    /// The document has form fields.
+    pub form: bool,
+    /// A form field has the keyboard.
+    pub field: bool,
+    pub fields_shown: bool,
     pub theme: ThemePreference,
 }
 
@@ -517,6 +532,14 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::Bookmarks,
+        group: Group::View,
+        label: "Bookmarks",
+        icon: icon::BOOKMARK_SIMPLE,
+        hint: "Show the document's outline in the side panel.",
+        ..BASE
+    },
+    Action {
         act: Act::ToggleInspector,
         group: Group::View,
         label: "Inspector",
@@ -534,6 +557,41 @@ pub static ACTIONS: &[Action] = &[
         checked: Some(|c| c.hidden_text),
         hint: "Outline the invisible text added by OCR. Hover to read it; select it with \
                the arrow tool to correct it.",
+        ..BASE
+    },
+    Action {
+        act: Act::ToggleFields,
+        group: Group::View,
+        label: "Highlight fields",
+        enabled: |c| c.form,
+        checked: Some(|c| c.fields_shown),
+        hint: "Tint the form's fields, and outline the required ones.",
+        ..BASE
+    },
+    Action {
+        act: Act::NextField,
+        group: Group::View,
+        label: "Next field",
+        enabled: |c| c.form,
+        hint: "Tab also moves to the next field.",
+        menu: false,
+        ..BASE
+    },
+    Action {
+        act: Act::PrevField,
+        group: Group::View,
+        label: "Previous field",
+        enabled: |c| c.form,
+        hint: "Shift+Tab also moves to the previous field.",
+        menu: false,
+        ..BASE
+    },
+    Action {
+        act: Act::ClearField,
+        group: Group::Edit,
+        label: "Clear field",
+        enabled: |c| c.field,
+        menu: false,
         ..BASE
     },
     Action {
@@ -739,6 +797,23 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Document,
         label: "Properties…",
         sep: true,
+        ..BASE
+    },
+    Action {
+        act: Act::ResetForm,
+        group: Group::Document,
+        label: "Reset form",
+        enabled: |c| c.form && !c.busy,
+        hint: "Put every field back to its default value. Can be undone.",
+        ..BASE
+    },
+    Action {
+        act: Act::FlattenForm,
+        group: Group::Document,
+        label: "Flatten form…",
+        enabled: |c| c.form && !c.busy,
+        hint: "Make the fields part of the pages, as they look now, so they can't be \
+               changed. Can be undone.",
         ..BASE
     },
     Action {

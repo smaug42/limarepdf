@@ -16,6 +16,10 @@ rayon.workspace = true
 rfd.workspace = true
 egui-phosphor.workspace = true
 
+[build-dependencies]
+# Embeds the icon in mpe-gui.exe on Windows; does nothing on other platforms.
+winresource = { version = "0.1.34", default-features = false }
+
 [dev-dependencies]
 # Tests build documents with form fields; already used by mpe-core.
 lopdf.workspace = true

@@ -16,9 +16,11 @@ const LARGE_BYTES: u64 = 100_000_000;
 pub enum Kind {
     /// The file was encrypted: saving drops the protection unless it is set again.
     Protected,
+    /// An XFA-only form: only Adobe software builds its pages.
+    Xfa,
     /// Pages are images without text.
     Scanned,
-    /// The document has form fields, which MPE cannot fill in.
+    /// The document has form fields.
     Forms,
     /// Many pages or a big file.
     Large,
@@ -34,6 +36,7 @@ impl Banner {
     pub fn icon(&self) -> &'static str {
         match self.kind {
             Kind::Protected => icon::LOCK_KEY,
+            Kind::Xfa => icon::WARNING,
             Kind::Scanned => icon::SCAN,
             Kind::Forms => icon::TEXTBOX,
             Kind::Large => icon::STACK,
@@ -45,7 +48,8 @@ impl Banner {
         match self.kind {
             Kind::Protected => Some(("Password security", Act::Security)),
             Kind::Scanned => Some(("Recognise text", Act::Ocr)),
-            Kind::Forms | Kind::Large => None,
+            Kind::Forms => Some(("Highlight fields", Act::ToggleFields)),
+            Kind::Xfa | Kind::Large => None,
         }
     }
 }
@@ -62,6 +66,16 @@ pub fn detect(pdf: &Pdf, bytes: Option<u64>) -> Vec<Banner> {
                 .into(),
         });
     }
+    let xfa = pdf.xfa_only();
+    if xfa {
+        v.push(Banner {
+            kind: Kind::Xfa,
+            text:
+                "This form was made for Adobe Reader (an XFA form). Only Adobe software can show \
+                   or fill it in; what you see is the placeholder page the file contains."
+                    .into(),
+        });
+    }
     let scans = scanned_pages(pdf);
     if scans > 0 {
         let what = if scans == pdf.page_count() {
@@ -74,10 +88,10 @@ pub fn detect(pdf: &Pdf, bytes: Option<u64>) -> Vec<Banner> {
             text: format!("{what} scans without text, so they cannot be searched or copied."),
         });
     }
-    if has_form_fields(pdf) {
+    if !xfa && has_form_fields(pdf) {
         v.push(Banner {
             kind: Kind::Forms,
-            text: "This document has form fields. MPE cannot fill them in yet.".into(),
+            text: "This document has a form. Click a field to fill it in, or press Tab.".into(),
         });
     }
     let pages = pdf.page_count();
@@ -206,6 +220,16 @@ mod tests {
         let catalog = q.doc.catalog_mut().unwrap();
         catalog.set("AcroForm", dictionary! { "Fields" => empty });
         assert!(kinds(&q, None).is_empty());
+    }
+
+    #[test]
+    fn xfa_only_forms_are_explained() {
+        let mut p = blank(1);
+        let empty: Vec<Object> = Vec::new();
+        let xfa = Object::string_literal("<xdp:xdp/>");
+        let catalog = p.doc.catalog_mut().unwrap();
+        catalog.set("AcroForm", dictionary! { "Fields" => empty, "XFA" => xfa });
+        assert_eq!(kinds(&p, None), [Kind::Xfa]);
     }
 
     #[test]

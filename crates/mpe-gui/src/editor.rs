@@ -1,12 +1,14 @@
 //! Content editing state and interaction: selecting, moving and resizing objects, inserting text, images
 //! and shapes, and the inspector panel.
 
+use crate::fields::FormUi;
 use crate::selection::{ObjKind, Selection};
 use crate::theme;
 use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use egui_phosphor::regular as icon;
 use mpe_core::{
-    words_text, Family, FontChoice, ObjectKind, PageObject, PageWord, PathStyle, Shape, TextEdit,
+    words_text, Family, FieldValue, FontChoice, Link, LinkTarget, ObjectKind, PageObject, PageWord,
+    PathStyle, Shape, TextEdit,
 };
 use std::collections::HashMap;
 
@@ -34,6 +36,8 @@ pub enum Action {
     ReplaceImage(usize, usize, Vec<u8>),
     EditText(usize, usize, TextEdit),
     PathStyle(usize, usize, PathStyle),
+    /// Set the named form field, drawn on these pages.
+    SetField(Vec<usize>, String, FieldValue),
 }
 
 #[derive(Clone, Copy)]
@@ -102,6 +106,11 @@ pub struct Editor {
     words: HashMap<usize, Vec<PageWord>>,
     /// A word selection is being dragged out.
     text_drag: bool,
+    links: HashMap<usize, Vec<Link>>,
+    /// A link was clicked; the tab follows it.
+    pub follow: Option<LinkTarget>,
+    /// Filling in form fields.
+    pub form: FormUi,
 }
 
 impl Default for Editor {
@@ -130,6 +139,9 @@ impl Default for Editor {
             show_hidden: false,
             words: HashMap::new(),
             text_drag: false,
+            links: HashMap::new(),
+            follow: None,
+            form: FormUi::default(),
         }
     }
 }
@@ -218,6 +230,8 @@ impl Editor {
         self.words.clear();
         self.selection.clear_words();
         self.text_drag = false;
+        self.links.clear();
+        self.form.invalidate();
     }
 
     pub fn set_tool(&mut self, t: Tool) {
@@ -448,12 +462,59 @@ impl Editor {
         } else {
             Sense::click_and_drag()
         };
-        let resp = ui.interact(r, ui.id().with(("page-edit", tab_id, page)), sense);
+        let mut resp = ui.interact(r, ui.id().with(("page-edit", tab_id, page)), sense);
         if resp.secondary_clicked() {
             let p = resp.interact_pointer_pos().map(to_pt);
             self.select_for_menu(pdf, page, p, 3.0 / k);
         }
-        if self.tool == Tool::View {
+        // Links are followed with a click in the hand and text-select tools, and with
+        // Ctrl+click in the editing tools, so they don't get in the way of editing. A drag
+        // that starts on a link still selects text.
+        let reading = self.tool == Tool::View;
+        let selecting = self.tool == Tool::SelectText;
+        let mut over_link = false;
+        let ctrl = ui.input(|i| i.modifiers.command);
+        // Form fields are filled in the same way, and sit above links.
+        let filling = (reading || selecting || ctrl) && !self.dragging();
+        let over_field = self
+            .form
+            .page_ui(ui, pdf, page, r, k, &resp, filling, &mut self.actions);
+        if over_field {
+            if !selecting || resp.clicked() {
+                return resp;
+            }
+            over_link = true;
+        } else if filling {
+            let link = resp.hover_pos().map(to_pt).and_then(|p| {
+                let links = self
+                    .links
+                    .entry(page)
+                    .or_insert_with(|| pdf.page_links(page).unwrap_or_default());
+                links.iter().find(|l| {
+                    let b = l.bbox;
+                    (b[0]..=b[2]).contains(&p.x) && (b[1]..=b[3]).contains(&p.y)
+                })
+            });
+            if let Some(link) = link {
+                let target = link.target.clone();
+                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                let tip = match &target {
+                    LinkTarget::Page(n) => format!("Go to page {}", n + 1),
+                    LinkTarget::Uri(u) => u.clone(),
+                };
+                over_link = true;
+                resp = resp.on_hover_text_at_pointer(tip);
+                if resp.clicked() {
+                    self.follow = Some(target);
+                    return resp;
+                }
+                // Holding Ctrl over a link sets an editing tool aside.
+                if !selecting {
+                    return resp;
+                }
+            }
+        }
+        if reading {
             return resp;
         }
         self.objects(pdf, page);
@@ -563,7 +624,7 @@ impl Editor {
                 let words = self.words(pdf, page).to_vec();
                 let inside =
                     |p: Pos2, b: [f32; 4]| p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3];
-                if hover_pt.is_some_and(|p| words.iter().any(|w| inside(p, w.bbox))) {
+                if !over_link && hover_pt.is_some_and(|p| words.iter().any(|w| inside(p, w.bbox))) {
                     ui.ctx().set_cursor_icon(CursorIcon::Text);
                 }
                 // Drag selects the words between the press and the pointer, in reading

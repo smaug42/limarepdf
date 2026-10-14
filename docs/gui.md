@@ -18,7 +18,10 @@ Each document gets a tab. The tab shows its name, with `*` while it has unsaved 
 
 - **Top bar:** the menu (☰), Open, Save, Undo and Redo, the tools, zoom, search, Print, an Export menu (pages as
   images, text), and the theme. On narrow windows the search field and the tools fold into single buttons.
-- **Left:** page thumbnails, or search results.
+- **Left:** three tabs. Pages shows the thumbnails, Search the search results, and Bookmarks the document's
+  outline. Click a bookmark to go to its page; the arrow beside one shows or hides the bookmarks inside it, which
+  start shown or hidden as the file asks. Bookmarks that go to another file or a web address are greyed out. They
+  can't be edited yet. ☰ > View > Bookmarks, or "Bookmarks" in the command palette, opens this tab.
 - **Middle:** the pages, scrolling continuously. By default they fit the width between the side panels, and keep
   fitting as you resize the window or open and close the panels. Zooming in or out, actual size, Ctrl+scroll or a
   pinch turns fitting off, and your zoom then stays as it is; the Fit width button (highlighted while fitting is on)
@@ -29,6 +32,43 @@ Each document gets a tab. The tab shows its name, with `*` while it has unsaved 
 Ctrl+K opens the command palette, which lists every command. Type to filter, use Up and Down to choose, and press
 Enter to run.
 
+## Links
+
+Click a link with the hand or text-select tool to follow it: the pointer turns into a hand over one, and hovering
+shows where it goes. Dragging from a link with the text-select tool selects text as usual. With the editing tools,
+hold Ctrl (Cmd on macOS) and click, so links don't get in the way of editing.
+
+- A link to another page goes there.
+- A link to a web or email address asks first, showing the full address, and then opens it in your browser or
+  email program. MPE itself never connects to the network. Links to anything else, such as a file or a program,
+  are shown but not opened.
+- Links that go to another PDF file are not followed. Links can't be added or edited yet.
+
+## Filling in forms
+
+Form fields work with the hand and text-select tools, like links: hovering tints a field and shows its description,
+and a click fills it in. With the editing tools, hold Ctrl (Cmd on macOS) and click.
+
+- **Text fields:** a click opens a text box over the field. Enter (in a one-line field) or clicking elsewhere keeps
+  what you typed; Esc drops it. Password fields show dots, and their value is not kept in the file.
+- **Checkboxes and radio buttons:** a click ticks or chooses.
+- **Drop-downs and lists:** a click opens the options. In a list that allows several choices, each click adds or
+  removes one; Done closes it. A drop-down you can type in has a text box at the top; Enter keeps the text.
+- **Tab and Shift+Tab** move to the next and previous field, top to bottom and page by page. On a checkbox or radio
+  button, Space ticks it; on a list, Space or Enter opens it.
+
+Each value you change is one undo step. ☰ > View > Highlight fields tints every field and outlines the required ones
+in red. The inspector's Form section shows the field you are in (its name, description and whether it is required),
+with Clear field, Highlight fields and Reset form, which puts every field back to its default. Flatten form… (also
+in the command palette) makes the fields part of the pages as they look now, so nobody can change the values,
+here or in other readers; it asks first, and Undo brings the fields back until you close the document. Read-only fields,
+buttons (they run scripts, which MPE doesn't) and signature fields can't be filled in; hovering says why.
+
+MPE draws the filled fields itself, so the values show the same in other readers. Text must be Latin-1 (Western
+European) for now; anything else is refused with a message rather than saved wrongly. Fields that have a value but
+no drawing of their own are drawn when the file opens. See [Command line](cli.md#forms) for filling forms in
+scripts.
+
 ## Notices about the document
 
 When a document opens, notices above the pages point out things worth knowing, each with a button where there is
@@ -38,7 +78,8 @@ something to do and × to dismiss it. At most two show at a time.
 | --- | --- |
 | The document was password-protected: saving removes the protection unless you set it again | Password security |
 | Its pages are scans without text, so they cannot be searched or copied (checked on the first 20 pages) | Recognise text |
-| It has form fields, which MPE cannot fill in yet | |
+| It is a form made for Adobe Reader (an XFA form), which only Adobe software can show or fill in; MPE shows the placeholder page the file contains, often "Please wait..." | |
+| It has a form: click a field to fill it in, or press Tab | Highlight fields |
 | It is large (more than 500 pages or 100 MB) | |
 
 The first two go away by themselves once dealt with: after password security is applied, or after text has been
@@ -118,6 +159,7 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Arrow keys (Shift for 10 points) | Move the selected object |
 | Ctrl+A, Ctrl+C | Select all text on the page, copy it (text tool) |
 | Esc | Cancel: clear the selection, or leave a drawing tool |
+| Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |
 
 ## Look and feel
 

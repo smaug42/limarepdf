@@ -8,6 +8,7 @@
 //! pressed as an [`Apply`]; the app carries it out.
 
 use crate::actions::{self, Act, Ctx};
+use crate::fields::{self, FormUi};
 use crate::selection::Selection;
 use crate::tab::Tab;
 use crate::theme;
@@ -334,6 +335,13 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
                     apply = Some(Apply::Security);
                 }
             });
+            if c.form {
+                section(ui, reveal, None, "Form", |ui| {
+                    if let Some(a) = form_ui(ui, &t.ed.form, c) {
+                        apply = Some(Apply::Act(a));
+                    }
+                });
+            }
         }
     }
     // Tools that work on a page range: the selected pages, or all.
@@ -392,6 +400,47 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
         }
     }
     apply
+}
+
+/// The form: the field with the keyboard, if any, and commands for the whole form.
+fn form_ui(ui: &mut Ui, form: &FormUi, c: &Ctx) -> Option<Act> {
+    let mut act = None;
+    let n = form.fields().len();
+    ui.weak(format!("{n} field{}", if n == 1 { "" } else { "s" }));
+    match form.focused_field() {
+        Some(f) => {
+            ui.strong(&f.name);
+            if let Some(tip) = &f.tooltip {
+                ui.label(tip);
+            }
+            let mut flags = Vec::new();
+            if f.required {
+                flags.push("Required");
+            }
+            if let Some(why) = fields::why_not(f) {
+                flags.push(why);
+            }
+            if !flags.is_empty() {
+                ui.weak(flags.join(" · "));
+            }
+            if act_button(ui, Act::ClearField, c) {
+                act = Some(Act::ClearField);
+            }
+        }
+        None => {
+            ui.weak("Click a field to fill it in, or press Tab.");
+        }
+    }
+    let mut shown = c.fields_shown;
+    if ui.checkbox(&mut shown, "Highlight fields").changed() {
+        act = Some(Act::ToggleFields);
+    }
+    for a in [Act::ResetForm, Act::FlattenForm] {
+        if act_button(ui, a, c) {
+            act = Some(a);
+        }
+    }
+    act
 }
 
 /// A collapsible section; opened and scrolled into view when it is `reveal`.

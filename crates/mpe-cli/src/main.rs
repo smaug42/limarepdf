@@ -9,8 +9,9 @@ macro_rules! out {
 }
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use mpe_core::{
-    parse_page_range, print, render, Bates, Cipher, Encryption, HeaderFooter, ImageImport, Info,
-    Ocr, OcrResult, Pdf, Restrictions, ScanMode, ScanOptions, ScanResult, Watermark,
+    parse_page_range, print, render, Bates, Cipher, Encryption, Field, FieldKind, FieldValue,
+    HeaderFooter, ImageImport, Info, Ocr, OcrResult, Pdf, Restrictions, ScanMode, ScanOptions,
+    ScanResult, Watermark,
 };
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
@@ -275,6 +276,11 @@ enum Cmd {
         #[arg(long)]
         password: Option<String>,
     },
+    /// Work with form fields
+    Form {
+        #[command(subcommand)]
+        cmd: FormCmd,
+    },
     /// List the printers; the default is marked
     Printers,
     /// Print (CUPS on Linux and macOS, the print spooler on Windows)
@@ -378,6 +384,295 @@ fn read_all(paths: &[PathBuf]) -> Result<Vec<Vec<u8>>> {
         .iter()
         .map(|p| std::fs::read(p).with_context(|| format!("reading {}", p.display())))
         .collect()
+}
+
+#[derive(Subcommand)]
+enum FormCmd {
+    /// List the fields: name, kind, value, pages and flags
+    List {
+        input: PathBuf,
+        /// Print the values as a JSON object instead, keyed by field name
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Fill in fields and write the result. A values file is applied first, then each
+    /// --set; any unknown name or unsuitable value stops it before anything is written
+    Fill {
+        #[command(flatten)]
+        io: Io,
+        /// Set one field: NAME=VALUE. Checkboxes take on or off; a multi-select list takes
+        /// its choices separated by |
+        #[arg(long = "set", value_name = "NAME=VALUE")]
+        set: Vec<String>,
+        /// A JSON object of values, as `mpe form list --json` prints them
+        #[arg(long, value_name = "FILE")]
+        values: Option<PathBuf>,
+        /// Then flatten the form, so the values can't be changed
+        #[arg(long)]
+        flatten: bool,
+    },
+    /// Put every field back to its default value
+    Reset {
+        #[command(flatten)]
+        io: Io,
+    },
+    /// Draw the fields into the pages as they look now and remove them, so the values
+    /// can no longer be changed
+    Flatten {
+        #[command(flatten)]
+        io: Io,
+        /// Only these pages, e.g. 1-3,7; fields elsewhere stay fillable
+        #[arg(long)]
+        pages: Option<String>,
+    },
+}
+
+/// A checkbox value given as text: on/off and the like, or the box's export value.
+fn check_from_text(f: &Field, s: &str) -> Result<bool> {
+    match s.to_ascii_lowercase().as_str() {
+        "on" | "yes" | "true" | "1" => Ok(true),
+        "off" | "no" | "false" | "0" | "" => Ok(false),
+        _ if f.options.iter().any(|o| o.0 == s) => Ok(true),
+        _ => bail!("\"{}\" is a checkbox: give on or off, not \"{s}\"", f.name),
+    }
+}
+
+/// A field's value from `--set NAME=VALUE` text.
+fn value_from_text(f: &Field, s: &str) -> Result<FieldValue> {
+    Ok(match &f.kind {
+        FieldKind::Text { .. } => FieldValue::Text(s.to_string()),
+        FieldKind::Check => FieldValue::Check(check_from_text(f, s)?),
+        FieldKind::Choice { multi: true, .. } if !s.is_empty() => {
+            FieldValue::Choice(s.split('|').map(str::to_string).collect())
+        }
+        FieldKind::Radio | FieldKind::Choice { .. } if s.is_empty() => FieldValue::Choice(vec![]),
+        FieldKind::Radio | FieldKind::Choice { .. } => FieldValue::Choice(vec![s.to_string()]),
+        FieldKind::Button | FieldKind::Signature => FieldValue::None,
+    })
+}
+
+/// A field's value from a JSON value, as `form list --json` prints them.
+fn value_from_json(f: &Field, v: &serde_json::Value) -> Result<FieldValue> {
+    use serde_json::Value;
+    let text = |v: &Value| -> Result<String> {
+        match v {
+            Value::String(s) => Ok(s.clone()),
+            Value::Number(n) => Ok(n.to_string()),
+            Value::Null => Ok(String::new()),
+            _ => bail!("\"{}\" takes text, not {v}", f.name),
+        }
+    };
+    Ok(match (&f.kind, v) {
+        (FieldKind::Check, Value::Bool(b)) => FieldValue::Check(*b),
+        (FieldKind::Check, v) => FieldValue::Check(check_from_text(f, &text(v)?)?),
+        (FieldKind::Radio | FieldKind::Choice { .. }, Value::Array(a)) => {
+            FieldValue::Choice(a.iter().map(text).collect::<Result<_>>()?)
+        }
+        (FieldKind::Radio | FieldKind::Choice { .. }, v) => {
+            let s = text(v)?;
+            FieldValue::Choice(if s.is_empty() { vec![] } else { vec![s] })
+        }
+        (_, v) => FieldValue::Text(text(v)?),
+    })
+}
+
+/// Why an XFA-only form can't be listed or filled.
+const XFA_ONLY: &str =
+    "this form was made for Adobe Reader (an XFA form): its fields are built by \
+                        Adobe software, so MPE can't list or fill them";
+
+fn form_fill(io: &Io, set: &[String], values: &Option<PathBuf>, flatten: bool) -> Result<()> {
+    let mut pdf = open(&io.input, &io.password)?;
+    if pdf.xfa_only() {
+        bail!("{XFA_ONLY}");
+    }
+    let fields = pdf.form_fields();
+    let field = |name: &str| -> Result<&Field> {
+        fields
+            .iter()
+            .find(|f| f.name == name)
+            .with_context(|| format!("no form field named \"{name}\""))
+    };
+    let mut todo: Vec<(String, FieldValue)> = Vec::new();
+    if let Some(path) = values {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("cannot read {}", path.display()))?;
+        let json: serde_json::Value = serde_json::from_str(&text)
+            .with_context(|| format!("{} is not valid JSON", path.display()))?;
+        let serde_json::Value::Object(map) = json else {
+            bail!(
+                "{} must hold a JSON object of field names and values",
+                path.display()
+            );
+        };
+        for (name, v) in &map {
+            todo.push((name.clone(), value_from_json(field(name)?, v)?));
+        }
+    }
+    for s in set {
+        let Some((name, v)) = s.split_once('=') else {
+            bail!("--set takes NAME=VALUE, not \"{s}\"");
+        };
+        todo.push((name.to_string(), value_from_text(field(name)?, v)?));
+    }
+    if todo.is_empty() {
+        bail!("nothing to fill in: give --set NAME=VALUE or --values FILE");
+    }
+    for (name, v) in &todo {
+        pdf.set_field(name, v.clone())?;
+    }
+    if flatten {
+        pdf.flatten_form(None)?;
+    }
+    pdf.save(&io.output)?;
+    out!(
+        "filled {} field(s){}; wrote {}",
+        todo.len(),
+        if flatten {
+            " and flattened the form"
+        } else {
+            ""
+        },
+        io.output.display()
+    );
+    Ok(())
+}
+
+/// A field's kind for `form list`.
+fn kind_name(k: &FieldKind) -> String {
+    match k {
+        FieldKind::Text {
+            multiline,
+            password,
+            comb,
+            max_len,
+        } => {
+            let mut s = String::from("text");
+            for (on, what) in [
+                (*multiline, "multiline"),
+                (*password, "password"),
+                (*comb, "comb"),
+            ] {
+                if on {
+                    s += &format!(" {what}");
+                }
+            }
+            if let Some(n) = max_len {
+                s += &format!(" max {n}");
+            }
+            s
+        }
+        FieldKind::Check => "checkbox".into(),
+        FieldKind::Radio => "radio".into(),
+        FieldKind::Choice {
+            combo,
+            editable,
+            multi,
+        } => match (combo, editable, multi) {
+            (true, true, _) => "combo editable".into(),
+            (true, false, _) => "combo".into(),
+            (false, _, true) => "list multi".into(),
+            (false, _, false) => "list".into(),
+        },
+        FieldKind::Button => "button".into(),
+        FieldKind::Signature => "signature".into(),
+    }
+}
+
+/// A field's value as JSON: a string for text and single choices, true or false for
+/// checkboxes, an array for multi-select lists, null when nothing is chosen. `None` for
+/// fields without a value (push buttons and signatures).
+fn json_value(f: &Field) -> Option<serde_json::Value> {
+    use serde_json::Value;
+    Some(match &f.value {
+        FieldValue::Text(t) => Value::String(t.clone()),
+        FieldValue::Check(on) => Value::Bool(*on),
+        FieldValue::Choice(c) if matches!(f.kind, FieldKind::Choice { multi: true, .. }) => {
+            Value::Array(c.iter().cloned().map(Value::String).collect())
+        }
+        FieldValue::Choice(c) => c.first().cloned().map_or(Value::Null, Value::String),
+        FieldValue::None => return None,
+    })
+}
+
+fn form_list(input: &Path, json: bool, password: &Option<String>) -> Result<()> {
+    let pdf = open(input, password)?;
+    if pdf.xfa_only() {
+        // An empty object for scripts; the reason on stderr.
+        if json {
+            out!("{{}}");
+        }
+        eprintln!("{XFA_ONLY}");
+        return Ok(());
+    }
+    let fields = pdf.form_fields();
+    if json {
+        // Written by hand to keep the form's order; serde_json's map would sort the names.
+        let rows: Vec<String> = fields
+            .iter()
+            .filter_map(|f| {
+                let v = json_value(f)?;
+                Some(format!(
+                    "  {}: {}",
+                    serde_json::Value::from(f.name.clone()),
+                    v
+                ))
+            })
+            .collect();
+        if rows.is_empty() {
+            out!("{{}}");
+        } else {
+            out!("{{\n{}\n}}", rows.join(",\n"));
+        }
+        return Ok(());
+    }
+    if fields.is_empty() {
+        out!("no form fields");
+    }
+    for f in &fields {
+        let value = match &f.value {
+            FieldValue::Text(t) => format!("{t:?}"),
+            FieldValue::Check(on) => if *on { "on" } else { "off" }.into(),
+            FieldValue::Choice(c) => format!("{c:?}"),
+            FieldValue::None => "-".into(),
+        };
+        let mut pages: Vec<usize> = f.widgets.iter().map(|w| w.page + 1).collect();
+        pages.sort_unstable();
+        pages.dedup();
+        let pages = match pages.as_slice() {
+            [] => "no page".into(),
+            [p] => format!("page {p}"),
+            _ => format!(
+                "pages {}",
+                pages
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+        };
+        let mut notes = vec![pages];
+        if f.required {
+            notes.push("required".into());
+        }
+        if f.read_only {
+            notes.push("read-only".into());
+        }
+        if !f.options.is_empty() {
+            let opts: Vec<&str> = f.options.iter().map(|o| o.0.as_str()).collect();
+            notes.push(format!("options {opts:?}"));
+        }
+        out!(
+            "{} [{}] = {} ({})",
+            f.name,
+            kind_name(&f.kind),
+            value,
+            notes.join(", ")
+        );
+    }
+    Ok(())
 }
 
 fn open(p: &Path, pw: &Option<String>) -> Result<Pdf> {
@@ -763,6 +1058,39 @@ fn main() -> Result<()> {
                 }
             }
         }
+        Cmd::Form { cmd } => match cmd {
+            FormCmd::List {
+                input,
+                json,
+                password,
+            } => form_list(&input, json, &password)?,
+            FormCmd::Fill {
+                io,
+                set,
+                values,
+                flatten,
+            } => form_fill(&io, &set, &values, flatten)?,
+            FormCmd::Reset { io } => run_edit(&io, |p| p.reset_form())?,
+            FormCmd::Flatten { io, pages } => {
+                let mut p = open(&io.input, &io.password)?;
+                if p.xfa_only() {
+                    bail!("{XFA_ONLY}");
+                }
+                if p.form_fields().is_empty() {
+                    bail!("{} has no form fields", io.input.display());
+                }
+                let idx = match pages {
+                    Some(r) => Some(parse_page_range(&r, p.page_count())?),
+                    None => None,
+                };
+                let n = p.flatten_form(idx.as_deref())?;
+                p.save(&io.output)?;
+                out!(
+                    "flattened {n} field widget(s); wrote {}",
+                    io.output.display()
+                );
+            }
+        },
         Cmd::Printers => {
             let list = print::printers()?;
             if list.is_empty() {

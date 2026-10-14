@@ -5,9 +5,11 @@ are not started.
 
 ## What MPE does
 
-- **View:** tabs, thumbnails, continuous scrolling, zoom, and search with highlights on the page.
+- **View:** tabs, thumbnails, continuous scrolling, zoom, search with highlights on the page, bookmarks and links.
 - **Organise pages:** drag thumbnails to reorder; rotate, insert, delete and extract pages; merge and split files.
 - **Edit content:** move, resize, restyle and delete text, images and shapes; edit text; add text, shapes and images.
+- **Fill in forms:** text fields, checkboxes, radio buttons and lists, in the app or from JSON on the command line;
+  flatten them so the values can't be changed.
 - **Stamp pages:** headers, footers, page numbers, Bates numbers and text watermarks.
 - **Scans:** turn images into PDFs, shrink and straighten scanned pages, and add a searchable text layer with
   built-in OCR (Latin script).
@@ -31,6 +33,7 @@ available.
 | Zoom, fit width, continuous scrolling, page navigation | Done | Pages fit the window's width by default and follow resizing; zooming turns that off. Single-page and facing-page layouts: No |
 | Open at a page from the command line | Done | `mpe-gui file.pdf --page N` |
 | Command palette, right-click menus, floating toolbar | Done | Toolbar customisation: No |
+| App icon | Done | Window, taskbar and Windows `.exe`. Wayland needs the desktop entry installed. [Details](install.md#menu-entry-and-icon-on-linux) |
 | Light and dark themes | Done | Follows the system, or chosen with the top bar's theme button; remembered between runs |
 | Rendering | Partial | Some transparency groups are drawn wrongly, and annotations without an appearance stream are not drawn. [Details](rendering.md) |
 | Search | Done | Phrases across line breaks are found and highlighted; hyphenated words split over lines are not. [Details](search-and-text.md) |
@@ -52,8 +55,13 @@ available.
 | Driving scanners | No | Not planned: scan with your system's tool and import the images |
 | Export to Word, Excel, CSV | No | |
 | Annotations, comments, stamps, measuring | No | Existing annotations are shown if they have an appearance stream |
-| Forms, form data, barcodes, JavaScript | No | |
-| Links, layers, attachments, bookmarks | No | |
+| Forms | Partial | Fill in text fields, checkboxes, radio buttons and lists in the app (Tab between fields, highlight, reset, flatten) and from the command line (`mpe form`, values as JSON, flatten all or some pages). Latin-1 text only; JavaScript doesn't run; creating fields and signing: No. [Details](gui.md#filling-in-forms) |
+| XFA-only forms (made for Adobe Reader) | No | Recognised and explained in a notice and by `mpe form`; showing or filling them is not planned (see below). Hybrid forms are filled through their ordinary fields |
+| Form data import/export (FDF, XFDF), barcodes, JavaScript | No | |
+| Bookmarks | Partial | Shown in the Bookmarks tab (also from the command palette) and followed; adding, editing or deleting them: No. [Details](gui.md#the-window) |
+| Links | Partial | Followed: to pages, and to web and email addresses after asking. Links to other PDF files, and adding or editing links: No. [Details](gui.md#links) |
+| Layers, attachments | No | |
+| Installers and packages | No | Releases are archives of the programs. Packages are planned for later; see below |
 | Redaction | No | |
 | Digital signatures, certificate encryption | No | |
 | PDF/A, optimised saving | No | Saved files are pruned and compressed |
@@ -82,6 +90,28 @@ Ideas for what comes next. None of these are available yet, and the list is not 
   tool you used last, or let you choose a default.
 - **Doing more with selected text.** Right-click selected text to print just the selection, or to save it as a new
   PDF.
+
+### XFA forms
+
+Many government forms are XFA-only: the PDF holds a "Please wait..." page, and the real form is XML that only Adobe
+software lays out. MPE recognises them and says so. Beyond that:
+
+- **Possible later: their data from the command line.** Export an XFA form's values as JSON and fill them from
+  JSON, to view, sign or print in Adobe Reader. Useful for batches; it needs an XML parser crate.
+- **Not planned: showing and filling them in MPE.** It would need an XFA layout engine (the specification runs to
+  over 1,500 pages) and a script engine for their JavaScript and FormCalc, months of work for a format Adobe has
+  deprecated and PDF 2.0 removed.
+
+### Packaging
+
+Planned for once the app is more complete; until then releases stay as archives.
+
+- **macOS:** an app bundle in a `.dmg` that registers MPE for PDFs, so it opens from Finder and "Open with". Without
+  Apple signing it needs the same one-time "Open Anyway" as the archive does today.
+- **Linux:** `.deb` and `.rpm` packages and an AUR package, installing the desktop entry and icon. The archive stays.
+- **Homebrew:** a cask in MPE's own tap.
+- **Later, maybe:** Flatpak, and a Windows installer (Start menu, PDF association, uninstaller).
+- **Signing** (macOS notarization, Windows code signing) comes after packaging, as a separate decision.
 
 ### Features that would set MPE apart
 

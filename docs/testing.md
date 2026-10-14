@@ -22,8 +22,12 @@ Run them with `cargo test --workspace`.
 | `crates/mpe-core/tests/ocr.rs` | OCR text layers, their placement, search and correction |
 | `crates/mpe-core/tests/export.rs` | Exporting pages as images and text |
 | `crates/mpe-core/tests/print.rs` | What is sent to the printer, with a stand-in for `lp` |
-| Unit tests in `crates/mpe-core/src` | Page ranges, document operations, matrices, overlays, print placement, the ToUnicode reader, standard font widths |
-| Unit tests in `crates/mpe-gui/src` | The command list (unique entries and shortcuts, menus), selection rules, page ranges, moving pages, fitting the zoom, document notices, recent files, settings, the security form |
+| `crates/mpe-core/tests/outline.rs` | Reading bookmarks: nesting, every kind of destination, broken and looping outlines |
+| `crates/mpe-core/tests/links.rs` | Reading links: every kind of target, links that can't be followed, placement on turned pages |
+| `crates/mpe-core/tests/forms.rs` | Reading form fields: every kind, inherited values, broken field trees, turned pages, XFA-only and hybrid forms |
+| `crates/mpe-core/tests/form_fill.rs` | Filling in forms: values, drawn appearances (checked by rendering, including a turned field), fonts that can't be used, refused values, passwords, reset, drawing missing appearances |
+| Unit tests in `crates/mpe-core/src` | Page ranges, document operations, matrices, overlays, print placement, the ToUnicode reader, standard font widths, laying out form fields (wrapping, auto size, alignment, comb, lists) |
+| Unit tests in `crates/mpe-gui/src` | The command list (unique entries and shortcuts, menus), selection rules, page ranges, moving pages, fitting the zoom, document notices, recent files, settings, the security form, form fields (Tab order, what a click does, keeping typed text) |
 
 The rendering tests assert what the PDF standard says should appear. The cases hayro gets wrong are marked
 `#[ignore]` with the reason; after a hayro upgrade, run
@@ -35,6 +39,9 @@ There are no automated tests of the desktop app's screens. Its commands, selecti
 unit-tested, and the operations behind it are covered by the core tests and the command line. The redesigned window
 (top bar, inspector, command palette, right-click menus, floating toolbar, thumbnail dragging, collapsing inspector)
 has been used by hand on Linux. Later additions (recent files, document notices, fit width, the theme button, crop)
-were checked by screenshot under a virtual X server; not every one has been clicked through by hand.
+were checked by screenshot under a virtual X server; not every one has been clicked through by hand. Of the newest:
+filling in forms has been used by hand on one form; the Bookmarks tab and links were checked through their core
+tests and real PDFs, and the XFA notice by screenshot, but none of these was clicked through. Filled forms were also opened in poppler and
+Ghostscript, including encrypted ones; not yet in Adobe Reader.
 
 Each feature page says what was not tested, under "How this was tested".

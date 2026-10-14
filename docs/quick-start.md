@@ -23,6 +23,7 @@ mpe merge a.pdf b.pdf -o both.pdf
 mpe extract report.pdf -o summary.pdf --pages 1-3,7
 mpe ocr scan.pdf -o searchable.pdf
 mpe watermark report.pdf -o draft.pdf --text DRAFT --opacity 0.3
+mpe form fill form.pdf -o filled.pdf --set name=Ann --set agree=on
 ```
 
-See the [command-line reference](cli.md) for all 25 commands.
+See the [command-line reference](cli.md) for every command.

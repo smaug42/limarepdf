@@ -21,6 +21,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 tiff = "0.11"
 egui-phosphor = "0.14"
 rfd = "0.17"
+serde_json = "1"
 
 # OCR inference is about 100x slower unoptimised; optimise these even in debug builds.
 [profile.dev.package.ocrs]

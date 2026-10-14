@@ -95,6 +95,21 @@ fn push_skipped(text: &mut String, skipped: &[String]) {
     }
 }
 
+/// What to show for a clicked link to an address outside the document. Only web and
+/// email addresses are offered for opening; anything else (a local file, a script) is
+/// shown but not opened.
+fn link_dialog(url: String) -> Dialog {
+    let scheme = url.split_once(':').map(|(s, _)| s.to_ascii_lowercase());
+    if matches!(scheme.as_deref(), Some("http" | "https" | "mailto")) {
+        Dialog::OpenLink(url)
+    } else {
+        Dialog::Message(
+            "Link not opened".into(),
+            format!("This link goes to:\n\n{url}\n\nMPE only opens web and email links."),
+        )
+    }
+}
+
 /// Summary of a scan optimisation for the user, and whether any page changed.
 fn scan_summary(report: &[(usize, ScanResult)]) -> (bool, String) {
     let (mut n, mut before, mut after) = (0, 0, 0);
@@ -142,7 +157,10 @@ enum Dialog {
     ConfirmQuit,
     /// Export would replace this many files.
     ConfirmReplace(ImageExport, usize),
+    ConfirmFlatten,
     Print(dlg::Print),
+    /// Open this web or email address from a link?
+    OpenLink(String),
     About,
 }
 
@@ -552,6 +570,10 @@ impl App {
                 self.settings.save();
             }
             Act::ToggleSide => self.show_side = !self.show_side,
+            Act::Bookmarks => {
+                self.show_side = true;
+                self.tabs[self.active].side = Side::Bookmarks;
+            }
             Act::ToggleInspector => {
                 self.show_inspector = !self.show_inspector;
                 if !self.narrow {
@@ -564,6 +586,25 @@ impl App {
                 let ed = &mut self.tabs[self.active].ed;
                 ed.show_hidden = !ed.show_hidden;
             }
+            Act::ToggleFields => {
+                let form = &mut self.tabs[self.active].ed.form;
+                form.highlight = !form.highlight;
+            }
+            Act::NextField => self.tabs[self.active].ed.form.step(true),
+            Act::PrevField => self.tabs[self.active].ed.form.step(false),
+            Act::ClearField => {
+                let ed = &mut self.tabs[self.active].ed;
+                if let Some(a) = ed.form.clear_value() {
+                    ed.actions.push(a);
+                }
+            }
+            Act::ResetForm => {
+                let t = &mut self.tabs[self.active];
+                t.ed.form.clear_focus();
+                t.edit(ctx, |p| p.reset_form());
+                t.notice = Some("Reset the form".into());
+            }
+            Act::FlattenForm => self.dialog = Dialog::ConfirmFlatten,
             Act::Tool(Tool::Image) => self.tabs[self.active].choose_image(),
             Act::Tool(tool) => self.tabs[self.active].ed.set_tool(tool),
             Act::SelectAllText => {
@@ -984,6 +1025,21 @@ impl App {
                 ) != Outcome::Open;
             }
             Dialog::Message(title, text) => done = dlg::message(ctx, title, text) != Outcome::Open,
+            Dialog::OpenLink(url) => match dlg::confirm(
+                ctx,
+                "Open link",
+                &format!(
+                    "This link goes to:\n\n{url}\n\nOpen it in your browser or email program?"
+                ),
+                "Open link",
+            ) {
+                Outcome::Apply => {
+                    ctx.open_url(egui::OpenUrl::new_tab(url.as_str()));
+                    done = true;
+                }
+                Outcome::Cancel => done = true,
+                Outcome::Open => {}
+            },
             Dialog::ConfirmClose(i) => match dlg::confirm(
                 ctx,
                 "Unsaved changes",
@@ -1033,6 +1089,26 @@ impl App {
             ) {
                 Outcome::Apply => {
                     self.start_export(ctx, e.clone());
+                    done = true;
+                }
+                Outcome::Cancel => done = true,
+                Outcome::Open => {}
+            },
+            Dialog::ConfirmFlatten => match dlg::confirm(
+                ctx,
+                "Flatten form?",
+                "The fields become part of the pages, as they look now, and can no longer be \
+                 filled in, here or in other readers. Undo brings them back until you close \
+                 the document.",
+                "Flatten",
+            ) {
+                Outcome::Apply => {
+                    let t = &mut self.tabs[self.active];
+                    t.ed.form.clear_focus();
+                    if t.edit(ctx, |p| p.flatten_form(None).map(|_| ())) {
+                        t.banners.retain(|b| b.kind != BannerKind::Forms);
+                        t.notice = Some("Flattened the form".into());
+                    }
                     done = true;
                 }
                 Outcome::Cancel => done = true,
@@ -1646,10 +1722,12 @@ impl eframe::App for App {
                     ui.horizontal(|ui| {
                         ui.selectable_value(&mut t.side, Side::Pages, "Pages");
                         ui.selectable_value(&mut t.side, Side::Search, "Search");
+                        ui.selectable_value(&mut t.side, Side::Bookmarks, "Bookmarks");
                     });
                     ui.separator();
                     match t.side {
                         Side::Pages => t.show_thumbs(ui, &c),
+                        Side::Bookmarks => t.show_outline(ui),
                         Side::Search => {
                             let r = ui.text_edit_singleline(&mut t.query);
                             let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
@@ -1758,6 +1836,9 @@ impl eframe::App for App {
         if let Some(t) = self.tabs.get_mut(self.active) {
             if let Some(e) = t.error.take() {
                 self.dialog = Dialog::Message("Error".into(), e);
+            }
+            if let Some(url) = t.open_link.take() {
+                self.dialog = link_dialog(url);
             }
         }
 

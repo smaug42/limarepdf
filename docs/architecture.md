@@ -15,7 +15,12 @@ It uses:
 - [`egui`](https://crates.io/crates/egui) for the interface, and [`rfd`](https://crates.io/crates/rfd) for file
   dialogs;
 - [`image`](https://crates.io/crates/image) for images;
-- [`ocrs`](https://github.com/robertknight/ocrs) for text recognition (see [Scanning and OCR](scanning-and-ocr.md)).
+- [`ocrs`](https://github.com/robertknight/ocrs) for text recognition (see [Scanning and OCR](scanning-and-ocr.md));
+- [`serde_json`](https://crates.io/crates/serde_json) in the command line, for form values as JSON.
+
+Forms are read in `crates/mpe-core/src/forms.rs`. When a value changes, MPE draws the field's appearance itself
+(`form_ap.rs`, written into the file by `form_write.rs`) rather than asking other readers to, so filled fields look
+the same everywhere; the desktop app's side is `crates/mpe-gui/src/fields.rs`.
 
 Page content is read by MPE's own parser (`crates/mpe-core/src/objects.rs`), which splits it into the objects that
 editing works on and reads the text that search, copying and export use, with its own reader for fonts' ToUnicode

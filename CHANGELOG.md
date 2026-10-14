@@ -15,6 +15,31 @@
 - A theme button in the top bar to choose System, Light or Dark, remembered between runs.
 - Applying password security can be undone.
 - The inspector's heading and the button that hides it share one row.
+- A Bookmarks tab beside Pages and Search shows the document's outline. Click a bookmark to go to its page.
+  ☰ > View > Bookmarks and the command palette open it.
+- Fill in forms: click a field with the hand or text-select tool to type in it, tick it or choose from its
+  options; Tab moves between fields. Each change is one undo step. ☰ > View > Highlight fields shows every field,
+  and the inspector's Form section has Clear field, Reset form and Flatten form…, which makes the fields part of
+  the pages so the values can't be changed (Undo brings them back). Fields with a value but no drawing of their own
+  now show their value. See [Filling in forms](docs/gui.md#filling-in-forms).
+- Forms made only for Adobe Reader (XFA forms, which show a "Please wait..." page) get a notice explaining that
+  only Adobe software can show or fill them; `mpe form list` and `mpe form fill` say the same.
+- Links work: click one with the hand or text-select tool (dragging still selects text), or Ctrl+click with the
+  editing tools. Links to pages go there; links to
+  web and email addresses show the address and ask before opening it in your browser or email program.
+- MPE has its own icon, on the window, the taskbar and, on Windows, `mpe-gui.exe` itself. The Linux archive
+  includes a desktop entry and icon, which Wayland desktops need to show it; see
+  [Install](docs/install.md#menu-entry-and-icon-on-linux).
+
+### Command line
+
+- `mpe form list` lists a form's fields with their kinds, values, pages and flags; `--json` prints the values as a
+  JSON object.
+- `mpe form fill` fills in text fields, checkboxes, radio buttons, drop-downs and lists, from `--set NAME=VALUE`
+  or a JSON file like the one `form list --json` prints, and `mpe form reset` puts fields back to their defaults.
+  MPE draws the filled fields itself, so the values show in every reader. See [Forms](docs/cli.md#forms).
+- `mpe form flatten` draws a form's fields into its pages and removes them (`--pages` for some pages only), and
+  `mpe form fill --flatten` fills in and flattens in one go.
 
 ### Fixes
 
@@ -43,6 +68,8 @@
 - Search takes about twice as long as before, as it now reads pages with MPE's own text reader: 0.17 s for a
   477-page manual. See [Performance](docs/performance.md).
 - Release notes on GitHub end with a link to every change since the previous version.
+- Installers and packages (a macOS app, Linux packages, Homebrew) are planned for once the app is more complete;
+  see [Features and status](docs/features.md#packaging).
 
 ## [0.3.0] - 2026-10-13
 
