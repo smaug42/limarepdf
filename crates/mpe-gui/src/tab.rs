@@ -1,7 +1,8 @@
 use crate::actions::{self, Act, Ctx};
 use crate::banners::{self, Banner};
-use crate::editor::{Action, Editor, Tool};
+use crate::editor::{annot_tip, Action, Editor, Tool};
 use crate::inspector::{Forms, Sec};
+use crate::markup::{self, Mark};
 use crate::selection::Selection;
 use crate::theme;
 use crate::worker::{Key, Worker};
@@ -94,8 +95,6 @@ pub struct Tab {
     /// The annotations, read when the Comments tab is first shown and again after the
     /// document changes: the revision they were read at, and the list.
     comments: Option<(u64, Vec<Annot>)>,
-    /// The annotation chosen in the Comments tab, outlined on its page.
-    comment_sel: Option<(u32, u16)>,
 }
 
 impl Tab {
@@ -150,7 +149,6 @@ impl Tab {
             outline: None,
             outline_open: Vec::new(),
             comments: None,
-            comment_sel: None,
         })
     }
 
@@ -333,7 +331,39 @@ impl Tab {
                 Action::SetField(pages, name, v) => {
                     self.edit_pages(ctx, &pages, |pdf| pdf.set_field(&name, v));
                 }
+                Action::SetAnnot(p, id, e) => {
+                    self.edit_pages(ctx, &[p], |pdf| {
+                        pdf.set_annotation(id, e.color, e.opacity, &e.contents)
+                    });
+                }
+                Action::DeleteAnnot(p, id) => {
+                    let gone = |pdf: &mut Pdf| pdf.remove_annotations(|a| a.id == id).map(|_| ());
+                    if self.edit_pages(ctx, &[p], gone) {
+                        self.ed.selection.clear_annot();
+                        self.notice = Some("Deleted the comment".into());
+                    }
+                }
             }
+        }
+    }
+
+    /// Mark the selected words with `mark` in `color`, one annotation per page, as one
+    /// undo step. The words are let go so the mark shows.
+    pub fn add_markup(&mut self, ctx: &egui::Context, mark: Mark, color: [f32; 3], author: &str) {
+        let lines = self.ed.selected_lines();
+        if lines.is_empty() {
+            return;
+        }
+        let pages: Vec<usize> = lines.iter().map(|(p, _)| *p).collect();
+        let kind = mark.kind();
+        let add = |pdf: &mut Pdf| {
+            for (p, boxes) in &lines {
+                pdf.add_markup(*p, &kind, boxes, color, author)?;
+            }
+            Ok(())
+        };
+        if self.edit_pages(ctx, &pages, add) {
+            self.ed.selection.clear_words();
         }
     }
 
@@ -506,11 +536,13 @@ impl Tab {
         let rev = self.revision;
         if self.comments.as_ref().is_none_or(|(r, _)| *r != rev) {
             let list = self.pdf.annotations();
-            if !list.iter().any(|a| Some(a.id) == self.comment_sel) {
-                self.comment_sel = None;
+            let gone = |(_, id)| !list.iter().any(|a| a.id == id);
+            if self.ed.selection.annot().is_some_and(gone) {
+                self.ed.selection.clear_annot();
             }
             self.comments = Some((rev, list));
         }
+        let chosen_id = self.ed.selection.annot().map(|(_, id)| id);
         let Some((_, list)) = &self.comments else {
             return;
         };
@@ -547,22 +579,11 @@ impl Tab {
                     if a.hidden() {
                         text = text.weak();
                     }
-                    let mut tip = a.kind.label();
-                    for extra in [&a.author, &a.modified] {
-                        if !extra.is_empty() {
-                            tip += &format!(" · {extra}");
-                        }
-                    }
-                    if a.hidden() {
-                        tip += " · hidden";
-                    }
-                    if !a.contents.is_empty() {
-                        tip += &format!("\n\n{}", a.contents);
-                    }
+                    let tip = annot_tip(a);
                     ui.horizontal(|ui| {
                         ui.add_space(depth as f32 * 12.0);
-                        let row = egui::Button::selectable(self.comment_sel == Some(a.id), text)
-                            .truncate();
+                        let row =
+                            egui::Button::selectable(chosen_id == Some(a.id), text).truncate();
                         let r = ui.add(row).on_hover_text(tip);
                         if r.clicked() {
                             chosen = Some(i);
@@ -586,7 +607,7 @@ impl Tab {
         if let Some(i) = chosen {
             let a = &list[i];
             let (id, page, top) = (a.id, a.page, a.bbox[1]);
-            self.comment_sel = Some(id);
+            self.ed.selection = Selection::Annot { page, id };
             self.go_to(page);
             self.goto_y = Some(top);
         }
@@ -596,18 +617,6 @@ impl Tab {
                 self.notice = Some("Deleted the comment".into());
             }
         }
-    }
-
-    /// The outline of the annotation chosen in the Comments tab, if it is on `page`.
-    fn chosen_comment(&self, page: usize) -> Option<[f32; 4]> {
-        if self.side != Side::Comments {
-            return None;
-        }
-        let id = self.comment_sel?;
-        let (_, list) = self.comments.as_ref()?;
-        list.iter()
-            .find(|a| a.id == id && a.page == page)
-            .map(|a| a.bbox)
     }
 
     pub fn run_search(&mut self) {
@@ -715,6 +724,9 @@ impl Tab {
         c.form = !self.ed.form.fields().is_empty();
         c.field = self.ed.form.focused_field().is_some();
         c.fields_shown = self.ed.form.highlight;
+        let annot = self.ed.selected_annot();
+        c.annot = annot.is_some();
+        c.annot_locked = annot.is_some_and(|a| a.locked());
     }
 
     /// A right-click menu for what is selected, its commands queued in `requested`. The
@@ -772,6 +784,18 @@ impl Tab {
                                     let tip = actions::tooltip(ui.ctx(), a);
                                     if ui.add(b).on_hover_text(tip).clicked() {
                                         self.requested.push(a.act);
+                                    }
+                                    if a.act == Act::Mark(Mark::Highlight) {
+                                        let more = egui::Button::new(
+                                            theme::icon(icon::CARET_DOWN).size(12.0),
+                                        )
+                                        .frame_when_inactive(false)
+                                        .min_size(egui::vec2(16.0, 26.0));
+                                        let acts = &mut self.requested;
+                                        egui::containers::menu::MenuButton::from_button(more)
+                                            .ui(ui, |ui| markup::menu(ui, &c, acts))
+                                            .0
+                                            .on_hover_text("Underline, strike out, colours");
                                     }
                                 }
                             }
@@ -916,15 +940,6 @@ impl Tab {
                 let cur = current.filter(|c| c.0 == i).map(|c| c.1);
                 self.ed
                     .overlay(ui, &self.pdf, i, r, self.zoom * BASE, matches, cur);
-                if let Some(b) = self.chosen_comment(i) {
-                    let k = self.zoom * BASE;
-                    let sr = Rect::from_min_max(
-                        Pos2::new(r.min.x + b[0] * k, r.min.y + b[1] * k),
-                        Pos2::new(r.min.x + b[2] * k, r.min.y + b[3] * k),
-                    );
-                    let stroke = egui::Stroke::new(2.0, ui.visuals().selection.stroke.color);
-                    painter.rect_stroke(sr.expand(2.0), 2.0, stroke, egui::StrokeKind::Outside);
-                }
                 let resp = self
                     .ed
                     .page_ui(ui, &self.pdf, self.id, i, r, self.zoom * BASE);
@@ -1305,6 +1320,7 @@ mod tests {
             page,
             kind: mpe_core::AnnotKind::Note,
             bbox: [0.0; 4],
+            quads: Vec::new(),
             color: None,
             opacity: 1.0,
             contents: String::new(),

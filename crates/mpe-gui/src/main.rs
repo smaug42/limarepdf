@@ -5,6 +5,7 @@ mod dialogs;
 mod editor;
 mod fields;
 mod inspector;
+mod markup;
 mod recent;
 mod selection;
 mod settings;

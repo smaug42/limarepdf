@@ -1,7 +1,8 @@
 # Features and status
 
-**Status: 0.3, for testing.** Most testing has been on Linux. Annotations can be viewed, deleted and flattened but
-not yet added; digital signatures and redaction are not started.
+**Status: 0.3, for testing.** Most testing has been on Linux. Annotations can be viewed, deleted and flattened, and
+text can be highlighted and marked; notes, text boxes and drawings can't be added yet. Digital signatures and
+redaction are not started.
 
 ## What MPE does
 
@@ -56,7 +57,7 @@ available.
 | Printing | Partial | No paper size or scaling options. Tried on Windows; not yet with a real printer on Linux or macOS. [Details](export-and-printing.md#printing) |
 | Driving scanners | No | Not planned: scan with your system's tool and import the images |
 | Export to Word, Excel, CSV | No | |
-| Annotations and comments | Partial | Shown (MPE draws the common types when the file has no drawing), listed in the Comments tab with replies, deleted, flattened; `mpe annot list\|remove\|flatten`. Adding and editing them: No, coming next. [Details](gui.md#comments-and-markup) |
+| Annotations and comments | Partial | Shown (MPE draws the common types when the file has no drawing), listed in the Comments tab with replies, deleted, flattened; `mpe annot list\|remove\|flatten`. Highlight, underline, strike out and squiggly-underline selected text; select any annotation to change its colour, opacity and comment. Adding notes, text boxes, shapes and drawings: No, coming next. [Details](gui.md#marking-text) |
 | Stamps, measuring | No | |
 | Forms | Partial | Fill in text fields, checkboxes, radio buttons and lists in the app (Tab between fields, highlight, reset, flatten) and from the command line (`mpe form`, values as JSON, flatten all or some pages). Latin-1 text only; JavaScript doesn't run; creating fields and signing: No. [Details](gui.md#filling-in-forms) |
 | XFA-only forms (made for Adobe Reader) | No | Recognised and explained in a notice and by `mpe form`; showing or filling them is not planned (see below). Hybrid forms are filled through their ordinary fields |

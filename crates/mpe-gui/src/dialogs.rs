@@ -222,6 +222,19 @@ pub fn password(ctx: &Context, s: &mut Password) -> Outcome {
     })
 }
 
+/// The name written into comments and markup; empty for none.
+pub fn comment_name(ctx: &Context, name: &mut String) -> Outcome {
+    modal(ctx, "Your name for comments", |ui| {
+        ui.label(
+            "Comments and markup you add are saved with this name, so others see who made \
+             them. Leave it empty to save no name.",
+        );
+        let r = ui.add(egui::TextEdit::singleline(name).hint_text("No name"));
+        let go = buttons(ui, "Save");
+        go || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+    })
+}
+
 pub fn message(ctx: &Context, title: &str, text: &str) -> Outcome {
     modal(ctx, title, |ui| {
         ui.label(text);

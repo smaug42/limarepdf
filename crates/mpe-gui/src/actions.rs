@@ -3,6 +3,7 @@
 //! does is in `App::act`.
 
 use crate::editor::Tool;
+use crate::markup::{self, Mark};
 use crate::selection::{ObjKind, Selection};
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, ThemePreference};
 use egui_phosphor::regular as icon;
@@ -32,6 +33,17 @@ pub enum Act {
     PrintSelection,
     /// Save the selected words as a PDF (cropped pages or plain text) or a text file.
     SaveSelection,
+    /// Mark the selected words, in the colour last chosen for the kind.
+    Mark(Mark),
+    /// Choose the colour for highlights, or (`line`) for the other marks: an index into
+    /// [`crate::markup::HIGHLIGHTS`] or [`crate::markup::LINES`]. Shown in the markup
+    /// menu, so not in [`ACTIONS`].
+    MarkColor {
+        line: bool,
+        index: usize,
+    },
+    /// Set the name written into comments and markup.
+    CommentName,
     /// Delete the selected object, or the selected pages.
     DeleteSelection,
     /// Copy the text of the selected text object.
@@ -151,6 +163,12 @@ pub struct Ctx {
     pub field: bool,
     pub fields_shown: bool,
     pub theme: ThemePreference,
+    /// An annotation is selected, and whether it may be changed.
+    pub annot: bool,
+    pub annot_locked: bool,
+    /// The markup colours last chosen; see [`Act::MarkColor`].
+    pub highlight: usize,
+    pub line: usize,
 }
 
 pub struct Action {
@@ -203,8 +221,8 @@ fn object(c: &Ctx) -> bool {
 fn text_object(c: &Ctx) -> bool {
     c.object && matches!(c.obj_kind, Some(ObjKind::Text | ObjKind::HiddenText))
 }
-fn object_or_pages(c: &Ctx) -> bool {
-    c.object || c.pages
+fn deletable(c: &Ctx) -> bool {
+    c.object || c.pages || (c.annot && !c.annot_locked)
 }
 fn image_object(c: &Ctx) -> bool {
     c.object && c.obj_kind == Some(ObjKind::Image)
@@ -373,6 +391,50 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::Mark(Mark::Highlight),
+        group: Group::Edit,
+        label: "Highlight",
+        icon: icon::HIGHLIGHTER,
+        keys: &[k(CS, Key::H)],
+        enabled: words_idle,
+        sep: true,
+        hint: "Highlight the selected text, in the colour last chosen.",
+        ..BASE
+    },
+    Action {
+        act: Act::Mark(Mark::Underline),
+        group: Group::Edit,
+        label: "Underline",
+        icon: icon::TEXT_UNDERLINE,
+        enabled: words_idle,
+        ..BASE
+    },
+    Action {
+        act: Act::Mark(Mark::StrikeOut),
+        group: Group::Edit,
+        label: "Strike out",
+        icon: icon::TEXT_STRIKETHROUGH,
+        enabled: words_idle,
+        ..BASE
+    },
+    Action {
+        act: Act::Mark(Mark::Squiggly),
+        group: Group::Edit,
+        label: "Squiggly underline",
+        icon: icon::WAVE_SINE,
+        enabled: words_idle,
+        ..BASE
+    },
+    Action {
+        act: Act::CommentName,
+        group: Group::Edit,
+        label: "Your name for comments…",
+        icon: icon::USER,
+        enabled: always,
+        hint: "The name saved in comments and markup you add, so others see who made them.",
+        ..BASE
+    },
+    Action {
         act: Act::EditObjectText,
         group: Group::Edit,
         label: "Edit text",
@@ -405,9 +467,9 @@ pub static ACTIONS: &[Action] = &[
         label: "Delete the selection",
         icon: icon::TRASH,
         keys: &[k(N, Key::Delete), k(N, Key::Backspace)],
-        enabled: object_or_pages,
-        hint: "The selected object, or the pages selected in the thumbnails. Undo brings \
-               them back.",
+        enabled: deletable,
+        hint: "The selected object, comment or markup, or the pages selected in the \
+               thumbnails. Undo brings them back.",
         ..BASE
     },
     Action {
@@ -900,8 +962,10 @@ pub fn context_items(sel: &Selection) -> &'static [&'static [Act]] {
     match sel {
         Selection::Words { .. } => &[
             &[Act::Copy, Act::SelectAllText],
+            &[Act::Mark(Mark::Highlight)],
             &[Act::PrintSelection, Act::SaveSelection],
         ],
+        Selection::Annot { .. } => &[&[Act::DeleteSelection]],
         Selection::Object { .. } => &[
             &[Act::EditObjectText, Act::ReplaceImage, Act::CopyObjectText],
             &[Act::DeleteObject],
@@ -929,8 +993,13 @@ pub fn context_menu(ui: &mut egui::Ui, sel: &Selection, c: &Ctx, acts: &mut Vec<
             ui.separator();
         }
         first = false;
-        for a in items {
+        for a in &items {
             menu_item(ui, a, c, acts);
+        }
+        if items.iter().any(|a| a.act == Act::Mark(Mark::Highlight)) {
+            ui.menu_button("Underline, strike out, colour", |ui| {
+                markup::menu(ui, c, acts)
+            });
         }
     }
 }
@@ -1022,7 +1091,11 @@ mod tests {
             kind: ObjKind::Path,
         };
         let words = Selection::word((0, 0));
-        for sel in [Selection::None, object, words] {
+        let annot = Selection::Annot {
+            page: 0,
+            id: (1, 0),
+        };
+        for sel in [Selection::None, object, words, annot] {
             for group in context_items(&sel) {
                 for &a in *group {
                     get(a);

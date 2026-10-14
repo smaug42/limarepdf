@@ -52,7 +52,8 @@ shown on the pages. ☰ > View > Comments, or "Comments" in the command palette,
 them page by page, with replies indented under the comment they answer. Each row shows the author and the first
 line of the comment; hover over it for the type, date and the whole comment.
 
-- Click a row to go to the annotation and outline it on the page.
+- Click a row to go to the annotation and select it, as clicking it on the page does (see
+  [Marking text](#marking-text)).
 - Right-click a row to delete it, along with any replies. Annotations the file locks can't be deleted. Undo brings
   it back.
 - ☰ > Document > Flatten annotations… draws all of them into the pages as they look now and removes them, so they
@@ -64,7 +65,27 @@ underlines, strike-outs, squiggly underlines, notes, text boxes, rectangles, ell
 freehand drawings itself, on screen and when printing. The file isn't changed by this; flattening saves MPE's
 drawing into it. Text boxes are drawn in Helvetica, ignoring any rich-text styling.
 
-Adding and editing annotations in MPE is coming.
+### Marking text
+
+Select text with the read tool, then click **Highlight** on the bar above it (or right-click > Highlight, or
+Ctrl+Shift+H). The small arrow next to it, or right-click > Underline, strike out, colour, has:
+
+- Underline, Strike out and Squiggly underline.
+- The highlight colour (yellow, green, blue, pink, orange) and the line colour (red, blue, green, black). The
+  colours chosen are remembered between runs.
+
+A selection across pages gets one highlight on each page, all in one undo step. The marks are saved as standard
+annotations, so other readers show them and can change or remove them.
+
+Click a mark (or a comment) with the read tool to select it: it is outlined, and the inspector shows who made it
+and when, with its colour, opacity and comment, changed with Apply changes. Delete or Backspace removes it, and
+Esc lets it go. A drag that starts on a mark still selects the text under it. Hovering over a mark shows its
+comment.
+
+New marks are saved with your name, which is the computer's user name until you set it with ☰ > Edit > Your name
+for comments…. Leave it empty to save no name.
+
+Adding notes, text boxes, shapes and freehand drawings is coming.
 
 ## Filling in forms
 
@@ -195,7 +216,8 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Ctrl+0, Ctrl+1 | Fit width on or off, actual size |
 | Ctrl+scroll, pinch | Zoom |
 | PageUp, PageDown, Home, End | Previous, next, first, last page |
-| Delete, Backspace | Delete the selected object or pages |
+| Delete, Backspace | Delete the selected object, comment or mark, or the selected pages |
+| Ctrl+Shift+H | Highlight the selected text |
 | Arrow keys (Shift for 10 points) | Move the selected object |
 | Ctrl+A, Ctrl+C | Select all text on the page, copy it (read tool) |
 | Esc | Cancel: clear the selection, or leave a drawing tool |
@@ -205,5 +227,6 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 
 The app follows the system's light or dark theme. The theme button at the right end of the top bar (a half circle,
 sun or moon, for the current choice) chooses System, Light or Dark; so does ☰ > View > Theme. The choice is
-remembered between runs, in `settings.txt` in the same folder as the recent-files list. The app uses the Inter font
+remembered between runs, in `settings.txt` in the same folder as the recent-files list, along with the markup
+colours and your name for comments. The app uses the Inter font
 and Phosphor icons.

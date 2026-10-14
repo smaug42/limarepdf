@@ -42,6 +42,11 @@
 - A Comments tab beside Bookmarks lists the document's annotations (comments, notes, highlights, drawings) page by
   page, with replies under what they answer. Click one to go to it; right-click to delete it. ☰ > Document >
   Flatten annotations… makes them part of the pages. See [Comments and markup](docs/gui.md#comments-and-markup).
+- Highlight selected text (the Highlight button above the selection, right-click, or Ctrl+Shift+H), or underline,
+  strike it out or squiggly-underline it, in colours that are remembered. The marks are standard annotations that
+  other readers show. Click a mark or comment to select it; the inspector changes its colour, opacity and comment,
+  and Delete removes it. Marks carry your name, the computer's user name unless set under ☰ > Edit > Your name for
+  comments…. See [Marking text](docs/gui.md#marking-text).
 - Annotations stored without a drawing of their own, which used to be invisible, are drawn: highlights,
   underlines, strike-outs, squiggly underlines, notes, text boxes, rectangles, ellipses, lines, polygons and
   freehand drawings. The file is left as it is.

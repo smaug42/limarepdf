@@ -4,6 +4,7 @@
 //! * Rasterisation: [`hayro`] (CPU, no unsafe, no C/C++ dependencies)
 
 mod annot_ap;
+mod annot_write;
 mod annots;
 mod doc;
 mod edit;

@@ -304,7 +304,7 @@ impl Pdf {
             .unwrap_or_default()
     }
 
-    fn numbers(&self, o: Option<&Object>) -> Option<Vec<f32>> {
+    pub(crate) fn numbers(&self, o: Option<&Object>) -> Option<Vec<f32>> {
         let (_, o) = self.doc.dereference(o?).ok()?;
         o.as_array()
             .ok()?

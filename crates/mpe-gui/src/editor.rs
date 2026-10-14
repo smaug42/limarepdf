@@ -7,8 +7,8 @@ use crate::theme;
 use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use egui_phosphor::regular as icon;
 use mpe_core::{
-    words_text, Family, FieldValue, FontChoice, Link, LinkTarget, ObjectKind, PageObject, PageWord,
-    PathStyle, Shape, TextEdit,
+    words_text, Annot, Family, FieldValue, FontChoice, Link, LinkTarget, ObjectKind, PageObject,
+    PageWord, PathStyle, Shape, TextEdit,
 };
 use std::collections::HashMap;
 
@@ -37,6 +37,17 @@ pub enum Action {
     PathStyle(usize, usize, PathStyle),
     /// Set the named form field, drawn on these pages.
     SetField(Vec<usize>, String, FieldValue),
+    /// Change an annotation on a page: its colour, opacity and comment.
+    SetAnnot(usize, (u32, u16), AnnotEdit),
+    DeleteAnnot(usize, (u32, u16)),
+}
+
+/// An annotation's properties as the inspector edits them.
+#[derive(Clone, PartialEq)]
+pub struct AnnotEdit {
+    pub color: Option<[f32; 3]>,
+    pub opacity: f32,
+    pub contents: String,
 }
 
 #[derive(Clone, Copy)]
@@ -110,6 +121,9 @@ pub struct Editor {
     pub follow: Option<LinkTarget>,
     /// Filling in form fields.
     pub form: FormUi,
+    annots: HashMap<usize, Vec<Annot>>,
+    /// The selected annotation's properties being edited in the inspector, with its id.
+    annot_insp: Option<((u32, u16), AnnotEdit)>,
 }
 
 impl Default for Editor {
@@ -141,8 +155,27 @@ impl Default for Editor {
             links: HashMap::new(),
             follow: None,
             form: FormUi::default(),
+            annots: HashMap::new(),
+            annot_insp: None,
         }
     }
+}
+
+/// Hover text for an annotation: its kind, author and date, then its comment.
+pub fn annot_tip(a: &Annot) -> String {
+    let mut tip = a.kind.label();
+    for extra in [&a.author, &a.modified] {
+        if !extra.is_empty() {
+            tip += &format!(" · {extra}");
+        }
+    }
+    if a.hidden() {
+        tip += " · hidden";
+    }
+    if !a.contents.is_empty() {
+        tip += &format!("\n\n{}", a.contents);
+    }
+    tip
 }
 
 fn norm(r: [f32; 4]) -> [f32; 4] {
@@ -241,6 +274,35 @@ impl Editor {
         self.text_drag = false;
         self.links.clear();
         self.form.invalidate();
+        self.annots.clear();
+        self.annot_insp = None;
+    }
+
+    /// The annotations on `page`, read once until the document changes.
+    pub fn annots(&mut self, pdf: &mpe_core::Pdf, page: usize) -> &[Annot] {
+        self.annots
+            .entry(page)
+            .or_insert_with(|| pdf.page_annotations(page).unwrap_or_default())
+    }
+
+    /// The topmost shown annotation under `p` (page points): over one of its lines for
+    /// markup, else inside its box.
+    fn annot_at(&mut self, pdf: &mpe_core::Pdf, page: usize, p: Pos2) -> Option<&Annot> {
+        let inside = |b: &[f32; 4]| p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3];
+        self.annots(pdf, page).iter().rev().find(|a| {
+            !a.hidden()
+                && if a.quads.is_empty() {
+                    inside(&a.bbox)
+                } else {
+                    a.quads.iter().any(inside)
+                }
+        })
+    }
+
+    /// The selected annotation, once its page's annotations have been read.
+    pub fn selected_annot(&self) -> Option<&Annot> {
+        let (page, id) = self.selection.annot()?;
+        self.annots.get(&page)?.iter().find(|a| a.id == id)
     }
 
     pub fn set_tool(&mut self, t: Tool) {
@@ -331,6 +393,21 @@ impl Editor {
                     (r[2], r[3]) = (r[2].max(b[2]), r[3].max(b[3]));
                 }
                 (r[0] < r[2]).then_some((p, [r[0] - PAD, r[1] - PAD, r[2] + PAD, r[3] + PAD]))
+            })
+            .collect()
+    }
+
+    /// For each page with selected words, the box around each selected line's words
+    /// (displayed-page points), for marking them.
+    pub fn selected_lines(&self) -> Vec<(usize, Vec<[f32; 4]>)> {
+        let Some(((first, _), (last, _))) = self.selection.words() else {
+            return Vec::new();
+        };
+        (first..=last)
+            .filter_map(|p| {
+                let words = self.words.get(&p)?;
+                let range = self.selection.words_on(p, words.len())?;
+                Some((p, Self::line_boxes(&words[range])))
             })
             .collect()
     }
@@ -722,11 +799,29 @@ impl Editor {
                         self.selection = Selection::word((page, i));
                     }
                 } else if resp.clicked() {
-                    match nearest(click_at()) {
-                        Some(i) if shift && self.selection.words().is_some() => {
+                    // A click on a comment or markup selects it; a drag still selects
+                    // the text under it.
+                    let annot = click_at()
+                        .filter(|_| !shift)
+                        .and_then(|p| self.annot_at(pdf, page, p))
+                        .map(|a| a.id);
+                    match (annot, nearest(click_at())) {
+                        (Some(id), _) => self.selection = Selection::Annot { page, id },
+                        (None, Some(i)) if shift && self.selection.words().is_some() => {
                             self.extend_words(pdf, (page, i));
                         }
-                        _ => self.selection.clear_words(),
+                        _ => {
+                            self.selection.clear_words();
+                            self.selection.clear_annot();
+                        }
+                    }
+                }
+                if !over_link && !self.text_drag {
+                    let tip = hover_pt
+                        .and_then(|p| self.annot_at(pdf, page, p))
+                        .map(annot_tip);
+                    if let Some(tip) = tip {
+                        resp = resp.on_hover_text_at_pointer(tip);
                     }
                 }
                 if let Some(range) = self.selection.words_on(page, words.len()) {
@@ -841,6 +936,25 @@ impl Editor {
                 }
             }
         }
+        // The selected annotation: each marked line, or its box.
+        if self.selection.annot().is_some_and(|(p, _)| p == page) {
+            self.annots(pdf, page);
+            if let Some(a) = self.selected_annot() {
+                let boxes = if a.quads.is_empty() {
+                    std::slice::from_ref(&a.bbox)
+                } else {
+                    &a.quads[..]
+                };
+                for &b in boxes {
+                    painter.rect_stroke(
+                        screen_rect(b).expand(2.0),
+                        2.0,
+                        Stroke::new(2.0, accent_strong),
+                        StrokeKind::Outside,
+                    );
+                }
+            }
+        }
         if let Some((p, (x, y))) = self.new_text {
             if p == page {
                 let c = to_screen(x, y);
@@ -879,11 +993,17 @@ impl Editor {
                     let b = w.bbox;
                     p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3]
                 });
+                // Selected words keep the menu for them, even over markup.
+                let on = self.selection.words_on(page, n);
+                if under.is_some_and(|i| on.is_some_and(|r| r.contains(&i))) {
+                    return;
+                }
+                if let Some(id) = self.annot_at(pdf, page, p).map(|a| a.id) {
+                    self.selection = Selection::Annot { page, id };
+                    return;
+                }
                 if let Some(i) = under {
-                    let on = self.selection.words_on(page, n);
-                    if !on.is_some_and(|r| r.contains(&i)) {
-                        self.selection = Selection::word((page, i));
-                    }
+                    self.selection = Selection::word((page, i));
                     return;
                 }
             }
@@ -929,6 +1049,7 @@ impl Editor {
             Tool::Text | Tool::Image | Tool::Rect | Tool::Ellipse | Tool::Line
         ) || self.sel().is_some()
             || self.selection.words().is_some()
+            || self.selection.annot().is_some()
     }
 
     /// The page and box (page points) of the selected object or words, for placing the
@@ -937,6 +1058,9 @@ impl Editor {
     pub fn selection_box(&self) -> Option<(usize, [f32; 4])> {
         if let Some(o) = self.selected_object() {
             return Some((self.sel()?.0, o.bbox));
+        }
+        if let Some(a) = self.selected_annot() {
+            return Some((a.page, a.bbox));
         }
         let Selection::Words { end: (page, _), .. } = self.selection else {
             return None;
@@ -971,9 +1095,12 @@ impl Editor {
         self.sel().is_some() && self.tool != Tool::Read
     }
 
+    /// Delete the selected object, or the selected annotation unless it is locked.
     pub fn delete_selected(&mut self) {
         if let Some((p, id)) = self.sel() {
             self.actions.push(Action::Delete(p, id));
+        } else if let Some(a) = self.selected_annot().filter(|a| !a.locked()) {
+            self.actions.push(Action::DeleteAnnot(a.page, a.id));
         }
     }
 
@@ -990,9 +1117,14 @@ impl Editor {
         }
     }
 
-    /// Esc: clear the word selection (read tool); otherwise drop unfinished text, leave
-    /// a drawing tool for the arrow, or with the arrow clear the selection.
+    /// Esc: clear a selected annotation, or the word selection (read tool); otherwise drop
+    /// unfinished text, leave a drawing tool for the arrow, or with the arrow clear the
+    /// selection.
     pub fn escape(&mut self) {
+        if self.selection.annot().is_some() {
+            self.selection.clear_annot();
+            return;
+        }
         match self.tool {
             Tool::Read => self.selection.clear_words(),
             Tool::Select => {
@@ -1063,8 +1195,83 @@ impl Editor {
         });
     }
 
+    /// The selected annotation: what and whose it is, and its colour, opacity and comment,
+    /// changed with Apply as one undo step.
+    fn annot_inspector(&mut self, ui: &mut egui::Ui) {
+        let Some(a) = self.selected_annot().cloned() else {
+            ui.weak("Nothing selected.");
+            return;
+        };
+        let now = AnnotEdit {
+            color: a.color,
+            opacity: a.opacity,
+            contents: a.contents.clone(),
+        };
+        if self.annot_insp.as_ref().is_none_or(|(id, _)| *id != a.id) {
+            self.annot_insp = Some((a.id, now.clone()));
+        }
+        let Some((_, e)) = self.annot_insp.as_mut() else {
+            return;
+        };
+        ui.strong(a.kind.label());
+        let mut about = vec![format!("Page {}", a.page + 1)];
+        about.extend(
+            [&a.author, &a.modified]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .cloned(),
+        );
+        ui.weak(about.join(" · "));
+        if a.locked() {
+            ui.weak("Locked in this document: it can't be changed or deleted here.");
+        }
+        ui.separator();
+        ui.add_enabled_ui(!a.locked(), |ui| {
+            ui.horizontal(|ui| {
+                let mut on = e.color.is_some();
+                if ui.checkbox(&mut on, "Colour").changed() {
+                    e.color = on.then_some(a.color.unwrap_or([0.0; 3]));
+                }
+                if let Some(c) = e.color.as_mut() {
+                    ui.color_edit_button_rgb(c);
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Opacity");
+                let mut pct = e.opacity * 100.0;
+                if ui
+                    .add(egui::Slider::new(&mut pct, 0.0..=100.0).suffix(" %"))
+                    .changed()
+                {
+                    e.opacity = pct / 100.0;
+                }
+            });
+            ui.label("Comment");
+            ui.add(
+                egui::TextEdit::multiline(&mut e.contents)
+                    .desired_rows(4)
+                    .desired_width(f32::INFINITY),
+            );
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(*e != now, egui::Button::new("Apply changes"))
+                    .clicked()
+                {
+                    self.actions.push(Action::SetAnnot(a.page, a.id, e.clone()));
+                }
+                if ui.button((theme::icon(icon::TRASH), "Delete")).clicked() {
+                    self.actions.push(Action::DeleteAnnot(a.page, a.id));
+                }
+            });
+        });
+    }
+
     /// The right-hand inspector: tool options, new-text entry and properties of the selected object.
     pub fn inspector(&mut self, ui: &mut egui::Ui) {
+        if self.selection.annot().is_some() {
+            self.annot_inspector(ui);
+            return;
+        }
         self.sync_insp();
         let page_err = self.sel().and_then(|s| self.unavailable.get(&s.0)).cloned();
         if let Some(e) = page_err {

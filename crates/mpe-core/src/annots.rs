@@ -135,6 +135,9 @@ pub struct Annot {
     pub kind: AnnotKind,
     /// Its area in displayed-page points (y down), like [`crate::PageObject::bbox`].
     pub bbox: [f32; 4],
+    /// For text markup, the box around each marked line, in the same points; empty for
+    /// other kinds.
+    pub quads: Vec<[f32; 4]>,
     /// Its colour as RGB (grey and CMYK are converted), if it has one.
     pub color: Option<[f32; 3]>,
     /// 0 (invisible) to 1 (opaque).
@@ -332,11 +335,38 @@ impl Pdf {
                 .and_then(|o| self.string_bytes(o))
                 .and_then(|b| pdf_date(&decode_text(&b)))
         };
+        let markup = matches!(
+            kind,
+            AnnotKind::Highlight
+                | AnnotKind::Underline
+                | AnnotKind::StrikeOut
+                | AnnotKind::Squiggly
+        );
+        let quads = if markup {
+            self.numbers(d.get(b"QuadPoints").ok())
+                .unwrap_or_default()
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|q| {
+                    let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+                    for &[x, y] in q.as_chunks::<2>().0 {
+                        let (x, y) = mx::apply(to_vis, x, y);
+                        (b[0], b[1]) = (b[0].min(x), b[1].min(y));
+                        (b[2], b[3]) = (b[2].max(x), b[3].max(y));
+                    }
+                    b
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         Some(Annot {
             id,
             page,
             kind,
             bbox: mx::transform_rect(to_vis, rect),
+            quads,
             color: self.colour(d, b"C").map(|c| rgb(&c)),
             opacity: d
                 .get(b"CA")

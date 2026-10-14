@@ -3,6 +3,7 @@ use crate::banners::Kind as BannerKind;
 use crate::dialogs::{self as dlg, Outcome};
 use crate::editor::{Action as EdAction, Tool};
 use crate::inspector::{self, Apply, Section};
+use crate::markup;
 use crate::recent::Recent;
 use crate::selection::Selection;
 use crate::settings::Settings;
@@ -163,6 +164,8 @@ enum Dialog {
     SaveSelection(dlg::Layout),
     /// Open this web or email address from a link?
     OpenLink(String),
+    /// The name for comments, being edited.
+    CommentName(String),
     About,
 }
 
@@ -624,6 +627,22 @@ impl App {
             Act::SaveSelection if has => {
                 self.dialog = Dialog::SaveSelection(dlg::Layout::Original);
             }
+            Act::Mark(m) if has => {
+                let color = markup::color(m, &self.state(ctx));
+                let author = self.settings.author();
+                self.tabs[self.active].add_markup(ctx, m, color, &author);
+            }
+            Act::MarkColor { line, index } => {
+                if line {
+                    self.settings.line = index;
+                } else {
+                    self.settings.highlight = index;
+                }
+                self.settings.save();
+            }
+            Act::CommentName => {
+                self.dialog = Dialog::CommentName(self.settings.author());
+            }
             Act::CloseTab if has => {
                 if self.tabs[self.active].dirty {
                     self.dialog = Dialog::ConfirmClose(self.active);
@@ -705,6 +724,8 @@ impl App {
                     self.act(ctx, Act::DeleteObject);
                 } else if self.tabs[self.active].ed.selection.pages().is_some() {
                     self.act(ctx, Act::Delete);
+                } else {
+                    self.tabs[self.active].ed.delete_selected();
                 }
             }
             Act::Nudge(dx, dy) => {
@@ -1113,6 +1134,15 @@ impl App {
                 ) != Outcome::Open;
             }
             Dialog::Message(title, text) => done = dlg::message(ctx, title, text) != Outcome::Open,
+            Dialog::CommentName(name) => match dlg::comment_name(ctx, name) {
+                Outcome::Apply => {
+                    self.settings.author = Some(name.trim().to_string());
+                    self.settings.save();
+                    done = true;
+                }
+                Outcome::Cancel => done = true,
+                Outcome::Open => {}
+            },
             Dialog::OpenLink(url) => match dlg::confirm(
                 ctx,
                 "Open link",
@@ -1282,6 +1312,8 @@ impl App {
             side: self.show_side,
             inspector: self.show_inspector,
             theme: ctx.options(|o| o.theme_preference),
+            highlight: self.settings.highlight,
+            line: self.settings.line,
             ..Default::default()
         };
         if let Some(t) = self.tabs.get(self.active) {

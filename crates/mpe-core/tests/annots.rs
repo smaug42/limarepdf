@@ -332,3 +332,82 @@ fn flattening_some_pages_leaves_the_others() {
     assert_eq!(left[0].page, 0);
     assert!(p.flatten_annotations(Some(&[5])).is_err());
 }
+
+#[test]
+fn markup_is_added_with_a_drawing_and_survives_saving() {
+    let mut p = page();
+    let lines = [[20.0, 30.0, 200.0, 44.0], [20.0, 50.0, 120.0, 64.0]];
+    let id = p
+        .add_markup(0, &AnnotKind::Highlight, &lines, [1.0, 1.0, 0.0], "Sam")
+        .unwrap();
+    let mut p = Pdf::from_bytes(&p.snapshot().unwrap(), None).unwrap();
+    let list = p.annotations();
+    assert_eq!(list.len(), 1);
+    let a = &list[0];
+    assert_eq!(a.id, id);
+    assert_eq!(a.kind, AnnotKind::Highlight);
+    assert_eq!(a.author, "Sam");
+    assert!(a.has_appearance, "MPE draws it when adding it");
+    assert!(!a.modified.is_empty());
+    assert_eq!(a.quads.len(), 2);
+    for (q, l) in a.quads.iter().zip(&lines) {
+        for i in 0..4 {
+            assert!((q[i] - l[i]).abs() < 0.01, "{q:?} vs {l:?}");
+        }
+    }
+    // Yellow over the first line, nothing between the end of the second line and the
+    // edge of the first.
+    assert!(ink(&mut p, [25, 32, 195, 42]).0 > 1000);
+    assert_eq!(ink(&mut p, [125, 52, 195, 62]).0, 0);
+    assert!(p
+        .add_markup(0, &AnnotKind::Note, &lines, [0.0; 3], "")
+        .is_err());
+    assert!(p
+        .add_markup(0, &AnnotKind::Underline, &[], [0.0; 3], "")
+        .is_err());
+}
+
+#[test]
+fn markup_follows_the_text_on_a_turned_page() {
+    let mut p = page();
+    p.rotate_pages(&[0], 90).unwrap();
+    // A line across the page as it is shown (200 wide, 300 high).
+    let line = [20.0, 50.0, 180.0, 70.0];
+    p.add_markup(0, &AnnotKind::Underline, &[line], [0.0; 3], "")
+        .unwrap();
+    let a = &p.annotations()[0];
+    assert!((a.quads[0][1] - 50.0).abs() < 0.01 && (a.quads[0][3] - 70.0).abs() < 0.01);
+    assert!(a.author.is_empty());
+    // The line is under the text as shown, not along its side.
+    assert!(ink(&mut p, [25, 64, 175, 71]).1 > 100);
+    assert_eq!(ink(&mut p, [25, 50, 175, 62]).0, 0);
+}
+
+#[test]
+fn changing_colour_opacity_and_comment() {
+    let mut p = page();
+    let id = p
+        .add_markup(
+            0,
+            &AnnotKind::StrikeOut,
+            &[[20.0, 30.0, 200.0, 44.0]],
+            [0.0; 3],
+            "",
+        )
+        .unwrap();
+    p.set_annotation(id, Some([1.0, 0.0, 0.0]), 0.5, "Delete this")
+        .unwrap();
+    let a = &p.annotations()[0];
+    assert_eq!(a.color, Some([1.0, 0.0, 0.0]));
+    assert!((a.opacity - 0.5).abs() < 1e-3);
+    assert_eq!(a.contents, "Delete this");
+    p.set_annotation(id, Some([1.0, 0.0, 0.0]), 1.0, "")
+        .unwrap();
+    let a = &p.annotations()[0];
+    assert_eq!(a.opacity, 1.0);
+    assert!(a.contents.is_empty());
+    // The struck line is red now: some ink, none of it dark.
+    let (any, dark) = ink(&mut p, [25, 32, 195, 42]);
+    assert!(any > 50 && dark == 0, "{any} {dark}");
+    assert!(p.set_annotation((999, 0), None, 1.0, "").is_err());
+}
