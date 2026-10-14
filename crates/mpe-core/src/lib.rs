@@ -6,6 +6,7 @@
 mod doc;
 mod edit;
 mod fonts;
+mod forms;
 mod imgs;
 mod inline;
 mod links;
@@ -28,6 +29,7 @@ mod tounicode;
 pub use doc::{Info, Pdf};
 pub use edit::{PathStyle, Shape, TextEdit};
 pub use fonts::{Family, FontChoice};
+pub use forms::{Field, FieldKind, FieldValue, Widget};
 pub use imgs::{image_dimensions, ImageImport};
 pub use links::{Link, LinkTarget};
 pub use objects::{words_text, ObjectKind, PageObject, PageWord};

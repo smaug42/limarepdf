@@ -455,15 +455,19 @@ impl Editor {
         } else {
             Sense::click_and_drag()
         };
-        let resp = ui.interact(r, ui.id().with(("page-edit", tab_id, page)), sense);
+        let mut resp = ui.interact(r, ui.id().with(("page-edit", tab_id, page)), sense);
         if resp.secondary_clicked() {
             let p = resp.interact_pointer_pos().map(to_pt);
             self.select_for_menu(pdf, page, p, 3.0 / k);
         }
-        // Links are followed with a click when reading, and with Ctrl+click in the
-        // other tools, so they don't get in the way of editing.
+        // Links are followed with a click in the hand and text-select tools, and with
+        // Ctrl+click in the editing tools, so they don't get in the way of editing. A drag
+        // that starts on a link still selects text.
         let reading = self.tool == Tool::View;
-        if reading || (ui.input(|i| i.modifiers.command) && !self.dragging()) {
+        let selecting = self.tool == Tool::SelectText;
+        let mut over_link = false;
+        let ctrl = ui.input(|i| i.modifiers.command);
+        if (reading || selecting || ctrl) && !self.dragging() {
             let link = resp.hover_pos().map(to_pt).and_then(|p| {
                 let links = self
                     .links
@@ -481,12 +485,16 @@ impl Editor {
                     LinkTarget::Page(n) => format!("Go to page {}", n + 1),
                     LinkTarget::Uri(u) => u.clone(),
                 };
-                let resp = resp.on_hover_text_at_pointer(tip);
+                over_link = true;
+                resp = resp.on_hover_text_at_pointer(tip);
                 if resp.clicked() {
                     self.follow = Some(target);
+                    return resp;
                 }
-                // Holding Ctrl over a link sets the tool aside.
-                return resp;
+                // Holding Ctrl over a link sets an editing tool aside.
+                if !selecting {
+                    return resp;
+                }
             }
         }
         if reading {
@@ -599,7 +607,7 @@ impl Editor {
                 let words = self.words(pdf, page).to_vec();
                 let inside =
                     |p: Pos2, b: [f32; 4]| p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3];
-                if hover_pt.is_some_and(|p| words.iter().any(|w| inside(p, w.bbox))) {
+                if !over_link && hover_pt.is_some_and(|p| words.iter().any(|w| inside(p, w.bbox))) {
                     ui.ctx().set_cursor_icon(CursorIcon::Text);
                 }
                 // Drag selects the words between the press and the pointer, in reading

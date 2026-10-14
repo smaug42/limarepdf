@@ -13,3 +13,4 @@ mpe-core = { path = "../mpe-core" }
 anyhow.workspace = true
 clap.workspace = true
 rayon.workspace = true
+serde_json.workspace = true

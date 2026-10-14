@@ -9,8 +9,9 @@ macro_rules! out {
 }
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use mpe_core::{
-    parse_page_range, print, render, Bates, Cipher, Encryption, HeaderFooter, ImageImport, Info,
-    Ocr, OcrResult, Pdf, Restrictions, ScanMode, ScanOptions, ScanResult, Watermark,
+    parse_page_range, print, render, Bates, Cipher, Encryption, Field, FieldKind, FieldValue,
+    HeaderFooter, ImageImport, Info, Ocr, OcrResult, Pdf, Restrictions, ScanMode, ScanOptions,
+    ScanResult, Watermark,
 };
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
@@ -275,6 +276,11 @@ enum Cmd {
         #[arg(long)]
         password: Option<String>,
     },
+    /// Work with form fields
+    Form {
+        #[command(subcommand)]
+        cmd: FormCmd,
+    },
     /// List the printers; the default is marked
     Printers,
     /// Print (CUPS on Linux and macOS, the print spooler on Windows)
@@ -378,6 +384,145 @@ fn read_all(paths: &[PathBuf]) -> Result<Vec<Vec<u8>>> {
         .iter()
         .map(|p| std::fs::read(p).with_context(|| format!("reading {}", p.display())))
         .collect()
+}
+
+#[derive(Subcommand)]
+enum FormCmd {
+    /// List the fields: name, kind, value, pages and flags
+    List {
+        input: PathBuf,
+        /// Print the values as a JSON object instead, keyed by field name
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        password: Option<String>,
+    },
+}
+
+/// A field's kind for `form list`.
+fn kind_name(k: &FieldKind) -> String {
+    match k {
+        FieldKind::Text {
+            multiline,
+            password,
+            comb,
+            max_len,
+        } => {
+            let mut s = String::from("text");
+            for (on, what) in [
+                (*multiline, "multiline"),
+                (*password, "password"),
+                (*comb, "comb"),
+            ] {
+                if on {
+                    s += &format!(" {what}");
+                }
+            }
+            if let Some(n) = max_len {
+                s += &format!(" max {n}");
+            }
+            s
+        }
+        FieldKind::Check => "checkbox".into(),
+        FieldKind::Radio => "radio".into(),
+        FieldKind::Choice {
+            combo,
+            editable,
+            multi,
+        } => match (combo, editable, multi) {
+            (true, true, _) => "combo editable".into(),
+            (true, false, _) => "combo".into(),
+            (false, _, true) => "list multi".into(),
+            (false, _, false) => "list".into(),
+        },
+        FieldKind::Button => "button".into(),
+        FieldKind::Signature => "signature".into(),
+    }
+}
+
+/// A field's value as JSON: a string for text and single choices, true or false for
+/// checkboxes, an array for multi-select lists, null when nothing is chosen. `None` for
+/// fields without a value (push buttons and signatures).
+fn json_value(f: &Field) -> Option<serde_json::Value> {
+    use serde_json::Value;
+    Some(match &f.value {
+        FieldValue::Text(t) => Value::String(t.clone()),
+        FieldValue::Check(on) => Value::Bool(*on),
+        FieldValue::Choice(c) if matches!(f.kind, FieldKind::Choice { multi: true, .. }) => {
+            Value::Array(c.iter().cloned().map(Value::String).collect())
+        }
+        FieldValue::Choice(c) => c.first().cloned().map_or(Value::Null, Value::String),
+        FieldValue::None => return None,
+    })
+}
+
+fn form_list(input: &Path, json: bool, password: &Option<String>) -> Result<()> {
+    let fields = open(input, password)?.form_fields();
+    if json {
+        // Written by hand to keep the form's order; serde_json's map would sort the names.
+        let rows: Vec<String> = fields
+            .iter()
+            .filter_map(|f| {
+                let v = json_value(f)?;
+                Some(format!(
+                    "  {}: {}",
+                    serde_json::Value::from(f.name.clone()),
+                    v
+                ))
+            })
+            .collect();
+        if rows.is_empty() {
+            out!("{{}}");
+        } else {
+            out!("{{\n{}\n}}", rows.join(",\n"));
+        }
+        return Ok(());
+    }
+    if fields.is_empty() {
+        out!("no form fields");
+    }
+    for f in &fields {
+        let value = match &f.value {
+            FieldValue::Text(t) => format!("{t:?}"),
+            FieldValue::Check(on) => if *on { "on" } else { "off" }.into(),
+            FieldValue::Choice(c) => format!("{c:?}"),
+            FieldValue::None => "-".into(),
+        };
+        let mut pages: Vec<usize> = f.widgets.iter().map(|w| w.page + 1).collect();
+        pages.sort_unstable();
+        pages.dedup();
+        let pages = match pages.as_slice() {
+            [] => "no page".into(),
+            [p] => format!("page {p}"),
+            _ => format!(
+                "pages {}",
+                pages
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+        };
+        let mut notes = vec![pages];
+        if f.required {
+            notes.push("required".into());
+        }
+        if f.read_only {
+            notes.push("read-only".into());
+        }
+        if !f.options.is_empty() {
+            let opts: Vec<&str> = f.options.iter().map(|o| o.0.as_str()).collect();
+            notes.push(format!("options {opts:?}"));
+        }
+        out!(
+            "{} [{}] = {} ({})",
+            f.name,
+            kind_name(&f.kind),
+            value,
+            notes.join(", ")
+        );
+    }
+    Ok(())
 }
 
 fn open(p: &Path, pw: &Option<String>) -> Result<Pdf> {
@@ -763,6 +908,13 @@ fn main() -> Result<()> {
                 }
             }
         }
+        Cmd::Form { cmd } => match cmd {
+            FormCmd::List {
+                input,
+                json,
+                password,
+            } => form_list(&input, json, &password)?,
+        },
         Cmd::Printers => {
             let list = print::printers()?;
             if list.is_empty() {

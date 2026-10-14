@@ -17,6 +17,8 @@ Page lists take numbers and ranges, counted from 1: `1-3,7`, `5-` (5 to the end)
 | `mpe search in.pdf "invoice"` | Find text; `--boxes` also prints where each match is on its page |
 | `mpe objects in.pdf --pages 1` | List the editable objects (text lines, images, paths) with their boxes; OCR text is marked "(hidden)" |
 | `mpe render in.pdf --dpi 150 --out-dir pngs` | Save pages as images; `--format jpeg --quality 85` for JPEG |
+| `mpe form list in.pdf` | List the form fields: name, kind, value, pages, and whether each is required or read-only, with a choice's options |
+| `mpe form list in.pdf --json` | The fields' values as a JSON object keyed by field name, in the form's order: text as strings, checkboxes as `true`/`false`, a radio group or drop-down's choice as a string (`null` for none), a multi-select list as an array. Push buttons and signatures are left out |
 
 ## Pages
 

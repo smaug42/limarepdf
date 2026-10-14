@@ -53,7 +53,8 @@ available.
 | Driving scanners | No | Not planned: scan with your system's tool and import the images |
 | Export to Word, Excel, CSV | No | |
 | Annotations, comments, stamps, measuring | No | Existing annotations are shown if they have an appearance stream |
-| Forms, form data, barcodes, JavaScript | No | |
+| Forms | Partial | Fields and their values can be listed (`mpe form list`, also as JSON). Filling in, in the app and from the command line, and flattening are being built; non-Latin text, JavaScript and XFA-only forms are not planned for the first version. [Details](cli.md#look-at-a-document) |
+| Form data import/export (FDF, XFDF), barcodes, JavaScript | No | |
 | Bookmarks | Partial | Shown in the Bookmarks tab (also from the command palette) and followed; adding, editing or deleting them: No. [Details](gui.md#the-window) |
 | Links | Partial | Followed: to pages, and to web and email addresses after asking. Links to other PDF files, and adding or editing links: No. [Details](gui.md#links) |
 | Layers, attachments | No | |

@@ -17,11 +17,17 @@
 - The inspector's heading and the button that hides it share one row.
 - A Bookmarks tab beside Pages and Search shows the document's outline. Click a bookmark to go to its page.
   ☰ > View > Bookmarks and the command palette open it.
-- Links work: click one with the hand tool, or Ctrl+click with any other tool. Links to pages go there; links to
+- Links work: click one with the hand or text-select tool (dragging still selects text), or Ctrl+click with the
+  editing tools. Links to pages go there; links to
   web and email addresses show the address and ask before opening it in your browser or email program.
 - MPE has its own icon, on the window, the taskbar and, on Windows, `mpe-gui.exe` itself. The Linux archive
   includes a desktop entry and icon, which Wayland desktops need to show it; see
   [Install](docs/install.md#menu-entry-and-icon-on-linux).
+
+### Command line
+
+- `mpe form list` lists a form's fields with their kinds, values, pages and flags; `--json` prints the values as a
+  JSON object. This is the first step towards filling in forms.
 
 ### Fixes
 

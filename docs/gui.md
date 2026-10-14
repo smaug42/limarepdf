@@ -34,8 +34,9 @@ Enter to run.
 
 ## Links
 
-Links in a document work with the hand tool: the pointer turns into a hand over one, and hovering shows where it
-goes. With any other tool, hold Ctrl (Cmd on macOS) and click, so links don't get in the way of editing.
+Click a link with the hand or text-select tool to follow it: the pointer turns into a hand over one, and hovering
+shows where it goes. Dragging from a link with the text-select tool selects text as usual. With the editing tools,
+hold Ctrl (Cmd on macOS) and click, so links don't get in the way of editing.
 
 - A link to another page goes there.
 - A link to a web or email address asks first, showing the full address, and then opens it in your browser or
