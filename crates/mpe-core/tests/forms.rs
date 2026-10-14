@@ -189,6 +189,8 @@ fn reads_every_kind_of_field() {
     let pages: Vec<usize> = colour.widgets.iter().map(|w| w.page).collect();
     assert_eq!(pages, [0, 1]);
     assert!(!colour.widgets[0].hidden && colour.widgets[1].hidden);
+    let exports: Vec<Option<&str>> = colour.widgets.iter().map(|w| w.export.as_deref()).collect();
+    assert_eq!(exports, [Some("red"), Some("blue")]);
 
     let size = find(&fields, "size");
     assert!(matches!(

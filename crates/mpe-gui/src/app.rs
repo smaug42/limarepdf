@@ -585,6 +585,24 @@ impl App {
                 let ed = &mut self.tabs[self.active].ed;
                 ed.show_hidden = !ed.show_hidden;
             }
+            Act::ToggleFields => {
+                let form = &mut self.tabs[self.active].ed.form;
+                form.highlight = !form.highlight;
+            }
+            Act::NextField => self.tabs[self.active].ed.form.step(true),
+            Act::PrevField => self.tabs[self.active].ed.form.step(false),
+            Act::ClearField => {
+                let ed = &mut self.tabs[self.active].ed;
+                if let Some(a) = ed.form.clear_value() {
+                    ed.actions.push(a);
+                }
+            }
+            Act::ResetForm => {
+                let t = &mut self.tabs[self.active];
+                t.ed.form.clear_focus();
+                t.edit(ctx, |p| p.reset_form());
+                t.notice = Some("Reset the form".into());
+            }
             Act::Tool(Tool::Image) => self.tabs[self.active].choose_image(),
             Act::Tool(tool) => self.tabs[self.active].ed.set_tool(tool),
             Act::SelectAllText => {

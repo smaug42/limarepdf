@@ -53,7 +53,7 @@ available.
 | Driving scanners | No | Not planned: scan with your system's tool and import the images |
 | Export to Word, Excel, CSV | No | |
 | Annotations, comments, stamps, measuring | No | Existing annotations are shown if they have an appearance stream |
-| Forms | Partial | From the command line: list fields and values (also as JSON), fill in text, checkboxes, radio buttons and lists, and reset. Filling in the desktop app and flattening: being built. Latin-1 text only; JavaScript doesn't run; XFA-only forms: No. [Details](cli.md#forms) |
+| Forms | Partial | Fill in text fields, checkboxes, radio buttons and lists in the app (Tab between fields, highlight, reset) and from the command line (`mpe form`, values as JSON). Flattening: being built. Latin-1 text only; JavaScript doesn't run; creating fields, signing and XFA-only forms: No. [Details](gui.md#filling-in-forms) |
 | Form data import/export (FDF, XFDF), barcodes, JavaScript | No | |
 | Bookmarks | Partial | Shown in the Bookmarks tab (also from the command palette) and followed; adding, editing or deleting them: No. [Details](gui.md#the-window) |
 | Links | Partial | Followed: to pages, and to web and email addresses after asking. Links to other PDF files, and adding or editing links: No. [Details](gui.md#links) |

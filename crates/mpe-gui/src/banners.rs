@@ -18,7 +18,7 @@ pub enum Kind {
     Protected,
     /// Pages are images without text.
     Scanned,
-    /// The document has form fields, which MPE cannot fill in.
+    /// The document has form fields.
     Forms,
     /// Many pages or a big file.
     Large,
@@ -45,7 +45,8 @@ impl Banner {
         match self.kind {
             Kind::Protected => Some(("Password security", Act::Security)),
             Kind::Scanned => Some(("Recognise text", Act::Ocr)),
-            Kind::Forms | Kind::Large => None,
+            Kind::Forms => Some(("Highlight fields", Act::ToggleFields)),
+            Kind::Large => None,
         }
     }
 }
@@ -77,7 +78,7 @@ pub fn detect(pdf: &Pdf, bytes: Option<u64>) -> Vec<Banner> {
     if has_form_fields(pdf) {
         v.push(Banner {
             kind: Kind::Forms,
-            text: "This document has form fields. MPE cannot fill them in yet.".into(),
+            text: "This document has a form. Click a field to fill it in, or press Tab.".into(),
         });
     }
     let pages = pdf.page_count();

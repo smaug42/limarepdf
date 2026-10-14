@@ -101,6 +101,8 @@ impl Tab {
     ) -> Result<Self, String> {
         let size = path.as_ref().and_then(|p| std::fs::metadata(p).ok());
         let banners = banners::detect(&pdf, size.map(|m| m.len()));
+        // Form fields without drawings would show nothing; this isn't a change to save.
+        pdf.refresh_appearances();
         let bytes = pdf.render_snapshot().map_err(|e| e.to_string())?;
         let sizes = sizes_of(&pdf);
         Ok(Self {
@@ -314,6 +316,9 @@ impl Tab {
                 }
                 Action::PathStyle(p, id, st) => {
                     self.edit_pages(ctx, &[p], |pdf| pdf.set_path_style(p, id, &st));
+                }
+                Action::SetField(pages, name, v) => {
+                    self.edit_pages(ctx, &pages, |pdf| pdf.set_field(&name, v));
                 }
             }
         }
@@ -584,6 +589,9 @@ impl Tab {
         c.tool = Some(self.ed.tool);
         c.fit = self.fit;
         c.hidden_text = self.ed.show_hidden;
+        c.form = !self.ed.form.fields().is_empty();
+        c.field = self.ed.form.focused_field().is_some();
+        c.fields_shown = self.ed.form.highlight;
     }
 
     /// A right-click menu for what is selected, its commands queued in `requested`. The
@@ -813,7 +821,15 @@ impl Tab {
         if let Some(&t) = tops.get(p) {
             self.view = (p, (top - t) / (BASE * self.zoom));
         }
+        let ed = &mut self.ed;
+        ed.form.keys(&ctx, &mut ed.actions);
         self.apply_actions(&ctx);
+        // The keyboard moved to a field on a page out of view.
+        if let Some(p) = self.ed.form.scroll_page() {
+            if p < visible.0 || p > visible.1 {
+                self.go_to(p);
+            }
+        }
         match self.ed.follow.take() {
             Some(LinkTarget::Page(p)) => self.go_to(p),
             Some(LinkTarget::Uri(u)) => self.open_link = Some(u),

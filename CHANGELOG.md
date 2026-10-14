@@ -17,6 +17,10 @@
 - The inspector's heading and the button that hides it share one row.
 - A Bookmarks tab beside Pages and Search shows the document's outline. Click a bookmark to go to its page.
   ☰ > View > Bookmarks and the command palette open it.
+- Fill in forms: click a field with the hand or text-select tool to type in it, tick it or choose from its
+  options; Tab moves between fields. Each change is one undo step. ☰ > View > Highlight fields shows every field,
+  and the inspector's Form section has Clear field and Reset form. Fields with a value but no drawing of their own
+  now show their value. See [Filling in forms](docs/gui.md#filling-in-forms).
 - Links work: click one with the hand or text-select tool (dragging still selects text), or Ctrl+click with the
   editing tools. Links to pages go there; links to
   web and email addresses show the address and ask before opening it in your browser or email program.

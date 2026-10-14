@@ -90,6 +90,9 @@ pub struct Widget {
     pub bbox: [f32; 4],
     /// For checkboxes and radio buttons: the state name meaning "on" for this widget.
     pub on_state: Option<String>,
+    /// For radio buttons: the value choosing this one gives the field (the export value
+    /// of its "on" state).
+    pub export: Option<String>,
     pub hidden: bool,
 }
 
@@ -306,10 +309,13 @@ impl Pdf {
             .as_ref()
             .map(|o| self.options(o))
             .unwrap_or_default();
-        let ws: Vec<Widget> = widgets
+        let mut ws: Vec<Widget> = widgets
             .iter()
             .filter_map(|&id| self.widget(id, w))
             .collect();
+        for wd in &mut ws {
+            wd.export = wd.on_state.as_deref().map(|s| button_export(s, &opt));
+        }
         let value = self.value_of(&kind, inh.v.as_ref(), &opt, widgets);
         let options = match &kind {
             FieldKind::Check | FieldKind::Radio => {
@@ -356,6 +362,7 @@ impl Pdf {
             page,
             bbox: mx::transform_rect(to_vis?, rect),
             on_state,
+            export: None,
             hidden: flags & HIDDEN != 0,
         })
     }
