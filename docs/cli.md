@@ -20,6 +20,22 @@ Page lists take numbers and ranges, counted from 1: `1-3,7`, `5-` (5 to the end)
 | `mpe form list in.pdf` | List the form fields: name, kind, value, pages, and whether each is required or read-only, with a choice's options |
 | `mpe form list in.pdf --json` | The fields' values as a JSON object keyed by field name, in the form's order: text as strings, checkboxes as `true`/`false`, a radio group or drop-down's choice as a string (`null` for none), a multi-select list as an array. Push buttons and signatures are left out |
 
+## Forms
+
+| Command | What it does |
+| --- | --- |
+| `mpe form fill in.pdf -o out.pdf --set name=Ann --set agree=on` | Fill in fields. Checkboxes take `on` or `off`; a multi-select list takes its choices separated by `\|` |
+| `mpe form fill in.pdf -o out.pdf --values values.json` | Fill in fields from a JSON object in the form `mpe form list --json` prints, so you can list, edit and fill. A choice can be given by its export value or by the text shown for it. `--set` can be added and is applied after the file |
+| `mpe form reset in.pdf -o out.pdf` | Put every field back to its default value |
+
+Filling checks every value first: an unknown field name, a read-only field, text too long for the field, a line
+break in a single-line field, or an option the field doesn't have stops it before anything is written. MPE draws
+each filled field itself, so the values show in every reader. Field text must be Latin-1 (Western European) for
+now; other characters are refused rather than written wrongly. When the field's own font can't show the text, MPE
+uses the closest standard font (Helvetica, Times or Courier). Password fields are drawn as `*` and their value is
+not kept in the file, as the PDF standard asks. Forms that need JavaScript to calculate or check values are filled,
+but their scripts don't run.
+
 ## Pages
 
 | Command | What it does |

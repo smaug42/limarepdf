@@ -99,8 +99,27 @@ struct Inherited {
     ft: Option<Vec<u8>>,
     ff: i64,
     v: Option<Object>,
+    dv: Option<Object>,
     max_len: Option<usize>,
     opt: Option<Object>,
+    da: Option<Vec<u8>>,
+    q: Option<i64>,
+}
+
+/// Where a field is in the file, and what writing its value needs besides [`Field`].
+pub(crate) struct Node {
+    /// The terminal field's dictionary, which holds `/V`.
+    pub id: ObjectId,
+    /// All its widget annotations, on a page or not.
+    pub widgets: Vec<ObjectId>,
+    /// The default appearance (`/DA`): font, size and colour, inherited or from the form.
+    pub da: Option<Vec<u8>>,
+    /// Alignment: 0 left, 1 centred, 2 right.
+    pub q: i64,
+    /// The value a reset goes back to.
+    pub dv: Option<Object>,
+    /// For a choice or a button with `/Opt`: (export value, text shown).
+    pub opt: Vec<(String, String)>,
 }
 
 /// State kept while walking the field tree.
@@ -110,15 +129,25 @@ struct Walk {
     /// Each page's matrix from user space to displayed-page points.
     to_vis: HashMap<usize, Option<M>>,
     seen: HashSet<ObjectId>,
-    out: Vec<Field>,
+    out: Vec<(Field, Node)>,
 }
 
 impl Pdf {
     /// The form's fields, in the order the form lists them; empty when there is no form.
     /// Broken entries are skipped, never fatal.
     pub fn form_fields(&self) -> Vec<Field> {
+        self.form_nodes().into_iter().map(|(f, _)| f).collect()
+    }
+
+    /// The fields with where each is in the file.
+    pub(crate) fn form_nodes(&self) -> Vec<(Field, Node)> {
         let Some(form) = self.acro_form() else {
             return Vec::new();
+        };
+        let top = Inherited {
+            da: form.get(b"DA").ok().and_then(|o| self.string_bytes(o)),
+            q: form.get(b"Q").ok().and_then(|o| self.int_value(o)),
+            ..Inherited::default()
         };
         let Some(fields) = form
             .get(b"Fields")
@@ -136,7 +165,7 @@ impl Pdf {
         };
         for f in fields {
             if let Ok(id) = f.as_reference() {
-                self.walk_field(id, "", &Inherited::default(), 0, &mut walk);
+                self.walk_field(id, "", &top, 0, &mut walk);
             }
         }
         walk.out
@@ -190,6 +219,15 @@ impl Pdf {
         if let Ok(v) = d.get(b"V") {
             inh.v = Some(v.clone());
         }
+        if let Ok(dv) = d.get(b"DV") {
+            inh.dv = Some(dv.clone());
+        }
+        if let Some(da) = d.get(b"DA").ok().and_then(|o| self.string_bytes(o)) {
+            inh.da = Some(da);
+        }
+        if let Some(q) = d.get(b"Q").ok().and_then(|o| self.int_value(o)) {
+            inh.q = Some(q);
+        }
         if let Some(n) = d.get(b"MaxLen").ok().and_then(|o| self.int_value(o)) {
             inh.max_len = usize::try_from(n).ok();
         }
@@ -223,7 +261,15 @@ impl Pdf {
             widgets
         };
         if let Some(field) = self.make_field(name, d, &inh, &widgets, w) {
-            w.out.push(field);
+            let node = Node {
+                id,
+                widgets,
+                da: inh.da,
+                q: inh.q.unwrap_or(0),
+                dv: inh.dv,
+                opt: inh.opt.map(|o| self.options(&o)).unwrap_or_default(),
+            };
+            w.out.push((field, node));
         }
     }
 
@@ -264,53 +310,20 @@ impl Pdf {
             .iter()
             .filter_map(|&id| self.widget(id, w))
             .collect();
-        let v = inh.v.as_ref();
-        let (value, options) = match &kind {
-            FieldKind::Text { .. } => {
-                let text = v.and_then(|o| self.text_value(o)).unwrap_or_default();
-                (FieldValue::Text(text), Vec::new())
-            }
+        let value = self.value_of(&kind, inh.v.as_ref(), &opt, widgets);
+        let options = match &kind {
             FieldKind::Check | FieldKind::Radio => {
-                let on = v
-                    .and_then(|o| o.as_name().ok())
-                    .map(|n| String::from_utf8_lossy(n).into_owned())
-                    .filter(|n| n != "Off");
-                // A button's states may be numbers that index /Opt, which then holds the
-                // export values.
-                let export = |state: &str| -> String {
-                    state
-                        .parse::<usize>()
-                        .ok()
-                        .and_then(|i| opt.get(i))
-                        .map_or_else(|| state.to_string(), |o| o.0.clone())
-                };
                 let mut options: Vec<(String, String)> = Vec::new();
-                for wd in &ws {
-                    if let Some(s) = &wd.on_state {
-                        let e = export(s);
-                        if !options.iter().any(|o| o.0 == e) {
-                            options.push((e.clone(), e));
-                        }
+                for s in widgets.iter().filter_map(|&id| self.on_state(id)) {
+                    let e = button_export(&s, &opt);
+                    if !options.iter().any(|o| o.0 == e) {
+                        options.push((e.clone(), e));
                     }
                 }
-                let value = if kind == FieldKind::Check {
-                    FieldValue::Check(on.is_some())
-                } else {
-                    FieldValue::Choice(on.map(|s| export(&s)).into_iter().collect())
-                };
-                (value, options)
+                options
             }
-            FieldKind::Choice { .. } => {
-                let chosen = match v.map(|o| self.doc.dereference(o).map(|x| x.1)) {
-                    Some(Ok(Object::Array(a))) => {
-                        a.iter().filter_map(|o| self.text_value(o)).collect()
-                    }
-                    Some(Ok(o)) => self.text_value(o).into_iter().collect(),
-                    _ => Vec::new(),
-                };
-                (FieldValue::Choice(chosen), opt)
-            }
-            FieldKind::Button | FieldKind::Signature => (FieldValue::None, Vec::new()),
+            FieldKind::Choice { .. } => opt,
+            _ => Vec::new(),
         };
         Some(Field {
             name,
@@ -333,7 +346,70 @@ impl Pdf {
             let pid = self.page_id_at(page).ok()?;
             mx::inv(self.vis_down(pid).0)
         });
-        let on_state = d
+        let on_state = self.on_state(id);
+        let flags = d
+            .get(b"F")
+            .ok()
+            .and_then(|o| self.int_value(o))
+            .unwrap_or(0);
+        Some(Widget {
+            page,
+            bbox: mx::transform_rect(to_vis?, rect),
+            on_state,
+            hidden: flags & HIDDEN != 0,
+        })
+    }
+
+    /// A field's value from its `/V` (or `/DV`) entry. For buttons, `widgets` give the
+    /// states, and `opt` the export values when the states are numbers.
+    pub(crate) fn value_of(
+        &self,
+        kind: &FieldKind,
+        v: Option<&Object>,
+        opt: &[(String, String)],
+        widgets: &[ObjectId],
+    ) -> FieldValue {
+        match kind {
+            FieldKind::Text { .. } => {
+                FieldValue::Text(v.and_then(|o| self.text_value(o)).unwrap_or_default())
+            }
+            FieldKind::Check | FieldKind::Radio => {
+                let on = v
+                    .and_then(|o| self.doc.dereference(o).ok())
+                    .and_then(|(_, o)| o.as_name().ok())
+                    .map(|n| String::from_utf8_lossy(n).into_owned())
+                    .filter(|n| n != "Off");
+                // A checkbox is ticked only when its value is one of its widgets' states
+                // (or, when they have no drawings to name states, when it isn't Off).
+                if *kind == FieldKind::Check {
+                    let states: Vec<String> =
+                        widgets.iter().filter_map(|&w| self.on_state(w)).collect();
+                    let ticked = on.is_some_and(|s| states.is_empty() || states.contains(&s));
+                    FieldValue::Check(ticked)
+                } else {
+                    FieldValue::Choice(on.map(|s| button_export(&s, opt)).into_iter().collect())
+                }
+            }
+            FieldKind::Choice { .. } => {
+                let chosen = match v.map(|o| self.doc.dereference(o).map(|x| x.1)) {
+                    Some(Ok(Object::Array(a))) => {
+                        a.iter().filter_map(|o| self.text_value(o)).collect()
+                    }
+                    Some(Ok(o)) => self.text_value(o).into_iter().collect(),
+                    _ => Vec::new(),
+                };
+                FieldValue::Choice(chosen)
+            }
+            FieldKind::Button | FieldKind::Signature => FieldValue::None,
+        }
+    }
+
+    /// A checkbox or radio widget's "on" state: the name in its normal appearance other
+    /// than `Off`.
+    pub(crate) fn on_state(&self, widget: ObjectId) -> Option<String> {
+        self.doc
+            .get_dictionary(widget)
+            .ok()?
             .get(b"AP")
             .ok()
             .and_then(|o| self.doc.dereference(o).ok())
@@ -346,18 +422,7 @@ impl Pdf {
                     .map(|(k, _)| k)
                     .find(|k| k.as_slice() != b"Off")
                     .map(|k| String::from_utf8_lossy(k).into_owned())
-            });
-        let flags = d
-            .get(b"F")
-            .ok()
-            .and_then(|o| self.int_value(o))
-            .unwrap_or(0);
-        Some(Widget {
-            page,
-            bbox: mx::transform_rect(to_vis?, rect),
-            on_state,
-            hidden: flags & HIDDEN != 0,
-        })
+            })
     }
 
     /// A choice field's `/Opt`: each entry a string, or an [export value, text shown]
@@ -398,7 +463,25 @@ impl Pdf {
         }
     }
 
-    fn int_value(&self, o: &Object) -> Option<i64> {
+    pub(crate) fn int_value(&self, o: &Object) -> Option<i64> {
         self.doc.dereference(o).ok()?.1.as_i64().ok()
     }
+
+    /// A string's raw bytes.
+    pub(crate) fn string_bytes(&self, o: &Object) -> Option<Vec<u8>> {
+        match self.doc.dereference(o).ok()?.1 {
+            Object::String(s, _) => Some(s.clone()),
+            _ => None,
+        }
+    }
+}
+
+/// A button state's export value: the state itself, or, when the field has `/Opt` and
+/// the state is a number, that entry of `/Opt`.
+pub(crate) fn button_export(state: &str, opt: &[(String, String)]) -> String {
+    state
+        .parse::<usize>()
+        .ok()
+        .and_then(|i| opt.get(i))
+        .map_or_else(|| state.to_string(), |o| o.0.clone())
 }

@@ -397,6 +397,119 @@ enum FormCmd {
         #[arg(long)]
         password: Option<String>,
     },
+    /// Fill in fields and write the result. A values file is applied first, then each
+    /// --set; any unknown name or unsuitable value stops it before anything is written
+    Fill {
+        #[command(flatten)]
+        io: Io,
+        /// Set one field: NAME=VALUE. Checkboxes take on or off; a multi-select list takes
+        /// its choices separated by |
+        #[arg(long = "set", value_name = "NAME=VALUE")]
+        set: Vec<String>,
+        /// A JSON object of values, as `mpe form list --json` prints them
+        #[arg(long, value_name = "FILE")]
+        values: Option<PathBuf>,
+    },
+    /// Put every field back to its default value
+    Reset {
+        #[command(flatten)]
+        io: Io,
+    },
+}
+
+/// A checkbox value given as text: on/off and the like, or the box's export value.
+fn check_from_text(f: &Field, s: &str) -> Result<bool> {
+    match s.to_ascii_lowercase().as_str() {
+        "on" | "yes" | "true" | "1" => Ok(true),
+        "off" | "no" | "false" | "0" | "" => Ok(false),
+        _ if f.options.iter().any(|o| o.0 == s) => Ok(true),
+        _ => bail!("\"{}\" is a checkbox: give on or off, not \"{s}\"", f.name),
+    }
+}
+
+/// A field's value from `--set NAME=VALUE` text.
+fn value_from_text(f: &Field, s: &str) -> Result<FieldValue> {
+    Ok(match &f.kind {
+        FieldKind::Text { .. } => FieldValue::Text(s.to_string()),
+        FieldKind::Check => FieldValue::Check(check_from_text(f, s)?),
+        FieldKind::Choice { multi: true, .. } if !s.is_empty() => {
+            FieldValue::Choice(s.split('|').map(str::to_string).collect())
+        }
+        FieldKind::Radio | FieldKind::Choice { .. } if s.is_empty() => FieldValue::Choice(vec![]),
+        FieldKind::Radio | FieldKind::Choice { .. } => FieldValue::Choice(vec![s.to_string()]),
+        FieldKind::Button | FieldKind::Signature => FieldValue::None,
+    })
+}
+
+/// A field's value from a JSON value, as `form list --json` prints them.
+fn value_from_json(f: &Field, v: &serde_json::Value) -> Result<FieldValue> {
+    use serde_json::Value;
+    let text = |v: &Value| -> Result<String> {
+        match v {
+            Value::String(s) => Ok(s.clone()),
+            Value::Number(n) => Ok(n.to_string()),
+            Value::Null => Ok(String::new()),
+            _ => bail!("\"{}\" takes text, not {v}", f.name),
+        }
+    };
+    Ok(match (&f.kind, v) {
+        (FieldKind::Check, Value::Bool(b)) => FieldValue::Check(*b),
+        (FieldKind::Check, v) => FieldValue::Check(check_from_text(f, &text(v)?)?),
+        (FieldKind::Radio | FieldKind::Choice { .. }, Value::Array(a)) => {
+            FieldValue::Choice(a.iter().map(text).collect::<Result<_>>()?)
+        }
+        (FieldKind::Radio | FieldKind::Choice { .. }, v) => {
+            let s = text(v)?;
+            FieldValue::Choice(if s.is_empty() { vec![] } else { vec![s] })
+        }
+        (_, v) => FieldValue::Text(text(v)?),
+    })
+}
+
+fn form_fill(io: &Io, set: &[String], values: &Option<PathBuf>) -> Result<()> {
+    let mut pdf = open(&io.input, &io.password)?;
+    let fields = pdf.form_fields();
+    let field = |name: &str| -> Result<&Field> {
+        fields
+            .iter()
+            .find(|f| f.name == name)
+            .with_context(|| format!("no form field named \"{name}\""))
+    };
+    let mut todo: Vec<(String, FieldValue)> = Vec::new();
+    if let Some(path) = values {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("cannot read {}", path.display()))?;
+        let json: serde_json::Value = serde_json::from_str(&text)
+            .with_context(|| format!("{} is not valid JSON", path.display()))?;
+        let serde_json::Value::Object(map) = json else {
+            bail!(
+                "{} must hold a JSON object of field names and values",
+                path.display()
+            );
+        };
+        for (name, v) in &map {
+            todo.push((name.clone(), value_from_json(field(name)?, v)?));
+        }
+    }
+    for s in set {
+        let Some((name, v)) = s.split_once('=') else {
+            bail!("--set takes NAME=VALUE, not \"{s}\"");
+        };
+        todo.push((name.to_string(), value_from_text(field(name)?, v)?));
+    }
+    if todo.is_empty() {
+        bail!("nothing to fill in: give --set NAME=VALUE or --values FILE");
+    }
+    for (name, v) in &todo {
+        pdf.set_field(name, v.clone())?;
+    }
+    pdf.save(&io.output)?;
+    out!(
+        "filled {} field(s); wrote {}",
+        todo.len(),
+        io.output.display()
+    );
+    Ok(())
 }
 
 /// A field's kind for `form list`.
@@ -914,6 +1027,8 @@ fn main() -> Result<()> {
                 json,
                 password,
             } => form_list(&input, json, &password)?,
+            FormCmd::Fill { io, set, values } => form_fill(&io, &set, &values)?,
+            FormCmd::Reset { io } => run_edit(&io, |p| p.reset_form())?,
         },
         Cmd::Printers => {
             let list = print::printers()?;

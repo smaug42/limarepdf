@@ -27,7 +27,10 @@
 ### Command line
 
 - `mpe form list` lists a form's fields with their kinds, values, pages and flags; `--json` prints the values as a
-  JSON object. This is the first step towards filling in forms.
+  JSON object.
+- `mpe form fill` fills in text fields, checkboxes, radio buttons, drop-downs and lists, from `--set NAME=VALUE`
+  or a JSON file like the one `form list --json` prints, and `mpe form reset` puts fields back to their defaults.
+  MPE draws the filled fields itself, so the values show in every reader. See [Forms](docs/cli.md#forms).
 
 ### Fixes
 
