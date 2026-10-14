@@ -30,5 +30,6 @@ This is a from-scratch implementation (with AI assistance): it contains no other
 - [Rendering](docs/rendering.md)
 - [Performance](docs/performance.md)
 - [Testing and platforms](docs/testing.md)
+- [Releasing](docs/releasing.md)
 
 **[Changelog](CHANGELOG.md)** · **[Licence](docs/licence.md)**

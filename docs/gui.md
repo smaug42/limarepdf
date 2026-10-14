@@ -7,6 +7,11 @@
 Open PDFs with the Open button, Ctrl+O, or by dropping them on the window. Image files (PNG, JPEG, TIFF) open as a new
 document with one page per image. From a terminal, `mpe-gui file.pdf --page 3` opens a file at page 3.
 
+Recently opened PDFs are listed on the start screen and under ☰ > File > Open recent, which also clears the list.
+Files that no longer exist are left out. The list holds 10 files and is kept on your computer only, in
+`~/.config/mpe/recent.txt` on Linux, `~/Library/Application Support/mpe/recent.txt` on macOS, and
+`%APPDATA%\mpe\recent.txt` on Windows.
+
 Each document gets a tab. The tab shows its name, with `*` while it has unsaved changes.
 
 ## The window
