@@ -2,7 +2,7 @@
 //! and shapes, and the inspector panel.
 
 use crate::fields::FormUi;
-use crate::selection::{ObjKind, Selection};
+use crate::selection::{ObjKind, Selection, WordAt};
 use crate::theme;
 use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use egui_phosphor::regular as icon;
@@ -14,11 +14,10 @@ use std::collections::HashMap;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tool {
-    /// Reading only: page clicks do nothing.
-    View,
+    /// The default: select words (visible or recognised) to copy, follow links, fill in
+    /// forms. Never changes page content.
+    Read,
     Select,
-    /// Select words (visible or recognised) and copy them.
-    SelectText,
     Text,
     Image,
     Rect,
@@ -116,7 +115,7 @@ pub struct Editor {
 impl Default for Editor {
     fn default() -> Self {
         Self {
-            tool: Tool::View,
+            tool: Tool::Read,
             selection: Selection::None,
             objs: HashMap::new(),
             unavailable: HashMap::new(),
@@ -152,6 +151,16 @@ fn norm(r: [f32; 4]) -> [f32; 4] {
         r[1].min(r[3]),
         r[0].max(r[2]),
         r[1].max(r[3]),
+    ]
+}
+
+/// The smallest box holding both.
+fn union(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    [
+        a[0].min(b[0]),
+        a[1].min(b[1]),
+        a[2].max(b[2]),
+        a[3].max(b[3]),
     ]
 }
 
@@ -238,7 +247,7 @@ impl Editor {
         self.tool = t;
         self.drag = None;
         self.draw = None;
-        if t == Tool::SelectText {
+        if t == Tool::Read {
             self.selection.clear_object();
             self.insp = None;
         } else {
@@ -247,9 +256,6 @@ impl Editor {
         }
         if t != Tool::Text {
             self.new_text = None;
-        }
-        if t == Tool::View {
-            self.selection.clear_object();
         }
     }
 
@@ -294,12 +300,52 @@ impl Editor {
             .or_insert_with(|| pdf.page_words(page).unwrap_or_default())
     }
 
-    /// The selected words as text, if any are selected.
+    /// The selected words as text, if any are selected: pages in order, separated by a
+    /// line break.
     pub fn selected_text(&self) -> Option<String> {
-        let (p, a, b) = self.selection.words()?;
-        let words = self.words.get(&p)?;
-        let range = words.get(a.min(b)..=a.max(b).min(words.len().checked_sub(1)?))?;
-        Some(words_text(range))
+        let ((first, _), (last, _)) = self.selection.words()?;
+        let parts: Vec<String> = (first..=last)
+            .filter_map(|p| {
+                let words = self.words.get(&p)?;
+                let range = self.selection.words_on(p, words.len())?;
+                Some(words_text(&words[range]))
+            })
+            .collect();
+        (!parts.is_empty()).then(|| parts.join("\n"))
+    }
+
+    /// Move the moving end of the word selection to `end`, or start one there. The words
+    /// of the pages in between are read, for copying.
+    fn extend_words(&mut self, pdf: &mpe_core::Pdf, end: WordAt) {
+        let anchor = match self.selection {
+            Selection::Words { anchor, .. } => anchor,
+            _ => end,
+        };
+        for p in anchor.0.min(end.0)..=anchor.0.max(end.0) {
+            self.words(pdf, p);
+        }
+        self.selection = Selection::Words { anchor, end };
+    }
+
+    /// The first and last index of the words on word `i`'s line.
+    fn line_of(words: &[PageWord], i: usize) -> Option<(usize, usize)> {
+        let line = words.get(i)?.line;
+        let first = words.iter().position(|w| w.line == line)?;
+        let last = words.iter().rposition(|w| w.line == line)?;
+        Some((first, last))
+    }
+
+    /// Each line's box: the union of its words' boxes, so gaps between words count.
+    fn line_boxes(words: &[PageWord]) -> Vec<[f32; 4]> {
+        // Words come in reading order, so a line's words are together.
+        let mut boxes: Vec<(usize, [f32; 4])> = Vec::new();
+        for w in words {
+            match boxes.last_mut() {
+                Some((l, b)) if *l == w.line => *b = union(*b, w.bbox),
+                _ => boxes.push((w.line, w.bbox)),
+            }
+        }
+        boxes.into_iter().map(|(_, b)| b).collect()
     }
 
     /// Index of the word nearest to `p` (page points), if the page has words.
@@ -455,27 +501,20 @@ impl Editor {
         let to_pt = |p: Pos2| Pos2::new((p.x - r.min.x) / k, (p.y - r.min.y) / k);
         let screen_rect =
             |b: [f32; 4]| Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3]));
-        // Reading only: clicks (for the right-click menu) but no drags, so dragging
-        // still scrolls the view.
-        let sense = if self.tool == Tool::View {
-            Sense::click()
-        } else {
-            Sense::click_and_drag()
-        };
-        let mut resp = ui.interact(r, ui.id().with(("page-edit", tab_id, page)), sense);
+        let id = ui.id().with(("page-edit", tab_id, page));
+        let mut resp = ui.interact(r, id, Sense::click_and_drag());
         if resp.secondary_clicked() {
             let p = resp.interact_pointer_pos().map(to_pt);
             self.select_for_menu(pdf, page, p, 3.0 / k);
         }
-        // Links are followed with a click in the hand and text-select tools, and with
-        // Ctrl+click in the editing tools, so they don't get in the way of editing. A drag
-        // that starts on a link still selects text.
-        let reading = self.tool == Tool::View;
-        let selecting = self.tool == Tool::SelectText;
+        // Links are followed with a click in the read tool, and with Ctrl+click in the
+        // editing tools, so they don't get in the way of editing. A drag that starts on a
+        // link still selects text.
+        let selecting = self.tool == Tool::Read;
         let mut over_link = false;
         let ctrl = ui.input(|i| i.modifiers.command);
         // Form fields are filled in the same way, and sit above links.
-        let filling = (reading || selecting || ctrl) && !self.dragging();
+        let filling = (selecting || ctrl) && !self.dragging();
         let over_field = self
             .form
             .page_ui(ui, pdf, page, r, k, &resp, filling, &mut self.actions);
@@ -513,9 +552,6 @@ impl Editor {
                     return resp;
                 }
             }
-        }
-        if reading {
-            return resp;
         }
         self.objects(pdf, page);
         let painter = ui.painter().clone();
@@ -620,56 +656,61 @@ impl Editor {
                     }
                 }
             }
-            Tool::SelectText => {
+            Tool::Read => {
                 let words = self.words(pdf, page).to_vec();
                 let inside =
                     |p: Pos2, b: [f32; 4]| p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3];
-                if !over_link && hover_pt.is_some_and(|p| words.iter().any(|w| inside(p, w.bbox))) {
+                let lines = Self::line_boxes(&words);
+                if !over_link && hover_pt.is_some_and(|p| lines.iter().any(|&b| inside(p, b))) {
                     ui.ctx().set_cursor_icon(CursorIcon::Text);
                 }
-                // Drag selects the words between the press and the pointer, in reading
-                // order; a click clears; a double-click selects one word.
+                let nearest = |p: Option<Pos2>| p.and_then(|p| Self::nearest_word(&words, p));
+                // A drag selects the words between the press and the pointer, in reading
+                // order, across pages: whichever visible page the pointer is over (held
+                // inside the view, which scrolls at its edges) moves the end. A click
+                // clears, Shift+click extends, a double-click selects a word and a
+                // triple-click its line.
                 if resp.drag_started() {
                     let p = ui.input(|i| i.pointer.press_origin()).map(to_pt);
-                    if let Some(i) = p.and_then(|p| Self::nearest_word(&words, p)) {
-                        self.selection = Selection::Words {
-                            page,
-                            first: i,
-                            last: i,
-                        };
+                    if let Some(i) = nearest(p) {
+                        self.selection = Selection::word((page, i));
                         self.text_drag = true;
                     }
                 }
-                if resp.dragged() && self.text_drag {
-                    let p = resp.interact_pointer_pos().map(to_pt);
-                    let i = p.and_then(|p| Self::nearest_word(&words, p));
-                    if let (Selection::Words { page: on, last, .. }, Some(i)) =
-                        (&mut self.selection, i)
-                    {
-                        if *on == page {
-                            *last = i;
-                        }
+                if self.text_drag {
+                    let view = ui.clip_rect();
+                    let at = ui.input(|i| i.pointer.latest_pos()).map(|p| view.clamp(p));
+                    if let Some(i) = nearest(at.filter(|p| r.contains(*p)).map(to_pt)) {
+                        self.extend_words(pdf, (page, i));
                     }
                 }
                 if resp.drag_stopped() {
                     self.text_drag = false;
                 }
-                if resp.clicked() {
-                    self.selection.clear_words();
-                }
-                if resp.double_clicked() {
-                    let p = resp.interact_pointer_pos().map(to_pt);
-                    if let Some(i) = p.and_then(|p| Self::nearest_word(&words, p)) {
+                let click_at = || resp.interact_pointer_pos().map(to_pt);
+                if resp.triple_clicked() {
+                    let line = nearest(click_at()).and_then(|i| Self::line_of(&words, i));
+                    if let Some((a, b)) = line {
                         self.selection = Selection::Words {
-                            page,
-                            first: i,
-                            last: i,
+                            anchor: (page, a),
+                            end: (page, b),
                         };
                     }
+                } else if resp.double_clicked() {
+                    if let Some(i) = nearest(click_at()) {
+                        self.selection = Selection::word((page, i));
+                    }
+                } else if resp.clicked() {
+                    match nearest(click_at()) {
+                        Some(i) if shift && self.selection.words().is_some() => {
+                            self.extend_words(pdf, (page, i));
+                        }
+                        _ => self.selection.clear_words(),
+                    }
                 }
-                if let Some((_, a, b)) = self.selection.words().filter(|s| s.0 == page) {
+                if let Some(range) = self.selection.words_on(page, words.len()) {
                     let fill = accent.gamma_multiply(0.45);
-                    for w in words.iter().take(a.max(b) + 1).skip(a.min(b)) {
+                    for w in &words[range] {
                         painter.rect_filled(screen_rect(w.bbox), 1.0, fill);
                     }
                 }
@@ -753,7 +794,6 @@ impl Editor {
                     }
                 }
             }
-            Tool::View => {}
         }
 
         // Selection frame and handles.
@@ -797,7 +837,7 @@ impl Editor {
     }
 
     /// Before a right-click menu opens: select what is under the pointer `p` (page
-    /// points), as most apps do. With the arrow, an object; with the text tool, a word
+    /// points), as most apps do. With the arrow, an object; with the read tool, a word
     /// (keeping a word selection the click falls inside); otherwise, or over nothing,
     /// the page (keeping a page selection that includes it).
     fn select_for_menu(&mut self, pdf: &mpe_core::Pdf, page: usize, p: Option<Pos2>, tol: f32) {
@@ -811,23 +851,17 @@ impl Editor {
                     return;
                 }
             }
-            (Tool::SelectText, Some(p)) => {
+            (Tool::Read, Some(p)) => {
                 let words = self.words(pdf, page);
+                let n = words.len();
                 let under = words.iter().position(|w| {
                     let b = w.bbox;
                     p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3]
                 });
                 if let Some(i) = under {
-                    let within = |(sp, a, b): (usize, usize, usize)| {
-                        sp == page && (a.min(b)..=a.max(b)).contains(&i)
-                    };
-                    let inside = self.selection.words().is_some_and(within);
-                    if !inside {
-                        self.selection = Selection::Words {
-                            page,
-                            first: i,
-                            last: i,
-                        };
+                    let on = self.selection.words_on(page, n);
+                    if !on.is_some_and(|r| r.contains(&i)) {
+                        self.selection = Selection::word((page, i));
                     }
                     return;
                 }
@@ -852,15 +886,14 @@ impl Editor {
         }
     }
 
-    /// Select every word on page `page` (text tool).
+    /// Select every word on page `page` (read tool).
     pub fn select_all_words(&mut self, pdf: &mpe_core::Pdf, page: usize) {
         let n = self.words(pdf, page).len();
         match n.checked_sub(1) {
             Some(last) => {
                 self.selection = Selection::Words {
-                    page,
-                    first: 0,
-                    last,
+                    anchor: (page, 0),
+                    end: (page, last),
                 }
             }
             None => self.selection.clear_words(),
@@ -878,20 +911,28 @@ impl Editor {
     }
 
     /// The page and box (page points) of the selected object or words, for placing the
-    /// floating toolbar.
+    /// floating toolbar. For words, the part on the page where the selection's moving end
+    /// is.
     pub fn selection_box(&self) -> Option<(usize, [f32; 4])> {
         if let Some(o) = self.selected_object() {
             return Some((self.sel()?.0, o.bbox));
         }
-        let (page, a, b) = self.selection.words()?;
-        let words = self.words.get(&page)?;
-        let run = words.get(a.min(b)..=a.max(b).min(words.len().checked_sub(1)?))?;
-        let join = |u: [f32; 4], b: [f32; 4]| {
-            let (lo, hi) = (|i: usize| u[i].min(b[i]), |i: usize| u[i].max(b[i]));
-            [lo(0), lo(1), hi(2), hi(3)]
+        let Selection::Words { end: (page, _), .. } = self.selection else {
+            return None;
         };
-        let union = run.iter().map(|w| w.bbox).reduce(join)?;
-        Some((page, union))
+        let words = self.words.get(&page)?;
+        let run = &words[self.selection.words_on(page, words.len())?];
+        let bbox = run.iter().map(|w| w.bbox).reduce(union)?;
+        Some((page, bbox))
+    }
+
+    /// Whether words are being selected by dragging. The drag ends when the button is
+    /// released, even if the page it started on has scrolled out of view.
+    pub fn selecting_words(&mut self, ctx: &egui::Context) -> bool {
+        if self.text_drag && !ctx.input(|i| i.pointer.primary_down()) {
+            self.text_drag = false;
+        }
+        self.text_drag
     }
 
     /// The pointer is moving, resizing, drawing or selecting something.
@@ -906,7 +947,7 @@ impl Editor {
 
     /// Whether an object is selected and can be deleted or moved.
     pub fn has_object(&self) -> bool {
-        self.sel().is_some() && !matches!(self.tool, Tool::View | Tool::SelectText)
+        self.sel().is_some() && self.tool != Tool::Read
     }
 
     pub fn delete_selected(&mut self) {
@@ -928,12 +969,11 @@ impl Editor {
         }
     }
 
-    /// Esc: clear the word selection (text tool); otherwise drop unfinished text, leave
+    /// Esc: clear the word selection (read tool); otherwise drop unfinished text, leave
     /// a drawing tool for the arrow, or with the arrow clear the selection.
     pub fn escape(&mut self) {
         match self.tool {
-            Tool::View => {}
-            Tool::SelectText => self.selection.clear_words(),
+            Tool::Read => self.selection.clear_words(),
             Tool::Select => {
                 self.new_text = None;
                 self.selection.clear_object();
@@ -1013,10 +1053,6 @@ impl Editor {
             );
         }
         match self.tool {
-            Tool::View => {
-                ui.label("Pick a tool in the toolbar to edit page content.");
-                return;
-            }
             Tool::Text => {
                 ui.strong("New text");
                 Self::font_ui(ui, &mut self.tfont);
@@ -1097,11 +1133,12 @@ impl Editor {
                 ui.separator();
             }
             Tool::Select => {}
-            Tool::SelectText => {
-                ui.strong("Select text");
+            Tool::Read => {
+                ui.strong("Selected text");
                 ui.label(
-                    "Drag over words to select them, double-click a word, or press Ctrl+A for \
-                     the whole page. Ctrl+C copies. Recognised (OCR) text can be selected too.",
+                    "Drag over words to select them, across pages if you like, double-click a \
+                     word, triple-click a line, Shift+click to extend, or press Ctrl+A for the \
+                     whole page. Ctrl+C copies.",
                 );
                 ui.separator();
                 match self.selected_text() {
@@ -1296,4 +1333,52 @@ pub fn pick_image() -> Option<Vec<u8>> {
         .add_filter("Images", &["png", "jpg", "jpeg"])
         .pick_file()?;
     std::fs::read(path).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn word(x: f32, y: f32, line: usize) -> PageWord {
+        PageWord {
+            text: "w".into(),
+            bbox: [x, y, x + 20.0, y + 10.0],
+            line,
+        }
+    }
+
+    #[test]
+    fn lines_join_their_words() {
+        let words = [
+            word(0.0, 0.0, 0),
+            word(30.0, 0.0, 0),
+            word(0.0, 20.0, 1),
+            word(30.0, 20.0, 1),
+            word(60.0, 20.0, 1),
+        ];
+        // The gap between words (20..30) is inside the line's box.
+        assert_eq!(
+            Editor::line_boxes(&words),
+            [[0.0, 0.0, 50.0, 10.0], [0.0, 20.0, 80.0, 30.0]]
+        );
+        assert_eq!(Editor::line_of(&words, 0), Some((0, 1)));
+        assert_eq!(Editor::line_of(&words, 3), Some((2, 4)));
+        assert_eq!(Editor::line_of(&words, 9), None);
+        assert!(Editor::line_boxes(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_press_in_a_margin_finds_the_nearest_word() {
+        let words = [word(100.0, 100.0, 0), word(100.0, 200.0, 1)];
+        // Left of the second line, and below everything.
+        assert_eq!(
+            Editor::nearest_word(&words, Pos2::new(10.0, 205.0)),
+            Some(1)
+        );
+        assert_eq!(
+            Editor::nearest_word(&words, Pos2::new(110.0, 900.0)),
+            Some(1)
+        );
+        assert_eq!(Editor::nearest_word(&[], Pos2::ZERO), None);
+    }
 }

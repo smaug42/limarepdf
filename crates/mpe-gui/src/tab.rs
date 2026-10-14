@@ -813,6 +813,9 @@ impl Tab {
                     wanted.push((key, key.1 as f32 / 20.0));
                 }
             }
+            if self.ed.selecting_words(ui.ctx()) {
+                edge_scroll(ui);
+            }
             let mid = vp.min.y + vp.height() / 3.0;
             probe = tops
                 .partition_point(|&t| t <= mid)
@@ -1061,6 +1064,33 @@ fn drop_index(rects: &[Rect], y: f32) -> usize {
         .unwrap_or(rects.len())
 }
 
+/// How fast (points per second) to scroll when the pointer is `d` points inside the edge
+/// margin of the view (positive) or past the edge (larger). Zero outside the margin.
+fn edge_speed(d: f32) -> f32 {
+    if d > 0.0 {
+        (d * 12.0).min(3000.0)
+    } else {
+        0.0
+    }
+}
+
+/// While a text selection is dragged: scroll when the pointer is near or past an edge of
+/// the pages view, faster the further out it is, and keep going while it is held still.
+fn edge_scroll(ui: &egui::Ui) {
+    const EDGE: f32 = 40.0;
+    let Some(p) = ui.input(|i| i.pointer.latest_pos()) else {
+        return;
+    };
+    let view = ui.clip_rect();
+    let dx = edge_speed(view.left() + EDGE - p.x) - edge_speed(p.x - (view.right() - EDGE));
+    let dy = edge_speed(view.top() + EDGE - p.y) - edge_speed(p.y - (view.bottom() - EDGE));
+    if dx != 0.0 || dy != 0.0 {
+        let dt = ui.input(|i| i.stable_dt).min(0.1);
+        ui.scroll_with_delta(Vec2::new(dx, dy) * dt);
+        ui.ctx().request_repaint();
+    }
+}
+
 /// While thumbnails are dragged: a line where they will land, a label at the pointer,
 /// and scrolling when the pointer nears the top or bottom of the list.
 fn drag_feedback(ui: &egui::Ui, rects: &[Rect], target: Option<usize>, p: Pos2, n: usize) {
@@ -1136,5 +1166,14 @@ mod tests {
         assert_eq!(drop_index(&rects, 10.0), 0);
         assert_eq!(drop_index(&rects, 60.0), 1);
         assert_eq!(drop_index(&rects, 290.0), 3);
+    }
+
+    #[test]
+    fn edge_scrolling_grows_past_the_edge() {
+        assert_eq!(edge_speed(-5.0), 0.0);
+        assert_eq!(edge_speed(0.0), 0.0);
+        assert!(edge_speed(10.0) > 0.0);
+        assert!(edge_speed(100.0) > edge_speed(10.0));
+        assert_eq!(edge_speed(1e6), 3000.0);
     }
 }

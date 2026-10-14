@@ -125,7 +125,7 @@ pub struct Ctx {
     pub busy: bool,
     pub can_undo: bool,
     pub can_redo: bool,
-    /// Words are selected with the text tool.
+    /// Words are selected with the read tool.
     pub words: bool,
     /// An object is selected with the arrow tool.
     pub object: bool,
@@ -201,10 +201,10 @@ fn image_object(c: &Ctx) -> bool {
     c.object && c.obj_kind == Some(ObjKind::Image)
 }
 fn text_tool(c: &Ctx) -> bool {
-    c.tool == Some(Tool::SelectText)
+    c.tool == Some(Tool::Read)
 }
-fn editing(c: &Ctx) -> bool {
-    c.doc && !matches!(c.tool, None | Some(Tool::View))
+fn any_tool(c: &Ctx) -> bool {
+    c.doc && c.tool.is_some()
 }
 
 const C: Modifiers = Modifiers::COMMAND;
@@ -409,7 +409,7 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Edit,
         label: "Cancel or deselect",
         keys: &[k(N, Key::Escape)],
-        enabled: editing,
+        enabled: any_tool,
         menu: false,
         palette: false,
         ..BASE
@@ -634,10 +634,10 @@ pub static ACTIONS: &[Action] = &[
     },
     // --------------------------------------------------------------- Tools
     Action {
-        act: Act::Tool(Tool::View),
+        act: Act::Tool(Tool::Read),
         group: Group::Tools,
-        label: "Read only (no editing)",
-        icon: icon::HAND,
+        label: "Read and select text",
+        icon: icon::CURSOR_TEXT,
         menu: false,
         ..BASE
     },
@@ -646,14 +646,6 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Tools,
         label: "Select, move and resize objects",
         icon: icon::CURSOR,
-        menu: false,
-        ..BASE
-    },
-    Action {
-        act: Act::Tool(Tool::SelectText),
-        group: Group::Tools,
-        label: "Select and copy text",
-        icon: icon::CURSOR_TEXT,
         menu: false,
         ..BASE
     },
@@ -984,11 +976,7 @@ mod tests {
             id: 0,
             kind: ObjKind::Path,
         };
-        let words = Selection::Words {
-            page: 0,
-            first: 0,
-            last: 0,
-        };
+        let words = Selection::word((0, 0));
         for sel in [Selection::None, object, words] {
             for group in context_items(&sel) {
                 for &a in *group {

@@ -17,16 +17,22 @@
 - The inspector's heading and the button that hides it share one row.
 - A Bookmarks tab beside Pages and Search shows the document's outline. Click a bookmark to go to its page.
   ☰ > View > Bookmarks and the command palette open it.
-- Fill in forms: click a field with the hand or text-select tool to type in it, tick it or choose from its
+- Fill in forms: click a field with the read tool to type in it, tick it or choose from its
   options; Tab moves between fields. Each change is one undo step. ☰ > View > Highlight fields shows every field,
   and the inspector's Form section has Clear field, Reset form and Flatten form…, which makes the fields part of
   the pages so the values can't be changed (Undo brings them back). Fields with a value but no drawing of their own
   now show their value. See [Filling in forms](docs/gui.md#filling-in-forms).
 - Forms made only for Adobe Reader (XFA forms, which show a "Please wait..." page) get a notice explaining that
   only Adobe software can show or fill them; `mpe form list` and `mpe form fill` say the same.
-- Links work: click one with the hand or text-select tool (dragging still selects text), or Ctrl+click with the
-  editing tools. Links to pages go there; links to
+- Links work: click one with the read tool (dragging still selects text), or Ctrl+click with the editing tools. Links to pages go there; links to
   web and email addresses show the address and ask before opening it in your browser or email program.
+- Select text without changing tools: the hand tool and the text cursor are now one read tool, which every
+  document opens with. Dragging anywhere on a page selects text from the nearest word; dragging past the edge of
+  the view scrolls it, so a selection can run across pages. Triple-click selects a line and Shift+click extends
+  the selection. See [Copying text](docs/gui.md#copying-text).
+- Selecting, copying and exporting text follow the order on the page, not the order the file draws it in, so a
+  selection no longer jumps when it reaches a block drawn out of place (common in forms), and exported text comes
+  out in reading order. See [Text extraction](docs/search-and-text.md#text-extraction).
 - MPE has its own icon, on the window, the taskbar and, on Windows, `mpe-gui.exe` itself. The Linux archive
   includes a desktop entry and icon, which Wayland desktops need to show it; see
   [Install](docs/install.md#menu-entry-and-icon-on-linux).

@@ -37,7 +37,7 @@ available.
 | Light and dark themes | Done | Follows the system, or chosen with the top bar's theme button; remembered between runs |
 | Rendering | Partial | Some transparency groups are drawn wrongly, and annotations without an appearance stream are not drawn. [Details](rendering.md) |
 | Search | Done | Phrases across line breaks are found and highlighted; hyphenated words split over lines are not. [Details](search-and-text.md) |
-| Select and copy text | Done | One page at a time; includes recognised text |
+| Select and copy text | Done | With the default read tool; across pages, scrolling while you drag; in the order on the page, not the file's drawing order; includes recognised text |
 | Page operations: insert, delete, rotate, extract, reorder, crop | Done | Crop by margins; no dragging a crop box on the page |
 | Merge and split | Done | Bookmarks, forms and named destinations of appended files are not carried over. Split by file size: No |
 | Undo and redo | Done | 20 levels, including password settings |
@@ -84,10 +84,6 @@ Ideas for what comes next. None of these are available yet, and the list is not 
 
 ### Fixes and usability
 
-- **Selecting text without changing tools.** Dragging across text should select the text, unless you have chosen
-  another tool on purpose.
-- **A better default tool.** The tool a document opens with is often not the one you want. MPE could start with the
-  tool you used last, or let you choose a default.
 - **Doing more with selected text.** Right-click selected text to print just the selection, or to save it as a new
   PDF.
 

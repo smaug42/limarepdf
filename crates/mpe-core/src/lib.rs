@@ -22,6 +22,7 @@ mod pagerange;
 pub mod print;
 #[cfg(windows)]
 mod print_win;
+mod reading;
 pub mod render;
 mod scan;
 mod security;

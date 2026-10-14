@@ -34,9 +34,9 @@ Enter to run.
 
 ## Links
 
-Click a link with the hand or text-select tool to follow it: the pointer turns into a hand over one, and hovering
-shows where it goes. Dragging from a link with the text-select tool selects text as usual. With the editing tools,
-hold Ctrl (Cmd on macOS) and click, so links don't get in the way of editing.
+Click a link with the read tool to follow it: the pointer turns into a hand over one, and hovering shows where it
+goes. Dragging from a link selects text as usual. With the editing tools, hold Ctrl (Cmd on macOS) and click, so
+links don't get in the way of editing.
 
 - A link to another page goes there.
 - A link to a web or email address asks first, showing the full address, and then opens it in your browser or
@@ -46,8 +46,8 @@ hold Ctrl (Cmd on macOS) and click, so links don't get in the way of editing.
 
 ## Filling in forms
 
-Form fields work with the hand and text-select tools, like links: hovering tints a field and shows its description,
-and a click fills it in. With the editing tools, hold Ctrl (Cmd on macOS) and click.
+Form fields work with the read tool, like links: hovering tints a field and shows its description, and a click
+fills it in. With the editing tools, hold Ctrl (Cmd on macOS) and click.
 
 - **Text fields:** a click opens a text box over the field. Enter (in a one-line field) or clicking elsewhere keeps
   what you typed; Esc drops it. Password fields show dots, and their value is not kept in the file.
@@ -112,7 +112,8 @@ Delete removes the selected object or pages. Deleting shows a notice with an Und
 
 ## Editing page content
 
-Pick a tool in the top bar. The hand is for reading only; the arrow selects.
+Pick a tool in the top bar. Documents open with the read tool (the text cursor), which selects text, follows links
+and fills in forms but never changes page content. The arrow selects objects to edit.
 
 With the arrow:
 
@@ -133,10 +134,16 @@ editing works and its limits.
 
 ## Copying text
 
-With the text-cursor tool, drag over words to select them in reading order, double-click to select one word, or
-press Ctrl+A for the whole page in view. Esc clears the selection. Copy with Ctrl+C, ☰ > Edit > Copy text or the floating
-toolbar: words on a line are separated by spaces and lines by line breaks. Recognised (OCR) text can be selected
-like any other text. A selection stays on one page.
+With the read tool, drag to select words in reading order. A drag can start anywhere on the page, such as in the
+margin: it starts at the nearest word. Dragging past the top or bottom of the view scrolls it, faster the further
+out the pointer is, so a selection can run across pages. Double-click selects one word, triple-click a line, and
+Shift+click extends the selection to where you click, on any page. Ctrl+A selects the whole page in view. Esc or
+a click clears the selection. Copy with Ctrl+C, ☰ > Edit > Copy text or the floating toolbar: words on a line are
+separated by spaces, and lines and pages by line breaks. Recognised (OCR) text can be selected like any other
+text.
+
+Scrolling is left to the mouse wheel, the touchpad, the scroll bars and the keyboard; dragging the page itself
+doesn't scroll it (except on a touch screen).
 
 ## Keyboard shortcuts
 
@@ -157,7 +164,7 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | PageUp, PageDown, Home, End | Previous, next, first, last page |
 | Delete, Backspace | Delete the selected object or pages |
 | Arrow keys (Shift for 10 points) | Move the selected object |
-| Ctrl+A, Ctrl+C | Select all text on the page, copy it (text tool) |
+| Ctrl+A, Ctrl+C | Select all text on the page, copy it (read tool) |
 | Esc | Cancel: clear the selection, or leave a drawing tool |
 | Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |
 
