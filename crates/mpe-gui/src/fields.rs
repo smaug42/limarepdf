@@ -364,8 +364,11 @@ impl FormUi {
             (rect.height() * 0.6).min(12.0 * k)
         }
         .clamp(8.0, 48.0);
+        // A multi-line box would otherwise be four rows high, whatever the field's size.
         let mut te = if multiline {
             egui::TextEdit::multiline(text)
+                .desired_rows(1)
+                .min_size(rect.size())
         } else {
             egui::TextEdit::singleline(text)
         }
@@ -386,11 +389,14 @@ impl FormUi {
         if !out.lost_focus() {
             return;
         }
-        let (esc, tab, shift) = ui.input(|i| {
+        // Tab is taken here, or `keys` would see it too and move on a second field.
+        let (esc, tab, shift) = ui.input_mut(|i| {
+            let shift = i.modifiers.shift;
             (
                 i.key_pressed(Key::Escape),
-                i.key_pressed(Key::Tab),
-                i.modifiers.shift,
+                i.consume_key(egui::Modifiers::SHIFT, Key::Tab)
+                    || i.consume_key(egui::Modifiers::NONE, Key::Tab),
+                shift,
             )
         });
         if esc {
