@@ -2,10 +2,11 @@
 //! document does not give the widths, and for text MPE adds in Helvetica.
 //!
 //! The tables are generated from Adobe's Core 14 AFM files by `tools/gen_std14.py`.
-//! Modified: only the advance widths (WX) of the characters in the Windows-1252 set are
-//! kept, as tables indexed by code; 0 marks a code with no character. The oblique and
-//! Courier fonts are left out: oblique widths are the upright ones, and Courier is 600
-//! throughout.
+//! Modified: only the advance widths (WX) are kept, as tables indexed by code: of the
+//! characters in the Windows-1252 set for Helvetica and Times, and of the codes of their
+//! built-in encodings for Symbol and ZapfDingbats; 0 marks a code with no character. The
+//! oblique and Courier fonts are left out: oblique widths are the upright ones, and
+//! Courier is 600 throughout.
 //!
 //! Helvetica.afm: Copyright (c) 1985, 1987, 1989, 1990, 1997 Adobe Systems Incorporated.  All Rights Reserved.Helvetica is a trademark of Linotype-Hell AG and/or its subsidiaries.
 //! Helvetica-Bold.afm: Copyright (c) 1985, 1987, 1989, 1990, 1997 Adobe Systems Incorporated.  All Rights Reserved.Helvetica is a trademark of Linotype-Hell AG and/or its subsidiaries.
@@ -13,6 +14,8 @@
 //! Times-Bold.afm: Copyright (c) 1985, 1987, 1989, 1990, 1993, 1997 Adobe Systems Incorporated.  All Rights Reserved.Times is a trademark of Linotype-Hell AG and/or its subsidiaries.
 //! Times-Italic.afm: Copyright (c) 1985, 1987, 1989, 1990, 1993, 1997 Adobe Systems Incorporated.  All Rights Reserved.Times is a trademark of Linotype-Hell AG and/or its subsidiaries.
 //! Times-BoldItalic.afm: Copyright (c) 1985, 1987, 1989, 1990, 1993, 1997 Adobe Systems Incorporated.  All Rights Reserved.Times is a trademark of Linotype-Hell AG and/or its subsidiaries.
+//! Symbol.afm: Copyright (c) 1985, 1987, 1989, 1990, 1997 Adobe Systems Incorporated. All rights reserved.
+//! ZapfDingbats.afm: Copyright (c) 1985, 1987, 1988, 1989, 1997 Adobe Systems Incorporated. All Rights Reserved.ITC Zapf Dingbats is a registered trademark of International Typeface Corporation.
 //!
 //! The permission notice that accompanies the AFM files, unmodified:
 //!
@@ -47,6 +50,21 @@ pub(crate) fn width(base: &str, c: char) -> Option<f32> {
         &HELVETICA
     };
     let w = table[code(c)? - 32];
+    (w > 0).then_some(w as f32)
+}
+
+/// Width (1/1000 em) of `code` in Symbol or ZapfDingbats, which have their own built-in
+/// encodings; `None` for other fonts and for codes the font has no glyph for.
+pub(crate) fn symbolic_width(base: &str, code: u32) -> Option<f32> {
+    let b = base.to_ascii_lowercase();
+    let table = if b.contains("dingbats") {
+        &ZAPF_DINGBATS
+    } else if b.contains("symbol") {
+        &SYMBOL
+    } else {
+        return None;
+    };
+    let w = *table.get((code as usize).checked_sub(32)?)?;
     (w > 0).then_some(w as f32)
 }
 
@@ -186,6 +204,44 @@ const TIMES_BOLD_ITALIC: [u16; 224] = [
     500, 556, 500, 500, 500, 500, 500, 570, 500, 556, 556, 556, 556, 444, 500, 444, // 240-255
 ];
 
+/// Symbol: widths (1/1000 em) of the codes of its built-in encoding 32..=255.
+#[rustfmt::skip]
+const SYMBOL: [u16; 224] = [
+    250, 333, 713, 500, 549, 833, 778, 439, 333, 333, 500, 549, 250, 549, 250, 278, // 32-47
+    500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 278, 278, 549, 549, 549, 444, // 48-63
+    549, 722, 667, 722, 612, 611, 763, 603, 722, 333, 631, 722, 686, 889, 722, 722, // 64-79
+    768, 741, 556, 592, 611, 690, 439, 768, 645, 795, 611, 333, 863, 333, 658, 500, // 80-95
+    500, 631, 549, 549, 494, 439, 521, 411, 603, 329, 603, 549, 549, 576, 521, 549, // 96-111
+    549, 521, 549, 603, 439, 576, 713, 686, 493, 686, 494, 480, 200, 480, 549, 0, // 112-127
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 128-143
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 144-159
+    750, 620, 247, 549, 167, 713, 500, 753, 753, 753, 753, 1042, 987, 603, 987, 603, // 160-175
+    400, 549, 411, 549, 549, 713, 494, 460, 549, 549, 549, 549, 1000, 603, 1000, 658, // 176-191
+    823, 686, 795, 987, 768, 768, 823, 768, 768, 713, 713, 713, 713, 713, 713, 713, // 192-207
+    768, 713, 790, 790, 890, 823, 549, 250, 713, 603, 603, 1042, 987, 603, 987, 603, // 208-223
+    494, 329, 790, 790, 786, 713, 384, 384, 384, 384, 384, 384, 494, 494, 494, 494, // 224-239
+    0, 329, 274, 686, 686, 686, 384, 384, 384, 384, 384, 384, 494, 494, 494, 0, // 240-255
+];
+
+/// ZapfDingbats: widths (1/1000 em) of the codes of its built-in encoding 32..=255.
+#[rustfmt::skip]
+const ZAPF_DINGBATS: [u16; 224] = [
+    278, 974, 961, 974, 980, 719, 789, 790, 791, 690, 960, 939, 549, 855, 911, 933, // 32-47
+    911, 945, 974, 755, 846, 762, 761, 571, 677, 763, 760, 759, 754, 494, 552, 537, // 48-63
+    577, 692, 786, 788, 788, 790, 793, 794, 816, 823, 789, 841, 823, 833, 816, 831, // 64-79
+    923, 744, 723, 749, 790, 792, 695, 776, 768, 792, 759, 707, 708, 682, 701, 826, // 80-95
+    815, 789, 789, 707, 687, 696, 689, 786, 787, 713, 791, 785, 791, 873, 761, 762, // 96-111
+    762, 759, 759, 892, 892, 788, 784, 438, 138, 277, 415, 392, 392, 668, 668, 0, // 112-127
+    390, 390, 317, 317, 276, 276, 509, 509, 410, 410, 234, 234, 334, 334, 0, 0, // 128-143
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 144-159
+    0, 732, 544, 544, 910, 667, 760, 760, 776, 595, 694, 626, 788, 788, 788, 788, // 160-175
+    788, 788, 788, 788, 788, 788, 788, 788, 788, 788, 788, 788, 788, 788, 788, 788, // 176-191
+    788, 788, 788, 788, 788, 788, 788, 788, 788, 788, 788, 788, 788, 788, 788, 788, // 192-207
+    788, 788, 788, 788, 894, 838, 1016, 458, 748, 924, 748, 918, 927, 928, 928, 834, // 208-223
+    873, 828, 924, 924, 917, 930, 931, 463, 883, 836, 836, 867, 867, 696, 696, 874, // 224-239
+    0, 874, 760, 946, 771, 865, 771, 888, 967, 888, 831, 873, 927, 970, 918, 0, // 240-255
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,5 +260,15 @@ mod tests {
         assert_eq!(width("Helvetica", '\u{20AC}'), Some(556.0));
         assert_eq!(width("Helvetica", '\u{4E2D}'), None);
         assert_eq!(width("Helvetica", '\u{7F}'), None);
+    }
+
+    #[test]
+    fn symbolic_widths_by_code() {
+        // Symbol 0x61 is alpha (631); ZapfDingbats 0x21 is a pair of scissors (974).
+        assert_eq!(symbolic_width("Symbol", 0x61), Some(631.0));
+        assert_eq!(symbolic_width("ZapfDingbats", 0x21), Some(974.0));
+        assert_eq!(symbolic_width("Symbol", 0x80), None);
+        assert_eq!(symbolic_width("Symbol", 10), None);
+        assert_eq!(symbolic_width("Times-Roman", 0x61), None);
     }
 }

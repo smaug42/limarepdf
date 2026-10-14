@@ -12,7 +12,8 @@ background and asks before replacing files. On the command line: `mpe render --f
 ## Text
 
 Export text writes every page's text to a `.txt` file, with pages separated by form feeds, as pdftotext does. Where:
-the top bar's Export menu or the inspector. On the command line, `mpe text` prints it.
+the top bar's Export menu or the inspector. On the command line, `mpe text` prints it. How the text is read, and its
+limits: [Search and text](search-and-text.md#text-extraction).
 
 Word, Excel and CSV export are not available.
 
@@ -39,5 +40,6 @@ Not yet available: paper size, scaling, colour and printer-specific options. The
 - Export: `crates/mpe-core/tests/export.rs` (sizes, content, re-import, names) and by running the CLI.
 - Printing: `crates/mpe-core/tests/print.rs`, with a stand-in for `lp` (its arguments, the document it receives, and
   errors), and against a real CUPS with no printers (error messages). The Windows page placement and rotation are
-  unit-tested; the Windows printing code has been compiled but not run.
-- Printing has not been tried with a real printer yet.
+  unit-tested.
+- Printing has been tried on Windows, where it works. On Linux and macOS it has not yet been tried with a real
+  printer.

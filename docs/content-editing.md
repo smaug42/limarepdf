@@ -35,3 +35,5 @@ Every edit is checked to re-parse before it is applied. An edit that fails leave
   JPEGs are not supported.
 - Rotating objects, grouping, changing the stacking order, and copying and pasting between pages are not implemented.
 - Moving an object does not move links or annotations over it.
+- Text inside a form XObject (a reusable block of page content) is searched and selected like other text, but it is
+  not a separate object: the form moves, resizes and deletes as a whole, and its text cannot be edited.

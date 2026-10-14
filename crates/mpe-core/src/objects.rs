@@ -118,16 +118,33 @@ pub(crate) struct Parsed {
     pub depth_left: usize,
     /// Raw inline images, referenced by placeholder operators in `ops`.
     pub inline: Vec<Vec<u8>>,
+    /// Text lines inside form XObjects the content draws, in page user space. They
+    /// are read and searched like the others but are not page objects: editing works
+    /// on the page's own operators.
+    pub form_text: Vec<TextData>,
 }
 
 impl Parsed {
-    /// Whether the page content shows any text, visible or not.
+    /// Whether the page content shows any text, visible or not, including inside forms.
     pub fn shows_text(&self) -> bool {
-        self.ops
+        !self.form_text.is_empty()
+            || self
+                .ops
+                .iter()
+                .any(|o| matches!(o.operator.as_str(), "Tj" | "TJ" | "'" | "\""))
+    }
+
+    /// Every text line: the page's own, then those inside forms.
+    pub fn text_lines(&self) -> impl Iterator<Item = &TextData> {
+        self.objs
             .iter()
-            .any(|o| matches!(o.operator.as_str(), "Tj" | "TJ" | "'" | "\""))
+            .filter_map(|o| o.text.as_ref())
+            .chain(&self.form_text)
     }
 }
+
+/// Deepest nesting of form XObjects whose text is read.
+const MAX_FORM_NESTING: usize = 8;
 
 #[derive(Clone)]
 struct Gs {
@@ -202,9 +219,11 @@ struct RunInfo {
     fill: Option<[f32; 3]>,
     corners: [(f32, f32); 4],
     /// Each character's start and end in text space along the run, from 0 to the
-    /// advance; empty when the characters could not be matched to glyphs.
+    /// advance.
     spans: Vec<(f32, f32)>,
     adv: f32,
+    /// Distance in user space from `start` to the first character, along `dir`.
+    lead: f32,
     ctm: M,
     visible: bool,
     tm_after: M,
@@ -228,19 +247,36 @@ impl Pdf {
     pub(crate) fn parse_page(&self, page_index: usize) -> Result<Parsed> {
         let page = self.page_id_at(page_index)?;
         let data = self.doc.get_page_content(page);
-        let (data, inline) = crate::inline::extract(&data)
+        let res = self.inherited(page, b"Resources");
+        self.parse_content(&data, res.as_ref(), mx::ID, 0)
+    }
+
+    /// Parse a content stream drawn with `resources`, starting from the transform `ctm`.
+    /// `nesting` counts the form XObjects it is inside of.
+    fn parse_content(
+        &self,
+        data: &[u8],
+        resources: Option<&Object>,
+        ctm: M,
+        nesting: usize,
+    ) -> Result<Parsed> {
+        let (data, inline) = crate::inline::extract(data)
             .map_err(|e| anyhow!("cannot parse the page content: {e}"))?;
         let ops = Content::decode(&data)
             .map_err(|e| anyhow!("cannot parse the page content: {e}"))?
             .operations;
 
-        let res = self.resolved_dict(self.inherited(page, b"Resources").as_ref());
+        let res = self.resolved_dict(resources);
         let fonts = self.resolved_dict(res.get(b"Font").ok());
         let xobjs = self.resolved_dict(res.get(b"XObject").ok());
         let mut font_cache: HashMap<Vec<u8>, Option<FontCtx>> = HashMap::new();
+        let mut form_text: Vec<TextData> = Vec::new();
 
         let mut stack: Vec<Gs> = Vec::new();
-        let mut gs = Gs::default();
+        let mut gs = Gs {
+            ctm,
+            ..Gs::default()
+        };
         let (mut tm, mut tlm) = (mx::ID, mx::ID);
         let mut objs: Vec<Obj> = Vec::new();
         let mut block: Vec<RunInfo> = Vec::new();
@@ -345,33 +381,29 @@ impl Pdf {
                     let th = gs.th;
                     let mut adv = 0.0f32;
                     let mut text = String::new();
-                    // Each character's place along the run. A glyph that decodes to
-                    // several characters (a ligature) shares its width among them.
+                    // The text is decoded one character code at a time, with each
+                    // character's place along the run. A glyph that decodes to several
+                    // characters (a ligature) shares its width among them.
                     let mut spans: Vec<(f32, f32)> = Vec::new();
-                    let mut spans_ok = true;
                     for it in items {
                         match it {
                             Object::String(s, _) => match fc {
                                 Some(f) => {
-                                    let decoded = f.decode(s);
-                                    let before = spans.len();
                                     let step = if f.type0 { 2 } else { 1 };
                                     for (k, (code, space)) in f.codes(s).into_iter().enumerate() {
                                         let glyph = f.width(code) / 1000.0 * tfs * th;
-                                        let one = &s[k * step..(k * step + step).min(s.len())];
-                                        let chars = f.decode(one).chars().count();
+                                        let raw = &s[k * step..(k * step + step).min(s.len())];
+                                        let decoded = f.decode_code(code, raw);
+                                        let chars = decoded.chars().count();
                                         let part = glyph / chars.max(1) as f32;
                                         for j in 0..chars {
                                             let a = adv + part * j as f32;
                                             spans.push((a, a + part));
                                         }
+                                        text.push_str(&decoded);
                                         adv +=
                                             glyph + (gs.tc + if space { gs.tw } else { 0.0 }) * th;
                                     }
-                                    if spans.len() - before != decoded.chars().count() {
-                                        spans_ok = false;
-                                    }
-                                    text.push_str(&decoded);
                                 }
                                 None => {
                                     for &b in s.iter() {
@@ -387,17 +419,16 @@ impl Pdf {
                                 if let Some(x) = n(o) {
                                     let from = adv;
                                     adv -= x / 1000.0 * tfs * th;
-                                    // A big negative kern is a visual gap (a space between words).
-                                    if x < -200.0 && !text.ends_with(' ') && !text.is_empty() {
+                                    // A big negative kern is a visual gap: a space between
+                                    // words. Justified lines squeeze these to under 0.2 em;
+                                    // kerning between letters stays under about 0.14 em.
+                                    if x < -150.0 && !text.ends_with(' ') && !text.is_empty() {
                                         text.push(' ');
                                         spans.push((from, adv));
                                     }
                                 }
                             }
                         }
-                    }
-                    if !spans_ok {
-                        spans.clear();
                     }
                     tm = mul(mx::translate(adv, 0.0), tm);
                     let trm = mul(mul(start_tm, gs.ctm), mx::ID);
@@ -422,6 +453,11 @@ impl Pdf {
                         apply(m, adv, a0),
                         apply(m, 0.0, a0),
                     ];
+                    // A TJ can open with a gap before its first character.
+                    let lead = spans.first().map_or(0.0, |&(a, _)| {
+                        let (p, q) = (apply(m, 0.0, 0.0), apply(m, a, 0.0));
+                        (q.0 - p.0) * dir.0 + (q.1 - p.1) * dir.1
+                    });
                     let ri = RunInfo {
                         run: Run {
                             op: i,
@@ -440,6 +476,7 @@ impl Pdf {
                         corners,
                         spans,
                         adv,
+                        lead,
                         ctm: gs.ctm,
                         visible: gs.tr != 3 && gs.tr != 7,
                         tm_after: tm,
@@ -541,6 +578,21 @@ impl Pdf {
                                         .ok()
                                         .and_then(|o| self.matrix_of(o))
                                         .unwrap_or(mx::ID);
+                                    // Its text, for reading and searching. A form without
+                                    // resources of its own uses the page's.
+                                    if nesting < MAX_FORM_NESTING {
+                                        let own = s.dict.get(b"Resources").ok();
+                                        let inner = s.get_plain_content().ok().and_then(|c| {
+                                            let ctm = mul(fm, gs.ctm);
+                                            let r = own.or(resources);
+                                            self.parse_content(&c, r, ctm, nesting + 1).ok()
+                                        });
+                                        if let Some(p) = inner {
+                                            form_text
+                                                .extend(p.objs.into_iter().filter_map(|o| o.text));
+                                            form_text.extend(p.form_text);
+                                        }
+                                    }
                                     (ObjectKind::Form, mx::transform_rect(fm, bbox))
                                 }
                                 _ => continue,
@@ -578,6 +630,7 @@ impl Pdf {
             objs,
             depth_left: depth,
             inline,
+            form_text,
         })
     }
 
@@ -664,17 +717,27 @@ impl Pdf {
 }
 
 impl Pdf {
-    /// Boxes of the places on a page (0-based) where `query` occurs, ignoring case, in
-    /// displayed-page points (y down), like [`PageObject::bbox`]. Visible and invisible
-    /// (OCR) text both count. Matches are found within one text line; a phrase broken
-    /// across lines is not found.
+    /// Boxes of the places on a page (0-based) where `query` occurs, as
+    /// [`Pdf::find_text_matches`] finds them, all in one list.
     pub fn find_text_boxes(&self, page_index: usize, query: &str) -> Result<Vec<[f32; 4]>> {
-        let fold = |s: &str| -> Vec<char> {
-            s.chars()
-                .map(|c| c.to_lowercase().next().unwrap_or(c))
-                .collect()
-        };
-        let q = fold(query.trim());
+        let matches = self.find_text_matches(page_index, query)?;
+        Ok(matches.into_iter().flatten().collect())
+    }
+
+    /// Where `query` occurs on a page (0-based): one entry per match, with a box for each
+    /// line it is on, in displayed-page points (y down), like [`PageObject::bbox`]. Case
+    /// is ignored, and any run of whitespace, a line break included, matches one space,
+    /// so a phrase broken across lines is found. Visible and invisible (OCR) text both
+    /// count: the same text [`Pdf::search`] reads.
+    pub fn find_text_matches(&self, page_index: usize, query: &str) -> Result<Vec<Vec<[f32; 4]>>> {
+        let fold = |c: char| c.to_lowercase().next().unwrap_or(c);
+        let q: Vec<char> = query
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .map(fold)
+            .collect();
         if q.is_empty() {
             return Ok(Vec::new());
         }
@@ -682,22 +745,61 @@ impl Pdf {
         let parsed = self.parse_page(page_index)?;
         let (vd, _, _) = self.vis_down(page);
         let to_vis = mx::inv(vd).ok_or_else(|| anyhow!("degenerate page transform"))?;
-        let mut out = Vec::new();
-        for t in parsed.objs.iter().filter_map(|o| o.text.as_ref()) {
-            let text = fold(&t.text);
-            let mut from = 0;
-            while from + q.len() <= text.len() {
-                let Some(pos) = text[from..].windows(q.len()).position(|w| w == q) else {
-                    break;
-                };
-                let (a, b) = (from + pos, from + pos + q.len());
-                for bb in span_boxes(&t.pieces, a, b) {
-                    out.push(mx::transform_rect(to_vis, bb));
+        let lines: Vec<&TextData> = parsed.text_lines().collect();
+
+        // The page's text in one string, whitespace collapsed to single spaces and lines
+        // joined by a space, with the line and character each one came from (none for
+        // the space between lines).
+        let mut text: Vec<char> = Vec::new();
+        let mut from: Vec<Option<(usize, usize)>> = Vec::new();
+        for (li, t) in lines.iter().enumerate() {
+            for (ci, c) in t.text.chars().enumerate() {
+                if !c.is_whitespace() {
+                    text.push(fold(c));
+                    from.push(Some((li, ci)));
+                } else if text.last().is_some_and(|&l| l != ' ') {
+                    text.push(' ');
+                    from.push(Some((li, ci)));
                 }
-                from = b;
+            }
+            if text.last().is_some_and(|&l| l != ' ') {
+                text.push(' ');
+                from.push(None);
             }
         }
+
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i + q.len() <= text.len() {
+            if text[i..i + q.len()] != q[..] {
+                i += 1;
+                continue;
+            }
+            // The characters of the match on each line it touches.
+            let mut parts: Vec<(usize, usize, usize)> = Vec::new();
+            for &(li, ci) in from[i..i + q.len()].iter().flatten() {
+                match parts.last_mut() {
+                    Some(p) if p.0 == li => p.2 = ci + 1,
+                    _ => parts.push((li, ci, ci + 1)),
+                }
+            }
+            let boxes: Vec<[f32; 4]> = parts
+                .iter()
+                .flat_map(|&(li, a, b)| span_boxes(&lines[li].pieces, a, b))
+                .map(|bb| mx::transform_rect(to_vis, bb))
+                .collect();
+            if !boxes.is_empty() {
+                out.push(boxes);
+            }
+            i += q.len();
+        }
         Ok(out)
+    }
+
+    /// Whether a page (0-based) shows any text, visible or not, including text inside
+    /// form XObjects. False when the page cannot be read.
+    pub fn page_has_text(&self, page_index: usize) -> bool {
+        self.parse_page(page_index).is_ok_and(|p| p.shows_text())
     }
 
     /// The words of a page (0-based), visible and invisible (OCR), in content order, which
@@ -708,7 +810,7 @@ impl Pdf {
         let (vd, _, _) = self.vis_down(page);
         let to_vis = mx::inv(vd).ok_or_else(|| anyhow!("degenerate page transform"))?;
         let mut out = Vec::new();
-        let texts = parsed.objs.iter().filter_map(|o| o.text.as_ref());
+        let texts = parsed.text_lines();
         for (line, t) in texts.enumerate() {
             let chars: Vec<char> = t.text.chars().collect();
             let mut i = 0;
@@ -864,7 +966,7 @@ fn group_runs(runs: Vec<RunInfo>, out: &mut Vec<Obj>) {
                     && p.visible == r.visible
                     && p.dir.0 * r.dir.0 + p.dir.1 * r.dir.1 > 0.9999;
                 let (dx, dy) = (r.start.0 - p.end.0, r.start.1 - p.end.1);
-                let along = dx * p.dir.0 + dy * p.dir.1;
+                let along = dx * p.dir.0 + dy * p.dir.1 + r.lead;
                 let perp = (-dx * p.dir.1 + dy * p.dir.0).abs();
                 same && perp < 0.3 * p.size && along > -0.3 * p.size && along < 0.7 * p.size
             }
@@ -873,8 +975,9 @@ fn group_runs(runs: Vec<RunInfo>, out: &mut Vec<Obj>) {
             flush(&mut cur, out);
         }
         if let Some(p) = cur.last_mut() {
+            // From the end of the last piece to this piece's first character.
             let (dx, dy) = (r.start.0 - p.end.0, r.start.1 - p.end.1);
-            let along = dx * p.dir.0 + dy * p.dir.1;
+            let along = dx * p.dir.0 + dy * p.dir.1 + r.lead;
             if along > 0.18 * p.size && !p.text.ends_with(' ') && !r.text.starts_with(' ') {
                 p.text.push(' ');
                 // The space covers the gap, measured in the run's own units.

@@ -21,6 +21,7 @@ mod scan;
 mod security;
 mod std14;
 mod text;
+mod tounicode;
 
 pub use doc::{Info, Pdf};
 pub use edit::{PathStyle, Shape, TextEdit};

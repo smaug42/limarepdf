@@ -1,4 +1,4 @@
-use crate::{Pdf, Result};
+use crate::{words_text, Pdf, Result};
 use rayon::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -9,11 +9,13 @@ pub struct SearchHit {
 }
 
 impl Pdf {
-    /// Extract text of one page (0-based). Returns an empty string when the page
-    /// has no extractable text (scanned page, unsupported font encoding).
+    /// Extract text of one page (0-based): its words in content order, which is usually
+    /// reading order, with spaces between words on a line and line breaks between
+    /// lines. It is the same reading of the page that search highlights and text
+    /// selection use. Empty when the page has no text (a scan) or cannot be read.
     pub fn page_text(&self, index: usize) -> String {
-        self.doc
-            .extract_text(&[index as u32 + 1])
+        self.page_words(index)
+            .map(|w| words_text(&w))
             .unwrap_or_default()
     }
 
@@ -26,7 +28,12 @@ impl Pdf {
 
     /// Case-insensitive text search across all pages, in parallel.
     pub fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
-        let q = query.trim().to_lowercase();
+        // Runs of whitespace match one space, as in the page text below.
+        let q = query
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
         if q.is_empty() {
             return Ok(vec![]);
         }

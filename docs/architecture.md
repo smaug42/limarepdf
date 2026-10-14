@@ -17,5 +17,9 @@ It uses:
 - [`image`](https://crates.io/crates/image) for images;
 - [`ocrs`](https://github.com/robertknight/ocrs) for text recognition (see [Scanning and OCR](scanning-and-ocr.md)).
 
+Page content is read by MPE's own parser (`crates/mpe-core/src/objects.rs`), which splits it into the objects that
+editing works on and reads the text that search, copying and export use, with its own reader for fonts' ToUnicode
+maps and Adobe's widths for the standard fonts (see [Search and text](search-and-text.md#text-extraction)).
+
 In the desktop app, every command is defined once in `crates/mpe-gui/src/actions.rs`; the menu, the top bar, the
 command palette, the right-click menus, the floating toolbar and the keyboard shortcuts are all built from that list.

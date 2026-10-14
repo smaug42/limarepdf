@@ -1,6 +1,7 @@
 //! Font information needed to measure and decode text in page content.
 
 use crate::std14;
+use crate::tounicode::ToUnicode;
 use lopdf::Encoding;
 use lopdf::{Dictionary, Document, Object};
 use std::collections::HashMap;
@@ -97,10 +98,31 @@ pub fn winansi_bytes(s: &str) -> Vec<u8> {
         .collect()
 }
 
+/// The letters of a Latin ligature character (U+FB00..=U+FB06); other characters as
+/// they are.
+fn unligature(c: char) -> String {
+    match c {
+        '\u{FB00}' => "ff",
+        '\u{FB01}' => "fi",
+        '\u{FB02}' => "fl",
+        '\u{FB03}' => "ffi",
+        '\u{FB04}' => "ffl",
+        '\u{FB05}' | '\u{FB06}' => "st",
+        _ => return c.to_string(),
+    }
+    .to_string()
+}
+
+/// Largest ToUnicode CMap read, once decompressed.
+const MAX_CMAP: usize = 16 << 20;
+
 pub(crate) struct FontCtx<'a> {
     pub type0: bool,
     pub base: String,
     enc: Option<Encoding<'a>>,
+    /// The font's ToUnicode map, read by MPE (lopdf rejects many that are laid out
+    /// differently from the usual template). Consulted before `enc`.
+    to_unicode: Option<ToUnicode>,
     first: u32,
     widths: Vec<f32>,
     missing: f32,
@@ -134,10 +156,18 @@ impl<'a> FontCtx<'a> {
             ),
             None => !has_encoding, // no /Encoding: the font's built-in (Standard for the base 14)
         };
+        let to_unicode = dict
+            .get(b"ToUnicode")
+            .ok()
+            .and_then(|o| doc.dereference(o).ok())
+            .and_then(|(_, o)| o.as_stream().ok())
+            .and_then(|s| s.get_plain_content_with_limit(MAX_CMAP).ok())
+            .and_then(|data| ToUnicode::parse(&data));
         let mut ctx = Self {
             type0,
             base,
             enc: dict.get_font_encoding(doc).ok(),
+            to_unicode,
             first: 0,
             widths: Vec::new(),
             missing: 0.0,
@@ -245,8 +275,12 @@ impl<'a> FontCtx<'a> {
                 .copied()
                 .unwrap_or(self.missing);
         }
-        // No widths in the document: a standard font, measured by the character shown.
-        let c = self.decode(&[code as u8]).chars().next();
+        // No widths in the document: a standard font. Symbol and ZapfDingbats are
+        // measured by code, the others by the character shown.
+        if let Some(w) = std14::symbolic_width(&self.base, code) {
+            return w;
+        }
+        let c = self.decode_raw(code, &[code as u8]).chars().next();
         c.and_then(|c| std14::width(&self.base, c)).unwrap_or(556.0)
     }
 
@@ -271,18 +305,32 @@ impl<'a> FontCtx<'a> {
         }
     }
 
-    pub fn decode(&self, bytes: &[u8]) -> String {
+    /// The text one character code stands for: from the ToUnicode map, else from the
+    /// encoding. `raw` is the code's bytes in the string. Ligatures come out as their
+    /// letters ("ﬁ" as "fi"), so that searches find the words they are in.
+    pub fn decode_code(&self, code: u32, raw: &[u8]) -> String {
+        let s = self.decode_raw(code, raw);
+        if s.chars().any(|c| ('\u{FB00}'..='\u{FB06}').contains(&c)) {
+            return s.chars().map(unligature).collect();
+        }
+        s
+    }
+
+    fn decode_raw(&self, code: u32, raw: &[u8]) -> String {
+        if let Some(s) = self.to_unicode.as_ref().and_then(|m| m.get(code)) {
+            return s.to_owned();
+        }
         if let Some(e) = &self.enc {
-            if let Ok(s) = e.bytes_to_string(bytes) {
-                if !s.is_empty() || bytes.is_empty() {
+            if let Ok(s) = e.bytes_to_string(raw) {
+                if !s.is_empty() || raw.is_empty() {
                     return s;
                 }
             }
         }
         if self.type0 {
-            return "\u{FFFD}".repeat(bytes.len() / 2);
+            return "\u{FFFD}".repeat(raw.len() / 2);
         }
-        bytes.iter().map(|&b| b as char).collect()
+        raw.iter().map(|&b| b as char).collect()
     }
 
     /// True when text can be re-encoded for this very font with plain ASCII:

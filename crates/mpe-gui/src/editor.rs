@@ -367,7 +367,7 @@ impl Editor {
         page: usize,
         r: Rect,
         k: f32,
-        matches: &[[f32; 4]],
+        matches: &[Vec<[f32; 4]>],
         current: Option<usize>,
     ) {
         if !self.show_hidden && self.selected_object().is_some_and(|o| o.hidden) {
@@ -381,12 +381,15 @@ impl Editor {
                 Pos2::new(r.min.x + b[2] * k, r.min.y + b[3] * k),
             )
         };
-        for (i, b) in matches.iter().enumerate() {
-            let sr = screen_rect(*b).expand(1.0);
-            painter.rect_filled(sr, 1.0, Color32::from_rgba_unmultiplied(255, 210, 0, 90));
-            if current == Some(i) {
-                let orange = Stroke::new(2.0, Color32::from_rgb(230, 120, 0));
-                painter.rect_stroke(sr, 1.0, orange, StrokeKind::Outside);
+        // A match broken across lines has a box on each.
+        for (i, boxes) in matches.iter().enumerate() {
+            for b in boxes {
+                let sr = screen_rect(*b).expand(1.0);
+                painter.rect_filled(sr, 1.0, Color32::from_rgba_unmultiplied(255, 210, 0, 90));
+                if current == Some(i) {
+                    let orange = Stroke::new(2.0, Color32::from_rgb(230, 120, 0));
+                    painter.rect_stroke(sr, 1.0, orange, StrokeKind::Outside);
+                }
             }
         }
         if !self.show_hidden {

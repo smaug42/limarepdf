@@ -5,7 +5,8 @@
 | Platform | Status |
 | --- | --- |
 | Linux x86_64 | Built and tested; the command line run on real PDFs; the desktop app used by hand and checked by screenshot under a virtual X server, including the narrow-window layout |
-| Windows x86_64, macOS (Intel and Apple Silicon) | Built and tested by continuous integration (`.github/workflows/ci.yml`, GitHub Actions), which also packages all four platforms. Not run by hand. The only platform-specific code is Windows printing, which has been compiled but not run |
+| Windows x86_64 | Built and tested by continuous integration (`.github/workflows/ci.yml`, GitHub Actions), which also packages all four platforms. Printing, the only platform-specific code, has been tried by hand and works |
+| macOS (Intel and Apple Silicon) | Built and tested by continuous integration. Not run by hand |
 
 ## Automated tests
 
@@ -13,16 +14,16 @@ Run them with `cargo test --workspace`.
 
 | Tests | What they cover |
 | --- | --- |
-| `crates/mpe-core/tests/integration.rs` | Overlays, encryption round trips with all four ciphers, search |
-| `crates/mpe-core/tests/edit.rs` | Content editing: objects, text edits, words and search boxes |
+| `crates/mpe-core/tests/integration.rs` | Overlays, encryption round trips with all four ciphers, search, crop margins on turned pages |
+| `crates/mpe-core/tests/edit.rs` | Content editing: objects and text edits. Reading text: words, search boxes placed by glyph widths, ToUnicode maps, word gaps, text inside form XObjects, phrases across lines |
 | `crates/mpe-core/tests/render_coverage.rs` | Rendering, pixel by pixel; see [Rendering](rendering.md) |
 | `crates/mpe-core/tests/import.rs` | Importing images as pages |
 | `crates/mpe-core/tests/scan.rs` | Optimising scanned pages |
 | `crates/mpe-core/tests/ocr.rs` | OCR text layers, their placement, search and correction |
 | `crates/mpe-core/tests/export.rs` | Exporting pages as images and text |
 | `crates/mpe-core/tests/print.rs` | What is sent to the printer, with a stand-in for `lp` |
-| Unit tests in `crates/mpe-core/src` | Page ranges, document operations, matrices, overlays, print placement |
-| Unit tests in `crates/mpe-gui/src` | The command list (unique entries and shortcuts, menus), selection rules, page ranges, moving pages |
+| Unit tests in `crates/mpe-core/src` | Page ranges, document operations, matrices, overlays, print placement, the ToUnicode reader, standard font widths |
+| Unit tests in `crates/mpe-gui/src` | The command list (unique entries and shortcuts, menus), selection rules, page ranges, moving pages, fitting the zoom, document notices, recent files, settings, the security form |
 
 The rendering tests assert what the PDF standard says should appear. The cases hayro gets wrong are marked
 `#[ignore]` with the reason; after a hayro upgrade, run
@@ -33,6 +34,7 @@ The rendering tests assert what the PDF standard says should appear. The cases h
 There are no automated tests of the desktop app's screens. Its commands, selection rules and page moves are
 unit-tested, and the operations behind it are covered by the core tests and the command line. The redesigned window
 (top bar, inspector, command palette, right-click menus, floating toolbar, thumbnail dragging, collapsing inspector)
-has been used by hand on Linux.
+has been used by hand on Linux. Later additions (recent files, document notices, fit width, the theme button, crop)
+were checked by screenshot under a virtual X server; not every one has been clicked through by hand.
 
 Each feature page says what was not tested, under "How this was tested".

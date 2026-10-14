@@ -122,6 +122,132 @@ fn match_boxes_follow_glyph_widths() {
 }
 
 #[test]
+fn reads_text_through_a_compact_tounicode_map() {
+    // Codes 1 and 2 mean nothing in any encoding; only the ToUnicode map, laid out as
+    // LibreOffice writes it, says they are "H" and "i". Code 3 is the "ﬁ" ligature,
+    // which comes out as its letters.
+    let mut p = make("BT /F1 20 Tf 10 150 Td (\x01\x02 \x03ne) Tj ET");
+    let cmap = b"/CIDInit/ProcSet findresource begin\n12 dict begin\nbegincmap\n\
+        /CIDSystemInfo<<\n/Registry (Adobe)\n/Ordering (UCS)\n/Supplement 0\n>> def\n\
+        /CMapName/Adobe-Identity-UCS def\n/CMapType 2 def\n\
+        1 begincodespacerange\n<00> <FF>\nendcodespacerange\n\
+        5 beginbfchar\n<01> <0048>\n<02> <0069>\n<03> <FB01>\n<20> <0020>\n<6E> <006E>\n\
+        endbfchar\n1 beginbfrange\n<65> <65> <0065>\nendbfrange\n\
+        endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n";
+    let s = p
+        .doc
+        .add_object(Stream::new(Dictionary::new(), cmap.to_vec()));
+    let page = p.page_ids()[0];
+    let fonts = p.doc.get_page_fonts(page).unwrap();
+    let (_, font) = fonts.iter().next().unwrap();
+    let mut font = (*font).clone();
+    font.remove(b"Encoding");
+    font.set("ToUnicode", Object::Reference(s));
+    let id = p.doc.add_object(font);
+    let res = dictionary! { "Font" => dictionary! { "F1" => Object::Reference(id) } };
+    p.doc
+        .get_dictionary_mut(page)
+        .unwrap()
+        .set("Resources", res);
+
+    assert_eq!(p.page_text(0), "Hi fine");
+    assert_eq!(p.search("hi").unwrap().len(), 1);
+    assert_eq!(p.find_text_boxes(0, "hi").unwrap().len(), 1);
+    assert_eq!(p.search("fine").unwrap().len(), 1);
+}
+
+#[test]
+fn finds_phrases_across_lines() {
+    let p = make("BT /F1 20 Tf 10 150 Td (one two) Tj 0 -30 Td (three four) Tj ET");
+    // One hit, one match, with a box on each line.
+    assert_eq!(p.search("two three").unwrap().len(), 1);
+    let m = p.find_text_matches(0, "Two   THREE").unwrap();
+    assert_eq!(m.len(), 1, "{m:?}");
+    assert_eq!(m[0].len(), 2, "{m:?}");
+    let (two, three) = (m[0][0], m[0][1]);
+    // "two" follows "one " (556 * 2 + 556 + 278 = 1946 per 1000 at 20 pt): 48.92.
+    assert!((two[0] - 48.92).abs() < 0.5, "{two:?}");
+    // "three" starts the second line, 30 pt lower.
+    assert!((three[0] - 10.0).abs() < 0.5, "{three:?}");
+    assert!((three[1] - two[1] - 30.0).abs() < 0.5, "{m:?}");
+    // Within a line, a match is still one box; counts agree with search.
+    let m = p.find_text_matches(0, "o").unwrap();
+    assert!(m.iter().all(|b| b.len() == 1));
+    assert_eq!(m.len(), p.search("o").unwrap().len());
+    assert!(p.find_text_matches(0, "four one").unwrap().is_empty());
+}
+
+#[test]
+fn reads_text_inside_form_xobjects() {
+    // The page draws form Fm1 moved 50 right; Fm1 (moved 5 more by its matrix) shows
+    // "Inside" and draws Fm2, which shows "Deeper". Fm1 has its own font resources;
+    // Fm2 has none and uses the page's.
+    let mut p = make("q 1 0 0 1 50 0 cm /Fm1 Do Q");
+    let page = p.page_ids()[0];
+    let font = {
+        let fonts = p.doc.get_page_fonts(page).unwrap();
+        let (_, f) = fonts.iter().next().unwrap();
+        p.doc.add_object((*f).clone())
+    };
+    let form = |content: &str, res: Option<Dictionary>| {
+        let mut d = dictionary! {
+            "Type" => "XObject", "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), 300.into(), 200.into()],
+            "Matrix" => vec![1.into(), 0.into(), 0.into(), 1.into(), 5.into(), 0.into()],
+        };
+        if let Some(r) = res {
+            d.set("Resources", r);
+        }
+        Stream::new(d, content.as_bytes().to_vec())
+    };
+    let fm2 = p
+        .doc
+        .add_object(form("BT /F1 20 Tf 10 100 Td (Deeper) Tj ET", None));
+    let fm1_res = dictionary! {
+        "Font" => dictionary! { "F1" => Object::Reference(font) },
+        "XObject" => dictionary! { "Fm2" => Object::Reference(fm2) },
+    };
+    let fm1 = p.doc.add_object(form(
+        "BT /F1 20 Tf 10 150 Td (Inside) Tj ET /Fm2 Do",
+        Some(fm1_res),
+    ));
+    let res = dictionary! {
+        "Font" => dictionary! { "F1" => Object::Reference(font) },
+        "XObject" => dictionary! { "Fm1" => Object::Reference(fm1) },
+    };
+    p.doc
+        .get_dictionary_mut(page)
+        .unwrap()
+        .set("Resources", res);
+
+    assert!(p.page_has_text(0));
+    assert_eq!(p.page_text(0), "Inside\nDeeper");
+    // 10 in the form, 5 from its matrix, 50 from the page: 65.
+    let b = p.find_text_boxes(0, "inside").unwrap();
+    assert!((b[0][0] - 65.0).abs() < 0.5, "{b:?}");
+    // Fm2 is moved by both matrices: 10 + 5 + 5 + 50.
+    let b = p.find_text_boxes(0, "deeper").unwrap();
+    assert!((b[0][0] - 70.0).abs() < 0.5, "{b:?}");
+    // The form stays one object; its text lines are not objects of their own.
+    let objs = p.page_objects(0).unwrap();
+    assert_eq!(objs.len(), 1);
+    assert_eq!(objs[0].kind, ObjectKind::Form);
+}
+
+#[test]
+fn gaps_between_words_become_spaces() {
+    // A title drawn as its own piece that opens with a gap, as Sphinx headings are.
+    let p = make("BT /F1 20 Tf 10 150 Td [(1.1)] TJ [-500 (What)] TJ ET");
+    assert_eq!(p.page_text(0), "1.1 What");
+    // A justified line squeezes the word gap to under 0.2 em.
+    let p = make("BT /F1 20 Tf 10 150 Td [(background) -198.6 (noise)] TJ ET");
+    assert_eq!(p.page_text(0), "background noise");
+    // Kerning between letters is not a gap.
+    let p = make("BT /F1 20 Tf 10 150 Td [(A) 80 (V) -120 (A)] TJ ET");
+    assert_eq!(p.page_text(0), "AVA");
+}
+
+#[test]
 fn lists_words_for_selection() {
     let p = make("BT /F1 24 Tf 60 150 Td (Hello world) Tj 0 -40 Td (again) Tj ET");
     let w = p.page_words(0).unwrap();

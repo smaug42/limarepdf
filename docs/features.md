@@ -33,7 +33,7 @@ available.
 | Command palette, right-click menus, floating toolbar | Done | Toolbar customisation: No |
 | Light and dark themes | Done | Follows the system, or chosen with the top bar's theme button; remembered between runs |
 | Rendering | Partial | Some transparency groups are drawn wrongly, and annotations without an appearance stream are not drawn. [Details](rendering.md) |
-| Search | Done | A phrase broken across lines is found but not highlighted. [Details](search-and-text.md) |
+| Search | Done | Phrases across line breaks are found and highlighted; hyphenated words split over lines are not. [Details](search-and-text.md) |
 | Select and copy text | Done | One page at a time; includes recognised text |
 | Page operations: insert, delete, rotate, extract, reorder, crop | Done | Crop by margins; no dragging a crop box on the page |
 | Merge and split | Done | Bookmarks, forms and named destinations of appended files are not carried over. Split by file size: No |
@@ -48,7 +48,7 @@ available.
 | Optimising scanned pages | Partial | Pages that are one image. [Details](scanning-and-ocr.md#optimising-scanned-pages) |
 | OCR | Partial | Latin script; built-in recognition model. [Details](scanning-and-ocr.md#recognising-text-ocr) |
 | Export pages as images, export text | Done | [Details](export-and-printing.md) |
-| Printing | Partial | No paper size or scaling options; not yet tried with a real printer. [Details](export-and-printing.md#printing) |
+| Printing | Partial | No paper size or scaling options. Tried on Windows; not yet with a real printer on Linux or macOS. [Details](export-and-printing.md#printing) |
 | Driving scanners | No | Not planned: scan with your system's tool and import the images |
 | Export to Word, Excel, CSV | No | |
 | Annotations, comments, stamps, measuring | No | Existing annotations are shown if they have an appearance stream |
@@ -98,7 +98,9 @@ Ideas for what comes next. None of these are available yet, and the list is not 
 - **Better OCR.** Scripts beyond Latin; reading the images on pages that also have text (today OCR only reads pages
   with no text at all, so a scanned figure or a pasted screenshot in a normal document is skipped); and matching the
   original fonts when scanned text is edited.
-- **Editing paragraphs.** Edit text as paragraphs that reflow, not line by line.
+- **Editing paragraphs.** Edit text as paragraphs that reflow, not line by line, as a command you choose ("Edit as
+  paragraph") rather than the default: MPE outlines the lines it takes to be the paragraph, you adjust or confirm,
+  and the reflow is one undo step. Line-by-line editing stays as it is.
 - **Incremental saving.** Save only what changed, which is faster for large files and keeps existing digital
   signatures valid when you add comments or fill in forms.
 - **Standards output.** PDF/A for archiving, and PDF/UA tagging for accessibility.

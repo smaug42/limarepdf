@@ -62,8 +62,9 @@ pub struct Tab {
     pub query: String,
     pub hits: Vec<SearchHit>,
     pub hit_idx: usize,
-    /// Boxes of the search matches on each page with hits (displayed-page points).
-    matches: HashMap<usize, Vec<[f32; 4]>>,
+    /// The search matches on each page with hits: for each, a box per line it is on
+    /// (displayed-page points).
+    matches: HashMap<usize, Vec<Vec<[f32; 4]>>>,
     /// Scroll to this height on the `goto` page (points from its top), with `goto`.
     goto_y: Option<f32>,
     pub error: Option<String>,
@@ -413,7 +414,7 @@ impl Tab {
         }
         let pages: BTreeSet<usize> = self.hits.iter().map(|h| h.page).collect();
         for p in pages {
-            if let Ok(b) = self.pdf.find_text_boxes(p, &self.query) {
+            if let Ok(b) = self.pdf.find_text_matches(p, &self.query) {
                 self.matches.insert(p, b);
             }
         }
@@ -431,8 +432,9 @@ impl Tab {
         self.show_hit();
     }
 
-    /// The current hit's page, and which of that page's match boxes it is (search finds
-    /// hits in the extracted text and boxes in the page objects, so the counts can differ).
+    /// The current hit's page, and which of that page's matches it is. Hits and matches
+    /// come from the same page text, so their counts agree; the index is clamped all the
+    /// same.
     fn current_match(&self) -> Option<(usize, usize)> {
         let h = self.hits.get(self.hit_idx)?;
         let nth = self.hits[..self.hit_idx]
@@ -449,7 +451,8 @@ impl Tab {
             return;
         };
         self.go_to(page);
-        self.goto_y = self.matches.get(&page).and_then(|v| v.get(k)).map(|b| b[1]);
+        let first = self.matches.get(&page).and_then(|v| v.get(k)?.first());
+        self.goto_y = first.map(|b| b[1]);
     }
 
     // ------------------------------------------------------------ drawing

@@ -8,11 +8,12 @@ MPE is dual-licensed under MIT or Apache-2.0, at your option. See [LICENSE-MIT](
 - **Icons:** Phosphor Icons (MIT, © Phosphor Icons), embedded as a font by `egui-phosphor`.
 - **Interface font:** Inter 4.1 by The Inter Project Authors, SIL Open Font License 1.1, included unmodified; see
   `crates/mpe-gui/assets/fonts/`. Release archives include the licence as `FONT-LICENSE-Inter.txt`.
-- **Font metrics:** the glyph widths of the standard PDF fonts (Helvetica and Times), extracted from Adobe's Core 14
-  AFM files, © 1985–1997 Adobe Systems Incorporated, which may be used, copied and distributed for any purpose with
-  their copyright notices kept. The notices, Adobe's permission notice and a note of what was changed are in
-  `crates/mpe-core/src/std14.rs`; `crates/mpe-core/tools/gen_std14.py` makes the tables from the AFM files. Helvetica
-  and Times are trademarks of Linotype-Hell AG and/or its subsidiaries.
+- **Font metrics:** the glyph widths of the standard PDF fonts (Helvetica, Times, Symbol and ZapfDingbats),
+  extracted from Adobe's Core 14 AFM files, © 1985–1997 Adobe Systems Incorporated, which may be used, copied and
+  distributed for any purpose with their copyright notices kept. The notices, Adobe's permission notice and a note of
+  what was changed are in `crates/mpe-core/src/std14.rs`; `crates/mpe-core/tools/gen_std14.py` makes the tables from
+  the AFM files. Helvetica and Times are trademarks of Linotype-Hell AG and/or its subsidiaries; ITC Zapf Dingbats
+  is a registered trademark of International Typeface Corporation.
 - **OCR model:** the text recognition model by Robert Knight, from the
   [ocrs](https://github.com/robertknight/ocrs) project, [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/),
   included unmodified; see `crates/mpe-core/models/README.md`, shipped as `OCR-MODEL.md` in release archives. With

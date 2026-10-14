@@ -20,10 +20,29 @@
 
 - Search highlights and selected words sit on the text: characters are placed by their widths in the font instead
   of being spread evenly, which put highlights a letter or more off in proportional fonts. Files that use the
-  standard Times or Helvetica fonts without their widths are measured with Adobe's published widths.
+  standard PDF fonts without their widths are measured with Adobe's published widths.
+- Text is read from many more files correctly. ToUnicode maps that the document library rejected (LibreOffice
+  writes them, for one) are now read, where before the text came out as nonsense and could not be searched.
+  Export text, `mpe text` and search now read the page the same way as highlights and copying.
+- Words separated only by a gap, with no space character, keep their space in extracted text, search and copying,
+  including in tightly justified lines and headings.
+- Ligatures such as "ﬁ" come out as their letters, so searches find words written with them.
+- A phrase that runs across a line break is highlighted on both lines; before, it was listed but not highlighted.
+- Text inside form XObjects (blocks of page content that some PDF makers put all their text in) is now read, so it
+  can be searched, selected, copied and exported. Pages whose only text is there are no longer taken for scans.
 - Headers, footers and watermarks measure accented Latin-1 letters by their real widths, so centred and
   right-aligned text containing them is placed correctly.
 - Long names in the start screen's recent files no longer run past the card.
+
+### Testing
+
+- Printing on Windows, built in 0.3.0 but not run then, has been tried and works.
+
+### Other changes
+
+- Search takes about twice as long as before, as it now reads pages with MPE's own text reader: 0.17 s for a
+  477-page manual. See [Performance](docs/performance.md).
+- Release notes on GitHub end with a link to every change since the previous version.
 
 ## [0.3.0] - 2026-10-13
 
