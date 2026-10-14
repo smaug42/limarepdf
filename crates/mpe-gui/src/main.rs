@@ -6,6 +6,7 @@ mod editor;
 mod inspector;
 mod recent;
 mod selection;
+mod settings;
 mod tab;
 mod theme;
 mod worker;

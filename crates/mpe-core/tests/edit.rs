@@ -458,7 +458,7 @@ fn bad_input_is_an_error_not_a_panic() {
 
 fn inline_pdf() -> Vec<u8> {
     let mut content = b"q 100 0 0 100 50 50 cm\nBI /W 4 /H 4 /BPC 8 /CS /RGB ID ".to_vec();
-    content.extend(std::iter::repeat([255u8, 0, 0]).take(16).flatten());
+    content.extend(std::iter::repeat_n([255u8, 0, 0], 16).flatten());
     content.extend(b"\nEI Q\nBT /F1 12 Tf 50 200 Td (after inline) Tj ET\n");
     let mut objs: Vec<Vec<u8>> = vec![
         b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),

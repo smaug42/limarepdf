@@ -41,7 +41,9 @@ fn renders_overlay_pixels() {
     assert_eq!((bmp.width, bmp.height), (300, 200));
     let dark = bmp
         .rgba
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|px| px[0] < 200 || px[1] < 200)
         .count();
     assert!(

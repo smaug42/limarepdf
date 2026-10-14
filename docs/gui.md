@@ -16,10 +16,13 @@ Each document gets a tab. The tab shows its name, with `*` while it has unsaved 
 
 ## The window
 
-- **Top bar:** the menu (☰), Open, Save, Undo and Redo, the tools, zoom, search, and an Export menu (export pages as
-  images, export text, print). On narrow windows the search field and the tools fold into single buttons.
+- **Top bar:** the menu (☰), Open, Save, Undo and Redo, the tools, zoom, search, Print, an Export menu (pages as
+  images, text), and the theme. On narrow windows the search field and the tools fold into single buttons.
 - **Left:** page thumbnails, or search results.
-- **Middle:** the pages, scrolling continuously.
+- **Middle:** the pages, scrolling continuously. By default they fit the width between the side panels, and keep
+  fitting as you resize the window or open and close the panels. Zooming in or out, actual size, Ctrl+scroll or a
+  pinch turns fitting off, and your zoom then stays as it is; the Fit width button (highlighted while fitting is on)
+  or Ctrl+0 turns it back on.
 - **Right:** the inspector, which shows options for what is selected. On windows narrower than about 960 pixels it
   collapses to a thin rail; click the rail to slide it out. ☰ > View > Inspector shows or hides it.
 
@@ -104,7 +107,7 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Ctrl+F | Search |
 | Ctrl+K | Command palette |
 | Ctrl+= , Ctrl+- | Zoom in, zoom out |
-| Ctrl+0, Ctrl+1 | Fit width, actual size |
+| Ctrl+0, Ctrl+1 | Fit width on or off, actual size |
 | Ctrl+scroll, pinch | Zoom |
 | PageUp, PageDown, Home, End | Previous, next, first, last page |
 | Delete, Backspace | Delete the selected object or pages |
@@ -114,5 +117,7 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 
 ## Look and feel
 
-The app follows the system's light or dark theme; ☰ > View > Theme overrides it. It uses the Inter font and Phosphor
-icons.
+The app follows the system's light or dark theme. The theme button at the right end of the top bar (a half circle,
+sun or moon, for the current choice) chooses System, Light or Dark; so does ☰ > View > Theme. The choice is
+remembered between runs, in `settings.txt` in the same folder as the recent-files list. The app uses the Inter font
+and Phosphor icons.

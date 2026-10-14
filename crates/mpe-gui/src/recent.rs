@@ -1,13 +1,10 @@
-//! Recently opened files, kept between runs in a small text file (one path per line) in
-//! the platform's settings folder:
-//!
-//! - Linux and other Unix: `$XDG_CONFIG_HOME/mpe/recent.txt`, else `~/.config/mpe/recent.txt`
-//! - macOS: `~/Library/Application Support/mpe/recent.txt`
-//! - Windows: `%APPDATA%\mpe\recent.txt`
+//! Recently opened files, kept between runs in `recent.txt` (one path per line) in MPE's
+//! settings folder (see [`crate::settings`]).
 //!
 //! The list stays on this computer. Failing to read or write it is not an error: the list
 //! is a convenience.
 
+use crate::settings::settings_dir;
 use std::path::{Path, PathBuf};
 
 /// How many files the list keeps.
@@ -17,22 +14,6 @@ pub struct Recent {
     paths: Vec<PathBuf>,
     /// Where the list is saved; `None` when there is no settings folder.
     file: Option<PathBuf>,
-}
-
-/// The settings folder for MPE, from the environment.
-fn settings_dir() -> Option<PathBuf> {
-    let env = |k: &str| {
-        let v = std::env::var_os(k)?;
-        (!v.is_empty()).then(|| PathBuf::from(v))
-    };
-    let base = if cfg!(windows) {
-        env("APPDATA")?
-    } else if cfg!(target_os = "macos") {
-        env("HOME")?.join("Library/Application Support")
-    } else {
-        env("XDG_CONFIG_HOME").or_else(|| Some(env("HOME")?.join(".config")))?
-    };
-    Some(base.join("mpe"))
 }
 
 impl Recent {

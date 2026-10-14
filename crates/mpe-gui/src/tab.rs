@@ -12,6 +12,8 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
 const GAP: f32 = 16.0;
+/// Room left beside a fitted page, beyond the gaps, so it never meets the scroll bar.
+const FIT_MARGIN: f32 = 12.0;
 const THUMB_W: f32 = 120.0;
 const MAX_UNDO: usize = 20;
 /// egui points at zoom 1.0 per PDF point (96 dpi logical).
@@ -38,6 +40,12 @@ pub struct Tab {
     thumbs: HashMap<usize, TextureHandle>,
     pending: HashSet<Key>,
     pub zoom: f32,
+    /// The zoom follows the width of the view (on until the user zooms).
+    pub fit: bool,
+    /// The place at the top of the view: page, and points down it.
+    view: (usize, f32),
+    /// After a zoom change: the place to put back at the top of the view.
+    rezoom: Option<(usize, f32)>,
     pub current: usize,
     anchor: usize,
     goto: Option<usize>,
@@ -92,6 +100,9 @@ impl Tab {
             thumbs: HashMap::new(),
             pending: HashSet::new(),
             zoom: 1.0,
+            fit: true,
+            view: (0, 0.0),
+            rezoom: None,
             current: 0,
             anchor: 0,
             goto: None,
@@ -429,16 +440,20 @@ impl Tab {
         }
     }
 
-    /// Change zoom and keep the current page at the top of the view.
+    /// Zoom chosen by the user: turns fitting to the width off.
     pub fn set_zoom(&mut self, z: f32) {
-        self.zoom = z.clamp(0.1, 8.0);
-        self.goto = Some(self.current);
+        self.fit = false;
+        self.zoom_to(z);
     }
 
-    pub fn fit_width(&mut self, avail: f32) {
-        if let Some(&(w, _)) = self.sizes.get(self.current) {
-            self.set_zoom((avail - 40.0) / (w * BASE));
+    /// Change the zoom, keeping the same place in the document at the top of the view.
+    fn zoom_to(&mut self, z: f32) {
+        let z = z.clamp(0.1, 8.0);
+        if (z - self.zoom).abs() < 1e-4 {
+            return;
         }
+        self.zoom = z;
+        self.rezoom = Some(self.view);
     }
 
     /// The command state for this tab's part: document, undo, selection and tool.
@@ -454,6 +469,7 @@ impl Tab {
         };
         c.pages = self.ed.selection.pages().is_some();
         c.tool = Some(self.ed.tool);
+        c.fit = self.fit;
         c.hidden_text = self.ed.show_hidden;
     }
 
@@ -572,6 +588,12 @@ impl Tab {
         if zd != 1.0 {
             self.set_zoom(self.zoom * zd);
         }
+        // Fitting: the widest page fills the width between the side panels, whatever the
+        // window size or which panels are open.
+        if self.fit {
+            let z = fit_zoom(&self.sizes, ui.available_width());
+            self.zoom_to(z);
+        }
 
         let page_w: Vec<f32> = self.sizes.iter().map(|s| s.0 * BASE * self.zoom).collect();
         let page_h: Vec<f32> = self.sizes.iter().map(|s| s.1 * BASE * self.zoom).collect();
@@ -589,6 +611,7 @@ impl Tab {
         let mut area = egui::ScrollArea::both()
             .id_salt(("pages", self.id))
             .auto_shrink([false, false]);
+        let rezoom = self.rezoom.take();
         if let Some(p) = self.goto.take() {
             // Within the page, keep a little context above the target.
             let within = self
@@ -596,6 +619,10 @@ impl Tab {
                 .take()
                 .map_or(0.0, |y| (y * BASE * self.zoom - 80.0).max(0.0));
             let top = tops.get(p).copied().unwrap_or(0.0) - GAP + within;
+            area = area.vertical_scroll_offset(top.max(0.0));
+        } else if let Some((p, y)) = rezoom {
+            // After a zoom change, put the same place back at the top of the view.
+            let top = tops.get(p).copied().unwrap_or(0.0) + y * BASE * self.zoom;
             area = area.vertical_scroll_offset(top.max(0.0));
         }
         let current = self.current_match();
@@ -666,7 +693,13 @@ impl Tab {
                 .saturating_sub(1)
                 .min(tops.len().saturating_sub(1));
         });
-        let _ = out;
+        // Remember the place at the top of the view (page, and points down it), so a zoom
+        // change can keep it there.
+        let top = out.state.offset.y;
+        let p = tops.partition_point(|&t| t <= top).saturating_sub(1);
+        if let Some(&t) = tops.get(p) {
+            self.view = (p, (top - t) / (BASE * self.zoom));
+        }
         self.apply_actions(&ctx);
         if self.goto.is_none() {
             self.current = probe;
@@ -854,6 +887,15 @@ impl Tab {
     }
 }
 
+/// The zoom at which the widest of the pages (`sizes`, in points) fits in `room` screen
+/// points beside the gaps, in whole percent so resizing the window does not re-render
+/// the pages at every step.
+fn fit_zoom(sizes: &[(f32, f32)], room: f32) -> f32 {
+    let widest = sizes.iter().map(|s| s.0).fold(1.0, f32::max);
+    let room = room - 2.0 * GAP - FIT_MARGIN;
+    ((room / (widest * BASE)) * 100.0).floor() / 100.0
+}
+
 fn sizes_of(pdf: &Pdf) -> Vec<(f32, f32)> {
     (0..pdf.page_count())
         .map(|i| pdf.page_size(i).unwrap_or((612.0, 792.0)))
@@ -933,6 +975,19 @@ mod tests {
         // Dropped onto itself: no change.
         assert_eq!(moved_order(3, &set(&[1]), 1), [0, 1, 2]);
         assert_eq!(moved_order(3, &set(&[1]), 2), [0, 1, 2]);
+    }
+
+    #[test]
+    fn fitting_uses_the_widest_page_and_whole_percent() {
+        let pages = [(612.0, 792.0), (792.0, 612.0), (300.0, 300.0)];
+        let room = 900.0;
+        let z = fit_zoom(&pages, room);
+        // The landscape page decides, and it fits beside the gaps and margin.
+        let (width, space) = (792.0 * BASE * z, room - 2.0 * GAP - FIT_MARGIN);
+        assert!(width <= space, "{z}");
+        // Within one percent step of filling it.
+        assert!(width > space - 792.0 * BASE * 0.01, "{z}");
+        assert_eq!((z * 100.0).round() / 100.0, z);
     }
 
     #[test]

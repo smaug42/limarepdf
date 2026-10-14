@@ -516,8 +516,10 @@ impl Default for Pdf {
 pub(crate) fn decode_text(b: &[u8]) -> String {
     if b.starts_with(&[0xFE, 0xFF]) {
         let u: Vec<u16> = b[2..]
-            .chunks_exact(2)
-            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_be_bytes(*c))
             .collect();
         String::from_utf16_lossy(&u)
     } else if b.starts_with(&[0xEF, 0xBB, 0xBF]) {

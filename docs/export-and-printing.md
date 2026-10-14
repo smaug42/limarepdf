@@ -18,7 +18,7 @@ Word, Excel and CSV export are not available.
 
 ## Printing
 
-Print (Ctrl+P, the top bar's Export menu or the inspector) chooses the printer, the pages (the selected pages by
+Print (the top bar's Print button, Ctrl+P, or the inspector) chooses the printer, the pages (the selected pages by
 default), copies and two-sided printing, and runs in the background. On the command line: `mpe printers` and
 `mpe print`.
 

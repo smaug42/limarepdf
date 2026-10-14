@@ -26,9 +26,12 @@ available.
 | Area | Status | Notes |
 | --- | --- | --- |
 | Tabs, thumbnails, opening by drag and drop | Done | |
-| Zoom, fit width, continuous scrolling, page navigation | Done | Single-page and facing-page layouts: No |
+| Recent files | Done | Start screen and ☰ > File > Open recent; 10 files, kept on your computer only |
+| Notices about the document | Done | Password-protected, scanned pages, form fields, large files. [Details](gui.md#notices-about-the-document) |
+| Zoom, fit width, continuous scrolling, page navigation | Done | Pages fit the window's width by default and follow resizing; zooming turns that off. Single-page and facing-page layouts: No |
 | Open at a page from the command line | Done | `mpe-gui file.pdf --page N` |
 | Command palette, right-click menus, floating toolbar | Done | Toolbar customisation: No |
+| Light and dark themes | Done | Follows the system, or chosen with the top bar's theme button; remembered between runs |
 | Rendering | Partial | Some transparency groups are drawn wrongly, and annotations without an appearance stream are not drawn. [Details](rendering.md) |
 | Search | Partial | Highlights can be a letter off in proportional fonts. [Details](search-and-text.md) |
 | Select and copy text | Done | One page at a time; includes recognised text |
@@ -81,9 +84,6 @@ Ideas for what comes next. None of these are available yet, and the list is not 
   tool you used last, or let you choose a default.
 - **Doing more with selected text.** Right-click selected text to print just the selection, or to save it as a new
   PDF.
-- **A print button in the top bar.** Print is in the Export menu and on Ctrl+P today; it should have its own button.
-- **A visible light and dark switch.** The theme can be chosen today under ☰ > View > Theme; a switch in the top bar
-  would make it easy to find.
 
 ### Features that would set MPE apart
 
