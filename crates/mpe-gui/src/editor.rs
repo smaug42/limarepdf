@@ -314,6 +314,27 @@ impl Editor {
         (!parts.is_empty()).then(|| parts.join("\n"))
     }
 
+    /// For each page with selected words, the rectangle around them with a small margin
+    /// (displayed-page points), for printing or saving the selection as cropped pages.
+    pub fn selected_rects(&self) -> Vec<(usize, [f32; 4])> {
+        const PAD: f32 = 4.0;
+        let Some(((first, _), (last, _))) = self.selection.words() else {
+            return Vec::new();
+        };
+        (first..=last)
+            .filter_map(|p| {
+                let words = self.words.get(&p)?;
+                let range = self.selection.words_on(p, words.len())?;
+                let mut r = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+                for b in words[range].iter().map(|w| w.bbox) {
+                    (r[0], r[1]) = (r[0].min(b[0]), r[1].min(b[1]));
+                    (r[2], r[3]) = (r[2].max(b[2]), r[3].max(b[3]));
+                }
+                (r[0] < r[2]).then_some((p, [r[0] - PAD, r[1] - PAD, r[2] + PAD, r[3] + PAD]))
+            })
+            .collect()
+    }
+
     /// Move the moving end of the word selection to `end`, or start one there. The words
     /// of the pages in between are read, for copying.
     fn extend_words(&mut self, pdf: &mpe_core::Pdf, end: WordAt) {
@@ -1138,7 +1159,7 @@ impl Editor {
                 ui.label(
                     "Drag over words to select them, across pages if you like, double-click a \
                      word, triple-click a line, Shift+click to extend, or press Ctrl+A for the \
-                     whole page. Ctrl+C copies.",
+                     whole page. Ctrl+C copies; right-click to print or save the selection.",
                 );
                 ui.separator();
                 match self.selected_text() {

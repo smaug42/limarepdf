@@ -47,6 +47,50 @@ fn range_field(ui: &mut Ui, text: &mut String) {
 
 // ------------------------------------------------------------------ print
 
+/// How selected text is printed or saved.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Layout {
+    /// The pages cropped to the selection, as they look.
+    Original,
+    /// The words alone, laid out afresh in Helvetica.
+    Plain,
+    /// A .txt file (saving only).
+    TextFile,
+}
+impl Layout {
+    fn label(self) -> &'static str {
+        match self {
+            Layout::Original => "As it looks (cropped pages)",
+            Layout::Plain => "Plain text (PDF)",
+            Layout::TextFile => "Text file (.txt)",
+        }
+    }
+    fn tip(self) -> &'static str {
+        match self {
+            Layout::Original => {
+                "Each page at its full width, cut down from top and bottom to the selected \
+                 lines. Fonts, pictures and layout stay; anything else beside those lines \
+                 shows too."
+            }
+            Layout::Plain => {
+                "Just the selected words, set in Helvetica. Fonts and pictures are lost, and \
+                 characters outside Western European alphabets come out as ?."
+            }
+            Layout::TextFile => "Just the selected words, as plain text.",
+        }
+    }
+}
+
+fn layout_choice(ui: &mut Ui, layout: &mut Layout, choices: &[Layout]) {
+    ui.label("Layout");
+    ui.vertical(|ui| {
+        for &x in choices {
+            ui.radio_value(layout, x, x.label()).on_hover_text(x.tip());
+        }
+    });
+    ui.end_row();
+}
+
 pub struct Print {
     pub printers: Vec<Printer>,
     pub printer: usize,
@@ -54,6 +98,8 @@ pub struct Print {
     pub copies: u32,
     pub sides: Sides,
     pub as_image: bool,
+    /// Printing the selected text, in this layout, instead of pages.
+    pub selection: Option<Layout>,
 }
 impl Print {
     /// `printers` has the default first.
@@ -65,11 +111,16 @@ impl Print {
             copies: 1,
             sides: Sides::One,
             as_image: false,
+            selection: None,
         }
     }
 }
 pub fn print(ctx: &Context, s: &mut Print) -> Outcome {
-    modal(ctx, "Print", |ui| {
+    let title = match s.selection {
+        Some(_) => "Print selected text",
+        None => "Print",
+    };
+    modal(ctx, title, |ui| {
         if s.printers.is_empty() {
             ui.label("No printers are set up. Add one in the system's printer settings.");
             return buttons(ui, "OK");
@@ -111,8 +162,13 @@ pub fn print(ctx: &Context, s: &mut Print) -> Outcome {
                         }
                     });
                 ui.end_row();
+                if let Some(layout) = &mut s.selection {
+                    layout_choice(ui, layout, &[Layout::Original, Layout::Plain]);
+                }
             });
-        range_field(ui, &mut s.pages);
+        if s.selection.is_none() {
+            range_field(ui, &mut s.pages);
+        }
         // Windows always prints pages drawn by MPE.
         if !cfg!(windows) {
             let tip = "MPE draws each page at 300 dpi and sends pictures of them, so the \
@@ -122,6 +178,20 @@ pub fn print(ctx: &Context, s: &mut Print) -> Outcome {
                 .on_hover_text(tip);
         }
         buttons(ui, "Print")
+    })
+}
+
+/// Save the selected text: choose the layout; the file dialog follows.
+pub fn save_selection(ctx: &Context, layout: &mut Layout) -> Outcome {
+    modal(ctx, "Save selected text", |ui| {
+        egui::Grid::new("save_selection")
+            .num_columns(2)
+            .spacing([10.0, 6.0])
+            .show(ui, |ui| {
+                let all = [Layout::Original, Layout::Plain, Layout::TextFile];
+                layout_choice(ui, layout, &all);
+            });
+        buttons(ui, "Save…")
     })
 }
 

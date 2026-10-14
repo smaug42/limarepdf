@@ -38,6 +38,7 @@ available.
 | Rendering | Partial | Some transparency groups are drawn wrongly, and annotations without an appearance stream are not drawn. [Details](rendering.md) |
 | Search | Done | Phrases across line breaks are found and highlighted; hyphenated words split over lines are not. [Details](search-and-text.md) |
 | Select and copy text | Done | With the default read tool; across pages, scrolling while you drag; in the order on the page, not the file's drawing order; includes recognised text |
+| Print or save selected text | Done | As the pages look, full width, cut down to the selected lines, or as plain text in Helvetica (Western European characters only); also saves a .txt file |
 | Page operations: insert, delete, rotate, extract, reorder, crop | Done | Crop by margins; no dragging a crop box on the page |
 | Merge and split | Done | Bookmarks, forms and named destinations of appended files are not carried over. Split by file size: No |
 | Undo and redo | Done | 20 levels, including password settings |
@@ -81,11 +82,6 @@ available.
 ## Planned and proposed
 
 Ideas for what comes next. None of these are available yet, and the list is not a commitment or an order.
-
-### Fixes and usability
-
-- **Doing more with selected text.** Right-click selected text to print just the selection, or to save it as a new
-  PDF.
 
 ### XFA forms
 

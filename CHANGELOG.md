@@ -30,6 +30,9 @@
   document opens with. Dragging anywhere on a page selects text from the nearest word; dragging past the edge of
   the view scrolls it, so a selection can run across pages. Triple-click selects a line and Shift+click extends
   the selection. See [Copying text](docs/gui.md#copying-text).
+- Print or save just the selected text: right-click it, or use ☰ > Edit. Choose the pages as they look, full width but
+  cut down to the selected lines, or the words alone as plain text; saving also offers a text file. See
+  [Copying text](docs/gui.md#copying-text).
 - Selecting, copying and exporting text follow the order on the page, not the order the file draws it in, so a
   selection no longer jumps when it reaches a block drawn out of place (common in forms), and exported text comes
   out in reading order. See [Text extraction](docs/search-and-text.md#text-extraction).

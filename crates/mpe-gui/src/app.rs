@@ -159,9 +159,45 @@ enum Dialog {
     ConfirmReplace(ImageExport, usize),
     ConfirmFlatten,
     Print(dlg::Print),
+    SaveSelection(dlg::Layout),
     /// Open this web or email address from a link?
     OpenLink(String),
     About,
+}
+
+/// What selected text is printed or saved from, taken from the tab so a background job
+/// can build the new document.
+enum Excerpt {
+    /// Pages cropped to these rectangles.
+    Pages(Vec<(usize, [f32; 4])>),
+    /// The words, on pages of this size.
+    Text(String, (f32, f32)),
+}
+impl Excerpt {
+    fn new(t: &Tab, layout: dlg::Layout) -> Self {
+        let rects = t.ed.selected_rects();
+        match layout {
+            // The full page width, margins included; `excerpt` clips to the page.
+            dlg::Layout::Original => Excerpt::Pages(
+                rects
+                    .into_iter()
+                    .map(|(p, r)| (p, [0.0, r[1], f32::MAX, r[3]]))
+                    .collect(),
+            ),
+            _ => {
+                let page = rects.first().map_or(0, |r| r.0);
+                let size = t.pdf.page_size(page).unwrap_or((612.0, 792.0));
+                Excerpt::Text(t.ed.selected_text().unwrap_or_default(), size)
+            }
+        }
+    }
+
+    fn build(&self, p: &Pdf) -> mpe_core::Result<Pdf> {
+        match self {
+            Excerpt::Pages(rects) => p.excerpt(rects),
+            Excerpt::Text(text, size) => Pdf::from_text(text, *size),
+        }
+    }
 }
 
 /// Title of the OCR background job, also used to recognise its result.
@@ -466,6 +502,40 @@ impl App {
         }
     }
 
+    /// Save the selected text as cropped pages, as plain text in a PDF, or as a text file.
+    fn save_selection(&mut self, layout: dlg::Layout) {
+        let t = &self.tabs[self.active];
+        let Some(text) = t.ed.selected_text() else {
+            return;
+        };
+        let (filter, ext) = match layout {
+            dlg::Layout::TextFile => ("Text", "txt"),
+            _ => ("PDF", "pdf"),
+        };
+        let Some(mut path) = rfd::FileDialog::new()
+            .add_filter(filter, &[ext])
+            .set_file_name(format!("{} (selection).{ext}", t.stem("document")))
+            .save_file()
+        else {
+            return;
+        };
+        if path.extension().is_none() {
+            path.set_extension(ext);
+        }
+        let result: mpe_core::Result<()> = match layout {
+            dlg::Layout::TextFile => std::fs::write(&path, text).map_err(Into::into),
+            _ => Excerpt::new(t, layout)
+                .build(&t.pdf)
+                .and_then(|mut d| d.save(&path)),
+        };
+        match result {
+            Ok(()) => self.status = format!("Saved the selected text to {}", path.display()),
+            Err(e) => {
+                self.dialog = Dialog::Message("Save failed".into(), format!("{e:#}"));
+            }
+        }
+    }
+
     fn new_from_images(&mut self, ctx: &egui::Context, files: &[PathBuf]) {
         let Some(data) = self.read_images(files) else {
             return;
@@ -537,16 +607,21 @@ impl App {
             Act::SaveAs => self.save(true),
             Act::ExportImages if has => self.reveal(Section::Export),
             Act::ExportText if has => self.export_text(),
-            Act::Print if has && !self.busy => {
+            Act::Print | Act::PrintSelection if has && !self.busy => {
                 let selected = self.tabs[self.active].ed.selection.pages();
                 let pages = selected.map_or("all".into(), inspector::range_text);
+                let selection = (a == Act::PrintSelection).then_some(dlg::Layout::Original);
                 self.dialog = match print::printers() {
                     Ok(list) => Dialog::Print(dlg::Print {
                         pages,
+                        selection,
                         ..dlg::Print::new(list)
                     }),
                     Err(e) => Dialog::Message("Print".into(), format!("{e:#}")),
                 }
+            }
+            Act::SaveSelection if has => {
+                self.dialog = Dialog::SaveSelection(dlg::Layout::Original);
             }
             Act::CloseTab if has => {
                 if self.tabs[self.active].dirty {
@@ -1118,25 +1193,46 @@ impl App {
                 Outcome::Apply if s.printers.is_empty() => done = true,
                 Outcome::Apply => {
                     let t = &mut self.tabs[self.active];
-                    match parse_page_range(&s.pages, t.page_count()) {
-                        Ok(pages) => {
-                            let printer = s.printers[s.printer].name.clone();
-                            let opts = print::PrintOptions {
-                                printer: Some(printer.clone()),
-                                copies: s.copies,
-                                sides: s.sides,
-                                as_image: s.as_image,
-                                title: t.stem("Untitled"),
-                            };
-                            self.spawn_job(ctx, "Print", move |p| {
-                                let reply = p.print(&pages, &opts)?;
-                                let n = pages.len();
-                                Ok((false, format!("Sent {n} page(s) to {printer}.\n{reply}")))
-                            });
-                            done = true;
+                    let printer = s.printers[s.printer].name.clone();
+                    let opts = print::PrintOptions {
+                        printer: Some(printer.clone()),
+                        copies: s.copies,
+                        sides: s.sides,
+                        as_image: s.as_image,
+                        title: t.stem("Untitled"),
+                    };
+                    if let Some(layout) = s.selection {
+                        let ex = Excerpt::new(t, layout);
+                        self.spawn_job(ctx, "Print", move |p| {
+                            let mut out = ex.build(p)?;
+                            let pages: Vec<usize> = (0..out.page_count()).collect();
+                            let reply = out.print(&pages, &opts)?;
+                            let msg = format!("Sent the selected text to {printer}.\n{reply}");
+                            Ok((false, msg))
+                        });
+                        done = true;
+                    } else {
+                        match parse_page_range(&s.pages, t.page_count()) {
+                            Ok(pages) => {
+                                self.spawn_job(ctx, "Print", move |p| {
+                                    let reply = p.print(&pages, &opts)?;
+                                    let n = pages.len();
+                                    Ok((false, format!("Sent {n} page(s) to {printer}.\n{reply}")))
+                                });
+                                done = true;
+                            }
+                            Err(e) => t.error = Some(e.to_string()),
                         }
-                        Err(e) => t.error = Some(e.to_string()),
                     }
+                }
+                Outcome::Cancel => done = true,
+                Outcome::Open => {}
+            },
+            Dialog::SaveSelection(layout) => match dlg::save_selection(ctx, layout) {
+                Outcome::Apply => {
+                    let layout = *layout;
+                    done = true;
+                    self.save_selection(layout);
                 }
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}

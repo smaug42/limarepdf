@@ -142,6 +142,17 @@ a click clears the selection. Copy with Ctrl+C, ☰ > Edit > Copy text or the fl
 separated by spaces, and lines and pages by line breaks. Recognised (OCR) text can be selected like any other
 text.
 
+To print or save just the selection, right-click it and choose Print selected text… or Save selected text… (also
+under ☰ > Edit). Both offer two layouts:
+
+- **As it looks (cropped pages):** each page with selected words at its full width, margins included, cut down
+  from the top and bottom to the selected lines. Fonts, pictures and layout stay as they are, but anything else
+  beside those lines shows too, such as the start of the first line, another column or a picture.
+- **Plain text (PDF):** only the selected words, set in 11-point Helvetica on pages the size of the first selected
+  page, keeping the line breaks. Characters outside Western European alphabets come out as `?`.
+
+Saving also offers **Text file (.txt)**, the same text that Ctrl+C copies.
+
 Scrolling is left to the mouse wheel, the touchpad, the scroll bars and the keyboard; dragging the page itself
 doesn't scroll it (except on a touch screen).
 

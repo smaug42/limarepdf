@@ -5,6 +5,7 @@
 
 mod doc;
 mod edit;
+mod excerpt;
 mod fonts;
 mod form_ap;
 mod form_flatten;

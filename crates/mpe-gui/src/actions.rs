@@ -28,6 +28,10 @@ pub enum Act {
     Redo,
     Copy,
     SelectAllText,
+    /// Print the selected words, as cropped pages or as plain text.
+    PrintSelection,
+    /// Save the selected words as a PDF (cropped pages or plain text) or a text file.
+    SaveSelection,
     /// Delete the selected object, or the selected pages.
     DeleteSelection,
     /// Copy the text of the selected text object.
@@ -188,6 +192,9 @@ fn redo(c: &Ctx) -> bool {
 fn words(c: &Ctx) -> bool {
     c.words
 }
+fn words_idle(c: &Ctx) -> bool {
+    c.words && !c.busy
+}
 fn object(c: &Ctx) -> bool {
     c.object
 }
@@ -345,6 +352,22 @@ pub static ACTIONS: &[Action] = &[
         icon: icon::SELECTION_ALL,
         keys: &[k(C, Key::A)],
         enabled: text_tool,
+        ..BASE
+    },
+    Action {
+        act: Act::PrintSelection,
+        group: Group::Edit,
+        label: "Print selected text…",
+        icon: icon::PRINTER,
+        enabled: words_idle,
+        ..BASE
+    },
+    Action {
+        act: Act::SaveSelection,
+        group: Group::Edit,
+        label: "Save selected text…",
+        icon: icon::FLOPPY_DISK,
+        enabled: words_idle,
         ..BASE
     },
     Action {
@@ -856,7 +879,10 @@ pub fn matches(a: &Action, query: &str) -> bool {
 /// after the click (right-clicking selects what is under the pointer first).
 pub fn context_items(sel: &Selection) -> &'static [&'static [Act]] {
     match sel {
-        Selection::Words { .. } => &[&[Act::Copy, Act::SelectAllText]],
+        Selection::Words { .. } => &[
+            &[Act::Copy, Act::SelectAllText],
+            &[Act::PrintSelection, Act::SaveSelection],
+        ],
         Selection::Object { .. } => &[
             &[Act::EditObjectText, Act::ReplaceImage, Act::CopyObjectText],
             &[Act::DeleteObject],
