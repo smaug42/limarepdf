@@ -22,6 +22,11 @@ FONTS = [
     ("TIMES_ITALIC", "Times-Italic"),
     ("TIMES_BOLD_ITALIC", "Times-BoldItalic"),
 ]
+# Fonts with their own built-in encoding: tables by code, not by character.
+SYMBOLIC = [
+    ("SYMBOL", "Symbol"),
+    ("ZAPF_DINGBATS", "ZapfDingbats"),
+]
 # Characters with no glyph of their own in the AFM files: measured as this glyph.
 SAME_AS = {" ": " ", "­": "-"}
 
@@ -52,12 +57,43 @@ def widths(name):
     return notice, row
 
 
+def widths_by_code(name):
+    by_code = {}
+    notice = None
+    for line in (AFM_DIR / f"{name}.afm").read_text(encoding="latin-1").splitlines():
+        if line.startswith("Notice "):
+            notice = line[len("Notice "):].strip()
+        if not line.startswith("C "):
+            continue
+        fields = dict(
+            f.strip().split(" ", 1) for f in line.split(";") if f.strip() and " " in f.strip()
+        )
+        code = int(fields["C"])
+        if code >= 0:
+            by_code[code] = int(float(fields["WX"]))
+    return notice, [by_code.get(code, 0) for code in range(32, 256)]
+
+
+def table(out, const, name, row, what):
+    out.append(f"/// {name}: widths (1/1000 em) of {what} 32..=255.")
+    out.append("#[rustfmt::skip]")
+    out.append(f"const {const}: [u16; 224] = [")
+    for i in range(0, 224, 16):
+        cells = ", ".join(str(w) for w in row[i:i + 16])
+        out.append(f"    {cells}, // {32 + i}-{32 + i + 15}")
+    out.append("];")
+    out.append("")
+
+
 readme = (AFM_DIR / "readme.txt").read_text(encoding="latin-1")
 permission = readme[readme.index("This file and the 14"):].strip()
 
 out = []
 for const, name in FONTS:
     notice, _ = widths(name)
+    out.append(f"//! {name}.afm: {notice}")
+for const, name in SYMBOLIC:
+    notice, _ = widths_by_code(name)
     out.append(f"//! {name}.afm: {notice}")
 out.append("//!")
 out.append("//! The permission notice that accompanies the AFM files, unmodified:")
@@ -81,12 +117,8 @@ out.append("];")
 out.append("")
 for const, name in FONTS:
     _, row = widths(name)
-    out.append(f"/// {name}: widths (1/1000 em) of Windows-1252 codes 32..=255.")
-    out.append("#[rustfmt::skip]")
-    out.append(f"const {const}: [u16; 224] = [")
-    for i in range(0, 224, 16):
-        cells = ", ".join(str(w) for w in row[i:i + 16])
-        out.append(f"    {cells}, // {32 + i}-{32 + i + 15}")
-    out.append("];")
-    out.append("")
+    table(out, const, name, row, "Windows-1252 codes")
+for const, name in SYMBOLIC:
+    _, row = widths_by_code(name)
+    table(out, const, name, row, "the codes of its built-in encoding")
 print("\n".join(out), end="")

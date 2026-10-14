@@ -202,9 +202,11 @@ struct RunInfo {
     fill: Option<[f32; 3]>,
     corners: [(f32, f32); 4],
     /// Each character's start and end in text space along the run, from 0 to the
-    /// advance; empty when the characters could not be matched to glyphs.
+    /// advance.
     spans: Vec<(f32, f32)>,
     adv: f32,
+    /// Distance in user space from `start` to the first character, along `dir`.
+    lead: f32,
     ctm: M,
     visible: bool,
     tm_after: M,
@@ -345,33 +347,29 @@ impl Pdf {
                     let th = gs.th;
                     let mut adv = 0.0f32;
                     let mut text = String::new();
-                    // Each character's place along the run. A glyph that decodes to
-                    // several characters (a ligature) shares its width among them.
+                    // The text is decoded one character code at a time, with each
+                    // character's place along the run. A glyph that decodes to several
+                    // characters (a ligature) shares its width among them.
                     let mut spans: Vec<(f32, f32)> = Vec::new();
-                    let mut spans_ok = true;
                     for it in items {
                         match it {
                             Object::String(s, _) => match fc {
                                 Some(f) => {
-                                    let decoded = f.decode(s);
-                                    let before = spans.len();
                                     let step = if f.type0 { 2 } else { 1 };
                                     for (k, (code, space)) in f.codes(s).into_iter().enumerate() {
                                         let glyph = f.width(code) / 1000.0 * tfs * th;
-                                        let one = &s[k * step..(k * step + step).min(s.len())];
-                                        let chars = f.decode(one).chars().count();
+                                        let raw = &s[k * step..(k * step + step).min(s.len())];
+                                        let decoded = f.decode_code(code, raw);
+                                        let chars = decoded.chars().count();
                                         let part = glyph / chars.max(1) as f32;
                                         for j in 0..chars {
                                             let a = adv + part * j as f32;
                                             spans.push((a, a + part));
                                         }
+                                        text.push_str(&decoded);
                                         adv +=
                                             glyph + (gs.tc + if space { gs.tw } else { 0.0 }) * th;
                                     }
-                                    if spans.len() - before != decoded.chars().count() {
-                                        spans_ok = false;
-                                    }
-                                    text.push_str(&decoded);
                                 }
                                 None => {
                                     for &b in s.iter() {
@@ -387,17 +385,16 @@ impl Pdf {
                                 if let Some(x) = n(o) {
                                     let from = adv;
                                     adv -= x / 1000.0 * tfs * th;
-                                    // A big negative kern is a visual gap (a space between words).
-                                    if x < -200.0 && !text.ends_with(' ') && !text.is_empty() {
+                                    // A big negative kern is a visual gap: a space between
+                                    // words. Justified lines squeeze these to under 0.2 em;
+                                    // kerning between letters stays under about 0.14 em.
+                                    if x < -150.0 && !text.ends_with(' ') && !text.is_empty() {
                                         text.push(' ');
                                         spans.push((from, adv));
                                     }
                                 }
                             }
                         }
-                    }
-                    if !spans_ok {
-                        spans.clear();
                     }
                     tm = mul(mx::translate(adv, 0.0), tm);
                     let trm = mul(mul(start_tm, gs.ctm), mx::ID);
@@ -422,6 +419,11 @@ impl Pdf {
                         apply(m, adv, a0),
                         apply(m, 0.0, a0),
                     ];
+                    // A TJ can open with a gap before its first character.
+                    let lead = spans.first().map_or(0.0, |&(a, _)| {
+                        let (p, q) = (apply(m, 0.0, 0.0), apply(m, a, 0.0));
+                        (q.0 - p.0) * dir.0 + (q.1 - p.1) * dir.1
+                    });
                     let ri = RunInfo {
                         run: Run {
                             op: i,
@@ -440,6 +442,7 @@ impl Pdf {
                         corners,
                         spans,
                         adv,
+                        lead,
                         ctm: gs.ctm,
                         visible: gs.tr != 3 && gs.tr != 7,
                         tm_after: tm,
@@ -864,7 +867,7 @@ fn group_runs(runs: Vec<RunInfo>, out: &mut Vec<Obj>) {
                     && p.visible == r.visible
                     && p.dir.0 * r.dir.0 + p.dir.1 * r.dir.1 > 0.9999;
                 let (dx, dy) = (r.start.0 - p.end.0, r.start.1 - p.end.1);
-                let along = dx * p.dir.0 + dy * p.dir.1;
+                let along = dx * p.dir.0 + dy * p.dir.1 + r.lead;
                 let perp = (-dx * p.dir.1 + dy * p.dir.0).abs();
                 same && perp < 0.3 * p.size && along > -0.3 * p.size && along < 0.7 * p.size
             }
@@ -873,8 +876,9 @@ fn group_runs(runs: Vec<RunInfo>, out: &mut Vec<Obj>) {
             flush(&mut cur, out);
         }
         if let Some(p) = cur.last_mut() {
+            // From the end of the last piece to this piece's first character.
             let (dx, dy) = (r.start.0 - p.end.0, r.start.1 - p.end.1);
-            let along = dx * p.dir.0 + dy * p.dir.1;
+            let along = dx * p.dir.0 + dy * p.dir.1 + r.lead;
             if along > 0.18 * p.size && !p.text.ends_with(' ') && !r.text.starts_with(' ') {
                 p.text.push(' ');
                 // The space covers the gap, measured in the run's own units.

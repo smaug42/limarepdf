@@ -20,7 +20,13 @@
 
 - Search highlights and selected words sit on the text: characters are placed by their widths in the font instead
   of being spread evenly, which put highlights a letter or more off in proportional fonts. Files that use the
-  standard Times or Helvetica fonts without their widths are measured with Adobe's published widths.
+  standard PDF fonts without their widths are measured with Adobe's published widths.
+- Text is read from many more files correctly. ToUnicode maps that the document library rejected (LibreOffice
+  writes them, for one) are now read, where before the text came out as nonsense and could not be searched.
+  Export text, `mpe text` and search now read the page the same way as highlights and copying.
+- Words separated only by a gap, with no space character, keep their space in extracted text, search and copying,
+  including in tightly justified lines and headings.
+- Ligatures such as "ﬁ" come out as their letters, so searches find words written with them.
 - Headers, footers and watermarks measure accented Latin-1 letters by their real widths, so centred and
   right-aligned text containing them is placed correctly.
 - Long names in the start screen's recent files no longer run past the card.

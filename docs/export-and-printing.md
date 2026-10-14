@@ -12,7 +12,8 @@ background and asks before replacing files. On the command line: `mpe render --f
 ## Text
 
 Export text writes every page's text to a `.txt` file, with pages separated by form feeds, as pdftotext does. Where:
-the top bar's Export menu or the inspector. On the command line, `mpe text` prints it.
+the top bar's Export menu or the inspector. On the command line, `mpe text` prints it. How the text is read, and its
+limits: [Search and text](search-and-text.md#text-extraction).
 
 Word, Excel and CSV export are not available.
 
