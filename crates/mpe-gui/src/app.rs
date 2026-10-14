@@ -1646,10 +1646,12 @@ impl eframe::App for App {
                     ui.horizontal(|ui| {
                         ui.selectable_value(&mut t.side, Side::Pages, "Pages");
                         ui.selectable_value(&mut t.side, Side::Search, "Search");
+                        ui.selectable_value(&mut t.side, Side::Bookmarks, "Bookmarks");
                     });
                     ui.separator();
                     match t.side {
                         Side::Pages => t.show_thumbs(ui, &c),
+                        Side::Bookmarks => t.show_outline(ui),
                         Side::Search => {
                             let r = ui.text_edit_singleline(&mut t.query);
                             let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));

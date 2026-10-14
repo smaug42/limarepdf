@@ -7,7 +7,7 @@ use crate::theme;
 use crate::worker::{Key, Worker};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptions, Vec2};
 use egui_phosphor::regular as icon;
-use mpe_core::{Encryption, Pdf, SearchHit};
+use mpe_core::{Encryption, OutlineItem, Pdf, SearchHit};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -23,6 +23,7 @@ const BASE: f32 = 96.0 / 72.0;
 pub enum Side {
     Pages,
     Search,
+    Bookmarks,
 }
 
 /// One undo or redo step: the state to go back to.
@@ -81,6 +82,11 @@ pub struct Tab {
     thumb_drag: Option<usize>,
     /// Notices about the document shown above the pages, most important first.
     pub banners: Vec<Banner>,
+    /// The bookmarks, read when first shown and again after the document changes:
+    /// the revision they were read at, and the items.
+    outline: Option<(u64, Vec<OutlineItem>)>,
+    /// For each bookmark, whether its children are shown.
+    outline_open: Vec<bool>,
 }
 
 impl Tab {
@@ -129,6 +135,8 @@ impl Tab {
             notice: None,
             thumb_drag: None,
             stale: HashSet::new(),
+            outline: None,
+            outline_open: Vec::new(),
         })
     }
 
@@ -402,6 +410,71 @@ impl Tab {
                 self.goto = Some(self.current);
             }
             Err(e) => self.error = Some(e.to_string()),
+        }
+    }
+
+    /// The Bookmarks side tab: the outline indented by level, with a caret to show or
+    /// hide an entry's children. Clicking an entry goes to its page.
+    pub fn show_outline(&mut self, ui: &mut egui::Ui) {
+        let rev = self.revision;
+        if self.outline.as_ref().is_none_or(|(r, _)| *r != rev) {
+            let items = self.pdf.outline();
+            self.outline_open = items.iter().map(|i| i.open).collect();
+            self.outline = Some((rev, items));
+        }
+        let Some((_, items)) = &self.outline else {
+            return;
+        };
+        if items.is_empty() {
+            ui.weak("This document has no bookmarks.");
+            return;
+        }
+        let mut jump = None;
+        let mut toggle = None;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                // Items deeper than this are inside a closed entry.
+                let mut closed_at: Option<usize> = None;
+                for (i, item) in items.iter().enumerate() {
+                    match closed_at {
+                        Some(d) if item.depth > d => continue,
+                        _ => closed_at = None,
+                    }
+                    let open = self.outline_open[i];
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        ui.add_space(item.depth as f32 * 12.0);
+                        let caret = if open {
+                            icon::CARET_DOWN
+                        } else {
+                            icon::CARET_RIGHT
+                        };
+                        let caret = egui::Button::new(theme::icon(caret).size(10.0))
+                            .frame_when_inactive(false);
+                        if ui.add_visible(item.has_children, caret).clicked() {
+                            toggle = Some(i);
+                        }
+                        let row = egui::Button::selectable(false, &item.title).truncate();
+                        let tip = match item.page {
+                            Some(p) => format!("{}\nPage {}", item.title, p + 1),
+                            None => format!("{}\nGoes outside this document", item.title),
+                        };
+                        let r = ui.add_enabled(item.page.is_some(), row);
+                        if r.on_hover_text(tip).clicked() {
+                            jump = item.page;
+                        }
+                    });
+                    if item.has_children && !open {
+                        closed_at = Some(item.depth);
+                    }
+                }
+            });
+        if let Some(i) = toggle {
+            self.outline_open[i] = !self.outline_open[i];
+        }
+        if let Some(p) = jump {
+            self.go_to(p);
         }
     }
 

@@ -15,6 +15,7 @@
 - A theme button in the top bar to choose System, Light or Dark, remembered between runs.
 - Applying password security can be undone.
 - The inspector's heading and the button that hides it share one row.
+- A Bookmarks tab beside Pages and Search shows the document's outline. Click a bookmark to go to its page.
 - MPE has its own icon, on the window, the taskbar and, on Windows, `mpe-gui.exe` itself. The Linux archive
   includes a desktop entry and icon, which Wayland desktops need to show it; see
   [Install](docs/install.md#menu-entry-and-icon-on-linux).

@@ -54,7 +54,8 @@ available.
 | Export to Word, Excel, CSV | No | |
 | Annotations, comments, stamps, measuring | No | Existing annotations are shown if they have an appearance stream |
 | Forms, form data, barcodes, JavaScript | No | |
-| Links, layers, attachments, bookmarks | No | |
+| Bookmarks | Partial | Shown in the Bookmarks tab and followed; adding, editing or deleting them: No. [Details](gui.md#the-window) |
+| Links, layers, attachments | No | |
 | Redaction | No | |
 | Digital signatures, certificate encryption | No | |
 | PDF/A, optimised saving | No | Saved files are pruned and compressed |

@@ -18,7 +18,10 @@ Each document gets a tab. The tab shows its name, with `*` while it has unsaved 
 
 - **Top bar:** the menu (☰), Open, Save, Undo and Redo, the tools, zoom, search, Print, an Export menu (pages as
   images, text), and the theme. On narrow windows the search field and the tools fold into single buttons.
-- **Left:** page thumbnails, or search results.
+- **Left:** three tabs. Pages shows the thumbnails, Search the search results, and Bookmarks the document's
+  outline. Click a bookmark to go to its page; the arrow beside one shows or hides the bookmarks inside it, which
+  start shown or hidden as the file asks. Bookmarks that go to another file or a web address are greyed out. They
+  can't be edited yet.
 - **Middle:** the pages, scrolling continuously. By default they fit the width between the side panels, and keep
   fitting as you resize the window or open and close the panels. Zooming in or out, actual size, Ctrl+scroll or a
   pinch turns fitting off, and your zoom then stays as it is; the Fit width button (highlighted while fitting is on)
