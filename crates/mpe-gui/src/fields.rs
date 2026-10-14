@@ -358,8 +358,12 @@ impl FormUi {
         else {
             return;
         };
-        let size = if multiline {
-            10.0 * k
+        // The size the field is saved with, so typing looks like the result; a field that
+        // fits its text to the box gets about what that gives.
+        let size = if field.text_size > 0.0 {
+            field.text_size * k
+        } else if multiline {
+            12.0 * k
         } else {
             (rect.height() * 0.6).min(12.0 * k)
         }
@@ -380,7 +384,11 @@ impl FormUi {
         if let Some(n) = max_len {
             te = te.char_limit(n);
         }
+        // Light colours in either theme: the box sits on the paper.
+        let theme = ui.visuals().clone();
+        *ui.visuals_mut() = egui::Visuals::light();
         let out = ui.put(rect, te);
+        *ui.visuals_mut() = theme;
         if *fresh {
             out.request_focus();
             *fresh = false;

@@ -645,7 +645,7 @@ fn check_value(field: &Field, value: FieldValue) -> Result<FieldValue> {
 }
 
 /// The font name, size and text colour from a `/DA` string.
-fn parse_da(da: &[u8]) -> (Option<Vec<u8>>, f32, Option<Operation>) {
+pub(crate) fn parse_da(da: &[u8]) -> (Option<Vec<u8>>, f32, Option<Operation>) {
     let ops = Content::decode(da)
         .map(|c| c.operations)
         .unwrap_or_default();

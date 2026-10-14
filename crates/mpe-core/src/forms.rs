@@ -1,6 +1,7 @@
 //! Interactive forms (AcroForm): the fields, their values and where their widgets are.
 
 use crate::doc::decode_text;
+use crate::form_write::parse_da;
 use crate::matrix::{self as mx, M};
 use crate::Pdf;
 use lopdf::{Dictionary, Object, ObjectId};
@@ -76,6 +77,8 @@ pub struct Field {
     pub required: bool,
     /// The description the file gives for the field (`/TU`), if any.
     pub tooltip: Option<String>,
+    /// The text size the field asks for (`/DA`), in points; 0 means fit to the field.
+    pub text_size: f32,
     /// Where the field is drawn and clicked. Widgets that aren't on any page are left out.
     pub widgets: Vec<Widget>,
 }
@@ -360,6 +363,7 @@ impl Pdf {
             read_only: ff & READ_ONLY != 0,
             required: ff & REQUIRED != 0,
             tooltip: d.get(b"TU").ok().and_then(|o| self.text_value(o)),
+            text_size: inh.da.as_deref().map_or(0.0, |da| parse_da(da).1),
             widgets: ws,
         })
     }

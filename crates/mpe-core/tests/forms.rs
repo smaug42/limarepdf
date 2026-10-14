@@ -84,6 +84,7 @@ fn reads_every_kind_of_field() {
     }));
     let address = p.doc.add_object(dictionary! {
         "T" => text("address"), "FT" => "Tx", "Kids" => vec![street.into(), city.into()],
+        "DA" => text("/Helv 9 Tf 0 g"),
     });
 
     // A checkbox, ticked.
@@ -166,6 +167,8 @@ fn reads_every_kind_of_field() {
     // 300 x 200 page: y is measured down from the top.
     assert_eq!(f.widgets[0].page, 0);
     assert_eq!(f.widgets[0].bbox, [10.0, 30.0, 110.0, 50.0]);
+    assert_eq!(f.text_size, 0.0, "no /DA: fit to the field");
+    assert_eq!(find(&fields, "address.city").text_size, 9.0, "inherited");
 
     assert_eq!(
         find(&fields, "address.street").value,
