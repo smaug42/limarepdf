@@ -82,6 +82,9 @@ pub(crate) struct TextData {
 pub(crate) struct Piece {
     pub chars: (usize, usize),
     pub corners: [(f32, f32); 4],
+    /// Where each character starts and ends along the box, as fractions of its length
+    /// from the start. Empty when not known; the characters are then spread evenly.
+    pub spans: Vec<(f32, f32)>,
 }
 
 #[derive(Clone, Debug)]
@@ -198,6 +201,10 @@ struct RunInfo {
     dir: (f32, f32),
     fill: Option<[f32; 3]>,
     corners: [(f32, f32); 4],
+    /// Each character's start and end in text space along the run, from 0 to the
+    /// advance; empty when the characters could not be matched to glyphs.
+    spans: Vec<(f32, f32)>,
+    adv: f32,
     ctm: M,
     visible: bool,
     tm_after: M,
@@ -337,45 +344,61 @@ impl Pdf {
                     let tfs = gs.size;
                     let th = gs.th;
                     let mut adv = 0.0f32;
-                    let mut bytes: Vec<u8> = Vec::new();
                     let mut text = String::new();
+                    // Each character's place along the run. A glyph that decodes to
+                    // several characters (a ligature) shares its width among them.
+                    let mut spans: Vec<(f32, f32)> = Vec::new();
+                    let mut spans_ok = true;
                     for it in items {
                         match it {
-                            Object::String(s, _) => {
-                                match fc {
-                                    Some(f) => {
-                                        for (code, space) in f.codes(s) {
-                                            adv += (f.width(code) / 1000.0 * tfs
-                                                + gs.tc
-                                                + if space { gs.tw } else { 0.0 })
-                                                * th;
+                            Object::String(s, _) => match fc {
+                                Some(f) => {
+                                    let decoded = f.decode(s);
+                                    let before = spans.len();
+                                    let step = if f.type0 { 2 } else { 1 };
+                                    for (k, (code, space)) in f.codes(s).into_iter().enumerate() {
+                                        let glyph = f.width(code) / 1000.0 * tfs * th;
+                                        let one = &s[k * step..(k * step + step).min(s.len())];
+                                        let chars = f.decode(one).chars().count();
+                                        let part = glyph / chars.max(1) as f32;
+                                        for j in 0..chars {
+                                            let a = adv + part * j as f32;
+                                            spans.push((a, a + part));
                                         }
-                                        text.push_str(&f.decode(s));
+                                        adv +=
+                                            glyph + (gs.tc + if space { gs.tw } else { 0.0 }) * th;
                                     }
-                                    None => {
-                                        for &b in s {
-                                            adv += (0.5 * tfs
-                                                + gs.tc
-                                                + if b == 32 { gs.tw } else { 0.0 })
-                                                * th;
-                                        }
-                                        text.extend(s.iter().map(|&b| b as char));
+                                    if spans.len() - before != decoded.chars().count() {
+                                        spans_ok = false;
                                     }
+                                    text.push_str(&decoded);
                                 }
-                                bytes.extend_from_slice(s);
-                            }
+                                None => {
+                                    for &b in s.iter() {
+                                        let glyph = 0.5 * tfs * th;
+                                        spans.push((adv, adv + glyph));
+                                        adv += glyph
+                                            + (gs.tc + if b == 32 { gs.tw } else { 0.0 }) * th;
+                                    }
+                                    text.extend(s.iter().map(|&b| b as char));
+                                }
+                            },
                             o => {
                                 if let Some(x) = n(o) {
+                                    let from = adv;
                                     adv -= x / 1000.0 * tfs * th;
                                     // A big negative kern is a visual gap (a space between words).
                                     if x < -200.0 && !text.ends_with(' ') && !text.is_empty() {
                                         text.push(' ');
+                                        spans.push((from, adv));
                                     }
                                 }
                             }
                         }
                     }
-                    let _ = bytes;
+                    if !spans_ok {
+                        spans.clear();
+                    }
                     tm = mul(mx::translate(adv, 0.0), tm);
                     let trm = mul(mul(start_tm, gs.ctm), mx::ID);
                     let lin = (trm[0].hypot(trm[1])).max(1e-6);
@@ -415,6 +438,8 @@ impl Pdf {
                         dir,
                         fill: gs.fill,
                         corners,
+                        spans,
+                        adv,
                         ctm: gs.ctm,
                         visible: gs.tr != 3 && gs.tr != 7,
                         tm_after: tm,
@@ -736,7 +761,8 @@ pub fn words_text(words: &[PageWord]) -> String {
 }
 
 /// User-space boxes covering characters `a..b` of a line, one per piece they touch.
-/// Within a piece, positions are interpolated by character index.
+/// Within a piece, characters are placed by their glyph widths, or spread evenly when
+/// those are not known.
 fn span_boxes(pieces: &[Piece], a: usize, b: usize) -> Vec<[f32; 4]> {
     let lerp =
         |p: (f32, f32), q: (f32, f32), f: f32| (p.0 + (q.0 - p.0) * f, p.1 + (q.1 - p.1) * f);
@@ -747,8 +773,12 @@ fn span_boxes(pieces: &[Piece], a: usize, b: usize) -> Vec<[f32; 4]> {
         if lo >= hi {
             continue;
         }
-        let n = (e - s) as f32;
-        let (f0, f1) = ((lo - s) as f32 / n, (hi - s) as f32 / n);
+        let (f0, f1) = if p.spans.len() == e - s {
+            (p.spans[lo - s].0, p.spans[hi - 1 - s].1)
+        } else {
+            let n = (e - s) as f32;
+            ((lo - s) as f32 / n, (hi - s) as f32 / n)
+        };
         let c = p.corners;
         let pts = [
             lerp(c[0], c[1], f0),
@@ -783,9 +813,18 @@ fn group_runs(runs: Vec<RunInfo>, out: &mut Vec<Obj>) {
             .map(|r| {
                 let n = r.text.chars().count();
                 at += n;
+                let spans = if r.spans.len() == n && r.adv.abs() > 1e-6 {
+                    r.spans
+                        .iter()
+                        .map(|&(a, b)| (a / r.adv, b / r.adv))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 Piece {
                     chars: (at - n, at),
                     corners: r.corners,
+                    spans,
                 }
             })
             .collect();
@@ -838,6 +877,13 @@ fn group_runs(runs: Vec<RunInfo>, out: &mut Vec<Obj>) {
             let along = dx * p.dir.0 + dy * p.dir.1;
             if along > 0.18 * p.size && !p.text.ends_with(' ') && !r.text.starts_with(' ') {
                 p.text.push(' ');
+                // The space covers the gap, measured in the run's own units.
+                let c = p.corners;
+                let len = (c[1].0 - c[0].0).hypot(c[1].1 - c[0].1);
+                if !p.spans.is_empty() && len > 1e-6 {
+                    let gap = along * p.adv / len;
+                    p.spans.push((p.adv, p.adv + gap));
+                }
             }
         }
         cur.push(r);

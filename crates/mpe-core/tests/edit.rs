@@ -12,8 +12,13 @@ fn make(content: &str) -> Pdf {
 }
 
 fn set_content(p: &mut Pdf, content: &str) {
+    set_content_in(p, "Helvetica", content);
+}
+
+/// Set the page content, with `/F1` a standard font (no widths in the file).
+fn set_content_in(p: &mut Pdf, base: &str, content: &str) {
     let page = p.page_ids()[0];
-    let font = p.doc.add_object(dictionary! { "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica", "Encoding" => "WinAnsiEncoding" });
+    let font = p.doc.add_object(dictionary! { "Type" => "Font", "Subtype" => "Type1", "BaseFont" => base, "Encoding" => "WinAnsiEncoding" });
     let s = p
         .doc
         .add_object(Stream::new(Dictionary::new(), content.as_bytes().to_vec()));
@@ -60,17 +65,60 @@ fn finds_text_boxes_in_visible_text() {
     let p = make(BASE);
     assert!(p.page_objects(0).unwrap().iter().all(|o| !o.hidden));
     // "Hello" at x = 60, baseline 150 on a 200 pt page (50 from the top), 24 pt
-    // Helvetica, about 55 pt wide. "ell" is characters 1..4 of 5, placed by character
-    // position: about 71..104.
+    // Helvetica, about 55 pt wide. "ell" follows the H (722 per 1000) and is
+    // 556 + 222 + 222 wide: 77.33..101.33.
     let b = p.find_text_boxes(0, "ELL").unwrap();
     assert_eq!(b.len(), 1, "{b:?}");
     let b = b[0];
-    assert!(b[0] > 68.0 && b[0] < 74.0, "{b:?}");
-    assert!(b[2] > 100.0 && b[2] < 107.0, "{b:?}");
+    assert!((b[0] - 77.33).abs() < 0.5, "{b:?}");
+    assert!((b[2] - 101.33).abs() < 0.5, "{b:?}");
     assert!(b[1] > 28.0 && b[1] < 34.0, "{b:?}");
     assert!(b[3] > 52.0 && b[3] < 58.0, "{b:?}");
     assert_eq!(p.find_text_boxes(0, "l").unwrap().len(), 2);
     assert!(p.find_text_boxes(0, "   ").unwrap().is_empty());
+}
+
+#[test]
+fn match_boxes_follow_glyph_widths() {
+    // Helvetica widths: i 222, space 278, W 944 (per 1000). At 20 pt from x = 10,
+    // "WWWWW" starts after ten narrow i's and a space, at 10 + 2498 * 0.02 = 59.96,
+    // and is 5 * 944 * 0.02 = 94.4 wide. Placed by character count it would start
+    // near 109.
+    let p = make("BT /F1 20 Tf 10 150 Td (iiiiiiiiii WWWWW) Tj ET");
+    let b = p.find_text_boxes(0, "wwwww").unwrap();
+    assert_eq!(b.len(), 1, "{b:?}");
+    assert!((b[0][0] - 59.96).abs() < 0.5, "{b:?}");
+    assert!((b[0][2] - 154.36).abs() < 0.5, "{b:?}");
+
+    // Kerning and spacing inside a TJ array move the characters after them, and a
+    // wide gap that stands for a space is a character too.
+    let p = make("BT /F1 20 Tf 2 Tc 10 150 Td [(ii) -1000 (WW) -300 (i)] TJ ET");
+    let w = p.page_words(0).unwrap();
+    let texts: Vec<&str> = w.iter().map(|w| w.text.as_str()).collect();
+    assert_eq!(texts, ["ii", "WW", "i"]);
+    // ii: 2 * (4.44 + 2) = 12.88, ending at 22.88 less the last Tc: 20.88.
+    assert!((w[0].bbox[2] - 20.88).abs() < 0.5, "{w:?}");
+    // The gap: 20 pt. WW from 10 + 12.88 + 20 = 42.88.
+    assert!((w[1].bbox[0] - 42.88).abs() < 0.5, "{w:?}");
+
+    // A line drawn in two pieces with a gap between them: the space MPE adds for the
+    // gap must not throw off the first piece. "iii" follows WWW (3 * 18.88) and is
+    // 3 * 4.44 wide.
+    let p = make("BT /F1 20 Tf 10 150 Td (WWWiii) Tj 80 0 Td (x) Tj ET");
+    assert_eq!(p.page_words(0).unwrap().len(), 2);
+    let b = p.find_text_boxes(0, "iii").unwrap();
+    assert!((b[0][0] - 66.64).abs() < 0.5, "{b:?}");
+    assert!((b[0][2] - 79.96).abs() < 0.5, "{b:?}");
+
+    // Times without widths in the file: Adobe's widths, i 278, space 250, W 944, so
+    // "WWW" starts at 10 + 1640 * 0.02 = 42.8 and is 56.64 wide.
+    let mut p = Pdf::new();
+    p.insert_blank(0, W as f32, H as f32).unwrap();
+    let content = "BT /F1 20 Tf 10 150 Td (iiiii WWW) Tj ET";
+    set_content_in(&mut p, "Times-Roman", content);
+    let b = p.find_text_boxes(0, "www").unwrap();
+    assert!((b[0][0] - 42.8).abs() < 0.5, "{b:?}");
+    assert!((b[0][2] - 99.44).abs() < 0.5, "{b:?}");
 }
 
 #[test]
@@ -458,7 +506,7 @@ fn bad_input_is_an_error_not_a_panic() {
 
 fn inline_pdf() -> Vec<u8> {
     let mut content = b"q 100 0 0 100 50 50 cm\nBI /W 4 /H 4 /BPC 8 /CS /RGB ID ".to_vec();
-    content.extend(std::iter::repeat([255u8, 0, 0]).take(16).flatten());
+    content.extend(std::iter::repeat_n([255u8, 0, 0], 16).flatten());
     content.extend(b"\nEI Q\nBT /F1 12 Tf 50 200 Td (after inline) Tj ET\n");
     let mut objs: Vec<Vec<u8>> = vec![
         b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),

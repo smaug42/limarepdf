@@ -16,15 +16,33 @@ Each document gets a tab. The tab shows its name, with `*` while it has unsaved 
 
 ## The window
 
-- **Top bar:** the menu (☰), Open, Save, Undo and Redo, the tools, zoom, search, and an Export menu (export pages as
-  images, export text, print). On narrow windows the search field and the tools fold into single buttons.
+- **Top bar:** the menu (☰), Open, Save, Undo and Redo, the tools, zoom, search, Print, an Export menu (pages as
+  images, text), and the theme. On narrow windows the search field and the tools fold into single buttons.
 - **Left:** page thumbnails, or search results.
-- **Middle:** the pages, scrolling continuously.
+- **Middle:** the pages, scrolling continuously. By default they fit the width between the side panels, and keep
+  fitting as you resize the window or open and close the panels. Zooming in or out, actual size, Ctrl+scroll or a
+  pinch turns fitting off, and your zoom then stays as it is; the Fit width button (highlighted while fitting is on)
+  or Ctrl+0 turns it back on.
 - **Right:** the inspector, which shows options for what is selected. On windows narrower than about 960 pixels it
   collapses to a thin rail; click the rail to slide it out. ☰ > View > Inspector shows or hides it.
 
 Ctrl+K opens the command palette, which lists every command. Type to filter, use Up and Down to choose, and press
 Enter to run.
+
+## Notices about the document
+
+When a document opens, notices above the pages point out things worth knowing, each with a button where there is
+something to do and × to dismiss it. At most two show at a time.
+
+| Notice | Button |
+| --- | --- |
+| The document was password-protected: saving removes the protection unless you set it again | Password security |
+| Its pages are scans without text, so they cannot be searched or copied (checked on the first 20 pages) | Recognise text |
+| It has form fields, which MPE cannot fill in yet | |
+| It is large (more than 500 pages or 100 MB) | |
+
+The first two go away by themselves once dealt with: after password security is applied, or after text has been
+recognised.
 
 ## Selecting and the inspector
 
@@ -32,11 +50,15 @@ What you select decides what the inspector, the right-click menu and the floatin
 
 | Selected | Inspector |
 | --- | --- |
-| Nothing | The document: properties, password security, watermark, headers/footers/Bates, OCR, optimise scanned pages, export pages as images, split into files, and buttons for export text, print and append PDFs |
-| Pages (click thumbnails; Shift for a range, Ctrl for one more) | Rotate, delete, extract to a new tab, insert images or a blank page after them, and the watermark, headers/footers, OCR and optimise tools with the pages filled in |
+| Nothing | The document: properties, password security, crop, watermark, headers/footers/Bates, OCR, optimise scanned pages, export pages as images, split into files, and buttons for export text, print and append PDFs |
+| Pages (click thumbnails; Shift for a range, Ctrl for one more) | Rotate, delete, extract to a new tab, insert images or a blank page after them, and the crop, watermark, headers/footers, OCR and optimise tools with the pages filled in |
 | An object, words, or a tool that adds content | That object's or tool's options |
 
 Menu commands for document and page settings open the matching section of the inspector.
+
+Crop trims margins from each side of the page as it is shown, measured from the full page; the fields start with
+the first page's current crop. Remove crop shows the whole page again. Cropping hides content but does not delete
+it.
 
 Right-click a page, an object, selected words or a thumbnail for a short menu of what applies there. Right-clicking
 selects what is under the pointer first. A selected object or run of words also gets a small floating toolbar with
@@ -89,7 +111,7 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Ctrl+F | Search |
 | Ctrl+K | Command palette |
 | Ctrl+= , Ctrl+- | Zoom in, zoom out |
-| Ctrl+0, Ctrl+1 | Fit width, actual size |
+| Ctrl+0, Ctrl+1 | Fit width on or off, actual size |
 | Ctrl+scroll, pinch | Zoom |
 | PageUp, PageDown, Home, End | Previous, next, first, last page |
 | Delete, Backspace | Delete the selected object or pages |
@@ -99,5 +121,7 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 
 ## Look and feel
 
-The app follows the system's light or dark theme; ☰ > View > Theme overrides it. It uses the Inter font and Phosphor
-icons.
+The app follows the system's light or dark theme. The theme button at the right end of the top bar (a half circle,
+sun or moon, for the current choice) chooses System, Light or Dark; so does ☰ > View > Theme. The choice is
+remembered between runs, in `settings.txt` in the same folder as the recent-files list. The app uses the Inter font
+and Phosphor icons.

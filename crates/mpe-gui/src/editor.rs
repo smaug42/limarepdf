@@ -171,13 +171,13 @@ fn resize(orig: [f32; 4], h: usize, dx: f32, dy: f32, keep_aspect: bool) -> [f32
     if matches!(h, 0 | 6 | 7) {
         b[0] += dx;
     }
-    if matches!(h, 2 | 3 | 4) {
+    if matches!(h, 2..=4) {
         b[2] += dx;
     }
-    if matches!(h, 0 | 1 | 2) {
+    if matches!(h, 0..=2) {
         b[1] += dy;
     }
-    if matches!(h, 4 | 5 | 6) {
+    if matches!(h, 4..=6) {
         b[3] += dy;
     }
     if keep_aspect && matches!(h, 0 | 2 | 4 | 6) {
@@ -941,8 +941,6 @@ impl Editor {
     /// The right-hand inspector: tool options, new-text entry and properties of the selected object.
     pub fn inspector(&mut self, ui: &mut egui::Ui) {
         self.sync_insp();
-        ui.heading("Edit");
-        ui.separator();
         let page_err = self.sel().and_then(|s| self.unavailable.get(&s.0)).cloned();
         if let Some(e) = page_err {
             ui.colored_label(

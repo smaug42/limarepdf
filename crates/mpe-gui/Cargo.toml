@@ -15,3 +15,7 @@ eframe.workspace = true
 rayon.workspace = true
 rfd.workspace = true
 egui-phosphor.workspace = true
+
+[dev-dependencies]
+# Tests build documents with form fields; already used by mpe-core.
+lopdf.workspace = true

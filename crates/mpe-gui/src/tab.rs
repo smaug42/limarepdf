@@ -1,15 +1,19 @@
 use crate::actions::{self, Act, Ctx};
+use crate::banners::{self, Banner};
 use crate::editor::{Action, Editor, Tool};
-use crate::inspector::Forms;
+use crate::inspector::{Forms, Sec};
 use crate::selection::Selection;
 use crate::theme;
 use crate::worker::{Key, Worker};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptions, Vec2};
+use egui_phosphor::regular as icon;
 use mpe_core::{Encryption, Pdf, SearchHit};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
 const GAP: f32 = 16.0;
+/// Room left beside a fitted page, beyond the gaps, so it never meets the scroll bar.
+const FIT_MARGIN: f32 = 12.0;
 const THUMB_W: f32 = 120.0;
 const MAX_UNDO: usize = 20;
 /// egui points at zoom 1.0 per PDF point (96 dpi logical).
@@ -19,6 +23,13 @@ const BASE: f32 = 96.0 / 72.0;
 pub enum Side {
     Pages,
     Search,
+}
+
+/// One undo or redo step: the state to go back to.
+struct Step {
+    /// The document's bytes; `None` when only the password settings changed.
+    pdf: Option<Vec<u8>>,
+    encryption: Option<Encryption>,
 }
 
 pub struct Tab {
@@ -36,11 +47,17 @@ pub struct Tab {
     thumbs: HashMap<usize, TextureHandle>,
     pending: HashSet<Key>,
     pub zoom: f32,
+    /// The zoom follows the width of the view (on until the user zooms).
+    pub fit: bool,
+    /// The place at the top of the view: page, and points down it.
+    view: (usize, f32),
+    /// After a zoom change: the place to put back at the top of the view.
+    rezoom: Option<(usize, f32)>,
     pub current: usize,
     anchor: usize,
     goto: Option<usize>,
-    undo: Vec<Vec<u8>>,
-    redo: Vec<Vec<u8>>,
+    undo: Vec<Step>,
+    redo: Vec<Step>,
     pub side: Side,
     pub query: String,
     pub hits: Vec<SearchHit>,
@@ -61,6 +78,8 @@ pub struct Tab {
     pub notice: Option<String>,
     /// A thumbnail drag in progress: the thumbnail it started on.
     thumb_drag: Option<usize>,
+    /// Notices about the document shown above the pages, most important first.
+    pub banners: Vec<Banner>,
 }
 
 impl Tab {
@@ -70,9 +89,12 @@ impl Tab {
         mut pdf: Pdf,
         path: Option<PathBuf>,
     ) -> Result<Self, String> {
+        let size = path.as_ref().and_then(|p| std::fs::metadata(p).ok());
+        let banners = banners::detect(&pdf, size.map(|m| m.len()));
         let bytes = pdf.render_snapshot().map_err(|e| e.to_string())?;
         let sizes = sizes_of(&pdf);
         Ok(Self {
+            banners,
             id,
             pdf,
             path,
@@ -85,6 +107,9 @@ impl Tab {
             thumbs: HashMap::new(),
             pending: HashSet::new(),
             zoom: 1.0,
+            fit: true,
+            view: (0, 0.0),
+            rezoom: None,
             current: 0,
             anchor: 0,
             goto: None,
@@ -192,12 +217,7 @@ impl Tab {
             self.error = Some(format!("{e:#}"));
             return false;
         }
-        self.undo.push(before);
-        if self.undo.len() > MAX_UNDO {
-            self.undo.remove(0);
-        }
-        self.redo.clear();
-        self.dirty = true;
+        self.push_undo(Some(before));
         self.revision += 1;
         match soft {
             Some(pages) => self.soft_refresh(ctx, pages),
@@ -305,28 +325,59 @@ impl Tab {
         }
     }
 
+    /// Record the state before a change: the document's bytes (`None` if it did not
+    /// change) and the current password settings.
+    fn push_undo(&mut self, pdf: Option<Vec<u8>>) {
+        let encryption = self.encryption.clone();
+        self.undo.push(Step { pdf, encryption });
+        if self.undo.len() > MAX_UNDO {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+        self.dirty = true;
+    }
+
+    /// Change the password settings, with undo. They take effect when the document is
+    /// saved.
+    pub fn set_encryption(&mut self, encryption: Option<Encryption>) {
+        self.push_undo(None);
+        self.encryption = encryption;
+    }
+
     pub fn undo(&mut self, ctx: &egui::Context) {
-        if let (Some(prev), Ok(cur)) = (self.undo.pop(), self.pdf.snapshot()) {
-            if let Ok(p) = Pdf::from_bytes(&prev, None) {
-                self.pdf = p;
-                self.redo.push(cur);
-                self.dirty = true;
-                self.revision += 1;
-                self.refresh(ctx);
+        if let Some(step) = self.undo.pop() {
+            if let Some(back) = self.restore(ctx, step) {
+                self.redo.push(back);
             }
         }
     }
 
     pub fn redo(&mut self, ctx: &egui::Context) {
-        if let (Some(next), Ok(cur)) = (self.redo.pop(), self.pdf.snapshot()) {
-            if let Ok(p) = Pdf::from_bytes(&next, None) {
-                self.pdf = p;
-                self.undo.push(cur);
-                self.dirty = true;
-                self.revision += 1;
-                self.refresh(ctx);
+        if let Some(step) = self.redo.pop() {
+            if let Some(back) = self.restore(ctx, step) {
+                self.undo.push(back);
             }
         }
+    }
+
+    /// Go back to a step's state. Returns the step that reverses it.
+    fn restore(&mut self, ctx: &egui::Context, step: Step) -> Option<Step> {
+        let pdf = match step.pdf {
+            Some(bytes) => {
+                let cur = self.pdf.snapshot().ok()?;
+                self.pdf = Pdf::from_bytes(&bytes, None).ok()?;
+                Some(cur)
+            }
+            None => None,
+        };
+        let encryption = std::mem::replace(&mut self.encryption, step.encryption);
+        self.forms.sec = Sec::of(self.encryption.as_ref());
+        self.dirty = true;
+        if pdf.is_some() {
+            self.revision += 1;
+            self.refresh(ctx);
+        }
+        Some(Step { pdf, encryption })
     }
 
     /// Re-render from the current document state.
@@ -422,16 +473,20 @@ impl Tab {
         }
     }
 
-    /// Change zoom and keep the current page at the top of the view.
+    /// Zoom chosen by the user: turns fitting to the width off.
     pub fn set_zoom(&mut self, z: f32) {
-        self.zoom = z.clamp(0.1, 8.0);
-        self.goto = Some(self.current);
+        self.fit = false;
+        self.zoom_to(z);
     }
 
-    pub fn fit_width(&mut self, avail: f32) {
-        if let Some(&(w, _)) = self.sizes.get(self.current) {
-            self.set_zoom((avail - 40.0) / (w * BASE));
+    /// Change the zoom, keeping the same place in the document at the top of the view.
+    fn zoom_to(&mut self, z: f32) {
+        let z = z.clamp(0.1, 8.0);
+        if (z - self.zoom).abs() < 1e-4 {
+            return;
         }
+        self.zoom = z;
+        self.rezoom = Some(self.view);
     }
 
     /// The command state for this tab's part: document, undo, selection and tool.
@@ -447,6 +502,7 @@ impl Tab {
         };
         c.pages = self.ed.selection.pages().is_some();
         c.tool = Some(self.ed.tool);
+        c.fit = self.fit;
         c.hidden_text = self.ed.show_hidden;
     }
 
@@ -513,15 +569,63 @@ impl Tab {
             });
     }
 
+    /// Up to two banners above the pages: icon, text, the banner's button if it has one,
+    /// and a close button. A button's command is queued in `requested`.
+    fn banners_ui(&mut self, ui: &mut egui::Ui) {
+        let mut close = None;
+        let fill = ui.visuals().selection.bg_fill;
+        for (i, b) in self.banners.iter().take(2).enumerate() {
+            let top = if i == 0 { 12 } else { 6 };
+            egui::Frame::new()
+                .fill(fill)
+                .corner_radius(theme::RADIUS)
+                .inner_margin(egui::Margin::symmetric(12, 6))
+                .outer_margin(egui::Margin {
+                    left: 16,
+                    right: 16,
+                    top,
+                    bottom: 0,
+                })
+                .show(ui, |ui| {
+                    let text = |ui: &mut egui::Ui| {
+                        ui.label(theme::icon(b.icon()).size(16.0));
+                        ui.add(egui::Label::new(&b.text).wrap());
+                    };
+                    let buttons = |ui: &mut egui::Ui| {
+                        let x = egui::Button::new(theme::icon(icon::X)).frame_when_inactive(false);
+                        if ui.add(x).on_hover_text("Dismiss").clicked() {
+                            close = Some(i);
+                        }
+                        if let Some((label, act)) = b.action() {
+                            if ui.button(label).clicked() {
+                                self.requested.push(act);
+                            }
+                        }
+                    };
+                    egui::Sides::new().shrink_left().show(ui, text, buttons);
+                });
+        }
+        if let Some(i) = close {
+            self.banners.remove(i);
+        }
+    }
+
     pub fn show_pages(&mut self, ui: &mut egui::Ui, base: &Ctx) {
         let ctx = ui.ctx().clone();
         self.collect(&ctx);
         let ppp = ctx.pixels_per_point();
         let dark = ui.visuals().dark_mode;
 
+        self.banners_ui(ui);
         let zd = ui.input(|i| i.zoom_delta());
         if zd != 1.0 {
             self.set_zoom(self.zoom * zd);
+        }
+        // Fitting: the widest page fills the width between the side panels, whatever the
+        // window size or which panels are open.
+        if self.fit {
+            let z = fit_zoom(&self.sizes, ui.available_width());
+            self.zoom_to(z);
         }
 
         let page_w: Vec<f32> = self.sizes.iter().map(|s| s.0 * BASE * self.zoom).collect();
@@ -540,6 +644,7 @@ impl Tab {
         let mut area = egui::ScrollArea::both()
             .id_salt(("pages", self.id))
             .auto_shrink([false, false]);
+        let rezoom = self.rezoom.take();
         if let Some(p) = self.goto.take() {
             // Within the page, keep a little context above the target.
             let within = self
@@ -547,6 +652,10 @@ impl Tab {
                 .take()
                 .map_or(0.0, |y| (y * BASE * self.zoom - 80.0).max(0.0));
             let top = tops.get(p).copied().unwrap_or(0.0) - GAP + within;
+            area = area.vertical_scroll_offset(top.max(0.0));
+        } else if let Some((p, y)) = rezoom {
+            // After a zoom change, put the same place back at the top of the view.
+            let top = tops.get(p).copied().unwrap_or(0.0) + y * BASE * self.zoom;
             area = area.vertical_scroll_offset(top.max(0.0));
         }
         let current = self.current_match();
@@ -617,7 +726,13 @@ impl Tab {
                 .saturating_sub(1)
                 .min(tops.len().saturating_sub(1));
         });
-        let _ = out;
+        // Remember the place at the top of the view (page, and points down it), so a zoom
+        // change can keep it there.
+        let top = out.state.offset.y;
+        let p = tops.partition_point(|&t| t <= top).saturating_sub(1);
+        if let Some(&t) = tops.get(p) {
+            self.view = (p, (top - t) / (BASE * self.zoom));
+        }
         self.apply_actions(&ctx);
         if self.goto.is_none() {
             self.current = probe;
@@ -805,6 +920,15 @@ impl Tab {
     }
 }
 
+/// The zoom at which the widest of the pages (`sizes`, in points) fits in `room` screen
+/// points beside the gaps, in whole percent so resizing the window does not re-render
+/// the pages at every step.
+fn fit_zoom(sizes: &[(f32, f32)], room: f32) -> f32 {
+    let widest = sizes.iter().map(|s| s.0).fold(1.0, f32::max);
+    let room = room - 2.0 * GAP - FIT_MARGIN;
+    ((room / (widest * BASE)) * 100.0).floor() / 100.0
+}
+
 fn sizes_of(pdf: &Pdf) -> Vec<(f32, f32)> {
     (0..pdf.page_count())
         .map(|i| pdf.page_size(i).unwrap_or((612.0, 792.0)))
@@ -884,6 +1008,19 @@ mod tests {
         // Dropped onto itself: no change.
         assert_eq!(moved_order(3, &set(&[1]), 1), [0, 1, 2]);
         assert_eq!(moved_order(3, &set(&[1]), 2), [0, 1, 2]);
+    }
+
+    #[test]
+    fn fitting_uses_the_widest_page_and_whole_percent() {
+        let pages = [(612.0, 792.0), (792.0, 612.0), (300.0, 300.0)];
+        let room = 900.0;
+        let z = fit_zoom(&pages, room);
+        // The landscape page decides, and it fits beside the gaps and margin.
+        let (width, space) = (792.0 * BASE * z, room - 2.0 * GAP - FIT_MARGIN);
+        assert!(width <= space, "{z}");
+        // Within one percent step of filling it.
+        assert!(width > space - 792.0 * BASE * 0.01, "{z}");
+        assert_eq!((z * 100.0).round() / 100.0, z);
     }
 
     #[test]

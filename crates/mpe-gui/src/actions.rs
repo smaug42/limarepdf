@@ -58,6 +58,7 @@ pub enum Act {
     Tool(Tool),
     RotR,
     RotL,
+    Crop,
     Delete,
     Extract,
     Blank,
@@ -125,6 +126,8 @@ pub struct Ctx {
     pub tool: Option<Tool>,
     pub side: bool,
     pub inspector: bool,
+    /// The active tab's zoom follows the width of the view.
+    pub fit: bool,
     pub hidden_text: bool,
     pub theme: ThemePreference,
 }
@@ -459,6 +462,9 @@ pub static ACTIONS: &[Action] = &[
         label: "Fit width",
         icon: icon::ARROWS_OUT,
         keys: &[k(C, Key::Num0)],
+        checked: Some(|c| c.fit),
+        hint: "Keep the pages as wide as the space between the side panels, as the window or \
+               panels change. Zooming turns it off; this turns it back on.",
         ..BASE
     },
     Action {
@@ -649,6 +655,14 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::Crop,
+        group: Group::Document,
+        label: "Crop pages…",
+        icon: icon::CROP,
+        hint: "Trim the margins of the selected pages, or all pages.",
+        ..BASE
+    },
+    Action {
         act: Act::Delete,
         group: Group::Document,
         label: "Delete pages",
@@ -781,7 +795,7 @@ pub fn context_items(sel: &Selection) -> &'static [&'static [Act]] {
             &[Act::DeleteObject],
         ],
         Selection::None | Selection::Pages(_) => &[
-            &[Act::RotR, Act::RotL],
+            &[Act::RotR, Act::RotL, Act::Crop],
             &[Act::Blank, Act::InsertImages, Act::Extract, Act::Delete],
         ],
     }

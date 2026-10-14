@@ -1,34 +1,15 @@
 //! Page overlays: watermarks, headers/footers, page numbers and Bates numbering.
 //! All text uses the PDF standard Helvetica font (WinAnsi, Latin-1 range).
 
-use crate::{Pdf, Result};
+use crate::{std14, Pdf, Result};
 use anyhow::bail;
 use lopdf::dictionary;
 use lopdf::{Dictionary, Object, ObjectId, Stream};
 
-/// Helvetica advance widths (1/1000 em) for ASCII 32..=126.
-pub(crate) const HELV: [u16; 95] = [
-    278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278, // 32-47
-    556, 556, 556, 556, 556, 556, 556, 556, 556, 556, // 0-9
-    278, 278, 584, 584, 584, 556, 1015, // : ; < = > ? @
-    667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833, 722, 778, 667, 778, 722, 667,
-    611, 722, 667, 944, 667, 667, 611, // A-Z
-    278, 278, 278, 469, 556, 333, // [ \ ] ^ _ `
-    556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500, 222, 833, 556, 556, 556, 556, 333, 500,
-    278, 556, 500, 722, 500, 500, 500, // a-z
-    334, 260, 334, 584, // { | } ~
-];
-
+/// Width in points of `s` in Helvetica at `size`.
 pub fn text_width(s: &str, size: f32) -> f32 {
     s.chars()
-        .map(|c| {
-            let u = c as u32;
-            if (32..=126).contains(&u) {
-                HELV[(u - 32) as usize] as f32
-            } else {
-                556.0
-            }
-        })
+        .map(|c| std14::width("Helvetica", c).unwrap_or(556.0))
         .sum::<f32>()
         * size
         / 1000.0

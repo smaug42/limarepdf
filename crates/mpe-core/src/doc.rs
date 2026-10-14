@@ -224,7 +224,13 @@ impl Pdf {
     pub(crate) fn page_box(&self, id: ObjectId) -> [f32; 4] {
         self.inherited(id, b"CropBox")
             .and_then(|o| self.rect(&o))
-            .or_else(|| self.inherited(id, b"MediaBox").and_then(|o| self.rect(&o)))
+            .unwrap_or_else(|| self.media_box(id))
+    }
+
+    /// Full box (MediaBox, else Letter) of a page in user space.
+    fn media_box(&self, id: ObjectId) -> [f32; 4] {
+        self.inherited(id, b"MediaBox")
+            .and_then(|o| self.rect(&o))
             .unwrap_or([0.0, 0.0, 612.0, 792.0])
     }
 
@@ -386,6 +392,35 @@ impl Pdf {
         Ok(())
     }
 
+    /// How far a page is cropped in from its full (media) box, in points:
+    /// `[top, right, bottom, left]` as the page is displayed, rotation applied.
+    pub fn crop_margins(&self, index: usize) -> Result<[f32; 4]> {
+        self.check_indices(&[index])?;
+        let id = self.page_ids()[index];
+        let m = self.media_box(id);
+        let [x0, y0, x1, y1] = self.page_box(id);
+        let unrotated = [m[3] - y1, m[2] - x1, y0 - m[1], x0 - m[0]];
+        Ok(rotate_sides(unrotated, self.page_rotation(id)).map(|v| v.max(0.0)))
+    }
+
+    /// Crop a page by margins in points from its full (media) box:
+    /// `[top, right, bottom, left]` as the page is displayed, rotation applied. All
+    /// zero shows the whole page again.
+    pub fn set_crop_margins(&mut self, index: usize, margins: [f32; 4]) -> Result<()> {
+        self.check_indices(&[index])?;
+        if margins.iter().any(|&v| v < 0.0) {
+            bail!("crop margins cannot be negative");
+        }
+        let id = self.page_ids()[index];
+        let back = 360 - self.page_rotation(id);
+        let [t, r, b, l] = rotate_sides(margins, back);
+        let m = self.media_box(id);
+        if m[0] + l >= m[2] - r || m[1] + b >= m[3] - t {
+            bail!("the crop margins leave nothing of page {}", index + 1);
+        }
+        self.crop_page(index, [m[0] + l, m[1] + b, m[2] - r, m[3] - t])
+    }
+
     /// Reorder pages. `order` must be a permutation of `0..page_count`.
     pub fn reorder(&mut self, order: &[usize]) -> Result<()> {
         let n = self.page_count();
@@ -512,12 +547,21 @@ impl Default for Pdf {
     }
 }
 
+/// Sides `[top, right, bottom, left]` of an unrotated page, as they appear once the page
+/// is turned clockwise by `rotation` degrees (a multiple of 90).
+fn rotate_sides(sides: [f32; 4], rotation: i64) -> [f32; 4] {
+    let k = (rotation.rem_euclid(360) / 90) as usize;
+    std::array::from_fn(|i| sides[(i + 4 - k) % 4])
+}
+
 /// Decode a PDF text string (UTF-16BE with BOM, UTF-8 with BOM, or PDFDocEncoding ~ Latin-1).
 pub(crate) fn decode_text(b: &[u8]) -> String {
     if b.starts_with(&[0xFE, 0xFF]) {
         let u: Vec<u16> = b[2..]
-            .chunks_exact(2)
-            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_be_bytes(*c))
             .collect();
         String::from_utf16_lossy(&u)
     } else if b.starts_with(&[0xEF, 0xBB, 0xBF]) {

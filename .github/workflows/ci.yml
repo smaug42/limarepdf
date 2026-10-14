@@ -74,6 +74,9 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          # All tags, to find the previous release for the compare link.
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           path: assets
@@ -93,6 +96,12 @@ jobs:
           fi
           # Relative links do not work on the release page: point them at this tag.
           sed -i "s#](docs/#](https://github.com/$GITHUB_REPOSITORY/blob/$tag/docs/#g" notes.md
+          # Link every commit since the previous version tag, if there is one.
+          prev=$(git tag --list 'v*' --sort=-v:refname | awk -v t="$tag" 'f {print; exit} $0 == t {f = 1}')
+          if [ -n "$prev" ]; then
+            printf '\n**All changes:** https://github.com/%s/compare/%s...%s\n' \
+              "$GITHUB_REPOSITORY" "$prev" "$tag" >> notes.md
+          fi
           (cd assets && sha256sum * > SHA256SUMS)
           gh release create "$tag" --draft --verify-tag --title "MPE $version" \
             --notes-file notes.md assets/*

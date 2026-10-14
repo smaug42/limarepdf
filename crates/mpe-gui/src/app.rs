@@ -1,17 +1,19 @@
 use crate::actions::{self, menu_item, tooltip, Act, Action, Ctx, Group, ACTIONS};
+use crate::banners::Kind as BannerKind;
 use crate::dialogs::{self as dlg, Outcome};
 use crate::editor::{Action as EdAction, Tool};
 use crate::inspector::{self, Apply, Section};
 use crate::recent::Recent;
 use crate::selection::Selection;
+use crate::settings::Settings;
 use crate::tab::{Side, Tab};
 use crate::theme;
-use eframe::egui::{self, Key};
+use eframe::egui::{self, AtomExt as _, Key};
 use egui_phosphor::regular as icon;
 use mpe_core::render::{image_names, ImageFormat};
 use mpe_core::{
-    parse_page_range, print, Bates, Encryption, HeaderFooter, ImageImport, OcrResult, Pdf,
-    ScanResult, Watermark,
+    parse_page_range, print, Bates, HeaderFooter, ImageImport, OcrResult, Pdf, ScanResult,
+    Watermark,
 };
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -144,6 +146,9 @@ enum Dialog {
     About,
 }
 
+/// Title of the OCR background job, also used to recognise its result.
+const OCR_JOB: &str = "Recognise text";
+
 /// Width of the inspector panel, and of its rail when collapsed.
 const INSPECTOR_WIDTH: f32 = 250.0;
 const RAIL_WIDTH: f32 = 36.0;
@@ -193,11 +198,15 @@ pub struct App {
     toast: Option<Toast>,
     /// Recently opened files, kept between runs.
     recent: Recent,
+    /// Settings kept between runs (the theme).
+    settings: Settings,
 }
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, files: Vec<PathBuf>, page: Option<usize>) -> Self {
         theme::install(&cc.egui_ctx);
+        let settings = Settings::load();
+        cc.egui_ctx.set_theme(settings.theme);
         let (tx, rx) = channel();
         let mut app = Self {
             tabs: Vec::new(),
@@ -218,6 +227,7 @@ impl App {
             narrow: false,
             toast: None,
             recent: Recent::load(),
+            settings,
         };
         let (images, pdfs): (Vec<_>, Vec<_>) = files.into_iter().partition(|p| is_image(p));
         for f in pdfs {
@@ -327,6 +337,10 @@ impl App {
                             *p = pdf;
                             Ok(())
                         });
+                        // Text was recognised: the scan banner has done its job.
+                        if title == OCR_JOB {
+                            t.banners.retain(|b| b.kind != BannerKind::Scanned);
+                        }
                     }
                     self.dialog = Dialog::Message(title.into(), text);
                 }
@@ -532,7 +546,11 @@ impl App {
                 }
             }
             Act::About => self.dialog = Dialog::About,
-            Act::Theme(p) => ctx.set_theme(p),
+            Act::Theme(p) => {
+                ctx.set_theme(p);
+                self.settings.theme = p;
+                self.settings.save();
+            }
             Act::ToggleSide => self.show_side = !self.show_side,
             Act::ToggleInspector => {
                 self.show_inspector = !self.show_inspector;
@@ -607,17 +625,10 @@ impl App {
                 t.set_zoom(t.zoom / 1.2);
             }
             Act::Actual => self.tabs[self.active].set_zoom(1.0),
+            // On: the zoom follows the view's width (see Tab::show_pages); off: it stays.
             Act::FitWidth => {
-                let mut w = ctx.content_rect().width();
-                if self.show_side {
-                    w -= 190.0;
-                }
-                w -= if self.show_inspector {
-                    INSPECTOR_WIDTH
-                } else {
-                    RAIL_WIDTH
-                };
-                self.tabs[self.active].fit_width(w);
+                let t = &mut self.tabs[self.active];
+                t.fit = !t.fit;
             }
             Act::RotL | Act::RotR => {
                 let deg = if matches!(a, Act::RotR) { 90 } else { 270 };
@@ -693,6 +704,7 @@ impl App {
             Act::Ocr => self.reveal(Section::Ocr),
             Act::HeaderFooter => self.reveal(Section::HeaderFooter),
             Act::Watermark => self.reveal(Section::Watermark),
+            Act::Crop => self.reveal(Section::Crop),
             Act::Props => self.reveal(Section::Properties),
             Act::Security => self.reveal(Section::Security),
             Act::EditObjectText => {
@@ -812,19 +824,23 @@ impl App {
             }
             Apply::Security => {
                 let t = &mut self.tabs[active];
-                let s = &t.forms.sec;
-                t.encryption = s.enabled.then(|| Encryption {
-                    user_password: s.user.clone(),
-                    owner_password: if s.owner.is_empty() {
-                        s.user.clone()
-                    } else {
-                        s.owner.clone()
-                    },
-                    cipher: s.cipher,
-                    restrictions: s.r,
-                });
-                t.dirty = true;
+                t.banners.retain(|b| b.kind != BannerKind::Protected);
+                t.set_encryption(t.forms.sec.encryption());
                 self.status = "Security settings apply when you save.".into();
+                self.notify(ctx, "Changed password security".into());
+            }
+            Apply::Crop => {
+                let t = &mut self.tabs[active];
+                let s = &t.forms.crop;
+                match parse_page_range(&s.pages, n) {
+                    Ok(idx) => {
+                        let m = s.margins;
+                        t.edit(ctx, |p| {
+                            idx.iter().try_for_each(|&i| p.set_crop_margins(i, m))
+                        });
+                    }
+                    Err(e) => t.error = Some(e.to_string()),
+                }
             }
             Apply::Watermark => {
                 let t = &mut self.tabs[active];
@@ -868,7 +884,7 @@ impl App {
                 }
             }
             Apply::Ocr => match parse_page_range(&self.tabs[active].forms.ocr, n) {
-                Ok(idx) => self.spawn_job(ctx, "Recognise text", move |p| {
+                Ok(idx) => self.spawn_job(ctx, OCR_JOB, move |p| {
                     let ocr = mpe_core::Ocr::bundled()?;
                     Ok(ocr_summary(&p.ocr_pages(&idx, &ocr)?))
                 }),
@@ -1285,7 +1301,8 @@ fn recent_menu(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
         ui.menu_button("Open recent", |ui| {
             for (i, path) in recent.iter().enumerate() {
                 let tip = path.display().to_string();
-                if ui.button(file_name(path)).on_hover_text(tip).clicked() {
+                let row = egui::Button::new(file_name(path)).truncate();
+                if ui.add(row).on_hover_text(tip).clicked() {
                     acts.push(Act::OpenRecent(i));
                     ui.close();
                 }
@@ -1363,8 +1380,12 @@ fn empty_state(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
         ui.label(egui::RichText::new("Recent").family(theme::semibold()));
         ui.add_space(4.0);
         for (i, path) in recent.iter().take(shown).enumerate() {
-            let name = file_name(path);
-            let row = egui::Button::new((theme::icon(icon::FILE_PDF).size(14.0), name))
+            // The name, not the icon, is the part that shrinks: cut short with "…".
+            // The growing space after it keeps the rows left-aligned.
+            let name = file_name(path).atom_shrink(true);
+            let glyph = theme::icon(icon::FILE_PDF).size(14.0);
+            let row = egui::Button::new((glyph, name, egui::Atom::grow()))
+                .truncate()
                 .frame_when_inactive(false)
                 .min_size(egui::vec2(ui.available_width(), 26.0));
             let tip = path.display().to_string();
@@ -1467,9 +1488,10 @@ impl eframe::App for App {
                 let sep = 2.0 * sp.item_spacing.x;
                 // Search field with its icon, and the zoom percentage.
                 let (field, pct) = (180.0 + 18.0 + 2.0 * sp.item_spacing.x, 64.0);
+                // Theme, Export menu, Print, search, then fit, zoom in and zoom out.
                 let right = |with_field: bool| {
                     let search = if with_field { field } else { btn };
-                    btn + search + sep + 3.0 * btn + pct
+                    3.0 * btn + search + sep + 3.0 * btn + pct
                 };
                 // Menu, Open, Save, Undo, Redo and three separators, then the tools.
                 let left = |tools: f32| 5.0 * btn + 3.0 * sep + tools;
@@ -1505,17 +1527,32 @@ impl eframe::App for App {
                     }
                 };
                 let right_side = |ui: &mut egui::Ui| {
+                    let acts = &mut right_acts;
+                    // The theme, at the far right, with or without a document.
+                    let glyph = match c.theme {
+                        egui::ThemePreference::Light => icon::SUN,
+                        egui::ThemePreference::Dark => icon::MOON,
+                        egui::ThemePreference::System => icon::CIRCLE_HALF,
+                    };
+                    ui.menu_button(menu_icon(glyph), |ui| {
+                        let themes = ACTIONS.iter().filter(|a| matches!(a.act, Act::Theme(_)));
+                        for a in themes {
+                            menu_item(ui, a, &c, acts);
+                        }
+                    })
+                    .response
+                    .on_hover_text("Theme: follow the system, light or dark");
                     if !has {
                         return;
                     }
-                    let acts = &mut right_acts;
                     ui.menu_button(menu_icon(icon::EXPORT), |ui| {
-                        for act in [Act::ExportImages, Act::ExportText, Act::Print] {
+                        for act in [Act::ExportImages, Act::ExportText] {
                             menu_item(ui, actions::get(act), &c, acts);
                         }
                     })
                     .response
-                    .on_hover_text("Export and print");
+                    .on_hover_text("Export");
+                    bar(ui, Act::Print, false, acts);
                     let t = &mut self.tabs[self.active];
                     if search_field {
                         let r = ui.add(
@@ -1537,7 +1574,8 @@ impl eframe::App for App {
                         bar(ui, Act::Find, false, acts);
                     }
                     ui.separator();
-                    bar(ui, Act::FitWidth, false, acts);
+                    // Highlighted while the zoom follows the width.
+                    bar(ui, Act::FitWidth, c.fit, acts);
                     bar(ui, Act::ZoomIn, false, acts);
                     // The zoom level; clicking it resets to actual size.
                     let level = format!("{:.0}%", t.zoom * 100.0);
@@ -1665,13 +1703,21 @@ impl eframe::App for App {
                     toggle = inspector_rail(ui);
                     return;
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                    let hide = egui::Button::new(theme::icon(icon::CARET_DOUBLE_RIGHT))
-                        .frame_when_inactive(false);
-                    if ui.add(hide).on_hover_text("Hide the inspector").clicked() {
-                        toggle = true;
-                    }
-                });
+                // The heading stays put above the scrolling content, with the
+                // button that hides the panel at its right.
+                let title = inspector::title(t);
+                egui::Sides::new().shrink_left().truncate().show(
+                    ui,
+                    |ui| ui.heading(title),
+                    |ui| {
+                        let hide = egui::Button::new(theme::icon(icon::CARET_DOUBLE_RIGHT))
+                            .frame_when_inactive(false);
+                        if ui.add(hide).on_hover_text("Hide the inspector").clicked() {
+                            toggle = true;
+                        }
+                    },
+                );
+                ui.add_space(4.0);
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {

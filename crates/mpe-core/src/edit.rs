@@ -67,7 +67,11 @@ fn move_only(show: Show) -> Vec<Operation> {
     match show {
         Show::Tj | Show::TJ => vec![],
         Show::Quote => vec![op("T*", vec![])],
-        Show::DQuote { aw, ac } => vec![op("Tw", vec![r(aw)]), op("Tc", vec![r(ac)]), op("T*", vec![])],
+        Show::DQuote { aw, ac } => vec![
+            op("Tw", vec![r(aw)]),
+            op("Tc", vec![r(ac)]),
+            op("T*", vec![]),
+        ],
     }
 }
 
