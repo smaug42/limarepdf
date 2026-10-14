@@ -50,11 +50,15 @@ What you select decides what the inspector, the right-click menu and the floatin
 
 | Selected | Inspector |
 | --- | --- |
-| Nothing | The document: properties, password security, watermark, headers/footers/Bates, OCR, optimise scanned pages, export pages as images, split into files, and buttons for export text, print and append PDFs |
-| Pages (click thumbnails; Shift for a range, Ctrl for one more) | Rotate, delete, extract to a new tab, insert images or a blank page after them, and the watermark, headers/footers, OCR and optimise tools with the pages filled in |
+| Nothing | The document: properties, password security, crop, watermark, headers/footers/Bates, OCR, optimise scanned pages, export pages as images, split into files, and buttons for export text, print and append PDFs |
+| Pages (click thumbnails; Shift for a range, Ctrl for one more) | Rotate, delete, extract to a new tab, insert images or a blank page after them, and the crop, watermark, headers/footers, OCR and optimise tools with the pages filled in |
 | An object, words, or a tool that adds content | That object's or tool's options |
 
 Menu commands for document and page settings open the matching section of the inspector.
+
+Crop trims margins from each side of the page as it is shown, measured from the full page; the fields start with
+the first page's current crop. Remove crop shows the whole page again. Cropping hides content but does not delete
+it.
 
 Right-click a page, an object, selected words or a thumbnail for a short menu of what applies there. Right-clicking
 selects what is under the pointer first. A selected object or run of words also gets a small floating toolbar with

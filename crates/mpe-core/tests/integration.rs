@@ -104,6 +104,34 @@ fn encryption_roundtrip_all_ciphers() {
 }
 
 #[test]
+fn crop_margins_follow_rotation() {
+    let mut p = Pdf::new();
+    p.insert_blank(0, 300.0, 200.0).unwrap();
+    assert_eq!(p.crop_margins(0).unwrap(), [0.0; 4]);
+
+    p.set_crop_margins(0, [10.0, 20.0, 30.0, 40.0]).unwrap();
+    assert_eq!(p.crop_margins(0).unwrap(), [10.0, 20.0, 30.0, 40.0]);
+    assert_eq!(p.page_size(0).unwrap(), (240.0, 160.0));
+
+    // Turned clockwise, the old left margin is at the top.
+    p.rotate_pages(&[0], 90).unwrap();
+    assert_eq!(p.crop_margins(0).unwrap(), [40.0, 10.0, 20.0, 30.0]);
+    assert_eq!(p.page_size(0).unwrap(), (160.0, 240.0));
+
+    // Margins are set as displayed: left on the turned page is the bottom unturned.
+    p.set_crop_margins(0, [0.0, 0.0, 0.0, 50.0]).unwrap();
+    p.rotate_pages(&[0], -90).unwrap();
+    assert_eq!(p.crop_margins(0).unwrap(), [0.0, 0.0, 50.0, 0.0]);
+
+    p.set_crop_margins(0, [0.0; 4]).unwrap();
+    assert_eq!(p.page_size(0).unwrap(), (300.0, 200.0));
+
+    assert!(p.set_crop_margins(0, [-1.0, 0.0, 0.0, 0.0]).is_err());
+    assert!(p.set_crop_margins(0, [100.0, 0.0, 100.0, 0.0]).is_err());
+    assert!(p.crop_margins(1).is_err());
+}
+
+#[test]
 fn search_finds_text() {
     let p = doc_with_text();
     let hits = p.search("NEEDLE").unwrap();

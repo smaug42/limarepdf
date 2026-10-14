@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased]
+
+### Desktop app
+
+- Pages fit the window's width by default and keep fitting as the window is resized or the side panels open and
+  close. Zooming turns fitting off; the Fit width button or Ctrl+0 turns it back on. Zooming keeps your place in
+  the document.
+- Recent files on the start screen and under ☰ > File > Open recent.
+- Notices above the pages when a document is password-protected, has scanned pages without text, has form fields,
+  or is large, with a button to deal with it where there is one.
+- Crop pages from the inspector, by margins from each side of the page.
+- A Print button in the top bar. The Export menu now holds only the exports.
+- A theme button in the top bar to choose System, Light or Dark, remembered between runs.
+- Applying password security can be undone.
+- The inspector's heading and the button that hides it share one row.
+
+### Fixes
+
+- Long names in the start screen's recent files no longer run past the card.
+
 ## [0.3.0] - 2026-10-13
 
 MPE is still a test release: most testing has been on Linux. See

@@ -1,7 +1,7 @@
 use crate::actions::{self, Act, Ctx};
 use crate::banners::{self, Banner};
 use crate::editor::{Action, Editor, Tool};
-use crate::inspector::Forms;
+use crate::inspector::{Forms, Sec};
 use crate::selection::Selection;
 use crate::theme;
 use crate::worker::{Key, Worker};
@@ -23,6 +23,13 @@ const BASE: f32 = 96.0 / 72.0;
 pub enum Side {
     Pages,
     Search,
+}
+
+/// One undo or redo step: the state to go back to.
+struct Step {
+    /// The document's bytes; `None` when only the password settings changed.
+    pdf: Option<Vec<u8>>,
+    encryption: Option<Encryption>,
 }
 
 pub struct Tab {
@@ -49,8 +56,8 @@ pub struct Tab {
     pub current: usize,
     anchor: usize,
     goto: Option<usize>,
-    undo: Vec<Vec<u8>>,
-    redo: Vec<Vec<u8>>,
+    undo: Vec<Step>,
+    redo: Vec<Step>,
     pub side: Side,
     pub query: String,
     pub hits: Vec<SearchHit>,
@@ -210,12 +217,7 @@ impl Tab {
             self.error = Some(format!("{e:#}"));
             return false;
         }
-        self.undo.push(before);
-        if self.undo.len() > MAX_UNDO {
-            self.undo.remove(0);
-        }
-        self.redo.clear();
-        self.dirty = true;
+        self.push_undo(Some(before));
         self.revision += 1;
         match soft {
             Some(pages) => self.soft_refresh(ctx, pages),
@@ -323,28 +325,59 @@ impl Tab {
         }
     }
 
+    /// Record the state before a change: the document's bytes (`None` if it did not
+    /// change) and the current password settings.
+    fn push_undo(&mut self, pdf: Option<Vec<u8>>) {
+        let encryption = self.encryption.clone();
+        self.undo.push(Step { pdf, encryption });
+        if self.undo.len() > MAX_UNDO {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+        self.dirty = true;
+    }
+
+    /// Change the password settings, with undo. They take effect when the document is
+    /// saved.
+    pub fn set_encryption(&mut self, encryption: Option<Encryption>) {
+        self.push_undo(None);
+        self.encryption = encryption;
+    }
+
     pub fn undo(&mut self, ctx: &egui::Context) {
-        if let (Some(prev), Ok(cur)) = (self.undo.pop(), self.pdf.snapshot()) {
-            if let Ok(p) = Pdf::from_bytes(&prev, None) {
-                self.pdf = p;
-                self.redo.push(cur);
-                self.dirty = true;
-                self.revision += 1;
-                self.refresh(ctx);
+        if let Some(step) = self.undo.pop() {
+            if let Some(back) = self.restore(ctx, step) {
+                self.redo.push(back);
             }
         }
     }
 
     pub fn redo(&mut self, ctx: &egui::Context) {
-        if let (Some(next), Ok(cur)) = (self.redo.pop(), self.pdf.snapshot()) {
-            if let Ok(p) = Pdf::from_bytes(&next, None) {
-                self.pdf = p;
-                self.undo.push(cur);
-                self.dirty = true;
-                self.revision += 1;
-                self.refresh(ctx);
+        if let Some(step) = self.redo.pop() {
+            if let Some(back) = self.restore(ctx, step) {
+                self.undo.push(back);
             }
         }
+    }
+
+    /// Go back to a step's state. Returns the step that reverses it.
+    fn restore(&mut self, ctx: &egui::Context, step: Step) -> Option<Step> {
+        let pdf = match step.pdf {
+            Some(bytes) => {
+                let cur = self.pdf.snapshot().ok()?;
+                self.pdf = Pdf::from_bytes(&bytes, None).ok()?;
+                Some(cur)
+            }
+            None => None,
+        };
+        let encryption = std::mem::replace(&mut self.encryption, step.encryption);
+        self.forms.sec = Sec::of(self.encryption.as_ref());
+        self.dirty = true;
+        if pdf.is_some() {
+            self.revision += 1;
+            self.refresh(ctx);
+        }
+        Some(Step { pdf, encryption })
     }
 
     /// Re-render from the current document state.

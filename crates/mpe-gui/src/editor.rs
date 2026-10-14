@@ -941,8 +941,6 @@ impl Editor {
     /// The right-hand inspector: tool options, new-text entry and properties of the selected object.
     pub fn inspector(&mut self, ui: &mut egui::Ui) {
         self.sync_insp();
-        ui.heading("Edit");
-        ui.separator();
         let page_err = self.sel().and_then(|s| self.unavailable.get(&s.0)).cloned();
         if let Some(e) = page_err {
             ui.colored_label(

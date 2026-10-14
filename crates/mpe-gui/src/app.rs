@@ -12,8 +12,8 @@ use eframe::egui::{self, AtomExt as _, Key};
 use egui_phosphor::regular as icon;
 use mpe_core::render::{image_names, ImageFormat};
 use mpe_core::{
-    parse_page_range, print, Bates, Encryption, HeaderFooter, ImageImport, OcrResult, Pdf,
-    ScanResult, Watermark,
+    parse_page_range, print, Bates, HeaderFooter, ImageImport, OcrResult, Pdf, ScanResult,
+    Watermark,
 };
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -704,6 +704,7 @@ impl App {
             Act::Ocr => self.reveal(Section::Ocr),
             Act::HeaderFooter => self.reveal(Section::HeaderFooter),
             Act::Watermark => self.reveal(Section::Watermark),
+            Act::Crop => self.reveal(Section::Crop),
             Act::Props => self.reveal(Section::Properties),
             Act::Security => self.reveal(Section::Security),
             Act::EditObjectText => {
@@ -824,19 +825,22 @@ impl App {
             Apply::Security => {
                 let t = &mut self.tabs[active];
                 t.banners.retain(|b| b.kind != BannerKind::Protected);
-                let s = &t.forms.sec;
-                t.encryption = s.enabled.then(|| Encryption {
-                    user_password: s.user.clone(),
-                    owner_password: if s.owner.is_empty() {
-                        s.user.clone()
-                    } else {
-                        s.owner.clone()
-                    },
-                    cipher: s.cipher,
-                    restrictions: s.r,
-                });
-                t.dirty = true;
+                t.set_encryption(t.forms.sec.encryption());
                 self.status = "Security settings apply when you save.".into();
+                self.notify(ctx, "Changed password security".into());
+            }
+            Apply::Crop => {
+                let t = &mut self.tabs[active];
+                let s = &t.forms.crop;
+                match parse_page_range(&s.pages, n) {
+                    Ok(idx) => {
+                        let m = s.margins;
+                        t.edit(ctx, |p| {
+                            idx.iter().try_for_each(|&i| p.set_crop_margins(i, m))
+                        });
+                    }
+                    Err(e) => t.error = Some(e.to_string()),
+                }
             }
             Apply::Watermark => {
                 let t = &mut self.tabs[active];
@@ -1699,13 +1703,21 @@ impl eframe::App for App {
                     toggle = inspector_rail(ui);
                     return;
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                    let hide = egui::Button::new(theme::icon(icon::CARET_DOUBLE_RIGHT))
-                        .frame_when_inactive(false);
-                    if ui.add(hide).on_hover_text("Hide the inspector").clicked() {
-                        toggle = true;
-                    }
-                });
+                // The heading stays put above the scrolling content, with the
+                // button that hides the panel at its right.
+                let title = inspector::title(t);
+                egui::Sides::new().shrink_left().truncate().show(
+                    ui,
+                    |ui| ui.heading(title),
+                    |ui| {
+                        let hide = egui::Button::new(theme::icon(icon::CARET_DOUBLE_RIGHT))
+                            .frame_when_inactive(false);
+                        if ui.add(hide).on_hover_text("Hide the inspector").clicked() {
+                            toggle = true;
+                        }
+                    },
+                );
+                ui.add_space(4.0);
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {

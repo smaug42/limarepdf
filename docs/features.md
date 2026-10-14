@@ -35,9 +35,9 @@ available.
 | Rendering | Partial | Some transparency groups are drawn wrongly, and annotations without an appearance stream are not drawn. [Details](rendering.md) |
 | Search | Partial | Highlights can be a letter off in proportional fonts. [Details](search-and-text.md) |
 | Select and copy text | Done | One page at a time; includes recognised text |
-| Page operations: insert, delete, rotate, extract, reorder, crop | Done | Crop is in the command line only |
+| Page operations: insert, delete, rotate, extract, reorder, crop | Done | Crop by margins; no dragging a crop box on the page |
 | Merge and split | Done | Bookmarks, forms and named destinations of appended files are not carried over. Split by file size: No |
-| Undo and redo | Done | 20 levels. Password settings cannot be undone |
+| Undo and redo | Done | 20 levels, including password settings |
 | Headers, footers, page numbers, dates, Bates numbers | Done | Helvetica and Latin-1 characters only |
 | Watermarks | Partial | Text only |
 | Document properties | Done | Title, author, subject, keywords, creator, producer |

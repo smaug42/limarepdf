@@ -13,7 +13,7 @@ use crate::tab::Tab;
 use crate::theme;
 use eframe::egui::{self, Ui};
 use mpe_core::render::{ImageFormat, MAX_DPI};
-use mpe_core::{Cipher, Info, Restrictions, ScanMode, ScanOptions};
+use mpe_core::{Cipher, Encryption, Info, Restrictions, ScanMode, ScanOptions};
 use std::collections::BTreeSet;
 
 /// A section of the panel, for opening it from a menu command.
@@ -21,6 +21,7 @@ use std::collections::BTreeSet;
 pub enum Section {
     Properties,
     Security,
+    Crop,
     HeaderFooter,
     Watermark,
     Ocr,
@@ -44,6 +45,7 @@ pub enum Apply {
     Act(Act),
     Props,
     Security,
+    Crop,
     HeaderFooter,
     Watermark,
     Ocr,
@@ -124,6 +126,43 @@ impl Default for Sec {
         }
     }
 }
+impl Sec {
+    /// The form filled in from the document's password settings.
+    pub fn of(e: Option<&Encryption>) -> Self {
+        match e {
+            Some(e) => Sec {
+                enabled: true,
+                user: e.user_password.clone(),
+                owner: e.owner_password.clone(),
+                cipher: e.cipher,
+                r: e.restrictions,
+            },
+            None => Sec::default(),
+        }
+    }
+
+    /// The password settings the form describes. An empty owner password is the open
+    /// password.
+    pub fn encryption(&self) -> Option<Encryption> {
+        self.enabled.then(|| Encryption {
+            user_password: self.user.clone(),
+            owner_password: if self.owner.is_empty() {
+                self.user.clone()
+            } else {
+                self.owner.clone()
+            },
+            cipher: self.cipher,
+            restrictions: self.r,
+        })
+    }
+}
+
+#[derive(Default)]
+pub struct Crop {
+    pub pages: String,
+    /// Points trimmed from the full page: top, right, bottom, left as displayed.
+    pub margins: [f32; 4],
+}
 
 pub struct Export {
     pub pages: String,
@@ -156,6 +195,7 @@ impl Export {
 pub struct Forms {
     pub meta: Info,
     pub sec: Sec,
+    pub crop: Crop,
     pub wm: Wm,
     pub hf: Hf,
     pub ocr: String,
@@ -196,32 +236,31 @@ pub fn range_text(pages: &BTreeSet<usize>) -> String {
 
 impl Tab {
     /// Bring the forms up to date: properties after the document changed, page ranges
-    /// and blank-page size after the selection changed.
+    /// and blank-page size after the selection changed, and the crop margins after
+    /// either.
     fn sync_forms(&mut self) {
-        if self.forms.meta_rev != Some(self.revision) {
+        let changed = self.forms.meta_rev != Some(self.revision);
+        if changed {
             if self.forms.meta_rev.is_none() {
-                self.forms.sec = match &self.encryption {
-                    Some(e) => Sec {
-                        enabled: true,
-                        user: e.user_password.clone(),
-                        owner: e.owner_password.clone(),
-                        cipher: e.cipher,
-                        r: e.restrictions,
-                    },
-                    None => Sec::default(),
-                };
+                self.forms.sec = Sec::of(self.encryption.as_ref());
                 self.forms.split = 1;
             }
             self.forms.meta = self.pdf.info();
             self.forms.meta_rev = Some(self.revision);
         }
         let sel = self.ed.selection.clone();
+        let first = sel.pages().and_then(|s| s.first().copied());
+        if changed || self.forms.filled_for.as_ref() != Some(&sel) {
+            let margins = self.pdf.crop_margins(first.unwrap_or(0));
+            self.forms.crop.margins = margins.unwrap_or_default();
+        }
         if self.forms.filled_for.as_ref() == Some(&sel) {
             return;
         }
         let range = sel.pages().map_or("all".into(), range_text);
         let f = &mut self.forms;
         for r in [
+            &mut f.crop.pages,
             &mut f.wm.range,
             &mut f.hf.range,
             &mut f.ocr,
@@ -230,10 +269,22 @@ impl Tab {
         ] {
             *r = range.clone();
         }
-        let first = sel.pages().and_then(|s| s.first().copied());
         let page = first.unwrap_or(self.current);
         f.blank = self.sizes.get(page).copied().unwrap_or((612.0, 792.0));
         f.filled_for = Some(sel);
+    }
+}
+
+/// The panel's heading, drawn by the app beside the button that hides the panel: "Edit"
+/// for the editor's section, else the selected pages or "Document".
+pub fn title(t: &Tab) -> String {
+    if t.ed.owns_panel() {
+        return "Edit".into();
+    }
+    match t.ed.selection.pages() {
+        Some(p) if p.len() == 1 => format!("Page {}", range_text(p)),
+        Some(p) => format!("{} pages", p.len()),
+        None => "Document".into(),
     }
 }
 
@@ -246,12 +297,6 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
     let f = &mut t.forms;
     match &pages {
         Some(pages) => {
-            let title = if pages.len() == 1 {
-                format!("Page {}", range_text(pages))
-            } else {
-                format!("{} pages", pages.len())
-            };
-            ui.heading(title);
             if pages.len() > 1 {
                 ui.weak(range_text(pages));
             }
@@ -276,7 +321,6 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
             });
         }
         None => {
-            ui.heading("Document");
             ui.weak("Select pages in the thumbnails, or pick a tool, for more options.");
             ui.add_space(4.0);
             section(ui, reveal, Some(Section::Properties), "Properties", |ui| {
@@ -293,6 +337,11 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
         }
     }
     // Tools that work on a page range: the selected pages, or all.
+    section(ui, reveal, Some(Section::Crop), "Crop", |ui| {
+        if crop_ui(ui, &mut f.crop) {
+            apply = Some(Apply::Crop);
+        }
+    });
     section(ui, reveal, Some(Section::Watermark), "Watermark", |ui| {
         if watermark_ui(ui, &mut f.wm) {
             apply = Some(Apply::Watermark);
@@ -414,6 +463,30 @@ fn blank_ui(ui: &mut Ui, size: &mut (f32, f32), after: usize) -> bool {
     });
     ui.button(format!("Insert after page {}", after + 1))
         .clicked()
+}
+
+/// Margins to trim, and the buttons to crop or show the whole page. Removing the crop
+/// sets the margins to zero.
+fn crop_ui(ui: &mut Ui, s: &mut Crop) -> bool {
+    ui.weak("Trimmed from each side of the full page, as shown.");
+    range_row(ui, &mut s.pages);
+    grid(ui, "crop", |ui| {
+        for (name, i) in [("Top", 0), ("Bottom", 2), ("Left", 3), ("Right", 1)] {
+            ui.label(name);
+            let v = &mut s.margins[i];
+            ui.add(egui::DragValue::new(v).range(0.0..=14400.0).suffix(" pt"));
+            ui.end_row();
+        }
+    });
+    let mut apply = false;
+    ui.horizontal(|ui| {
+        apply = ui.button("Crop").clicked();
+        if ui.button("Remove crop").clicked() {
+            s.margins = [0.0; 4];
+            apply = true;
+        }
+    });
+    apply
 }
 
 fn meta_ui(ui: &mut Ui, s: &mut Info) -> bool {
@@ -629,5 +702,24 @@ mod tests {
         let set: BTreeSet<usize> = [0, 1, 2, 4, 6, 7].into();
         assert_eq!(range_text(&set), "1-3,5,7-8");
         assert_eq!(range_text(&[3].into()), "4");
+    }
+
+    #[test]
+    fn security_form_round_trips() {
+        assert!(Sec::default().encryption().is_none());
+        let form = Sec {
+            enabled: true,
+            user: "open".into(),
+            owner: String::new(),
+            cipher: Cipher::Aes128,
+            r: Restrictions::default(),
+        };
+        let e = form.encryption().unwrap();
+        // An empty owner password is the open password.
+        assert_eq!(e.owner_password, "open");
+        let back = Sec::of(Some(&e));
+        assert!(back.enabled);
+        assert_eq!((back.user.as_str(), back.cipher), ("open", Cipher::Aes128));
+        assert!(!Sec::of(None).enabled);
     }
 }

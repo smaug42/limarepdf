@@ -58,6 +58,7 @@ pub enum Act {
     Tool(Tool),
     RotR,
     RotL,
+    Crop,
     Delete,
     Extract,
     Blank,
@@ -654,6 +655,14 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::Crop,
+        group: Group::Document,
+        label: "Crop pages…",
+        icon: icon::CROP,
+        hint: "Trim the margins of the selected pages, or all pages.",
+        ..BASE
+    },
+    Action {
         act: Act::Delete,
         group: Group::Document,
         label: "Delete pages",
@@ -786,7 +795,7 @@ pub fn context_items(sel: &Selection) -> &'static [&'static [Act]] {
             &[Act::DeleteObject],
         ],
         Selection::None | Selection::Pages(_) => &[
-            &[Act::RotR, Act::RotL],
+            &[Act::RotR, Act::RotL, Act::Crop],
             &[Act::Blank, Act::InsertImages, Act::Extract, Act::Delete],
         ],
     }

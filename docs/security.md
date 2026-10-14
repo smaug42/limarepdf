@@ -9,8 +9,8 @@ MPE opens password-protected PDFs (with the open, or user, password) and can pro
 
 Permission flags are advisory: they rely on the viewer honouring them.
 
-Where: the inspector's Password security section, with nothing selected. The settings apply when you save, and they
-cannot be undone with Ctrl+Z. On the command line: `mpe encrypt` and `mpe decrypt`.
+Where: the inspector's Password security section, with nothing selected. The settings apply when you save. Applying
+them can be undone with Ctrl+Z, like any other change. On the command line: `mpe encrypt` and `mpe decrypt`.
 
 ## Things to know
 
