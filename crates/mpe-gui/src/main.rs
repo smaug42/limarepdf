@@ -3,6 +3,7 @@ mod app;
 mod dialogs;
 mod editor;
 mod inspector;
+mod recent;
 mod selection;
 mod tab;
 mod theme;

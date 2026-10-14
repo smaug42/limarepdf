@@ -11,6 +11,11 @@ use egui_phosphor::regular as icon;
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Act {
     Open,
+    /// Open the nth file in the recent-files list (of those that still exist). Built
+    /// from the list at run time, so not in [`ACTIONS`].
+    OpenRecent(usize),
+    /// Empty the recent-files list. Shown with the list, so not in [`ACTIONS`].
+    ClearRecent,
     NewFromImages,
     Save,
     SaveAs,

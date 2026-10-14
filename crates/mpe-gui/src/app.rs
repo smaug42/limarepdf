@@ -2,6 +2,7 @@ use crate::actions::{self, menu_item, tooltip, Act, Action, Ctx, Group, ACTIONS}
 use crate::dialogs::{self as dlg, Outcome};
 use crate::editor::{Action as EdAction, Tool};
 use crate::inspector::{self, Apply, Section};
+use crate::recent::Recent;
 use crate::selection::Selection;
 use crate::tab::{Side, Tab};
 use crate::theme;
@@ -190,6 +191,8 @@ pub struct App {
     /// The window was narrower than `NARROW_WIDTH` last frame.
     narrow: bool,
     toast: Option<Toast>,
+    /// Recently opened files, kept between runs.
+    recent: Recent,
 }
 
 impl App {
@@ -214,6 +217,7 @@ impl App {
             inspector_pref: true,
             narrow: false,
             toast: None,
+            recent: Recent::load(),
         };
         let (images, pdfs): (Vec<_>, Vec<_>) = files.into_iter().partition(|p| is_image(p));
         for f in pdfs {
@@ -279,7 +283,10 @@ impl App {
     fn poll_loads(&mut self, ctx: &egui::Context) {
         while let Ok(m) = self.rx.try_recv() {
             match m {
-                Loaded::Ok { path, pdf, page } => self.add_tab(ctx, pdf, Some(path), page, false),
+                Loaded::Ok { path, pdf, page } => {
+                    self.recent.add(&path);
+                    self.add_tab(ctx, pdf, Some(path), page, false);
+                }
                 Loaded::NeedPassword { path, error } => {
                     self.dialog = Dialog::Password(dlg::Password {
                         path,
@@ -465,6 +472,7 @@ impl App {
         match tab.pdf.save(&path) {
             Ok(()) => {
                 self.status = format!("Saved {}", path.display());
+                self.recent.add(&path);
                 tab.path = Some(path);
                 tab.dirty = false;
             }
@@ -482,6 +490,12 @@ impl App {
                     }
                 }
             }
+            Act::OpenRecent(i) => {
+                if let Some(path) = self.recent.existing().get(i).map(|p| (*p).clone()) {
+                    self.spawn_open(ctx, path, None, None);
+                }
+            }
+            Act::ClearRecent => self.recent.clear(),
             Act::NewFromImages => {
                 if let Some(files) = Self::pick_images() {
                     self.new_from_images(ctx, &files);
@@ -1056,8 +1070,9 @@ impl App {
         c
     }
 
-    /// The menu: one submenu per group, built from the registry.
-    fn menu(ui: &mut egui::Ui, c: &Ctx, acts: &mut Vec<Act>) {
+    /// The menu: one submenu per group, built from the registry, plus File > Open recent
+    /// from `recent` (the recent files that still exist).
+    fn menu(ui: &mut egui::Ui, c: &Ctx, recent: &[&PathBuf], acts: &mut Vec<Act>) {
         for g in Group::MENUS {
             ui.menu_button(g.name(), |ui| {
                 let items: Vec<&Action> =
@@ -1070,6 +1085,9 @@ impl App {
                     }
                     if a.submenu.is_empty() {
                         menu_item(ui, a, c, acts);
+                        if a.act == Act::Open {
+                            recent_menu(ui, recent, acts);
+                        }
                         i += 1;
                         continue;
                     }
@@ -1261,13 +1279,48 @@ fn palette_row(ui: &mut egui::Ui, a: &Action, n: usize, on: bool, enabled: bool)
     ui.add_enabled(enabled, b)
 }
 
+/// File > Open recent: the recent files that still exist, then Clear recent files.
+fn recent_menu(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
+    ui.add_enabled_ui(!recent.is_empty(), |ui| {
+        ui.menu_button("Open recent", |ui| {
+            for (i, path) in recent.iter().enumerate() {
+                let tip = path.display().to_string();
+                if ui.button(file_name(path)).on_hover_text(tip).clicked() {
+                    acts.push(Act::OpenRecent(i));
+                    ui.close();
+                }
+            }
+            ui.separator();
+            if ui.button("Clear recent files").clicked() {
+                acts.push(Act::ClearRecent);
+                ui.close();
+            }
+        });
+    });
+}
+
+/// A path's file name, or the whole path when it has none.
+fn file_name(path: &Path) -> String {
+    match path.file_name() {
+        Some(n) => n.to_string_lossy().into(),
+        None => path.display().to_string(),
+    }
+}
+
 /// The window with no document: a card to open a PDF or start from images. The card
 /// is a drop target and is clickable as a whole; it lights up while files are dragged
 /// over the window.
-fn empty_state(ui: &mut egui::Ui, acts: &mut Vec<Act>) {
+fn empty_state(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
     let dragging = ui.input(|i| !i.raw.hovered_files.is_empty());
     let room = ui.max_rect();
-    let size = egui::vec2(440.0, 280.0).min(room.size() - egui::vec2(32.0, 32.0));
+    // Up to five recent files under the buttons, with a heading.
+    let shown = recent.len().min(5);
+    let extra = if shown > 0 {
+        36.0 + 30.0 * shown as f32
+    } else {
+        0.0
+    };
+    let size = egui::vec2(440.0, 280.0 + extra).min(room.size() - egui::vec2(32.0, 32.0));
     let card = egui::Rect::from_center_size(room.center(), size.max(egui::vec2(1.0, 1.0)));
     let id = egui::Id::new("empty-card");
     let r = ui
@@ -1304,6 +1357,21 @@ fn empty_state(ui: &mut egui::Ui, acts: &mut Vec<Act>) {
     let images = egui::Button::new("New from images…").min_size(egui::vec2(180.0, 28.0));
     if ui.add(images).clicked() {
         acts.push(Act::NewFromImages);
+    }
+    if shown > 0 {
+        ui.add_space(16.0);
+        ui.label(egui::RichText::new("Recent").family(theme::semibold()));
+        ui.add_space(4.0);
+        for (i, path) in recent.iter().take(shown).enumerate() {
+            let name = file_name(path);
+            let row = egui::Button::new((theme::icon(icon::FILE_PDF).size(14.0), name))
+                .frame_when_inactive(false)
+                .min_size(egui::vec2(ui.available_width(), 26.0));
+            let tip = path.display().to_string();
+            if ui.add(row).on_hover_text(tip).clicked() {
+                acts.push(Act::OpenRecent(i));
+            }
+        }
     }
     ui.add_space(16.0);
     ui.weak("or drop PDF and image files anywhere in this window");
@@ -1365,6 +1433,10 @@ impl eframe::App for App {
         let mut acts: Vec<Act> = Vec::new();
         let has = !self.tabs.is_empty();
         let c = self.state(&ctx);
+        // Recent files that still exist, for the menu and the start screen. Copied, so
+        // the frame can change the app while showing them.
+        let recent_files: Vec<PathBuf> = self.recent.existing().into_iter().cloned().collect();
+        let recent: Vec<&PathBuf> = recent_files.iter().collect();
 
         // A top-bar button for a command: its icon, no frame until hovered except when
         // `on` (the active tool), its label and shortcut as the tooltip.
@@ -1408,7 +1480,7 @@ impl eframe::App for App {
 
                 let left_side = |ui: &mut egui::Ui| {
                     ui.menu_button(menu_icon(icon::LIST), |ui| {
-                        Self::menu(ui, &c, &mut acts);
+                        Self::menu(ui, &c, &recent, &mut acts);
                     })
                     .response
                     .on_hover_text("Menu");
@@ -1632,7 +1704,7 @@ impl eframe::App for App {
             if let Some(t) = self.tabs.get_mut(self.active) {
                 t.show_pages(ui, &c);
             } else {
-                empty_state(ui, &mut acts);
+                empty_state(ui, &recent, &mut acts);
             }
         });
 
