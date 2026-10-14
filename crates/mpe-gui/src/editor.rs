@@ -6,7 +6,8 @@ use crate::theme;
 use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use egui_phosphor::regular as icon;
 use mpe_core::{
-    words_text, Family, FontChoice, ObjectKind, PageObject, PageWord, PathStyle, Shape, TextEdit,
+    words_text, Family, FontChoice, Link, LinkTarget, ObjectKind, PageObject, PageWord, PathStyle,
+    Shape, TextEdit,
 };
 use std::collections::HashMap;
 
@@ -102,6 +103,9 @@ pub struct Editor {
     words: HashMap<usize, Vec<PageWord>>,
     /// A word selection is being dragged out.
     text_drag: bool,
+    links: HashMap<usize, Vec<Link>>,
+    /// A link was clicked; the tab follows it.
+    pub follow: Option<LinkTarget>,
 }
 
 impl Default for Editor {
@@ -130,6 +134,8 @@ impl Default for Editor {
             show_hidden: false,
             words: HashMap::new(),
             text_drag: false,
+            links: HashMap::new(),
+            follow: None,
         }
     }
 }
@@ -218,6 +224,7 @@ impl Editor {
         self.words.clear();
         self.selection.clear_words();
         self.text_drag = false;
+        self.links.clear();
     }
 
     pub fn set_tool(&mut self, t: Tool) {
@@ -453,7 +460,36 @@ impl Editor {
             let p = resp.interact_pointer_pos().map(to_pt);
             self.select_for_menu(pdf, page, p, 3.0 / k);
         }
-        if self.tool == Tool::View {
+        // Links are followed with a click when reading, and with Ctrl+click in the
+        // other tools, so they don't get in the way of editing.
+        let reading = self.tool == Tool::View;
+        if reading || (ui.input(|i| i.modifiers.command) && !self.dragging()) {
+            let link = resp.hover_pos().map(to_pt).and_then(|p| {
+                let links = self
+                    .links
+                    .entry(page)
+                    .or_insert_with(|| pdf.page_links(page).unwrap_or_default());
+                links.iter().find(|l| {
+                    let b = l.bbox;
+                    (b[0]..=b[2]).contains(&p.x) && (b[1]..=b[3]).contains(&p.y)
+                })
+            });
+            if let Some(link) = link {
+                let target = link.target.clone();
+                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                let tip = match &target {
+                    LinkTarget::Page(n) => format!("Go to page {}", n + 1),
+                    LinkTarget::Uri(u) => u.clone(),
+                };
+                let resp = resp.on_hover_text_at_pointer(tip);
+                if resp.clicked() {
+                    self.follow = Some(target);
+                }
+                // Holding Ctrl over a link sets the tool aside.
+                return resp;
+            }
+        }
+        if reading {
             return resp;
         }
         self.objects(pdf, page);

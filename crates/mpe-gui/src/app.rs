@@ -95,6 +95,21 @@ fn push_skipped(text: &mut String, skipped: &[String]) {
     }
 }
 
+/// What to show for a clicked link to an address outside the document. Only web and
+/// email addresses are offered for opening; anything else (a local file, a script) is
+/// shown but not opened.
+fn link_dialog(url: String) -> Dialog {
+    let scheme = url.split_once(':').map(|(s, _)| s.to_ascii_lowercase());
+    if matches!(scheme.as_deref(), Some("http" | "https" | "mailto")) {
+        Dialog::OpenLink(url)
+    } else {
+        Dialog::Message(
+            "Link not opened".into(),
+            format!("This link goes to:\n\n{url}\n\nMPE only opens web and email links."),
+        )
+    }
+}
+
 /// Summary of a scan optimisation for the user, and whether any page changed.
 fn scan_summary(report: &[(usize, ScanResult)]) -> (bool, String) {
     let (mut n, mut before, mut after) = (0, 0, 0);
@@ -143,6 +158,8 @@ enum Dialog {
     /// Export would replace this many files.
     ConfirmReplace(ImageExport, usize),
     Print(dlg::Print),
+    /// Open this web or email address from a link?
+    OpenLink(String),
     About,
 }
 
@@ -552,6 +569,10 @@ impl App {
                 self.settings.save();
             }
             Act::ToggleSide => self.show_side = !self.show_side,
+            Act::Bookmarks => {
+                self.show_side = true;
+                self.tabs[self.active].side = Side::Bookmarks;
+            }
             Act::ToggleInspector => {
                 self.show_inspector = !self.show_inspector;
                 if !self.narrow {
@@ -984,6 +1005,21 @@ impl App {
                 ) != Outcome::Open;
             }
             Dialog::Message(title, text) => done = dlg::message(ctx, title, text) != Outcome::Open,
+            Dialog::OpenLink(url) => match dlg::confirm(
+                ctx,
+                "Open link",
+                &format!(
+                    "This link goes to:\n\n{url}\n\nOpen it in your browser or email program?"
+                ),
+                "Open link",
+            ) {
+                Outcome::Apply => {
+                    ctx.open_url(egui::OpenUrl::new_tab(url.as_str()));
+                    done = true;
+                }
+                Outcome::Cancel => done = true,
+                Outcome::Open => {}
+            },
             Dialog::ConfirmClose(i) => match dlg::confirm(
                 ctx,
                 "Unsaved changes",
@@ -1760,6 +1796,9 @@ impl eframe::App for App {
         if let Some(t) = self.tabs.get_mut(self.active) {
             if let Some(e) = t.error.take() {
                 self.dialog = Dialog::Message("Error".into(), e);
+            }
+            if let Some(url) = t.open_link.take() {
+                self.dialog = link_dialog(url);
             }
         }
 

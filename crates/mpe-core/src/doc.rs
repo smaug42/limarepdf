@@ -201,7 +201,7 @@ impl Pdf {
         o.as_float().ok()
     }
 
-    fn rect(&self, o: &Object) -> Option<[f32; 4]> {
+    pub(crate) fn rect(&self, o: &Object) -> Option<[f32; 4]> {
         let (_, o) = self.doc.dereference(o).ok()?;
         let a = o.as_array().ok()?;
         if a.len() < 4 {

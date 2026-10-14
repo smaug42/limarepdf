@@ -51,6 +51,8 @@ pub enum Act {
     FirstPage,
     LastPage,
     ToggleSide,
+    /// Show the side panel's Bookmarks tab.
+    Bookmarks,
     ToggleInspector,
     ToggleHidden,
     Theme(ThemePreference),
@@ -514,6 +516,14 @@ pub static ACTIONS: &[Action] = &[
         enabled: always,
         checked: Some(|c| c.side),
         sep: true,
+        ..BASE
+    },
+    Action {
+        act: Act::Bookmarks,
+        group: Group::View,
+        label: "Bookmarks",
+        icon: icon::BOOKMARK_SIMPLE,
+        hint: "Show the document's outline in the side panel.",
         ..BASE
     },
     Action {

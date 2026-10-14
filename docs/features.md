@@ -5,7 +5,7 @@ are not started.
 
 ## What MPE does
 
-- **View:** tabs, thumbnails, continuous scrolling, zoom, and search with highlights on the page.
+- **View:** tabs, thumbnails, continuous scrolling, zoom, search with highlights on the page, bookmarks and links.
 - **Organise pages:** drag thumbnails to reorder; rotate, insert, delete and extract pages; merge and split files.
 - **Edit content:** move, resize, restyle and delete text, images and shapes; edit text; add text, shapes and images.
 - **Stamp pages:** headers, footers, page numbers, Bates numbers and text watermarks.
@@ -54,8 +54,10 @@ available.
 | Export to Word, Excel, CSV | No | |
 | Annotations, comments, stamps, measuring | No | Existing annotations are shown if they have an appearance stream |
 | Forms, form data, barcodes, JavaScript | No | |
-| Bookmarks | Partial | Shown in the Bookmarks tab and followed; adding, editing or deleting them: No. [Details](gui.md#the-window) |
-| Links, layers, attachments | No | |
+| Bookmarks | Partial | Shown in the Bookmarks tab (also from the command palette) and followed; adding, editing or deleting them: No. [Details](gui.md#the-window) |
+| Links | Partial | Followed: to pages, and to web and email addresses after asking. Links to other PDF files, and adding or editing links: No. [Details](gui.md#links) |
+| Layers, attachments | No | |
+| Installers and packages | No | Releases are archives of the programs. Packages are planned for later; see below |
 | Redaction | No | |
 | Digital signatures, certificate encryption | No | |
 | PDF/A, optimised saving | No | Saved files are pruned and compressed |
@@ -84,6 +86,17 @@ Ideas for what comes next. None of these are available yet, and the list is not 
   tool you used last, or let you choose a default.
 - **Doing more with selected text.** Right-click selected text to print just the selection, or to save it as a new
   PDF.
+
+### Packaging
+
+Planned for once the app is more complete; until then releases stay as archives.
+
+- **macOS:** an app bundle in a `.dmg` that registers MPE for PDFs, so it opens from Finder and "Open with". Without
+  Apple signing it needs the same one-time "Open Anyway" as the archive does today.
+- **Linux:** `.deb` and `.rpm` packages and an AUR package, installing the desktop entry and icon. The archive stays.
+- **Homebrew:** a cask in MPE's own tap.
+- **Later, maybe:** Flatpak, and a Windows installer (Start menu, PDF association, uninstaller).
+- **Signing** (macOS notarization, Windows code signing) comes after packaging, as a separate decision.
 
 ### Features that would set MPE apart
 

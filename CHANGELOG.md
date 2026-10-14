@@ -16,6 +16,9 @@
 - Applying password security can be undone.
 - The inspector's heading and the button that hides it share one row.
 - A Bookmarks tab beside Pages and Search shows the document's outline. Click a bookmark to go to its page.
+  ☰ > View > Bookmarks and the command palette open it.
+- Links work: click one with the hand tool, or Ctrl+click with any other tool. Links to pages go there; links to
+  web and email addresses show the address and ask before opening it in your browser or email program.
 - MPE has its own icon, on the window, the taskbar and, on Windows, `mpe-gui.exe` itself. The Linux archive
   includes a desktop entry and icon, which Wayland desktops need to show it; see
   [Install](docs/install.md#menu-entry-and-icon-on-linux).
@@ -47,6 +50,8 @@
 - Search takes about twice as long as before, as it now reads pages with MPE's own text reader: 0.17 s for a
   477-page manual. See [Performance](docs/performance.md).
 - Release notes on GitHub end with a link to every change since the previous version.
+- Installers and packages (a macOS app, Linux packages, Homebrew) are planned for once the app is more complete;
+  see [Features and status](docs/features.md#packaging).
 
 ## [0.3.0] - 2026-10-13
 

@@ -21,7 +21,7 @@ Each document gets a tab. The tab shows its name, with `*` while it has unsaved 
 - **Left:** three tabs. Pages shows the thumbnails, Search the search results, and Bookmarks the document's
   outline. Click a bookmark to go to its page; the arrow beside one shows or hides the bookmarks inside it, which
   start shown or hidden as the file asks. Bookmarks that go to another file or a web address are greyed out. They
-  can't be edited yet.
+  can't be edited yet. ☰ > View > Bookmarks, or "Bookmarks" in the command palette, opens this tab.
 - **Middle:** the pages, scrolling continuously. By default they fit the width between the side panels, and keep
   fitting as you resize the window or open and close the panels. Zooming in or out, actual size, Ctrl+scroll or a
   pinch turns fitting off, and your zoom then stays as it is; the Fit width button (highlighted while fitting is on)
@@ -31,6 +31,17 @@ Each document gets a tab. The tab shows its name, with `*` while it has unsaved 
 
 Ctrl+K opens the command palette, which lists every command. Type to filter, use Up and Down to choose, and press
 Enter to run.
+
+## Links
+
+Links in a document work with the hand tool: the pointer turns into a hand over one, and hovering shows where it
+goes. With any other tool, hold Ctrl (Cmd on macOS) and click, so links don't get in the way of editing.
+
+- A link to another page goes there.
+- A link to a web or email address asks first, showing the full address, and then opens it in your browser or
+  email program. MPE itself never connects to the network. Links to anything else, such as a file or a program,
+  are shown but not opened.
+- Links that go to another PDF file are not followed. Links can't be added or edited yet.
 
 ## Notices about the document
 

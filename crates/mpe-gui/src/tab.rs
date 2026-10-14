@@ -7,7 +7,7 @@ use crate::theme;
 use crate::worker::{Key, Worker};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptions, Vec2};
 use egui_phosphor::regular as icon;
-use mpe_core::{Encryption, OutlineItem, Pdf, SearchHit};
+use mpe_core::{Encryption, LinkTarget, OutlineItem, Pdf, SearchHit};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -78,6 +78,9 @@ pub struct Tab {
     pub forms: Forms,
     /// Something undoable just happened, for the undo toast.
     pub notice: Option<String>,
+    /// A link to a web address (or anything outside the document) was clicked; the app
+    /// asks before opening it.
+    pub open_link: Option<String>,
     /// A thumbnail drag in progress: the thumbnail it started on.
     thumb_drag: Option<usize>,
     /// Notices about the document shown above the pages, most important first.
@@ -133,6 +136,7 @@ impl Tab {
             requested: Vec::new(),
             forms: Forms::default(),
             notice: None,
+            open_link: None,
             thumb_drag: None,
             stale: HashSet::new(),
             outline: None,
@@ -810,6 +814,11 @@ impl Tab {
             self.view = (p, (top - t) / (BASE * self.zoom));
         }
         self.apply_actions(&ctx);
+        match self.ed.follow.take() {
+            Some(LinkTarget::Page(p)) => self.go_to(p),
+            Some(LinkTarget::Uri(u)) => self.open_link = Some(u),
+            None => {}
+        }
         if self.goto.is_none() {
             self.current = probe;
         }
