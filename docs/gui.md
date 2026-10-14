@@ -76,6 +76,7 @@ something to do and × to dismiss it. At most two show at a time.
 | --- | --- |
 | The document was password-protected: saving removes the protection unless you set it again | Password security |
 | Its pages are scans without text, so they cannot be searched or copied (checked on the first 20 pages) | Recognise text |
+| It is a form made for Adobe Reader (an XFA form), which only Adobe software can show or fill in; MPE shows the placeholder page the file contains, often "Please wait..." | |
 | It has a form: click a field to fill it in, or press Tab | Highlight fields |
 | It is large (more than 500 pages or 100 MB) | |
 

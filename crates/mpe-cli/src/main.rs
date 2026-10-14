@@ -466,8 +466,16 @@ fn value_from_json(f: &Field, v: &serde_json::Value) -> Result<FieldValue> {
     })
 }
 
+/// Why an XFA-only form can't be listed or filled.
+const XFA_ONLY: &str =
+    "this form was made for Adobe Reader (an XFA form): its fields are built by \
+                        Adobe software, so MPE can't list or fill them";
+
 fn form_fill(io: &Io, set: &[String], values: &Option<PathBuf>) -> Result<()> {
     let mut pdf = open(&io.input, &io.password)?;
+    if pdf.xfa_only() {
+        bail!("{XFA_ONLY}");
+    }
     let fields = pdf.form_fields();
     let field = |name: &str| -> Result<&Field> {
         fields
@@ -570,7 +578,16 @@ fn json_value(f: &Field) -> Option<serde_json::Value> {
 }
 
 fn form_list(input: &Path, json: bool, password: &Option<String>) -> Result<()> {
-    let fields = open(input, password)?.form_fields();
+    let pdf = open(input, password)?;
+    if pdf.xfa_only() {
+        // An empty object for scripts; the reason on stderr.
+        if json {
+            out!("{{}}");
+        }
+        eprintln!("{XFA_ONLY}");
+        return Ok(());
+    }
+    let fields = pdf.form_fields();
     if json {
         // Written by hand to keep the form's order; serde_json's map would sort the names.
         let rows: Vec<String> = fields

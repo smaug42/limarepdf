@@ -21,6 +21,8 @@
   options; Tab moves between fields. Each change is one undo step. ☰ > View > Highlight fields shows every field,
   and the inspector's Form section has Clear field and Reset form. Fields with a value but no drawing of their own
   now show their value. See [Filling in forms](docs/gui.md#filling-in-forms).
+- Forms made only for Adobe Reader (XFA forms, which show a "Please wait..." page) get a notice explaining that
+  only Adobe software can show or fill them; `mpe form list` and `mpe form fill` say the same.
 - Links work: click one with the hand or text-select tool (dragging still selects text), or Ctrl+click with the
   editing tools. Links to pages go there; links to
   web and email addresses show the address and ask before opening it in your browser or email program.

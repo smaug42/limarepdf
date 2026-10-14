@@ -264,6 +264,34 @@ fn skips_broken_fields() {
 }
 
 #[test]
+fn tells_xfa_only_forms_from_hybrid_ones() {
+    let mut p = two_pages();
+    assert!(!p.xfa_only(), "no form at all");
+    let xfa = Object::Stream(lopdf::Stream::new(dictionary! {}, b"<xdp:xdp/>".to_vec()));
+    let xfa = p.doc.add_object(xfa);
+
+    // XFA with no ordinary fields: only Adobe software can show it.
+    let form = set_form(&mut p, &[]);
+    p.doc.get_dictionary_mut(form).unwrap().set("XFA", xfa);
+    assert!(p.xfa_only());
+
+    // Hybrid: XFA plus ordinary fields on the pages, which MPE fills.
+    let f = p.doc.add_object(widget(dictionary! {
+        "FT" => "Tx", "T" => text("t"), "Rect" => rect(0, 0),
+    }));
+    on_page(&mut p, 0, &[f]);
+    p.doc
+        .get_dictionary_mut(form)
+        .unwrap()
+        .set("Fields", vec![f.into()]);
+    assert!(!p.xfa_only());
+
+    // ...unless the file says its pages must be built from the XFA.
+    p.doc.catalog_mut().unwrap().set("NeedsRendering", true);
+    assert!(p.xfa_only());
+}
+
+#[test]
 fn places_widgets_on_rotated_pages() {
     let mut p = two_pages();
     let f = p.doc.add_object(widget(dictionary! {

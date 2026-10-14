@@ -36,6 +36,10 @@ uses the closest standard font (Helvetica, Times or Courier). Password fields ar
 not kept in the file, as the PDF standard asks. Forms that need JavaScript to calculate or check values are filled,
 but their scripts don't run.
 
+Forms made only for Adobe Reader (XFA forms, whose pages say "Please wait..." elsewhere) have no fields MPE can
+reach: `form list` says so (with `--json` it prints `{}` and the reason on standard error), and `form fill` stops
+with that reason. Hybrid forms, which carry ordinary fields alongside the XFA, are filled as usual.
+
 ## Pages
 
 | Command | What it does |

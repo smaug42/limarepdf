@@ -174,6 +174,27 @@ impl Pdf {
         walk.out
     }
 
+    /// Whether this is an XFA-only ("dynamic XFA") form: one made for Adobe Reader, whose
+    /// pages and fields are built from XML that only Adobe software lays out. The PDF's
+    /// own pages are then usually a "Please wait..." placeholder. Hybrid forms, which
+    /// also carry ordinary fields, are not XFA-only: those fields are what MPE fills.
+    pub fn xfa_only(&self) -> bool {
+        let Some(form) = self.acro_form() else {
+            return false;
+        };
+        if !form.has(b"XFA") {
+            return false;
+        }
+        let needs_rendering = self
+            .doc
+            .catalog()
+            .ok()
+            .and_then(|c| c.get(b"NeedsRendering").ok())
+            .and_then(|o| o.as_bool().ok())
+            .unwrap_or(false);
+        needs_rendering || !self.form_fields().iter().any(|f| !f.widgets.is_empty())
+    }
+
     /// The catalog's `/AcroForm` dictionary.
     pub(crate) fn acro_form(&self) -> Option<&Dictionary> {
         let form = self.doc.catalog().ok()?.get(b"AcroForm").ok()?;
