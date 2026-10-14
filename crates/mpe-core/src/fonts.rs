@@ -1,6 +1,6 @@
 //! Font information needed to measure and decode text in page content.
 
-use crate::overlay::HELV;
+use crate::std14;
 use lopdf::Encoding;
 use lopdf::{Dictionary, Document, Object};
 use std::collections::HashMap;
@@ -245,19 +245,9 @@ impl<'a> FontCtx<'a> {
                 .copied()
                 .unwrap_or(self.missing);
         }
-        let b = self.base.to_ascii_lowercase();
-        if b.contains("courier") {
-            600.0
-        } else if (32..=126).contains(&code) {
-            let w = HELV[(code - 32) as usize] as f32;
-            if b.contains("times") {
-                w * 0.9
-            } else {
-                w
-            }
-        } else {
-            556.0
-        }
+        // No widths in the document: a standard font, measured by the character shown.
+        let c = self.decode(&[code as u8]).chars().next();
+        c.and_then(|c| std14::width(&self.base, c)).unwrap_or(556.0)
     }
 
     /// Split a string into character codes. The flag marks the single-byte space (word spacing applies).

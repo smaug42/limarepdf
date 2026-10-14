@@ -18,6 +18,11 @@
 
 ### Fixes
 
+- Search highlights and selected words sit on the text: characters are placed by their widths in the font instead
+  of being spread evenly, which put highlights a letter or more off in proportional fonts. Files that use the
+  standard Times or Helvetica fonts without their widths are measured with Adobe's published widths.
+- Headers, footers and watermarks measure accented Latin-1 letters by their real widths, so centred and
+  right-aligned text containing them is placed correctly.
 - Long names in the start screen's recent files no longer run past the card.
 
 ## [0.3.0] - 2026-10-13

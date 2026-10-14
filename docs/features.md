@@ -33,7 +33,7 @@ available.
 | Command palette, right-click menus, floating toolbar | Done | Toolbar customisation: No |
 | Light and dark themes | Done | Follows the system, or chosen with the top bar's theme button; remembered between runs |
 | Rendering | Partial | Some transparency groups are drawn wrongly, and annotations without an appearance stream are not drawn. [Details](rendering.md) |
-| Search | Partial | Highlights can be a letter off in proportional fonts. [Details](search-and-text.md) |
+| Search | Done | A phrase broken across lines is found but not highlighted. [Details](search-and-text.md) |
 | Select and copy text | Done | One page at a time; includes recognised text |
 | Page operations: insert, delete, rotate, extract, reorder, crop | Done | Crop by margins; no dragging a crop box on the page |
 | Merge and split | Done | Bookmarks, forms and named destinations of appended files are not carried over. Split by file size: No |
@@ -76,8 +76,6 @@ Ideas for what comes next. None of these are available yet, and the list is not 
 
 ### Fixes and usability
 
-- **Search highlights in the right place.** Highlights are placed by character position, and are often visibly off
-  the matching text. They should sit exactly on the words.
 - **Selecting text without changing tools.** Dragging across text should select the text, unless you have chosen
   another tool on purpose.
 - **A better default tool.** The tool a document opens with is often not the one you want. MPE could start with the
