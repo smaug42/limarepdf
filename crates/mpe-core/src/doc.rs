@@ -109,20 +109,23 @@ impl Pdf {
         self.snapshot_hiding(|flags| flags & 4 == 0)
     }
 
-    /// A snapshot in which annotations whose flags match `hide` are marked Hidden.
+    /// A snapshot in which annotations whose flags match `hide` are marked Hidden, and
+    /// annotations without a drawing get MPE's (the document itself keeps none).
     fn snapshot_hiding(&mut self, hide: impl Fn(i64) -> bool) -> Result<Vec<u8>> {
         let ids = self.annots_where(hide);
-        if ids.is_empty() {
+        let missing = self.missing_appearances(&self.page_ids());
+        if ids.is_empty() && missing.is_empty() {
             return self.snapshot();
         }
-        let mut doc = self.doc.clone();
+        let mut copy = self.clone();
+        copy.draw_annotations(&missing);
         for (id, flags) in ids {
-            if let Ok(a) = doc.get_dictionary_mut(id) {
+            if let Ok(a) = copy.doc.get_dictionary_mut(id) {
                 a.set("F", flags | 2);
             }
         }
         let mut out = Vec::new();
-        doc.save_to(&mut out)?;
+        copy.doc.save_to(&mut out)?;
         Ok(out)
     }
 

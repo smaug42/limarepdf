@@ -483,7 +483,7 @@ impl Pdf {
     }
 
     /// A text string (or a name, as some files write), decoded.
-    fn text_value(&self, o: &Object) -> Option<String> {
+    pub(crate) fn text_value(&self, o: &Object) -> Option<String> {
         match self.doc.dereference(o).ok()?.1 {
             Object::String(s, _) => Some(decode_text(s)),
             Object::Name(n) => Some(String::from_utf8_lossy(n).into_owned()),

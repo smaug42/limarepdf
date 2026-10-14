@@ -24,6 +24,7 @@ Run them with `cargo test --workspace`.
 | `crates/mpe-core/tests/print.rs` | What is sent to the printer, with a stand-in for `lp` |
 | `crates/mpe-core/tests/outline.rs` | Reading bookmarks: nesting, every kind of destination, broken and looping outlines |
 | `crates/mpe-core/tests/links.rs` | Reading links: every kind of target, links that can't be followed, placement on turned pages |
+| `crates/mpe-core/tests/annots.rs` | Annotations: reading them, drawing each type that has no drawing (on screen only), removing them with replies and popups, flattening all or some pages |
 | `crates/mpe-core/tests/forms.rs` | Reading form fields: every kind, inherited values, broken field trees, turned pages, XFA-only and hybrid forms |
 | `crates/mpe-core/tests/form_fill.rs` | Filling in forms: values, drawn appearances (checked by rendering, including a turned field), fonts that can't be used, refused values, passwords, reset, drawing missing appearances |
 | Unit tests in `crates/mpe-core/src` | Page ranges, document operations, matrices, overlays, print placement, the ToUnicode reader, standard font widths, laying out form fields (wrapping, auto size, alignment, comb, lists) |

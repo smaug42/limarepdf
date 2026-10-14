@@ -18,10 +18,11 @@ Each document gets a tab. The tab shows its name, with `*` while it has unsaved 
 
 - **Top bar:** the menu (☰), Open, Save, Undo and Redo, the tools, zoom, search, Print, an Export menu (pages as
   images, text), and the theme. On narrow windows the search field and the tools fold into single buttons.
-- **Left:** three tabs. Pages shows the thumbnails, Search the search results, and Bookmarks the document's
+- **Left:** four tabs. Pages shows the thumbnails, Search the search results, and Bookmarks the document's
   outline. Click a bookmark to go to its page; the arrow beside one shows or hides the bookmarks inside it, which
   start shown or hidden as the file asks. Bookmarks that go to another file or a web address are greyed out. They
-  can't be edited yet. ☰ > View > Bookmarks, or "Bookmarks" in the command palette, opens this tab.
+  can't be edited yet. ☰ > View > Bookmarks, or "Bookmarks" in the command palette, opens this tab. Comments
+  lists the document's annotations; see [Comments and markup](#comments-and-markup).
 - **Middle:** the pages, scrolling continuously. By default they fit the width between the side panels, and keep
   fitting as you resize the window or open and close the panels. Zooming in or out, actual size, Ctrl+scroll or a
   pinch turns fitting off, and your zoom then stays as it is; the Fit width button (highlighted while fitting is on)
@@ -43,6 +44,27 @@ links don't get in the way of editing.
   email program. MPE itself never connects to the network. Links to anything else, such as a file or a program,
   are shown but not opened.
 - Links that go to another PDF file are not followed. Links can't be added or edited yet.
+
+## Comments and markup
+
+Annotations (comments, sticky notes, highlights, text boxes, shapes and drawings that other programs added) are
+shown on the pages. ☰ > View > Comments, or "Comments" in the command palette, opens the Comments tab, which lists
+them page by page, with replies indented under the comment they answer. Each row shows the author and the first
+line of the comment; hover over it for the type, date and the whole comment.
+
+- Click a row to go to the annotation and outline it on the page.
+- Right-click a row to delete it, along with any replies. Annotations the file locks can't be deleted. Undo brings
+  it back.
+- ☰ > Document > Flatten annotations… draws all of them into the pages as they look now and removes them, so they
+  can no longer be changed or removed in any reader. Their comment text is dropped. Links and form fields stay,
+  and so do file attachments. Undo brings them back.
+
+Some files store annotations without a drawing, leaving each reader to draw them. MPE draws highlights,
+underlines, strike-outs, squiggly underlines, notes, text boxes, rectangles, ellipses, lines, polygons and
+freehand drawings itself, on screen and when printing. The file isn't changed by this; flattening saves MPE's
+drawing into it. Text boxes are drawn in Helvetica, ignoring any rich-text styling.
+
+Adding and editing annotations in MPE is coming.
 
 ## Filling in forms
 

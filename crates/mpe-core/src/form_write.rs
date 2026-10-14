@@ -673,7 +673,7 @@ fn encode_da(font: &[u8], size: f32, color: Option<&Operation>) -> Vec<u8> {
 }
 
 /// Widths of a standard font by WinAnsi code.
-fn standard_metrics(base: &str) -> Metrics {
+pub(crate) fn standard_metrics(base: &str) -> Metrics {
     let mut w = [0.0; 256];
     for c in (0x20..=0x2122).filter_map(char::from_u32) {
         let b = winansi_bytes(&c.to_string())[0];

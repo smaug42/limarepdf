@@ -158,6 +158,7 @@ enum Dialog {
     /// Export would replace this many files.
     ConfirmReplace(ImageExport, usize),
     ConfirmFlatten,
+    ConfirmFlattenAnnots,
     Print(dlg::Print),
     SaveSelection(dlg::Layout),
     /// Open this web or email address from a link?
@@ -649,6 +650,10 @@ impl App {
                 self.show_side = true;
                 self.tabs[self.active].side = Side::Bookmarks;
             }
+            Act::Comments => {
+                self.show_side = true;
+                self.tabs[self.active].side = Side::Comments;
+            }
             Act::ToggleInspector => {
                 self.show_inspector = !self.show_inspector;
                 if !self.narrow {
@@ -680,6 +685,14 @@ impl App {
                 t.notice = Some("Reset the form".into());
             }
             Act::FlattenForm => self.dialog = Dialog::ConfirmFlatten,
+            Act::FlattenAnnots => {
+                if self.tabs[self.active].pdf.annotations().is_empty() {
+                    self.tabs[self.active].notice =
+                        Some("There are no annotations to flatten".into());
+                } else {
+                    self.dialog = Dialog::ConfirmFlattenAnnots;
+                }
+            }
             Act::Tool(Tool::Image) => self.tabs[self.active].choose_image(),
             Act::Tool(tool) => self.tabs[self.active].ed.set_tool(tool),
             Act::SelectAllText => {
@@ -1183,6 +1196,25 @@ impl App {
                     if t.edit(ctx, |p| p.flatten_form(None).map(|_| ())) {
                         t.banners.retain(|b| b.kind != BannerKind::Forms);
                         t.notice = Some("Flattened the form".into());
+                    }
+                    done = true;
+                }
+                Outcome::Cancel => done = true,
+                Outcome::Open => {}
+            },
+            Dialog::ConfirmFlattenAnnots => match dlg::confirm(
+                ctx,
+                "Flatten annotations?",
+                "Comments, notes, highlights and drawings become part of the pages, as they \
+                 look now, and can no longer be changed or removed, here or in other readers. \
+                 Their comment text is dropped. Links and form fields stay. Undo brings them \
+                 back until you close the document.",
+                "Flatten",
+            ) {
+                Outcome::Apply => {
+                    let t = &mut self.tabs[self.active];
+                    if t.edit(ctx, |p| p.flatten_annotations(None).map(|_| ())) {
+                        t.notice = Some("Flattened the annotations".into());
                     }
                     done = true;
                 }
@@ -1815,15 +1847,17 @@ impl eframe::App for App {
                 .default_size(170.0)
                 .show(ui, |ui| {
                     let t = &mut self.tabs[active];
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.selectable_value(&mut t.side, Side::Pages, "Pages");
                         ui.selectable_value(&mut t.side, Side::Search, "Search");
                         ui.selectable_value(&mut t.side, Side::Bookmarks, "Bookmarks");
+                        ui.selectable_value(&mut t.side, Side::Comments, "Comments");
                     });
                     ui.separator();
                     match t.side {
                         Side::Pages => t.show_thumbs(ui, &c),
                         Side::Bookmarks => t.show_outline(ui),
+                        Side::Comments => t.show_comments(ui),
                         Side::Search => {
                             let r = ui.text_edit_singleline(&mut t.query);
                             let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));

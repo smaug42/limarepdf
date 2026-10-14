@@ -7,7 +7,7 @@ use crate::theme;
 use crate::worker::{Key, Worker};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptions, Vec2};
 use egui_phosphor::regular as icon;
-use mpe_core::{Encryption, LinkTarget, OutlineItem, Pdf, SearchHit};
+use mpe_core::{Annot, Encryption, LinkTarget, OutlineItem, Pdf, SearchHit};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -24,6 +24,7 @@ pub enum Side {
     Pages,
     Search,
     Bookmarks,
+    Comments,
 }
 
 /// One undo or redo step: the state to go back to.
@@ -90,6 +91,11 @@ pub struct Tab {
     outline: Option<(u64, Vec<OutlineItem>)>,
     /// For each bookmark, whether its children are shown.
     outline_open: Vec<bool>,
+    /// The annotations, read when the Comments tab is first shown and again after the
+    /// document changes: the revision they were read at, and the list.
+    comments: Option<(u64, Vec<Annot>)>,
+    /// The annotation chosen in the Comments tab, outlined on its page.
+    comment_sel: Option<(u32, u16)>,
 }
 
 impl Tab {
@@ -143,6 +149,8 @@ impl Tab {
             stale: HashSet::new(),
             outline: None,
             outline_open: Vec::new(),
+            comments: None,
+            comment_sel: None,
         })
     }
 
@@ -492,6 +500,116 @@ impl Tab {
         }
     }
 
+    /// The Comments side tab: the annotations by page, replies under what they answer.
+    /// Clicking one goes to it and outlines it; right-click to delete it.
+    pub fn show_comments(&mut self, ui: &mut egui::Ui) {
+        let rev = self.revision;
+        if self.comments.as_ref().is_none_or(|(r, _)| *r != rev) {
+            let list = self.pdf.annotations();
+            if !list.iter().any(|a| Some(a.id) == self.comment_sel) {
+                self.comment_sel = None;
+            }
+            self.comments = Some((rev, list));
+        }
+        let Some((_, list)) = &self.comments else {
+            return;
+        };
+        if list.is_empty() {
+            ui.weak("This document has no comments or markup.");
+            return;
+        }
+        let mut chosen = None;
+        let mut delete = None;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let mut page = usize::MAX;
+                for (i, depth) in thread_order(list) {
+                    let a = &list[i];
+                    if a.page != page {
+                        page = a.page;
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(format!("Page {}", page + 1))
+                                .small()
+                                .strong(),
+                        );
+                    }
+                    let first = a.contents.lines().find(|l| !l.trim().is_empty());
+                    let who = if a.author.is_empty() { "" } else { &a.author };
+                    let text = match (who, first) {
+                        ("", None) => a.kind.label(),
+                        ("", Some(t)) => format!("{}: {t}", a.kind.label()),
+                        (w, None) => format!("{} · {w}", a.kind.label()),
+                        (w, Some(t)) => format!("{w}: {t}"),
+                    };
+                    let mut text = egui::RichText::new(text);
+                    if a.hidden() {
+                        text = text.weak();
+                    }
+                    let mut tip = a.kind.label();
+                    for extra in [&a.author, &a.modified] {
+                        if !extra.is_empty() {
+                            tip += &format!(" · {extra}");
+                        }
+                    }
+                    if a.hidden() {
+                        tip += " · hidden";
+                    }
+                    if !a.contents.is_empty() {
+                        tip += &format!("\n\n{}", a.contents);
+                    }
+                    ui.horizontal(|ui| {
+                        ui.add_space(depth as f32 * 12.0);
+                        let row = egui::Button::selectable(self.comment_sel == Some(a.id), text)
+                            .truncate();
+                        let r = ui.add(row).on_hover_text(tip);
+                        if r.clicked() {
+                            chosen = Some(i);
+                        }
+                        r.context_menu(|ui| {
+                            let label = if list.iter().any(|b| b.reply_to == Some(a.id)) {
+                                "Delete, with its replies"
+                            } else {
+                                "Delete"
+                            };
+                            let del = ui
+                                .add_enabled(!a.locked(), egui::Button::new(label))
+                                .on_disabled_hover_text("It is locked in this document.");
+                            if del.clicked() {
+                                delete = Some(a.id);
+                            }
+                        });
+                    });
+                }
+            });
+        if let Some(i) = chosen {
+            let a = &list[i];
+            let (id, page, top) = (a.id, a.page, a.bbox[1]);
+            self.comment_sel = Some(id);
+            self.go_to(page);
+            self.goto_y = Some(top);
+        }
+        if let Some(id) = delete {
+            let ctx = ui.ctx().clone();
+            if self.edit(&ctx, |p| p.remove_annotations(|a| a.id == id).map(|_| ())) {
+                self.notice = Some("Deleted the comment".into());
+            }
+        }
+    }
+
+    /// The outline of the annotation chosen in the Comments tab, if it is on `page`.
+    fn chosen_comment(&self, page: usize) -> Option<[f32; 4]> {
+        if self.side != Side::Comments {
+            return None;
+        }
+        let id = self.comment_sel?;
+        let (_, list) = self.comments.as_ref()?;
+        list.iter()
+            .find(|a| a.id == id && a.page == page)
+            .map(|a| a.bbox)
+    }
+
     pub fn run_search(&mut self) {
         self.hit_idx = 0;
         self.matches.clear();
@@ -798,6 +916,15 @@ impl Tab {
                 let cur = current.filter(|c| c.0 == i).map(|c| c.1);
                 self.ed
                     .overlay(ui, &self.pdf, i, r, self.zoom * BASE, matches, cur);
+                if let Some(b) = self.chosen_comment(i) {
+                    let k = self.zoom * BASE;
+                    let sr = Rect::from_min_max(
+                        Pos2::new(r.min.x + b[0] * k, r.min.y + b[1] * k),
+                        Pos2::new(r.min.x + b[2] * k, r.min.y + b[3] * k),
+                    );
+                    let stroke = egui::Stroke::new(2.0, ui.visuals().selection.stroke.color);
+                    painter.rect_stroke(sr.expand(2.0), 2.0, stroke, egui::StrokeKind::Outside);
+                }
                 let resp = self
                     .ed
                     .page_ui(ui, &self.pdf, self.id, i, r, self.zoom * BASE);
@@ -1091,6 +1218,45 @@ fn edge_scroll(ui: &egui::Ui) {
     }
 }
 
+/// The order the Comments tab lists annotations in, with each one's depth: page by page in
+/// the file's order, with replies under what they answer. A reply whose comment is missing
+/// or on another page is listed as a comment of its own.
+fn thread_order(list: &[Annot]) -> Vec<(usize, usize)> {
+    const MAX_DEPTH: usize = 6;
+    let n = list.len();
+    let index: HashMap<(u32, u16), usize> =
+        list.iter().enumerate().map(|(i, a)| (a.id, i)).collect();
+    let parent: Vec<Option<usize>> = list
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let p = *index.get(&a.reply_to?)?;
+            (p != i && list[p].page == a.page).then_some(p)
+        })
+        .collect();
+    let mut kids = vec![Vec::new(); n];
+    for (i, p) in parent.iter().enumerate() {
+        if let Some(p) = *p {
+            kids[p].push(i);
+        }
+    }
+    let mut out = Vec::with_capacity(n);
+    let mut seen = vec![false; n];
+    for root in (0..n).filter(|&i| parent[i].is_none()) {
+        let mut stack = vec![(root, 0)];
+        while let Some((i, d)) = stack.pop() {
+            if std::mem::replace(&mut seen[i], true) {
+                continue;
+            }
+            out.push((i, d.min(MAX_DEPTH)));
+            stack.extend(kids[i].iter().rev().map(|&k| (k, d + 1)));
+        }
+    }
+    // Replies that answer each other in a circle have no first comment.
+    out.extend((0..n).filter(|&i| !seen[i]).map(|i| (i, 0)));
+    out
+}
+
 /// While thumbnails are dragged: a line where they will land, a label at the pointer,
 /// and scrolling when the pointer nears the top or bottom of the list.
 fn drag_feedback(ui: &egui::Ui, rects: &[Rect], target: Option<usize>, p: Pos2, n: usize) {
@@ -1131,6 +1297,40 @@ fn drag_feedback(ui: &egui::Ui, rects: &[Rect], target: Option<usize>, p: Pos2, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replies_follow_what_they_answer() {
+        let a = |id: u32, page: usize, reply_to: Option<u32>| Annot {
+            id: (id, 0),
+            page,
+            kind: mpe_core::AnnotKind::Note,
+            bbox: [0.0; 4],
+            color: None,
+            opacity: 1.0,
+            contents: String::new(),
+            author: String::new(),
+            subject: String::new(),
+            modified: String::new(),
+            flags: 0,
+            reply_to: reply_to.map(|r| (r, 0)),
+            has_appearance: true,
+        };
+        // 3 answers 1, 4 answers 3, 5 answers a comment on another page, 6 and 7 answer
+        // each other.
+        let list = [
+            a(1, 0, None),
+            a(2, 0, None),
+            a(3, 0, Some(1)),
+            a(4, 0, Some(3)),
+            a(5, 1, Some(2)),
+            a(6, 1, Some(7)),
+            a(7, 1, Some(6)),
+        ];
+        assert_eq!(
+            thread_order(&list),
+            [(0, 0), (2, 1), (3, 2), (1, 0), (4, 0), (5, 0), (6, 0)]
+        );
+    }
 
     #[test]
     fn moving_pages_keeps_their_order() {

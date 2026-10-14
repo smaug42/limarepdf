@@ -3,6 +3,8 @@
 //! * Editing and structure: [`lopdf`]
 //! * Rasterisation: [`hayro`] (CPU, no unsafe, no C/C++ dependencies)
 
+mod annot_ap;
+mod annots;
 mod doc;
 mod edit;
 mod excerpt;
@@ -31,6 +33,7 @@ mod std14;
 mod text;
 mod tounicode;
 
+pub use annots::{Annot, AnnotKind};
 pub use doc::{Info, Pdf};
 pub use edit::{PathStyle, Shape, TextEdit};
 pub use fonts::{Family, FontChoice};

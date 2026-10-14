@@ -57,6 +57,8 @@ pub enum Act {
     ToggleSide,
     /// Show the side panel's Bookmarks tab.
     Bookmarks,
+    Comments,
+    FlattenAnnots,
     ToggleInspector,
     ToggleHidden,
     /// Tint every form field, and outline the required ones.
@@ -563,6 +565,14 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::Comments,
+        group: Group::View,
+        label: "Comments",
+        icon: icon::CHAT_TEXT,
+        hint: "List the document's comments, notes and markup in the side panel.",
+        ..BASE
+    },
+    Action {
         act: Act::ToggleInspector,
         group: Group::View,
         label: "Inspector",
@@ -829,6 +839,15 @@ pub static ACTIONS: &[Action] = &[
         enabled: |c| c.form && !c.busy,
         hint: "Make the fields part of the pages, as they look now, so they can't be \
                changed. Can be undone.",
+        ..BASE
+    },
+    Action {
+        act: Act::FlattenAnnots,
+        group: Group::Document,
+        label: "Flatten annotations…",
+        enabled: |c| c.doc && !c.busy,
+        hint: "Make comments, notes, highlights and drawings part of the pages, as they \
+               look now, so they can't be changed or removed. Can be undone.",
         ..BASE
     },
     Action {

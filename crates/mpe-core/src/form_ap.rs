@@ -297,11 +297,11 @@ pub(crate) fn wrap(text: &str, max: f32, size: f32, m: &Metrics) -> Vec<String> 
     out
 }
 
-fn op(name: &str, operands: Vec<Object>) -> Operation {
+pub(crate) fn op(name: &str, operands: Vec<Object>) -> Operation {
     Operation::new(name, operands)
 }
 
-fn nums(v: &[f32]) -> Vec<Object> {
+pub(crate) fn nums(v: &[f32]) -> Vec<Object> {
     v.iter()
         .map(|&x| Object::Real((x * 1000.0).round() / 1000.0))
         .collect()
@@ -329,7 +329,7 @@ pub(crate) fn fill_color(c: &[f32]) -> Option<Operation> {
     Some(op(name, nums(c)))
 }
 
-fn stroke_color(c: &[f32]) -> Option<Operation> {
+pub(crate) fn stroke_color(c: &[f32]) -> Option<Operation> {
     let name = match c.len() {
         1 => "G",
         3 => "RG",
@@ -339,7 +339,7 @@ fn stroke_color(c: &[f32]) -> Option<Operation> {
     Some(op(name, nums(c)))
 }
 
-fn encode(ops: Vec<Operation>) -> Vec<u8> {
+pub(crate) fn encode(ops: Vec<Operation>) -> Vec<u8> {
     Content { operations: ops }.encode().unwrap_or_default()
 }
 

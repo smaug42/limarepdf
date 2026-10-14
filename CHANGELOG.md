@@ -39,6 +39,12 @@
 - MPE has its own icon, on the window, the taskbar and, on Windows, `mpe-gui.exe` itself. The Linux archive
   includes a desktop entry and icon, which Wayland desktops need to show it; see
   [Install](docs/install.md#menu-entry-and-icon-on-linux).
+- A Comments tab beside Bookmarks lists the document's annotations (comments, notes, highlights, drawings) page by
+  page, with replies under what they answer. Click one to go to it; right-click to delete it. ☰ > Document >
+  Flatten annotations… makes them part of the pages. See [Comments and markup](docs/gui.md#comments-and-markup).
+- Annotations stored without a drawing of their own, which used to be invisible, are drawn: highlights,
+  underlines, strike-outs, squiggly underlines, notes, text boxes, rectangles, ellipses, lines, polygons and
+  freehand drawings. The file is left as it is.
 
 ### Command line
 
@@ -49,6 +55,10 @@
   MPE draws the filled fields itself, so the values show in every reader. See [Forms](docs/cli.md#forms).
 - `mpe form flatten` draws a form's fields into its pages and removes them (`--pages` for some pages only), and
   `mpe form fill --flatten` fills in and flattens in one go.
+- `mpe annot list` lists annotations (also `--json`), `mpe annot remove` removes them, all or by type, author and
+  page, and `mpe annot flatten` draws them into the pages. See [Annotations](docs/cli.md#annotations).
+- `mpe render` draws pages as the app does: annotations marked not to be shown on screen are left out, and
+  annotations without a drawing of their own are drawn.
 
 ### Fixes
 
