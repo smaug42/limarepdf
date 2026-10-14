@@ -66,3 +66,43 @@ available.
 - Saving rewrites the whole file; incremental saving is not available.
 - Saving removes the validity of digital signatures, as any rewrite does.
 - Files the renderer cannot read show "Rendering…" on their pages; editing may still work.
+
+## Planned and proposed
+
+Ideas for what comes next. None of these are available yet, and the list is not a commitment or an order.
+
+### Fixes and usability
+
+- **Search highlights in the right place.** Highlights are placed by character position, and are often visibly off
+  the matching text. They should sit exactly on the words.
+- **Selecting text without changing tools.** Dragging across text should select the text, unless you have chosen
+  another tool on purpose.
+- **A better default tool.** The tool a document opens with is often not the one you want. MPE could start with the
+  tool you used last, or let you choose a default.
+- **Doing more with selected text.** Right-click selected text to print just the selection, or to save it as a new
+  PDF.
+- **A print button in the top bar.** Print is in the Export menu and on Ctrl+P today; it should have its own button.
+- **A visible light and dark switch.** The theme can be chosen today under ☰ > View > Theme; a switch in the top bar
+  would make it easy to find.
+
+### Features that would set MPE apart
+
+- **Redaction you can check.** Remove the text, images and metadata under a redaction, not just cover them, then
+  report what was removed and verify that none of it remains in the saved file.
+- **Sanitise before sharing.** One command that strips metadata (including XMP), JavaScript, attachments and hidden
+  layers. It pairs with redaction and with MPE making no network connections.
+- **Offline AI.** Summaries, questions and answers, and meaning-based search, run by a model on your own computer, so
+  documents never leave it.
+- **Comparing documents.** Text and visual differences between two PDFs, also from the command line, so a comparison
+  can run in a build or review pipeline.
+- **Recipes for batches.** Describe a sequence of steps in a file (for example: recognise text, watermark,
+  Bates-number, encrypt) and run it on many documents from the command line.
+- **Better OCR.** Scripts beyond Latin; reading the images on pages that also have text (today OCR only reads pages
+  with no text at all, so a scanned figure or a pasted screenshot in a normal document is skipped); and matching the
+  original fonts when scanned text is edited.
+- **Editing paragraphs.** Edit text as paragraphs that reflow, not line by line.
+- **Incremental saving.** Save only what changed, which is faster for large files and keeps existing digital
+  signatures valid when you add comments or fill in forms.
+- **Standards output.** PDF/A for archiving, and PDF/UA tagging for accessibility.
+- **Verifiable signatures.** Apply and validate digital signatures, including certificate-based ones, with revocation
+  checked offline.

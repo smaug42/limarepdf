@@ -26,6 +26,21 @@ Each document gets a tab. The tab shows its name, with `*` while it has unsaved 
 Ctrl+K opens the command palette, which lists every command. Type to filter, use Up and Down to choose, and press
 Enter to run.
 
+## Notices about the document
+
+When a document opens, notices above the pages point out things worth knowing, each with a button where there is
+something to do and × to dismiss it. At most two show at a time.
+
+| Notice | Button |
+| --- | --- |
+| The document was password-protected: saving removes the protection unless you set it again | Password security |
+| Its pages are scans without text, so they cannot be searched or copied (checked on the first 20 pages) | Recognise text |
+| It has form fields, which MPE cannot fill in yet | |
+| It is large (more than 500 pages or 100 MB) | |
+
+The first two go away by themselves once dealt with: after password security is applied, or after text has been
+recognised.
+
 ## Selecting and the inspector
 
 What you select decides what the inspector, the right-click menu and the floating toolbar offer.

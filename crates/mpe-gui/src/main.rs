@@ -1,5 +1,6 @@
 mod actions;
 mod app;
+mod banners;
 mod dialogs;
 mod editor;
 mod inspector;

@@ -1,4 +1,5 @@
 use crate::actions::{self, menu_item, tooltip, Act, Action, Ctx, Group, ACTIONS};
+use crate::banners::Kind as BannerKind;
 use crate::dialogs::{self as dlg, Outcome};
 use crate::editor::{Action as EdAction, Tool};
 use crate::inspector::{self, Apply, Section};
@@ -143,6 +144,9 @@ enum Dialog {
     Print(dlg::Print),
     About,
 }
+
+/// Title of the OCR background job, also used to recognise its result.
+const OCR_JOB: &str = "Recognise text";
 
 /// Width of the inspector panel, and of its rail when collapsed.
 const INSPECTOR_WIDTH: f32 = 250.0;
@@ -327,6 +331,10 @@ impl App {
                             *p = pdf;
                             Ok(())
                         });
+                        // Text was recognised: the scan banner has done its job.
+                        if title == OCR_JOB {
+                            t.banners.retain(|b| b.kind != BannerKind::Scanned);
+                        }
                     }
                     self.dialog = Dialog::Message(title.into(), text);
                 }
@@ -812,6 +820,7 @@ impl App {
             }
             Apply::Security => {
                 let t = &mut self.tabs[active];
+                t.banners.retain(|b| b.kind != BannerKind::Protected);
                 let s = &t.forms.sec;
                 t.encryption = s.enabled.then(|| Encryption {
                     user_password: s.user.clone(),
@@ -868,7 +877,7 @@ impl App {
                 }
             }
             Apply::Ocr => match parse_page_range(&self.tabs[active].forms.ocr, n) {
-                Ok(idx) => self.spawn_job(ctx, "Recognise text", move |p| {
+                Ok(idx) => self.spawn_job(ctx, OCR_JOB, move |p| {
                     let ocr = mpe_core::Ocr::bundled()?;
                     Ok(ocr_summary(&p.ocr_pages(&idx, &ocr)?))
                 }),

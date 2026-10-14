@@ -1,10 +1,12 @@
 use crate::actions::{self, Act, Ctx};
+use crate::banners::{self, Banner};
 use crate::editor::{Action, Editor, Tool};
 use crate::inspector::Forms;
 use crate::selection::Selection;
 use crate::theme;
 use crate::worker::{Key, Worker};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptions, Vec2};
+use egui_phosphor::regular as icon;
 use mpe_core::{Encryption, Pdf, SearchHit};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
@@ -61,6 +63,8 @@ pub struct Tab {
     pub notice: Option<String>,
     /// A thumbnail drag in progress: the thumbnail it started on.
     thumb_drag: Option<usize>,
+    /// Notices about the document shown above the pages, most important first.
+    pub banners: Vec<Banner>,
 }
 
 impl Tab {
@@ -70,9 +74,12 @@ impl Tab {
         mut pdf: Pdf,
         path: Option<PathBuf>,
     ) -> Result<Self, String> {
+        let size = path.as_ref().and_then(|p| std::fs::metadata(p).ok());
+        let banners = banners::detect(&pdf, size.map(|m| m.len()));
         let bytes = pdf.render_snapshot().map_err(|e| e.to_string())?;
         let sizes = sizes_of(&pdf);
         Ok(Self {
+            banners,
             id,
             pdf,
             path,
@@ -513,12 +520,54 @@ impl Tab {
             });
     }
 
+    /// Up to two banners above the pages: icon, text, the banner's button if it has one,
+    /// and a close button. A button's command is queued in `requested`.
+    fn banners_ui(&mut self, ui: &mut egui::Ui) {
+        let mut close = None;
+        let fill = ui.visuals().selection.bg_fill;
+        for (i, b) in self.banners.iter().take(2).enumerate() {
+            let top = if i == 0 { 12 } else { 6 };
+            egui::Frame::new()
+                .fill(fill)
+                .corner_radius(theme::RADIUS)
+                .inner_margin(egui::Margin::symmetric(12, 6))
+                .outer_margin(egui::Margin {
+                    left: 16,
+                    right: 16,
+                    top,
+                    bottom: 0,
+                })
+                .show(ui, |ui| {
+                    let text = |ui: &mut egui::Ui| {
+                        ui.label(theme::icon(b.icon()).size(16.0));
+                        ui.add(egui::Label::new(&b.text).wrap());
+                    };
+                    let buttons = |ui: &mut egui::Ui| {
+                        let x = egui::Button::new(theme::icon(icon::X)).frame_when_inactive(false);
+                        if ui.add(x).on_hover_text("Dismiss").clicked() {
+                            close = Some(i);
+                        }
+                        if let Some((label, act)) = b.action() {
+                            if ui.button(label).clicked() {
+                                self.requested.push(act);
+                            }
+                        }
+                    };
+                    egui::Sides::new().shrink_left().show(ui, text, buttons);
+                });
+        }
+        if let Some(i) = close {
+            self.banners.remove(i);
+        }
+    }
+
     pub fn show_pages(&mut self, ui: &mut egui::Ui, base: &Ctx) {
         let ctx = ui.ctx().clone();
         self.collect(&ctx);
         let ppp = ctx.pixels_per_point();
         let dark = ui.visuals().dark_mode;
 
+        self.banners_ui(ui);
         let zd = ui.input(|i| i.zoom_delta());
         if zd != 1.0 {
             self.set_zoom(self.zoom * zd);
