@@ -6,13 +6,17 @@ text-and-graphics test file of 538 KB:
 | Task | Time |
 | --- | --- |
 | Render 300 pages at 100 dpi to PNG files (both cores) | 3.5 s |
-| Full-text search of 300 pages | 0.05 s |
+| Full-text search of 300 pages | 0.05 s (see below) |
 | Watermark 300 pages | 0.03 s |
 | Merge 3 × 300 pages into 900 pages | 0.03 s |
 | Split 900 pages into 18 files | 0.14 s |
 | AES-256 encrypt 300 pages | 0.02 s |
 
 These are single runs on small, simple pages, not a benchmark suite, and no comparison with other software was made.
+
+Search was measured when it used the document library's text extraction. It now reads pages with MPE's own text
+reader, which gets far more files right and takes about twice as long on the same files: searching the 477-page
+Ghostscript manual takes 0.17 s instead of 0.09 s on a 6-core machine, including starting the program.
 Pages with large images, heavy transparency or many fonts are slower, and hayro's own documentation says its renderer
 has not yet been tuned for performance.
 

@@ -38,6 +38,12 @@
 
 - Printing on Windows, built in 0.3.0 but not run then, has been tried and works.
 
+### Other changes
+
+- Search takes about twice as long as before, as it now reads pages with MPE's own text reader: 0.17 s for a
+  477-page manual. See [Performance](docs/performance.md).
+- Release notes on GitHub end with a link to every change since the previous version.
+
 ## [0.3.0] - 2026-10-13
 
 MPE is still a test release: most testing has been on Linux. See
