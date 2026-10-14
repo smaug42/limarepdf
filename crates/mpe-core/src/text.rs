@@ -28,7 +28,12 @@ impl Pdf {
 
     /// Case-insensitive text search across all pages, in parallel.
     pub fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
-        let q = query.trim().to_lowercase();
+        // Runs of whitespace match one space, as in the page text below.
+        let q = query
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
         if q.is_empty() {
             return Ok(vec![]);
         }

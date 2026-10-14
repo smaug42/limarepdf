@@ -105,7 +105,7 @@ fn scanned_pages(pdf: &Pdf) -> usize {
                 return false;
             };
             let area = |b: [f32; 4]| (b[2] - b[0]).abs() * (b[3] - b[1]).abs();
-            let text = objs.iter().any(|o| o.kind == ObjectKind::Text);
+            let text = pdf.page_has_text(i);
             let image = objs
                 .iter()
                 .any(|o| o.kind == ObjectKind::Image && area(o.bbox) >= 0.5 * w * h);

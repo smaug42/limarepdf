@@ -7,7 +7,8 @@ On the command line, `mpe search --boxes` also prints where each match is on its
 
 Limits:
 
-- A phrase broken across lines is listed but not highlighted.
+- A phrase can run across a line break: search treats the break as a space and highlights the part on each line.
+  A word hyphenated at the end of a line is not found as one word.
 - Scanned pages have no text until you [recognise it](scanning-and-ocr.md#recognising-text-ocr).
 
 Highlights are placed using each character's width in the font. When a file uses one of the standard PDF fonts
@@ -38,4 +39,5 @@ Limits:
   give the wrong characters.
 - CID fonts whose codes are not two bytes long (some older Chinese, Japanese and Korean encodings) can come out
   wrong.
-- Text inside form XObjects (reusable blocks of page content) is not read.
+- Text inside form XObjects (reusable blocks of page content, which some PDF makers put all their text in) is read,
+  searched and selected, but cannot be edited line by line: the form moves, resizes and deletes as one object.

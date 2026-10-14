@@ -40,5 +40,6 @@ Not yet available: paper size, scaling, colour and printer-specific options. The
 - Export: `crates/mpe-core/tests/export.rs` (sizes, content, re-import, names) and by running the CLI.
 - Printing: `crates/mpe-core/tests/print.rs`, with a stand-in for `lp` (its arguments, the document it receives, and
   errors), and against a real CUPS with no printers (error messages). The Windows page placement and rotation are
-  unit-tested; the Windows printing code has been compiled but not run.
-- Printing has not been tried with a real printer yet.
+  unit-tested.
+- Printing has been tried on Windows, where it works. On Linux and macOS it has not yet been tried with a real
+  printer.

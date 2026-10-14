@@ -27,9 +27,16 @@
 - Words separated only by a gap, with no space character, keep their space in extracted text, search and copying,
   including in tightly justified lines and headings.
 - Ligatures such as "ﬁ" come out as their letters, so searches find words written with them.
+- A phrase that runs across a line break is highlighted on both lines; before, it was listed but not highlighted.
+- Text inside form XObjects (blocks of page content that some PDF makers put all their text in) is now read, so it
+  can be searched, selected, copied and exported. Pages whose only text is there are no longer taken for scans.
 - Headers, footers and watermarks measure accented Latin-1 letters by their real widths, so centred and
   right-aligned text containing them is placed correctly.
 - Long names in the start screen's recent files no longer run past the card.
+
+### Testing
+
+- Printing on Windows, built in 0.3.0 but not run then, has been tried and works.
 
 ## [0.3.0] - 2026-10-13
 
