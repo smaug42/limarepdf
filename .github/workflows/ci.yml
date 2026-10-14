@@ -51,6 +51,11 @@ jobs:
           cp crates/mpe-core/models/README.md "$dir/OCR-MODEL.md"
           # Licence for the Inter font built into mpe-gui.
           cp crates/mpe-gui/assets/fonts/OFL.txt "$dir/FONT-LICENSE-Inter.txt"
+          # Linux desktop entry and icon; docs/install.md says where they go.
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            cp crates/mpe-gui/assets/mpe.desktop "$dir/"
+            cp docs/images/icon.png "$dir/mpe.png"
+          fi
           cd dist
           if [ "${{ runner.os }}" = "Windows" ]; then
             7z a -tzip "$name.zip" "$name" > /dev/null

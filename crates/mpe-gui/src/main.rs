@@ -22,9 +22,16 @@ fn main() -> eframe::Result {
             files.push(std::path::PathBuf::from(a));
         }
     }
+    let mut viewport = eframe::egui::ViewportBuilder::default()
+        .with_title("MPE")
+        // Wayland takes the icon from the mpe.desktop file this id names, not the window.
+        .with_app_id("mpe");
+    match eframe::icon_data::from_png_bytes(include_bytes!("../../../docs/images/icon.png")) {
+        Ok(icon) => viewport = viewport.with_icon(icon),
+        Err(e) => eprintln!("mpe-gui: app icon not loaded: {e}"),
+    }
     let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_title("MPE")
+        viewport: viewport
             .with_inner_size([1200.0, 850.0])
             .with_min_inner_size([640.0, 420.0])
             .with_drag_and_drop(true),
