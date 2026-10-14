@@ -157,6 +157,7 @@ enum Dialog {
     ConfirmQuit,
     /// Export would replace this many files.
     ConfirmReplace(ImageExport, usize),
+    ConfirmFlatten,
     Print(dlg::Print),
     /// Open this web or email address from a link?
     OpenLink(String),
@@ -603,6 +604,7 @@ impl App {
                 t.edit(ctx, |p| p.reset_form());
                 t.notice = Some("Reset the form".into());
             }
+            Act::FlattenForm => self.dialog = Dialog::ConfirmFlatten,
             Act::Tool(Tool::Image) => self.tabs[self.active].choose_image(),
             Act::Tool(tool) => self.tabs[self.active].ed.set_tool(tool),
             Act::SelectAllText => {
@@ -1087,6 +1089,26 @@ impl App {
             ) {
                 Outcome::Apply => {
                     self.start_export(ctx, e.clone());
+                    done = true;
+                }
+                Outcome::Cancel => done = true,
+                Outcome::Open => {}
+            },
+            Dialog::ConfirmFlatten => match dlg::confirm(
+                ctx,
+                "Flatten form?",
+                "The fields become part of the pages, as they look now, and can no longer be \
+                 filled in, here or in other readers. Undo brings them back until you close \
+                 the document.",
+                "Flatten",
+            ) {
+                Outcome::Apply => {
+                    let t = &mut self.tabs[self.active];
+                    t.ed.form.clear_focus();
+                    if t.edit(ctx, |p| p.flatten_form(None).map(|_| ())) {
+                        t.banners.retain(|b| b.kind != BannerKind::Forms);
+                        t.notice = Some("Flattened the form".into());
+                    }
                     done = true;
                 }
                 Outcome::Cancel => done = true,

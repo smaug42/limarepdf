@@ -196,9 +196,14 @@ impl Tab {
 
     // ------------------------------------------------------------ editing
 
-    /// Run an edit with undo support. On failure the document is left unchanged.
-    pub fn edit(&mut self, ctx: &egui::Context, f: impl FnOnce(&mut Pdf) -> mpe_core::Result<()>) {
-        self.edit_inner(ctx, None, f);
+    /// Run an edit with undo support. On failure the document is left unchanged, and
+    /// false is returned.
+    pub fn edit(
+        &mut self,
+        ctx: &egui::Context,
+        f: impl FnOnce(&mut Pdf) -> mpe_core::Result<()>,
+    ) -> bool {
+        self.edit_inner(ctx, None, f)
     }
 
     /// Like [`Tab::edit`] for changes confined to the given pages: the old picture stays visible until the new

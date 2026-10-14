@@ -409,11 +409,23 @@ enum FormCmd {
         /// A JSON object of values, as `mpe form list --json` prints them
         #[arg(long, value_name = "FILE")]
         values: Option<PathBuf>,
+        /// Then flatten the form, so the values can't be changed
+        #[arg(long)]
+        flatten: bool,
     },
     /// Put every field back to its default value
     Reset {
         #[command(flatten)]
         io: Io,
+    },
+    /// Draw the fields into the pages as they look now and remove them, so the values
+    /// can no longer be changed
+    Flatten {
+        #[command(flatten)]
+        io: Io,
+        /// Only these pages, e.g. 1-3,7; fields elsewhere stay fillable
+        #[arg(long)]
+        pages: Option<String>,
     },
 }
 
@@ -471,7 +483,7 @@ const XFA_ONLY: &str =
     "this form was made for Adobe Reader (an XFA form): its fields are built by \
                         Adobe software, so MPE can't list or fill them";
 
-fn form_fill(io: &Io, set: &[String], values: &Option<PathBuf>) -> Result<()> {
+fn form_fill(io: &Io, set: &[String], values: &Option<PathBuf>, flatten: bool) -> Result<()> {
     let mut pdf = open(&io.input, &io.password)?;
     if pdf.xfa_only() {
         bail!("{XFA_ONLY}");
@@ -511,10 +523,18 @@ fn form_fill(io: &Io, set: &[String], values: &Option<PathBuf>) -> Result<()> {
     for (name, v) in &todo {
         pdf.set_field(name, v.clone())?;
     }
+    if flatten {
+        pdf.flatten_form(None)?;
+    }
     pdf.save(&io.output)?;
     out!(
-        "filled {} field(s); wrote {}",
+        "filled {} field(s){}; wrote {}",
         todo.len(),
+        if flatten {
+            " and flattened the form"
+        } else {
+            ""
+        },
         io.output.display()
     );
     Ok(())
@@ -1044,8 +1064,32 @@ fn main() -> Result<()> {
                 json,
                 password,
             } => form_list(&input, json, &password)?,
-            FormCmd::Fill { io, set, values } => form_fill(&io, &set, &values)?,
+            FormCmd::Fill {
+                io,
+                set,
+                values,
+                flatten,
+            } => form_fill(&io, &set, &values, flatten)?,
             FormCmd::Reset { io } => run_edit(&io, |p| p.reset_form())?,
+            FormCmd::Flatten { io, pages } => {
+                let mut p = open(&io.input, &io.password)?;
+                if p.xfa_only() {
+                    bail!("{XFA_ONLY}");
+                }
+                if p.form_fields().is_empty() {
+                    bail!("{} has no form fields", io.input.display());
+                }
+                let idx = match pages {
+                    Some(r) => Some(parse_page_range(&r, p.page_count())?),
+                    None => None,
+                };
+                let n = p.flatten_form(idx.as_deref())?;
+                p.save(&io.output)?;
+                out!(
+                    "flattened {n} field widget(s); wrote {}",
+                    io.output.display()
+                );
+            }
         },
         Cmd::Printers => {
             let list = print::printers()?;

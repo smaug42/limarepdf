@@ -8,7 +8,8 @@ are not started.
 - **View:** tabs, thumbnails, continuous scrolling, zoom, search with highlights on the page, bookmarks and links.
 - **Organise pages:** drag thumbnails to reorder; rotate, insert, delete and extract pages; merge and split files.
 - **Edit content:** move, resize, restyle and delete text, images and shapes; edit text; add text, shapes and images.
-- **Fill in forms:** text fields, checkboxes, radio buttons and lists, in the app or from JSON on the command line.
+- **Fill in forms:** text fields, checkboxes, radio buttons and lists, in the app or from JSON on the command line;
+  flatten them so the values can't be changed.
 - **Stamp pages:** headers, footers, page numbers, Bates numbers and text watermarks.
 - **Scans:** turn images into PDFs, shrink and straighten scanned pages, and add a searchable text layer with
   built-in OCR (Latin script).
@@ -54,7 +55,7 @@ available.
 | Driving scanners | No | Not planned: scan with your system's tool and import the images |
 | Export to Word, Excel, CSV | No | |
 | Annotations, comments, stamps, measuring | No | Existing annotations are shown if they have an appearance stream |
-| Forms | Partial | Fill in text fields, checkboxes, radio buttons and lists in the app (Tab between fields, highlight, reset) and from the command line (`mpe form`, values as JSON). Flattening: being built. Latin-1 text only; JavaScript doesn't run; creating fields and signing: No. [Details](gui.md#filling-in-forms) |
+| Forms | Partial | Fill in text fields, checkboxes, radio buttons and lists in the app (Tab between fields, highlight, reset, flatten) and from the command line (`mpe form`, values as JSON, flatten all or some pages). Latin-1 text only; JavaScript doesn't run; creating fields and signing: No. [Details](gui.md#filling-in-forms) |
 | XFA-only forms (made for Adobe Reader) | No | Recognised and explained in a notice and by `mpe form`; showing or filling them is not planned (see below). Hybrid forms are filled through their ordinary fields |
 | Form data import/export (FDF, XFDF), barcodes, JavaScript | No | |
 | Bookmarks | Partial | Shown in the Bookmarks tab (also from the command palette) and followed; adding, editing or deleting them: No. [Details](gui.md#the-window) |

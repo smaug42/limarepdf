@@ -59,7 +59,9 @@ and a click fills it in. With the editing tools, hold Ctrl (Cmd on macOS) and cl
 
 Each value you change is one undo step. ☰ > View > Highlight fields tints every field and outlines the required ones
 in red. The inspector's Form section shows the field you are in (its name, description and whether it is required),
-with Clear field, Highlight fields and Reset form, which puts every field back to its default. Read-only fields,
+with Clear field, Highlight fields and Reset form, which puts every field back to its default. Flatten form… (also
+in the command palette) makes the fields part of the pages as they look now, so nobody can change the values,
+here or in other readers; it asks first, and Undo brings the fields back until you close the document. Read-only fields,
 buttons (they run scripts, which MPE doesn't) and signature fields can't be filled in; hovering says why.
 
 MPE draws the filled fields itself, so the values show the same in other readers. Text must be Latin-1 (Western

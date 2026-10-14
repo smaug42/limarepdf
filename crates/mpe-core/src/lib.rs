@@ -7,6 +7,7 @@ mod doc;
 mod edit;
 mod fonts;
 mod form_ap;
+mod form_flatten;
 mod form_write;
 mod forms;
 mod imgs;

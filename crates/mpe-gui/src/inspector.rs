@@ -435,8 +435,10 @@ fn form_ui(ui: &mut Ui, form: &FormUi, c: &Ctx) -> Option<Act> {
     if ui.checkbox(&mut shown, "Highlight fields").changed() {
         act = Some(Act::ToggleFields);
     }
-    if act_button(ui, Act::ResetForm, c) {
-        act = Some(Act::ResetForm);
+    for a in [Act::ResetForm, Act::FlattenForm] {
+        if act_button(ui, a, c) {
+            act = Some(a);
+        }
     }
     act
 }

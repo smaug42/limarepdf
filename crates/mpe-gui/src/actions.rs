@@ -62,6 +62,7 @@ pub enum Act {
     /// Empty the form field with the keyboard.
     ClearField,
     ResetForm,
+    FlattenForm,
     Theme(ThemePreference),
     Palette,
     Tool(Tool),
@@ -804,6 +805,15 @@ pub static ACTIONS: &[Action] = &[
         label: "Reset form",
         enabled: |c| c.form && !c.busy,
         hint: "Put every field back to its default value. Can be undone.",
+        ..BASE
+    },
+    Action {
+        act: Act::FlattenForm,
+        group: Group::Document,
+        label: "Flatten form…",
+        enabled: |c| c.form && !c.busy,
+        hint: "Make the fields part of the pages, as they look now, so they can't be \
+               changed. Can be undone.",
         ..BASE
     },
     Action {

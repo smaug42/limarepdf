@@ -163,6 +163,29 @@ impl Pdf {
         font: ObjectId,
         gs: Option<ObjectId>,
     ) -> Result<()> {
+        self.wrap_contents(page, below, above)?;
+        let pd = self.doc.get_dictionary(page)?;
+        let mut res = self.resolved_dict(pd.get(b"Resources").ok());
+        let mut fonts = self.resolved_dict(res.get(b"Font").ok());
+        fonts.set(FONT_NAME, Object::Reference(font));
+        res.set("Font", fonts);
+        if let Some(gs) = gs {
+            let mut egs = self.resolved_dict(res.get(b"ExtGState").ok());
+            egs.set(GS_NAME, Object::Reference(gs));
+            res.set("ExtGState", egs);
+        }
+        self.doc.get_dictionary_mut(page)?.set("Resources", res);
+        Ok(())
+    }
+
+    /// Wrap the page's existing content in q/Q, so that it leaves the graphics state as
+    /// it found it, and add `below` and `above` streams.
+    pub(crate) fn wrap_contents(
+        &mut self,
+        page: ObjectId,
+        below: Option<Vec<u8>>,
+        above: Option<Vec<u8>>,
+    ) -> Result<()> {
         let existing = self.page_content_refs(page);
         let mut contents: Vec<Object> = Vec::with_capacity(existing.len() + 4);
         if let Some(b) = below {
@@ -190,20 +213,7 @@ impl Pdf {
                     .into(),
             );
         }
-
-        let pd = self.doc.get_dictionary(page)?;
-        let mut res = self.resolved_dict(pd.get(b"Resources").ok());
-        let mut fonts = self.resolved_dict(res.get(b"Font").ok());
-        fonts.set(FONT_NAME, Object::Reference(font));
-        res.set("Font", fonts);
-        if let Some(gs) = gs {
-            let mut egs = self.resolved_dict(res.get(b"ExtGState").ok());
-            egs.set(GS_NAME, Object::Reference(gs));
-            res.set("ExtGState", egs);
-        }
-        let pd = self.doc.get_dictionary_mut(page)?;
-        pd.set("Resources", res);
-        pd.set("Contents", contents);
+        self.doc.get_dictionary_mut(page)?.set("Contents", contents);
         Ok(())
     }
 

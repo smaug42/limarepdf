@@ -19,7 +19,8 @@
   ☰ > View > Bookmarks and the command palette open it.
 - Fill in forms: click a field with the hand or text-select tool to type in it, tick it or choose from its
   options; Tab moves between fields. Each change is one undo step. ☰ > View > Highlight fields shows every field,
-  and the inspector's Form section has Clear field and Reset form. Fields with a value but no drawing of their own
+  and the inspector's Form section has Clear field, Reset form and Flatten form…, which makes the fields part of
+  the pages so the values can't be changed (Undo brings them back). Fields with a value but no drawing of their own
   now show their value. See [Filling in forms](docs/gui.md#filling-in-forms).
 - Forms made only for Adobe Reader (XFA forms, which show a "Please wait..." page) get a notice explaining that
   only Adobe software can show or fill them; `mpe form list` and `mpe form fill` say the same.
@@ -37,6 +38,8 @@
 - `mpe form fill` fills in text fields, checkboxes, radio buttons, drop-downs and lists, from `--set NAME=VALUE`
   or a JSON file like the one `form list --json` prints, and `mpe form reset` puts fields back to their defaults.
   MPE draws the filled fields itself, so the values show in every reader. See [Forms](docs/cli.md#forms).
+- `mpe form flatten` draws a form's fields into its pages and removes them (`--pages` for some pages only), and
+  `mpe form fill --flatten` fills in and flattens in one go.
 
 ### Fixes
 

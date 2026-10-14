@@ -27,6 +27,8 @@ Page lists take numbers and ranges, counted from 1: `1-3,7`, `5-` (5 to the end)
 | `mpe form fill in.pdf -o out.pdf --set name=Ann --set agree=on` | Fill in fields. Checkboxes take `on` or `off`; a multi-select list takes its choices separated by `\|` |
 | `mpe form fill in.pdf -o out.pdf --values values.json` | Fill in fields from a JSON object in the form `mpe form list --json` prints, so you can list, edit and fill. A choice can be given by its export value or by the text shown for it. `--set` can be added and is applied after the file |
 | `mpe form reset in.pdf -o out.pdf` | Put every field back to its default value |
+| `mpe form flatten in.pdf -o out.pdf` | Draw the fields into the pages as they look now and remove them, so the values can't be changed. `--pages 1-3` flattens only those pages; fields elsewhere stay fillable |
+| `mpe form fill in.pdf -o out.pdf --values values.json --flatten` | Fill in, then flatten |
 
 Filling checks every value first: an unknown field name, a read-only field, text too long for the field, a line
 break in a single-line field, or an option the field doesn't have stops it before anything is written. MPE draws
@@ -35,6 +37,9 @@ now; other characters are refused rather than written wrongly. When the field's 
 uses the closest standard font (Helvetica, Times or Courier). Password fields are drawn as `*` and their value is
 not kept in the file, as the PDF standard asks. Forms that need JavaScript to calculate or check values are filled,
 but their scripts don't run.
+
+Flattening keeps each field's look exactly, including checkboxes and borders; hidden fields are removed without
+being drawn. Once no fields are left the form itself is removed, so readers no longer offer to fill it in.
 
 Forms made only for Adobe Reader (XFA forms, whose pages say "Please wait..." elsewhere) have no fields MPE can
 reach: `form list` says so (with `--json` it prints `{}` and the reason on standard error), and `form fill` stops

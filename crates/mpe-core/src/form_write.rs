@@ -183,7 +183,7 @@ impl Pdf {
 
     /// After a change: a hybrid form's XFA part still holds the old values, and readers
     /// that prefer XFA would show those, so it goes.
-    fn form_changed(&mut self) {
+    pub(crate) fn form_changed(&mut self) {
         if let Ok(form) = self.acro_form_id() {
             if let Ok(d) = self.doc.get_dictionary_mut(form) {
                 d.remove(b"XFA");
@@ -420,7 +420,7 @@ impl Pdf {
         Ok((look, matrix))
     }
 
-    fn dict_of<'a>(&'a self, o: &'a Object) -> Option<&'a Dictionary> {
+    pub(crate) fn dict_of<'a>(&'a self, o: &'a Object) -> Option<&'a Dictionary> {
         self.doc
             .dereference(o)
             .ok()
@@ -528,7 +528,7 @@ impl Pdf {
 
     /// The `/AcroForm` dictionary's object, made indirect if it was written in the
     /// catalog.
-    fn acro_form_id(&mut self) -> Result<ObjectId> {
+    pub(crate) fn acro_form_id(&mut self) -> Result<ObjectId> {
         let catalog = self.doc.trailer.get(b"Root")?.as_reference()?;
         self.indirect_entry(catalog, b"AcroForm")
     }
