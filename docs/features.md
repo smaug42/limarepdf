@@ -82,6 +82,8 @@ available.
 - Saving removes the validity of digital signatures, as any rewrite does. The app asks first when a document is
   signed; the command line doesn't.
 - Files the renderer cannot read show "Rendering…" on their pages; editing may still work.
+- A malformed file that makes MPE fail while opening, editing or saving gets an error message, and a failed edit
+  leaves the document as it was. A failure elsewhere, such as searching or listing comments, can still close the app.
 
 ## Planned and proposed
 

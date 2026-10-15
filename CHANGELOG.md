@@ -14,6 +14,8 @@
 - Search highlights follow the page's reading order, as the results list does, so every match listed is highlighted
   and stepping through results goes to the right place.
 - On Windows, a console window no longer opens behind the app.
+- A malformed file that makes MPE fail while opening, editing or saving shows an error instead of closing the app.
+  A failed edit leaves the document as it was.
 
 ## [0.5.0] - 2026-10-15
 

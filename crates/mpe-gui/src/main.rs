@@ -16,6 +16,21 @@ mod tab;
 mod theme;
 mod worker;
 
+/// Run document work that a malformed file could make panic, turning a panic into an error so the app stays
+/// open. The caller must not trust any state the closure was changing when it fails.
+pub fn guard<T>(f: impl FnOnce() -> mpe_core::Result<T>) -> mpe_core::Result<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|p| {
+        let why = p
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| p.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown cause".into());
+        Err(anyhow::anyhow!(
+            "MPE hit an internal error ({why}). The file may be damaged."
+        ))
+    })
+}
+
 fn main() -> eframe::Result {
     let mut files = Vec::new();
     let mut page: Option<usize> = None;
@@ -47,4 +62,17 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| Ok(Box::new(app::App::new(cc, files, page)))),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn guard_turns_panics_into_errors() {
+        assert_eq!(super::guard(|| Ok(3)).unwrap(), 3);
+        let e = super::guard::<()>(|| panic!("bad xref")).unwrap_err();
+        assert!(e.to_string().contains("bad xref"));
+        let n = 7;
+        let e = super::guard::<()>(|| panic!("index {n}")).unwrap_err();
+        assert!(e.to_string().contains("index 7"));
+    }
 }

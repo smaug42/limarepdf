@@ -233,14 +233,15 @@ impl Tab {
         soft: Option<&[usize]>,
         f: impl FnOnce(&mut Pdf) -> mpe_core::Result<()>,
     ) -> bool {
-        let before = match self.pdf.snapshot() {
+        let before = match crate::guard(|| self.pdf.snapshot()) {
             Ok(b) => b,
             Err(e) => {
-                self.error = Some(e.to_string());
+                self.error = Some(format!("{e:#}"));
                 return false;
             }
         };
-        if let Err(e) = f(&mut self.pdf) {
+        // A panic leaves the document half changed, so it is put back like any other failure.
+        if let Err(e) = crate::guard(|| f(&mut self.pdf)) {
             if let Ok(p) = Pdf::from_bytes(&before, None) {
                 self.pdf = p;
             }

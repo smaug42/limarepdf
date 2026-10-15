@@ -309,7 +309,7 @@ impl App {
         let tx = self.tx.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let msg = match Pdf::open(&path, password.as_deref()) {
+            let msg = match crate::guard(|| Pdf::open(&path, password.as_deref())) {
                 Ok(pdf) => Loaded::Ok { path, pdf, page },
                 Err(e) => {
                     let s = format!("{e:#}");
@@ -336,7 +336,9 @@ impl App {
         page: Option<usize>,
         dirty: bool,
     ) {
-        match Tab::new(ctx, self.next_id, pdf, path) {
+        let tab =
+            crate::guard(|| Tab::new(ctx, self.next_id, pdf, path).map_err(anyhow::Error::msg));
+        match tab {
             Ok(mut t) => {
                 self.next_id += 1;
                 t.dirty = dirty;
@@ -346,7 +348,7 @@ impl App {
                 self.tabs.push(t);
                 self.active = self.tabs.len() - 1;
             }
-            Err(e) => self.dialog = Dialog::Message("Cannot open".into(), e),
+            Err(e) => self.dialog = Dialog::Message("Cannot open".into(), format!("{e:#}")),
         }
     }
 
@@ -530,9 +532,11 @@ impl App {
         }
         let result: mpe_core::Result<()> = match layout {
             dlg::Layout::TextFile => std::fs::write(&path, text).map_err(Into::into),
-            _ => Excerpt::new(t, layout)
-                .build(&t.pdf)
-                .and_then(|mut d| d.save(&path)),
+            _ => crate::guard(|| {
+                Excerpt::new(t, layout)
+                    .build(&t.pdf)
+                    .and_then(|mut d| d.save(&path))
+            }),
         };
         match result {
             Ok(()) => self.status = format!("Saved the selected text to {}", path.display()),
@@ -586,7 +590,7 @@ impl App {
             tab.path.clone().unwrap()
         };
         tab.pdf.set_encryption(tab.encryption.clone());
-        match tab.pdf.save(&path) {
+        match crate::guard(|| tab.pdf.save(&path)) {
             Ok(()) => {
                 self.status = format!("Saved {}", path.display());
                 self.recent.add(&path);
@@ -834,7 +838,7 @@ impl App {
                 };
                 let mut docs = Vec::new();
                 for f in &files {
-                    match Pdf::open(f, None) {
+                    match crate::guard(|| Pdf::open(f, None)) {
                         Ok(d) => docs.push(d),
                         Err(e) => {
                             self.dialog = Dialog::Message(
