@@ -84,12 +84,31 @@ jobs:
             dist/*.deb
             dist/*.rpm
 
+  # A universal MPE.app (Apple Silicon and Intel) in a .dmg; packaging/macos/make-dmg.sh.
+  # The tests ran in the build job on both Macs.
+  macos-dmg:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --workspace --release --target aarch64-apple-darwin --target x86_64-apple-darwin
+      - name: Make the dmg
+        run: bash packaging/macos/make-dmg.sh dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mpe-macos-dmg
+          path: dist/*.dmg
+
   # On a version tag (v0.3.0): a draft GitHub Release with the archives, their checksums,
   # GPG signatures, build attestations and this version's section of CHANGELOG.md.
   # Publish it on GitHub. A dry run (workflow_dispatch) does everything but the release
   # and uploads the signed files as an artifact instead.
   release:
-    needs: build
+    needs: [build, macos-dmg]
     if: startsWith(github.ref, 'refs/tags/v') || inputs.dry_run
     runs-on: ubuntu-latest
     permissions:

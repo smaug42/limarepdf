@@ -2,7 +2,8 @@
 
 ## Download
 
-On Linux, the [packages](#linux-packages) are the easiest way. Otherwise, download an archive for your platform from
+On Linux, the [packages](#linux-packages) are the easiest way, and on macOS the [app](#macos-app). Otherwise,
+download an archive for your platform from
 the project's Releases page on GitHub: Linux (`.tar.gz`), Windows
 (`.zip`), and macOS for Intel and for Apple Silicon (`.tar.gz`). `SHA256SUMS` lists their checksums
 ([checking a download](#checking-a-download)).
@@ -14,6 +15,19 @@ licences, including those of the bundled OCR model and font. The Linux archive a
 The binaries are not code-signed, so the system warns the first time you run them. On macOS, run
 `xattr -d com.apple.quarantine mpe mpe-gui` in the unpacked folder, or try to run it once, then choose Open Anyway
 under System Settings > Privacy & Security. On Windows, choose More info, then Run anyway.
+
+### macOS app
+
+`MPE-<version>.dmg` holds `MPE.app`, one app for both Apple Silicon and Intel Macs (macOS 11 or later). Open the dmg
+and drag MPE to Applications. MPE is not signed with an Apple Developer ID, so the first launch says Apple cannot
+check it: choose Done, then open System Settings > Privacy & Security, choose Open Anyway next to MPE, and confirm.
+MPE then appears under Open With for PDF files.
+
+The command-line tool is inside the app; to use it from a terminal:
+
+```
+sudo ln -s /Applications/MPE.app/Contents/MacOS/mpe /usr/local/bin/mpe
+```
 
 ### Checking a download
 

@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- MPE.app's Info.plist; CI replaces VERSION with the version from Cargo.toml. -->
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>MPE</string>
+    <key>CFBundleDisplayName</key>
+    <string>MPE</string>
+    <key>CFBundleIdentifier</key>
+    <string>io.github.smaug42.mpe</string>
+    <key>CFBundleExecutable</key>
+    <string>mpe-gui</string>
+    <key>CFBundleIconFile</key>
+    <string>mpe</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>VERSION</string>
+    <key>CFBundleVersion</key>
+    <string>VERSION</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.productivity</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>MIT OR Apache-2.0</string>
+    <!-- Lists MPE under "Open With" for PDFs, without taking over as the default. -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>PDF document</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.adobe.pdf</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>

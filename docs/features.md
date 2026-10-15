@@ -124,7 +124,9 @@ version: timestamps, revocation checks, hardware tokens and signing encrypted fi
 In progress (design approved 2026-10-15). Done: every release file and `SHA256SUMS` are GPG-signed with MPE's own
 key, and each file has a build attestation (`gh attestation verify`); a dry run of the release job checks this
 without releasing. Linux `.deb` and `.rpm` packages (the rpm signed) are built for each release, and signed apt and
-dnf repositories on the project's GitHub Pages are rebuilt when a release is published. Next: the rest below.
+dnf repositories on the project's GitHub Pages are rebuilt when a release is published. macOS gets a universal
+`MPE.app` in a `.dmg`, listed under Open With for PDFs (whether a PDF opened that way loads, rather than just
+starting MPE, is untested). Next: the rest below.
 
 - **macOS:** an app bundle in a `.dmg` that registers MPE for PDFs, so it opens from Finder and "Open with". Without
   Apple signing it needs the same one-time "Open Anyway" as the archive does today.

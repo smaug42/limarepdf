@@ -42,6 +42,10 @@ eframe or rfd changes (`strings target/release/mpe-gui | grep '\.so'` lists them
 `podman run --rm -v $PWD:/p:Z debian:stable bash -c 'apt-get update && apt-get install -y /p/mpe_*.deb && mpe --version'`
 (and the same with `fedora` and `dnf install -y /p/*.rpm`).
 
+The `macos-dmg` job builds both Mac targets on one runner and runs `packaging/macos/make-dmg.sh`: it joins each
+binary with `lipo`, makes `MPE.app` from `packaging/macos/Info.plist` (which registers MPE for PDFs) and an icon made
+with `iconutil`, signs it ad hoc, and wraps it in `MPE-<version>.dmg` with `hdiutil`.
+
 The `release` job writes `SHA256SUMS`, signs it and every file with the signing subkey (below), checks each signature
 against `docs/mpe-signing-key.asc`, and records build provenance with `actions/attest-build-provenance`, which
 users check with `gh attestation verify`.
