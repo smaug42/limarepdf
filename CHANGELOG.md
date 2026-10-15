@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Saving a digitally signed document asks first, since the saved copy's signatures will show as invalid. Saving as
+  a new file keeps the signed original. Core: `Pdf::signature_count`.
+
 ### Changed
 
 - "New from images…" is now "Make a PDF from images…", on the start screen and in the menu, with a hover tip on the

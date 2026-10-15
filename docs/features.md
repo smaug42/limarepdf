@@ -79,7 +79,8 @@ available.
 - Headers, footers and watermarks are added to the page content. They are not annotations and cannot be removed one
   by one later; use Undo before saving.
 - Saving rewrites the whole file; incremental saving is not available.
-- Saving removes the validity of digital signatures, as any rewrite does.
+- Saving removes the validity of digital signatures, as any rewrite does. The app asks first when a document is
+  signed; the command line doesn't.
 - Files the renderer cannot read show "Rendering…" on their pages; editing may still work.
 
 ## Planned and proposed
@@ -113,8 +114,8 @@ boxes, with no angle, so turning them needs a workaround:
 A future task, not yet scheduled. Create your own signing identity (a self-signed certificate), sign documents with
 a standard PDF signature that other readers check, and verify signatures, in the app and from the command line.
 Readers show such a signature as valid but from an unknown signer until the recipient trusts the certificate by
-checking its fingerprint with you. Signing adds to the end of the file, so earlier signatures stay valid. A first
-step needs no new libraries: warn before a save would break a file's existing signatures. Not planned for the first
+checking its fingerprint with you. Signing adds to the end of the file, so earlier signatures stay valid. Not
+planned for the first
 version: timestamps, revocation checks, hardware tokens and signing encrypted files.
 
 ### Packaging

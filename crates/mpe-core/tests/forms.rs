@@ -227,6 +227,28 @@ fn reads_every_kind_of_field() {
 }
 
 #[test]
+fn counts_only_signed_signature_fields() {
+    let mut p = two_pages();
+    let empty = p.doc.add_object(widget(dictionary! {
+        "FT" => "Sig", "T" => text("empty"), "Rect" => rect(150, 150),
+    }));
+    let value = p
+        .doc
+        .add_object(dictionary! { "Type" => "Sig", "Filter" => "Adobe.PPKLite" });
+    let signed = p.doc.add_object(widget(dictionary! {
+        "FT" => "Sig", "T" => text("signed"), "Rect" => rect(150, 120), "V" => value,
+    }));
+    let name = p.doc.add_object(widget(dictionary! {
+        "FT" => "Tx", "T" => text("name"), "Rect" => rect(150, 90), "V" => text("x"),
+    }));
+    on_page(&mut p, 0, &[empty, signed, name]);
+    set_form(&mut p, &[empty, name]);
+    assert_eq!(p.signature_count(), 0);
+    set_form(&mut p, &[empty, signed, name]);
+    assert_eq!(p.signature_count(), 1);
+}
+
+#[test]
 fn skips_broken_fields() {
     let mut p = two_pages();
     // No field type anywhere in its parents.

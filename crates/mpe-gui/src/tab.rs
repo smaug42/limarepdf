@@ -44,6 +44,8 @@ pub struct Tab {
     /// is still current.
     pub revision: u64,
     pub encryption: Option<Encryption>,
+    /// The file holds digital signatures that saving would break; cleared once saved.
+    pub signed: bool,
     worker: Worker,
     pub sizes: Vec<(f32, f32)>,
     pages: HashMap<usize, (u32, TextureHandle)>,
@@ -110,6 +112,7 @@ impl Tab {
         pdf.refresh_appearances();
         let bytes = pdf.app_snapshot().map_err(|e| e.to_string())?;
         let sizes = sizes_of(&pdf);
+        let signed = pdf.signature_count() > 0;
         Ok(Self {
             banners,
             id,
@@ -118,6 +121,7 @@ impl Tab {
             dirty: false,
             revision: 0,
             encryption: None,
+            signed,
             worker: Worker::spawn(ctx.clone(), bytes),
             sizes,
             pages: HashMap::new(),
