@@ -31,7 +31,8 @@ sudo ln -s /Applications/MPE.app/Contents/MacOS/mpe /usr/local/bin/mpe
 
 ### Windows installer
 
-`mpe-<version>-x86_64.msi` installs MPE for all users in `Program Files\MPE`, adds it to the Start menu and to Open
+`mpe-<version>-x86_64.msi` opens an installer that lets you choose the folder (`Program Files\MPE` by default). It installs MPE for all
+users, adds it to the Start menu and to Open
 with for PDF files, and puts `mpe` on the `PATH` (open a new terminal to use it). To make MPE the default PDF app,
 choose it in Settings > Apps > Default apps. Installing a newer version replaces the old one; uninstall from
 Settings > Apps. The installer is not code-signed, so SmartScreen warns: choose More info, then Run anyway.

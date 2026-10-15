@@ -125,7 +125,7 @@ like notes.
 
 - **Rectangle, ellipse, line:** drag, or click for a default size. Shift keeps squares, circles and lines at
   multiples of 45°. The inspector sets the outline (or line) colour and width, the fill of rectangles and
-  ellipses, and an arrowhead at the end of a line, before you start.
+  ellipses (off until you turn it on), and an arrowhead at the end of a line, before you start.
 - **Pen:** drag to draw; a click makes a dot. Strokes started within 1.5 seconds of the last one, on the same page,
   join the same drawing, so a word or a circle with a tick is one annotation. Each stroke is still its own undo
   step. Points closer together than about a third of a point to the line drawn are dropped, which keeps files

@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Changed
+
+- New rectangles and ellipses have no fill; turn Fill on in the inspector to fill them.
+- The Windows installer shows its steps, says in plain words that MPE is free and open source, and lets you choose
+  where to install MPE.
+
+### Fixed
+
+- On Windows, a console window no longer opens behind the app.
+
 ## [0.5.0] - 2026-10-15
 
 Installable packages and signed releases: a Windows installer, a macOS app, Linux packages with apt and dnf

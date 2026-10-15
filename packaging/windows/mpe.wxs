@@ -1,15 +1,27 @@
 <!--
   The Windows installer, built in CI with WiX 5 from the repository root:
     wix build packaging/windows/mpe.wxs -arch x64 -d Version=<version> -o mpe-<version>-x86_64.msi
-  Installs for all users in Program Files\MPE, with a Start menu shortcut, MPE under
-  "Open with" for PDFs (and in Settings > Default apps), and mpe.exe on the PATH.
-  The UpgradeCode must never change: it is how a newer MPE replaces an older one.
+  (with -ext WixToolset.UI.wixext -loc packaging/windows/mpe.wxl -culture en-US; the .wxl holds the
+  Welcome screen's licence summary). Installs for all users, by default in Program Files\MPE,
+  with a Start menu shortcut, MPE under "Open with" for PDFs (and in Settings > Default apps),
+  and mpe.exe on the PATH. The UpgradeCode must never change: it is how a newer MPE replaces
+  an older one.
 -->
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package Name="MPE" Manufacturer="Clayton Cornell" Version="$(var.Version)"
            UpgradeCode="59D37102-94EF-4ADF-BBC4-BC3B5D763CEB" Scope="perMachine">
     <MajorUpgrade DowngradeErrorMessage="A newer version of MPE is already installed." />
     <MediaTemplate EmbedCab="yes" />
+
+    <!-- Installer screens: welcome, install folder, ready, progress, finish. The licence page is
+         skipped (MIT or Apache-2.0 asks nothing of the user): the two Publish lines below take
+         precedence over the dialog set's own (higher Order). -->
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <UI>
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstallDirDlg"
+               Condition="NOT Installed" Order="2" />
+      <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2" />
+    </UI>
 
     <Icon Id="mpe.ico" SourceFile="crates\mpe-gui\assets\icon.ico" />
     <Property Id="ARPPRODUCTICON" Value="mpe.ico" />

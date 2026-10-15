@@ -82,8 +82,11 @@ jobs:
         run: |
           dotnet tool install --global wix --version 5.0.2
           export PATH="$PATH:$HOME/.dotnet/tools"
+          wix extension add --global WixToolset.UI.wixext/5.0.2
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          wix build packaging/windows/mpe.wxs -arch x64 -d Version=$version -o "dist/mpe-$version-x86_64.msi"
+          wix build packaging/windows/mpe.wxs -arch x64 -ext WixToolset.UI.wixext \
+            -loc packaging/windows/mpe.wxl -culture en-US -d Version=$version \
+            -o "dist/mpe-$version-x86_64.msi"
       - uses: actions/upload-artifact@v4
         with:
           name: mpe-${{ matrix.name }}

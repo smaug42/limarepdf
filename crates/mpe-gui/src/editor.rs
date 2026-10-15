@@ -317,7 +317,7 @@ impl Default for Editor {
             tfont: FontChoice::default(),
             tsize: 14.0,
             tcolor: [0.0; 3],
-            fill_on: true,
+            fill_on: false,
             fill: [0.95, 0.75, 0.2],
             stroke_on: true,
             stroke: [0.1, 0.1, 0.1],
