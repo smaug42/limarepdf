@@ -22,7 +22,8 @@ How a release is made, for maintainers.
    from the matching `CHANGELOG.md` section, ends them with a link comparing the tag with the previous version tag,
    and creates a draft GitHub Release with the four archives, `SHA256SUMS`, and a GPG signature (`.asc`) for each.
    It also records a build attestation for every file.
-5. On GitHub, open the draft under Releases, choose Edit, check the notes and files, and publish it.
+5. On GitHub, open the draft under Releases, choose Edit, check the notes and files, and publish it. Publishing
+   starts the `packages` workflow, which updates the apt and dnf repositories ([below](#package-repositories)).
 
 Do not create the release on GitHub by hand, or the tag from GitHub's release form: the `release` job then finds a
 release already there and fails.
@@ -51,6 +52,22 @@ To try the release job without making a release, start the workflow by hand (Act
 branch with "dry_run" ticked. It builds, signs and attests as a release would, then uploads the files as the
 `release-dry-run` artifact instead of creating a release. Its attestations are real but harmless: they name the
 branch, not a tag.
+
+## Package repositories
+
+`.github/workflows/packages.yml` runs when a release is published. It downloads the `.deb` and `.rpm` files of the
+last three published releases, builds a flat apt repository and a dnf repository with
+`packaging/build-repos.sh`, signs them (`InRelease`, `Release.gpg`, `repomd.xml.asc`), checks the signatures against
+`docs/mpe-signing-key.asc`, and deploys them to GitHub Pages at https://smaug42.github.io/mpe/ with the page in
+`packaging/pages/`.
+
+Set up once: Settings > Pages > Source: GitHub Actions; then, under Settings > Environments > github-pages, add a
+deployment tag rule `v*`, since a release run's ref is its tag.
+
+Started by hand (Actions > packages > Run workflow), it builds the site without deploying it unless "deploy" is
+ticked. If no published release has packages yet, it takes them from the latest successful `release-dry-run` of
+`ci.yml` on the chosen branch. To try the script locally, run it in an `ubuntu:24.04` container with `apt-utils`,
+`createrepo-c` and `gnupg`, a throwaway key, and `MPE_SITE_URL=file:///site`.
 
 ## Signing key
 

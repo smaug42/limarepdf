@@ -35,6 +35,22 @@ are under the run's artifacts (this needs a GitHub sign-in).
 
 ### Linux packages
 
+The easiest way is MPE's package repository, which brings updates with the rest of your system. It is signed with
+the key [below](#checking-a-download).
+
+Debian and Ubuntu:
+
+```
+sudo install -d /etc/apt/keyrings
+sudo curl -fsSLo /etc/apt/keyrings/mpe.asc https://smaug42.github.io/mpe/mpe-signing-key.asc
+sudo curl -fsSLo /etc/apt/sources.list.d/mpe.sources https://smaug42.github.io/mpe/apt/mpe.sources
+sudo apt update && sudo apt install mpe
+```
+
+Fedora: `sudo dnf config-manager addrepo --from-repofile=https://smaug42.github.io/mpe/rpm/mpe.repo`, then
+`sudo dnf install mpe`. openSUSE: `sudo zypper addrepo https://smaug42.github.io/mpe/rpm/mpe.repo`, then
+`sudo zypper install mpe`.
+
 Each release also has a `.deb` (Debian 13, Ubuntu 24.04 and later) and an `.rpm` (Fedora, openSUSE), built on Ubuntu
 24.04, so older systems need the archive's binaries or a build from source. They install `mpe-gui` and `mpe` in
 `/usr/bin`, with the menu entry, icon and docs, and pull in the libraries the app needs.
