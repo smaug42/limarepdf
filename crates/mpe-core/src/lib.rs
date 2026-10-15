@@ -51,3 +51,7 @@ pub use security::{Cipher, Encryption, Restrictions};
 pub use text::SearchHit;
 
 pub type Result<T> = anyhow::Result<T>;
+
+/// The most a page's content, a drawing's content or a text stream may decompress to, so a
+/// small crafted stream can't use up memory. Fonts and scanned images have their own limits.
+pub(crate) const MAX_CONTENT: usize = 256 << 20;

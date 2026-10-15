@@ -500,7 +500,7 @@ impl Pdf {
             Object::String(s, _) => Some(decode_text(s)),
             Object::Name(n) => Some(String::from_utf8_lossy(n).into_owned()),
             Object::Stream(s) => {
-                let data = s.decompressed_content().ok()?;
+                let data = s.decompressed_content_with_limit(crate::MAX_CONTENT).ok()?;
                 Some(decode_text(&data))
             }
             _ => None,

@@ -246,7 +246,9 @@ impl Pdf {
 
     pub(crate) fn parse_page(&self, page_index: usize) -> Result<Parsed> {
         let page = self.page_id_at(page_index)?;
-        let data = self.doc.get_page_content(page);
+        let data = self
+            .doc
+            .get_page_content_with_limit(page, crate::MAX_CONTENT)?;
         let res = self.inherited(page, b"Resources");
         self.parse_content(&data, res.as_ref(), mx::ID, 0)
     }
@@ -582,7 +584,8 @@ impl Pdf {
                                     // resources of its own uses the page's.
                                     if nesting < MAX_FORM_NESTING {
                                         let own = s.dict.get(b"Resources").ok();
-                                        let inner = s.get_plain_content().ok().and_then(|c| {
+                                        let c = s.get_plain_content_with_limit(crate::MAX_CONTENT);
+                                        let inner = c.ok().and_then(|c| {
                                             let ctm = mul(fm, gs.ctm);
                                             let r = own.or(resources);
                                             self.parse_content(&c, r, ctm, nesting + 1).ok()
