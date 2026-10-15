@@ -12,7 +12,13 @@ Files that no longer exist are left out. The list holds 10 files and is kept on 
 `~/.config/mpe/recent.txt` on Linux, `~/Library/Application Support/mpe/recent.txt` on macOS, and
 `%APPDATA%\mpe\recent.txt` on Windows.
 
+The start screen also has Make a PDF from images…, which turns photos or scanned pages into a new document.
+
 Each document gets a tab. The tab shows its name, with `*` while it has unsaved changes.
+
+Saving writes a temporary file beside the document and then replaces the document with it, so a save that fails
+part way leaves the original as it was. MPE saves by rewriting the whole file, which makes any digital signatures
+invalid; when a document is signed, MPE asks first. Save As to a new file keeps the signed original.
 
 ## The window
 

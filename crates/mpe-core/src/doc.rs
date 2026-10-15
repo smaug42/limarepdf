@@ -173,14 +173,34 @@ impl Pdf {
         Ok(out)
     }
 
+    /// Writes the document to `path`. It is written to a temporary file in the same folder
+    /// first and then renamed over `path`, so a failure part way leaves any existing file
+    /// as it was. A symbolic link is followed, and an existing file keeps its permissions.
     pub fn save(&mut self, path: impl AsRef<Path>) -> Result<()> {
-        let path = path.as_ref();
-        let f =
-            std::fs::File::create(path).with_context(|| format!("creating {}", path.display()))?;
-        let mut w = BufWriter::with_capacity(1 << 20, f);
-        self.write_to(&mut w)?;
-        w.flush()?;
-        Ok(())
+        let path = std::fs::canonicalize(path.as_ref()).unwrap_or_else(|_| path.as_ref().into());
+        let name = path.file_name().context("no file name to save to")?;
+        let mut tmp_name = std::ffi::OsString::from(".");
+        tmp_name.push(name);
+        tmp_name.push(format!(".mpe-{}.tmp", std::process::id()));
+        let tmp = path.with_file_name(tmp_name);
+        let written = (|| -> Result<()> {
+            let f = std::fs::File::create(&tmp)
+                .with_context(|| format!("creating {}", tmp.display()))?;
+            let mut w = BufWriter::with_capacity(1 << 20, f);
+            self.write_to(&mut w)?;
+            let f = w.into_inner().map_err(|e| e.into_error())?;
+            f.sync_all()?;
+            if let Ok(old) = std::fs::metadata(&path) {
+                std::fs::set_permissions(&tmp, old.permissions())?;
+            }
+            std::fs::rename(&tmp, &path)
+                .with_context(|| format!("replacing {}", path.display()))?;
+            Ok(())
+        })();
+        if written.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        written
     }
 
     // -------------------------------------------------------------- pages

@@ -160,6 +160,8 @@ enum Dialog {
     ConfirmReplace(ImageExport, usize),
     ConfirmFlatten,
     ConfirmFlattenAnnots,
+    /// Save (`true`: as a new file) although it breaks the document's signatures?
+    ConfirmSaveSigned(bool),
     Print(dlg::Print),
     SaveSelection(dlg::Layout),
     /// Open this web or email address from a link?
@@ -553,7 +555,16 @@ impl App {
         }
     }
 
+    /// Saves, first asking when that would break the document's digital signatures.
     fn save(&mut self, as_new: bool) {
+        if self.tabs.get(self.active).is_some_and(|t| t.signed) {
+            self.dialog = Dialog::ConfirmSaveSigned(as_new);
+        } else {
+            self.save_now(as_new);
+        }
+    }
+
+    fn save_now(&mut self, as_new: bool) {
         let Some(tab) = self.tabs.get_mut(self.active) else {
             return;
         };
@@ -581,6 +592,8 @@ impl App {
                 self.recent.add(&path);
                 tab.path = Some(path);
                 tab.dirty = false;
+                // The saved copy's signatures are already broken: no need to ask again.
+                tab.signed = false;
             }
             Err(e) => self.dialog = Dialog::Message("Save failed".into(), format!("{e:#}")),
         }
@@ -1251,6 +1264,24 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
+            Dialog::ConfirmSaveSigned(as_new) => {
+                let as_new = *as_new;
+                match dlg::confirm(
+                    ctx,
+                    "Break the signatures?",
+                    "This document is digitally signed. MPE saves by rewriting the whole file, so \
+                     the saved copy's signatures will show as invalid in every reader. Save as a \
+                     new file to keep the signed original.",
+                    "Save anyway",
+                ) {
+                    Outcome::Apply => {
+                        self.save_now(as_new);
+                        done = true;
+                    }
+                    Outcome::Cancel => done = true,
+                    Outcome::Open => {}
+                }
+            }
             Dialog::Print(s) => match dlg::print(ctx, s) {
                 Outcome::Apply if s.printers.is_empty() => done = true,
                 Outcome::Apply => {
@@ -1638,8 +1669,11 @@ fn empty_state(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
         acts.push(Act::Open);
     }
     ui.add_space(4.0);
-    let images = egui::Button::new("New from images…").min_size(egui::vec2(180.0, 28.0));
-    if ui.add(images).clicked() {
+    let images = egui::Button::new("Make a PDF from images…").min_size(egui::vec2(180.0, 28.0));
+    let images = ui
+        .add(images)
+        .on_hover_text("Turn photos or scanned pages into a new PDF");
+    if images.clicked() {
         acts.push(Act::NewFromImages);
     }
     if shown > 0 {

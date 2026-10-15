@@ -145,6 +145,18 @@ impl Pdf {
         self.form_nodes().into_iter().map(|(f, _)| f).collect()
     }
 
+    /// How many signature fields hold a signature. Any full rewrite, such as
+    /// [`Pdf::save`], makes those signatures invalid.
+    pub fn signature_count(&self) -> usize {
+        self.form_nodes()
+            .iter()
+            .filter(|(f, n)| {
+                f.kind == FieldKind::Signature
+                    && self.doc.get_dictionary(n.id).is_ok_and(|d| d.has(b"V"))
+            })
+            .count()
+    }
+
     /// The fields with where each is in the file.
     pub(crate) fn form_nodes(&self) -> Vec<(Field, Node)> {
         let Some(form) = self.acro_form() else {
@@ -488,7 +500,7 @@ impl Pdf {
             Object::String(s, _) => Some(decode_text(s)),
             Object::Name(n) => Some(String::from_utf8_lossy(n).into_owned()),
             Object::Stream(s) => {
-                let data = s.decompressed_content().ok()?;
+                let data = s.decompressed_content_with_limit(crate::MAX_CONTENT).ok()?;
                 Some(decode_text(&data))
             }
             _ => None,

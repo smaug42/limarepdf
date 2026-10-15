@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Saving a digitally signed document asks first, since the saved copy's signatures will show as invalid. Saving as
+  a new file keeps the signed original. Core: `Pdf::signature_count`.
+
+### Fixed
+
+- Saving is safe: MPE writes to a temporary file beside the document and then replaces it, so a failed save (a
+  full disk, an error part way) leaves the original untouched. Saving through a symbolic link keeps the link, and
+  a replaced file keeps its permissions. Applies to the app and every command.
+- A page's content, a drawing inside a page and text stored as a stream are decompressed up to 256 MB, so a small
+  crafted file can't use up all memory when MPE reads its text.
+
+### Changed
+
+- "New from images…" is now "Make a PDF from images…", on the start screen and in the menu, with a hover tip on the
+  start screen.
+
 ## [0.4.0] - 2026-10-14
 
 Annotations and forms: highlight, comment on and draw on documents, reply to comments, fill in and flatten forms,
