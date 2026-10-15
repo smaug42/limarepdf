@@ -3,7 +3,8 @@
 ## Download
 
 Download an archive for your platform from the project's Releases page on GitHub: Linux (`.tar.gz`), Windows
-(`.zip`), and macOS for Intel and for Apple Silicon (`.tar.gz`). `SHA256SUMS` lists their checksums.
+(`.zip`), and macOS for Intel and for Apple Silicon (`.tar.gz`). `SHA256SUMS` lists their checksums
+([checking a download](#checking-a-download)).
 
 Each archive holds the desktop app (`mpe-gui`), the command-line tool (`mpe`), these docs, the changelog, and the
 licences, including those of the bundled OCR model and font. The Linux archive also has a desktop entry and icon
@@ -12,6 +13,21 @@ licences, including those of the bundled OCR model and font. The Linux archive a
 The binaries are not code-signed, so the system warns the first time you run them. On macOS, run
 `xattr -d com.apple.quarantine mpe mpe-gui` in the unpacked folder, or try to run it once, then choose Open Anyway
 under System Settings > Privacy & Security. On Windows, choose More info, then Run anyway.
+
+### Checking a download
+
+Every release file has a GPG signature beside it (`.asc`), and `SHA256SUMS` is signed too. The signing key is
+[`mpe-signing-key.asc`](mpe-signing-key.asc), also on keys.openpgp.org, with the fingerprint
+`0CF9 7E88 BAFE E9B6 38D2  14CB EB40 041A 7A8D C801`. To check a file:
+
+```
+gpg --import mpe-signing-key.asc
+gpg --verify SHA256SUMS.asc SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
+Each file also has a build attestation recording that it was built by this project's GitHub Actions from a given
+commit. With the GitHub CLI: `gh attestation verify <file> --repo smaug42/mpe`.
 
 Between releases, each run of the project's continuous integration on GitHub Actions builds the same archives; they
 are under the run's artifacts (this needs a GitHub sign-in).

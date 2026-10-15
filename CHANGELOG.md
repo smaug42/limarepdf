@@ -6,6 +6,9 @@
 
 - Saving a digitally signed document asks first, since the saved copy's signatures will show as invalid. Saving as
   a new file keeps the signed original. Core: `Pdf::signature_count`.
+- Releases are signed: every file and `SHA256SUMS` has a GPG signature (`.asc`) made with MPE's own key, and a build
+  attestation that `gh attestation verify` checks. [docs/install.md](docs/install.md#checking-a-download) explains
+  how.
 
 ### Fixed
 

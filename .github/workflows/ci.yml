@@ -7,6 +7,11 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Sign and attest the files as a release would, without making a release
+        type: boolean
+        default: false
 
 # A newer commit on the same branch or pull request cancels the older run. Tag runs are
 # never cancelled, since they make the release.
@@ -69,14 +74,18 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
 
-  # On a version tag (v0.3.0): a draft GitHub Release with the four archives, their
-  # checksums and this version's section of CHANGELOG.md. Publish it on GitHub.
+  # On a version tag (v0.3.0): a draft GitHub Release with the archives, their checksums,
+  # GPG signatures, build attestations and this version's section of CHANGELOG.md.
+  # Publish it on GitHub. A dry run (workflow_dispatch) does everything but the release
+  # and uploads the signed files as an artifact instead.
   release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.dry_run
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -86,7 +95,36 @@ jobs:
         with:
           path: assets
           merge-multiple: true
+      # SHA256SUMS, then a detached signature (.asc) for it and for every file, made with
+      # the signing subkey in secrets and checked against the published key in docs/.
+      - name: Checksums and signatures
+        env:
+          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          if [ -z "$GPG_SIGNING_KEY" ]; then
+            echo "The GPG_SIGNING_KEY secret is not set"; exit 1
+          fi
+          echo "$GPG_SIGNING_KEY" | gpg --batch --import
+          gpg --dearmor < docs/mpe-signing-key.asc > "$RUNNER_TEMP/mpe.gpg"
+          cd assets
+          sha256sum * > SHA256SUMS
+          for f in *; do
+            gpg --batch --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
+              --armor --detach-sign "$f"
+            gpgv --keyring "$RUNNER_TEMP/mpe.gpg" "$f.asc" "$f"
+          done
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: assets/*
+      - name: Upload the dry run
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dry-run
+          path: assets
       - name: Draft the release
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -107,6 +145,5 @@ jobs:
             printf '\n**All changes:** https://github.com/%s/compare/%s...%s\n' \
               "$GITHUB_REPOSITORY" "$prev" "$tag" >> notes.md
           fi
-          (cd assets && sha256sum * > SHA256SUMS)
           gh release create "$tag" --draft --verify-tag --title "MPE $version" \
             --notes-file notes.md assets/*
