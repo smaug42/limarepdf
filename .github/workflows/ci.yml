@@ -7,6 +7,11 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Sign and attest the files as a release would, without making a release
+        type: boolean
+        default: false
 
 # A newer commit on the same branch or pull request cancels the older run. Tag runs are
 # never cancelled, since they make the release.
@@ -62,21 +67,64 @@ jobs:
           else
             tar -czf "$name.tar.gz" "$name"
           fi
+      # .deb and .rpm from the binaries just built; the settings are in crates/mpe-gui/Cargo.toml.
+      # The rpm is signed later, in the release job, which holds the key.
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          cargo install cargo-deb cargo-generate-rpm --locked
+          cargo deb -p mpe-gui --no-build --no-strip --output dist/
+          cargo generate-rpm -p crates/mpe-gui --output dist/
+      # The MSI from packaging/windows/mpe.wxs. WiX is pinned to 5 (open source, no EULA step).
+      - name: Windows installer
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          export PATH="$PATH:$HOME/.dotnet/tools"
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          wix build packaging/windows/mpe.wxs -arch x64 -d Version=$version -o "dist/mpe-$version-x86_64.msi"
       - uses: actions/upload-artifact@v4
         with:
           name: mpe-${{ matrix.name }}
           path: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.deb
+            dist/*.rpm
+            dist/*.msi
 
-  # On a version tag (v0.3.0): a draft GitHub Release with the four archives, their
-  # checksums and this version's section of CHANGELOG.md. Publish it on GitHub.
+  # A universal MPE.app (Apple Silicon and Intel) in a .dmg; packaging/macos/make-dmg.sh.
+  # The tests ran in the build job on both Macs.
+  macos-dmg:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --workspace --release --target aarch64-apple-darwin --target x86_64-apple-darwin
+      - name: Make the dmg
+        run: bash packaging/macos/make-dmg.sh dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mpe-macos-dmg
+          path: dist/*.dmg
+
+  # On a version tag (v0.3.0): a draft GitHub Release with the archives, their checksums,
+  # GPG signatures, build attestations and this version's section of CHANGELOG.md.
+  # Publish it on GitHub. A dry run (workflow_dispatch) does everything but the release
+  # and uploads the signed files as an artifact instead.
   release:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, macos-dmg]
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.dry_run
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -86,7 +134,48 @@ jobs:
         with:
           path: assets
           merge-multiple: true
+      # SHA256SUMS, then a detached signature (.asc) for it and for every file, made with
+      # the signing subkey in secrets and checked against the published key in docs/.
+      - name: Checksums and signatures
+        env:
+          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          if [ -z "$GPG_SIGNING_KEY" ]; then
+            echo "The GPG_SIGNING_KEY secret is not set"; exit 1
+          fi
+          echo "$GPG_SIGNING_KEY" | gpg --batch --import
+          gpg --dearmor < docs/mpe-signing-key.asc > "$RUNNER_TEMP/mpe.gpg"
+          # The rpm carries its own signature, checked by rpm and dnf against the published key.
+          sudo apt-get install -y rpm > /dev/null
+          (umask 077; printf '%s' "$GPG_PASSPHRASE" > "$RUNNER_TEMP/pass")
+          key=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/ {print $10; exit}')
+          # Ubuntu's rpm looks for gpg2, which isn't installed.
+          rpmsign --addsign --define "__gpg /usr/bin/gpg" --define "_gpg_name $key" \
+            --define "_gpg_sign_cmd_extra_args --batch --pinentry-mode loopback --passphrase-file $RUNNER_TEMP/pass" \
+            assets/*.rpm
+          rm "$RUNNER_TEMP/pass"
+          rpmkeys --dbpath "$RUNNER_TEMP/rpmdb" --import docs/mpe-signing-key.asc
+          rpmkeys --dbpath "$RUNNER_TEMP/rpmdb" --checksig assets/*.rpm | tee "$RUNNER_TEMP/rpmcheck"
+          grep -q "signatures OK" "$RUNNER_TEMP/rpmcheck"
+          cd assets
+          sha256sum * > SHA256SUMS
+          for f in *; do
+            gpg --batch --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
+              --armor --detach-sign "$f"
+            gpgv --keyring "$RUNNER_TEMP/mpe.gpg" "$f.asc" "$f"
+          done
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: assets/*
+      - name: Upload the dry run
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dry-run
+          path: assets
       - name: Draft the release
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -107,6 +196,5 @@ jobs:
             printf '\n**All changes:** https://github.com/%s/compare/%s...%s\n' \
               "$GITHUB_REPOSITORY" "$prev" "$tag" >> notes.md
           fi
-          (cd assets && sha256sum * > SHA256SUMS)
           gh release create "$tag" --draft --verify-tag --title "MPE $version" \
             --notes-file notes.md assets/*

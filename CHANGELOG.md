@@ -6,6 +6,17 @@
 
 - Saving a digitally signed document asks first, since the saved copy's signatures will show as invalid. Saving as
   a new file keeps the signed original. Core: `Pdf::signature_count`.
+- Releases are signed: every file and `SHA256SUMS` has a GPG signature (`.asc`) made with MPE's own key, and a build
+  attestation that `gh attestation verify` checks. [docs/install.md](docs/install.md#checking-a-download) explains
+  how.
+- Linux `.deb` and `.rpm` packages (the rpm GPG-signed), installing both programs, the menu entry, the icon and the
+  docs, with the libraries the app needs as dependencies.
+- Signed apt and dnf package repositories at https://smaug42.github.io/mpe/, for Debian, Ubuntu, Fedora and
+  openSUSE, so MPE updates with the rest of the system.
+- A macOS app, `MPE.app` in a `.dmg`, for Apple Silicon and Intel in one, listed under Open With for PDFs. The
+  command-line tool is inside it.
+- A Windows installer (`.msi`): Program Files, a Start menu entry, Open with for PDFs (and a choice in Default
+  apps), `mpe` on the `PATH`, upgrades and an uninstaller.
 
 ### Fixed
 

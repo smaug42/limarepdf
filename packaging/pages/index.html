@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MPE packages</title>
+<style>
+  :root { color-scheme: light dark; --bg: #fafafa; --fg: #1d1d1f; --muted: #555; --code: #ececec; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #18181a; --fg: #e8e8ea; --muted: #a0a0a6; --code: #26262a; } }
+  body { background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; margin: 0; padding: 2rem 16px; }
+  main { max-width: 46rem; margin: 0 auto; }
+  h1 { margin-top: 0; }
+  p { color: var(--muted); }
+  pre { background: var(--code); padding: .8rem 1rem; border-radius: 6px; overflow-x: auto; font-size: 14px; }
+  a { color: inherit; }
+</style>
+</head>
+<body>
+<main>
+<h1>MPE packages</h1>
+<p>Package repositories for <a href="https://github.com/smaug42/mpe">MPE</a>, a PDF viewer and editor. Both are
+signed with the <a href="mpe-signing-key.asc">MPE release signing key</a>, fingerprint
+<code>0CF9 7E88 BAFE E9B6 38D2 14CB EB40 041A 7A8D C801</code>. Updates arrive with your system's own updates.</p>
+
+<h2>Debian and Ubuntu</h2>
+<p>Debian 13, Ubuntu 24.04 and later.</p>
+<pre>sudo install -d /etc/apt/keyrings
+sudo curl -fsSLo /etc/apt/keyrings/mpe.asc https://smaug42.github.io/mpe/mpe-signing-key.asc
+sudo curl -fsSLo /etc/apt/sources.list.d/mpe.sources https://smaug42.github.io/mpe/apt/mpe.sources
+sudo apt update
+sudo apt install mpe</pre>
+
+<h2>Fedora</h2>
+<pre>sudo dnf config-manager addrepo --from-repofile=https://smaug42.github.io/mpe/rpm/mpe.repo
+sudo dnf install mpe</pre>
+
+<h2>openSUSE</h2>
+<pre>sudo zypper addrepo https://smaug42.github.io/mpe/rpm/mpe.repo
+sudo zypper install mpe</pre>
+
+<p>Other systems, and the downloads themselves, are on the
+<a href="https://github.com/smaug42/mpe/releases">Releases page</a>.</p>
+</main>
+</body>
+</html>
