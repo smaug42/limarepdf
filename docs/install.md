@@ -9,9 +9,9 @@ Each archive holds the desktop app (`mpe-gui`), the command-line tool (`mpe`), t
 licences, including those of the bundled OCR model and font. The Linux archive also has a desktop entry and icon
 ([below](#menu-entry-and-icon-on-linux)). Unpack it anywhere; there is no installer.
 
-The binaries are not code-signed, so the system warns the first time you run them. On macOS, right-click the app and
-choose Open, or run `xattr -d com.apple.quarantine mpe mpe-gui` in the unpacked folder. On Windows, choose
-More info, then Run anyway.
+The binaries are not code-signed, so the system warns the first time you run them. On macOS, run
+`xattr -d com.apple.quarantine mpe mpe-gui` in the unpacked folder, or try to run it once, then choose Open Anyway
+under System Settings > Privacy & Security. On Windows, choose More info, then Run anyway.
 
 Between releases, each run of the project's continuous integration on GitHub Actions builds the same archives; they
 are under the run's artifacts (this needs a GitHub sign-in).
