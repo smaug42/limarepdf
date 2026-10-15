@@ -730,17 +730,11 @@ impl Pdf {
     /// Where `query` occurs on a page (0-based): one entry per match, with a box for each
     /// line it is on, in displayed-page points (y down), like [`PageObject::bbox`]. Case
     /// is ignored, and any run of whitespace, a line break included, matches one space,
-    /// so a phrase broken across lines is found. Visible and invisible (OCR) text both
-    /// count: the same text [`Pdf::search`] reads.
+    /// so a phrase broken across lines is found, as is a word hyphenated at a line end.
+    /// Visible and invisible (OCR) text both count: the same text [`Pdf::search`] reads.
     pub fn find_text_matches(&self, page_index: usize, query: &str) -> Result<Vec<Vec<[f32; 4]>>> {
-        let fold = |c: char| c.to_lowercase().next().unwrap_or(c);
-        let q: Vec<char> = query
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .chars()
-            .map(fold)
-            .collect();
+        use crate::text::{find_all, fold, fold_query, joints};
+        let q = fold_query(query);
         if q.is_empty() {
             return Ok(Vec::new());
         }
@@ -755,6 +749,7 @@ impl Pdf {
         // the space between lines).
         let mut text: Vec<char> = Vec::new();
         let mut from: Vec<Option<(usize, usize)>> = Vec::new();
+        let mut breaks = Vec::new();
         for (li, t) in lines.iter().enumerate() {
             for (ci, c) in t.text.chars().enumerate() {
                 if !c.is_whitespace() {
@@ -769,18 +764,17 @@ impl Pdf {
                 text.push(' ');
                 from.push(None);
             }
+            if !text.is_empty() {
+                breaks.push(text.len() - 1);
+            }
         }
+        let skip = joints(&text, &breaks);
 
         let mut out = Vec::new();
-        let mut i = 0;
-        while i + q.len() <= text.len() {
-            if text[i..i + q.len()] != q[..] {
-                i += 1;
-                continue;
-            }
+        for (s, e) in find_all(&text, &skip, &q) {
             // The characters of the match on each line it touches.
             let mut parts: Vec<(usize, usize, usize)> = Vec::new();
-            for &(li, ci) in from[i..i + q.len()].iter().flatten() {
+            for &(li, ci) in from[s..e].iter().flatten() {
                 match parts.last_mut() {
                     Some(p) if p.0 == li => p.2 = ci + 1,
                     _ => parts.push((li, ci, ci + 1)),
@@ -794,7 +788,6 @@ impl Pdf {
             if !boxes.is_empty() {
                 out.push(boxes);
             }
-            i += q.len();
         }
         Ok(out)
     }

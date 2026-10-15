@@ -38,7 +38,7 @@ available.
 | App icon | Done | Window, taskbar and Windows `.exe`. Wayland needs the desktop entry installed. [Details](install.md#menu-entry-and-icon-on-linux) |
 | Light and dark themes | Done | Follows the system, or chosen with the top bar's theme button; remembered between runs |
 | Rendering | Partial | Some transparency groups are drawn wrongly. Annotations without a drawing of their own are drawn by MPE for the common types only. [Details](rendering.md) |
-| Search | Done | Phrases across line breaks are found and highlighted; hyphenated words split over lines are not. [Details](search-and-text.md) |
+| Search | Done | Phrases across line breaks, and words hyphenated at a line end, are found and highlighted. [Details](search-and-text.md) |
 | Select and copy text | Done | With the default read tool; across pages, scrolling while you drag; in the order on the page, not the file's drawing order; includes recognised text |
 | Print or save selected text | Done | As the pages look, full width, cut down to the selected lines, or as plain text in Helvetica (Western European characters only); also saves a .txt file |
 | Page operations: insert, delete, rotate, extract, reorder, crop | Done | Crop by margins; no dragging a crop box on the page |

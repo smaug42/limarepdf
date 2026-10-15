@@ -8,7 +8,8 @@ On the command line, `mpe search --boxes` also prints where each match is on its
 Limits:
 
 - A phrase can run across a line break: search treats the break as a space and highlights the part on each line.
-  A word hyphenated at the end of a line is not found as one word.
+  A word hyphenated at the end of a line is found whole, with or without its hyphen: "information" and
+  "self-employed" find "infor-" + "mation" and "self-" + "employed". Soft hyphens are ignored.
 - Scanned pages have no text until you [recognise it](scanning-and-ocr.md#recognising-text-ocr).
 
 Highlights are placed using each character's width in the font. When a file uses one of the standard PDF fonts

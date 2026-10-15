@@ -10,6 +10,7 @@
 
 ### Fixed
 
+- Search finds words hyphenated at a line end, with or without the hyphen, in the app and in `mpe search`.
 - On Windows, a console window no longer opens behind the app.
 
 ## [0.5.0] - 2026-10-15

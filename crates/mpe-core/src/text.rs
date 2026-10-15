@@ -26,14 +26,11 @@ impl Pdf {
         texts.join("\u{c}")
     }
 
-    /// Case-insensitive text search across all pages, in parallel.
+    /// Case-insensitive text search across all pages, in parallel. Runs of whitespace,
+    /// line breaks included, match one space, and words hyphenated at a line end are
+    /// found whole (see [`joints`]).
     pub fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
-        // Runs of whitespace match one space, as in the page text below.
-        let q = query
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .to_lowercase();
+        let q = fold_query(query);
         if q.is_empty() {
             return Ok(vec![]);
         }
@@ -41,26 +38,18 @@ impl Pdf {
         let mut hits: Vec<SearchHit> = (0..n)
             .into_par_iter()
             .flat_map_iter(|p| {
-                let text = self.page_text(p);
-                let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-                let lower = flat.to_lowercase();
-                let mut out = Vec::new();
-                let mut from = 0;
-                // Only trust byte offsets when lowercasing preserved lengths.
-                let same_len = lower.len() == flat.len();
-                while let Some(pos) = lower[from..].find(&q) {
-                    let at = from + pos;
-                    let snippet = if same_len {
-                        let s = floor_boundary(&flat, at.saturating_sub(30));
-                        let e = floor_boundary(&flat, (at + q.len() + 30).min(flat.len()));
-                        flat[s..e].to_string()
-                    } else {
-                        flat.chars().take(80).collect()
-                    };
-                    out.push(SearchHit { page: p, snippet });
-                    from = at + q.len().max(1);
-                }
-                out.into_iter()
+                let words = self.page_words(p).unwrap_or_default();
+                let (text, breaks, orig) = search_text(&words);
+                let skip = joints(&text, &breaks);
+                find_all(&text, &skip, &q)
+                    .into_iter()
+                    .map(|(s, e)| SearchHit {
+                        page: p,
+                        snippet: orig[s.saturating_sub(30)..(e + 30).min(orig.len())]
+                            .iter()
+                            .collect(),
+                    })
+                    .collect::<Vec<_>>()
             })
             .collect();
         hits.sort_by_key(|h| h.page);
@@ -68,9 +57,86 @@ impl Pdf {
     }
 }
 
-fn floor_boundary(s: &str, mut i: usize) -> usize {
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
+/// One character as search compares it: lowercased.
+pub(crate) fn fold(c: char) -> char {
+    c.to_lowercase().next().unwrap_or(c)
+}
+
+/// A search query as matched: whitespace runs as one space, lowercased.
+pub(crate) fn fold_query(query: &str) -> Vec<char> {
+    query
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .map(fold)
+        .collect()
+}
+
+/// Which characters of folded page text a match may skip: soft hyphens, and a hyphen at
+/// a line end together with the line break after it, when letters or digits sit on both
+/// sides ("infor-" + "mation"). `breaks` are the indices of the spaces that join lines.
+/// Matching the hyphen is still allowed, so "self-employed" finds "self-" + "employed".
+pub(crate) fn joints(text: &[char], breaks: &[usize]) -> Vec<bool> {
+    let mut skip: Vec<bool> = text.iter().map(|&c| c == '\u{ad}').collect();
+    for &k in breaks {
+        if k >= 2
+            && k + 1 < text.len()
+            && matches!(text[k - 1], '-' | '\u{ad}' | '\u{2010}')
+            && text[k - 2].is_alphanumeric()
+            && text[k + 1].is_alphanumeric()
+        {
+            skip[k - 1] = true;
+            skip[k] = true;
+        }
     }
-    i
+    skip
+}
+
+/// Where the folded query `q` occurs in folded text, as non-overlapping `start..end`
+/// ranges of `text`; characters marked in `skip` are passed over when they don't match.
+pub(crate) fn find_all(text: &[char], skip: &[bool], q: &[char]) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    if q.is_empty() {
+        return out;
+    }
+    let mut i = 0;
+    while i < text.len() {
+        let (mut t, mut k) = (i, 0);
+        while k < q.len() && t < text.len() {
+            if text[t] == q[k] {
+                k += 1;
+            } else if !(skip[t] && t > i) {
+                break;
+            }
+            t += 1;
+        }
+        if k == q.len() {
+            out.push((i, t));
+            i = t;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// The text of a run of words for searching, folded, with the line-joining spaces' indices
+/// and, for each character, the original character (for snippets).
+fn search_text(words: &[crate::PageWord]) -> (Vec<char>, Vec<usize>, Vec<char>) {
+    let (mut text, mut breaks, mut orig) = (Vec::new(), Vec::new(), Vec::new());
+    for (i, w) in words.iter().enumerate() {
+        if i > 0 {
+            if words[i - 1].line != w.line {
+                breaks.push(text.len());
+            }
+            text.push(' ');
+            orig.push(' ');
+        }
+        for c in w.text.chars() {
+            text.push(fold(c));
+            orig.push(c);
+        }
+    }
+    (text, breaks, orig)
 }
