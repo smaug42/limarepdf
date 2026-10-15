@@ -152,6 +152,8 @@ pub struct Ctx {
     /// Pages are selected in the thumbnails.
     pub pages: bool,
     pub tool: Option<Tool>,
+    /// The Annotate button's tool, the one last used.
+    pub annot_tool: Option<Tool>,
     pub side: bool,
     pub inspector: bool,
     /// The active tab's zoom follows the width of the view.
@@ -166,6 +168,8 @@ pub struct Ctx {
     /// An annotation is selected, and whether it may be changed.
     pub annot: bool,
     pub annot_locked: bool,
+    /// The arrow tool can move the selected annotation.
+    pub annot_moves: bool,
     /// The markup colours last chosen; see [`Act::MarkColor`].
     pub highlight: usize,
     pub line: usize,
@@ -217,6 +221,10 @@ fn words_idle(c: &Ctx) -> bool {
 }
 fn object(c: &Ctx) -> bool {
     c.object
+}
+/// An object, or an annotation the arrow can move.
+fn nudgeable(c: &Ctx) -> bool {
+    c.object || c.annot_moves
 }
 fn text_object(c: &Ctx) -> bool {
     c.object && matches!(c.obj_kind, Some(ObjKind::Text | ObjKind::HiddenText))
@@ -506,7 +514,7 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Edit,
         label: "Move the selected object left",
         keys: &[k(N, Key::ArrowLeft)],
-        enabled: object,
+        enabled: nudgeable,
         menu: false,
         palette: false,
         ..BASE
@@ -516,7 +524,7 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Edit,
         label: "Move the selected object right",
         keys: &[k(N, Key::ArrowRight)],
-        enabled: object,
+        enabled: nudgeable,
         menu: false,
         palette: false,
         ..BASE
@@ -526,7 +534,7 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Edit,
         label: "Move the selected object up",
         keys: &[k(N, Key::ArrowUp)],
-        enabled: object,
+        enabled: nudgeable,
         menu: false,
         palette: false,
         ..BASE
@@ -536,7 +544,7 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Edit,
         label: "Move the selected object down",
         keys: &[k(N, Key::ArrowDown)],
-        enabled: object,
+        enabled: nudgeable,
         menu: false,
         palette: false,
         ..BASE
@@ -781,6 +789,22 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Tools,
         label: "Add image…",
         icon: icon::IMAGE,
+        menu: false,
+        ..BASE
+    },
+    Action {
+        act: Act::Tool(Tool::Note),
+        group: Group::Tools,
+        label: "Add a note",
+        icon: icon::NOTE,
+        menu: false,
+        ..BASE
+    },
+    Action {
+        act: Act::Tool(Tool::TextBox),
+        group: Group::Tools,
+        label: "Add a text box",
+        icon: icon::TEXTBOX,
         menu: false,
         ..BASE
     },

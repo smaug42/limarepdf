@@ -1463,6 +1463,37 @@ impl App {
     }
 }
 
+/// A toolbar button for a command: (ui, command, shown as on, where clicks go).
+type BarButton<'a> = &'a dyn Fn(&mut egui::Ui, Act, bool, &mut Vec<Act>);
+
+/// The Annotate button: the annotation tool last used, and a small menu beside it for
+/// the others.
+fn annotate_button(
+    ui: &mut egui::Ui,
+    tools: Vec<&Action>,
+    c: &Ctx,
+    bar: BarButton,
+    acts: &mut Vec<Act>,
+) {
+    let last = c.annot_tool.unwrap_or(Tool::Note);
+    let on = |a: &Action| matches!(a.act, Act::Tool(t) if c.tool == Some(t));
+    if let Some(a) = tools.iter().find(|a| a.act == Act::Tool(last)) {
+        bar(ui, a.act, on(a), acts);
+    }
+    ui.add_space(-ui.spacing().item_spacing.x);
+    ui.menu_button(theme::icon(icon::CARET_DOWN).size(10.0), |ui| {
+        for a in tools {
+            let b = egui::Button::new((theme::icon(a.icon).size(16.0), a.label)).selected(on(a));
+            if ui.add(b).clicked() {
+                acts.push(a.act);
+                ui.close();
+            }
+        }
+    })
+    .response
+    .on_hover_text("Annotate");
+}
+
 /// The tools as one menu button showing the current tool, for narrow windows.
 fn tool_menu(
     ui: &mut egui::Ui,
@@ -1731,7 +1762,8 @@ impl eframe::App for App {
                 };
                 // Menu, Open, Save, Undo, Redo and three separators, then the tools.
                 let left = |tools: f32| 5.0 * btn + 3.0 * sep + tools;
-                let inline = 8.0 * btn;
+                // Seven tools, then the Annotate button with its menu.
+                let inline = 10.0 * btn;
                 let w = ui.available_width() - 16.0;
                 let search_field = w >= left(inline) + right(true);
                 let tools_inline = w >= left(inline) + right(search_field);
@@ -1754,10 +1786,15 @@ impl eframe::App for App {
                     ui.separator();
                     let tools = ACTIONS.iter().filter(|a| a.group == Group::Tools);
                     let is_on = |a: &Action| matches!(a.act, Act::Tool(t) if c.tool == Some(t));
+                    let annotate =
+                        |a: &&Action| matches!(a.act, Act::Tool(t) if Tool::ANNOTATE.contains(&t));
                     if tools_inline {
-                        for a in tools {
+                        for a in tools.clone().filter(|a| !annotate(a)) {
                             bar(ui, a.act, is_on(a), &mut acts);
                         }
+                        ui.separator();
+                        let annot_tools = tools.filter(annotate).collect();
+                        annotate_button(ui, annot_tools, &c, &bar, &mut acts);
                     } else {
                         tool_menu(ui, tools.collect(), &is_on, &mut acts);
                     }
@@ -1986,8 +2023,10 @@ impl eframe::App for App {
         let canvas = egui::Frame::central_panel(ui.style())
             .fill(theme::canvas(ui.visuals().dark_mode))
             .inner_margin(0);
+        let author = self.settings.author();
         egui::CentralPanel::default().frame(canvas).show(ui, |ui| {
             if let Some(t) = self.tabs.get_mut(self.active) {
+                t.ed.author = author;
                 t.show_pages(ui, &c);
             } else {
                 empty_state(ui, &recent, &mut acts);

@@ -108,7 +108,7 @@ impl Tab {
         let banners = banners::detect(&pdf, size.map(|m| m.len()));
         // Form fields without drawings would show nothing; this isn't a change to save.
         pdf.refresh_appearances();
-        let bytes = pdf.render_snapshot().map_err(|e| e.to_string())?;
+        let bytes = pdf.app_snapshot().map_err(|e| e.to_string())?;
         let sizes = sizes_of(&pdf);
         Ok(Self {
             banners,
@@ -253,7 +253,7 @@ impl Tab {
     }
 
     fn soft_refresh(&mut self, ctx: &egui::Context, pages: &[usize]) {
-        match self.pdf.render_snapshot() {
+        match self.pdf.app_snapshot() {
             Ok(bytes) => {
                 self.worker = Worker::spawn(ctx.clone(), bytes);
                 self.pending.clear();
@@ -333,8 +333,45 @@ impl Tab {
                 }
                 Action::SetAnnot(p, id, e) => {
                     self.edit_pages(ctx, &[p], |pdf| {
-                        pdf.set_annotation(id, e.color, e.opacity, &e.contents)
+                        pdf.set_annotation(id, e.color, e.opacity, &e.contents)?;
+                        match &e.text {
+                            Some(s) => pdf.set_text_style(id, s),
+                            None => Ok(()),
+                        }
                     });
+                }
+                Action::AnnotText(p, id, text) => {
+                    let Some(a) = self.pdf.annotations().into_iter().find(|a| a.id == id) else {
+                        continue;
+                    };
+                    self.edit_pages(ctx, &[p], |pdf| {
+                        pdf.set_annotation(id, a.color, a.opacity, &text)
+                    });
+                }
+                Action::MoveAnnot(p, id, to) => {
+                    self.edit_pages(ctx, &[p], |pdf| pdf.move_annotation(p, id, to));
+                }
+                Action::AddNote(p, at, text) => {
+                    let (color, author) = (self.ed.note_color, self.ed.author.clone());
+                    let mut new = None;
+                    let add = |pdf: &mut Pdf| {
+                        new = Some(pdf.add_note(p, at, color, &text, &author)?);
+                        Ok(())
+                    };
+                    if self.edit_pages(ctx, &[p], add) {
+                        self.after_annot(p, new);
+                    }
+                }
+                Action::AddTextBox(p, rect, text) => {
+                    let (style, author) = (self.ed.box_style, self.ed.author.clone());
+                    let mut new = None;
+                    let add = |pdf: &mut Pdf| {
+                        new = Some(pdf.add_text_box(p, rect, &text, &style, &author)?);
+                        Ok(())
+                    };
+                    if self.edit_pages(ctx, &[p], add) {
+                        self.after_annot(p, new);
+                    }
                 }
                 Action::DeleteAnnot(p, id) => {
                     let gone = |pdf: &mut Pdf| pdf.remove_annotations(|a| a.id == id).map(|_| ());
@@ -364,6 +401,14 @@ impl Tab {
         };
         if self.edit_pages(ctx, &pages, add) {
             self.ed.selection.clear_words();
+        }
+    }
+
+    /// A new note or text box is selected, with the arrow to move it, as new objects are.
+    fn after_annot(&mut self, page: usize, id: Option<(u32, u16)>) {
+        self.ed.set_tool(Tool::Select);
+        if let Some(id) = id {
+            self.ed.selection = Selection::Annot { page, id };
         }
     }
 
@@ -443,7 +488,7 @@ impl Tab {
 
     /// Re-render from the current document state.
     pub fn refresh(&mut self, ctx: &egui::Context) {
-        match self.pdf.render_snapshot() {
+        match self.pdf.app_snapshot() {
             Ok(bytes) => {
                 self.worker = Worker::spawn(ctx.clone(), bytes);
                 self.sizes = sizes_of(&self.pdf);
@@ -719,6 +764,7 @@ impl Tab {
         };
         c.pages = self.ed.selection.pages().is_some();
         c.tool = Some(self.ed.tool);
+        c.annot_tool = Some(self.ed.annot_tool);
         c.fit = self.fit;
         c.hidden_text = self.ed.show_hidden;
         c.form = !self.ed.form.fields().is_empty();
@@ -727,6 +773,7 @@ impl Tab {
         let annot = self.ed.selected_annot();
         c.annot = annot.is_some();
         c.annot_locked = annot.is_some_and(|a| a.locked());
+        c.annot_moves = self.ed.tool == Tool::Select && annot.is_some_and(crate::editor::movable);
     }
 
     /// A right-click menu for what is selected, its commands queued in `requested`. The
@@ -1330,6 +1377,7 @@ mod tests {
             flags: 0,
             reply_to: reply_to.map(|r| (r, 0)),
             has_appearance: true,
+            text_style: None,
         };
         // 3 answers 1, 4 answers 3, 5 answers a comment on another page, 6 and 7 answer
         // each other.

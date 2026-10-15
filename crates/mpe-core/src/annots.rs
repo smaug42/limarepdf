@@ -5,6 +5,7 @@
 use crate::annot_ap::DRAWN;
 use crate::doc::decode_text;
 use crate::form_flatten::Flat;
+use crate::form_write::parse_da;
 use crate::matrix as mx;
 use crate::{Pdf, Result};
 use anyhow::anyhow;
@@ -156,6 +157,29 @@ pub struct Annot {
     /// Whether the file has a drawing for it. MPE draws the common kinds itself when
     /// not, on screen and when printing.
     pub has_appearance: bool,
+    /// For text boxes, how the text is set; `None` for other kinds.
+    pub text_style: Option<TextStyle>,
+}
+
+/// How a text box's text is set: Helvetica at `size` points in `color`, on `fill` (none
+/// when transparent), with a border `border` points wide in the text colour (0 for none).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextStyle {
+    pub size: f32,
+    pub color: [f32; 3],
+    pub fill: Option<[f32; 3]>,
+    pub border: f32,
+}
+
+impl Default for TextStyle {
+    fn default() -> Self {
+        Self {
+            size: 12.0,
+            color: [0.0; 3],
+            fill: None,
+            border: 0.0,
+        }
+    }
 }
 
 impl Annot {
@@ -361,6 +385,28 @@ impl Pdf {
         } else {
             Vec::new()
         };
+        let text_style = (kind == AnnotKind::TextBox).then(|| {
+            let da = d
+                .get(b"DA")
+                .ok()
+                .and_then(|o| self.string_bytes(o))
+                .unwrap_or_default();
+            let (_, size, color) = parse_da(&da);
+            let color: Vec<f32> = color
+                .map(|o| {
+                    o.operands
+                        .iter()
+                        .filter_map(|x| x.as_float().ok())
+                        .collect()
+                })
+                .unwrap_or_default();
+            TextStyle {
+                size: if size > 0.0 { size } else { 12.0 },
+                color: rgb(&color),
+                fill: self.colour(d, b"C").map(|c| rgb(&c)),
+                border: self.border(d).0,
+            }
+        });
         Some(Annot {
             id,
             page,
@@ -386,6 +432,7 @@ impl Pdf {
                 .ok()
                 .and_then(|o| self.dict_of(o))
                 .is_some_and(|ap| ap.has(b"N")),
+            text_style,
         })
     }
 }

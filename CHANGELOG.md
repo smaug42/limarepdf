@@ -47,6 +47,11 @@
   other readers show. Click a mark or comment to select it; the inspector changes its colour, opacity and comment,
   and Delete removes it. Marks carry your name, the computer's user name unless set under ☰ > Edit > Your name for
   comments…. See [Marking text](docs/gui.md#marking-text).
+- Sticky notes and text boxes: the new Annotate button in the top bar holds both tools. Click to place a note and
+  type its comment beside it; drag a text box and type straight onto the page. Double-click either to change its
+  text. Text boxes on turned pages read upright. See [Notes and text boxes](docs/gui.md#notes-and-text-boxes).
+- The arrow tool selects, moves and resizes annotations (notes keep their size; text markup stays on its text), and
+  the arrow keys nudge them.
 - Annotations stored without a drawing of their own, which used to be invisible, are drawn: highlights,
   underlines, strike-outs, squiggly underlines, notes, text boxes, rectangles, ellipses, lines, polygons and
   freehand drawings. The file is left as it is.

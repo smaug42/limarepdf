@@ -100,18 +100,25 @@ impl Pdf {
     /// flag but not NoView, so annotations flagged NoView are marked Hidden in the copy that
     /// is serialised. The document itself is not changed.
     pub fn render_snapshot(&mut self) -> Result<Vec<u8>> {
-        self.snapshot_hiding(|flags| flags & 32 != 0)
+        self.snapshot_hiding(|flags, _| flags & 32 != 0)
+    }
+
+    /// Like [`Pdf::render_snapshot`], for the app, which draws sticky notes itself at a
+    /// fixed size on screen: notes are left out too.
+    pub fn app_snapshot(&mut self) -> Result<Vec<u8>> {
+        self.snapshot_hiding(|flags, sub| flags & 32 != 0 || sub == b"Text")
     }
 
     /// Like [`Pdf::render_snapshot`], for printing: annotations without the Print flag
     /// (bit 3) are marked Hidden instead.
     pub fn print_snapshot(&mut self) -> Result<Vec<u8>> {
-        self.snapshot_hiding(|flags| flags & 4 == 0)
+        self.snapshot_hiding(|flags, _| flags & 4 == 0)
     }
 
-    /// A snapshot in which annotations whose flags match `hide` are marked Hidden, and
-    /// annotations without a drawing get MPE's (the document itself keeps none).
-    fn snapshot_hiding(&mut self, hide: impl Fn(i64) -> bool) -> Result<Vec<u8>> {
+    /// A snapshot in which annotations whose flags and subtype match `hide` are marked
+    /// Hidden, and annotations without a drawing get MPE's (the document itself keeps
+    /// none).
+    fn snapshot_hiding(&mut self, hide: impl Fn(i64, &[u8]) -> bool) -> Result<Vec<u8>> {
         let ids = self.annots_where(hide);
         let missing = self.missing_appearances(&self.page_ids());
         if ids.is_empty() && missing.is_empty() {
@@ -129,8 +136,9 @@ impl Pdf {
         Ok(out)
     }
 
-    /// Annotations not Hidden (bit 2) whose flags match `hide`, with their flags.
-    fn annots_where(&self, hide: impl Fn(i64) -> bool) -> Vec<(ObjectId, i64)> {
+    /// Annotations not Hidden (bit 2) whose flags and subtype match `hide`, with their
+    /// flags.
+    fn annots_where(&self, hide: impl Fn(i64, &[u8]) -> bool) -> Vec<(ObjectId, i64)> {
         let mut out = Vec::new();
         for page in self.page_ids() {
             let Some(annots) = self
@@ -146,14 +154,12 @@ impl Pdf {
             };
             for r in annots {
                 let Ok(id) = r.as_reference() else { continue };
-                let flags = self
-                    .doc
-                    .get_dictionary(id)
-                    .ok()
-                    .and_then(|d| d.get(b"F").ok())
-                    .and_then(|f| self.num(f))
-                    .unwrap_or(0.0) as i64;
-                if flags & 2 == 0 && hide(flags) {
+                let Ok(d) = self.doc.get_dictionary(id) else {
+                    continue;
+                };
+                let flags = d.get(b"F").ok().and_then(|f| self.num(f)).unwrap_or(0.0) as i64;
+                let sub = d.get(b"Subtype").and_then(|o| o.as_name()).unwrap_or(b"");
+                if flags & 2 == 0 && hide(flags, sub) {
                     out.push((id, flags));
                 }
             }

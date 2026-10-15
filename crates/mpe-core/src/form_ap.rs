@@ -297,6 +297,15 @@ pub(crate) fn wrap(text: &str, max: f32, size: f32, m: &Metrics) -> Vec<String> 
     out
 }
 
+/// The height a box `w` wide, with a solid border `border` wide, needs to show all of
+/// `text` in lines at `size`, as [`draw`] lays them out.
+pub(crate) fn lines_height(text: &str, w: f32, size: f32, border: f32, m: &Metrics) -> f32 {
+    let avail = (w - 2.0 * border).max(0.0) - 2.0 * PAD;
+    let n = wrap(text, avail, size, m).len().max(1) as f32;
+    // The first line's ascent, the lines below it, and the last line's descent.
+    2.0 * (border + PAD) + 0.8 * size + (n - 1.0) * LEADING * size + 0.25 * size
+}
+
 pub(crate) fn op(name: &str, operands: Vec<Object>) -> Operation {
     Operation::new(name, operands)
 }

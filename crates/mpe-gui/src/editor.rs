@@ -7,8 +7,8 @@ use crate::theme;
 use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use egui_phosphor::regular as icon;
 use mpe_core::{
-    words_text, Annot, Family, FieldValue, FontChoice, Link, LinkTarget, ObjectKind, PageObject,
-    PageWord, PathStyle, Shape, TextEdit,
+    words_text, Annot, AnnotKind, Family, FieldValue, FontChoice, Link, LinkTarget, ObjectKind,
+    PageObject, PageWord, PathStyle, Shape, TextEdit, TextStyle,
 };
 use std::collections::HashMap;
 
@@ -23,6 +23,65 @@ pub enum Tool {
     Rect,
     Ellipse,
     Line,
+    /// Click to put a sticky note on the page, then type its comment.
+    Note,
+    /// Drag a box, then type text straight onto the page.
+    TextBox,
+}
+
+impl Tool {
+    /// The tools behind the toolbar's Annotate button.
+    pub const ANNOTATE: [Tool; 2] = [Tool::Note, Tool::TextBox];
+}
+
+/// A note or text box being typed: a new one at `rect` (displayed-page points), or the
+/// existing one `id`.
+pub struct Writing {
+    pub page: usize,
+    pub id: Option<(u32, u16)>,
+    pub note: bool,
+    pub rect: [f32; 4],
+    pub text: String,
+    /// The text it had, for an existing one.
+    original: String,
+    /// A text box's text size in points.
+    size: f32,
+    /// Takes the keyboard on the next frame.
+    fresh: bool,
+}
+
+impl Writing {
+    /// A new note (with its icon's box) or text box, empty.
+    fn new(page: usize, note: bool, rect: [f32; 4], size: f32) -> Self {
+        Self {
+            page,
+            id: None,
+            note,
+            rect,
+            text: String::new(),
+            original: String::new(),
+            size,
+            fresh: true,
+        }
+    }
+}
+
+/// A note's icon on screen, in pixels, whatever the zoom, as other readers show notes.
+const NOTE_PX: f32 = 24.0;
+
+/// The box an annotation takes up on screen, in page points at `zoom` pixels per point:
+/// a note's icon grows from its top left corner to [`NOTE_PX`].
+fn shown_box(note: bool, b: [f32; 4], zoom: f32) -> [f32; 4] {
+    if !note {
+        return b;
+    }
+    let s = NOTE_PX / zoom.max(0.01);
+    [b[0], b[1], b[2].max(b[0] + s), b[3].max(b[1] + s)]
+}
+
+/// Whether a double-click opens it for typing: a note or a text box that isn't locked.
+fn writable(a: &Annot) -> bool {
+    !a.locked() && matches!(a.kind, AnnotKind::Note | AnnotKind::TextBox)
 }
 
 /// A change requested by the interface, applied by the tab after the frame is drawn.
@@ -39,7 +98,15 @@ pub enum Action {
     SetField(Vec<usize>, String, FieldValue),
     /// Change an annotation on a page: its colour, opacity and comment.
     SetAnnot(usize, (u32, u16), AnnotEdit),
+    /// Replace an annotation's comment, or a text box's text.
+    AnnotText(usize, (u32, u16), String),
+    /// Give an annotation a new box (displayed-page points).
+    MoveAnnot(usize, (u32, u16), [f32; 4]),
     DeleteAnnot(usize, (u32, u16)),
+    /// A new note centred on a point, with its comment.
+    AddNote(usize, (f32, f32), String),
+    /// A new text box and its text.
+    AddTextBox(usize, [f32; 4], String),
 }
 
 /// An annotation's properties as the inspector edits them.
@@ -48,6 +115,19 @@ pub struct AnnotEdit {
     pub color: Option<[f32; 3]>,
     pub opacity: f32,
     pub contents: String,
+    /// A text box's text size, colour, fill and border.
+    pub text: Option<TextStyle>,
+}
+
+/// Whether the annotation can be moved with the arrow tool: not locked, and not text
+/// markup, which stays on its text.
+pub fn movable(a: &Annot) -> bool {
+    !a.locked() && a.quads.is_empty()
+}
+
+/// Whether it can also be resized: a note's icon keeps its size.
+pub fn resizable(a: &Annot) -> bool {
+    movable(a) && a.kind != AnnotKind::Note
 }
 
 #[derive(Clone, Copy)]
@@ -59,6 +139,8 @@ enum Mode {
 struct Drag {
     page: usize,
     id: usize,
+    /// Moving an annotation, not object `id`.
+    annot: Option<(u32, u16)>,
     mode: Mode,
     start: Pos2,
     orig: [f32; 4],
@@ -124,6 +206,17 @@ pub struct Editor {
     annots: HashMap<usize, Vec<Annot>>,
     /// The selected annotation's properties being edited in the inspector, with its id.
     annot_insp: Option<((u32, u16), AnnotEdit)>,
+    /// The Annotate button's tool: the one last used.
+    pub annot_tool: Tool,
+    /// A note or text box being typed.
+    pub writing: Option<Writing>,
+    pub note_color: [f32; 3],
+    /// How new text boxes are set.
+    pub box_style: TextStyle,
+    /// The name new annotations are signed with (from the settings).
+    pub author: String,
+    /// Pixels per page point, as the pages are drawn now.
+    zoom: f32,
 }
 
 impl Default for Editor {
@@ -157,6 +250,15 @@ impl Default for Editor {
             form: FormUi::default(),
             annots: HashMap::new(),
             annot_insp: None,
+            annot_tool: Tool::Note,
+            writing: None,
+            note_color: [1.0, 0.85, 0.2],
+            box_style: TextStyle {
+                border: 1.0,
+                ..TextStyle::default()
+            },
+            author: String::new(),
+            zoom: 1.0,
         }
     }
 }
@@ -289,14 +391,142 @@ impl Editor {
     /// markup, else inside its box.
     fn annot_at(&mut self, pdf: &mpe_core::Pdf, page: usize, p: Pos2) -> Option<&Annot> {
         let inside = |b: &[f32; 4]| p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3];
+        let zoom = self.zoom;
         self.annots(pdf, page).iter().rev().find(|a| {
             !a.hidden()
                 && if a.quads.is_empty() {
-                    inside(&a.bbox)
+                    inside(&shown_box(a.kind == AnnotKind::Note, a.bbox, zoom))
                 } else {
                     a.quads.iter().any(inside)
                 }
         })
+    }
+
+    /// Start typing a note or text box, finishing one already open first.
+    fn start_writing(&mut self, w: Writing) {
+        self.finish_writing();
+        self.selection.clear_annot();
+        self.writing = Some(w);
+    }
+
+    /// Open the selected note or text box for typing.
+    pub fn write_selected(&mut self) {
+        let Some(a) = self.selected_annot().filter(|a| writable(a)).cloned() else {
+            return;
+        };
+        self.finish_writing();
+        self.writing = Some(Writing {
+            id: Some(a.id),
+            text: a.contents.clone(),
+            original: a.contents,
+            ..Writing::new(
+                a.page,
+                a.kind == AnnotKind::Note,
+                a.bbox,
+                a.text_style.map_or(12.0, |s| s.size),
+            )
+        });
+    }
+
+    /// Keep what was typed: a new note or text box with some text, or changed text.
+    pub fn finish_writing(&mut self) {
+        let Some(w) = self.writing.take() else { return };
+        match w.id {
+            Some(id) if w.text != w.original => {
+                self.actions.push(Action::AnnotText(w.page, id, w.text));
+            }
+            None if !w.text.trim().is_empty() => {
+                let r = w.rect;
+                self.actions.push(if w.note {
+                    Action::AddNote(w.page, ((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0), w.text)
+                } else {
+                    Action::AddTextBox(w.page, r, w.text)
+                });
+            }
+            _ => {}
+        }
+    }
+
+    /// The note or text box being typed on `page` (drawn at `r`, `k` pixels per point):
+    /// a comment box beside a note's icon, or the text box's own area. Returns true when
+    /// the page should not take the pointer this frame: it is over the text box, or the
+    /// typing just ended.
+    fn writing_ui(&mut self, ui: &mut egui::Ui, page: usize, r: Rect, k: f32) -> bool {
+        let Some(w) = self.writing.as_mut().filter(|w| w.page == page) else {
+            return false;
+        };
+        let to_screen = |x: f32, y: f32| Pos2::new(r.min.x + x * k, r.min.y + y * k);
+        let b = shown_box(w.note, w.rect, k);
+        let area = Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3]));
+        // Light colours in either theme, as for form fields: the text sits on the paper.
+        let theme = ui.visuals().clone();
+        let (out, done, cancel) = if w.note {
+            let [cr, cg, cb] = self.note_color.map(|v| (v * 255.0).round() as u8);
+            if w.id.is_none() {
+                ui.painter()
+                    .rect_filled(area, 2.0, Color32::from_rgb(cr, cg, cb));
+            }
+            let (mut done, mut cancel) = (false, false);
+            let inner = egui::Area::new(ui.id().with(("note-writing", page)))
+                .fixed_pos(area.right_top() + Vec2::new(6.0, 0.0))
+                .order(egui::Order::Foreground)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style())
+                        .show(ui, |ui| {
+                            ui.set_width(240.0);
+                            let out = ui.add(
+                                egui::TextEdit::multiline(&mut w.text)
+                                    .id(egui::Id::new(("note-text", page)))
+                                    .hint_text("Comment")
+                                    .desired_rows(4)
+                                    .desired_width(f32::INFINITY),
+                            );
+                            ui.horizontal(|ui| {
+                                done = ui.button("Done").clicked();
+                                cancel = ui.button("Cancel").clicked();
+                            });
+                            out
+                        })
+                        .inner
+                });
+            (inner.inner, done, cancel)
+        } else {
+            let te = egui::TextEdit::multiline(&mut w.text)
+                .id(egui::Id::new(("box-text", page)))
+                .font(egui::FontId::proportional((w.size * k).clamp(6.0, 96.0)))
+                .desired_rows(1)
+                .min_size(area.size())
+                .desired_width(area.width())
+                .margin(egui::Margin::same(2));
+            *ui.visuals_mut() = egui::Visuals::light();
+            let out = ui.put(area, te);
+            *ui.visuals_mut() = theme;
+            (out, false, false)
+        };
+        if w.fresh {
+            out.request_focus();
+            w.fresh = false;
+            return false;
+        }
+        // Ctrl+Enter finishes; Esc drops what was typed. The focus is asked first: asking
+        // inside `input_mut` would wait on the lock it holds.
+        let focused = out.has_focus();
+        let (finish, esc) = ui.input_mut(|i| {
+            (
+                focused && i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter),
+                i.key_pressed(egui::Key::Escape),
+            )
+        });
+        if cancel || (esc && (out.lost_focus() || out.has_focus())) {
+            self.writing = None;
+            return true;
+        }
+        // A note stays open until Done; a text box ends when it loses the keyboard.
+        if done || finish || (!w.note && out.lost_focus()) {
+            self.finish_writing();
+            return true;
+        }
+        !w.note && out.hovered()
     }
 
     /// The selected annotation, once its page's annotations have been read.
@@ -306,6 +536,10 @@ impl Editor {
     }
 
     pub fn set_tool(&mut self, t: Tool) {
+        self.finish_writing();
+        if Tool::ANNOTATE.contains(&t) {
+            self.annot_tool = t;
+        }
         self.tool = t;
         self.drag = None;
         self.draw = None;
@@ -597,6 +831,8 @@ impl Editor {
     ) -> egui::Response {
         let to_screen = |x: f32, y: f32| Pos2::new(r.min.x + x * k, r.min.y + y * k);
         let to_pt = |p: Pos2| Pos2::new((p.x - r.min.x) / k, (p.y - r.min.y) / k);
+        let click_pt = |resp: &egui::Response| resp.interact_pointer_pos().map(to_pt);
+        self.zoom = k;
         let screen_rect =
             |b: [f32; 4]| Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3]));
         let id = ui.id().with(("page-edit", tab_id, page));
@@ -660,23 +896,66 @@ impl Editor {
         let htol = 6.0 / k;
         let shift = ui.input(|i| i.modifiers.shift);
 
-        // current selection box on this page
+        // current selection box on this page: an object's, or an annotation's that the
+        // arrow can move
+        self.annots(pdf, page);
         let sel_here = self.sel().filter(|s| s.0 == page);
-        let sel_box = sel_here.and_then(|(_, id)| {
-            if let Some(d) = &self.drag {
-                if d.page == page && d.id == id {
-                    return Some(d.cur);
+        let sel_annot = self
+            .selected_annot()
+            .filter(|a| a.page == page && self.tool == Tool::Select && movable(a))
+            .map(|a| (a.id, a.bbox, resizable(a)));
+        let sel_note = self
+            .selected_annot()
+            .is_some_and(|a| a.kind == AnnotKind::Note);
+        let sel_box = sel_here
+            .and_then(|(_, id)| {
+                if let Some(d) = &self.drag {
+                    if d.page == page && d.id == id && d.annot.is_none() {
+                        return Some(d.cur);
+                    }
                 }
-            }
-            self.objs.get(&page)?.get(id).map(|o| o.bbox)
-        });
+                self.objs.get(&page)?.get(id).map(|o| o.bbox)
+            })
+            .or_else(|| {
+                let (id, b, _) = sel_annot?;
+                let d = self.drag.as_ref().filter(|d| d.annot == Some(id));
+                Some(shown_box(sel_note, d.map_or(b, |d| d.cur), k))
+            });
+        // The box that has handles: not a note's.
+        let sized_box = sel_box.filter(|_| sel_annot.is_none_or(|(_, _, r)| r));
+        let annot_drag = |a: &Annot, mode: Mode, start: Pos2| Drag {
+            page,
+            id: 0,
+            annot: Some(a.id),
+            mode,
+            start,
+            orig: a.bbox,
+            cur: a.bbox,
+        };
+        // Typing a note or text box: its box takes the keyboard and the pointer.
+        if self.writing_ui(ui, page, r, k) {
+            return resp;
+        }
+        let ctrl_annot = click_pt(&resp)
+            .filter(|_| ctrl && resp.clicked())
+            .filter(|_| Tool::ANNOTATE.contains(&self.tool))
+            .and_then(|p| self.annot_at(pdf, page, p))
+            .map(|a| a.id);
 
         match self.tool {
             Tool::Select => {
                 if let Some(p) = hover_pt {
-                    let over_handle = sel_box.and_then(|b| self.handle_hit(b, p, htol));
+                    let over_handle = sized_box.and_then(|b| self.handle_hit(b, p, htol));
+                    let over_annot = self.annot_at(pdf, page, p).cloned();
                     if let Some(h) = over_handle {
                         ui.ctx().set_cursor_icon(handle_cursor(h));
+                    } else if let Some(a) = over_annot {
+                        if movable(&a) {
+                            ui.ctx().set_cursor_icon(CursorIcon::Grab);
+                        }
+                        if !self.dragging() {
+                            resp = resp.on_hover_text_at_pointer(annot_tip(&a));
+                        }
                     } else if let Some(i) = self.hit(page, p, tol) {
                         ui.ctx().set_cursor_icon(CursorIcon::Grab);
                         if sel_here.map(|s| s.1) != Some(i) {
@@ -694,9 +973,17 @@ impl Editor {
                 if resp.drag_started() {
                     let p = ui.input(|i| i.pointer.press_origin()).map(to_pt);
                     if let Some(p) = p {
-                        let h = sel_box.and_then(|b| self.handle_hit(b, p, htol));
-                        if let (Some(h), Some((_, id))) = (h, sel_here) {
+                        let h = sized_box.and_then(|b| self.handle_hit(b, p, htol));
+                        let selected = self.selected_annot().filter(|_| sel_annot.is_some());
+                        if let (Some(h), Some(a)) = (h, selected) {
+                            self.drag = Some(annot_drag(a, Mode::Handle(h), p));
+                        } else if let (Some(h), Some((_, id))) = (h, sel_here) {
                             self.start_drag(page, id, Mode::Handle(h), p);
+                        } else if let Some(a) = self.annot_at(pdf, page, p).cloned() {
+                            self.selection = Selection::Annot { page, id: a.id };
+                            if movable(&a) {
+                                self.drag = Some(annot_drag(&a, Mode::Move, p));
+                            }
                         } else if let Some(i) = self.hit(page, p, tol) {
                             self.select_object(page, i);
                             self.start_drag(page, i, Mode::Move, p);
@@ -731,22 +1018,32 @@ impl Editor {
                     if let Some(d) = self.drag.take() {
                         let moved = d.cur.iter().zip(&d.orig).any(|(a, b)| (a - b).abs() > 0.5);
                         if d.page == page && moved {
-                            self.actions.push(Action::SetBox(d.page, d.id, d.cur));
+                            self.actions.push(match d.annot {
+                                Some(id) => Action::MoveAnnot(d.page, id, d.cur),
+                                None => Action::SetBox(d.page, d.id, d.cur),
+                            });
                         }
                     }
                 }
                 if resp.clicked() {
                     if let Some(p) = resp.interact_pointer_pos().map(to_pt) {
-                        let h = sel_box.and_then(|b| self.handle_hit(b, p, htol));
+                        let h = sized_box.and_then(|b| self.handle_hit(b, p, htol));
                         if h.is_none() {
-                            match self.hit(page, p, tol) {
-                                Some(i) => self.select_object(page, i),
-                                None => self.selection.clear_object(),
+                            let annot = self.annot_at(pdf, page, p).map(|a| a.id);
+                            match (annot, self.hit(page, p, tol)) {
+                                (Some(id), _) => self.selection = Selection::Annot { page, id },
+                                (None, Some(i)) => self.select_object(page, i),
+                                (None, None) => {
+                                    self.selection.clear_object();
+                                    self.selection.clear_annot();
+                                }
                             }
                         }
                     }
                 }
-                if resp.double_clicked() {
+                if resp.double_clicked() && self.selection.annot().is_some() {
+                    self.write_selected();
+                } else if resp.double_clicked() {
                     if let Some(o) = self.selected_object() {
                         if o.kind == ObjectKind::Text {
                             self.focus_text = true;
@@ -795,7 +1092,12 @@ impl Editor {
                         };
                     }
                 } else if resp.double_clicked() {
-                    if let Some(i) = nearest(click_at()) {
+                    // On a note or text box, open it for typing; else select a word.
+                    let annot = click_at().and_then(|p| self.annot_at(pdf, page, p));
+                    if let Some(id) = annot.filter(|a| writable(a)).map(|a| a.id) {
+                        self.selection = Selection::Annot { page, id };
+                        self.write_selected();
+                    } else if let Some(i) = nearest(click_at()) {
                         self.selection = Selection::word((page, i));
                     }
                 } else if resp.clicked() {
@@ -841,7 +1143,26 @@ impl Editor {
                     }
                 }
             }
-            Tool::Image | Tool::Rect | Tool::Ellipse | Tool::Line => {
+            // Ctrl+click on an annotation selects it in the annotation tools.
+            Tool::Note | Tool::TextBox if ctrl_annot.is_some() => {
+                if let Some(id) = ctrl_annot {
+                    self.selection = Selection::Annot { page, id };
+                }
+            }
+            Tool::Note => {
+                ui.ctx().set_cursor_icon(CursorIcon::Cell);
+                if let Some(p) = click_pt(&resp).filter(|_| resp.clicked()) {
+                    // The icon, drawn at a fixed size on screen from the note's top left
+                    // corner, is centred on the click. The note itself is 20 points.
+                    let (x, y) = (p.x - NOTE_PX / 2.0 / k, p.y - NOTE_PX / 2.0 / k);
+                    let rect = [x, y, x + 20.0, y + 20.0];
+                    self.start_writing(Writing::new(page, true, rect, 0.0));
+                }
+                if let Some(a) = hover_pt.and_then(|p| self.annot_at(pdf, page, p)) {
+                    resp = resp.on_hover_text_at_pointer(annot_tip(a));
+                }
+            }
+            Tool::Image | Tool::Rect | Tool::Ellipse | Tool::Line | Tool::TextBox => {
                 ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
                 if resp.drag_started() {
                     if let Some(p) = ui.input(|i| i.pointer.press_origin()).map(to_pt) {
@@ -872,6 +1193,7 @@ impl Editor {
                         let (w, h) = match (self.tool, &self.pending_image) {
                             (Tool::Image, Some((_, aspect))) => (200.0, 200.0 / aspect.max(0.01)),
                             (Tool::Line, _) => (120.0, 0.0),
+                            (Tool::TextBox, _) => (200.0, (self.box_style.size * 2.5).max(20.0)),
                             _ => (120.0, 80.0),
                         };
                         finish = Some((p, Pos2::new(p.x + w, p.y + h)));
@@ -891,6 +1213,10 @@ impl Editor {
                             }
                             Tool::Line => {
                                 self.actions.push(Action::AddShape(page, Shape::Line, rect))
+                            }
+                            Tool::TextBox => {
+                                let size = self.box_style.size;
+                                self.start_writing(Writing::new(page, false, n, size));
                             }
                             _ => {}
                         }
@@ -922,7 +1248,8 @@ impl Editor {
                     Stroke::new(1.5, accent_strong),
                     StrokeKind::Outside,
                 );
-                for h in 0..8 {
+                let handles = if sized_box.is_some() { 0..8 } else { 0..0 };
+                for h in handles {
                     let (x, y) = handle_pos(b, h);
                     let c = to_screen(x, y);
                     let hr = Rect::from_center_size(c, Vec2::splat(7.0));
@@ -936,12 +1263,42 @@ impl Editor {
                 }
             }
         }
-        // The selected annotation: each marked line, or its box.
-        if self.selection.annot().is_some_and(|(p, _)| p == page) {
+        // Notes at a fixed size on screen, over the page's small drawing of them.
+        for a in self.annots.get(&page).into_iter().flatten() {
+            if a.kind != AnnotKind::Note || a.hidden() {
+                continue;
+            }
+            let moving = self.drag.as_ref().filter(|d| d.annot == Some(a.id));
+            let b = shown_box(true, moving.map_or(a.bbox, |d| d.cur), k);
+            let sr = Rect::from_min_size(to_screen(b[0], b[1]), Vec2::splat(NOTE_PX));
+            let [cr, cg, cb] = a
+                .color
+                .unwrap_or([1.0, 0.85, 0.2])
+                .map(|v| (v * 255.0) as u8);
+            let fill = Color32::from_rgb(cr, cg, cb).gamma_multiply(a.opacity.max(0.3));
+            painter.rect_filled(sr, 3.0, fill);
+            painter.rect_stroke(
+                sr,
+                3.0,
+                Stroke::new(1.0, Color32::from_gray(60)),
+                StrokeKind::Inside,
+            );
+            painter.text(
+                sr.center(),
+                egui::Align2::CENTER_CENTER,
+                icon::NOTE,
+                egui::FontId::new(NOTE_PX * 0.7, theme::icons()),
+                Color32::from_gray(30),
+            );
+        }
+        // The selected annotation: each marked line, or its box (unless the arrow has
+        // framed it above).
+        if sel_annot.is_none() && self.selection.annot().is_some_and(|(p, _)| p == page) {
             self.annots(pdf, page);
             if let Some(a) = self.selected_annot() {
+                let shown = [shown_box(a.kind == AnnotKind::Note, a.bbox, k)];
                 let boxes = if a.quads.is_empty() {
-                    std::slice::from_ref(&a.bbox)
+                    &shown[..]
                 } else {
                     &a.quads[..]
                 };
@@ -977,6 +1334,14 @@ impl Editor {
     /// the page (keeping a page selection that includes it).
     fn select_for_menu(&mut self, pdf: &mpe_core::Pdf, page: usize, p: Option<Pos2>, tol: f32) {
         match (self.tool, p) {
+            (Tool::Select | Tool::Note | Tool::TextBox, Some(p))
+                if self.annot_at(pdf, page, p).is_some() =>
+            {
+                if let Some(id) = self.annot_at(pdf, page, p).map(|a| a.id) {
+                    self.selection = Selection::Annot { page, id };
+                }
+                return;
+            }
             (Tool::Select, Some(p)) => {
                 self.objects(pdf, page);
                 if let Some(i) = self.hit(page, p, tol) {
@@ -1019,6 +1384,7 @@ impl Editor {
             self.drag = Some(Drag {
                 page,
                 id,
+                annot: None,
                 mode,
                 start,
                 orig: o.bbox,
@@ -1046,7 +1412,13 @@ impl Editor {
     pub fn owns_panel(&self) -> bool {
         matches!(
             self.tool,
-            Tool::Text | Tool::Image | Tool::Rect | Tool::Ellipse | Tool::Line
+            Tool::Text
+                | Tool::Image
+                | Tool::Rect
+                | Tool::Ellipse
+                | Tool::Line
+                | Tool::Note
+                | Tool::TextBox
         ) || self.sel().is_some()
             || self.selection.words().is_some()
             || self.selection.annot().is_some()
@@ -1104,8 +1476,16 @@ impl Editor {
         }
     }
 
-    /// Move the selected object by (dx, dy) points.
+    /// Move the selected object, or annotation (arrow tool), by (dx, dy) points.
     pub fn nudge(&mut self, dx: f32, dy: f32) {
+        if self.tool == Tool::Select {
+            if let Some(a) = self.selected_annot().filter(|a| movable(a)) {
+                let b = a.bbox;
+                let to = [b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy];
+                self.actions.push(Action::MoveAnnot(a.page, a.id, to));
+                return;
+            }
+        }
         let Some((p, id)) = self.sel() else { return };
         if let Some(o) = self.objs.get(&p).and_then(|v| v.get(id)) {
             let b = o.bbox;
@@ -1121,6 +1501,9 @@ impl Editor {
     /// unfinished text, leave a drawing tool for the arrow, or with the arrow clear the
     /// selection.
     pub fn escape(&mut self) {
+        if self.writing.take().is_some() {
+            return;
+        }
         if self.selection.annot().is_some() {
             self.selection.clear_annot();
             return;
@@ -1206,6 +1589,7 @@ impl Editor {
             color: a.color,
             opacity: a.opacity,
             contents: a.contents.clone(),
+            text: a.text_style,
         };
         if self.annot_insp.as_ref().is_none_or(|(id, _)| *id != a.id) {
             self.annot_insp = Some((a.id, now.clone()));
@@ -1227,15 +1611,21 @@ impl Editor {
         }
         ui.separator();
         ui.add_enabled_ui(!a.locked(), |ui| {
-            ui.horizontal(|ui| {
-                let mut on = e.color.is_some();
-                if ui.checkbox(&mut on, "Colour").changed() {
-                    e.color = on.then_some(a.color.unwrap_or([0.0; 3]));
+            match e.text.as_mut() {
+                // A text box's colour is its fill, set with its text.
+                Some(s) => text_style_ui(ui, s),
+                None => {
+                    ui.horizontal(|ui| {
+                        let mut on = e.color.is_some();
+                        if ui.checkbox(&mut on, "Colour").changed() {
+                            e.color = on.then_some(a.color.unwrap_or([0.0; 3]));
+                        }
+                        if let Some(c) = e.color.as_mut() {
+                            ui.color_edit_button_rgb(c);
+                        }
+                    });
                 }
-                if let Some(c) = e.color.as_mut() {
-                    ui.color_edit_button_rgb(c);
-                }
-            });
+            }
             ui.horizontal(|ui| {
                 ui.label("Opacity");
                 let mut pct = e.opacity * 100.0;
@@ -1246,12 +1636,15 @@ impl Editor {
                     e.opacity = pct / 100.0;
                 }
             });
-            ui.label("Comment");
+            ui.label(if e.text.is_some() { "Text" } else { "Comment" });
             ui.add(
                 egui::TextEdit::multiline(&mut e.contents)
                     .desired_rows(4)
                     .desired_width(f32::INFINITY),
             );
+            if writable(&a) {
+                ui.weak("Double-click it on the page to type there.");
+            }
             ui.horizontal(|ui| {
                 if ui
                     .add_enabled(*e != now, egui::Button::new("Apply changes"))
@@ -1359,6 +1752,28 @@ impl Editor {
                 });
                 ui.label("Drag on the page, or click for a default size.");
                 ui.separator();
+            }
+            Tool::Note => {
+                ui.strong("New note");
+                ui.horizontal(|ui| {
+                    ui.label("Colour");
+                    ui.color_edit_button_rgb(&mut self.note_color);
+                });
+                ui.label(
+                    "Click on the page to place a note, type its comment, then press Done \
+                     (or Ctrl+Enter). Ctrl+click selects an annotation.",
+                );
+                return;
+            }
+            Tool::TextBox => {
+                ui.strong("New text box");
+                text_style_ui(ui, &mut self.box_style);
+                ui.label(
+                    "Drag a box on the page, or click for a default size, then type. Click \
+                     outside the box or press Ctrl+Enter to finish; Esc drops it. Ctrl+click \
+                     selects an annotation.",
+                );
+                return;
             }
             Tool::Select => {}
             Tool::Read => {
@@ -1553,6 +1968,37 @@ impl Editor {
             self.actions.push(Action::Delete(page, id));
         }
     }
+}
+
+/// A text box's text size and colour, fill and border.
+fn text_style_ui(ui: &mut egui::Ui, s: &mut TextStyle) {
+    ui.horizontal(|ui| {
+        ui.label("Text");
+        ui.add(
+            egui::DragValue::new(&mut s.size)
+                .range(4.0..=200.0)
+                .suffix(" pt"),
+        );
+        ui.color_edit_button_rgb(&mut s.color);
+    });
+    ui.horizontal(|ui| {
+        let mut on = s.fill.is_some();
+        if ui.checkbox(&mut on, "Background").changed() {
+            s.fill = on.then_some([1.0, 1.0, 0.85]);
+        }
+        if let Some(c) = s.fill.as_mut() {
+            ui.color_edit_button_rgb(c);
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("Border");
+        ui.add(
+            egui::DragValue::new(&mut s.border)
+                .range(0.0..=20.0)
+                .speed(0.1)
+                .suffix(" pt"),
+        );
+    });
 }
 
 /// Ask for an image file and return its bytes if it can be decoded.

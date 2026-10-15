@@ -31,7 +31,7 @@ const GS: &str = "MpeGs";
 /// Control-point distance for a quarter circle drawn as a Bézier curve.
 const KAPPA: f32 = 0.5523;
 /// A note's icon: its size in points and its colour when the note has none.
-const NOTE_SIZE: f32 = 20.0;
+pub(crate) const NOTE_SIZE: f32 = 20.0;
 const NOTE_COLOR: [f32; 3] = [1.0, 0.85, 0.2];
 /// Text size for a text box whose `/DA` gives none.
 const TEXT_SIZE: f32 = 12.0;
@@ -46,6 +46,8 @@ struct Drawing {
     gs: Option<Dictionary>,
     /// Uses Helvetica as [`FONT`].
     font: bool,
+    /// Turns the drawing to fit `/Rect`, for text boxes on turned pages.
+    matrix: Option<[f32; 6]>,
 }
 
 impl Pdf {
@@ -71,12 +73,15 @@ impl Pdf {
             if let Some(gs) = d.gs {
                 res.set("ExtGState", dictionary! { GS => gs });
             }
-            let form = dictionary! {
+            let mut form = dictionary! {
                 "Type" => "XObject",
                 "Subtype" => "Form",
                 "BBox" => nums(&d.bbox),
                 "Resources" => res,
             };
+            if let Some(m) = d.matrix {
+                form.set("Matrix", nums(&m));
+            }
             let ap = self.doc.add_object(Stream::new(form, d.content));
             if let Ok(a) = self.doc.get_dictionary_mut(id) {
                 a.set("AP", dictionary! { "N" => ap });
@@ -180,13 +185,28 @@ impl Pdf {
             bbox: rect,
             gs: gs_dict(alpha, blend),
             font: false,
+            matrix: None,
         })
     }
 
     /// A text box: its `/Contents` in Helvetica, with the size and colour from `/DA` (or
     /// the `/DS` style string), on the `/C` background with a border.
     fn free_text(&self, d: &Dictionary, rect: [f32; 4], alpha: f32) -> Drawing {
+        // `/Rotate` (as Acrobat writes it) turns the text with its page, so it reads
+        // upright as the page is shown.
+        let turn = d
+            .get(b"Rotate")
+            .ok()
+            .and_then(|o| self.int_value(o))
+            .unwrap_or(0)
+            .rem_euclid(360);
         let (w, h) = (rect[2] - rect[0], rect[3] - rect[1]);
+        let (w, h, matrix) = match turn {
+            90 => (h, w, Some([0.0, 1.0, -1.0, 0.0, 0.0, 0.0])),
+            180 => (w, h, Some([-1.0, 0.0, 0.0, -1.0, 0.0, 0.0])),
+            270 => (h, w, Some([0.0, -1.0, 1.0, 0.0, 0.0, 0.0])),
+            _ => (w, h, None),
+        };
         let da = d
             .get(b"DA")
             .ok()
@@ -245,6 +265,7 @@ impl Pdf {
             bbox: [0.0, 0.0, w, h],
             gs: gs_dict(alpha, false),
             font: true,
+            matrix,
         }
     }
 
@@ -261,7 +282,7 @@ impl Pdf {
     }
 
     /// The border width (from `/BS /W`, else `/Border`, else 1) and dash pattern.
-    fn border(&self, d: &Dictionary) -> (f32, Option<Vec<f32>>) {
+    pub(crate) fn border(&self, d: &Dictionary) -> (f32, Option<Vec<f32>>) {
         if let Some(bs) = d.get(b"BS").ok().and_then(|o| self.dict_of(o)) {
             let w = bs.get(b"W").ok().and_then(|o| self.num(o)).unwrap_or(1.0);
             let dashed = bs.get(b"S").and_then(|o| o.as_name()).ok() == Some(b"D");

@@ -85,7 +85,30 @@ comment.
 New marks are saved with your name, which is the computer's user name until you set it with ☰ > Edit > Your name
 for comments…. Leave it empty to save no name.
 
-Adding notes, text boxes, shapes and freehand drawings is coming.
+### Notes and text boxes
+
+The **Annotate** button in the top bar holds the note and text box tools. It shows the one you used last; the small
+arrow beside it picks the other. The inspector sets the note colour, or the text box's text size and colour,
+background (none at first) and border, before you start.
+
+- **Note:** click on the page. A comment box opens beside the note; type, then click Done (or press Ctrl+Enter).
+  Cancel or Esc drops it, and so does Done with nothing typed. Hovering over a note shows its comment. Notes
+  show at the same size on screen whatever the zoom, with MPE's own icon in the note's colour (also for notes other
+  programs made with a different icon); printed, they keep their own drawing, 20 points across for MPE's.
+- **Text box:** drag a box, or click for a default size, then type straight onto the page. Enter starts a new
+  line. Click outside the box or press Ctrl+Enter to finish; Esc drops it. Text boxes use Helvetica, so characters
+  outside Latin-1 come out as `?`. When you finish, the box grows downward to fit its text, keeping its width; it
+  stops at the bottom of the page, and it never shrinks (resize it with the arrow).
+
+A new note or text box is selected with the arrow, so it can be moved straight away. Double-click a note or text
+box (with the read tool or the arrow) to change its text. Ctrl+click selects an annotation while an annotate tool
+is on. The inspector for a selected text box also changes its text, size, colours, background and border, with Apply changes.
+
+With the arrow, click any annotation to select it, drag it to move it, and drag a handle to resize it. Arrow keys
+move it by 1 point, or 10 with Shift. Notes keep their size, and text markup stays on its text, so neither can be
+resized, and markup can't be moved. Locked annotations can't be moved.
+
+Adding shapes and freehand drawings as annotations is coming.
 
 ## Filling in forms
 
@@ -171,6 +194,8 @@ The other tools add content:
 - **Text:** click where the text starts, type, press Enter.
 - **Rectangle, ellipse, line:** drag, or click for a default size.
 - **Image:** choose a PNG, JPEG or TIFF, then drag a box.
+- **Annotate:** sticky notes and text boxes, saved as annotations rather than page content; see
+  [Notes and text boxes](#notes-and-text-boxes).
 
 Everything that changes the document can be undone with Ctrl+Z. See [Content editing](content-editing.md) for how
 editing works and its limits.

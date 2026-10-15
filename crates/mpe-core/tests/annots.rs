@@ -411,3 +411,157 @@ fn changing_colour_opacity_and_comment() {
     assert!(any > 50 && dark == 0, "{any} {dark}");
     assert!(p.set_annotation((999, 0), None, 1.0, "").is_err());
 }
+
+#[test]
+fn a_note_is_placed_where_clicked() {
+    let mut p = page();
+    let id = p
+        .add_note(0, (100.0, 50.0), [1.0, 0.85, 0.2], "Check this", "Sam")
+        .unwrap();
+    let p2 = Pdf::from_bytes(&p.snapshot().unwrap(), None).unwrap();
+    let a = &p2.annotations()[0];
+    assert_eq!((a.id, &a.kind), (id, &AnnotKind::Note));
+    assert_eq!(
+        (a.contents.as_str(), a.author.as_str()),
+        ("Check this", "Sam")
+    );
+    assert!(a.has_appearance);
+    assert!((a.bbox[0] - 90.0).abs() < 0.01 && (a.bbox[1] - 40.0).abs() < 0.01);
+    assert!(ink(&mut p, [90, 40, 110, 60]).1 > 5, "the icon is drawn");
+    assert_eq!(ink(&mut p, [120, 40, 200, 60]).0, 0);
+    // The app draws notes itself, so its page images leave them out.
+    let hp = render::load(p.app_snapshot().unwrap(), None).unwrap();
+    let bmp = Renderer::new(&hp).render(0, 1.0).unwrap();
+    assert!(
+        bmp.rgba.iter().all(|&c| c == 255),
+        "no note in the app's image"
+    );
+}
+
+#[test]
+fn a_text_box_is_written_and_restyled() {
+    let mut p = page();
+    let style = mpe_core::TextStyle {
+        size: 20.0,
+        ..Default::default()
+    };
+    let r = [20.0, 60.0, 280.0, 100.0];
+    let id = p.add_text_box(0, r, "MMMM MMMM", &style, "").unwrap();
+    let a = &p.annotations()[0];
+    assert_eq!(a.kind, AnnotKind::TextBox);
+    assert_eq!(a.contents, "MMMM MMMM");
+    assert_eq!(a.text_style, Some(style));
+    assert!(ink(&mut p, [20, 60, 280, 100]).1 > 100, "text drawn");
+    let red = mpe_core::TextStyle {
+        size: 20.0,
+        color: [1.0, 0.0, 0.0],
+        fill: Some([0.9, 0.9, 1.0]),
+        border: 2.0,
+    };
+    p.set_text_style(id, &red).unwrap();
+    assert_eq!(p.annotations()[0].text_style, Some(red));
+    let (any, dark) = ink(&mut p, [20, 60, 280, 100]);
+    assert!(any > 5000 && dark == 0, "filled, red text: {any} {dark}");
+    assert!(p
+        .add_text_box(0, [5.0, 5.0, 5.5, 50.0], "x", &style, "")
+        .is_err());
+}
+
+#[test]
+fn a_text_box_grows_to_fit_its_text_but_not_off_the_page() {
+    let mut p = page();
+    let style = mpe_core::TextStyle {
+        size: 12.0,
+        border: 1.0,
+        ..Default::default()
+    };
+    let four = "one\ntwo\nthree\nfour";
+    let id = p
+        .add_text_box(0, [20.0, 20.0, 120.0, 40.0], four, &style, "")
+        .unwrap();
+    let b = p.annotations()[0].bbox;
+    assert_eq!(
+        (b[0], b[1], b[2]),
+        (20.0, 20.0, 120.0),
+        "only the bottom moves"
+    );
+    assert!(b[3] > 75.0 && b[3] < 85.0, "four lines fit: {b:?}");
+    // Fewer lines don't shrink it; more lines grow it, up to the page's bottom edge.
+    p.set_annotation(id, None, 1.0, "one").unwrap();
+    assert_eq!(p.annotations()[0].bbox, b);
+    let long = "many words in a row ".repeat(20);
+    p.set_annotation(id, None, 1.0, &long).unwrap();
+    let b = p.annotations()[0].bbox;
+    assert!((b[3] - 200.0).abs() < 0.01, "stops at the edge: {b:?}");
+}
+
+#[test]
+fn a_text_box_reads_upright_on_a_turned_page() {
+    let mut p = page();
+    p.rotate_pages(&[0], 90).unwrap();
+    let style = mpe_core::TextStyle {
+        size: 20.0,
+        ..Default::default()
+    };
+    // Wide and short as the page is shown (200 wide, 300 high).
+    p.add_text_box(0, [10.0, 100.0, 190.0, 140.0], "MMMM MMMM", &style, "")
+        .unwrap();
+    let a = &p.annotations()[0];
+    assert!((a.bbox[2] - 190.0).abs() < 0.01 && (a.bbox[3] - 140.0).abs() < 0.01);
+    // The text runs across: ink in both halves of the box, also once flattened.
+    assert!(ink(&mut p, [10, 100, 90, 140]).1 > 50);
+    assert!(ink(&mut p, [100, 100, 180, 140]).1 > 50);
+    let before = ink(&mut p, [10, 100, 190, 140]);
+    assert_eq!(p.flatten_annotations(None).unwrap(), 1);
+    assert!(p.annotations().is_empty());
+    assert_eq!(ink(&mut p, [10, 100, 190, 140]), before);
+}
+
+#[test]
+fn moving_and_resizing_take_the_geometry_along() {
+    let mut p = page();
+    let line = add(
+        &mut p,
+        0,
+        "Line",
+        [10.0, 10.0, 110.0, 30.0],
+        dictionary! { "L" => nums(&[10.0, 20.0, 110.0, 20.0]), "C" => nums(&[0.0, 0.0, 0.0]),
+        "BS" => dictionary! { "W" => 3 } },
+    );
+    let note = p
+        .add_note(0, (200.0, 100.0), [1.0, 0.0, 0.0], "", "")
+        .unwrap();
+    // The line is drawn for the screen only; the note has a drawing in the file.
+    let before = p.annotations();
+    let nb = before.iter().find(|a| a.id == note).unwrap().bbox;
+    // Move the note 50 points right: same size, same drawing.
+    let to = [nb[0] + 50.0, nb[1], nb[2] + 50.0, nb[3]];
+    p.move_annotation(0, note, to).unwrap();
+    let after = p.annotations();
+    let na = after.iter().find(|a| a.id == note).unwrap();
+    assert!((na.bbox[0] - to[0]).abs() < 0.01 && (na.bbox[1] - to[1]).abs() < 0.01);
+    assert!(ink(&mut p, [240, 90, 260, 110]).0 > 50, "the note moved");
+    assert_eq!(ink(&mut p, [190, 90, 210, 110]).0, 0);
+    // Stretch the line to twice its length, 100 points higher on the page.
+    let lb = after.iter().find(|a| a.id == line).unwrap().bbox;
+    p.move_annotation(
+        0,
+        line,
+        [lb[0], lb[1] - 100.0, lb[0] + 200.0, lb[3] - 100.0],
+    )
+    .unwrap();
+    let d = p.doc.get_dictionary(line).unwrap();
+    let l: Vec<f32> = d
+        .get(b"L")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o.as_float().unwrap())
+        .collect();
+    assert_eq!(l, vec![10.0, 120.0, 210.0, 120.0]);
+    assert!(
+        ink(&mut p, [150, 75, 200, 85]).1 > 20,
+        "drawn longer, higher"
+    );
+}
