@@ -16,6 +16,8 @@
 - On Windows, a console window no longer opens behind the app.
 - A malformed file that makes MPE fail while opening, editing or saving shows an error instead of closing the app.
   A failed edit leaves the document as it was.
+- Release builds check integer arithmetic for overflow, so a malformed file stops with an error instead of producing
+  wrong results.
 
 ## [0.5.0] - 2026-10-15
 
