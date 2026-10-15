@@ -293,6 +293,38 @@ impl Pdf {
         self.insert_annot(page, d, author)
     }
 
+    /// Move a line's ends to `ends` (x1, y1, x2, y2 in displayed-page points on page
+    /// `page_index`, zero-based), keeping its width and endings, and draw it again.
+    pub fn set_line_ends(
+        &mut self,
+        page_index: usize,
+        id: (u32, u16),
+        ends: [f32; 4],
+    ) -> Result<()> {
+        let page = self.page_id_at(page_index)?;
+        let (to_user, _, _) = self.vis_down(page);
+        let (a, b) = (
+            mx::apply(to_user, ends[0], ends[1]),
+            mx::apply(to_user, ends[2], ends[3]),
+        );
+        if (b.0 - a.0).hypot(b.1 - a.1) < 1.0 {
+            bail!("the line is too short");
+        }
+        let d = self.doc.get_dictionary(id)?;
+        if d.get(b"Subtype").and_then(|o| o.as_name()).ok() != Some(b"Line") {
+            bail!("not a line");
+        }
+        let width = self.border(d).0;
+        let arrow = self.line_ends(d).iter().any(|e| e.as_slice() != b"None");
+        let l = [a.0, a.1, b.0, b.1];
+        let d = self.doc.get_dictionary_mut(id)?;
+        d.set("L", nums(&l));
+        d.set("Rect", nums(&line_rect(&l, width, arrow)));
+        d.set("M", Object::string_literal(pdf_now()));
+        self.draw_annotations(&[id]);
+        Ok(())
+    }
+
     /// A drawing's strokes as numbers, as `/InkList` holds them.
     fn strokes(&self, d: &Dictionary) -> Vec<Vec<f32>> {
         d.get(b"InkList")

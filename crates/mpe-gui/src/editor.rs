@@ -121,6 +121,8 @@ pub enum Action {
     AnnotText(usize, (u32, u16), String),
     /// Give an annotation a new box (displayed-page points).
     MoveAnnot(usize, (u32, u16), [f32; 4]),
+    /// Move a line's ends (x1, y1, x2, y2 in displayed-page points).
+    LineEnds(usize, (u32, u16), [f32; 4]),
     DeleteAnnot(usize, (u32, u16)),
     /// A new note centred on a point, with its comment.
     AddNote(usize, (f32, f32), String),
@@ -154,15 +156,18 @@ pub fn movable(a: &Annot) -> bool {
     !a.locked() && a.quads.is_empty()
 }
 
-/// Whether it can also be resized: a note's icon keeps its size.
+/// Whether it can also be resized by its box: a note's icon keeps its size, and a line
+/// has handles on its ends instead.
 pub fn resizable(a: &Annot) -> bool {
-    movable(a) && a.kind != AnnotKind::Note
+    movable(a) && !matches!(a.kind, AnnotKind::Note | AnnotKind::Line)
 }
 
 #[derive(Clone, Copy)]
 enum Mode {
     Move,
     Handle(usize),
+    /// One end of a line (0 is its start); `Drag::orig` and `cur` hold both ends.
+    End(usize),
 }
 
 struct Drag {
@@ -992,6 +997,19 @@ impl Editor {
             .selected_annot()
             .filter(|a| a.page == page && self.tool == Tool::Select && movable(a))
             .map(|a| (a.id, a.bbox, resizable(a)));
+        // A selected line's two ends, which have handles instead of its box.
+        let sel_line = self
+            .selected_annot()
+            .filter(|a| a.page == page && self.tool == Tool::Select && movable(a))
+            .filter(|a| a.kind == AnnotKind::Line)
+            .and_then(|a| match a.paths.first()?.as_slice() {
+                [p, q, ..] => Some((a.id, [p.0, p.1, q.0, q.1])),
+                _ => None,
+            });
+        let end_hit = |p: Pos2| {
+            let (_, e) = sel_line?;
+            (0..2).find(|&i| p.distance(Pos2::new(e[2 * i], e[2 * i + 1])) <= htol)
+        };
         let sel_note = self
             .selected_annot()
             .is_some_and(|a| a.kind == AnnotKind::Note);
@@ -1041,7 +1059,9 @@ impl Editor {
                 if let Some(p) = hover_pt {
                     let over_handle = sized_box.and_then(|b| self.handle_hit(b, p, htol));
                     let over_annot = self.annot_at(pdf, page, p).cloned();
-                    if let Some(h) = over_handle {
+                    if end_hit(p).is_some() {
+                        ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
+                    } else if let Some(h) = over_handle {
                         ui.ctx().set_cursor_icon(handle_cursor(h));
                     } else if let Some(a) = over_annot {
                         if movable(&a) {
@@ -1069,7 +1089,17 @@ impl Editor {
                     if let Some(p) = p {
                         let h = sized_box.and_then(|b| self.handle_hit(b, p, htol));
                         let selected = self.selected_annot().filter(|_| sel_annot.is_some());
-                        if let (Some(h), Some(a)) = (h, selected) {
+                        if let (Some(i), Some((id, ends))) = (end_hit(p), sel_line) {
+                            self.drag = Some(Drag {
+                                page,
+                                id: 0,
+                                annot: Some(id),
+                                mode: Mode::End(i),
+                                start: p,
+                                orig: ends,
+                                cur: ends,
+                            });
+                        } else if let (Some(h), Some(a)) = (h, selected) {
                             self.drag = Some(annot_drag(a, Mode::Handle(h), p));
                         } else if let (Some(h), Some((_, id))) = (h, sel_here) {
                             self.start_drag(page, id, Mode::Handle(h), p);
@@ -1100,10 +1130,25 @@ impl Editor {
                                     d.orig[3] + dy,
                                 ],
                                 Mode::Handle(h) => resize(d.orig, h, dx, dy, shift),
+                                // Shift keeps the line at a multiple of 45° from its
+                                // other end.
+                                Mode::End(i) => {
+                                    let o = 1 - i;
+                                    let other = Pos2::new(d.orig[2 * o], d.orig[2 * o + 1]);
+                                    let q = if shift {
+                                        constrain(Tool::Line, other, p)
+                                    } else {
+                                        p
+                                    };
+                                    let mut e = d.orig;
+                                    (e[2 * i], e[2 * i + 1]) = (q.x, q.y);
+                                    e
+                                }
                             };
                             ui.ctx().set_cursor_icon(match d.mode {
                                 Mode::Move => CursorIcon::Grabbing,
                                 Mode::Handle(h) => handle_cursor(h),
+                                Mode::End(_) => CursorIcon::Crosshair,
                             });
                         }
                     }
@@ -1112,9 +1157,10 @@ impl Editor {
                     if let Some(d) = self.drag.take() {
                         let moved = d.cur.iter().zip(&d.orig).any(|(a, b)| (a - b).abs() > 0.5);
                         if d.page == page && moved {
-                            self.actions.push(match d.annot {
-                                Some(id) => Action::MoveAnnot(d.page, id, d.cur),
-                                None => Action::SetBox(d.page, d.id, d.cur),
+                            self.actions.push(match (d.annot, d.mode) {
+                                (Some(id), Mode::End(_)) => Action::LineEnds(d.page, id, d.cur),
+                                (Some(id), _) => Action::MoveAnnot(d.page, id, d.cur),
+                                (None, _) => Action::SetBox(d.page, d.id, d.cur),
                             });
                         }
                     }
@@ -1388,8 +1434,30 @@ impl Editor {
             }
         }
 
-        // Selection frame and handles.
-        if self.tool == Tool::Select {
+        // Selection frame and handles; a line has round handles on its ends instead, and
+        // shows where it goes while dragged.
+        if let Some((id, e)) = sel_line {
+            let d = self.drag.as_ref().filter(|d| d.annot == Some(id));
+            let e = match d {
+                Some(d) if matches!(d.mode, Mode::End(_)) => d.cur,
+                Some(d) => {
+                    let (dx, dy) = (d.cur[0] - d.orig[0], d.cur[1] - d.orig[1]);
+                    [e[0] + dx, e[1] + dy, e[2] + dx, e[3] + dy]
+                }
+                None => e,
+            };
+            let ends = [to_screen(e[0], e[1]), to_screen(e[2], e[3])];
+            let guide = if d.is_some() {
+                Stroke::new(1.5, accent_strong)
+            } else {
+                Stroke::new(1.0, accent_strong.gamma_multiply(0.6))
+            };
+            painter.line_segment(ends, guide);
+            for c in ends {
+                painter.circle_filled(c, 4.5, Color32::WHITE);
+                painter.circle_stroke(c, 4.5, Stroke::new(1.5, accent_strong));
+            }
+        } else if self.tool == Tool::Select {
             if let Some(b) = sel_box {
                 let sr = screen_rect(b);
                 painter.rect_stroke(

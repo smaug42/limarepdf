@@ -132,6 +132,10 @@ Select a shape, line or drawing (click it with the read tool or the arrow, or Ct
 to change its colour, width, fill, arrowhead, opacity and comment in the inspector, then Apply changes. Lines and
 drawings are picked by clicking near their strokes, not anywhere in their box.
 
+With the arrow, a selected line has a round handle on each end instead of a box: drag either end to turn the line
+or point an arrow somewhere else (Shift keeps it at a multiple of 45° from the other end). Drag the line itself to
+move it.
+
 ## Filling in forms
 
 Form fields work with the read tool, like links: hovering tints a field and shows its description, and a click

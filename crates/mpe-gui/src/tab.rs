@@ -354,6 +354,9 @@ impl Tab {
                 Action::MoveAnnot(p, id, to) => {
                     self.edit_pages(ctx, &[p], |pdf| pdf.move_annotation(p, id, to));
                 }
+                Action::LineEnds(p, id, ends) => {
+                    self.edit_pages(ctx, &[p], |pdf| pdf.set_line_ends(p, id, ends));
+                }
                 Action::AddNote(p, at, text) => {
                     let (color, author) = (self.ed.note_color, self.ed.author.clone());
                     let mut new = None;

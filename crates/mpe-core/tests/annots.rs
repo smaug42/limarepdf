@@ -638,6 +638,43 @@ fn shapes_and_lines_are_annotations_that_can_be_restyled() {
 }
 
 #[test]
+fn a_line_can_be_pointed_elsewhere() {
+    let mut p = page();
+    let arrow = ShapeLook {
+        fill: None,
+        width: 3.0,
+        arrow: true,
+    };
+    let line = p
+        .add_shape_annotation(
+            0,
+            Shape::Line,
+            [20.0, 100.0, 120.0, 100.0],
+            Some([0.0; 3]),
+            &arrow,
+            "",
+        )
+        .unwrap();
+    // Turn it to point straight down from its start.
+    p.set_line_ends(0, line, [20.0, 100.0, 20.0, 180.0])
+        .unwrap();
+    let a = &p.annotations()[0];
+    assert_eq!(a.paths, [vec![(20.0, 100.0), (20.0, 180.0)]]);
+    assert_eq!(a.shape, Some(arrow), "width and arrowhead kept");
+    assert!(a.bbox[3] > 180.0 && a.bbox[0] < 20.0);
+    assert_eq!(
+        ink(&mut p, [40, 95, 120, 105]).0,
+        0,
+        "gone from where it was"
+    );
+    assert!(
+        ink(&mut p, [17, 120, 23, 170]).1 > 50,
+        "drawn where it points"
+    );
+    assert!(p.set_line_ends(0, line, [5.0, 5.0, 5.0, 5.2]).is_err());
+}
+
+#[test]
 fn pen_strokes_are_simplified_and_join_one_drawing() {
     let mut p = page();
     // A straight stroke drawn with a slight wobble, 100 points long.

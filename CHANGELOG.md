@@ -57,6 +57,8 @@
   arrowhead, and Shift keeps squares, circles and 45° lines. "Draw on page (permanent)" in the inspector keeps
   the old behaviour of drawing into the page content. A selected shape, line or drawing has its width, fill and
   arrowhead in the inspector. See [Shapes, lines and drawings](docs/gui.md#shapes-lines-and-drawings).
+- A selected line or arrow has handles on its two ends instead of a box, so it can be turned and pointed
+  elsewhere with the arrow tool.
 - Reply to an annotation from the Comments tab (right-click > Reply…) or the inspector, which also lists the
   replies it has.
 - Annotations stored without a drawing of their own, which used to be invisible, are drawn: highlights,
