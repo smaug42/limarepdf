@@ -16,8 +16,6 @@ them can be undone with Ctrl+Z, like any other change. On the command line: `mpe
 
 - Saving a document you opened with a password removes the protection, unless you set it again in Password security.
   The desktop app says so in a notice when such a document opens.
-- AES-256 files saved by MPE 0.2.0 and earlier show blank or garbled pages in viewers based on poppler, such as Okular
-  and Evince, because of a missing key length. To fix one, open it in MPE, set the password again and save.
 - Certificate encryption is not supported.
 
 ## How this was tested

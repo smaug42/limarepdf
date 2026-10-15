@@ -1,10 +1,11 @@
 # MPE
 
 MPE is a PDF viewer and editor for Linux, Windows and macOS, written entirely in Rust with no C or C++ dependencies.
-It organises, edits, fills in, stamps, secures, scans and prints PDFs, from a desktop app or the command line.
+It organises, edits, annotates, fills in, stamps, secures, scans and prints PDFs, from a desktop app or the command
+line.
 This is a from-scratch implementation (with AI assistance): it contains no other product's code, strings, stamps, fonts or other assets.
 
-![The MPE window: the top bar, page thumbnails on the left, a report open in the middle, and the inspector on the right](docs/images/mpe-gui.png)
+![The MPE window: the top bar, page thumbnails on the left, a report with a highlight, a note, a pen tick and an arrow with a text box in the middle, and the inspector on the right](docs/images/mpe-gui.png)
 
 ## Documentation
 

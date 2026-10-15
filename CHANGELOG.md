@@ -1,44 +1,12 @@
 # Changelog
 
-## [Unreleased]
+## [0.4.0] - 2026-10-14
 
-### Desktop app
+Annotations and forms: highlight, comment on and draw on documents, reply to comments, fill in and flatten forms,
+follow links and bookmarks, and select text without changing tools.
 
-- Pages fit the window's width by default and keep fitting as the window is resized or the side panels open and
-  close. Zooming turns fitting off; the Fit width button or Ctrl+0 turns it back on. Zooming keeps your place in
-  the document.
-- Recent files on the start screen and under ☰ > File > Open recent.
-- Notices above the pages when a document is password-protected, has scanned pages without text, has form fields,
-  or is large, with a button to deal with it where there is one.
-- Crop pages from the inspector, by margins from each side of the page.
-- A Print button in the top bar. The Export menu now holds only the exports.
-- A theme button in the top bar to choose System, Light or Dark, remembered between runs.
-- Applying password security can be undone.
-- The inspector's heading and the button that hides it share one row.
-- A Bookmarks tab beside Pages and Search shows the document's outline. Click a bookmark to go to its page.
-  ☰ > View > Bookmarks and the command palette open it.
-- Fill in forms: click a field with the read tool to type in it, tick it or choose from its
-  options; Tab moves between fields. Each change is one undo step. ☰ > View > Highlight fields shows every field,
-  and the inspector's Form section has Clear field, Reset form and Flatten form…, which makes the fields part of
-  the pages so the values can't be changed (Undo brings them back). Fields with a value but no drawing of their own
-  now show their value. See [Filling in forms](docs/gui.md#filling-in-forms).
-- Forms made only for Adobe Reader (XFA forms, which show a "Please wait..." page) get a notice explaining that
-  only Adobe software can show or fill them; `mpe form list` and `mpe form fill` say the same.
-- Links work: click one with the read tool (dragging still selects text), or Ctrl+click with the editing tools. Links to pages go there; links to
-  web and email addresses show the address and ask before opening it in your browser or email program.
-- Select text without changing tools: the hand tool and the text cursor are now one read tool, which every
-  document opens with. Dragging anywhere on a page selects text from the nearest word; dragging past the edge of
-  the view scrolls it, so a selection can run across pages. Triple-click selects a line and Shift+click extends
-  the selection. See [Copying text](docs/gui.md#copying-text).
-- Print or save just the selected text: right-click it, or use ☰ > Edit. Choose the pages as they look, full width but
-  cut down to the selected lines, or the words alone as plain text; saving also offers a text file. See
-  [Copying text](docs/gui.md#copying-text).
-- Selecting, copying and exporting text follow the order on the page, not the order the file draws it in, so a
-  selection no longer jumps when it reaches a block drawn out of place (common in forms), and exported text comes
-  out in reading order. See [Text extraction](docs/search-and-text.md#text-extraction).
-- MPE has its own icon, on the window, the taskbar and, on Windows, `mpe-gui.exe` itself. The Linux archive
-  includes a desktop entry and icon, which Wayland desktops need to show it; see
-  [Install](docs/install.md#menu-entry-and-icon-on-linux).
+### Annotations
+
 - A Comments tab beside Bookmarks lists the document's annotations (comments, notes, highlights, drawings) page by
   page, with replies under what they answer. Click one to go to it; right-click to delete it. ☰ > Document >
   Flatten annotations… makes them part of the pages. See [Comments and markup](docs/gui.md#comments-and-markup).
@@ -64,6 +32,48 @@
 - Annotations stored without a drawing of their own, which used to be invisible, are drawn: highlights,
   underlines, strike-outs, squiggly underlines, notes, text boxes, rectangles, ellipses, lines, polygons and
   freehand drawings. The file is left as it is.
+
+### Forms, links and text
+
+- Fill in forms: click a field with the read tool to type in it, tick it or choose from its
+  options; Tab moves between fields. Each change is one undo step. ☰ > View > Highlight fields shows every field,
+  and the inspector's Form section has Clear field, Reset form and Flatten form…, which makes the fields part of
+  the pages so the values can't be changed (Undo brings them back). Fields with a value but no drawing of their own
+  now show their value. See [Filling in forms](docs/gui.md#filling-in-forms).
+- Forms made only for Adobe Reader (XFA forms, which show a "Please wait..." page) get a notice explaining that
+  only Adobe software can show or fill them; `mpe form list` and `mpe form fill` say the same.
+- Links work: click one with the read tool (dragging still selects text), or Ctrl+click with the editing tools.
+  Links to pages go there; links to web and email addresses show the address and ask before opening it in your
+  browser or email program.
+- A Bookmarks tab beside Pages and Search shows the document's outline. Click a bookmark to go to its page.
+  ☰ > View > Bookmarks and the command palette open it.
+- Select text without changing tools: the hand tool and the text cursor are now one read tool, which every
+  document opens with. Dragging anywhere on a page selects text from the nearest word; dragging past the edge of
+  the view scrolls it, so a selection can run across pages. Triple-click selects a line and Shift+click extends
+  the selection. See [Copying text](docs/gui.md#copying-text).
+- Print or save just the selected text: right-click it, or use ☰ > Edit. Choose the pages as they look, full width but
+  cut down to the selected lines, or the words alone as plain text; saving also offers a text file. See
+  [Copying text](docs/gui.md#copying-text).
+- Selecting, copying and exporting text follow the order on the page, not the order the file draws it in, so a
+  selection no longer jumps when it reaches a block drawn out of place (common in forms), and exported text comes
+  out in reading order. See [Text extraction](docs/search-and-text.md#text-extraction).
+
+### Desktop app
+
+- Pages fit the window's width by default and keep fitting as the window is resized or the side panels open and
+  close. Zooming turns fitting off; the Fit width button or Ctrl+0 turns it back on. Zooming keeps your place in
+  the document.
+- Recent files on the start screen and under ☰ > File > Open recent.
+- Notices above the pages when a document is password-protected, has scanned pages without text, has form fields,
+  or is large, with a button to deal with it where there is one.
+- Crop pages from the inspector, by margins from each side of the page.
+- A Print button in the top bar. The Export menu now holds only the exports.
+- A theme button in the top bar to choose System, Light or Dark, remembered between runs.
+- Applying password security can be undone.
+- The inspector's heading and the button that hides it share one row.
+- MPE has its own icon, on the window, the taskbar and, on Windows, `mpe-gui.exe` itself. The Linux archive
+  includes a desktop entry and icon, which Wayland desktops need to show it; see
+  [Install](docs/install.md#menu-entry-and-icon-on-linux).
 
 ### Command line
 
