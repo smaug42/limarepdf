@@ -34,6 +34,13 @@ release already there and fails.
 the licences. The archives are made on the runner because Actions artifacts lose Unix file permissions; on the
 Actions page each artifact therefore downloads as a zip with the archive inside.
 
+The Linux job also makes `mpe_<version>-1_amd64.deb` and `mpe-<version>-1.x86_64.rpm` with `cargo-deb` and
+`cargo-generate-rpm`, from the `[package.metadata.deb]` and `[package.metadata.generate-rpm]` sections of
+`crates/mpe-gui/Cargo.toml`. Their dependency lists name the libraries mpe-gui loads at run time; check them when
+eframe or rfd changes (`strings target/release/mpe-gui | grep '\.so'` lists them). A quick install test:
+`podman run --rm -v $PWD:/p:Z debian:stable bash -c 'apt-get update && apt-get install -y /p/mpe_*.deb && mpe --version'`
+(and the same with `fedora` and `dnf install -y /p/*.rpm`).
+
 The `release` job writes `SHA256SUMS`, signs it and every file with the signing subkey (below), checks each signature
 against `docs/mpe-signing-key.asc`, and records build provenance with `actions/attest-build-provenance`, which
 users check with `gh attestation verify`.

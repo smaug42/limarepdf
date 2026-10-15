@@ -67,12 +67,22 @@ jobs:
           else
             tar -czf "$name.tar.gz" "$name"
           fi
+      # .deb and .rpm from the binaries just built; the settings are in crates/mpe-gui/Cargo.toml.
+      # The rpm is signed later, in the release job, which holds the key.
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          cargo install cargo-deb cargo-generate-rpm --locked
+          cargo deb -p mpe-gui --no-build --no-strip --output dist/
+          cargo generate-rpm -p crates/mpe-gui --output dist/
       - uses: actions/upload-artifact@v4
         with:
           name: mpe-${{ matrix.name }}
           path: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.deb
+            dist/*.rpm
 
   # On a version tag (v0.3.0): a draft GitHub Release with the archives, their checksums,
   # GPG signatures, build attestations and this version's section of CHANGELOG.md.
@@ -107,6 +117,17 @@ jobs:
           fi
           echo "$GPG_SIGNING_KEY" | gpg --batch --import
           gpg --dearmor < docs/mpe-signing-key.asc > "$RUNNER_TEMP/mpe.gpg"
+          # The rpm carries its own signature, checked by rpm and dnf against the published key.
+          sudo apt-get install -y rpm > /dev/null
+          (umask 077; printf '%s' "$GPG_PASSPHRASE" > "$RUNNER_TEMP/pass")
+          key=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/ {print $10; exit}')
+          rpmsign --addsign --define "_gpg_name $key" \
+            --define "_gpg_sign_cmd_extra_args --batch --pinentry-mode loopback --passphrase-file $RUNNER_TEMP/pass" \
+            assets/*.rpm
+          rm "$RUNNER_TEMP/pass"
+          rpmkeys --dbpath "$RUNNER_TEMP/rpmdb" --import docs/mpe-signing-key.asc
+          rpmkeys --dbpath "$RUNNER_TEMP/rpmdb" --checksig assets/*.rpm | tee "$RUNNER_TEMP/rpmcheck"
+          grep -q "signatures OK" "$RUNNER_TEMP/rpmcheck"
           cd assets
           sha256sum * > SHA256SUMS
           for f in *; do

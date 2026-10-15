@@ -2,7 +2,8 @@
 
 ## Download
 
-Download an archive for your platform from the project's Releases page on GitHub: Linux (`.tar.gz`), Windows
+On Linux, the [packages](#linux-packages) are the easiest way. Otherwise, download an archive for your platform from
+the project's Releases page on GitHub: Linux (`.tar.gz`), Windows
 (`.zip`), and macOS for Intel and for Apple Silicon (`.tar.gz`). `SHA256SUMS` lists their checksums
 ([checking a download](#checking-a-download)).
 
@@ -32,7 +33,23 @@ commit. With the GitHub CLI: `gh attestation verify <file> --repo smaug42/mpe`.
 Between releases, each run of the project's continuous integration on GitHub Actions builds the same archives; they
 are under the run's artifacts (this needs a GitHub sign-in).
 
+### Linux packages
+
+Each release also has a `.deb` (Debian 13, Ubuntu 24.04 and later) and an `.rpm` (Fedora, openSUSE), built on Ubuntu
+24.04, so older systems need the archive's binaries or a build from source. They install `mpe-gui` and `mpe` in
+`/usr/bin`, with the menu entry, icon and docs, and pull in the libraries the app needs.
+
+```
+sudo apt install ./mpe_<version>-1_amd64.deb
+sudo dnf install ./mpe-<version>-1.x86_64.rpm
+```
+
+The `.rpm` is signed with the key [below](#checking-a-download); to have rpm check it, import the key first with
+`sudo rpm --import mpe-signing-key.asc`.
+
 ### Menu entry and icon on Linux
+
+The packages above set this up. For the archive:
 
 The window shows MPE's icon on X11, Windows and macOS without any setup. Wayland desktops (GNOME, KDE Plasma and
 others) take a window's icon from its desktop entry instead, so without one the window has a generic icon. The Linux

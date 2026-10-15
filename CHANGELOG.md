@@ -9,6 +9,8 @@
 - Releases are signed: every file and `SHA256SUMS` has a GPG signature (`.asc`) made with MPE's own key, and a build
   attestation that `gh attestation verify` checks. [docs/install.md](docs/install.md#checking-a-download) explains
   how.
+- Linux `.deb` and `.rpm` packages (the rpm GPG-signed), installing both programs, the menu entry, the icon and the
+  docs, with the libraries the app needs as dependencies.
 
 ### Fixed
 
