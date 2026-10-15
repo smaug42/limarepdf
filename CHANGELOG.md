@@ -15,6 +15,8 @@
   openSUSE, so MPE updates with the rest of the system.
 - A macOS app, `MPE.app` in a `.dmg`, for Apple Silicon and Intel in one, listed under Open With for PDFs. The
   command-line tool is inside it.
+- A Windows installer (`.msi`): Program Files, a Start menu entry, Open with for PDFs (and a choice in Default
+  apps), `mpe` on the `PATH`, upgrades and an uninstaller.
 
 ### Fixed
 

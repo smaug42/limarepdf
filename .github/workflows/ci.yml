@@ -75,6 +75,15 @@ jobs:
           cargo install cargo-deb cargo-generate-rpm --locked
           cargo deb -p mpe-gui --no-build --no-strip --output dist/
           cargo generate-rpm -p crates/mpe-gui --output dist/
+      # The MSI from packaging/windows/mpe.wxs. WiX is pinned to 5 (open source, no EULA step).
+      - name: Windows installer
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          export PATH="$PATH:$HOME/.dotnet/tools"
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          wix build packaging/windows/mpe.wxs -arch x64 -d Version=$version -o "dist/mpe-$version-x86_64.msi"
       - uses: actions/upload-artifact@v4
         with:
           name: mpe-${{ matrix.name }}
@@ -83,6 +92,7 @@ jobs:
             dist/*.zip
             dist/*.deb
             dist/*.rpm
+            dist/*.msi
 
   # A universal MPE.app (Apple Silicon and Intel) in a .dmg; packaging/macos/make-dmg.sh.
   # The tests ran in the build job on both Macs.

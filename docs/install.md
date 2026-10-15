@@ -2,8 +2,8 @@
 
 ## Download
 
-On Linux, the [packages](#linux-packages) are the easiest way, and on macOS the [app](#macos-app). Otherwise,
-download an archive for your platform from
+On Linux, the [packages](#linux-packages) are the easiest way, on macOS the [app](#macos-app), and on Windows the
+[installer](#windows-installer). Otherwise, download an archive for your platform from
 the project's Releases page on GitHub: Linux (`.tar.gz`), Windows
 (`.zip`), and macOS for Intel and for Apple Silicon (`.tar.gz`). `SHA256SUMS` lists their checksums
 ([checking a download](#checking-a-download)).
@@ -28,6 +28,13 @@ The command-line tool is inside the app; to use it from a terminal:
 ```
 sudo ln -s /Applications/MPE.app/Contents/MacOS/mpe /usr/local/bin/mpe
 ```
+
+### Windows installer
+
+`mpe-<version>-x86_64.msi` installs MPE for all users in `Program Files\MPE`, adds it to the Start menu and to Open
+with for PDF files, and puts `mpe` on the `PATH` (open a new terminal to use it). To make MPE the default PDF app,
+choose it in Settings > Apps > Default apps. Installing a newer version replaces the old one; uninstall from
+Settings > Apps. The installer is not code-signed, so SmartScreen warns: choose More info, then Run anyway.
 
 ### Checking a download
 

@@ -46,6 +46,9 @@ The `macos-dmg` job builds both Mac targets on one runner and runs `packaging/ma
 binary with `lipo`, makes `MPE.app` from `packaging/macos/Info.plist` (which registers MPE for PDFs) and an icon made
 with `iconutil`, signs it ad hoc, and wraps it in `MPE-<version>.dmg` with `hdiutil`.
 
+The Windows job also builds `mpe-<version>-x86_64.msi` from `packaging/windows/mpe.wxs` with WiX 5 (a .NET tool,
+pinned because later versions add an EULA step). Its `UpgradeCode` must never change.
+
 The `release` job writes `SHA256SUMS`, signs it and every file with the signing subkey (below), checks each signature
 against `docs/mpe-signing-key.asc`, and records build provenance with `actions/attest-build-provenance`, which
 users check with `gh attestation verify`.
