@@ -9,9 +9,9 @@ macro_rules! out {
 }
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use mpe_core::{
-    parse_page_range, print, render, Bates, Cipher, Encryption, Field, FieldKind, FieldValue,
-    HeaderFooter, ImageImport, Info, Ocr, OcrResult, Pdf, Restrictions, ScanMode, ScanOptions,
-    ScanResult, Watermark,
+    parse_page_range, print, render, Annot, AnnotKind, Bates, Cipher, Encryption, Field, FieldKind,
+    FieldValue, HeaderFooter, ImageImport, Info, Ocr, OcrResult, Pdf, Restrictions, ScanMode,
+    ScanOptions, ScanResult, Watermark,
 };
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
@@ -281,6 +281,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: FormCmd,
     },
+    /// Work with annotations: comments, notes, highlights and drawings
+    Annot {
+        #[command(subcommand)]
+        cmd: AnnotCmd,
+    },
     /// List the printers; the default is marked
     Printers,
     /// Print (CUPS on Linux and macOS, the print spooler on Windows)
@@ -427,6 +432,130 @@ enum FormCmd {
         #[arg(long)]
         pages: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum AnnotCmd {
+    /// List the annotations: page, kind, author, date and comment. Links and form fields
+    /// are not included
+    List {
+        input: PathBuf,
+        /// Only these pages, e.g. 1-3,7
+        #[arg(long)]
+        pages: Option<String>,
+        /// Print a JSON array instead
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Remove annotations, with their replies. With no options, removes them all
+    Remove {
+        #[command(flatten)]
+        io: Io,
+        /// Only on these pages, e.g. 1-3,7
+        #[arg(long)]
+        pages: Option<String>,
+        /// Only these kinds, separated by commas: highlight, underline, strikeout,
+        /// squiggly, note, textbox, square, circle, line, polygon, polyline, ink, stamp,
+        /// or another subtype as the file names it
+        #[arg(long = "type", value_name = "KINDS")]
+        kinds: Option<String>,
+        /// Only those by this author (exact match)
+        #[arg(long)]
+        author: Option<String>,
+    },
+    /// Draw the annotations into the pages as they look now and remove them, so they can
+    /// no longer be changed. Links and form fields are kept
+    Flatten {
+        #[command(flatten)]
+        io: Io,
+        /// Only these pages, e.g. 1-3,7
+        #[arg(long)]
+        pages: Option<String>,
+    },
+}
+
+fn annot_list(input: &Path, pages: &Option<String>, json: bool, pw: &Option<String>) -> Result<()> {
+    let pdf = open(input, pw)?;
+    let pages = match pages {
+        Some(r) => Some(parse_page_range(r, pdf.page_count())?),
+        None => None,
+    };
+    let list: Vec<Annot> = pdf
+        .annotations()
+        .into_iter()
+        .filter(|a| pages.as_ref().is_none_or(|p| p.contains(&a.page)))
+        .collect();
+    let index = |id: (u32, u16)| list.iter().position(|a| a.id == id);
+    // f32 noise such as 0.8999999761 left out.
+    let round = |v: &[f32]| -> Vec<f64> {
+        v.iter()
+            .map(|&x| (f64::from(x) * 1000.0).round() / 1000.0)
+            .collect()
+    };
+    if json {
+        let rows: Vec<serde_json::Value> = list
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                serde_json::json!({
+                    "index": i + 1,
+                    "page": a.page + 1,
+                    "type": a.kind.name(),
+                    "author": a.author,
+                    "modified": a.modified,
+                    "contents": a.contents,
+                    "subject": a.subject,
+                    "color": a.color.map(|c| round(&c)),
+                    "opacity": round(&[a.opacity])[0],
+                    "rect": round(&a.bbox),
+                    "reply_to": a.reply_to.and_then(index).map(|i| i + 1),
+                    "hidden": a.hidden(),
+                    "locked": a.locked(),
+                })
+            })
+            .collect();
+        out!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    if list.is_empty() {
+        out!("no annotations");
+    }
+    for (i, a) in list.iter().enumerate() {
+        let mut notes = Vec::new();
+        if let Some(r) = a.reply_to.and_then(index) {
+            notes.push(format!("reply to #{}", r + 1));
+        }
+        if a.hidden() {
+            notes.push("hidden".into());
+        }
+        if a.locked() {
+            notes.push("locked".into());
+        }
+        let dash = |s: &str| {
+            if s.is_empty() {
+                "-".to_string()
+            } else {
+                s.to_string()
+            }
+        };
+        out!(
+            "#{:<3} page {:<4} {:<10} {:<16} {:<16} {:?}{}",
+            i + 1,
+            a.page + 1,
+            a.kind.name(),
+            dash(&a.author),
+            dash(&a.modified),
+            a.contents,
+            if notes.is_empty() {
+                String::new()
+            } else {
+                format!("  ({})", notes.join(", "))
+            }
+        );
+    }
+    Ok(())
 }
 
 /// A checkbox value given as text: on/off and the like, or the box's export value.
@@ -1091,6 +1220,50 @@ fn main() -> Result<()> {
                 );
             }
         },
+        Cmd::Annot { cmd } => match cmd {
+            AnnotCmd::List {
+                input,
+                pages,
+                json,
+                password,
+            } => annot_list(&input, &pages, json, &password)?,
+            AnnotCmd::Remove {
+                io,
+                pages,
+                kinds,
+                author,
+            } => {
+                let mut p = open(&io.input, &io.password)?;
+                let pages = match pages {
+                    Some(r) => Some(parse_page_range(&r, p.page_count())?),
+                    None => None,
+                };
+                let kinds: Option<Vec<AnnotKind>> = kinds.map(|k| {
+                    k.split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(AnnotKind::parse)
+                        .collect()
+                });
+                let n = p.remove_annotations(|a| {
+                    pages.as_ref().is_none_or(|p| p.contains(&a.page))
+                        && kinds.as_ref().is_none_or(|k| k.contains(&a.kind))
+                        && author.as_ref().is_none_or(|w| *w == a.author)
+                })?;
+                p.save(&io.output)?;
+                out!("removed {n} annotation(s); wrote {}", io.output.display());
+            }
+            AnnotCmd::Flatten { io, pages } => {
+                let mut p = open(&io.input, &io.password)?;
+                let idx = match pages {
+                    Some(r) => Some(parse_page_range(&r, p.page_count())?),
+                    None => None,
+                };
+                let n = p.flatten_annotations(idx.as_deref())?;
+                p.save(&io.output)?;
+                out!("flattened {n} annotation(s); wrote {}", io.output.display());
+            }
+        },
         Cmd::Printers => {
             let list = print::printers()?;
             if list.is_empty() {
@@ -1146,8 +1319,12 @@ fn main() -> Result<()> {
             out_dir,
             password,
         } => {
-            let bytes = std::fs::read(&input)?;
-            let hp = render::load(bytes, password.as_deref())?;
+            // As the app shows it (NoView annotations hidden, missing annotation drawings
+            // added), or the file as it is when the document reader can't open it.
+            let hp = match open(&input, &password).and_then(|mut p| p.render_snapshot()) {
+                Ok(bytes) => render::load(bytes, None)?,
+                Err(_) => render::load(std::fs::read(&input)?, password.as_deref())?,
+            };
             let n = render::Renderer::new(&hp).page_count();
             let idx = parse_page_range(&pages, n)?;
             let stem = input

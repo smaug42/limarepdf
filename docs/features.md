@@ -1,11 +1,13 @@
 # Features and status
 
-**Status: 0.3, for testing.** Most testing has been on Linux. Annotations, forms, digital signatures and redaction
-are not started.
+**Status: 0.3, for testing.** Most testing has been on Linux. Annotations can be viewed, moved, deleted and flattened;
+text can be highlighted and marked; notes, text boxes, shapes, lines, freehand drawings and replies added. Digital
+signatures and redaction are not started.
 
 ## What MPE does
 
-- **View:** tabs, thumbnails, continuous scrolling, zoom, search with highlights on the page, bookmarks and links.
+- **View:** tabs, thumbnails, continuous scrolling, zoom, search with highlights on the page, bookmarks, links and
+  comments.
 - **Organise pages:** drag thumbnails to reorder; rotate, insert, delete and extract pages; merge and split files.
 - **Edit content:** move, resize, restyle and delete text, images and shapes; edit text; add text, shapes and images.
 - **Fill in forms:** text fields, checkboxes, radio buttons and lists, in the app or from JSON on the command line;
@@ -35,9 +37,10 @@ available.
 | Command palette, right-click menus, floating toolbar | Done | Toolbar customisation: No |
 | App icon | Done | Window, taskbar and Windows `.exe`. Wayland needs the desktop entry installed. [Details](install.md#menu-entry-and-icon-on-linux) |
 | Light and dark themes | Done | Follows the system, or chosen with the top bar's theme button; remembered between runs |
-| Rendering | Partial | Some transparency groups are drawn wrongly, and annotations without an appearance stream are not drawn. [Details](rendering.md) |
+| Rendering | Partial | Some transparency groups are drawn wrongly. Annotations without a drawing of their own are drawn by MPE for the common types only. [Details](rendering.md) |
 | Search | Done | Phrases across line breaks are found and highlighted; hyphenated words split over lines are not. [Details](search-and-text.md) |
-| Select and copy text | Done | One page at a time; includes recognised text |
+| Select and copy text | Done | With the default read tool; across pages, scrolling while you drag; in the order on the page, not the file's drawing order; includes recognised text |
+| Print or save selected text | Done | As the pages look, full width, cut down to the selected lines, or as plain text in Helvetica (Western European characters only); also saves a .txt file |
 | Page operations: insert, delete, rotate, extract, reorder, crop | Done | Crop by margins; no dragging a crop box on the page |
 | Merge and split | Done | Bookmarks, forms and named destinations of appended files are not carried over. Split by file size: No |
 | Undo and redo | Done | 20 levels, including password settings |
@@ -54,7 +57,8 @@ available.
 | Printing | Partial | No paper size or scaling options. Tried on Windows; not yet with a real printer on Linux or macOS. [Details](export-and-printing.md#printing) |
 | Driving scanners | No | Not planned: scan with your system's tool and import the images |
 | Export to Word, Excel, CSV | No | |
-| Annotations, comments, stamps, measuring | No | Existing annotations are shown if they have an appearance stream |
+| Annotations and comments | Partial | Shown (MPE draws the common types when the file has no drawing), listed in the Comments tab with replies, deleted, flattened; `mpe annot list\|remove\|flatten`. Highlight, underline, strike out and squiggly-underline selected text; add sticky notes and text boxes (Helvetica, Latin-1 only), rectangles, ellipses, lines with an optional arrowhead, and freehand pen drawings; reply to any annotation; select any annotation to change its colour, opacity and comment (and a shape's width, fill and arrowhead), and move or resize it with the arrow. Not yet: stamps, polygons, measuring, attachments, XFDF. [Details](gui.md#shapes-lines-and-drawings) |
+| Stamps, measuring | No | |
 | Forms | Partial | Fill in text fields, checkboxes, radio buttons and lists in the app (Tab between fields, highlight, reset, flatten) and from the command line (`mpe form`, values as JSON, flatten all or some pages). Latin-1 text only; JavaScript doesn't run; creating fields and signing: No. [Details](gui.md#filling-in-forms) |
 | XFA-only forms (made for Adobe Reader) | No | Recognised and explained in a notice and by `mpe form`; showing or filling them is not planned (see below). Hybrid forms are filled through their ordinary fields |
 | Form data import/export (FDF, XFDF), barcodes, JavaScript | No | |
@@ -81,15 +85,6 @@ available.
 ## Planned and proposed
 
 Ideas for what comes next. None of these are available yet, and the list is not a commitment or an order.
-
-### Fixes and usability
-
-- **Selecting text without changing tools.** Dragging across text should select the text, unless you have chosen
-  another tool on purpose.
-- **A better default tool.** The tool a document opens with is often not the one you want. MPE could start with the
-  tool you used last, or let you choose a default.
-- **Doing more with selected text.** Right-click selected text to print just the selection, or to save it as a new
-  PDF.
 
 ### XFA forms
 

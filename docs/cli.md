@@ -16,7 +16,9 @@ Page lists take numbers and ranges, counted from 1: `1-3,7`, `5-` (5 to the end)
 | `mpe text in.pdf --pages 1-2` | Print the text of pages |
 | `mpe search in.pdf "invoice"` | Find text; `--boxes` also prints where each match is on its page |
 | `mpe objects in.pdf --pages 1` | List the editable objects (text lines, images, paths) with their boxes; OCR text is marked "(hidden)" |
-| `mpe render in.pdf --dpi 150 --out-dir pngs` | Save pages as images; `--format jpeg --quality 85` for JPEG |
+| `mpe render in.pdf --dpi 150 --out-dir pngs` | Save pages as images, as the app shows them; `--format jpeg --quality 85` for JPEG |
+| `mpe annot list in.pdf` | List the annotations (comments, notes, highlights, drawings): number, page, type, author, date and comment, and which one a reply answers. `--pages 2-3` for some pages; links and form fields are left out |
+| `mpe annot list in.pdf --json` | The same as a JSON array, with each annotation's colour, opacity and box on the page (points from the top left) |
 | `mpe form list in.pdf` | List the form fields: name, kind, value, pages, and whether each is required or read-only, with a choice's options |
 | `mpe form list in.pdf --json` | The fields' values as a JSON object keyed by field name, in the form's order: text as strings, checkboxes as `true`/`false`, a radio group or drop-down's choice as a string (`null` for none), a multi-select list as an array. Push buttons and signatures are left out |
 
@@ -44,6 +46,23 @@ being drawn. Once no fields are left the form itself is removed, so readers no l
 Forms made only for Adobe Reader (XFA forms, whose pages say "Please wait..." elsewhere) have no fields MPE can
 reach: `form list` says so (with `--json` it prints `{}` and the reason on standard error), and `form fill` stops
 with that reason. Hybrid forms, which carry ordinary fields alongside the XFA, are filled as usual.
+
+## Annotations
+
+| Command | What it does |
+| --- | --- |
+| `mpe annot remove in.pdf -o out.pdf` | Remove every annotation (links and form fields stay) |
+| `mpe annot remove in.pdf -o out.pdf --type highlight,note --author Sam --pages 1-3` | Remove only those: of these types, by this author (exact match), on these pages. Any of the three can be left out |
+| `mpe annot flatten in.pdf -o out.pdf` | Draw the annotations into the pages as they look now and remove them, so they can't be changed or removed. `--pages 1-3` for some pages only |
+
+The types are `highlight`, `underline`, `strikeout`, `squiggly`, `note`, `textbox`, `square`, `circle`, `line`,
+`polygon`, `polyline`, `ink` (freehand drawing) and `stamp`; other types can be named as the file does, for example
+`FileAttachment`. Removing an annotation also removes the replies to it. Locked annotations are removed too.
+
+Flattening draws highlights, notes, text boxes, shapes, lines, drawings, stamps and carets; replies and comment
+pop-ups are removed without being drawn, and hidden annotations are removed. Links, form fields, file attachments,
+sound and video, and redaction marks are kept. Annotations stored without a drawing get MPE's drawing first (see
+[Comments and markup](gui.md#comments-and-markup)).
 
 ## Pages
 

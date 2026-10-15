@@ -17,19 +17,53 @@
 - The inspector's heading and the button that hides it share one row.
 - A Bookmarks tab beside Pages and Search shows the document's outline. Click a bookmark to go to its page.
   ☰ > View > Bookmarks and the command palette open it.
-- Fill in forms: click a field with the hand or text-select tool to type in it, tick it or choose from its
+- Fill in forms: click a field with the read tool to type in it, tick it or choose from its
   options; Tab moves between fields. Each change is one undo step. ☰ > View > Highlight fields shows every field,
   and the inspector's Form section has Clear field, Reset form and Flatten form…, which makes the fields part of
   the pages so the values can't be changed (Undo brings them back). Fields with a value but no drawing of their own
   now show their value. See [Filling in forms](docs/gui.md#filling-in-forms).
 - Forms made only for Adobe Reader (XFA forms, which show a "Please wait..." page) get a notice explaining that
   only Adobe software can show or fill them; `mpe form list` and `mpe form fill` say the same.
-- Links work: click one with the hand or text-select tool (dragging still selects text), or Ctrl+click with the
-  editing tools. Links to pages go there; links to
+- Links work: click one with the read tool (dragging still selects text), or Ctrl+click with the editing tools. Links to pages go there; links to
   web and email addresses show the address and ask before opening it in your browser or email program.
+- Select text without changing tools: the hand tool and the text cursor are now one read tool, which every
+  document opens with. Dragging anywhere on a page selects text from the nearest word; dragging past the edge of
+  the view scrolls it, so a selection can run across pages. Triple-click selects a line and Shift+click extends
+  the selection. See [Copying text](docs/gui.md#copying-text).
+- Print or save just the selected text: right-click it, or use ☰ > Edit. Choose the pages as they look, full width but
+  cut down to the selected lines, or the words alone as plain text; saving also offers a text file. See
+  [Copying text](docs/gui.md#copying-text).
+- Selecting, copying and exporting text follow the order on the page, not the order the file draws it in, so a
+  selection no longer jumps when it reaches a block drawn out of place (common in forms), and exported text comes
+  out in reading order. See [Text extraction](docs/search-and-text.md#text-extraction).
 - MPE has its own icon, on the window, the taskbar and, on Windows, `mpe-gui.exe` itself. The Linux archive
   includes a desktop entry and icon, which Wayland desktops need to show it; see
   [Install](docs/install.md#menu-entry-and-icon-on-linux).
+- A Comments tab beside Bookmarks lists the document's annotations (comments, notes, highlights, drawings) page by
+  page, with replies under what they answer. Click one to go to it; right-click to delete it. ☰ > Document >
+  Flatten annotations… makes them part of the pages. See [Comments and markup](docs/gui.md#comments-and-markup).
+- Highlight selected text (the Highlight button above the selection, right-click, or Ctrl+Shift+H), or underline,
+  strike it out or squiggly-underline it, in colours that are remembered. The marks are standard annotations that
+  other readers show. Click a mark or comment to select it; the inspector changes its colour, opacity and comment,
+  and Delete removes it. Marks carry your name, the computer's user name unless set under ☰ > Edit > Your name for
+  comments…. See [Marking text](docs/gui.md#marking-text).
+- Sticky notes and text boxes: the new Annotate button in the top bar holds both tools. Click to place a note and
+  type its comment beside it; drag a text box and type straight onto the page. Double-click either to change its
+  text. Text boxes on turned pages read upright. See [Notes and text boxes](docs/gui.md#notes-and-text-boxes).
+- The arrow tool selects, moves and resizes annotations (notes keep their size; text markup stays on its text), and
+  the arrow keys nudge them.
+- The rectangle, ellipse and line tools now add annotations, and have moved into the Annotate button's menu
+  with a new pen for freehand drawing (strokes made in quick succession form one drawing). Lines can have an
+  arrowhead, and Shift keeps squares, circles and 45° lines. "Draw on page (permanent)" in the inspector keeps
+  the old behaviour of drawing into the page content. A selected shape, line or drawing has its width, fill and
+  arrowhead in the inspector. See [Shapes, lines and drawings](docs/gui.md#shapes-lines-and-drawings).
+- A selected line or arrow has handles on its two ends instead of a box, so it can be turned and pointed
+  elsewhere with the arrow tool. A selected freehand drawing has a rotate handle.
+- Reply to an annotation from the Comments tab (right-click > Reply…) or the inspector, which also lists the
+  replies it has.
+- Annotations stored without a drawing of their own, which used to be invisible, are drawn: highlights,
+  underlines, strike-outs, squiggly underlines, notes, text boxes, rectangles, ellipses, lines, polygons and
+  freehand drawings. The file is left as it is.
 
 ### Command line
 
@@ -40,6 +74,10 @@
   MPE draws the filled fields itself, so the values show in every reader. See [Forms](docs/cli.md#forms).
 - `mpe form flatten` draws a form's fields into its pages and removes them (`--pages` for some pages only), and
   `mpe form fill --flatten` fills in and flattens in one go.
+- `mpe annot list` lists annotations (also `--json`), `mpe annot remove` removes them, all or by type, author and
+  page, and `mpe annot flatten` draws them into the pages. See [Annotations](docs/cli.md#annotations).
+- `mpe render` draws pages as the app does: annotations marked not to be shown on screen are left out, and
+  annotations without a drawing of their own are drawn.
 
 ### Fixes
 

@@ -3,6 +3,7 @@ use crate::banners::Kind as BannerKind;
 use crate::dialogs::{self as dlg, Outcome};
 use crate::editor::{Action as EdAction, Tool};
 use crate::inspector::{self, Apply, Section};
+use crate::markup;
 use crate::recent::Recent;
 use crate::selection::Selection;
 use crate::settings::Settings;
@@ -158,10 +159,49 @@ enum Dialog {
     /// Export would replace this many files.
     ConfirmReplace(ImageExport, usize),
     ConfirmFlatten,
+    ConfirmFlattenAnnots,
     Print(dlg::Print),
+    SaveSelection(dlg::Layout),
     /// Open this web or email address from a link?
     OpenLink(String),
+    /// The name for comments, being edited.
+    CommentName(String),
     About,
+}
+
+/// What selected text is printed or saved from, taken from the tab so a background job
+/// can build the new document.
+enum Excerpt {
+    /// Pages cropped to these rectangles.
+    Pages(Vec<(usize, [f32; 4])>),
+    /// The words, on pages of this size.
+    Text(String, (f32, f32)),
+}
+impl Excerpt {
+    fn new(t: &Tab, layout: dlg::Layout) -> Self {
+        let rects = t.ed.selected_rects();
+        match layout {
+            // The full page width, margins included; `excerpt` clips to the page.
+            dlg::Layout::Original => Excerpt::Pages(
+                rects
+                    .into_iter()
+                    .map(|(p, r)| (p, [0.0, r[1], f32::MAX, r[3]]))
+                    .collect(),
+            ),
+            _ => {
+                let page = rects.first().map_or(0, |r| r.0);
+                let size = t.pdf.page_size(page).unwrap_or((612.0, 792.0));
+                Excerpt::Text(t.ed.selected_text().unwrap_or_default(), size)
+            }
+        }
+    }
+
+    fn build(&self, p: &Pdf) -> mpe_core::Result<Pdf> {
+        match self {
+            Excerpt::Pages(rects) => p.excerpt(rects),
+            Excerpt::Text(text, size) => Pdf::from_text(text, *size),
+        }
+    }
 }
 
 /// Title of the OCR background job, also used to recognise its result.
@@ -466,6 +506,40 @@ impl App {
         }
     }
 
+    /// Save the selected text as cropped pages, as plain text in a PDF, or as a text file.
+    fn save_selection(&mut self, layout: dlg::Layout) {
+        let t = &self.tabs[self.active];
+        let Some(text) = t.ed.selected_text() else {
+            return;
+        };
+        let (filter, ext) = match layout {
+            dlg::Layout::TextFile => ("Text", "txt"),
+            _ => ("PDF", "pdf"),
+        };
+        let Some(mut path) = rfd::FileDialog::new()
+            .add_filter(filter, &[ext])
+            .set_file_name(format!("{} (selection).{ext}", t.stem("document")))
+            .save_file()
+        else {
+            return;
+        };
+        if path.extension().is_none() {
+            path.set_extension(ext);
+        }
+        let result: mpe_core::Result<()> = match layout {
+            dlg::Layout::TextFile => std::fs::write(&path, text).map_err(Into::into),
+            _ => Excerpt::new(t, layout)
+                .build(&t.pdf)
+                .and_then(|mut d| d.save(&path)),
+        };
+        match result {
+            Ok(()) => self.status = format!("Saved the selected text to {}", path.display()),
+            Err(e) => {
+                self.dialog = Dialog::Message("Save failed".into(), format!("{e:#}"));
+            }
+        }
+    }
+
     fn new_from_images(&mut self, ctx: &egui::Context, files: &[PathBuf]) {
         let Some(data) = self.read_images(files) else {
             return;
@@ -537,16 +611,37 @@ impl App {
             Act::SaveAs => self.save(true),
             Act::ExportImages if has => self.reveal(Section::Export),
             Act::ExportText if has => self.export_text(),
-            Act::Print if has && !self.busy => {
+            Act::Print | Act::PrintSelection if has && !self.busy => {
                 let selected = self.tabs[self.active].ed.selection.pages();
                 let pages = selected.map_or("all".into(), inspector::range_text);
+                let selection = (a == Act::PrintSelection).then_some(dlg::Layout::Original);
                 self.dialog = match print::printers() {
                     Ok(list) => Dialog::Print(dlg::Print {
                         pages,
+                        selection,
                         ..dlg::Print::new(list)
                     }),
                     Err(e) => Dialog::Message("Print".into(), format!("{e:#}")),
                 }
+            }
+            Act::SaveSelection if has => {
+                self.dialog = Dialog::SaveSelection(dlg::Layout::Original);
+            }
+            Act::Mark(m) if has => {
+                let color = markup::color(m, &self.state(ctx));
+                let author = self.settings.author();
+                self.tabs[self.active].add_markup(ctx, m, color, &author);
+            }
+            Act::MarkColor { line, index } => {
+                if line {
+                    self.settings.line = index;
+                } else {
+                    self.settings.highlight = index;
+                }
+                self.settings.save();
+            }
+            Act::CommentName => {
+                self.dialog = Dialog::CommentName(self.settings.author());
             }
             Act::CloseTab if has => {
                 if self.tabs[self.active].dirty {
@@ -573,6 +668,10 @@ impl App {
             Act::Bookmarks => {
                 self.show_side = true;
                 self.tabs[self.active].side = Side::Bookmarks;
+            }
+            Act::Comments => {
+                self.show_side = true;
+                self.tabs[self.active].side = Side::Comments;
             }
             Act::ToggleInspector => {
                 self.show_inspector = !self.show_inspector;
@@ -605,6 +704,14 @@ impl App {
                 t.notice = Some("Reset the form".into());
             }
             Act::FlattenForm => self.dialog = Dialog::ConfirmFlatten,
+            Act::FlattenAnnots => {
+                if self.tabs[self.active].pdf.annotations().is_empty() {
+                    self.tabs[self.active].notice =
+                        Some("There are no annotations to flatten".into());
+                } else {
+                    self.dialog = Dialog::ConfirmFlattenAnnots;
+                }
+            }
             Act::Tool(Tool::Image) => self.tabs[self.active].choose_image(),
             Act::Tool(tool) => self.tabs[self.active].ed.set_tool(tool),
             Act::SelectAllText => {
@@ -617,6 +724,8 @@ impl App {
                     self.act(ctx, Act::DeleteObject);
                 } else if self.tabs[self.active].ed.selection.pages().is_some() {
                     self.act(ctx, Act::Delete);
+                } else {
+                    self.tabs[self.active].ed.delete_selected();
                 }
             }
             Act::Nudge(dx, dy) => {
@@ -1025,6 +1134,15 @@ impl App {
                 ) != Outcome::Open;
             }
             Dialog::Message(title, text) => done = dlg::message(ctx, title, text) != Outcome::Open,
+            Dialog::CommentName(name) => match dlg::comment_name(ctx, name) {
+                Outcome::Apply => {
+                    self.settings.author = Some(name.trim().to_string());
+                    self.settings.save();
+                    done = true;
+                }
+                Outcome::Cancel => done = true,
+                Outcome::Open => {}
+            },
             Dialog::OpenLink(url) => match dlg::confirm(
                 ctx,
                 "Open link",
@@ -1114,29 +1232,69 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
+            Dialog::ConfirmFlattenAnnots => match dlg::confirm(
+                ctx,
+                "Flatten annotations?",
+                "Comments, notes, highlights and drawings become part of the pages, as they \
+                 look now, and can no longer be changed or removed, here or in other readers. \
+                 Their comment text is dropped. Links and form fields stay. Undo brings them \
+                 back until you close the document.",
+                "Flatten",
+            ) {
+                Outcome::Apply => {
+                    let t = &mut self.tabs[self.active];
+                    if t.edit(ctx, |p| p.flatten_annotations(None).map(|_| ())) {
+                        t.notice = Some("Flattened the annotations".into());
+                    }
+                    done = true;
+                }
+                Outcome::Cancel => done = true,
+                Outcome::Open => {}
+            },
             Dialog::Print(s) => match dlg::print(ctx, s) {
                 Outcome::Apply if s.printers.is_empty() => done = true,
                 Outcome::Apply => {
                     let t = &mut self.tabs[self.active];
-                    match parse_page_range(&s.pages, t.page_count()) {
-                        Ok(pages) => {
-                            let printer = s.printers[s.printer].name.clone();
-                            let opts = print::PrintOptions {
-                                printer: Some(printer.clone()),
-                                copies: s.copies,
-                                sides: s.sides,
-                                as_image: s.as_image,
-                                title: t.stem("Untitled"),
-                            };
-                            self.spawn_job(ctx, "Print", move |p| {
-                                let reply = p.print(&pages, &opts)?;
-                                let n = pages.len();
-                                Ok((false, format!("Sent {n} page(s) to {printer}.\n{reply}")))
-                            });
-                            done = true;
+                    let printer = s.printers[s.printer].name.clone();
+                    let opts = print::PrintOptions {
+                        printer: Some(printer.clone()),
+                        copies: s.copies,
+                        sides: s.sides,
+                        as_image: s.as_image,
+                        title: t.stem("Untitled"),
+                    };
+                    if let Some(layout) = s.selection {
+                        let ex = Excerpt::new(t, layout);
+                        self.spawn_job(ctx, "Print", move |p| {
+                            let mut out = ex.build(p)?;
+                            let pages: Vec<usize> = (0..out.page_count()).collect();
+                            let reply = out.print(&pages, &opts)?;
+                            let msg = format!("Sent the selected text to {printer}.\n{reply}");
+                            Ok((false, msg))
+                        });
+                        done = true;
+                    } else {
+                        match parse_page_range(&s.pages, t.page_count()) {
+                            Ok(pages) => {
+                                self.spawn_job(ctx, "Print", move |p| {
+                                    let reply = p.print(&pages, &opts)?;
+                                    let n = pages.len();
+                                    Ok((false, format!("Sent {n} page(s) to {printer}.\n{reply}")))
+                                });
+                                done = true;
+                            }
+                            Err(e) => t.error = Some(e.to_string()),
                         }
-                        Err(e) => t.error = Some(e.to_string()),
                     }
+                }
+                Outcome::Cancel => done = true,
+                Outcome::Open => {}
+            },
+            Dialog::SaveSelection(layout) => match dlg::save_selection(ctx, layout) {
+                Outcome::Apply => {
+                    let layout = *layout;
+                    done = true;
+                    self.save_selection(layout);
                 }
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
@@ -1154,6 +1312,8 @@ impl App {
             side: self.show_side,
             inspector: self.show_inspector,
             theme: ctx.options(|o| o.theme_preference),
+            highlight: self.settings.highlight,
+            line: self.settings.line,
             ..Default::default()
         };
         if let Some(t) = self.tabs.get(self.active) {
@@ -1301,6 +1461,37 @@ impl App {
             self.act(ctx, a);
         }
     }
+}
+
+/// A toolbar button for a command: (ui, command, shown as on, where clicks go).
+type BarButton<'a> = &'a dyn Fn(&mut egui::Ui, Act, bool, &mut Vec<Act>);
+
+/// The Annotate button: the annotation tool last used, and a small menu beside it for
+/// the others.
+fn annotate_button(
+    ui: &mut egui::Ui,
+    tools: Vec<&Action>,
+    c: &Ctx,
+    bar: BarButton,
+    acts: &mut Vec<Act>,
+) {
+    let last = c.annot_tool.unwrap_or(Tool::Note);
+    let on = |a: &Action| matches!(a.act, Act::Tool(t) if c.tool == Some(t));
+    if let Some(a) = tools.iter().find(|a| a.act == Act::Tool(last)) {
+        bar(ui, a.act, on(a), acts);
+    }
+    ui.add_space(-ui.spacing().item_spacing.x);
+    ui.menu_button(theme::icon(icon::CARET_DOWN).size(10.0), |ui| {
+        for a in tools {
+            let b = egui::Button::new((theme::icon(a.icon).size(16.0), a.label)).selected(on(a));
+            if ui.add(b).clicked() {
+                acts.push(a.act);
+                ui.close();
+            }
+        }
+    })
+    .response
+    .on_hover_text("Annotate");
 }
 
 /// The tools as one menu button showing the current tool, for narrow windows.
@@ -1571,7 +1762,8 @@ impl eframe::App for App {
                 };
                 // Menu, Open, Save, Undo, Redo and three separators, then the tools.
                 let left = |tools: f32| 5.0 * btn + 3.0 * sep + tools;
-                let inline = 8.0 * btn;
+                // Seven tools, then the Annotate button with its menu.
+                let inline = 10.0 * btn;
                 let w = ui.available_width() - 16.0;
                 let search_field = w >= left(inline) + right(true);
                 let tools_inline = w >= left(inline) + right(search_field);
@@ -1594,10 +1786,15 @@ impl eframe::App for App {
                     ui.separator();
                     let tools = ACTIONS.iter().filter(|a| a.group == Group::Tools);
                     let is_on = |a: &Action| matches!(a.act, Act::Tool(t) if c.tool == Some(t));
+                    let annotate =
+                        |a: &&Action| matches!(a.act, Act::Tool(t) if Tool::ANNOTATE.contains(&t));
                     if tools_inline {
-                        for a in tools {
+                        for a in tools.clone().filter(|a| !annotate(a)) {
                             bar(ui, a.act, is_on(a), &mut acts);
                         }
+                        ui.separator();
+                        let annot_tools = tools.filter(annotate).collect();
+                        annotate_button(ui, annot_tools, &c, &bar, &mut acts);
                     } else {
                         tool_menu(ui, tools.collect(), &is_on, &mut acts);
                     }
@@ -1719,15 +1916,17 @@ impl eframe::App for App {
                 .default_size(170.0)
                 .show(ui, |ui| {
                     let t = &mut self.tabs[active];
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.selectable_value(&mut t.side, Side::Pages, "Pages");
                         ui.selectable_value(&mut t.side, Side::Search, "Search");
                         ui.selectable_value(&mut t.side, Side::Bookmarks, "Bookmarks");
+                        ui.selectable_value(&mut t.side, Side::Comments, "Comments");
                     });
                     ui.separator();
                     match t.side {
                         Side::Pages => t.show_thumbs(ui, &c),
                         Side::Bookmarks => t.show_outline(ui),
+                        Side::Comments => t.show_comments(ui),
                         Side::Search => {
                             let r = ui.text_edit_singleline(&mut t.query);
                             let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
@@ -1768,6 +1967,10 @@ impl eframe::App for App {
         let mut panel_apply = None;
         if has {
             let t = &mut self.tabs[self.active];
+            // "Reply…" in the Comments tab types in the inspector.
+            if t.ed.reply_focus {
+                self.show_inspector = true;
+            }
             let mut open = self.show_inspector;
             let mut toggle = false;
             let rail = egui::Panel::right("inspector-rail")
@@ -1824,8 +2027,10 @@ impl eframe::App for App {
         let canvas = egui::Frame::central_panel(ui.style())
             .fill(theme::canvas(ui.visuals().dark_mode))
             .inner_margin(0);
+        let author = self.settings.author();
         egui::CentralPanel::default().frame(canvas).show(ui, |ui| {
             if let Some(t) = self.tabs.get_mut(self.active) {
+                t.ed.author = author;
                 t.show_pages(ui, &c);
             } else {
                 empty_state(ui, &recent, &mut acts);

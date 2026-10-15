@@ -802,8 +802,10 @@ impl Pdf {
         self.parse_page(page_index).is_ok_and(|p| p.shows_text())
     }
 
-    /// The words of a page (0-based), visible and invisible (OCR), in content order, which
-    /// is usually reading order. Boxes are in displayed-page points (y down).
+    /// The words of a page (0-based), visible and invisible (OCR), in reading order worked
+    /// out from their positions (see [`crate::reading`]), not the order the page draws
+    /// them in. `line` numbers the visual lines. Boxes are in displayed-page points (y
+    /// down).
     pub fn page_words(&self, page_index: usize) -> Result<Vec<PageWord>> {
         let page = self.page_id_at(page_index)?;
         let parsed = self.parse_page(page_index)?;
@@ -835,7 +837,17 @@ impl Pdf {
                 });
             }
         }
-        Ok(out)
+        let boxes: Vec<[f32; 4]> = out.iter().map(|w| w.bbox).collect();
+        let mut words: Vec<Option<PageWord>> = out.into_iter().map(Some).collect();
+        let ordered = crate::reading::reading_order(&boxes)
+            .into_iter()
+            .filter_map(|(i, row)| {
+                let mut w = words[i].take()?;
+                w.line = row;
+                Some(w)
+            })
+            .collect();
+        Ok(ordered)
     }
 }
 

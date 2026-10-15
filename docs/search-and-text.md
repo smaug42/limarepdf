@@ -30,8 +30,11 @@ copying, so they always agree.
   otherwise from its encoding. Ligatures such as "ﬁ" come out as their letters, so searching for "find" finds it.
 - **Spaces:** a gap between words is a space, whether the file has a space character there or only moves the next
   word along (as justified text and many PDF makers do).
-- **Order:** words come in the order the page draws them, which is usually reading order; lines are separated by
-  line breaks. Text in multi-column layouts can come out a column at a time or interleaved, depending on the file.
+- **Order:** words come in reading order worked out from where they sit on the page, not the order the file draws
+  them in (forms and many other files draw blocks out of order, such as a footer first). Blocks separated by space
+  are read top to bottom; columns of text a column at a time; anything else row by row, left to right. Lines are
+  separated by line breaks. Narrow columns, such as the page numbers of a table of contents, stay with their rows.
+  Tables with wide columns come out a column at a time.
 
 Limits:
 
@@ -39,5 +42,7 @@ Limits:
   give the wrong characters.
 - CID fonts whose codes are not two bytes long (some older Chinese, Japanese and Korean encodings) can come out
   wrong.
+- Highlights are placed using the order the file draws text in. A match that runs from one block into another the
+  file draws elsewhere is listed, but not highlighted.
 - Text inside form XObjects (reusable blocks of page content, which some PDF makers put all their text in) is read,
   searched and selected, but cannot be edited line by line: the form moves, resizes and deletes as one object.

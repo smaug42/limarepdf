@@ -1,13 +1,14 @@
 use crate::actions::{self, Act, Ctx};
 use crate::banners::{self, Banner};
-use crate::editor::{Action, Editor, Tool};
+use crate::editor::{annot_tip, Action, Editor, Tool};
 use crate::inspector::{Forms, Sec};
+use crate::markup::{self, Mark};
 use crate::selection::Selection;
 use crate::theme;
 use crate::worker::{Key, Worker};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptions, Vec2};
 use egui_phosphor::regular as icon;
-use mpe_core::{Encryption, LinkTarget, OutlineItem, Pdf, SearchHit};
+use mpe_core::{Annot, Encryption, LinkTarget, OutlineItem, Pdf, SearchHit, Shape, ShapeLook};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -24,6 +25,7 @@ pub enum Side {
     Pages,
     Search,
     Bookmarks,
+    Comments,
 }
 
 /// One undo or redo step: the state to go back to.
@@ -90,6 +92,9 @@ pub struct Tab {
     outline: Option<(u64, Vec<OutlineItem>)>,
     /// For each bookmark, whether its children are shown.
     outline_open: Vec<bool>,
+    /// The annotations, read when the Comments tab is first shown and again after the
+    /// document changes: the revision they were read at, and the list.
+    comments: Option<(u64, Vec<Annot>)>,
 }
 
 impl Tab {
@@ -103,7 +108,7 @@ impl Tab {
         let banners = banners::detect(&pdf, size.map(|m| m.len()));
         // Form fields without drawings would show nothing; this isn't a change to save.
         pdf.refresh_appearances();
-        let bytes = pdf.render_snapshot().map_err(|e| e.to_string())?;
+        let bytes = pdf.app_snapshot().map_err(|e| e.to_string())?;
         let sizes = sizes_of(&pdf);
         Ok(Self {
             banners,
@@ -143,6 +148,7 @@ impl Tab {
             stale: HashSet::new(),
             outline: None,
             outline_open: Vec::new(),
+            comments: None,
         })
     }
 
@@ -247,7 +253,7 @@ impl Tab {
     }
 
     fn soft_refresh(&mut self, ctx: &egui::Context, pages: &[usize]) {
-        match self.pdf.render_snapshot() {
+        match self.pdf.app_snapshot() {
             Ok(bytes) => {
                 self.worker = Worker::spawn(ctx.clone(), bytes);
                 self.pending.clear();
@@ -325,7 +331,138 @@ impl Tab {
                 Action::SetField(pages, name, v) => {
                     self.edit_pages(ctx, &pages, |pdf| pdf.set_field(&name, v));
                 }
+                Action::SetAnnot(p, id, e) => {
+                    self.edit_pages(ctx, &[p], |pdf| {
+                        pdf.set_annotation(id, e.color, e.opacity, &e.contents)?;
+                        if let Some(s) = &e.shape {
+                            pdf.set_shape_look(id, s)?;
+                        }
+                        match &e.text {
+                            Some(s) => pdf.set_text_style(id, s),
+                            None => Ok(()),
+                        }
+                    });
+                }
+                Action::AnnotText(p, id, text) => {
+                    let Some(a) = self.pdf.annotations().into_iter().find(|a| a.id == id) else {
+                        continue;
+                    };
+                    self.edit_pages(ctx, &[p], |pdf| {
+                        pdf.set_annotation(id, a.color, a.opacity, &text)
+                    });
+                }
+                Action::MoveAnnot(p, id, to) => {
+                    self.edit_pages(ctx, &[p], |pdf| pdf.move_annotation(p, id, to));
+                }
+                Action::LineEnds(p, id, ends) => {
+                    self.edit_pages(ctx, &[p], |pdf| pdf.set_line_ends(p, id, ends));
+                }
+                Action::RotateInk(p, id, degrees) => {
+                    self.edit_pages(ctx, &[p], |pdf| pdf.rotate_ink(p, id, degrees));
+                }
+                Action::AddNote(p, at, text) => {
+                    let (color, author) = (self.ed.note_color, self.ed.author.clone());
+                    let mut new = None;
+                    let add = |pdf: &mut Pdf| {
+                        new = Some(pdf.add_note(p, at, color, &text, &author)?);
+                        Ok(())
+                    };
+                    if self.edit_pages(ctx, &[p], add) {
+                        self.after_annot(p, new);
+                    }
+                }
+                Action::AddTextBox(p, rect, text) => {
+                    let (style, author) = (self.ed.box_style, self.ed.author.clone());
+                    let mut new = None;
+                    let add = |pdf: &mut Pdf| {
+                        new = Some(pdf.add_text_box(p, rect, &text, &style, &author)?);
+                        Ok(())
+                    };
+                    if self.edit_pages(ctx, &[p], add) {
+                        self.after_annot(p, new);
+                    }
+                }
+                Action::AddShapeAnnot(p, shape, rect) => {
+                    let ed = &self.ed;
+                    let color = ed.stroke_on.then_some(ed.stroke);
+                    let look = ShapeLook {
+                        fill: (shape != Shape::Line && ed.fill_on).then_some(ed.fill),
+                        width: ed.width,
+                        arrow: shape == Shape::Line && ed.arrow,
+                    };
+                    let author = ed.author.clone();
+                    let mut new = None;
+                    let add = |pdf: &mut Pdf| {
+                        new =
+                            Some(pdf.add_shape_annotation(p, shape, rect, color, &look, &author)?);
+                        Ok(())
+                    };
+                    if self.edit_pages(ctx, &[p], add) {
+                        self.after_annot(p, new);
+                    }
+                }
+                Action::AddInk(p, stroke) => {
+                    let ed = &self.ed;
+                    let (color, width, author) = (ed.pen_color, ed.pen_width, ed.author.clone());
+                    let mut new = None;
+                    let add = |pdf: &mut Pdf| {
+                        new = Some(pdf.add_ink(p, &[stroke], color, width, &author)?);
+                        Ok(())
+                    };
+                    // The pen stays in hand, ready for the next stroke.
+                    if self.edit_pages(ctx, &[p], add) {
+                        self.ed.ink = new.map(|id| (p, id));
+                    }
+                }
+                Action::AddInkStroke(p, id, stroke) => {
+                    if self.edit_pages(ctx, &[p], |pdf| pdf.add_ink_stroke(p, id, &stroke)) {
+                        self.ed.ink = Some((p, id));
+                    }
+                }
+                Action::Reply(p, id, text) => {
+                    let author = self.ed.author.clone();
+                    if self.edit_pages(ctx, &[p], |pdf| {
+                        pdf.add_reply(id, &text, &author).map(|_| ())
+                    }) {
+                        self.ed.selection = Selection::Annot { page: p, id };
+                    }
+                }
+                Action::DeleteAnnot(p, id) => {
+                    let gone = |pdf: &mut Pdf| pdf.remove_annotations(|a| a.id == id).map(|_| ());
+                    if self.edit_pages(ctx, &[p], gone) {
+                        self.ed.selection.clear_annot();
+                        self.notice = Some("Deleted the comment".into());
+                    }
+                }
             }
+        }
+    }
+
+    /// Mark the selected words with `mark` in `color`, one annotation per page, as one
+    /// undo step. The words are let go so the mark shows.
+    pub fn add_markup(&mut self, ctx: &egui::Context, mark: Mark, color: [f32; 3], author: &str) {
+        let lines = self.ed.selected_lines();
+        if lines.is_empty() {
+            return;
+        }
+        let pages: Vec<usize> = lines.iter().map(|(p, _)| *p).collect();
+        let kind = mark.kind();
+        let add = |pdf: &mut Pdf| {
+            for (p, boxes) in &lines {
+                pdf.add_markup(*p, &kind, boxes, color, author)?;
+            }
+            Ok(())
+        };
+        if self.edit_pages(ctx, &pages, add) {
+            self.ed.selection.clear_words();
+        }
+    }
+
+    /// A new note or text box is selected, with the arrow to move it, as new objects are.
+    fn after_annot(&mut self, page: usize, id: Option<(u32, u16)>) {
+        self.ed.set_tool(Tool::Select);
+        if let Some(id) = id {
+            self.ed.selection = Selection::Annot { page, id };
         }
     }
 
@@ -405,7 +542,7 @@ impl Tab {
 
     /// Re-render from the current document state.
     pub fn refresh(&mut self, ctx: &egui::Context) {
-        match self.pdf.render_snapshot() {
+        match self.pdf.app_snapshot() {
             Ok(bytes) => {
                 self.worker = Worker::spawn(ctx.clone(), bytes);
                 self.sizes = sizes_of(&self.pdf);
@@ -489,6 +626,102 @@ impl Tab {
         }
         if let Some(p) = jump {
             self.go_to(p);
+        }
+    }
+
+    /// The Comments side tab: the annotations by page, replies under what they answer.
+    /// Clicking one goes to it and outlines it; right-click to delete it.
+    pub fn show_comments(&mut self, ui: &mut egui::Ui) {
+        let rev = self.revision;
+        if self.comments.as_ref().is_none_or(|(r, _)| *r != rev) {
+            let list = self.pdf.annotations();
+            let gone = |(_, id)| !list.iter().any(|a| a.id == id);
+            if self.ed.selection.annot().is_some_and(gone) {
+                self.ed.selection.clear_annot();
+            }
+            self.comments = Some((rev, list));
+        }
+        let chosen_id = self.ed.selection.annot().map(|(_, id)| id);
+        let Some((_, list)) = &self.comments else {
+            return;
+        };
+        if list.is_empty() {
+            ui.weak("This document has no comments or markup.");
+            return;
+        }
+        let mut chosen = None;
+        let mut delete = None;
+        let mut reply = false;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let mut page = usize::MAX;
+                for (i, depth) in thread_order(list) {
+                    let a = &list[i];
+                    if a.page != page {
+                        page = a.page;
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(format!("Page {}", page + 1))
+                                .small()
+                                .strong(),
+                        );
+                    }
+                    let first = a.contents.lines().find(|l| !l.trim().is_empty());
+                    let who = if a.author.is_empty() { "" } else { &a.author };
+                    let text = match (who, first) {
+                        ("", None) => a.kind.label(),
+                        ("", Some(t)) => format!("{}: {t}", a.kind.label()),
+                        (w, None) => format!("{} · {w}", a.kind.label()),
+                        (w, Some(t)) => format!("{w}: {t}"),
+                    };
+                    let mut text = egui::RichText::new(text);
+                    if a.hidden() {
+                        text = text.weak();
+                    }
+                    let tip = annot_tip(a);
+                    ui.horizontal(|ui| {
+                        ui.add_space(depth as f32 * 12.0);
+                        let row =
+                            egui::Button::selectable(chosen_id == Some(a.id), text).truncate();
+                        let r = ui.add(row).on_hover_text(tip);
+                        if r.clicked() {
+                            chosen = Some(i);
+                        }
+                        r.context_menu(|ui| {
+                            let answer = theme::icon(icon::ARROW_BEND_UP_LEFT);
+                            if ui.button((answer, "Reply…")).clicked() {
+                                chosen = Some(i);
+                                reply = true;
+                            }
+                            let label = if list.iter().any(|b| b.reply_to == Some(a.id)) {
+                                "Delete, with its replies"
+                            } else {
+                                "Delete"
+                            };
+                            let del = ui
+                                .add_enabled(!a.locked(), egui::Button::new(label))
+                                .on_disabled_hover_text("It is locked in this document.");
+                            if del.clicked() {
+                                delete = Some(a.id);
+                            }
+                        });
+                    });
+                }
+            });
+        if let Some(i) = chosen {
+            let a = &list[i];
+            let (id, page, top) = (a.id, a.page, a.bbox[1]);
+            self.ed.selection = Selection::Annot { page, id };
+            self.ed.reply_focus = reply;
+            self.go_to(page);
+            self.goto_y = Some(top);
+        }
+        if let Some(id) = delete {
+            let ctx = ui.ctx().clone();
+            if self.edit(&ctx, |p| p.remove_annotations(|a| a.id == id).map(|_| ())) {
+                self.notice = Some("Deleted the comment".into());
+            }
         }
     }
 
@@ -592,11 +825,16 @@ impl Tab {
         };
         c.pages = self.ed.selection.pages().is_some();
         c.tool = Some(self.ed.tool);
+        c.annot_tool = Some(self.ed.annot_tool);
         c.fit = self.fit;
         c.hidden_text = self.ed.show_hidden;
         c.form = !self.ed.form.fields().is_empty();
         c.field = self.ed.form.focused_field().is_some();
         c.fields_shown = self.ed.form.highlight;
+        let annot = self.ed.selected_annot();
+        c.annot = annot.is_some();
+        c.annot_locked = annot.is_some_and(|a| a.locked());
+        c.annot_moves = self.ed.tool == Tool::Select && annot.is_some_and(crate::editor::movable);
     }
 
     /// A right-click menu for what is selected, its commands queued in `requested`. The
@@ -654,6 +892,18 @@ impl Tab {
                                     let tip = actions::tooltip(ui.ctx(), a);
                                     if ui.add(b).on_hover_text(tip).clicked() {
                                         self.requested.push(a.act);
+                                    }
+                                    if a.act == Act::Mark(Mark::Highlight) {
+                                        let more = egui::Button::new(
+                                            theme::icon(icon::CARET_DOWN).size(12.0),
+                                        )
+                                        .frame_when_inactive(false)
+                                        .min_size(egui::vec2(16.0, 26.0));
+                                        let acts = &mut self.requested;
+                                        egui::containers::menu::MenuButton::from_button(more)
+                                            .ui(ui, |ui| markup::menu(ui, &c, acts))
+                                            .0
+                                            .on_hover_text("Underline, strike out, colours");
                                     }
                                 }
                             }
@@ -812,6 +1062,9 @@ impl Tab {
                 if self.pages.get(&i).map(|(k, _)| *k) != Some(key.1) || self.stale.contains(&i) {
                     wanted.push((key, key.1 as f32 / 20.0));
                 }
+            }
+            if self.ed.selecting_words(ui.ctx()) {
+                edge_scroll(ui);
             }
             let mid = vp.min.y + vp.height() / 3.0;
             probe = tops
@@ -1061,6 +1314,72 @@ fn drop_index(rects: &[Rect], y: f32) -> usize {
         .unwrap_or(rects.len())
 }
 
+/// How fast (points per second) to scroll when the pointer is `d` points inside the edge
+/// margin of the view (positive) or past the edge (larger). Zero outside the margin.
+fn edge_speed(d: f32) -> f32 {
+    if d > 0.0 {
+        (d * 12.0).min(3000.0)
+    } else {
+        0.0
+    }
+}
+
+/// While a text selection is dragged: scroll when the pointer is near or past an edge of
+/// the pages view, faster the further out it is, and keep going while it is held still.
+fn edge_scroll(ui: &egui::Ui) {
+    const EDGE: f32 = 40.0;
+    let Some(p) = ui.input(|i| i.pointer.latest_pos()) else {
+        return;
+    };
+    let view = ui.clip_rect();
+    let dx = edge_speed(view.left() + EDGE - p.x) - edge_speed(p.x - (view.right() - EDGE));
+    let dy = edge_speed(view.top() + EDGE - p.y) - edge_speed(p.y - (view.bottom() - EDGE));
+    if dx != 0.0 || dy != 0.0 {
+        let dt = ui.input(|i| i.stable_dt).min(0.1);
+        ui.scroll_with_delta(Vec2::new(dx, dy) * dt);
+        ui.ctx().request_repaint();
+    }
+}
+
+/// The order the Comments tab lists annotations in, with each one's depth: page by page in
+/// the file's order, with replies under what they answer. A reply whose comment is missing
+/// or on another page is listed as a comment of its own.
+fn thread_order(list: &[Annot]) -> Vec<(usize, usize)> {
+    const MAX_DEPTH: usize = 6;
+    let n = list.len();
+    let index: HashMap<(u32, u16), usize> =
+        list.iter().enumerate().map(|(i, a)| (a.id, i)).collect();
+    let parent: Vec<Option<usize>> = list
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let p = *index.get(&a.reply_to?)?;
+            (p != i && list[p].page == a.page).then_some(p)
+        })
+        .collect();
+    let mut kids = vec![Vec::new(); n];
+    for (i, p) in parent.iter().enumerate() {
+        if let Some(p) = *p {
+            kids[p].push(i);
+        }
+    }
+    let mut out = Vec::with_capacity(n);
+    let mut seen = vec![false; n];
+    for root in (0..n).filter(|&i| parent[i].is_none()) {
+        let mut stack = vec![(root, 0)];
+        while let Some((i, d)) = stack.pop() {
+            if std::mem::replace(&mut seen[i], true) {
+                continue;
+            }
+            out.push((i, d.min(MAX_DEPTH)));
+            stack.extend(kids[i].iter().rev().map(|&k| (k, d + 1)));
+        }
+    }
+    // Replies that answer each other in a circle have no first comment.
+    out.extend((0..n).filter(|&i| !seen[i]).map(|i| (i, 0)));
+    out
+}
+
 /// While thumbnails are dragged: a line where they will land, a label at the pointer,
 /// and scrolling when the pointer nears the top or bottom of the list.
 fn drag_feedback(ui: &egui::Ui, rects: &[Rect], target: Option<usize>, p: Pos2, n: usize) {
@@ -1103,6 +1422,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn replies_follow_what_they_answer() {
+        let a = |id: u32, page: usize, reply_to: Option<u32>| Annot {
+            id: (id, 0),
+            page,
+            kind: mpe_core::AnnotKind::Note,
+            bbox: [0.0; 4],
+            quads: Vec::new(),
+            color: None,
+            opacity: 1.0,
+            contents: String::new(),
+            author: String::new(),
+            subject: String::new(),
+            modified: String::new(),
+            flags: 0,
+            reply_to: reply_to.map(|r| (r, 0)),
+            has_appearance: true,
+            text_style: None,
+            shape: None,
+            paths: Vec::new(),
+        };
+        // 3 answers 1, 4 answers 3, 5 answers a comment on another page, 6 and 7 answer
+        // each other.
+        let list = [
+            a(1, 0, None),
+            a(2, 0, None),
+            a(3, 0, Some(1)),
+            a(4, 0, Some(3)),
+            a(5, 1, Some(2)),
+            a(6, 1, Some(7)),
+            a(7, 1, Some(6)),
+        ];
+        assert_eq!(
+            thread_order(&list),
+            [(0, 0), (2, 1), (3, 2), (1, 0), (4, 0), (5, 0), (6, 0)]
+        );
+    }
+
+    #[test]
     fn moving_pages_keeps_their_order() {
         let set = |v: &[usize]| v.iter().copied().collect::<BTreeSet<usize>>();
         // Pages 2 and 4 (0-based 1, 3) to the start.
@@ -1136,5 +1493,14 @@ mod tests {
         assert_eq!(drop_index(&rects, 10.0), 0);
         assert_eq!(drop_index(&rects, 60.0), 1);
         assert_eq!(drop_index(&rects, 290.0), 3);
+    }
+
+    #[test]
+    fn edge_scrolling_grows_past_the_edge() {
+        assert_eq!(edge_speed(-5.0), 0.0);
+        assert_eq!(edge_speed(0.0), 0.0);
+        assert!(edge_speed(10.0) > 0.0);
+        assert!(edge_speed(100.0) > edge_speed(10.0));
+        assert_eq!(edge_speed(1e6), 3000.0);
     }
 }

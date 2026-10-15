@@ -11,17 +11,20 @@ MPE draws pages with [hayro](https://crates.io/crates/hayro) 0.8, a pure-Rust PD
 - colour-key image masks (`/Mask [..]`);
 - annotations that have an appearance stream (`/AP`): Text, Highlight, Link, Stamp, FreeText and Widget were tested,
   including the Widget `/AS` state and the Hidden flag;
-- annotations with the NoView flag are hidden in the desktop app (MPE marks them Hidden before drawing, since hayro
-  ignores NoView);
+- annotations with the NoView flag are hidden, in the desktop app and `mpe render` (MPE marks them Hidden before
+  drawing, since hayro ignores NoView);
+- annotations without an appearance stream: hayro draws nothing for them, so MPE draws its own for Highlight,
+  Underline, StrikeOut, Squiggly, Text (notes), FreeText, Square, Circle, Line, Polygon, PolyLine and Ink, in the
+  copy it renders and prints, not in the file (`crates/mpe-core/tests/annots.rs`);
 - password-protected files with all four ciphers.
 
 ## Known to be wrong
 
 - Knockout groups are drawn as non-knockout.
 - Non-isolated groups are drawn as isolated.
-- `mpe render` (the command line) draws NoView annotations.
-- Annotations without an appearance stream are not drawn at all (tested: Text, Highlight, Link, Stamp, FreeText,
-  Widget).
+- Other annotation types without an appearance stream (Stamp, Caret, FileAttachment and the rest) are not drawn.
+  For those MPE draws, cloudy borders, callout lines, leader lines, rich text and the note icon's shape (one icon
+  for every kind of note) are not reproduced.
 
 Other PDF features have not been tested by MPE. Files hayro cannot parse show "Rendering…" on those pages; editing may
 still work if the document library (lopdf) can read them.

@@ -331,10 +331,17 @@ impl Pdf {
 
 /// Today's UTC date as YYYY-MM-DD (no external time crate).
 fn today_iso() -> String {
+    let [y, m, d, ..] = utc_now();
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// The time now in UTC: year, month, day, hour, minute, second.
+pub(crate) fn utc_now() -> [i64; 6] {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
+    let t = secs.rem_euclid(86_400);
     let z = secs.div_euclid(86_400) + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
@@ -345,7 +352,7 @@ fn today_iso() -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
-    format!("{y:04}-{m:02}-{d:02}")
+    [y, m, d, t / 3600, t % 3600 / 60, t % 60]
 }
 
 #[cfg(test)]

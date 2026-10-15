@@ -28,8 +28,27 @@ pub fn settings_dir() -> Option<PathBuf> {
 
 pub struct Settings {
     pub theme: ThemePreference,
+    /// The colours text markup was last made in: indices into
+    /// [`crate::markup::HIGHLIGHTS`] and [`crate::markup::LINES`].
+    pub highlight: usize,
+    pub line: usize,
+    /// The name written into comments and markup; `None` until it is set, meaning the
+    /// system user name. Empty writes no name.
+    pub author: Option<String>,
     /// Where they are saved; `None` when there is no settings folder.
     file: Option<PathBuf>,
+}
+
+/// The name of the user logged in, or empty.
+fn system_user() -> String {
+    ["USER", "USERNAME", "LOGNAME"]
+        .iter()
+        .find_map(|k| {
+            let v = std::env::var(k).ok()?;
+            let v = v.trim();
+            (!v.is_empty()).then(|| v.to_string())
+        })
+        .unwrap_or_default()
 }
 
 fn theme_name(t: ThemePreference) -> &'static str {
@@ -50,6 +69,9 @@ impl Settings {
     pub fn from_file(file: Option<PathBuf>) -> Self {
         let mut s = Self {
             theme: ThemePreference::System,
+            highlight: 0,
+            line: 0,
+            author: None,
             file,
         };
         let text = s
@@ -61,15 +83,39 @@ impl Settings {
             let Some((key, value)) = line.split_once('=') else {
                 continue;
             };
-            if key.trim() == "theme" {
-                s.theme = match value.trim() {
-                    "light" => ThemePreference::Light,
-                    "dark" => ThemePreference::Dark,
-                    _ => ThemePreference::System,
-                };
+            let value = value.trim();
+            match key.trim() {
+                "theme" => {
+                    s.theme = match value {
+                        "light" => ThemePreference::Light,
+                        "dark" => ThemePreference::Dark,
+                        _ => ThemePreference::System,
+                    };
+                }
+                "highlight_colour" => {
+                    s.highlight = value
+                        .parse()
+                        .ok()
+                        .filter(|&i| i < crate::markup::HIGHLIGHTS.len())
+                        .unwrap_or(0);
+                }
+                "line_colour" => {
+                    s.line = value
+                        .parse()
+                        .ok()
+                        .filter(|&i| i < crate::markup::LINES.len())
+                        .unwrap_or(0);
+                }
+                "comment_name" => s.author = Some(value.to_string()),
+                _ => {}
             }
         }
         s
+    }
+
+    /// The name to write into new comments and markup; may be empty.
+    pub fn author(&self) -> String {
+        self.author.clone().unwrap_or_else(system_user)
     }
 
     pub fn save(&self) {
@@ -77,7 +123,18 @@ impl Settings {
         if let Some(dir) = file.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(file, format!("theme = {}\n", theme_name(self.theme)));
+        let mut text = format!(
+            "theme = {}\nhighlight_colour = {}\nline_colour = {}\n",
+            theme_name(self.theme),
+            self.highlight,
+            self.line
+        );
+        if let Some(name) = &self.author {
+            // One line: a name pasted with line breaks keeps its first line.
+            let name = name.lines().next().unwrap_or("").trim();
+            text += &format!("comment_name = {name}\n");
+        }
+        let _ = std::fs::write(file, text);
     }
 }
 
@@ -102,6 +159,25 @@ mod tests {
             s.save();
             assert_eq!(Settings::from_file(Some(f.clone())).theme, t);
         }
+    }
+
+    #[test]
+    fn markup_colours_and_name_are_saved_and_read_back() {
+        let f = file("markup");
+        let s = Settings::from_file(Some(f.clone()));
+        assert_eq!((s.highlight, s.line, s.author.as_deref()), (0, 0, None));
+        let mut s = Settings::from_file(Some(f.clone()));
+        s.highlight = 2;
+        s.line = 1;
+        s.author = Some(String::new());
+        s.save();
+        let s = Settings::from_file(Some(f.clone()));
+        assert_eq!((s.highlight, s.line), (2, 1));
+        assert_eq!(s.author(), "", "an empty name stays empty");
+        std::fs::write(&f, "highlight_colour = 99\ncomment_name = Sam Lee\n").unwrap();
+        let s = Settings::from_file(Some(f));
+        assert_eq!(s.highlight, 0, "out of range falls back to the first");
+        assert_eq!(s.author(), "Sam Lee");
     }
 
     #[test]

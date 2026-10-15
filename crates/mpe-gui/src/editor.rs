@@ -2,28 +2,105 @@
 //! and shapes, and the inspector panel.
 
 use crate::fields::FormUi;
-use crate::selection::{ObjKind, Selection};
+use crate::selection::{ObjKind, Selection, WordAt};
 use crate::theme;
 use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use egui_phosphor::regular as icon;
 use mpe_core::{
-    words_text, Family, FieldValue, FontChoice, Link, LinkTarget, ObjectKind, PageObject, PageWord,
-    PathStyle, Shape, TextEdit,
+    words_text, Annot, AnnotKind, Family, FieldValue, FontChoice, Link, LinkTarget, ObjectKind,
+    PageObject, PageWord, PathStyle, Shape, ShapeLook, TextEdit, TextStyle,
 };
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tool {
-    /// Reading only: page clicks do nothing.
-    View,
+    /// The default: select words (visible or recognised) to copy, follow links, fill in
+    /// forms. Never changes page content.
+    Read,
     Select,
-    /// Select words (visible or recognised) and copy them.
-    SelectText,
     Text,
     Image,
     Rect,
     Ellipse,
     Line,
+    /// Click to put a sticky note on the page, then type its comment.
+    Note,
+    /// Drag a box, then type text straight onto the page.
+    TextBox,
+    /// Draw freehand; strokes made in quick succession make one drawing.
+    Pen,
+}
+
+impl Tool {
+    /// The tools behind the toolbar's Annotate button.
+    pub const ANNOTATE: [Tool; 6] = [
+        Tool::Note,
+        Tool::TextBox,
+        Tool::Rect,
+        Tool::Ellipse,
+        Tool::Line,
+        Tool::Pen,
+    ];
+}
+
+/// A pen stroke strictly sooner than this (seconds) after the last one joins its drawing.
+const INK_PAUSE: f64 = 1.5;
+
+/// A pen stroke being drawn: its points in page points, and the drawing it joins.
+struct PenStroke {
+    page: usize,
+    points: Vec<Pos2>,
+    join: Option<(u32, u16)>,
+}
+
+/// A note or text box being typed: a new one at `rect` (displayed-page points), or the
+/// existing one `id`.
+pub struct Writing {
+    pub page: usize,
+    pub id: Option<(u32, u16)>,
+    pub note: bool,
+    pub rect: [f32; 4],
+    pub text: String,
+    /// The text it had, for an existing one.
+    original: String,
+    /// A text box's text size in points.
+    size: f32,
+    /// Takes the keyboard on the next frame.
+    fresh: bool,
+}
+
+impl Writing {
+    /// A new note (with its icon's box) or text box, empty.
+    fn new(page: usize, note: bool, rect: [f32; 4], size: f32) -> Self {
+        Self {
+            page,
+            id: None,
+            note,
+            rect,
+            text: String::new(),
+            original: String::new(),
+            size,
+            fresh: true,
+        }
+    }
+}
+
+/// A note's icon on screen, in pixels, whatever the zoom, as other readers show notes.
+const NOTE_PX: f32 = 24.0;
+
+/// The box an annotation takes up on screen, in page points at `zoom` pixels per point:
+/// a note's icon grows from its top left corner to [`NOTE_PX`].
+fn shown_box(note: bool, b: [f32; 4], zoom: f32) -> [f32; 4] {
+    if !note {
+        return b;
+    }
+    let s = NOTE_PX / zoom.max(0.01);
+    [b[0], b[1], b[2].max(b[0] + s), b[3].max(b[1] + s)]
+}
+
+/// Whether a double-click opens it for typing: a note or a text box that isn't locked.
+fn writable(a: &Annot) -> bool {
+    !a.locked() && matches!(a.kind, AnnotKind::Note | AnnotKind::TextBox)
 }
 
 /// A change requested by the interface, applied by the tab after the frame is drawn.
@@ -38,17 +115,100 @@ pub enum Action {
     PathStyle(usize, usize, PathStyle),
     /// Set the named form field, drawn on these pages.
     SetField(Vec<usize>, String, FieldValue),
+    /// Change an annotation on a page: its colour, opacity and comment.
+    SetAnnot(usize, (u32, u16), AnnotEdit),
+    /// Replace an annotation's comment, or a text box's text.
+    AnnotText(usize, (u32, u16), String),
+    /// Give an annotation a new box (displayed-page points).
+    MoveAnnot(usize, (u32, u16), [f32; 4]),
+    /// Move a line's ends (x1, y1, x2, y2 in displayed-page points).
+    LineEnds(usize, (u32, u16), [f32; 4]),
+    /// Turn a drawing by this many degrees, clockwise.
+    RotateInk(usize, (u32, u16), f32),
+    DeleteAnnot(usize, (u32, u16)),
+    /// A new note centred on a point, with its comment.
+    AddNote(usize, (f32, f32), String),
+    /// A new text box and its text.
+    AddTextBox(usize, [f32; 4], String),
+    /// A rectangle, ellipse or line as an annotation, styled as the tool is.
+    AddShapeAnnot(usize, Shape, [f32; 4]),
+    /// A new drawing with one pen stroke (page points).
+    AddInk(usize, Vec<(f32, f32)>),
+    /// Another stroke for a drawing.
+    AddInkStroke(usize, (u32, u16), Vec<(f32, f32)>),
+    /// Answer an annotation.
+    Reply(usize, (u32, u16), String),
+}
+
+/// An annotation's properties as the inspector edits them.
+#[derive(Clone, PartialEq)]
+pub struct AnnotEdit {
+    pub color: Option<[f32; 3]>,
+    pub opacity: f32,
+    pub contents: String,
+    /// A text box's text size, colour, fill and border.
+    pub text: Option<TextStyle>,
+    /// A shape's, line's or drawing's fill, width and arrowhead.
+    pub shape: Option<ShapeLook>,
+}
+
+/// Whether the annotation can be moved with the arrow tool: not locked, and not text
+/// markup, which stays on its text.
+pub fn movable(a: &Annot) -> bool {
+    !a.locked() && a.quads.is_empty()
+}
+
+/// Whether it can also be resized by its box: a note's icon keeps its size, and a line
+/// has handles on its ends instead.
+pub fn resizable(a: &Annot) -> bool {
+    movable(a) && !matches!(a.kind, AnnotKind::Note | AnnotKind::Line)
 }
 
 #[derive(Clone, Copy)]
 enum Mode {
     Move,
     Handle(usize),
+    /// One end of a line (0 is its start); `Drag::orig` and `cur` hold both ends.
+    End(usize),
+    /// Turning a drawing about the middle of its box (`orig`); `cur[0]` holds the angle
+    /// in degrees, clockwise.
+    Rotate,
+}
+
+/// How far above a drawing's box its rotate handle sits, in pixels.
+const ROTATE_GAP: f32 = 22.0;
+
+/// A circular arrow in place of the pointer, over the rotate handle and while turning:
+/// the system cursors have no rotate shape. Dark on a light disc, so it shows on any page.
+fn rotate_cursor(ctx: &egui::Context) {
+    let Some(at) = ctx.pointer_latest_pos() else {
+        return;
+    };
+    ctx.set_cursor_icon(CursorIcon::None);
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Tooltip,
+        egui::Id::new("rotate-cursor"),
+    ));
+    painter.circle(
+        at,
+        10.0,
+        Color32::WHITE.gamma_multiply(0.9),
+        Stroke::new(1.0, Color32::from_gray(60)),
+    );
+    painter.text(
+        at,
+        egui::Align2::CENTER_CENTER,
+        icon::ARROW_CLOCKWISE,
+        egui::FontId::new(15.0, theme::icons()),
+        Color32::from_gray(20),
+    );
 }
 
 struct Drag {
     page: usize,
     id: usize,
+    /// Moving an annotation, not object `id`.
+    annot: Option<(u32, u16)>,
     mode: Mode,
     start: Pos2,
     orig: [f32; 4],
@@ -111,12 +271,41 @@ pub struct Editor {
     pub follow: Option<LinkTarget>,
     /// Filling in form fields.
     pub form: FormUi,
+    annots: HashMap<usize, Vec<Annot>>,
+    /// The selected annotation's properties being edited in the inspector, with its id.
+    annot_insp: Option<((u32, u16), AnnotEdit)>,
+    /// The Annotate button's tool: the one last used.
+    pub annot_tool: Tool,
+    /// A note or text box being typed.
+    pub writing: Option<Writing>,
+    pub note_color: [f32; 3],
+    /// How new text boxes are set.
+    pub box_style: TextStyle,
+    /// The name new annotations are signed with (from the settings).
+    pub author: String,
+    /// Pixels per page point, as the pages are drawn now.
+    zoom: f32,
+    /// The shape tools draw into the page's content instead of adding annotations.
+    pub draw_permanent: bool,
+    /// New lines get an arrowhead.
+    pub arrow: bool,
+    pub pen_color: [f32; 3],
+    pub pen_width: f32,
+    pen_stroke: Option<PenStroke>,
+    /// The drawing the pen last added to, and its page.
+    pub ink: Option<(usize, (u32, u16))>,
+    /// When (`egui` time) the pen's last stroke ended.
+    ink_at: f64,
+    /// A reply being typed in the inspector.
+    reply: String,
+    /// Put the keyboard in the reply box (and show the inspector).
+    pub reply_focus: bool,
 }
 
 impl Default for Editor {
     fn default() -> Self {
         Self {
-            tool: Tool::View,
+            tool: Tool::Read,
             selection: Selection::None,
             objs: HashMap::new(),
             unavailable: HashMap::new(),
@@ -142,8 +331,71 @@ impl Default for Editor {
             links: HashMap::new(),
             follow: None,
             form: FormUi::default(),
+            annots: HashMap::new(),
+            annot_insp: None,
+            annot_tool: Tool::Note,
+            writing: None,
+            note_color: [1.0, 0.85, 0.2],
+            box_style: TextStyle {
+                border: 1.0,
+                ..TextStyle::default()
+            },
+            author: String::new(),
+            zoom: 1.0,
+            draw_permanent: false,
+            arrow: false,
+            pen_color: [0.1, 0.25, 0.8],
+            pen_width: 2.0,
+            pen_stroke: None,
+            ink: None,
+            ink_at: f64::NEG_INFINITY,
+            reply: String::new(),
+            reply_focus: false,
         }
     }
+}
+
+/// Distance from `p` to the segment from `a` to `b`.
+fn seg_dist(p: Pos2, a: (f32, f32), b: (f32, f32)) -> f32 {
+    let (a, b) = (Pos2::new(a.0, a.1), Pos2::new(b.0, b.1));
+    let ab = b - a;
+    let t = ((p - a).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
+    p.distance(a + ab * t)
+}
+
+/// Where a shape drag ends with Shift held: squares and circles, and lines at a multiple
+/// of 45°.
+fn constrain(tool: Tool, a: Pos2, b: Pos2) -> Pos2 {
+    let d = b - a;
+    match tool {
+        Tool::Line => {
+            let step = std::f32::consts::FRAC_PI_4;
+            let angle = (d.y.atan2(d.x) / step).round() * step;
+            a + Vec2::angled(angle) * d.length()
+        }
+        Tool::Rect | Tool::Ellipse => {
+            let m = d.x.abs().max(d.y.abs());
+            a + Vec2::new(m * d.x.signum(), m * d.y.signum())
+        }
+        _ => b,
+    }
+}
+
+/// Hover text for an annotation: its kind, author and date, then its comment.
+pub fn annot_tip(a: &Annot) -> String {
+    let mut tip = a.kind.label();
+    for extra in [&a.author, &a.modified] {
+        if !extra.is_empty() {
+            tip += &format!(" · {extra}");
+        }
+    }
+    if a.hidden() {
+        tip += " · hidden";
+    }
+    if !a.contents.is_empty() {
+        tip += &format!("\n\n{}", a.contents);
+    }
+    tip
 }
 
 fn norm(r: [f32; 4]) -> [f32; 4] {
@@ -152,6 +404,16 @@ fn norm(r: [f32; 4]) -> [f32; 4] {
         r[1].min(r[3]),
         r[0].max(r[2]),
         r[1].max(r[3]),
+    ]
+}
+
+/// The smallest box holding both.
+fn union(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    [
+        a[0].min(b[0]),
+        a[1].min(b[1]),
+        a[2].max(b[2]),
+        a[3].max(b[3]),
     ]
 }
 
@@ -232,13 +494,183 @@ impl Editor {
         self.text_drag = false;
         self.links.clear();
         self.form.invalidate();
+        self.annots.clear();
+        self.annot_insp = None;
+        self.ink = None;
+    }
+
+    /// The annotations on `page`, read once until the document changes.
+    pub fn annots(&mut self, pdf: &mpe_core::Pdf, page: usize) -> &[Annot] {
+        self.annots
+            .entry(page)
+            .or_insert_with(|| pdf.page_annotations(page).unwrap_or_default())
+    }
+
+    /// The topmost shown annotation under `p` (page points): over one of its lines for
+    /// markup, near its strokes for lines and drawings, else inside its box.
+    fn annot_at(&mut self, pdf: &mpe_core::Pdf, page: usize, p: Pos2) -> Option<&Annot> {
+        let inside = |b: &[f32; 4]| p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3];
+        let zoom = self.zoom;
+        self.annots(pdf, page).iter().rev().find(|a| {
+            let reach = 4.0 / zoom + a.shape.map_or(0.0, |s| s.width / 2.0);
+            let near = |s: &Vec<(f32, f32)>| match s[..] {
+                [q] => p.distance(Pos2::new(q.0, q.1)) <= reach,
+                _ => s.windows(2).any(|w| seg_dist(p, w[0], w[1]) <= reach),
+            };
+            a.on_page()
+                && if !a.paths.is_empty() {
+                    a.paths.iter().filter(|s| !s.is_empty()).any(near)
+                } else if a.quads.is_empty() {
+                    inside(&shown_box(a.kind == AnnotKind::Note, a.bbox, zoom))
+                } else {
+                    a.quads.iter().any(inside)
+                }
+        })
+    }
+
+    /// Start typing a note or text box, finishing one already open first.
+    fn start_writing(&mut self, w: Writing) {
+        self.finish_writing();
+        self.selection.clear_annot();
+        self.writing = Some(w);
+    }
+
+    /// Open the selected note or text box for typing.
+    pub fn write_selected(&mut self) {
+        let Some(a) = self.selected_annot().filter(|a| writable(a)).cloned() else {
+            return;
+        };
+        self.finish_writing();
+        self.writing = Some(Writing {
+            id: Some(a.id),
+            text: a.contents.clone(),
+            original: a.contents,
+            ..Writing::new(
+                a.page,
+                a.kind == AnnotKind::Note,
+                a.bbox,
+                a.text_style.map_or(12.0, |s| s.size),
+            )
+        });
+    }
+
+    /// Keep what was typed: a new note or text box with some text, or changed text.
+    pub fn finish_writing(&mut self) {
+        let Some(w) = self.writing.take() else { return };
+        match w.id {
+            Some(id) if w.text != w.original => {
+                self.actions.push(Action::AnnotText(w.page, id, w.text));
+            }
+            None if !w.text.trim().is_empty() => {
+                let r = w.rect;
+                self.actions.push(if w.note {
+                    Action::AddNote(w.page, ((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0), w.text)
+                } else {
+                    Action::AddTextBox(w.page, r, w.text)
+                });
+            }
+            _ => {}
+        }
+    }
+
+    /// The note or text box being typed on `page` (drawn at `r`, `k` pixels per point):
+    /// a comment box beside a note's icon, or the text box's own area. Returns true when
+    /// the page should not take the pointer this frame: it is over the text box, or the
+    /// typing just ended.
+    fn writing_ui(&mut self, ui: &mut egui::Ui, page: usize, r: Rect, k: f32) -> bool {
+        let Some(w) = self.writing.as_mut().filter(|w| w.page == page) else {
+            return false;
+        };
+        let to_screen = |x: f32, y: f32| Pos2::new(r.min.x + x * k, r.min.y + y * k);
+        let b = shown_box(w.note, w.rect, k);
+        let area = Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3]));
+        // Light colours in either theme, as for form fields: the text sits on the paper.
+        let theme = ui.visuals().clone();
+        let (out, done, cancel) = if w.note {
+            let [cr, cg, cb] = self.note_color.map(|v| (v * 255.0).round() as u8);
+            if w.id.is_none() {
+                ui.painter()
+                    .rect_filled(area, 2.0, Color32::from_rgb(cr, cg, cb));
+            }
+            let (mut done, mut cancel) = (false, false);
+            let inner = egui::Area::new(ui.id().with(("note-writing", page)))
+                .fixed_pos(area.right_top() + Vec2::new(6.0, 0.0))
+                .order(egui::Order::Foreground)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style())
+                        .show(ui, |ui| {
+                            ui.set_width(240.0);
+                            let out = ui.add(
+                                egui::TextEdit::multiline(&mut w.text)
+                                    .id(egui::Id::new(("note-text", page)))
+                                    .hint_text("Comment")
+                                    .desired_rows(4)
+                                    .desired_width(f32::INFINITY),
+                            );
+                            ui.horizontal(|ui| {
+                                done = ui.button("Done").clicked();
+                                cancel = ui.button("Cancel").clicked();
+                            });
+                            out
+                        })
+                        .inner
+                });
+            (inner.inner, done, cancel)
+        } else {
+            let te = egui::TextEdit::multiline(&mut w.text)
+                .id(egui::Id::new(("box-text", page)))
+                .font(egui::FontId::proportional((w.size * k).clamp(6.0, 96.0)))
+                .desired_rows(1)
+                .min_size(area.size())
+                .desired_width(area.width())
+                .margin(egui::Margin::same(2));
+            *ui.visuals_mut() = egui::Visuals::light();
+            let out = ui.put(area, te);
+            *ui.visuals_mut() = theme;
+            (out, false, false)
+        };
+        if w.fresh {
+            out.request_focus();
+            w.fresh = false;
+            return false;
+        }
+        // Ctrl+Enter finishes; Esc drops what was typed. The focus is asked first: asking
+        // inside `input_mut` would wait on the lock it holds.
+        let focused = out.has_focus();
+        let (finish, esc) = ui.input_mut(|i| {
+            (
+                focused && i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter),
+                i.key_pressed(egui::Key::Escape),
+            )
+        });
+        if cancel || (esc && (out.lost_focus() || out.has_focus())) {
+            self.writing = None;
+            return true;
+        }
+        // A note stays open until Done; a text box ends when it loses the keyboard.
+        if done || finish || (!w.note && out.lost_focus()) {
+            self.finish_writing();
+            return true;
+        }
+        !w.note && out.hovered()
+    }
+
+    /// The selected annotation, once its page's annotations have been read.
+    pub fn selected_annot(&self) -> Option<&Annot> {
+        let (page, id) = self.selection.annot()?;
+        self.annots.get(&page)?.iter().find(|a| a.id == id)
     }
 
     pub fn set_tool(&mut self, t: Tool) {
+        self.finish_writing();
+        if Tool::ANNOTATE.contains(&t) {
+            self.annot_tool = t;
+        }
         self.tool = t;
         self.drag = None;
         self.draw = None;
-        if t == Tool::SelectText {
+        self.pen_stroke = None;
+        if t == Tool::Read {
             self.selection.clear_object();
             self.insp = None;
         } else {
@@ -247,9 +679,6 @@ impl Editor {
         }
         if t != Tool::Text {
             self.new_text = None;
-        }
-        if t == Tool::View {
-            self.selection.clear_object();
         }
     }
 
@@ -294,12 +723,88 @@ impl Editor {
             .or_insert_with(|| pdf.page_words(page).unwrap_or_default())
     }
 
-    /// The selected words as text, if any are selected.
+    /// The selected words as text, if any are selected: pages in order, separated by a
+    /// line break.
     pub fn selected_text(&self) -> Option<String> {
-        let (p, a, b) = self.selection.words()?;
-        let words = self.words.get(&p)?;
-        let range = words.get(a.min(b)..=a.max(b).min(words.len().checked_sub(1)?))?;
-        Some(words_text(range))
+        let ((first, _), (last, _)) = self.selection.words()?;
+        let parts: Vec<String> = (first..=last)
+            .filter_map(|p| {
+                let words = self.words.get(&p)?;
+                let range = self.selection.words_on(p, words.len())?;
+                Some(words_text(&words[range]))
+            })
+            .collect();
+        (!parts.is_empty()).then(|| parts.join("\n"))
+    }
+
+    /// For each page with selected words, the rectangle around them with a small margin
+    /// (displayed-page points), for printing or saving the selection as cropped pages.
+    pub fn selected_rects(&self) -> Vec<(usize, [f32; 4])> {
+        const PAD: f32 = 4.0;
+        let Some(((first, _), (last, _))) = self.selection.words() else {
+            return Vec::new();
+        };
+        (first..=last)
+            .filter_map(|p| {
+                let words = self.words.get(&p)?;
+                let range = self.selection.words_on(p, words.len())?;
+                let mut r = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+                for b in words[range].iter().map(|w| w.bbox) {
+                    (r[0], r[1]) = (r[0].min(b[0]), r[1].min(b[1]));
+                    (r[2], r[3]) = (r[2].max(b[2]), r[3].max(b[3]));
+                }
+                (r[0] < r[2]).then_some((p, [r[0] - PAD, r[1] - PAD, r[2] + PAD, r[3] + PAD]))
+            })
+            .collect()
+    }
+
+    /// For each page with selected words, the box around each selected line's words
+    /// (displayed-page points), for marking them.
+    pub fn selected_lines(&self) -> Vec<(usize, Vec<[f32; 4]>)> {
+        let Some(((first, _), (last, _))) = self.selection.words() else {
+            return Vec::new();
+        };
+        (first..=last)
+            .filter_map(|p| {
+                let words = self.words.get(&p)?;
+                let range = self.selection.words_on(p, words.len())?;
+                Some((p, Self::line_boxes(&words[range])))
+            })
+            .collect()
+    }
+
+    /// Move the moving end of the word selection to `end`, or start one there. The words
+    /// of the pages in between are read, for copying.
+    fn extend_words(&mut self, pdf: &mpe_core::Pdf, end: WordAt) {
+        let anchor = match self.selection {
+            Selection::Words { anchor, .. } => anchor,
+            _ => end,
+        };
+        for p in anchor.0.min(end.0)..=anchor.0.max(end.0) {
+            self.words(pdf, p);
+        }
+        self.selection = Selection::Words { anchor, end };
+    }
+
+    /// The first and last index of the words on word `i`'s line.
+    fn line_of(words: &[PageWord], i: usize) -> Option<(usize, usize)> {
+        let line = words.get(i)?.line;
+        let first = words.iter().position(|w| w.line == line)?;
+        let last = words.iter().rposition(|w| w.line == line)?;
+        Some((first, last))
+    }
+
+    /// Each line's box: the union of its words' boxes, so gaps between words count.
+    fn line_boxes(words: &[PageWord]) -> Vec<[f32; 4]> {
+        // Words come in reading order, so a line's words are together.
+        let mut boxes: Vec<(usize, [f32; 4])> = Vec::new();
+        for w in words {
+            match boxes.last_mut() {
+                Some((l, b)) if *l == w.line => *b = union(*b, w.bbox),
+                _ => boxes.push((w.line, w.bbox)),
+            }
+        }
+        boxes.into_iter().map(|(_, b)| b).collect()
     }
 
     /// Index of the word nearest to `p` (page points), if the page has words.
@@ -453,29 +958,24 @@ impl Editor {
     ) -> egui::Response {
         let to_screen = |x: f32, y: f32| Pos2::new(r.min.x + x * k, r.min.y + y * k);
         let to_pt = |p: Pos2| Pos2::new((p.x - r.min.x) / k, (p.y - r.min.y) / k);
+        let click_pt = |resp: &egui::Response| resp.interact_pointer_pos().map(to_pt);
+        self.zoom = k;
         let screen_rect =
             |b: [f32; 4]| Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3]));
-        // Reading only: clicks (for the right-click menu) but no drags, so dragging
-        // still scrolls the view.
-        let sense = if self.tool == Tool::View {
-            Sense::click()
-        } else {
-            Sense::click_and_drag()
-        };
-        let mut resp = ui.interact(r, ui.id().with(("page-edit", tab_id, page)), sense);
+        let id = ui.id().with(("page-edit", tab_id, page));
+        let mut resp = ui.interact(r, id, Sense::click_and_drag());
         if resp.secondary_clicked() {
             let p = resp.interact_pointer_pos().map(to_pt);
             self.select_for_menu(pdf, page, p, 3.0 / k);
         }
-        // Links are followed with a click in the hand and text-select tools, and with
-        // Ctrl+click in the editing tools, so they don't get in the way of editing. A drag
-        // that starts on a link still selects text.
-        let reading = self.tool == Tool::View;
-        let selecting = self.tool == Tool::SelectText;
+        // Links are followed with a click in the read tool, and with Ctrl+click in the
+        // editing tools, so they don't get in the way of editing. A drag that starts on a
+        // link still selects text.
+        let selecting = self.tool == Tool::Read;
         let mut over_link = false;
         let ctrl = ui.input(|i| i.modifiers.command);
         // Form fields are filled in the same way, and sit above links.
-        let filling = (reading || selecting || ctrl) && !self.dragging();
+        let filling = (selecting || ctrl) && !self.dragging();
         let over_field = self
             .form
             .page_ui(ui, pdf, page, r, k, &resp, filling, &mut self.actions);
@@ -514,9 +1014,6 @@ impl Editor {
                 }
             }
         }
-        if reading {
-            return resp;
-        }
         self.objects(pdf, page);
         let painter = ui.painter().clone();
         let accent = ui.visuals().selection.bg_fill;
@@ -526,23 +1023,102 @@ impl Editor {
         let htol = 6.0 / k;
         let shift = ui.input(|i| i.modifiers.shift);
 
-        // current selection box on this page
+        // current selection box on this page: an object's, or an annotation's that the
+        // arrow can move
+        self.annots(pdf, page);
         let sel_here = self.sel().filter(|s| s.0 == page);
-        let sel_box = sel_here.and_then(|(_, id)| {
-            if let Some(d) = &self.drag {
-                if d.page == page && d.id == id {
-                    return Some(d.cur);
+        let sel_annot = self
+            .selected_annot()
+            .filter(|a| a.page == page && self.tool == Tool::Select && movable(a))
+            .map(|a| (a.id, a.bbox, resizable(a)));
+        // A selected line's two ends, which have handles instead of its box.
+        let sel_line = self
+            .selected_annot()
+            .filter(|a| a.page == page && self.tool == Tool::Select && movable(a))
+            .filter(|a| a.kind == AnnotKind::Line)
+            .and_then(|a| match a.paths.first()?.as_slice() {
+                [p, q, ..] => Some((a.id, [p.0, p.1, q.0, q.1])),
+                _ => None,
+            });
+        let end_hit = |p: Pos2| {
+            let (_, e) = sel_line?;
+            (0..2).find(|&i| p.distance(Pos2::new(e[2 * i], e[2 * i + 1])) <= htol)
+        };
+        // A selected drawing's box and strokes; it has a rotate handle above its box.
+        let sel_ink = self
+            .selected_annot()
+            .filter(|a| a.page == page && self.tool == Tool::Select && movable(a))
+            .filter(|a| a.kind == AnnotKind::Ink)
+            .map(|a| (a.id, a.bbox, a.paths.clone()));
+        let rotate_at = |b: [f32; 4]| Pos2::new((b[0] + b[2]) / 2.0, b[1] - ROTATE_GAP / k);
+        let rotate_hit = |p: Pos2| {
+            sel_ink
+                .as_ref()
+                .is_some_and(|(_, b, _)| p.distance(rotate_at(*b)) <= htol)
+        };
+        let sel_note = self
+            .selected_annot()
+            .is_some_and(|a| a.kind == AnnotKind::Note);
+        let sel_box = sel_here
+            .and_then(|(_, id)| {
+                if let Some(d) = &self.drag {
+                    if d.page == page && d.id == id && d.annot.is_none() {
+                        return Some(d.cur);
+                    }
                 }
-            }
-            self.objs.get(&page)?.get(id).map(|o| o.bbox)
-        });
+                self.objs.get(&page)?.get(id).map(|o| o.bbox)
+            })
+            .or_else(|| {
+                let (id, b, _) = sel_annot?;
+                let d = self.drag.as_ref().filter(|d| d.annot == Some(id));
+                let d = d.filter(|d| !matches!(d.mode, Mode::Rotate));
+                Some(shown_box(sel_note, d.map_or(b, |d| d.cur), k))
+            });
+        // The box that has handles: not a note's.
+        let sized_box = sel_box.filter(|_| sel_annot.is_none_or(|(_, _, r)| r));
+        let annot_drag = |a: &Annot, mode: Mode, start: Pos2| Drag {
+            page,
+            id: 0,
+            annot: Some(a.id),
+            mode,
+            start,
+            orig: a.bbox,
+            cur: a.bbox,
+        };
+        // Typing a note or text box: its box takes the keyboard and the pointer.
+        if self.writing_ui(ui, page, r, k) {
+            return resp;
+        }
+        let ctrl_annot = click_pt(&resp)
+            .filter(|_| ctrl && resp.clicked())
+            .filter(|_| Tool::ANNOTATE.contains(&self.tool))
+            .and_then(|p| self.annot_at(pdf, page, p))
+            .map(|a| a.id);
 
         match self.tool {
+            // Ctrl+click on an annotation selects it in the annotation tools.
+            _ if ctrl_annot.is_some() => {
+                if let Some(id) = ctrl_annot {
+                    self.selection = Selection::Annot { page, id };
+                }
+            }
             Tool::Select => {
                 if let Some(p) = hover_pt {
-                    let over_handle = sel_box.and_then(|b| self.handle_hit(b, p, htol));
-                    if let Some(h) = over_handle {
+                    let over_handle = sized_box.and_then(|b| self.handle_hit(b, p, htol));
+                    let over_annot = self.annot_at(pdf, page, p).cloned();
+                    if rotate_hit(p) && !self.dragging() {
+                        rotate_cursor(ui.ctx());
+                    } else if end_hit(p).is_some() {
+                        ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
+                    } else if let Some(h) = over_handle {
                         ui.ctx().set_cursor_icon(handle_cursor(h));
+                    } else if let Some(a) = over_annot {
+                        if movable(&a) {
+                            ui.ctx().set_cursor_icon(CursorIcon::Grab);
+                        }
+                        if !self.dragging() {
+                            resp = resp.on_hover_text_at_pointer(annot_tip(&a));
+                        }
                     } else if let Some(i) = self.hit(page, p, tol) {
                         ui.ctx().set_cursor_icon(CursorIcon::Grab);
                         if sel_here.map(|s| s.1) != Some(i) {
@@ -560,9 +1136,37 @@ impl Editor {
                 if resp.drag_started() {
                     let p = ui.input(|i| i.pointer.press_origin()).map(to_pt);
                     if let Some(p) = p {
-                        let h = sel_box.and_then(|b| self.handle_hit(b, p, htol));
-                        if let (Some(h), Some((_, id))) = (h, sel_here) {
+                        let h = sized_box.and_then(|b| self.handle_hit(b, p, htol));
+                        let selected = self.selected_annot().filter(|_| sel_annot.is_some());
+                        if let Some((id, b, _)) = sel_ink.as_ref().filter(|_| rotate_hit(p)) {
+                            self.drag = Some(Drag {
+                                page,
+                                id: 0,
+                                annot: Some(*id),
+                                mode: Mode::Rotate,
+                                start: p,
+                                orig: *b,
+                                cur: [0.0; 4],
+                            });
+                        } else if let (Some(i), Some((id, ends))) = (end_hit(p), sel_line) {
+                            self.drag = Some(Drag {
+                                page,
+                                id: 0,
+                                annot: Some(id),
+                                mode: Mode::End(i),
+                                start: p,
+                                orig: ends,
+                                cur: ends,
+                            });
+                        } else if let (Some(h), Some(a)) = (h, selected) {
+                            self.drag = Some(annot_drag(a, Mode::Handle(h), p));
+                        } else if let (Some(h), Some((_, id))) = (h, sel_here) {
                             self.start_drag(page, id, Mode::Handle(h), p);
+                        } else if let Some(a) = self.annot_at(pdf, page, p).cloned() {
+                            self.selection = Selection::Annot { page, id: a.id };
+                            if movable(&a) {
+                                self.drag = Some(annot_drag(&a, Mode::Move, p));
+                            }
                         } else if let Some(i) = self.hit(page, p, tol) {
                             self.select_object(page, i);
                             self.start_drag(page, i, Mode::Move, p);
@@ -585,34 +1189,78 @@ impl Editor {
                                     d.orig[3] + dy,
                                 ],
                                 Mode::Handle(h) => resize(d.orig, h, dx, dy, shift),
+                                // Shift keeps the line at a multiple of 45° from its
+                                // other end.
+                                Mode::End(i) => {
+                                    let o = 1 - i;
+                                    let other = Pos2::new(d.orig[2 * o], d.orig[2 * o + 1]);
+                                    let q = if shift {
+                                        constrain(Tool::Line, other, p)
+                                    } else {
+                                        p
+                                    };
+                                    let mut e = d.orig;
+                                    (e[2 * i], e[2 * i + 1]) = (q.x, q.y);
+                                    e
+                                }
+                                // The angle swept about the box's middle since the press;
+                                // Shift keeps to steps of 15°.
+                                Mode::Rotate => {
+                                    let o = d.orig;
+                                    let c = Pos2::new((o[0] + o[2]) / 2.0, (o[1] + o[3]) / 2.0);
+                                    let angle = |q: Pos2| (q.y - c.y).atan2(q.x - c.x);
+                                    let mut deg = (angle(p) - angle(d.start)).to_degrees();
+                                    deg = (deg + 180.0).rem_euclid(360.0) - 180.0;
+                                    if shift {
+                                        deg = (deg / 15.0).round() * 15.0;
+                                    }
+                                    [deg, 0.0, 0.0, 0.0]
+                                }
                             };
-                            ui.ctx().set_cursor_icon(match d.mode {
-                                Mode::Move => CursorIcon::Grabbing,
-                                Mode::Handle(h) => handle_cursor(h),
-                            });
+                            match d.mode {
+                                Mode::Move => ui.ctx().set_cursor_icon(CursorIcon::Grabbing),
+                                Mode::Handle(h) => ui.ctx().set_cursor_icon(handle_cursor(h)),
+                                Mode::End(_) => ui.ctx().set_cursor_icon(CursorIcon::Crosshair),
+                                Mode::Rotate => rotate_cursor(ui.ctx()),
+                            }
                         }
                     }
                 }
                 if resp.drag_stopped() {
                     if let Some(d) = self.drag.take() {
-                        let moved = d.cur.iter().zip(&d.orig).any(|(a, b)| (a - b).abs() > 0.5);
+                        let moved = match d.mode {
+                            Mode::Rotate => d.cur[0].abs() > 0.1,
+                            _ => d.cur.iter().zip(&d.orig).any(|(a, b)| (a - b).abs() > 0.5),
+                        };
                         if d.page == page && moved {
-                            self.actions.push(Action::SetBox(d.page, d.id, d.cur));
+                            self.actions.push(match (d.annot, d.mode) {
+                                (Some(id), Mode::End(_)) => Action::LineEnds(d.page, id, d.cur),
+                                (Some(id), Mode::Rotate) => Action::RotateInk(d.page, id, d.cur[0]),
+                                (Some(id), _) => Action::MoveAnnot(d.page, id, d.cur),
+                                (None, _) => Action::SetBox(d.page, d.id, d.cur),
+                            });
                         }
                     }
                 }
                 if resp.clicked() {
                     if let Some(p) = resp.interact_pointer_pos().map(to_pt) {
-                        let h = sel_box.and_then(|b| self.handle_hit(b, p, htol));
+                        let h = sized_box.and_then(|b| self.handle_hit(b, p, htol));
                         if h.is_none() {
-                            match self.hit(page, p, tol) {
-                                Some(i) => self.select_object(page, i),
-                                None => self.selection.clear_object(),
+                            let annot = self.annot_at(pdf, page, p).map(|a| a.id);
+                            match (annot, self.hit(page, p, tol)) {
+                                (Some(id), _) => self.selection = Selection::Annot { page, id },
+                                (None, Some(i)) => self.select_object(page, i),
+                                (None, None) => {
+                                    self.selection.clear_object();
+                                    self.selection.clear_annot();
+                                }
                             }
                         }
                     }
                 }
-                if resp.double_clicked() {
+                if resp.double_clicked() && self.selection.annot().is_some() {
+                    self.write_selected();
+                } else if resp.double_clicked() {
                     if let Some(o) = self.selected_object() {
                         if o.kind == ObjectKind::Text {
                             self.focus_text = true;
@@ -620,56 +1268,84 @@ impl Editor {
                     }
                 }
             }
-            Tool::SelectText => {
+            Tool::Read => {
                 let words = self.words(pdf, page).to_vec();
                 let inside =
                     |p: Pos2, b: [f32; 4]| p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3];
-                if !over_link && hover_pt.is_some_and(|p| words.iter().any(|w| inside(p, w.bbox))) {
+                let lines = Self::line_boxes(&words);
+                if !over_link && hover_pt.is_some_and(|p| lines.iter().any(|&b| inside(p, b))) {
                     ui.ctx().set_cursor_icon(CursorIcon::Text);
                 }
-                // Drag selects the words between the press and the pointer, in reading
-                // order; a click clears; a double-click selects one word.
+                let nearest = |p: Option<Pos2>| p.and_then(|p| Self::nearest_word(&words, p));
+                // A drag selects the words between the press and the pointer, in reading
+                // order, across pages: whichever visible page the pointer is over (held
+                // inside the view, which scrolls at its edges) moves the end. A click
+                // clears, Shift+click extends, a double-click selects a word and a
+                // triple-click its line.
                 if resp.drag_started() {
                     let p = ui.input(|i| i.pointer.press_origin()).map(to_pt);
-                    if let Some(i) = p.and_then(|p| Self::nearest_word(&words, p)) {
-                        self.selection = Selection::Words {
-                            page,
-                            first: i,
-                            last: i,
-                        };
+                    if let Some(i) = nearest(p) {
+                        self.selection = Selection::word((page, i));
                         self.text_drag = true;
                     }
                 }
-                if resp.dragged() && self.text_drag {
-                    let p = resp.interact_pointer_pos().map(to_pt);
-                    let i = p.and_then(|p| Self::nearest_word(&words, p));
-                    if let (Selection::Words { page: on, last, .. }, Some(i)) =
-                        (&mut self.selection, i)
-                    {
-                        if *on == page {
-                            *last = i;
-                        }
+                if self.text_drag {
+                    let view = ui.clip_rect();
+                    let at = ui.input(|i| i.pointer.latest_pos()).map(|p| view.clamp(p));
+                    if let Some(i) = nearest(at.filter(|p| r.contains(*p)).map(to_pt)) {
+                        self.extend_words(pdf, (page, i));
                     }
                 }
                 if resp.drag_stopped() {
                     self.text_drag = false;
                 }
-                if resp.clicked() {
-                    self.selection.clear_words();
-                }
-                if resp.double_clicked() {
-                    let p = resp.interact_pointer_pos().map(to_pt);
-                    if let Some(i) = p.and_then(|p| Self::nearest_word(&words, p)) {
+                let click_at = || resp.interact_pointer_pos().map(to_pt);
+                if resp.triple_clicked() {
+                    let line = nearest(click_at()).and_then(|i| Self::line_of(&words, i));
+                    if let Some((a, b)) = line {
                         self.selection = Selection::Words {
-                            page,
-                            first: i,
-                            last: i,
+                            anchor: (page, a),
+                            end: (page, b),
                         };
                     }
+                } else if resp.double_clicked() {
+                    // On a note or text box, open it for typing; else select a word.
+                    let annot = click_at().and_then(|p| self.annot_at(pdf, page, p));
+                    if let Some(id) = annot.filter(|a| writable(a)).map(|a| a.id) {
+                        self.selection = Selection::Annot { page, id };
+                        self.write_selected();
+                    } else if let Some(i) = nearest(click_at()) {
+                        self.selection = Selection::word((page, i));
+                    }
+                } else if resp.clicked() {
+                    // A click on a comment or markup selects it; a drag still selects
+                    // the text under it.
+                    let annot = click_at()
+                        .filter(|_| !shift)
+                        .and_then(|p| self.annot_at(pdf, page, p))
+                        .map(|a| a.id);
+                    match (annot, nearest(click_at())) {
+                        (Some(id), _) => self.selection = Selection::Annot { page, id },
+                        (None, Some(i)) if shift && self.selection.words().is_some() => {
+                            self.extend_words(pdf, (page, i));
+                        }
+                        _ => {
+                            self.selection.clear_words();
+                            self.selection.clear_annot();
+                        }
+                    }
                 }
-                if let Some((_, a, b)) = self.selection.words().filter(|s| s.0 == page) {
+                if !over_link && !self.text_drag {
+                    let tip = hover_pt
+                        .and_then(|p| self.annot_at(pdf, page, p))
+                        .map(annot_tip);
+                    if let Some(tip) = tip {
+                        resp = resp.on_hover_text_at_pointer(tip);
+                    }
+                }
+                if let Some(range) = self.selection.words_on(page, words.len()) {
                     let fill = accent.gamma_multiply(0.45);
-                    for w in words.iter().take(a.max(b) + 1).skip(a.min(b)) {
+                    for w in &words[range] {
                         painter.rect_filled(screen_rect(w.bbox), 1.0, fill);
                     }
                 }
@@ -684,7 +1360,20 @@ impl Editor {
                     }
                 }
             }
-            Tool::Image | Tool::Rect | Tool::Ellipse | Tool::Line => {
+            Tool::Note => {
+                ui.ctx().set_cursor_icon(CursorIcon::Cell);
+                if let Some(p) = click_pt(&resp).filter(|_| resp.clicked()) {
+                    // The icon, drawn at a fixed size on screen from the note's top left
+                    // corner, is centred on the click. The note itself is 20 points.
+                    let (x, y) = (p.x - NOTE_PX / 2.0 / k, p.y - NOTE_PX / 2.0 / k);
+                    let rect = [x, y, x + 20.0, y + 20.0];
+                    self.start_writing(Writing::new(page, true, rect, 0.0));
+                }
+                if let Some(a) = hover_pt.and_then(|p| self.annot_at(pdf, page, p)) {
+                    resp = resp.on_hover_text_at_pointer(annot_tip(a));
+                }
+            }
+            Tool::Image | Tool::Rect | Tool::Ellipse | Tool::Line | Tool::TextBox => {
                 ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
                 if resp.drag_started() {
                     if let Some(p) = ui.input(|i| i.pointer.press_origin()).map(to_pt) {
@@ -700,6 +1389,9 @@ impl Editor {
                     {
                         if d.page == page {
                             d.cur = to_pt(pos);
+                            if shift {
+                                d.cur = constrain(self.tool, d.start, d.cur);
+                            }
                         }
                     }
                 }
@@ -715,6 +1407,7 @@ impl Editor {
                         let (w, h) = match (self.tool, &self.pending_image) {
                             (Tool::Image, Some((_, aspect))) => (200.0, 200.0 / aspect.max(0.01)),
                             (Tool::Line, _) => (120.0, 0.0),
+                            (Tool::TextBox, _) => (200.0, (self.box_style.size * 2.5).max(20.0)),
                             _ => (120.0, 80.0),
                         };
                         finish = Some((p, Pos2::new(p.x + w, p.y + h)));
@@ -726,14 +1419,21 @@ impl Editor {
                     let big =
                         self.tool == Tool::Line || ((n[2] - n[0]) > 2.0 && (n[3] - n[1]) > 2.0);
                     if big {
+                        let shape = |s: Shape, b: [f32; 4]| {
+                            if self.draw_permanent {
+                                Action::AddShape(page, s, b)
+                            } else {
+                                Action::AddShapeAnnot(page, s, b)
+                            }
+                        };
                         match self.tool {
                             Tool::Image => self.actions.push(Action::AddImage(page, n)),
-                            Tool::Rect => self.actions.push(Action::AddShape(page, Shape::Rect, n)),
-                            Tool::Ellipse => {
-                                self.actions.push(Action::AddShape(page, Shape::Ellipse, n))
-                            }
-                            Tool::Line => {
-                                self.actions.push(Action::AddShape(page, Shape::Line, rect))
+                            Tool::Rect => self.actions.push(shape(Shape::Rect, n)),
+                            Tool::Ellipse => self.actions.push(shape(Shape::Ellipse, n)),
+                            Tool::Line => self.actions.push(shape(Shape::Line, rect)),
+                            Tool::TextBox => {
+                                let size = self.box_style.size;
+                                self.start_writing(Writing::new(page, false, n, size));
                             }
                             _ => {}
                         }
@@ -753,11 +1453,124 @@ impl Editor {
                     }
                 }
             }
-            Tool::View => {}
+            Tool::Pen => {
+                ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
+                let now = ui.input(|i| i.time);
+                // A stroke soon after the last one, on the same page, joins its drawing.
+                let join = self
+                    .ink
+                    .filter(|(p, _)| *p == page && now - self.ink_at < INK_PAUSE)
+                    .map(|(_, id)| id);
+                if resp.drag_started() {
+                    if let Some(p) = ui.input(|i| i.pointer.press_origin()).map(to_pt) {
+                        self.pen_stroke = Some(PenStroke {
+                            page,
+                            points: vec![p],
+                            join,
+                        });
+                    }
+                }
+                if resp.dragged() {
+                    let s = self.pen_stroke.as_mut().filter(|s| s.page == page);
+                    if let (Some(s), Some(pos)) = (s, resp.interact_pointer_pos()) {
+                        let p = to_pt(pos);
+                        // A point for each screen pixel moved, at most.
+                        if s.points.last().is_none_or(|q| q.distance(p) * k >= 1.0) {
+                            s.points.push(p);
+                        }
+                    }
+                }
+                let done = if resp.drag_stopped() {
+                    self.pen_stroke.take().filter(|s| s.page == page)
+                } else if resp.clicked() {
+                    // A click makes a dot.
+                    click_pt(&resp).map(|p| PenStroke {
+                        page,
+                        points: vec![p],
+                        join,
+                    })
+                } else {
+                    None
+                };
+                if let Some(s) = done {
+                    let pts = s.points.iter().map(|p| (p.x, p.y)).collect();
+                    self.actions.push(match s.join {
+                        Some(id) => Action::AddInkStroke(page, id, pts),
+                        None => Action::AddInk(page, pts),
+                    });
+                    self.ink_at = now;
+                }
+                if let Some(s) = self.pen_stroke.as_ref().filter(|s| s.page == page) {
+                    let [cr, cg, cb] = self.pen_color.map(|v| (v * 255.0).round() as u8);
+                    let line: Vec<Pos2> = s.points.iter().map(|p| to_screen(p.x, p.y)).collect();
+                    painter.add(egui::Shape::line(
+                        line,
+                        Stroke::new((self.pen_width * k).max(1.0), Color32::from_rgb(cr, cg, cb)),
+                    ));
+                }
+            }
         }
 
-        // Selection frame and handles.
-        if self.tool == Tool::Select {
+        // Selection frame and handles; a line has round handles on its ends instead, and
+        // shows where it goes while dragged.
+        if let Some((id, e)) = sel_line {
+            let d = self.drag.as_ref().filter(|d| d.annot == Some(id));
+            let e = match d {
+                Some(d) if matches!(d.mode, Mode::End(_)) => d.cur,
+                Some(d) => {
+                    let (dx, dy) = (d.cur[0] - d.orig[0], d.cur[1] - d.orig[1]);
+                    [e[0] + dx, e[1] + dy, e[2] + dx, e[3] + dy]
+                }
+                None => e,
+            };
+            let ends = [to_screen(e[0], e[1]), to_screen(e[2], e[3])];
+            let guide = if d.is_some() {
+                Stroke::new(1.5, accent_strong)
+            } else {
+                Stroke::new(1.0, accent_strong.gamma_multiply(0.6))
+            };
+            painter.line_segment(ends, guide);
+            for c in ends {
+                painter.circle_filled(c, 4.5, Color32::WHITE);
+                painter.circle_stroke(c, 4.5, Stroke::new(1.5, accent_strong));
+            }
+        } else if let Some((_, b, paths)) = sel_ink.as_ref().filter(|_| {
+            self.drag
+                .as_ref()
+                .is_some_and(|d| d.page == page && matches!(d.mode, Mode::Rotate))
+        }) {
+            // Turning a drawing: its strokes as they will be, in place of its box.
+            let deg = self.drag.as_ref().map_or(0.0, |d| d.cur[0]);
+            let c = Pos2::new((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0);
+            let rot = egui::emath::Rot2::from_angle(deg.to_radians());
+            let st = Stroke::new(1.5, accent_strong);
+            for s in paths {
+                let pts: Vec<Pos2> = s
+                    .iter()
+                    .map(|&(x, y)| {
+                        let q = c + rot * (Pos2::new(x, y) - c);
+                        to_screen(q.x, q.y)
+                    })
+                    .collect();
+                painter.add(egui::Shape::line(pts, st));
+            }
+            painter.text(
+                to_screen(c.x, c.y),
+                egui::Align2::CENTER_CENTER,
+                format!("{deg:.0}°"),
+                egui::FontId::proportional(13.0),
+                accent_strong,
+            );
+        } else if self.tool == Tool::Select {
+            if let Some((_, b, _)) = &sel_ink {
+                let (top, knob) = (
+                    to_screen((b[0] + b[2]) / 2.0, b[1]),
+                    to_screen(rotate_at(*b).x, rotate_at(*b).y),
+                );
+                painter.line_segment([top, knob], Stroke::new(1.0, accent_strong));
+                painter.circle_filled(knob, 5.0, Color32::WHITE);
+                painter.circle_stroke(knob, 5.0, Stroke::new(1.5, accent_strong));
+            }
             if let Some(b) = sel_box {
                 let sr = screen_rect(b);
                 painter.rect_stroke(
@@ -766,7 +1579,8 @@ impl Editor {
                     Stroke::new(1.5, accent_strong),
                     StrokeKind::Outside,
                 );
-                for h in 0..8 {
+                let handles = if sized_box.is_some() { 0..8 } else { 0..0 };
+                for h in handles {
                     let (x, y) = handle_pos(b, h);
                     let c = to_screen(x, y);
                     let hr = Rect::from_center_size(c, Vec2::splat(7.0));
@@ -776,6 +1590,55 @@ impl Editor {
                         1.0,
                         Stroke::new(1.0, accent_strong),
                         StrokeKind::Inside,
+                    );
+                }
+            }
+        }
+        // Notes at a fixed size on screen, over the page's small drawing of them.
+        for a in self.annots.get(&page).into_iter().flatten() {
+            if a.kind != AnnotKind::Note || !a.on_page() {
+                continue;
+            }
+            let moving = self.drag.as_ref().filter(|d| d.annot == Some(a.id));
+            let b = shown_box(true, moving.map_or(a.bbox, |d| d.cur), k);
+            let sr = Rect::from_min_size(to_screen(b[0], b[1]), Vec2::splat(NOTE_PX));
+            let [cr, cg, cb] = a
+                .color
+                .unwrap_or([1.0, 0.85, 0.2])
+                .map(|v| (v * 255.0) as u8);
+            let fill = Color32::from_rgb(cr, cg, cb).gamma_multiply(a.opacity.max(0.3));
+            painter.rect_filled(sr, 3.0, fill);
+            painter.rect_stroke(
+                sr,
+                3.0,
+                Stroke::new(1.0, Color32::from_gray(60)),
+                StrokeKind::Inside,
+            );
+            painter.text(
+                sr.center(),
+                egui::Align2::CENTER_CENTER,
+                icon::NOTE,
+                egui::FontId::new(NOTE_PX * 0.7, theme::icons()),
+                Color32::from_gray(30),
+            );
+        }
+        // The selected annotation: each marked line, or its box (unless the arrow has
+        // framed it above).
+        if sel_annot.is_none() && self.selection.annot().is_some_and(|(p, _)| p == page) {
+            self.annots(pdf, page);
+            if let Some(a) = self.selected_annot() {
+                let shown = [shown_box(a.kind == AnnotKind::Note, a.bbox, k)];
+                let boxes = if a.quads.is_empty() {
+                    &shown[..]
+                } else {
+                    &a.quads[..]
+                };
+                for &b in boxes {
+                    painter.rect_stroke(
+                        screen_rect(b).expand(2.0),
+                        2.0,
+                        Stroke::new(2.0, accent_strong),
+                        StrokeKind::Outside,
                     );
                 }
             }
@@ -797,11 +1660,18 @@ impl Editor {
     }
 
     /// Before a right-click menu opens: select what is under the pointer `p` (page
-    /// points), as most apps do. With the arrow, an object; with the text tool, a word
+    /// points), as most apps do. With the arrow, an object; with the read tool, a word
     /// (keeping a word selection the click falls inside); otherwise, or over nothing,
     /// the page (keeping a page selection that includes it).
     fn select_for_menu(&mut self, pdf: &mpe_core::Pdf, page: usize, p: Option<Pos2>, tol: f32) {
+        let annotating = self.tool == Tool::Select || Tool::ANNOTATE.contains(&self.tool);
         match (self.tool, p) {
+            (_, Some(p)) if annotating && self.annot_at(pdf, page, p).is_some() => {
+                if let Some(id) = self.annot_at(pdf, page, p).map(|a| a.id) {
+                    self.selection = Selection::Annot { page, id };
+                }
+                return;
+            }
             (Tool::Select, Some(p)) => {
                 self.objects(pdf, page);
                 if let Some(i) = self.hit(page, p, tol) {
@@ -811,24 +1681,24 @@ impl Editor {
                     return;
                 }
             }
-            (Tool::SelectText, Some(p)) => {
+            (Tool::Read, Some(p)) => {
                 let words = self.words(pdf, page);
+                let n = words.len();
                 let under = words.iter().position(|w| {
                     let b = w.bbox;
                     p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3]
                 });
+                // Selected words keep the menu for them, even over markup.
+                let on = self.selection.words_on(page, n);
+                if under.is_some_and(|i| on.is_some_and(|r| r.contains(&i))) {
+                    return;
+                }
+                if let Some(id) = self.annot_at(pdf, page, p).map(|a| a.id) {
+                    self.selection = Selection::Annot { page, id };
+                    return;
+                }
                 if let Some(i) = under {
-                    let within = |(sp, a, b): (usize, usize, usize)| {
-                        sp == page && (a.min(b)..=a.max(b)).contains(&i)
-                    };
-                    let inside = self.selection.words().is_some_and(within);
-                    if !inside {
-                        self.selection = Selection::Words {
-                            page,
-                            first: i,
-                            last: i,
-                        };
-                    }
+                    self.selection = Selection::word((page, i));
                     return;
                 }
             }
@@ -844,6 +1714,7 @@ impl Editor {
             self.drag = Some(Drag {
                 page,
                 id,
+                annot: None,
                 mode,
                 start,
                 orig: o.bbox,
@@ -852,15 +1723,14 @@ impl Editor {
         }
     }
 
-    /// Select every word on page `page` (text tool).
+    /// Select every word on page `page` (read tool).
     pub fn select_all_words(&mut self, pdf: &mpe_core::Pdf, page: usize) {
         let n = self.words(pdf, page).len();
         match n.checked_sub(1) {
             Some(last) => {
                 self.selection = Selection::Words {
-                    page,
-                    first: 0,
-                    last,
+                    anchor: (page, 0),
+                    end: (page, last),
                 }
             }
             None => self.selection.clear_words(),
@@ -872,26 +1742,49 @@ impl Editor {
     pub fn owns_panel(&self) -> bool {
         matches!(
             self.tool,
-            Tool::Text | Tool::Image | Tool::Rect | Tool::Ellipse | Tool::Line
+            Tool::Text
+                | Tool::Image
+                | Tool::Rect
+                | Tool::Ellipse
+                | Tool::Line
+                | Tool::Note
+                | Tool::TextBox
+                | Tool::Pen
         ) || self.sel().is_some()
             || self.selection.words().is_some()
+            || self.selection.annot().is_some()
     }
 
     /// The page and box (page points) of the selected object or words, for placing the
-    /// floating toolbar.
+    /// floating toolbar. For words, the part on the page where the selection's moving end
+    /// is. A drawing's box includes its rotate handle, so the toolbar doesn't cover it.
     pub fn selection_box(&self) -> Option<(usize, [f32; 4])> {
         if let Some(o) = self.selected_object() {
             return Some((self.sel()?.0, o.bbox));
         }
-        let (page, a, b) = self.selection.words()?;
-        let words = self.words.get(&page)?;
-        let run = words.get(a.min(b)..=a.max(b).min(words.len().checked_sub(1)?))?;
-        let join = |u: [f32; 4], b: [f32; 4]| {
-            let (lo, hi) = (|i: usize| u[i].min(b[i]), |i: usize| u[i].max(b[i]));
-            [lo(0), lo(1), hi(2), hi(3)]
+        if let Some(a) = self.selected_annot() {
+            let mut b = a.bbox;
+            if a.kind == AnnotKind::Ink && self.tool == Tool::Select && movable(a) {
+                b[1] -= (ROTATE_GAP + 8.0) / self.zoom.max(0.01);
+            }
+            return Some((a.page, b));
+        }
+        let Selection::Words { end: (page, _), .. } = self.selection else {
+            return None;
         };
-        let union = run.iter().map(|w| w.bbox).reduce(join)?;
-        Some((page, union))
+        let words = self.words.get(&page)?;
+        let run = &words[self.selection.words_on(page, words.len())?];
+        let bbox = run.iter().map(|w| w.bbox).reduce(union)?;
+        Some((page, bbox))
+    }
+
+    /// Whether words are being selected by dragging. The drag ends when the button is
+    /// released, even if the page it started on has scrolled out of view.
+    pub fn selecting_words(&mut self, ctx: &egui::Context) -> bool {
+        if self.text_drag && !ctx.input(|i| i.pointer.primary_down()) {
+            self.text_drag = false;
+        }
+        self.text_drag
     }
 
     /// The pointer is moving, resizing, drawing or selecting something.
@@ -906,17 +1799,28 @@ impl Editor {
 
     /// Whether an object is selected and can be deleted or moved.
     pub fn has_object(&self) -> bool {
-        self.sel().is_some() && !matches!(self.tool, Tool::View | Tool::SelectText)
+        self.sel().is_some() && self.tool != Tool::Read
     }
 
+    /// Delete the selected object, or the selected annotation unless it is locked.
     pub fn delete_selected(&mut self) {
         if let Some((p, id)) = self.sel() {
             self.actions.push(Action::Delete(p, id));
+        } else if let Some(a) = self.selected_annot().filter(|a| !a.locked()) {
+            self.actions.push(Action::DeleteAnnot(a.page, a.id));
         }
     }
 
-    /// Move the selected object by (dx, dy) points.
+    /// Move the selected object, or annotation (arrow tool), by (dx, dy) points.
     pub fn nudge(&mut self, dx: f32, dy: f32) {
+        if self.tool == Tool::Select {
+            if let Some(a) = self.selected_annot().filter(|a| movable(a)) {
+                let b = a.bbox;
+                let to = [b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy];
+                self.actions.push(Action::MoveAnnot(a.page, a.id, to));
+                return;
+            }
+        }
         let Some((p, id)) = self.sel() else { return };
         if let Some(o) = self.objs.get(&p).and_then(|v| v.get(id)) {
             let b = o.bbox;
@@ -928,12 +1832,19 @@ impl Editor {
         }
     }
 
-    /// Esc: clear the word selection (text tool); otherwise drop unfinished text, leave
-    /// a drawing tool for the arrow, or with the arrow clear the selection.
+    /// Esc: clear a selected annotation, or the word selection (read tool); otherwise drop
+    /// unfinished text, leave a drawing tool for the arrow, or with the arrow clear the
+    /// selection.
     pub fn escape(&mut self) {
+        if self.writing.take().is_some() {
+            return;
+        }
+        if self.selection.annot().is_some() {
+            self.selection.clear_annot();
+            return;
+        }
         match self.tool {
-            Tool::View => {}
-            Tool::SelectText => self.selection.clear_words(),
+            Tool::Read => self.selection.clear_words(),
             Tool::Select => {
                 self.new_text = None;
                 self.selection.clear_object();
@@ -1002,8 +1913,178 @@ impl Editor {
         });
     }
 
+    /// The selected annotation: what and whose it is, and its colour, opacity and comment,
+    /// changed with Apply as one undo step.
+    fn annot_inspector(&mut self, ui: &mut egui::Ui) {
+        let Some(a) = self.selected_annot().cloned() else {
+            ui.weak("Nothing selected.");
+            return;
+        };
+        let now = AnnotEdit {
+            color: a.color,
+            opacity: a.opacity,
+            contents: a.contents.clone(),
+            text: a.text_style,
+            shape: a.shape,
+        };
+        if self.annot_insp.as_ref().is_none_or(|(id, _)| *id != a.id) {
+            if self.annot_insp.is_some() {
+                self.reply.clear();
+            }
+            self.annot_insp = Some((a.id, now.clone()));
+        }
+        let replies: Vec<Annot> = self
+            .annots
+            .get(&a.page)
+            .into_iter()
+            .flatten()
+            .filter(|r| r.reply_to == Some(a.id))
+            .cloned()
+            .collect();
+        let Some((_, e)) = self.annot_insp.as_mut() else {
+            return;
+        };
+        ui.strong(if a.reply_to.is_some() {
+            "Reply".into()
+        } else {
+            a.kind.label()
+        });
+        let mut about = vec![format!("Page {}", a.page + 1)];
+        about.extend(
+            [&a.author, &a.modified]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .cloned(),
+        );
+        ui.weak(about.join(" · "));
+        if a.locked() {
+            ui.weak("Locked in this document: it can't be changed or deleted here.");
+        }
+        ui.separator();
+        ui.add_enabled_ui(!a.locked(), |ui| {
+            match e.text.as_mut() {
+                // A text box's colour is its fill, set with its text.
+                Some(s) => text_style_ui(ui, s),
+                None => {
+                    ui.horizontal(|ui| {
+                        let mut on = e.color.is_some();
+                        let label = match a.kind {
+                            AnnotKind::Square | AnnotKind::Circle => "Outline",
+                            AnnotKind::Line | AnnotKind::Ink => "Line",
+                            _ => "Colour",
+                        };
+                        if ui.checkbox(&mut on, label).changed() {
+                            e.color = on.then_some(a.color.unwrap_or([0.0; 3]));
+                        }
+                        if let Some(c) = e.color.as_mut() {
+                            ui.color_edit_button_rgb(c);
+                        }
+                        if let Some(s) = e.shape.as_mut() {
+                            ui.add(
+                                egui::DragValue::new(&mut s.width)
+                                    .range(0.0..=40.0)
+                                    .speed(0.1)
+                                    .suffix(" pt"),
+                            );
+                        }
+                    });
+                }
+            }
+            if let Some(s) = e.shape.as_mut() {
+                match a.kind {
+                    AnnotKind::Square | AnnotKind::Circle => {
+                        ui.horizontal(|ui| {
+                            let mut on = s.fill.is_some();
+                            if ui.checkbox(&mut on, "Fill").changed() {
+                                s.fill = on.then_some([1.0, 1.0, 0.6]);
+                            }
+                            if let Some(c) = s.fill.as_mut() {
+                                ui.color_edit_button_rgb(c);
+                            }
+                        });
+                    }
+                    AnnotKind::Line => {
+                        ui.checkbox(&mut s.arrow, "Arrowhead");
+                    }
+                    _ => {}
+                }
+            }
+            ui.horizontal(|ui| {
+                ui.label("Opacity");
+                let mut pct = e.opacity * 100.0;
+                if ui
+                    .add(egui::Slider::new(&mut pct, 0.0..=100.0).suffix(" %"))
+                    .changed()
+                {
+                    e.opacity = pct / 100.0;
+                }
+            });
+            ui.label(if e.text.is_some() { "Text" } else { "Comment" });
+            ui.add(
+                egui::TextEdit::multiline(&mut e.contents)
+                    .desired_rows(4)
+                    .desired_width(f32::INFINITY),
+            );
+            if writable(&a) {
+                ui.weak("Double-click it on the page to type there.");
+            }
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(*e != now, egui::Button::new("Apply changes"))
+                    .clicked()
+                {
+                    self.actions.push(Action::SetAnnot(a.page, a.id, e.clone()));
+                }
+                if ui.button((theme::icon(icon::TRASH), "Delete")).clicked() {
+                    self.actions.push(Action::DeleteAnnot(a.page, a.id));
+                }
+            });
+        });
+        // Replies, then a box to add one. Answering doesn't change the annotation, so
+        // locked ones can be answered too.
+        ui.separator();
+        for r in &replies {
+            let who: Vec<&str> = [r.author.as_str(), r.modified.as_str()]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .collect();
+            ui.weak(if who.is_empty() {
+                "Reply".to_string()
+            } else {
+                who.join(" · ")
+            });
+            ui.label(&r.contents);
+            ui.add_space(4.0);
+        }
+        let out = ui.add(
+            egui::TextEdit::multiline(&mut self.reply)
+                .hint_text("Reply")
+                .desired_rows(2)
+                .desired_width(f32::INFINITY),
+        );
+        if self.reply_focus {
+            out.request_focus();
+            self.reply_focus = false;
+        }
+        let ready = !self.reply.trim().is_empty();
+        if ui
+            .add_enabled(
+                ready,
+                egui::Button::new((theme::icon(icon::ARROW_BEND_UP_LEFT), "Add reply")),
+            )
+            .clicked()
+        {
+            let text = std::mem::take(&mut self.reply);
+            self.actions.push(Action::Reply(a.page, a.id, text));
+        }
+    }
+
     /// The right-hand inspector: tool options, new-text entry and properties of the selected object.
     pub fn inspector(&mut self, ui: &mut egui::Ui) {
+        if self.selection.annot().is_some() {
+            self.annot_inspector(ui);
+            return;
+        }
         self.sync_insp();
         let page_err = self.sel().and_then(|s| self.unavailable.get(&s.0)).cloned();
         if let Some(e) = page_err {
@@ -1013,10 +2094,6 @@ impl Editor {
             );
         }
         match self.tool {
-            Tool::View => {
-                ui.label("Pick a tool in the toolbar to edit page content.");
-                return;
-            }
             Tool::Text => {
                 ui.strong("New text");
                 Self::font_ui(ui, &mut self.tfont);
@@ -1093,15 +2170,71 @@ impl Editor {
                             .suffix(" pt"),
                     );
                 });
-                ui.label("Drag on the page, or click for a default size.");
+                if self.tool == Tool::Line && !self.draw_permanent {
+                    ui.checkbox(&mut self.arrow, "Arrowhead");
+                }
+                ui.checkbox(&mut self.draw_permanent, "Draw on page (permanent)")
+                    .on_hover_text(
+                        "Draw into the page itself instead of adding an annotation. It can \
+                         still be moved with the arrow, but it is no longer a comment that \
+                         other apps can list, hide or remove.",
+                    );
+                ui.label(if self.draw_permanent {
+                    "Drag on the page, or click for a default size. Shift keeps squares, \
+                     circles and 45° lines."
+                } else {
+                    "Drag on the page, or click for a default size. Shift keeps squares, \
+                     circles and 45° lines. Ctrl+click selects an annotation."
+                });
                 ui.separator();
             }
-            Tool::Select => {}
-            Tool::SelectText => {
-                ui.strong("Select text");
+            Tool::Pen => {
+                ui.strong("Pen");
+                ui.horizontal(|ui| {
+                    ui.color_edit_button_rgb(&mut self.pen_color);
+                    ui.add(
+                        egui::DragValue::new(&mut self.pen_width)
+                            .range(0.25..=40.0)
+                            .speed(0.1)
+                            .suffix(" pt"),
+                    );
+                });
                 ui.label(
-                    "Drag over words to select them, double-click a word, or press Ctrl+A for \
-                     the whole page. Ctrl+C copies. Recognised (OCR) text can be selected too.",
+                    "Drag to draw. Strokes made one soon after another become one drawing, \
+                     which the arrow tool moves as a whole and Undo takes back a stroke at a \
+                     time. Ctrl+click selects an annotation.",
+                );
+                return;
+            }
+            Tool::Note => {
+                ui.strong("New note");
+                ui.horizontal(|ui| {
+                    ui.label("Colour");
+                    ui.color_edit_button_rgb(&mut self.note_color);
+                });
+                ui.label(
+                    "Click on the page to place a note, type its comment, then press Done \
+                     (or Ctrl+Enter). Ctrl+click selects an annotation.",
+                );
+                return;
+            }
+            Tool::TextBox => {
+                ui.strong("New text box");
+                text_style_ui(ui, &mut self.box_style);
+                ui.label(
+                    "Drag a box on the page, or click for a default size, then type. Click \
+                     outside the box or press Ctrl+Enter to finish; Esc drops it. Ctrl+click \
+                     selects an annotation.",
+                );
+                return;
+            }
+            Tool::Select => {}
+            Tool::Read => {
+                ui.strong("Selected text");
+                ui.label(
+                    "Drag over words to select them, across pages if you like, double-click a \
+                     word, triple-click a line, Shift+click to extend, or press Ctrl+A for the \
+                     whole page. Ctrl+C copies; right-click to print or save the selection.",
                 );
                 ui.separator();
                 match self.selected_text() {
@@ -1290,10 +2423,89 @@ impl Editor {
     }
 }
 
+/// A text box's text size and colour, fill and border.
+fn text_style_ui(ui: &mut egui::Ui, s: &mut TextStyle) {
+    ui.horizontal(|ui| {
+        ui.label("Text");
+        ui.add(
+            egui::DragValue::new(&mut s.size)
+                .range(4.0..=200.0)
+                .suffix(" pt"),
+        );
+        ui.color_edit_button_rgb(&mut s.color);
+    });
+    ui.horizontal(|ui| {
+        let mut on = s.fill.is_some();
+        if ui.checkbox(&mut on, "Background").changed() {
+            s.fill = on.then_some([1.0, 1.0, 0.85]);
+        }
+        if let Some(c) = s.fill.as_mut() {
+            ui.color_edit_button_rgb(c);
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("Border");
+        ui.add(
+            egui::DragValue::new(&mut s.border)
+                .range(0.0..=20.0)
+                .speed(0.1)
+                .suffix(" pt"),
+        );
+    });
+}
+
 /// Ask for an image file and return its bytes if it can be decoded.
 pub fn pick_image() -> Option<Vec<u8>> {
     let path = rfd::FileDialog::new()
         .add_filter("Images", &["png", "jpg", "jpeg"])
         .pick_file()?;
     std::fs::read(path).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn word(x: f32, y: f32, line: usize) -> PageWord {
+        PageWord {
+            text: "w".into(),
+            bbox: [x, y, x + 20.0, y + 10.0],
+            line,
+        }
+    }
+
+    #[test]
+    fn lines_join_their_words() {
+        let words = [
+            word(0.0, 0.0, 0),
+            word(30.0, 0.0, 0),
+            word(0.0, 20.0, 1),
+            word(30.0, 20.0, 1),
+            word(60.0, 20.0, 1),
+        ];
+        // The gap between words (20..30) is inside the line's box.
+        assert_eq!(
+            Editor::line_boxes(&words),
+            [[0.0, 0.0, 50.0, 10.0], [0.0, 20.0, 80.0, 30.0]]
+        );
+        assert_eq!(Editor::line_of(&words, 0), Some((0, 1)));
+        assert_eq!(Editor::line_of(&words, 3), Some((2, 4)));
+        assert_eq!(Editor::line_of(&words, 9), None);
+        assert!(Editor::line_boxes(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_press_in_a_margin_finds_the_nearest_word() {
+        let words = [word(100.0, 100.0, 0), word(100.0, 200.0, 1)];
+        // Left of the second line, and below everything.
+        assert_eq!(
+            Editor::nearest_word(&words, Pos2::new(10.0, 205.0)),
+            Some(1)
+        );
+        assert_eq!(
+            Editor::nearest_word(&words, Pos2::new(110.0, 900.0)),
+            Some(1)
+        );
+        assert_eq!(Editor::nearest_word(&[], Pos2::ZERO), None);
+    }
 }

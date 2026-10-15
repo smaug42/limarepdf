@@ -11,6 +11,25 @@ use std::collections::HashSet;
 const HIDDEN: i64 = 1 << 1;
 const MAX_DEPTH: usize = 32;
 
+/// What flattening a page does with one of its annotations.
+pub(crate) enum Flat {
+    /// Leave it on the page.
+    Keep,
+    /// Draw it into the content and remove it.
+    Draw,
+    /// Remove it without drawing it.
+    Drop,
+}
+
+/// Flattening a form draws its widgets and keeps everything else.
+fn flat_widget(_: &Pdf, d: &Dictionary) -> Flat {
+    if d.get(b"Subtype").and_then(|o| o.as_name()).ok() == Some(b"Widget") {
+        Flat::Draw
+    } else {
+        Flat::Keep
+    }
+}
+
 impl Pdf {
     /// Draw the form's widgets into the pages' content as they look now and remove them,
     /// so the values can no longer be changed. `pages` (zero-based) limits this to some
@@ -20,21 +39,16 @@ impl Pdf {
     pub fn flatten_form(&mut self, pages: Option<&[usize]>) -> Result<usize> {
         let ids = self.page_ids();
         let whole = pages.is_none();
-        let pages: Vec<usize> = match pages {
-            Some(p) => {
-                if let Some(&bad) = p.iter().find(|&&i| i >= ids.len()) {
-                    bail!("page {} does not exist", bad + 1);
-                }
-                p.to_vec()
-            }
-            None => (0..ids.len()).collect(),
-        };
+        let pages = self.page_list(pages)?;
         // A field with a value but no drawing would otherwise vanish.
         self.refresh_appearances();
+        // Appearances without resources of their own use the form's.
+        let dr = self.acro_form().and_then(|f| f.get(b"DR").ok()).cloned();
         let mut removed = HashSet::new();
         let mut drawn = 0;
         for i in pages {
-            drawn += self.flatten_page(ids[i], &mut removed)?;
+            drawn +=
+                self.flatten_page(ids[i], flat_widget, dr.as_ref(), "MpeField", &mut removed)?;
         }
         if whole {
             self.remove_form()?;
@@ -44,8 +58,31 @@ impl Pdf {
         Ok(drawn)
     }
 
-    /// Draw and remove one page's widgets, adding them to `removed`.
-    fn flatten_page(&mut self, page: ObjectId, removed: &mut HashSet<ObjectId>) -> Result<usize> {
+    /// The chosen pages (zero-based), checked, or every page.
+    pub(crate) fn page_list(&self, pages: Option<&[usize]>) -> Result<Vec<usize>> {
+        let n = self.page_count();
+        match pages {
+            Some(p) => {
+                if let Some(&bad) = p.iter().find(|&&i| i >= n) {
+                    bail!("page {} does not exist", bad + 1);
+                }
+                Ok(p.to_vec())
+            }
+            None => Ok((0..n).collect()),
+        }
+    }
+
+    /// Draw and remove one page's annotations as `which` says, adding the removed ones to
+    /// `removed`. Appearances without resources get `dr`; the drawings are named from
+    /// `prefix` in the page's resources.
+    pub(crate) fn flatten_page(
+        &mut self,
+        page: ObjectId,
+        which: fn(&Pdf, &Dictionary) -> Flat,
+        dr: Option<&Object>,
+        prefix: &str,
+        removed: &mut HashSet<ObjectId>,
+    ) -> Result<usize> {
         let Some(annots) = self
             .doc
             .get_dictionary(page)?
@@ -60,35 +97,35 @@ impl Pdf {
         let mut kept = Vec::new();
         let mut shown = Vec::new();
         for a in &annots {
-            let widget = a
+            let found = a
                 .as_reference()
                 .ok()
-                .and_then(|id| Some((id, self.doc.get_dictionary(id).ok()?)))
-                .filter(|(_, d)| {
-                    d.get(b"Subtype").and_then(|o| o.as_name()).ok() == Some(b"Widget")
-                });
-            let Some((id, d)) = widget else {
+                .and_then(|id| Some((id, self.doc.get_dictionary(id).ok()?)));
+            let Some((id, d)) = found else {
                 kept.push(a.clone());
                 continue;
             };
-            removed.insert(id);
-            if let Some(placed) = self.placement(d) {
-                shown.push(placed);
+            match which(self, d) {
+                Flat::Keep => {
+                    kept.push(a.clone());
+                    continue;
+                }
+                Flat::Drop => {}
+                Flat::Draw => shown.extend(self.placement(d)),
             }
+            removed.insert(id);
         }
         if kept.len() == annots.len() {
             return Ok(0);
         }
 
-        // Appearances without resources of their own use the form's.
-        let dr = self.acro_form().and_then(|f| f.get(b"DR").ok()).cloned();
         let mut res = self.resolved_dict(self.inherited(page, b"Resources").as_ref());
         let mut xobjects = self.resolved_dict(res.get(b"XObject").ok());
         let mut content = Vec::new();
         let mut n = 0;
         for (ap, m) in &shown {
             if let (Some(dr), Ok(s)) = (
-                &dr,
+                dr,
                 self.doc.get_object_mut(*ap).and_then(|o| o.as_stream_mut()),
             ) {
                 if !s.dict.has(b"Resources") {
@@ -97,7 +134,7 @@ impl Pdf {
             }
             let name = loop {
                 n += 1;
-                let name = format!("MpeField{n}");
+                let name = format!("{prefix}{n}");
                 if !xobjects.has(name.as_bytes()) {
                     break name;
                 }

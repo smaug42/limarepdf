@@ -3,6 +3,7 @@
 //! does is in `App::act`.
 
 use crate::editor::Tool;
+use crate::markup::{self, Mark};
 use crate::selection::{ObjKind, Selection};
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, ThemePreference};
 use egui_phosphor::regular as icon;
@@ -28,6 +29,21 @@ pub enum Act {
     Redo,
     Copy,
     SelectAllText,
+    /// Print the selected words, as cropped pages or as plain text.
+    PrintSelection,
+    /// Save the selected words as a PDF (cropped pages or plain text) or a text file.
+    SaveSelection,
+    /// Mark the selected words, in the colour last chosen for the kind.
+    Mark(Mark),
+    /// Choose the colour for highlights, or (`line`) for the other marks: an index into
+    /// [`crate::markup::HIGHLIGHTS`] or [`crate::markup::LINES`]. Shown in the markup
+    /// menu, so not in [`ACTIONS`].
+    MarkColor {
+        line: bool,
+        index: usize,
+    },
+    /// Set the name written into comments and markup.
+    CommentName,
     /// Delete the selected object, or the selected pages.
     DeleteSelection,
     /// Copy the text of the selected text object.
@@ -53,6 +69,8 @@ pub enum Act {
     ToggleSide,
     /// Show the side panel's Bookmarks tab.
     Bookmarks,
+    Comments,
+    FlattenAnnots,
     ToggleInspector,
     ToggleHidden,
     /// Tint every form field, and outline the required ones.
@@ -125,7 +143,7 @@ pub struct Ctx {
     pub busy: bool,
     pub can_undo: bool,
     pub can_redo: bool,
-    /// Words are selected with the text tool.
+    /// Words are selected with the read tool.
     pub words: bool,
     /// An object is selected with the arrow tool.
     pub object: bool,
@@ -134,6 +152,8 @@ pub struct Ctx {
     /// Pages are selected in the thumbnails.
     pub pages: bool,
     pub tool: Option<Tool>,
+    /// The Annotate button's tool, the one last used.
+    pub annot_tool: Option<Tool>,
     pub side: bool,
     pub inspector: bool,
     /// The active tab's zoom follows the width of the view.
@@ -145,6 +165,14 @@ pub struct Ctx {
     pub field: bool,
     pub fields_shown: bool,
     pub theme: ThemePreference,
+    /// An annotation is selected, and whether it may be changed.
+    pub annot: bool,
+    pub annot_locked: bool,
+    /// The arrow tool can move the selected annotation.
+    pub annot_moves: bool,
+    /// The markup colours last chosen; see [`Act::MarkColor`].
+    pub highlight: usize,
+    pub line: usize,
 }
 
 pub struct Action {
@@ -188,23 +216,30 @@ fn redo(c: &Ctx) -> bool {
 fn words(c: &Ctx) -> bool {
     c.words
 }
+fn words_idle(c: &Ctx) -> bool {
+    c.words && !c.busy
+}
 fn object(c: &Ctx) -> bool {
     c.object
+}
+/// An object, or an annotation the arrow can move.
+fn nudgeable(c: &Ctx) -> bool {
+    c.object || c.annot_moves
 }
 fn text_object(c: &Ctx) -> bool {
     c.object && matches!(c.obj_kind, Some(ObjKind::Text | ObjKind::HiddenText))
 }
-fn object_or_pages(c: &Ctx) -> bool {
-    c.object || c.pages
+fn deletable(c: &Ctx) -> bool {
+    c.object || c.pages || (c.annot && !c.annot_locked)
 }
 fn image_object(c: &Ctx) -> bool {
     c.object && c.obj_kind == Some(ObjKind::Image)
 }
 fn text_tool(c: &Ctx) -> bool {
-    c.tool == Some(Tool::SelectText)
+    c.tool == Some(Tool::Read)
 }
-fn editing(c: &Ctx) -> bool {
-    c.doc && !matches!(c.tool, None | Some(Tool::View))
+fn any_tool(c: &Ctx) -> bool {
+    c.doc && c.tool.is_some()
 }
 
 const C: Modifiers = Modifiers::COMMAND;
@@ -348,6 +383,66 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::PrintSelection,
+        group: Group::Edit,
+        label: "Print selected text…",
+        icon: icon::PRINTER,
+        enabled: words_idle,
+        ..BASE
+    },
+    Action {
+        act: Act::SaveSelection,
+        group: Group::Edit,
+        label: "Save selected text…",
+        icon: icon::FLOPPY_DISK,
+        enabled: words_idle,
+        ..BASE
+    },
+    Action {
+        act: Act::Mark(Mark::Highlight),
+        group: Group::Edit,
+        label: "Highlight",
+        icon: icon::HIGHLIGHTER,
+        keys: &[k(CS, Key::H)],
+        enabled: words_idle,
+        sep: true,
+        hint: "Highlight the selected text, in the colour last chosen.",
+        ..BASE
+    },
+    Action {
+        act: Act::Mark(Mark::Underline),
+        group: Group::Edit,
+        label: "Underline",
+        icon: icon::TEXT_UNDERLINE,
+        enabled: words_idle,
+        ..BASE
+    },
+    Action {
+        act: Act::Mark(Mark::StrikeOut),
+        group: Group::Edit,
+        label: "Strike out",
+        icon: icon::TEXT_STRIKETHROUGH,
+        enabled: words_idle,
+        ..BASE
+    },
+    Action {
+        act: Act::Mark(Mark::Squiggly),
+        group: Group::Edit,
+        label: "Squiggly underline",
+        icon: icon::WAVE_SINE,
+        enabled: words_idle,
+        ..BASE
+    },
+    Action {
+        act: Act::CommentName,
+        group: Group::Edit,
+        label: "Your name for comments…",
+        icon: icon::USER,
+        enabled: always,
+        hint: "The name saved in comments and markup you add, so others see who made them.",
+        ..BASE
+    },
+    Action {
         act: Act::EditObjectText,
         group: Group::Edit,
         label: "Edit text",
@@ -380,9 +475,9 @@ pub static ACTIONS: &[Action] = &[
         label: "Delete the selection",
         icon: icon::TRASH,
         keys: &[k(N, Key::Delete), k(N, Key::Backspace)],
-        enabled: object_or_pages,
-        hint: "The selected object, or the pages selected in the thumbnails. Undo brings \
-               them back.",
+        enabled: deletable,
+        hint: "The selected object, comment or markup, or the pages selected in the \
+               thumbnails. Undo brings them back.",
         ..BASE
     },
     Action {
@@ -409,7 +504,7 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Edit,
         label: "Cancel or deselect",
         keys: &[k(N, Key::Escape)],
-        enabled: editing,
+        enabled: any_tool,
         menu: false,
         palette: false,
         ..BASE
@@ -419,7 +514,7 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Edit,
         label: "Move the selected object left",
         keys: &[k(N, Key::ArrowLeft)],
-        enabled: object,
+        enabled: nudgeable,
         menu: false,
         palette: false,
         ..BASE
@@ -429,7 +524,7 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Edit,
         label: "Move the selected object right",
         keys: &[k(N, Key::ArrowRight)],
-        enabled: object,
+        enabled: nudgeable,
         menu: false,
         palette: false,
         ..BASE
@@ -439,7 +534,7 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Edit,
         label: "Move the selected object up",
         keys: &[k(N, Key::ArrowUp)],
-        enabled: object,
+        enabled: nudgeable,
         menu: false,
         palette: false,
         ..BASE
@@ -449,7 +544,7 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Edit,
         label: "Move the selected object down",
         keys: &[k(N, Key::ArrowDown)],
-        enabled: object,
+        enabled: nudgeable,
         menu: false,
         palette: false,
         ..BASE
@@ -537,6 +632,14 @@ pub static ACTIONS: &[Action] = &[
         label: "Bookmarks",
         icon: icon::BOOKMARK_SIMPLE,
         hint: "Show the document's outline in the side panel.",
+        ..BASE
+    },
+    Action {
+        act: Act::Comments,
+        group: Group::View,
+        label: "Comments",
+        icon: icon::CHAT_TEXT,
+        hint: "List the document's comments, notes and markup in the side panel.",
         ..BASE
     },
     Action {
@@ -634,10 +737,10 @@ pub static ACTIONS: &[Action] = &[
     },
     // --------------------------------------------------------------- Tools
     Action {
-        act: Act::Tool(Tool::View),
+        act: Act::Tool(Tool::Read),
         group: Group::Tools,
-        label: "Read only (no editing)",
-        icon: icon::HAND,
+        label: "Read and select text",
+        icon: icon::CURSOR_TEXT,
         menu: false,
         ..BASE
     },
@@ -650,14 +753,6 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
-        act: Act::Tool(Tool::SelectText),
-        group: Group::Tools,
-        label: "Select and copy text",
-        icon: icon::CURSOR_TEXT,
-        menu: false,
-        ..BASE
-    },
-    Action {
         act: Act::Tool(Tool::Text),
         group: Group::Tools,
         label: "Add text",
@@ -666,9 +761,33 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::Tool(Tool::Image),
+        group: Group::Tools,
+        label: "Add image…",
+        icon: icon::IMAGE,
+        menu: false,
+        ..BASE
+    },
+    Action {
+        act: Act::Tool(Tool::Note),
+        group: Group::Tools,
+        label: "Add a note",
+        icon: icon::NOTE,
+        menu: false,
+        ..BASE
+    },
+    Action {
+        act: Act::Tool(Tool::TextBox),
+        group: Group::Tools,
+        label: "Add a text box",
+        icon: icon::TEXTBOX,
+        menu: false,
+        ..BASE
+    },
+    Action {
         act: Act::Tool(Tool::Rect),
         group: Group::Tools,
-        label: "Add rectangle",
+        label: "Add a rectangle",
         icon: icon::SQUARE,
         menu: false,
         ..BASE
@@ -676,7 +795,7 @@ pub static ACTIONS: &[Action] = &[
     Action {
         act: Act::Tool(Tool::Ellipse),
         group: Group::Tools,
-        label: "Add ellipse",
+        label: "Add an ellipse",
         icon: icon::CIRCLE,
         menu: false,
         ..BASE
@@ -684,16 +803,16 @@ pub static ACTIONS: &[Action] = &[
     Action {
         act: Act::Tool(Tool::Line),
         group: Group::Tools,
-        label: "Add line",
+        label: "Add a line or arrow",
         icon: icon::LINE_SEGMENT,
         menu: false,
         ..BASE
     },
     Action {
-        act: Act::Tool(Tool::Image),
+        act: Act::Tool(Tool::Pen),
         group: Group::Tools,
-        label: "Add image…",
-        icon: icon::IMAGE,
+        label: "Draw with the pen",
+        icon: icon::SCRIBBLE,
         menu: false,
         ..BASE
     },
@@ -817,6 +936,15 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::FlattenAnnots,
+        group: Group::Document,
+        label: "Flatten annotations…",
+        enabled: |c| c.doc && !c.busy,
+        hint: "Make comments, notes, highlights and drawings part of the pages, as they \
+               look now, so they can't be changed or removed. Can be undone.",
+        ..BASE
+    },
+    Action {
         act: Act::Security,
         group: Group::Document,
         label: "Password security…",
@@ -864,7 +992,12 @@ pub fn matches(a: &Action, query: &str) -> bool {
 /// after the click (right-clicking selects what is under the pointer first).
 pub fn context_items(sel: &Selection) -> &'static [&'static [Act]] {
     match sel {
-        Selection::Words { .. } => &[&[Act::Copy, Act::SelectAllText]],
+        Selection::Words { .. } => &[
+            &[Act::Copy, Act::SelectAllText],
+            &[Act::Mark(Mark::Highlight)],
+            &[Act::PrintSelection, Act::SaveSelection],
+        ],
+        Selection::Annot { .. } => &[&[Act::DeleteSelection]],
         Selection::Object { .. } => &[
             &[Act::EditObjectText, Act::ReplaceImage, Act::CopyObjectText],
             &[Act::DeleteObject],
@@ -892,8 +1025,13 @@ pub fn context_menu(ui: &mut egui::Ui, sel: &Selection, c: &Ctx, acts: &mut Vec<
             ui.separator();
         }
         first = false;
-        for a in items {
+        for a in &items {
             menu_item(ui, a, c, acts);
+        }
+        if items.iter().any(|a| a.act == Act::Mark(Mark::Highlight)) {
+            ui.menu_button("Underline, strike out, colour", |ui| {
+                markup::menu(ui, c, acts)
+            });
         }
     }
 }
@@ -984,12 +1122,12 @@ mod tests {
             id: 0,
             kind: ObjKind::Path,
         };
-        let words = Selection::Words {
+        let words = Selection::word((0, 0));
+        let annot = Selection::Annot {
             page: 0,
-            first: 0,
-            last: 0,
+            id: (1, 0),
         };
-        for sel in [Selection::None, object, words] {
+        for sel in [Selection::None, object, words, annot] {
             for group in context_items(&sel) {
                 for &a in *group {
                     get(a);

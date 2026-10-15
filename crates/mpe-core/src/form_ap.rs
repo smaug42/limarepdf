@@ -297,11 +297,20 @@ pub(crate) fn wrap(text: &str, max: f32, size: f32, m: &Metrics) -> Vec<String> 
     out
 }
 
-fn op(name: &str, operands: Vec<Object>) -> Operation {
+/// The height a box `w` wide, with a solid border `border` wide, needs to show all of
+/// `text` in lines at `size`, as [`draw`] lays them out.
+pub(crate) fn lines_height(text: &str, w: f32, size: f32, border: f32, m: &Metrics) -> f32 {
+    let avail = (w - 2.0 * border).max(0.0) - 2.0 * PAD;
+    let n = wrap(text, avail, size, m).len().max(1) as f32;
+    // The first line's ascent, the lines below it, and the last line's descent.
+    2.0 * (border + PAD) + 0.8 * size + (n - 1.0) * LEADING * size + 0.25 * size
+}
+
+pub(crate) fn op(name: &str, operands: Vec<Object>) -> Operation {
     Operation::new(name, operands)
 }
 
-fn nums(v: &[f32]) -> Vec<Object> {
+pub(crate) fn nums(v: &[f32]) -> Vec<Object> {
     v.iter()
         .map(|&x| Object::Real((x * 1000.0).round() / 1000.0))
         .collect()
@@ -329,7 +338,7 @@ pub(crate) fn fill_color(c: &[f32]) -> Option<Operation> {
     Some(op(name, nums(c)))
 }
 
-fn stroke_color(c: &[f32]) -> Option<Operation> {
+pub(crate) fn stroke_color(c: &[f32]) -> Option<Operation> {
     let name = match c.len() {
         1 => "G",
         3 => "RG",
@@ -339,7 +348,7 @@ fn stroke_color(c: &[f32]) -> Option<Operation> {
     Some(op(name, nums(c)))
 }
 
-fn encode(ops: Vec<Operation>) -> Vec<u8> {
+pub(crate) fn encode(ops: Vec<Operation>) -> Vec<u8> {
     Content { operations: ops }.encode().unwrap_or_default()
 }
 

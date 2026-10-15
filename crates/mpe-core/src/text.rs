@@ -9,8 +9,8 @@ pub struct SearchHit {
 }
 
 impl Pdf {
-    /// Extract text of one page (0-based): its words in content order, which is usually
-    /// reading order, with spaces between words on a line and line breaks between
+    /// Extract text of one page (0-based): its words in reading order, worked out from
+    /// their positions, with spaces between words on a line and line breaks between
     /// lines. It is the same reading of the page that search highlights and text
     /// selection use. Empty when the page has no text (a scan) or cannot be read.
     pub fn page_text(&self, index: usize) -> String {
