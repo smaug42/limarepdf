@@ -108,6 +108,15 @@ boxes, with no angle, so turning them needs a workaround:
   (an ellipse becomes many short sides). A turned drawing inside an upright box is the other way, but readers that
   redraw the shape show it upright again, so it is not planned.
 
+### Digital signatures
+
+A future task, not yet scheduled. Create your own signing identity (a self-signed certificate), sign documents with
+a standard PDF signature that other readers check, and verify signatures, in the app and from the command line.
+Readers show such a signature as valid but from an unknown signer until the recipient trusts the certificate by
+checking its fingerprint with you. Signing adds to the end of the file, so earlier signatures stay valid. A first
+step needs no new libraries: warn before a save would break a file's existing signatures. Not planned for the first
+version: timestamps, revocation checks, hardware tokens and signing encrypted files.
+
 ### Packaging
 
 Planned for once the app is more complete; until then releases stay as archives.

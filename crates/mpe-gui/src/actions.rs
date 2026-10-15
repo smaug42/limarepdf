@@ -281,7 +281,7 @@ pub static ACTIONS: &[Action] = &[
     Action {
         act: Act::NewFromImages,
         group: Group::File,
-        label: "New from images…",
+        label: "Make a PDF from images…",
         icon: icon::IMAGES,
         enabled: always,
         ..BASE

@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- "New from images…" is now "Make a PDF from images…", on the start screen and in the menu, with a hover tip on the
+  start screen.
+
 ## [0.4.0] - 2026-10-14
 
 Annotations and forms: highlight, comment on and draw on documents, reply to comments, fill in and flatten forms,

@@ -1638,8 +1638,11 @@ fn empty_state(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
         acts.push(Act::Open);
     }
     ui.add_space(4.0);
-    let images = egui::Button::new("New from images…").min_size(egui::vec2(180.0, 28.0));
-    if ui.add(images).clicked() {
+    let images = egui::Button::new("Make a PDF from images…").min_size(egui::vec2(180.0, 28.0));
+    let images = ui
+        .add(images)
+        .on_hover_text("Turn photos or scanned pages into a new PDF");
+    if images.clicked() {
         acts.push(Act::NewFromImages);
     }
     if shown > 0 {
