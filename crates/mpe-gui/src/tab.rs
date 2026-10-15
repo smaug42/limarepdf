@@ -8,7 +8,7 @@ use crate::theme;
 use crate::worker::{Key, Worker};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptions, Vec2};
 use egui_phosphor::regular as icon;
-use mpe_core::{Annot, Encryption, LinkTarget, OutlineItem, Pdf, SearchHit};
+use mpe_core::{Annot, Encryption, LinkTarget, OutlineItem, Pdf, SearchHit, Shape, ShapeLook};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -334,6 +334,9 @@ impl Tab {
                 Action::SetAnnot(p, id, e) => {
                     self.edit_pages(ctx, &[p], |pdf| {
                         pdf.set_annotation(id, e.color, e.opacity, &e.contents)?;
+                        if let Some(s) = &e.shape {
+                            pdf.set_shape_look(id, s)?;
+                        }
                         match &e.text {
                             Some(s) => pdf.set_text_style(id, s),
                             None => Ok(()),
@@ -371,6 +374,51 @@ impl Tab {
                     };
                     if self.edit_pages(ctx, &[p], add) {
                         self.after_annot(p, new);
+                    }
+                }
+                Action::AddShapeAnnot(p, shape, rect) => {
+                    let ed = &self.ed;
+                    let color = ed.stroke_on.then_some(ed.stroke);
+                    let look = ShapeLook {
+                        fill: (shape != Shape::Line && ed.fill_on).then_some(ed.fill),
+                        width: ed.width,
+                        arrow: shape == Shape::Line && ed.arrow,
+                    };
+                    let author = ed.author.clone();
+                    let mut new = None;
+                    let add = |pdf: &mut Pdf| {
+                        new =
+                            Some(pdf.add_shape_annotation(p, shape, rect, color, &look, &author)?);
+                        Ok(())
+                    };
+                    if self.edit_pages(ctx, &[p], add) {
+                        self.after_annot(p, new);
+                    }
+                }
+                Action::AddInk(p, stroke) => {
+                    let ed = &self.ed;
+                    let (color, width, author) = (ed.pen_color, ed.pen_width, ed.author.clone());
+                    let mut new = None;
+                    let add = |pdf: &mut Pdf| {
+                        new = Some(pdf.add_ink(p, &[stroke], color, width, &author)?);
+                        Ok(())
+                    };
+                    // The pen stays in hand, ready for the next stroke.
+                    if self.edit_pages(ctx, &[p], add) {
+                        self.ed.ink = new.map(|id| (p, id));
+                    }
+                }
+                Action::AddInkStroke(p, id, stroke) => {
+                    if self.edit_pages(ctx, &[p], |pdf| pdf.add_ink_stroke(p, id, &stroke)) {
+                        self.ed.ink = Some((p, id));
+                    }
+                }
+                Action::Reply(p, id, text) => {
+                    let author = self.ed.author.clone();
+                    if self.edit_pages(ctx, &[p], |pdf| {
+                        pdf.add_reply(id, &text, &author).map(|_| ())
+                    }) {
+                        self.ed.selection = Selection::Annot { page: p, id };
                     }
                 }
                 Action::DeleteAnnot(p, id) => {
@@ -597,6 +645,7 @@ impl Tab {
         }
         let mut chosen = None;
         let mut delete = None;
+        let mut reply = false;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -634,6 +683,11 @@ impl Tab {
                             chosen = Some(i);
                         }
                         r.context_menu(|ui| {
+                            let answer = theme::icon(icon::ARROW_BEND_UP_LEFT);
+                            if ui.button((answer, "Reply…")).clicked() {
+                                chosen = Some(i);
+                                reply = true;
+                            }
                             let label = if list.iter().any(|b| b.reply_to == Some(a.id)) {
                                 "Delete, with its replies"
                             } else {
@@ -653,6 +707,7 @@ impl Tab {
             let a = &list[i];
             let (id, page, top) = (a.id, a.page, a.bbox[1]);
             self.ed.selection = Selection::Annot { page, id };
+            self.ed.reply_focus = reply;
             self.go_to(page);
             self.goto_y = Some(top);
         }
@@ -1378,6 +1433,8 @@ mod tests {
             reply_to: reply_to.map(|r| (r, 0)),
             has_appearance: true,
             text_style: None,
+            shape: None,
+            paths: Vec::new(),
         };
         // 3 answers 1, 4 answers 3, 5 answers a comment on another page, 6 and 7 answer
         // each other.

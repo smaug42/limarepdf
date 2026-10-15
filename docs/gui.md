@@ -56,6 +56,9 @@ line of the comment; hover over it for the type, date and the whole comment.
   [Marking text](#marking-text)).
 - Right-click a row to delete it, along with any replies. Annotations the file locks can't be deleted. Undo brings
   it back.
+- Right-click a row and choose Reply…, or select an annotation and use the Reply box at the bottom of the
+  inspector, to answer it. The inspector lists the replies it already has. Replies are saved as standard reply
+  comments (`/IRT`) that are not shown on the page or printed, and they carry your name.
 - ☰ > Document > Flatten annotations… draws all of them into the pages as they look now and removes them, so they
   can no longer be changed or removed in any reader. Their comment text is dropped. Links and form fields stay,
   and so do file attachments. Undo brings them back.
@@ -108,7 +111,26 @@ With the arrow, click any annotation to select it, drag it to move it, and drag 
 move it by 1 point, or 10 with Shift. Notes keep their size, and text markup stays on its text, so neither can be
 resized, and markup can't be moved. Locked annotations can't be moved.
 
-Adding shapes and freehand drawings as annotations is coming.
+### Shapes, lines and drawings
+
+The Annotate button's menu also holds the rectangle, ellipse, line and pen tools. What they draw are annotations:
+other readers list them as comments, and they can be selected, moved, resized, restyled, commented on and deleted
+like notes.
+
+- **Rectangle, ellipse, line:** drag, or click for a default size. Shift keeps squares, circles and lines at
+  multiples of 45°. The inspector sets the outline (or line) colour and width, the fill of rectangles and
+  ellipses, and an arrowhead at the end of a line, before you start.
+- **Pen:** drag to draw; a click makes a dot. Strokes started within 1.5 seconds of the last one, on the same page,
+  join the same drawing, so a word or a circle with a tick is one annotation. Each stroke is still its own undo
+  step. Points closer together than about a third of a point to the line drawn are dropped, which keeps files
+  small. The inspector sets the pen's colour and width.
+- **Draw on page (permanent):** with this switched on in the inspector, the rectangle, ellipse and line tools draw
+  into the page content as they did before annotations. Those shapes are selected with the arrow as page objects,
+  not as comments.
+
+Select a shape, line or drawing (click it with the read tool or the arrow, or Ctrl+click with an annotate tool)
+to change its colour, width, fill, arrowhead, opacity and comment in the inspector, then Apply changes. Lines and
+drawings are picked by clicking near their strokes, not anywhere in their box.
 
 ## Filling in forms
 
@@ -192,10 +214,11 @@ With the arrow:
 The other tools add content:
 
 - **Text:** click where the text starts, type, press Enter.
-- **Rectangle, ellipse, line:** drag, or click for a default size.
 - **Image:** choose a PNG, JPEG or TIFF, then drag a box.
-- **Annotate:** sticky notes and text boxes, saved as annotations rather than page content; see
-  [Notes and text boxes](#notes-and-text-boxes).
+- **Annotate:** sticky notes, text boxes, rectangles, ellipses, lines and the pen, saved as annotations rather
+  than page content; see [Notes and text boxes](#notes-and-text-boxes) and
+  [Shapes, lines and drawings](#shapes-lines-and-drawings). A rectangle, ellipse or line can still be drawn into
+  the page content with "Draw on page (permanent)".
 
 Everything that changes the document can be undone with Ctrl+Z. See [Content editing](content-editing.md) for how
 editing works and its limits.

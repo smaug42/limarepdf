@@ -1967,6 +1967,10 @@ impl eframe::App for App {
         let mut panel_apply = None;
         if has {
             let t = &mut self.tabs[self.active];
+            // "Reply…" in the Comments tab types in the inspector.
+            if t.ed.reply_focus {
+                self.show_inspector = true;
+            }
             let mut open = self.show_inspector;
             let mut toggle = false;
             let rail = egui::Panel::right("inspector-rail")

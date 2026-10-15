@@ -17,6 +17,7 @@ const MAX_ANNOTS: usize = 10_000;
 
 /// Annotation flags (`/F`).
 const HIDDEN: i64 = 1 << 1;
+pub(crate) const NO_VIEW: i64 = 1 << 5;
 const READ_ONLY: i64 = 1 << 6;
 const LOCKED: i64 = 1 << 7;
 
@@ -159,6 +160,34 @@ pub struct Annot {
     pub has_appearance: bool,
     /// For text boxes, how the text is set; `None` for other kinds.
     pub text_style: Option<TextStyle>,
+    /// For rectangles, ellipses, lines and drawings, how they are painted; `None` for
+    /// other kinds.
+    pub shape: Option<ShapeLook>,
+    /// For lines, polylines and drawings, their points in displayed-page points, one list
+    /// per stroke; empty for other kinds.
+    pub paths: Vec<Vec<(f32, f32)>>,
+}
+
+/// How a rectangle, ellipse, line or drawing is painted. Its line's colour is the
+/// annotation's colour.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShapeLook {
+    /// The inside of a rectangle or ellipse (none when transparent).
+    pub fill: Option<[f32; 3]>,
+    /// The line's width in points.
+    pub width: f32,
+    /// A line has an arrowhead at its end.
+    pub arrow: bool,
+}
+
+impl Default for ShapeLook {
+    fn default() -> Self {
+        Self {
+            fill: None,
+            width: 1.0,
+            arrow: false,
+        }
+    }
 }
 
 /// How a text box's text is set: Helvetica at `size` points in `color`, on `fill` (none
@@ -185,6 +214,12 @@ impl Default for TextStyle {
 impl Annot {
     pub fn hidden(&self) -> bool {
         self.flags & HIDDEN != 0
+    }
+
+    /// Whether it is shown on the page: not hidden and not a reply, which is listed with
+    /// the comment it answers.
+    pub fn on_page(&self) -> bool {
+        self.flags & (HIDDEN | NO_VIEW) == 0 && self.reply_to.is_none()
     }
 
     /// Locked or read-only: it may not be moved, changed or deleted in the app.
@@ -277,7 +312,7 @@ impl Pdf {
     }
 
     /// The annotations on `pages` that MPE can draw and that have no drawing of their own
-    /// (no `/AP /N`). Hidden ones are left out.
+    /// (no `/AP /N`). Hidden ones and replies are left out.
     pub(crate) fn missing_appearances(&self, pages: &[ObjectId]) -> Vec<ObjectId> {
         let mut out = Vec::new();
         for &page in pages {
@@ -294,7 +329,9 @@ impl Pdf {
                     .ok()
                     .and_then(|o| self.dict_of(o))
                     .is_some_and(|ap| ap.has(b"N"));
-                if drawn && !has_ap && self.flags(d) & HIDDEN == 0 {
+                // Replies are listed, not drawn.
+                let shown = self.flags(d) & (HIDDEN | NO_VIEW) == 0 && !d.has(b"IRT");
+                if drawn && !has_ap && shown {
                     out.push(id);
                 }
             }
@@ -407,6 +444,44 @@ impl Pdf {
                 border: self.border(d).0,
             }
         });
+        let shape = matches!(
+            kind,
+            AnnotKind::Square | AnnotKind::Circle | AnnotKind::Line | AnnotKind::Ink
+        )
+        .then(|| ShapeLook {
+            fill: matches!(kind, AnnotKind::Square | AnnotKind::Circle)
+                .then(|| self.colour(d, b"IC").map(|c| rgb(&c)))
+                .flatten(),
+            width: self.border(d).0,
+            arrow: self.line_ends(d).iter().any(|e| e.as_slice() != b"None"),
+        });
+        let to_shown = |v: Vec<f32>| -> Vec<(f32, f32)> {
+            v.as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&[x, y]| mx::apply(to_vis, x, y))
+                .collect()
+        };
+        let paths = match kind {
+            AnnotKind::Line => self.numbers(d.get(b"L").ok()).into_iter().collect(),
+            AnnotKind::PolyLine => self.numbers(d.get(b"Vertices").ok()).into_iter().collect(),
+            AnnotKind::Ink => d
+                .get(b"InkList")
+                .ok()
+                .and_then(|o| self.doc.dereference(o).ok())
+                .and_then(|(_, o)| o.as_array().ok())
+                .map(|list| {
+                    list.iter()
+                        .take(MAX_ANNOTS)
+                        .filter_map(|s| self.numbers(Some(s)))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
+        .into_iter()
+        .map(to_shown)
+        .collect();
         Some(Annot {
             id,
             page,
@@ -433,6 +508,8 @@ impl Pdf {
                 .and_then(|o| self.dict_of(o))
                 .is_some_and(|ap| ap.has(b"N")),
             text_style,
+            shape,
+            paths,
         })
     }
 }

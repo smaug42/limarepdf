@@ -311,7 +311,7 @@ impl Pdf {
     }
 
     /// The two `/LE` line-ending names.
-    fn line_ends(&self, d: &Dictionary) -> Vec<Vec<u8>> {
+    pub(crate) fn line_ends(&self, d: &Dictionary) -> Vec<Vec<u8>> {
         d.get(b"LE")
             .ok()
             .and_then(|o| self.doc.dereference(o).ok())
@@ -491,6 +491,11 @@ fn ellipse(ops: &mut Vec<Operation>, r: [f32; 4]) {
     ops.push(op("h", vec![]));
 }
 
+/// How long a line ending is on a line `w` points wide.
+pub(crate) fn arrow_size(w: f32) -> f32 {
+    6.0 * w.max(1.0)
+}
+
 /// A line ending (`/LE`) at `at`, for a line coming from `from`. Arrows point outwards;
 /// the `R` forms point back along the line.
 fn line_end(ops: &mut Vec<Operation>, end: &[u8], at: (f32, f32), from: (f32, f32), pen: &Pen) {
@@ -498,7 +503,7 @@ fn line_end(ops: &mut Vec<Operation>, end: &[u8], at: (f32, f32), from: (f32, f3
     if len < 1e-3 {
         return;
     }
-    let s = 6.0 * pen.w.max(1.0);
+    let s = arrow_size(pen.w);
     let d = ((at.0 - from.0) / len, (at.1 - from.1) / len);
     let n = (-d.1, d.0);
     let pt = |a: f32, b: f32| (at.0 + d.0 * a + n.0 * b, at.1 + d.1 * a + n.1 * b);

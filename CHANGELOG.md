@@ -52,6 +52,13 @@
   text. Text boxes on turned pages read upright. See [Notes and text boxes](docs/gui.md#notes-and-text-boxes).
 - The arrow tool selects, moves and resizes annotations (notes keep their size; text markup stays on its text), and
   the arrow keys nudge them.
+- The rectangle, ellipse and line tools now add annotations, and have moved into the Annotate button's menu
+  with a new pen for freehand drawing (strokes made in quick succession form one drawing). Lines can have an
+  arrowhead, and Shift keeps squares, circles and 45° lines. "Draw on page (permanent)" in the inspector keeps
+  the old behaviour of drawing into the page content. A selected shape, line or drawing has its width, fill and
+  arrowhead in the inspector. See [Shapes, lines and drawings](docs/gui.md#shapes-lines-and-drawings).
+- Reply to an annotation from the Comments tab (right-click > Reply…) or the inspector, which also lists the
+  replies it has.
 - Annotations stored without a drawing of their own, which used to be invisible, are drawn: highlights,
   underlines, strike-outs, squiggly underlines, notes, text boxes, rectangles, ellipses, lines, polygons and
   freehand drawings. The file is left as it is.

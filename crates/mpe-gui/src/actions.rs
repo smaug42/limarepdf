@@ -761,30 +761,6 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
-        act: Act::Tool(Tool::Rect),
-        group: Group::Tools,
-        label: "Add rectangle",
-        icon: icon::SQUARE,
-        menu: false,
-        ..BASE
-    },
-    Action {
-        act: Act::Tool(Tool::Ellipse),
-        group: Group::Tools,
-        label: "Add ellipse",
-        icon: icon::CIRCLE,
-        menu: false,
-        ..BASE
-    },
-    Action {
-        act: Act::Tool(Tool::Line),
-        group: Group::Tools,
-        label: "Add line",
-        icon: icon::LINE_SEGMENT,
-        menu: false,
-        ..BASE
-    },
-    Action {
         act: Act::Tool(Tool::Image),
         group: Group::Tools,
         label: "Add image…",
@@ -805,6 +781,38 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Tools,
         label: "Add a text box",
         icon: icon::TEXTBOX,
+        menu: false,
+        ..BASE
+    },
+    Action {
+        act: Act::Tool(Tool::Rect),
+        group: Group::Tools,
+        label: "Add a rectangle",
+        icon: icon::SQUARE,
+        menu: false,
+        ..BASE
+    },
+    Action {
+        act: Act::Tool(Tool::Ellipse),
+        group: Group::Tools,
+        label: "Add an ellipse",
+        icon: icon::CIRCLE,
+        menu: false,
+        ..BASE
+    },
+    Action {
+        act: Act::Tool(Tool::Line),
+        group: Group::Tools,
+        label: "Add a line or arrow",
+        icon: icon::LINE_SEGMENT,
+        menu: false,
+        ..BASE
+    },
+    Action {
+        act: Act::Tool(Tool::Pen),
+        group: Group::Tools,
+        label: "Draw with the pen",
+        icon: icon::SCRIBBLE,
         menu: false,
         ..BASE
     },

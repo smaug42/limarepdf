@@ -1,14 +1,16 @@
-//! Adding and changing annotations: text markup over lines of text, notes and text
-//! boxes, an annotation's colour, opacity and comment, and its place on the page. Each
-//! gets a drawing of its own straight away, so other viewers show it as MPE does.
+//! Adding and changing annotations: text markup over lines of text, notes, text boxes,
+//! shapes, lines, freehand drawings and replies, an annotation's colour, opacity and
+//! comment, and its place on the page. Each gets a drawing of its own straight away, so
+//! other viewers show it as MPE does.
 
-use crate::annot_ap::{DRAWN, NOTE_SIZE};
+use crate::annot_ap::{arrow_size, DRAWN, NOTE_SIZE};
+use crate::annots::NO_VIEW;
 use crate::doc::encode_text;
 use crate::form_ap::{lines_height, nums};
 use crate::form_write::{parse_da, standard_metrics};
 use crate::matrix as mx;
 use crate::overlay::utc_now;
-use crate::{AnnotKind, Pdf, Result, TextStyle};
+use crate::{AnnotKind, Pdf, Result, Shape, ShapeLook, TextStyle};
 use anyhow::{anyhow, bail};
 use lopdf::{dictionary, Dictionary, Object, ObjectId, StringFormat};
 
@@ -18,6 +20,10 @@ const NO_ZOOM: i64 = 1 << 3;
 const NO_ROTATE: i64 = 1 << 4;
 /// Room around the lines in `/Rect`, for the wavy line and strokes on the edge.
 const PAD: f32 = 1.0;
+/// How far a simplified pen stroke may stray from the one drawn, in points.
+const INK_TOLERANCE: f32 = 0.35;
+/// Most points kept from one pen stroke.
+const MAX_STROKE: usize = 20_000;
 
 impl Pdf {
     /// Mark lines of text on page `page_index` (zero-based) with a highlight, underline,
@@ -127,6 +133,189 @@ impl Pdf {
         self.insert_annot(page, d, author)
     }
 
+    /// Draw a rectangle, ellipse or line on page `page_index` (zero-based) as an
+    /// annotation. `rect` is in displayed-page points (y down); a line runs from its first
+    /// corner to the second. `color` is the line's colour, `None` for no outline. Returns
+    /// its id.
+    pub fn add_shape_annotation(
+        &mut self,
+        page_index: usize,
+        shape: Shape,
+        rect: [f32; 4],
+        color: Option<[f32; 3]>,
+        look: &ShapeLook,
+        author: &str,
+    ) -> Result<(u32, u16)> {
+        let page = self.page_id_at(page_index)?;
+        let (to_user, _, _) = self.vis_down(page);
+        let mut d = if shape == Shape::Line {
+            let (a, b) = (
+                mx::apply(to_user, rect[0], rect[1]),
+                mx::apply(to_user, rect[2], rect[3]),
+            );
+            if (b.0 - a.0).hypot(b.1 - a.1) < 1.0 {
+                bail!("the line is too short");
+            }
+            let l = [a.0, a.1, b.0, b.1];
+            dictionary! {
+                "Subtype" => "Line",
+                "L" => nums(&l),
+                "Rect" => nums(&line_rect(&l, look.width, look.arrow)),
+            }
+        } else {
+            let r = mx::transform_rect(to_user, rect);
+            if r[2] - r[0] < 1.0 || r[3] - r[1] < 1.0 {
+                bail!("the shape is too small");
+            }
+            let sub = if shape == Shape::Rect {
+                "Square"
+            } else {
+                "Circle"
+            };
+            dictionary! { "Subtype" => sub, "Rect" => nums(&r) }
+        };
+        d.set("F", PRINT);
+        match color {
+            Some(c) => d.set("C", nums(&c)),
+            None => d.set("C", Vec::<Object>::new()),
+        }
+        shape_entries(&mut d, look, true);
+        self.insert_annot(page, d, author)
+    }
+
+    /// Draw freehand on page `page_index` (zero-based): `strokes` in displayed-page points
+    /// (y down), each simplified, as one drawing (`/Ink`) in `color`, `width` points wide.
+    /// Returns its id.
+    pub fn add_ink(
+        &mut self,
+        page_index: usize,
+        strokes: &[Vec<(f32, f32)>],
+        color: [f32; 3],
+        width: f32,
+        author: &str,
+    ) -> Result<(u32, u16)> {
+        let page = self.page_id_at(page_index)?;
+        let (to_user, _, _) = self.vis_down(page);
+        let list: Vec<Vec<f32>> = strokes
+            .iter()
+            .map(|s| user_stroke(to_user, s))
+            .filter(|s| !s.is_empty())
+            .collect();
+        if list.is_empty() {
+            bail!("nothing was drawn");
+        }
+        let look = ShapeLook {
+            width,
+            ..ShapeLook::default()
+        };
+        let mut d = dictionary! {
+            "Subtype" => "Ink",
+            "Rect" => nums(&points_rect(&list, ink_pad(look.width))),
+            "InkList" => ink_list(&list),
+            "C" => nums(&color),
+            "F" => PRINT,
+        };
+        shape_entries(&mut d, &look, false);
+        self.insert_annot(page, d, author)
+    }
+
+    /// Add a stroke (displayed-page points on page `page_index`, simplified as in
+    /// [`Pdf::add_ink`]) to the drawing `id`, and draw it again.
+    pub fn add_ink_stroke(
+        &mut self,
+        page_index: usize,
+        id: (u32, u16),
+        stroke: &[(f32, f32)],
+    ) -> Result<()> {
+        let page = self.page_id_at(page_index)?;
+        let (to_user, _, _) = self.vis_down(page);
+        let new = user_stroke(to_user, stroke);
+        if new.is_empty() {
+            bail!("nothing was drawn");
+        }
+        let d = self.doc.get_dictionary(id)?;
+        if d.get(b"Subtype").and_then(|o| o.as_name()).ok() != Some(b"Ink") {
+            bail!("not a drawing");
+        }
+        let mut list = self.strokes(d);
+        list.push(new);
+        let pad = ink_pad(self.border(d).0);
+        let d = self.doc.get_dictionary_mut(id)?;
+        d.set("InkList", ink_list(&list));
+        d.set("Rect", nums(&points_rect(&list, pad)));
+        d.set("M", Object::string_literal(pdf_now()));
+        self.draw_annotations(&[id]);
+        Ok(())
+    }
+
+    /// Set a rectangle's, ellipse's, line's or drawing's line width, fill and arrowhead,
+    /// and draw it again. A line's ends are rewritten only when the arrowhead is switched
+    /// on or off, so other endings a file has are kept.
+    pub fn set_shape_look(&mut self, id: (u32, u16), look: &ShapeLook) -> Result<()> {
+        let d = self.doc.get_dictionary(id)?;
+        let had_arrow = self.line_ends(d).iter().any(|e| e.as_slice() != b"None");
+        let rect = match d.get(b"Subtype").and_then(|o| o.as_name())? {
+            b"Square" | b"Circle" => None,
+            b"Line" => self
+                .numbers(d.get(b"L").ok())
+                .filter(|l| l.len() >= 4)
+                .map(|l| line_rect(&l, look.width, look.arrow)),
+            b"Ink" => Some(points_rect(&self.strokes(d), ink_pad(look.width))),
+            _ => bail!("not a shape, line or drawing"),
+        };
+        let d = self.doc.get_dictionary_mut(id)?;
+        shape_entries(d, look, look.arrow != had_arrow);
+        if let Some(r) = rect.filter(|r| r[2] > r[0] && r[3] > r[1]) {
+            d.set("Rect", nums(&r));
+        }
+        d.set("M", Object::string_literal(pdf_now()));
+        self.draw_annotations(&[id]);
+        Ok(())
+    }
+
+    /// Answer the annotation `to` with a comment (`/IRT`). The reply is listed with what
+    /// it answers, and is not shown on the page or printed. Returns its id.
+    pub fn add_reply(&mut self, to: (u32, u16), text: &str, author: &str) -> Result<(u32, u16)> {
+        if text.trim().is_empty() {
+            bail!("the reply is empty");
+        }
+        let page = self.annot_page(to)?;
+        let rect = self.doc.get_dictionary(to)?.get(b"Rect")?.clone();
+        let mut d = dictionary! {
+            "Subtype" => "Text",
+            "Rect" => rect,
+            "IRT" => to,
+            "RT" => "R",
+            "Name" => "Comment",
+            "F" => NO_ZOOM | NO_ROTATE | NO_VIEW,
+        };
+        set_text(&mut d, "Contents", text);
+        self.insert_annot(page, d, author)
+    }
+
+    /// A drawing's strokes as numbers, as `/InkList` holds them.
+    fn strokes(&self, d: &Dictionary) -> Vec<Vec<f32>> {
+        d.get(b"InkList")
+            .ok()
+            .and_then(|o| self.doc.dereference(o).ok())
+            .and_then(|(_, o)| o.as_array().ok())
+            .map(|list| list.iter().filter_map(|s| self.numbers(Some(s))).collect())
+            .unwrap_or_default()
+    }
+
+    /// The page an annotation is on: its `/P`, else the page that lists it.
+    fn annot_page(&self, id: ObjectId) -> Result<ObjectId> {
+        let d = self.doc.get_dictionary(id)?;
+        match d.get(b"P").and_then(|o| o.as_reference()) {
+            Ok(p) => Ok(p),
+            Err(_) => self
+                .page_ids()
+                .into_iter()
+                .find(|&p| self.annot_refs(p).contains(&id))
+                .ok_or_else(|| anyhow!("the annotation is on no page")),
+        }
+    }
+
     /// Set a text box's text size and colour, fill and border, and draw it again.
     pub fn set_text_style(&mut self, id: (u32, u16), style: &TextStyle) -> Result<()> {
         let d = self.doc.get_dictionary_mut(id)?;
@@ -224,15 +413,7 @@ impl Pdf {
             .and_then(|o| self.int_value(o))
             .unwrap_or(0)
             .rem_euclid(360);
-        let page = match d.get(b"P").and_then(|o| o.as_reference()) {
-            Ok(p) => p,
-            Err(_) => self
-                .page_ids()
-                .into_iter()
-                .find(|&p| self.annot_refs(p).contains(&id))
-                .ok_or_else(|| anyhow!("the annotation is on no page"))?,
-        };
-        let pb = self.page_box(page);
+        let pb = self.page_box(self.annot_page(id)?);
         let sideways = matches!(turn, 90 | 270);
         let (w, h) = (rect[2] - rect[0], rect[3] - rect[1]);
         let (w, h) = if sideways { (h, w) } else { (w, h) };
@@ -272,10 +453,15 @@ impl Pdf {
             a.set("NM", Object::string_literal(name));
         }
         self.push_annot(page, id)?;
-        if self.doc.get_dictionary(id)?.get(b"Subtype")?.as_name()? == b"FreeText" {
+        let d = self.doc.get_dictionary(id)?;
+        let reply = d.has(b"IRT");
+        if d.get(b"Subtype")?.as_name()? == b"FreeText" {
             self.fit_text_box(id)?;
         }
-        self.draw_annotations(&[id]);
+        // Replies are not shown, so they need no drawing.
+        if !reply {
+            self.draw_annotations(&[id]);
+        }
         Ok(id)
     }
 
@@ -373,6 +559,111 @@ fn text_style(d: &mut Dictionary, s: &TextStyle) {
     d.set("BS", dictionary! { "W" => s.border.max(0.0), "S" => "S" });
 }
 
+/// A shape's look: the `/BS` width; the `/IC` fill of a rectangle or ellipse; and, when
+/// `ends` is set, a line's arrowhead (`/LE`).
+fn shape_entries(d: &mut Dictionary, look: &ShapeLook, ends: bool) {
+    d.set(
+        "BS",
+        dictionary! { "W" => look.width.clamp(0.0, 100.0), "S" => "S" },
+    );
+    match d.get(b"Subtype").and_then(|o| o.as_name()).ok() {
+        Some(b"Square" | b"Circle") => match look.fill {
+            Some(c) => d.set("IC", nums(&c)),
+            None => {
+                d.remove(b"IC");
+            }
+        },
+        Some(b"Line") if ends => {
+            if look.arrow {
+                d.set("LE", vec![Object::from("None"), Object::from("OpenArrow")]);
+            } else {
+                d.remove(b"LE");
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A line's `/Rect`: around its two points (`l`, as `/L` holds them), with room for its
+/// width and arrowhead.
+fn line_rect(l: &[f32], width: f32, arrow: bool) -> [f32; 4] {
+    let pad = width / 2.0 + PAD + if arrow { arrow_size(width) } else { 0.0 };
+    points_rect(&[l[..4].to_vec()], pad)
+}
+
+/// Room around a drawing's points for its strokes.
+fn ink_pad(width: f32) -> f32 {
+    width.max(0.0) / 2.0 + PAD
+}
+
+/// The box around every x, y pair in `lists`, `pad` larger on each side.
+fn points_rect(lists: &[Vec<f32>], pad: f32) -> [f32; 4] {
+    let mut r = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+    for &[x, y] in lists.iter().flat_map(|v| v.as_chunks::<2>().0) {
+        (r[0], r[1]) = (r[0].min(x), r[1].min(y));
+        (r[2], r[3]) = (r[2].max(x), r[3].max(y));
+    }
+    [r[0] - pad, r[1] - pad, r[2] + pad, r[3] + pad]
+}
+
+/// Strokes as an `/InkList`.
+fn ink_list(list: &[Vec<f32>]) -> Object {
+    list.iter()
+        .map(|s| Object::from(nums(s)))
+        .collect::<Vec<_>>()
+        .into()
+}
+
+/// A pen stroke in displayed-page points as user-space numbers, simplified.
+fn user_stroke(to_user: mx::M, stroke: &[(f32, f32)]) -> Vec<f32> {
+    let pts: Vec<(f32, f32)> = stroke
+        .iter()
+        .take(MAX_STROKE)
+        .map(|&(x, y)| mx::apply(to_user, x, y))
+        .filter(|p| p.0.is_finite() && p.1.is_finite())
+        .collect();
+    simplify(&pts, INK_TOLERANCE)
+        .into_iter()
+        .flat_map(|(x, y)| [x, y])
+        .collect()
+}
+
+/// Fewer points along much the same line (Douglas–Peucker): every point dropped is within
+/// `tol` of the line kept. The first and last points always stay.
+fn simplify(p: &[(f32, f32)], tol: f32) -> Vec<(f32, f32)> {
+    if p.len() < 3 {
+        return p.to_vec();
+    }
+    let mut keep = vec![false; p.len()];
+    keep[0] = true;
+    keep[p.len() - 1] = true;
+    let mut todo = vec![(0, p.len() - 1)];
+    while let Some((a, b)) = todo.pop() {
+        let (pa, pb) = (p[a], p[b]);
+        let (dx, dy) = (pb.0 - pa.0, pb.1 - pa.1);
+        let len = dx.hypot(dy);
+        let off = |q: (f32, f32)| {
+            if len < 1e-6 {
+                (q.0 - pa.0).hypot(q.1 - pa.1)
+            } else {
+                ((q.0 - pa.0) * dy - (q.1 - pa.1) * dx).abs() / len
+            }
+        };
+        let far = (a + 1..b)
+            .map(|i| (i, off(p[i])))
+            .max_by(|x, y| x.1.total_cmp(&y.1));
+        if let Some((i, _)) = far.filter(|&(_, d)| d > tol) {
+            keep[i] = true;
+            todo.push((a, i));
+            todo.push((i, b));
+        }
+    }
+    p.iter()
+        .zip(keep)
+        .filter_map(|(&q, k)| k.then_some(q))
+        .collect()
+}
+
 /// `v` as x, y pairs, each moved by `m`.
 fn map_points(m: mx::M, v: &[f32]) -> Vec<f32> {
     v.as_chunks::<2>()
@@ -389,4 +680,26 @@ fn map_points(m: mx::M, v: &[f32]) -> Vec<f32> {
 fn pdf_now() -> String {
     let [y, mo, d, h, mi, s] = utc_now();
     format!("D:{y:04}{mo:02}{d:02}{h:02}{mi:02}{s:02}Z")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn simplifying_keeps_corners_and_drops_wobble() {
+        // A straight run with a small wobble, then a corner.
+        let p = [
+            (0.0, 0.0),
+            (5.0, 0.1),
+            (10.0, -0.1),
+            (15.0, 0.0),
+            (15.0, 10.0),
+        ];
+        assert_eq!(simplify(&p, 0.35), [(0.0, 0.0), (15.0, 0.0), (15.0, 10.0)]);
+        assert_eq!(simplify(&p[..2], 0.35), &p[..2]);
+        // A stroke that comes back to where it started keeps its far point.
+        let back = [(0.0, 0.0), (5.0, 5.0), (0.0, 0.0)];
+        assert_eq!(simplify(&back, 0.35), back);
+    }
 }

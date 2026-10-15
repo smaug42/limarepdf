@@ -3,7 +3,7 @@
 
 use lopdf::{dictionary, Dictionary, Object, ObjectId, StringFormat};
 use mpe_core::render::{self, Renderer};
-use mpe_core::{AnnotKind, Pdf};
+use mpe_core::{AnnotKind, Pdf, Shape, ShapeLook};
 
 fn text(s: &str) -> Object {
     Object::String(s.as_bytes().to_vec(), StringFormat::Literal)
@@ -564,4 +564,119 @@ fn moving_and_resizing_take_the_geometry_along() {
         ink(&mut p, [150, 75, 200, 85]).1 > 20,
         "drawn longer, higher"
     );
+}
+
+#[test]
+fn shapes_and_lines_are_annotations_that_can_be_restyled() {
+    let mut p = page();
+    let look = ShapeLook {
+        fill: Some([1.0, 1.0, 0.0]),
+        width: 2.0,
+        arrow: false,
+    };
+    let sq = p
+        .add_shape_annotation(
+            0,
+            Shape::Rect,
+            [20.0, 20.0, 120.0, 80.0],
+            Some([0.0; 3]),
+            &look,
+            "Sam",
+        )
+        .unwrap();
+    let arrow = ShapeLook {
+        fill: None,
+        width: 3.0,
+        arrow: true,
+    };
+    let line = p
+        .add_shape_annotation(
+            0,
+            Shape::Line,
+            [150.0, 150.0, 280.0, 150.0],
+            Some([0.0; 3]),
+            &arrow,
+            "",
+        )
+        .unwrap();
+    let list = p.annotations();
+    let a = list.iter().find(|a| a.id == sq).unwrap();
+    assert_eq!((&a.kind, a.shape), (&AnnotKind::Square, Some(look)));
+    assert_eq!(a.bbox, [20.0, 20.0, 120.0, 80.0]);
+    let l = list.iter().find(|a| a.id == line).unwrap();
+    assert_eq!(l.kind, AnnotKind::Line);
+    assert_eq!(l.shape, Some(arrow));
+    assert_eq!(l.paths, [vec![(150.0, 150.0), (280.0, 150.0)]]);
+    // Filled yellow inside, a dark outline, and an arrowhead that reaches above the line.
+    let (any, dark) = ink(&mut p, [30, 30, 110, 70]);
+    assert!(any > 3000 && dark == 0, "{any} {dark}");
+    assert!(ink(&mut p, [18, 18, 122, 23]).1 > 100, "outline");
+    assert!(ink(&mut p, [262, 142, 278, 146]).1 > 3, "arrowhead");
+    // No fill, a thin line and no arrowhead.
+    p.set_shape_look(sq, &ShapeLook::default()).unwrap();
+    p.set_shape_look(
+        line,
+        &ShapeLook {
+            arrow: false,
+            ..arrow
+        },
+    )
+    .unwrap();
+    assert_eq!(ink(&mut p, [30, 30, 110, 70]).0, 0);
+    assert_eq!(ink(&mut p, [262, 142, 278, 146]).0, 0);
+    assert!(p.doc.get_dictionary(line).unwrap().get(b"LE").is_err());
+    let a = p.annotations();
+    assert_eq!(a[0].shape, Some(ShapeLook::default()));
+    assert!(!a[1].shape.unwrap().arrow);
+    // Too small to be meant.
+    assert!(p
+        .add_shape_annotation(0, Shape::Ellipse, [5.0, 5.0, 5.5, 9.0], None, &look, "")
+        .is_err());
+    assert!(p
+        .add_shape_annotation(0, Shape::Line, [5.0, 5.0, 5.2, 5.0], None, &look, "")
+        .is_err());
+}
+
+#[test]
+fn pen_strokes_are_simplified_and_join_one_drawing() {
+    let mut p = page();
+    // A straight stroke drawn with a slight wobble, 100 points long.
+    let wobbly: Vec<(f32, f32)> = (0..=100)
+        .map(|i| (20.0 + i as f32, 50.0 + if i % 2 == 0 { 0.1 } else { -0.1 }))
+        .collect();
+    let id = p.add_ink(0, &[wobbly], [0.0; 3], 2.0, "").unwrap();
+    let a = &p.annotations()[0];
+    assert_eq!(a.kind, AnnotKind::Ink);
+    assert!(a.paths[0].len() <= 3, "{:?}", a.paths);
+    p.add_ink_stroke(0, id, &[(20.0, 120.0), (120.0, 120.0)])
+        .unwrap();
+    let a = &p.annotations()[0];
+    assert_eq!(a.paths.len(), 2);
+    assert!(a.bbox[1] < 50.0 && a.bbox[3] > 120.0, "{:?}", a.bbox);
+    assert!(ink(&mut p, [30, 48, 110, 53]).1 > 50);
+    assert!(ink(&mut p, [30, 118, 110, 123]).1 > 50);
+    let note = p.add_note(0, (200.0, 100.0), [1.0; 3], "", "").unwrap();
+    assert!(p.add_ink_stroke(0, note, &[(0.0, 0.0)]).is_err());
+    assert!(p.add_ink(0, &[vec![]], [0.0; 3], 1.0, "").is_err());
+}
+
+#[test]
+fn replies_are_listed_but_not_drawn() {
+    let mut p = page();
+    let note = p
+        .add_note(0, (100.0, 100.0), [1.0, 0.85, 0.2], "Is this right?", "Sam")
+        .unwrap();
+    let before = ink(&mut p, [0, 0, 300, 200]);
+    let reply = p.add_reply(note, "Yes.", "Alex").unwrap();
+    let p2 = Pdf::from_bytes(&p.snapshot().unwrap(), None).unwrap();
+    let list = p2.annotations();
+    let r = list.iter().find(|a| a.id == reply).unwrap();
+    assert_eq!(r.reply_to, Some(note));
+    assert_eq!((r.contents.as_str(), r.author.as_str()), ("Yes.", "Alex"));
+    assert!(!r.on_page() && !r.has_appearance);
+    assert!(list.iter().find(|a| a.id == note).unwrap().on_page());
+    assert_eq!(ink(&mut p, [0, 0, 300, 200]), before, "nothing more drawn");
+    assert!(p.add_reply(note, "  ", "").is_err());
+    // Deleting what it answers takes the reply too.
+    assert_eq!(p.remove_annotations(|a| a.id == note).unwrap(), 2);
 }

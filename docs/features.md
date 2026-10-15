@@ -1,9 +1,8 @@
 # Features and status
 
 **Status: 0.3, for testing.** Most testing has been on Linux. Annotations can be viewed, moved, deleted and flattened;
-text can be highlighted and marked, and notes and text boxes added. Shapes and drawings can't be added as
-annotations yet. Digital signatures and
-redaction are not started.
+text can be highlighted and marked; notes, text boxes, shapes, lines, freehand drawings and replies added. Digital
+signatures and redaction are not started.
 
 ## What MPE does
 
@@ -58,7 +57,7 @@ available.
 | Printing | Partial | No paper size or scaling options. Tried on Windows; not yet with a real printer on Linux or macOS. [Details](export-and-printing.md#printing) |
 | Driving scanners | No | Not planned: scan with your system's tool and import the images |
 | Export to Word, Excel, CSV | No | |
-| Annotations and comments | Partial | Shown (MPE draws the common types when the file has no drawing), listed in the Comments tab with replies, deleted, flattened; `mpe annot list\|remove\|flatten`. Highlight, underline, strike out and squiggly-underline selected text; add sticky notes and text boxes (Helvetica, Latin-1 only); select any annotation to change its colour, opacity and comment, and move or resize it with the arrow. Adding shapes and drawings as annotations: No, coming next. [Details](gui.md#notes-and-text-boxes) |
+| Annotations and comments | Partial | Shown (MPE draws the common types when the file has no drawing), listed in the Comments tab with replies, deleted, flattened; `mpe annot list\|remove\|flatten`. Highlight, underline, strike out and squiggly-underline selected text; add sticky notes and text boxes (Helvetica, Latin-1 only), rectangles, ellipses, lines with an optional arrowhead, and freehand pen drawings; reply to any annotation; select any annotation to change its colour, opacity and comment (and a shape's width, fill and arrowhead), and move or resize it with the arrow. Not yet: stamps, polygons, measuring, attachments, XFDF. [Details](gui.md#shapes-lines-and-drawings) |
 | Stamps, measuring | No | |
 | Forms | Partial | Fill in text fields, checkboxes, radio buttons and lists in the app (Tab between fields, highlight, reset, flatten) and from the command line (`mpe form`, values as JSON, flatten all or some pages). Latin-1 text only; JavaScript doesn't run; creating fields and signing: No. [Details](gui.md#filling-in-forms) |
 | XFA-only forms (made for Adobe Reader) | No | Recognised and explained in a notice and by `mpe form`; showing or filling them is not planned (see below). Hybrid forms are filled through their ordinary fields |
