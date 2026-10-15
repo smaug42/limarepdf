@@ -1,6 +1,6 @@
 # Features and status
 
-**Status: 0.3, for testing.** Most testing has been on Linux. Annotations can be viewed, moved, deleted and flattened;
+**Status: 0.4, for testing.** Most testing has been on Linux. Annotations can be viewed, moved, deleted and flattened;
 text can be highlighted and marked; notes, text boxes, shapes, lines, freehand drawings and replies added. Digital
 signatures and redaction are not started.
 
@@ -57,7 +57,7 @@ available.
 | Printing | Partial | No paper size or scaling options. Tried on Windows; not yet with a real printer on Linux or macOS. [Details](export-and-printing.md#printing) |
 | Driving scanners | No | Not planned: scan with your system's tool and import the images |
 | Export to Word, Excel, CSV | No | |
-| Annotations and comments | Partial | Shown (MPE draws the common types when the file has no drawing), listed in the Comments tab with replies, deleted, flattened; `mpe annot list\|remove\|flatten`. Highlight, underline, strike out and squiggly-underline selected text; add sticky notes and text boxes (Helvetica, Latin-1 only), rectangles, ellipses, lines with an optional arrowhead, and freehand pen drawings; reply to any annotation; select any annotation to change its colour, opacity and comment (and a shape's width, fill and arrowhead), and move or resize it with the arrow. Not yet: stamps, polygons, measuring, attachments, XFDF. [Details](gui.md#shapes-lines-and-drawings) |
+| Annotations and comments | Partial | Shown (MPE draws the common types when the file has no drawing), listed in the Comments tab with replies, deleted, flattened; `mpe annot list\|remove\|flatten`. Highlight, underline, strike out and squiggly-underline selected text; add sticky notes and text boxes (Helvetica, Latin-1 only), rectangles, ellipses, lines with an optional arrowhead, and freehand pen drawings; reply to any annotation; select any annotation to change its colour, opacity and comment (and a shape's width, fill and arrowhead), and move or resize it with the arrow; drag a line's ends to turn it, and turn freehand drawings with their rotate handle. Not yet: turning rectangles, ellipses and text boxes (see below), stamps, polygons, measuring, attachments, XFDF. [Details](gui.md#shapes-lines-and-drawings) |
 | Stamps, measuring | No | |
 | Forms | Partial | Fill in text fields, checkboxes, radio buttons and lists in the app (Tab between fields, highlight, reset, flatten) and from the command line (`mpe form`, values as JSON, flatten all or some pages). Latin-1 text only; JavaScript doesn't run; creating fields and signing: No. [Details](gui.md#filling-in-forms) |
 | XFA-only forms (made for Adobe Reader) | No | Recognised and explained in a notice and by `mpe form`; showing or filling them is not planned (see below). Hybrid forms are filled through their ordinary fields |
@@ -96,6 +96,17 @@ software lays out. MPE recognises them and says so. Beyond that:
 - **Not planned: showing and filling them in MPE.** It would need an XFA layout engine (the specification runs to
   over 1,500 pages) and a script engine for their JavaScript and FormCalc, months of work for a format Adobe has
   deprecated and PDF 2.0 removed.
+
+### Turning annotation boxes
+
+Deferred until the core features are complete. PDF stores rectangle, ellipse and text box annotations as upright
+boxes, with no angle, so turning them needs a workaround:
+
+- **Text boxes in quarter turns:** the `/Rotate` entry Acrobat writes (MPE already uses it on turned pages). Other
+  readers understand it.
+- **Rectangles and ellipses at any angle:** saved as polygons, which every reader shows but lists as polygons
+  (an ellipse becomes many short sides). A turned drawing inside an upright box is the other way, but readers that
+  redraw the shape show it upright again, so it is not planned.
 
 ### Packaging
 
