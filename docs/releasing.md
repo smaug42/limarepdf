@@ -72,7 +72,8 @@ Set up once: Settings > Pages > Source: GitHub Actions; then, under Settings > E
 deployment tag rule `v*`, since a release run's ref is its tag.
 
 Started by hand (Actions > packages > Run workflow), it builds the site without deploying it unless "deploy" is
-ticked. If no published release has packages yet, it takes them from the latest successful `release-dry-run` of
+ticked; pull requests that change `packaging/` or the workflow build it the same way, as a check. (Starting it by hand
+needs the workflow on `main`.) If no published release has packages yet, it takes them from the latest successful `release-dry-run` of
 `ci.yml` on the chosen branch. To try the script locally, run it in an `ubuntu:24.04` container with `apt-utils`,
 `createrepo-c` and `gnupg`, a throwaway key, and `MPE_SITE_URL=file:///site`.
 

@@ -3,10 +3,15 @@ name: packages
 # from the .deb and .rpm files of the last three published releases each time a release
 # is published. Started by hand, it builds the site without deploying it (unless "deploy"
 # is ticked); before the first release with packages it takes them from the latest
-# release dry run of ci.yml on the chosen branch.
+# release dry run of ci.yml on the chosen branch. Pull requests that change the packaging
+# build the site too, as a check, without deploying it.
 on:
   release:
     types: [published]
+  pull_request:
+    paths:
+      - packaging/**
+      - .github/workflows/packages.yml
   workflow_dispatch:
     inputs:
       deploy:
@@ -36,7 +41,8 @@ jobs:
             gh release download "$tag" --pattern '*.deb' --pattern '*.rpm' --dir in || true
           done
           if ! ls in/*.deb > /dev/null 2>&1; then
-            run=$(gh run list --workflow ci.yml --branch "$GITHUB_REF_NAME" --event workflow_dispatch \
+            # A pull request's branch is GITHUB_HEAD_REF; otherwise the branch it was started on.
+            run=$(gh run list --workflow ci.yml --branch "${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}" --event workflow_dispatch \
               --status success --limit 1 --json databaseId --jq '.[0].databaseId')
             gh run download "$run" --name release-dry-run --dir dry
             cp dry/*.deb dry/*.rpm in/
