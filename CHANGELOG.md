@@ -2,10 +2,13 @@
 
 ## [Unreleased]
 
-### Added
+## [0.5.0] - 2026-10-15
 
-- Saving a digitally signed document asks first, since the saved copy's signatures will show as invalid. Saving as
-  a new file keeps the signed original. Core: `Pdf::signature_count`.
+Installable packages and signed releases: a Windows installer, a macOS app, Linux packages with apt and dnf
+repositories, and GPG signatures and build attestations for every download. Saving is also safer.
+
+### Packages and signed releases
+
 - Releases are signed: every file and `SHA256SUMS` has a GPG signature (`.asc`) made with MPE's own key, and a build
   attestation that `gh attestation verify` checks. [docs/install.md](docs/install.md#checking-a-download) explains
   how.
@@ -18,15 +21,17 @@
 - A Windows installer (`.msi`): Program Files, a Start menu entry, Open with for PDFs (and a choice in Default
   apps), `mpe` on the `PATH`, upgrades and an uninstaller.
 
-### Fixed
+### Saving and safety
 
+- Saving a digitally signed document asks first, since the saved copy's signatures will show as invalid. Saving as
+  a new file keeps the signed original. Core: `Pdf::signature_count`.
 - Saving is safe: MPE writes to a temporary file beside the document and then replaces it, so a failed save (a
   full disk, an error part way) leaves the original untouched. Saving through a symbolic link keeps the link, and
   a replaced file keeps its permissions. Applies to the app and every command.
 - A page's content, a drawing inside a page and text stored as a stream are decompressed up to 256 MB, so a small
   crafted file can't use up all memory when MPE reads its text.
 
-### Changed
+### Desktop app
 
 - "New from images…" is now "Make a PDF from images…", on the start screen and in the menu, with a hover tip on the
   start screen.

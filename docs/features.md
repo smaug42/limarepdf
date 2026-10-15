@@ -1,6 +1,6 @@
 # Features and status
 
-**Status: 0.4, for testing.** Most testing has been on Linux. Annotations can be viewed, moved, deleted and flattened;
+**Status: 0.5, for testing.** Most testing has been on Linux. Annotations can be viewed, moved, deleted and flattened;
 text can be highlighted and marked; notes, text boxes, shapes, lines, freehand drawings and replies added. Digital
 signatures and redaction are not started.
 
@@ -121,19 +121,15 @@ version: timestamps, revocation checks, hardware tokens and signing encrypted fi
 
 ### Packaging
 
-In progress (design approved 2026-10-15). Done: every release file and `SHA256SUMS` are GPG-signed with MPE's own
-key, and each file has a build attestation (`gh attestation verify`); a dry run of the release job checks this
-without releasing. Linux `.deb` and `.rpm` packages (the rpm signed) are built for each release, and signed apt and
-dnf repositories on the project's GitHub Pages are rebuilt when a release is published. macOS gets a universal
-`MPE.app` in a `.dmg`, listed under Open With for PDFs (whether a PDF opened that way loads, rather than just
-starting MPE, is untested). Windows gets an MSI installer. Next: the rest below.
+Since 0.5: every release file and `SHA256SUMS` are GPG-signed with MPE's own key, and each file has a build
+attestation (`gh attestation verify`); a dry run of the release job checks this without releasing. Each release has
+Linux `.deb` and `.rpm` packages (the rpm signed), signed apt and dnf repositories on the project's GitHub Pages
+(rebuilt when a release is published), a universal macOS `MPE.app` in a `.dmg`, and a Windows MSI installer. The
+archives stay.
 
-- **macOS:** an app bundle in a `.dmg` that registers MPE for PDFs, so it opens from Finder and "Open with". Without
-  Apple signing it needs the same one-time "Open Anyway" as the archive does today.
-- **Linux:** `.deb` and `.rpm` packages and an AUR package, installing the desktop entry and icon. The archive stays.
-- **Homebrew:** a cask in MPE's own tap.
-- **Windows:** an MSI installer (Start menu, "Open with" for PDFs, `mpe` on the `PATH`, uninstaller). The zip stays.
-- **Later:** winget and Scoop manifests. Maybe Flatpak.
+- **Untested:** whether a PDF opened from Finder's Open With loads in MPE, rather than just starting it; installing
+  the MSI on Windows.
+- **Next:** an AUR package, a Homebrew cask in MPE's own tap, and winget and Scoop manifests. Maybe Flatpak.
 - **Code signing** (macOS notarization, Windows Authenticode) needs certificates MPE doesn't have yet, so those builds
   stay unsigned; the GPG signatures and attestations cover them meanwhile.
 
