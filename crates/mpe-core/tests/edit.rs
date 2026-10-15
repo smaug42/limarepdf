@@ -79,6 +79,23 @@ fn finds_text_boxes_in_visible_text() {
 }
 
 #[test]
+fn finds_text_in_reading_order_not_drawing_order() {
+    // The lower line is drawn first.
+    let p =
+        make("BT /F1 18 Tf 20 100 Td (gamma) Tj ET\nBT /F1 18 Tf 20 150 Td (alpha beta) Tj ET\n");
+    let m = p.find_text_matches(0, "beta gamma").unwrap();
+    assert_eq!(m.len(), 1, "{m:?}");
+    assert_eq!(m[0].len(), 2, "{m:?}");
+    assert!(
+        m[0][0][1] < m[0][1][1],
+        "beta's box is above gamma's: {m:?}"
+    );
+    assert_eq!(p.search("beta gamma").unwrap().len(), 1);
+    assert!(p.find_text_matches(0, "gamma alpha").unwrap().is_empty());
+    assert!(p.search("gamma alpha").unwrap().is_empty());
+}
+
+#[test]
 fn match_boxes_follow_glyph_widths() {
     // Helvetica widths: i 222, space 278, W 944 (per 1000). At 20 pt from x = 10,
     // "WWWWW" starts after ten narrow i's and a space, at 10 + 2498 * 0.02 = 59.96,

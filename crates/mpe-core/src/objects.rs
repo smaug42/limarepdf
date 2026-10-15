@@ -744,39 +744,36 @@ impl Pdf {
         let to_vis = mx::inv(vd).ok_or_else(|| anyhow!("degenerate page transform"))?;
         let lines: Vec<&TextData> = parsed.text_lines().collect();
 
-        // The page's text in one string, whitespace collapsed to single spaces and lines
-        // joined by a space, with the line and character each one came from (none for
-        // the space between lines).
+        // The page's words in reading order in one string, one space between words, as
+        // [`Pdf::search`] reads them, with the text line and character each one came from
+        // (none for the spaces).
         let mut text: Vec<char> = Vec::new();
         let mut from: Vec<Option<(usize, usize)>> = Vec::new();
         let mut breaks = Vec::new();
-        for (li, t) in lines.iter().enumerate() {
-            for (ci, c) in t.text.chars().enumerate() {
-                if !c.is_whitespace() {
-                    text.push(fold(c));
-                    from.push(Some((li, ci)));
-                } else if text.last().is_some_and(|&l| l != ' ') {
-                    text.push(' ');
-                    from.push(Some((li, ci)));
+        let words = ordered_words(&lines, to_vis);
+        for (i, (w, li, start)) in words.iter().enumerate() {
+            if i > 0 {
+                if words[i - 1].0.line != w.line {
+                    breaks.push(text.len());
                 }
-            }
-            if text.last().is_some_and(|&l| l != ' ') {
                 text.push(' ');
                 from.push(None);
             }
-            if !text.is_empty() {
-                breaks.push(text.len() - 1);
+            for (k, c) in w.text.chars().enumerate() {
+                text.push(fold(c));
+                from.push(Some((*li, start + k)));
             }
         }
         let skip = joints(&text, &breaks);
 
         let mut out = Vec::new();
         for (s, e) in find_all(&text, &skip, &q) {
-            // The characters of the match on each line it touches.
+            // The characters of the match on each text line it touches; a run on one line
+            // includes the spaces between its words.
             let mut parts: Vec<(usize, usize, usize)> = Vec::new();
             for &(li, ci) in from[s..e].iter().flatten() {
                 match parts.last_mut() {
-                    Some(p) if p.0 == li => p.2 = ci + 1,
+                    Some(p) if p.0 == li && ci >= p.2 => p.2 = ci + 1,
                     _ => parts.push((li, ci, ci + 1)),
                 }
             }
@@ -807,44 +804,52 @@ impl Pdf {
         let parsed = self.parse_page(page_index)?;
         let (vd, _, _) = self.vis_down(page);
         let to_vis = mx::inv(vd).ok_or_else(|| anyhow!("degenerate page transform"))?;
-        let mut out = Vec::new();
-        let texts = parsed.text_lines();
-        for (line, t) in texts.enumerate() {
-            let chars: Vec<char> = t.text.chars().collect();
-            let mut i = 0;
-            while i < chars.len() {
-                if chars[i].is_whitespace() {
-                    i += 1;
-                    continue;
-                }
-                let start = i;
-                while i < chars.len() && !chars[i].is_whitespace() {
-                    i += 1;
-                }
-                let boxes = span_boxes(&t.pieces, start, i);
-                if boxes.is_empty() {
-                    continue;
-                }
-                let bb = mx::aabb(boxes.iter().flat_map(|b| [(b[0], b[1]), (b[2], b[3])]));
-                out.push(PageWord {
-                    text: chars[start..i].iter().collect(),
-                    bbox: mx::transform_rect(to_vis, bb),
-                    line,
-                });
-            }
-        }
-        let boxes: Vec<[f32; 4]> = out.iter().map(|w| w.bbox).collect();
-        let mut words: Vec<Option<PageWord>> = out.into_iter().map(Some).collect();
-        let ordered = crate::reading::reading_order(&boxes)
+        let lines: Vec<&TextData> = parsed.text_lines().collect();
+        Ok(ordered_words(&lines, to_vis)
             .into_iter()
-            .filter_map(|(i, row)| {
-                let mut w = words[i].take()?;
-                w.line = row;
-                Some(w)
-            })
-            .collect();
-        Ok(ordered)
+            .map(|(w, _, _)| w)
+            .collect())
     }
+}
+
+/// The words of a page's text lines in reading order (see [`Pdf::page_words`]), each with
+/// the index of the text line it came from and its first character there.
+fn ordered_words(lines: &[&TextData], to_vis: M) -> Vec<(PageWord, usize, usize)> {
+    let mut out = Vec::new();
+    for (li, t) in lines.iter().enumerate() {
+        let chars: Vec<char> = t.text.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i].is_whitespace() {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < chars.len() && !chars[i].is_whitespace() {
+                i += 1;
+            }
+            let boxes = span_boxes(&t.pieces, start, i);
+            if boxes.is_empty() {
+                continue;
+            }
+            let bb = mx::aabb(boxes.iter().flat_map(|b| [(b[0], b[1]), (b[2], b[3])]));
+            let word = PageWord {
+                text: chars[start..i].iter().collect(),
+                bbox: mx::transform_rect(to_vis, bb),
+                line: li,
+            };
+            out.push(Some((word, li, start)));
+        }
+    }
+    let boxes: Vec<[f32; 4]> = out.iter().flatten().map(|w| w.0.bbox).collect();
+    crate::reading::reading_order(&boxes)
+        .into_iter()
+        .filter_map(|(i, row)| {
+            let mut w = out[i].take()?;
+            w.0.line = row;
+            Some(w)
+        })
+        .collect()
 }
 
 /// A word on a page: its text, its box in displayed-page points (y down), and the index

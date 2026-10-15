@@ -43,7 +43,5 @@ Limits:
   give the wrong characters.
 - CID fonts whose codes are not two bytes long (some older Chinese, Japanese and Korean encodings) can come out
   wrong.
-- Highlights are placed using the order the file draws text in. A match that runs from one block into another the
-  file draws elsewhere is listed, but not highlighted.
 - Text inside form XObjects (reusable blocks of page content, which some PDF makers put all their text in) is read,
   searched and selected, but cannot be edited line by line: the form moves, resizes and deletes as one object.

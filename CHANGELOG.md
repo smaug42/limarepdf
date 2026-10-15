@@ -11,6 +11,8 @@
 ### Fixed
 
 - Search finds words hyphenated at a line end, with or without the hyphen, in the app and in `mpe search`.
+- Search highlights follow the page's reading order, as the results list does, so every match listed is highlighted
+  and stepping through results goes to the right place.
 - On Windows, a console window no longer opens behind the app.
 
 ## [0.5.0] - 2026-10-15
