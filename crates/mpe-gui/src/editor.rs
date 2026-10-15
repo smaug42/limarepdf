@@ -123,6 +123,8 @@ pub enum Action {
     MoveAnnot(usize, (u32, u16), [f32; 4]),
     /// Move a line's ends (x1, y1, x2, y2 in displayed-page points).
     LineEnds(usize, (u32, u16), [f32; 4]),
+    /// Turn a drawing by this many degrees, clockwise.
+    RotateInk(usize, (u32, u16), f32),
     DeleteAnnot(usize, (u32, u16)),
     /// A new note centred on a point, with its comment.
     AddNote(usize, (f32, f32), String),
@@ -168,6 +170,38 @@ enum Mode {
     Handle(usize),
     /// One end of a line (0 is its start); `Drag::orig` and `cur` hold both ends.
     End(usize),
+    /// Turning a drawing about the middle of its box (`orig`); `cur[0]` holds the angle
+    /// in degrees, clockwise.
+    Rotate,
+}
+
+/// How far above a drawing's box its rotate handle sits, in pixels.
+const ROTATE_GAP: f32 = 22.0;
+
+/// A circular arrow in place of the pointer, over the rotate handle and while turning:
+/// the system cursors have no rotate shape. Dark on a light disc, so it shows on any page.
+fn rotate_cursor(ctx: &egui::Context) {
+    let Some(at) = ctx.pointer_latest_pos() else {
+        return;
+    };
+    ctx.set_cursor_icon(CursorIcon::None);
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Tooltip,
+        egui::Id::new("rotate-cursor"),
+    ));
+    painter.circle(
+        at,
+        10.0,
+        Color32::WHITE.gamma_multiply(0.9),
+        Stroke::new(1.0, Color32::from_gray(60)),
+    );
+    painter.text(
+        at,
+        egui::Align2::CENTER_CENTER,
+        icon::ARROW_CLOCKWISE,
+        egui::FontId::new(15.0, theme::icons()),
+        Color32::from_gray(20),
+    );
 }
 
 struct Drag {
@@ -1010,6 +1044,18 @@ impl Editor {
             let (_, e) = sel_line?;
             (0..2).find(|&i| p.distance(Pos2::new(e[2 * i], e[2 * i + 1])) <= htol)
         };
+        // A selected drawing's box and strokes; it has a rotate handle above its box.
+        let sel_ink = self
+            .selected_annot()
+            .filter(|a| a.page == page && self.tool == Tool::Select && movable(a))
+            .filter(|a| a.kind == AnnotKind::Ink)
+            .map(|a| (a.id, a.bbox, a.paths.clone()));
+        let rotate_at = |b: [f32; 4]| Pos2::new((b[0] + b[2]) / 2.0, b[1] - ROTATE_GAP / k);
+        let rotate_hit = |p: Pos2| {
+            sel_ink
+                .as_ref()
+                .is_some_and(|(_, b, _)| p.distance(rotate_at(*b)) <= htol)
+        };
         let sel_note = self
             .selected_annot()
             .is_some_and(|a| a.kind == AnnotKind::Note);
@@ -1025,6 +1071,7 @@ impl Editor {
             .or_else(|| {
                 let (id, b, _) = sel_annot?;
                 let d = self.drag.as_ref().filter(|d| d.annot == Some(id));
+                let d = d.filter(|d| !matches!(d.mode, Mode::Rotate));
                 Some(shown_box(sel_note, d.map_or(b, |d| d.cur), k))
             });
         // The box that has handles: not a note's.
@@ -1059,7 +1106,9 @@ impl Editor {
                 if let Some(p) = hover_pt {
                     let over_handle = sized_box.and_then(|b| self.handle_hit(b, p, htol));
                     let over_annot = self.annot_at(pdf, page, p).cloned();
-                    if end_hit(p).is_some() {
+                    if rotate_hit(p) && !self.dragging() {
+                        rotate_cursor(ui.ctx());
+                    } else if end_hit(p).is_some() {
                         ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
                     } else if let Some(h) = over_handle {
                         ui.ctx().set_cursor_icon(handle_cursor(h));
@@ -1089,7 +1138,17 @@ impl Editor {
                     if let Some(p) = p {
                         let h = sized_box.and_then(|b| self.handle_hit(b, p, htol));
                         let selected = self.selected_annot().filter(|_| sel_annot.is_some());
-                        if let (Some(i), Some((id, ends))) = (end_hit(p), sel_line) {
+                        if let Some((id, b, _)) = sel_ink.as_ref().filter(|_| rotate_hit(p)) {
+                            self.drag = Some(Drag {
+                                page,
+                                id: 0,
+                                annot: Some(*id),
+                                mode: Mode::Rotate,
+                                start: p,
+                                orig: *b,
+                                cur: [0.0; 4],
+                            });
+                        } else if let (Some(i), Some((id, ends))) = (end_hit(p), sel_line) {
                             self.drag = Some(Drag {
                                 page,
                                 id: 0,
@@ -1144,21 +1203,39 @@ impl Editor {
                                     (e[2 * i], e[2 * i + 1]) = (q.x, q.y);
                                     e
                                 }
+                                // The angle swept about the box's middle since the press;
+                                // Shift keeps to steps of 15°.
+                                Mode::Rotate => {
+                                    let o = d.orig;
+                                    let c = Pos2::new((o[0] + o[2]) / 2.0, (o[1] + o[3]) / 2.0);
+                                    let angle = |q: Pos2| (q.y - c.y).atan2(q.x - c.x);
+                                    let mut deg = (angle(p) - angle(d.start)).to_degrees();
+                                    deg = (deg + 180.0).rem_euclid(360.0) - 180.0;
+                                    if shift {
+                                        deg = (deg / 15.0).round() * 15.0;
+                                    }
+                                    [deg, 0.0, 0.0, 0.0]
+                                }
                             };
-                            ui.ctx().set_cursor_icon(match d.mode {
-                                Mode::Move => CursorIcon::Grabbing,
-                                Mode::Handle(h) => handle_cursor(h),
-                                Mode::End(_) => CursorIcon::Crosshair,
-                            });
+                            match d.mode {
+                                Mode::Move => ui.ctx().set_cursor_icon(CursorIcon::Grabbing),
+                                Mode::Handle(h) => ui.ctx().set_cursor_icon(handle_cursor(h)),
+                                Mode::End(_) => ui.ctx().set_cursor_icon(CursorIcon::Crosshair),
+                                Mode::Rotate => rotate_cursor(ui.ctx()),
+                            }
                         }
                     }
                 }
                 if resp.drag_stopped() {
                     if let Some(d) = self.drag.take() {
-                        let moved = d.cur.iter().zip(&d.orig).any(|(a, b)| (a - b).abs() > 0.5);
+                        let moved = match d.mode {
+                            Mode::Rotate => d.cur[0].abs() > 0.1,
+                            _ => d.cur.iter().zip(&d.orig).any(|(a, b)| (a - b).abs() > 0.5),
+                        };
                         if d.page == page && moved {
                             self.actions.push(match (d.annot, d.mode) {
                                 (Some(id), Mode::End(_)) => Action::LineEnds(d.page, id, d.cur),
+                                (Some(id), Mode::Rotate) => Action::RotateInk(d.page, id, d.cur[0]),
                                 (Some(id), _) => Action::MoveAnnot(d.page, id, d.cur),
                                 (None, _) => Action::SetBox(d.page, d.id, d.cur),
                             });
@@ -1457,7 +1534,43 @@ impl Editor {
                 painter.circle_filled(c, 4.5, Color32::WHITE);
                 painter.circle_stroke(c, 4.5, Stroke::new(1.5, accent_strong));
             }
+        } else if let Some((_, b, paths)) = sel_ink.as_ref().filter(|_| {
+            self.drag
+                .as_ref()
+                .is_some_and(|d| d.page == page && matches!(d.mode, Mode::Rotate))
+        }) {
+            // Turning a drawing: its strokes as they will be, in place of its box.
+            let deg = self.drag.as_ref().map_or(0.0, |d| d.cur[0]);
+            let c = Pos2::new((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0);
+            let rot = egui::emath::Rot2::from_angle(deg.to_radians());
+            let st = Stroke::new(1.5, accent_strong);
+            for s in paths {
+                let pts: Vec<Pos2> = s
+                    .iter()
+                    .map(|&(x, y)| {
+                        let q = c + rot * (Pos2::new(x, y) - c);
+                        to_screen(q.x, q.y)
+                    })
+                    .collect();
+                painter.add(egui::Shape::line(pts, st));
+            }
+            painter.text(
+                to_screen(c.x, c.y),
+                egui::Align2::CENTER_CENTER,
+                format!("{deg:.0}°"),
+                egui::FontId::proportional(13.0),
+                accent_strong,
+            );
         } else if self.tool == Tool::Select {
+            if let Some((_, b, _)) = &sel_ink {
+                let (top, knob) = (
+                    to_screen((b[0] + b[2]) / 2.0, b[1]),
+                    to_screen(rotate_at(*b).x, rotate_at(*b).y),
+                );
+                painter.line_segment([top, knob], Stroke::new(1.0, accent_strong));
+                painter.circle_filled(knob, 5.0, Color32::WHITE);
+                painter.circle_stroke(knob, 5.0, Stroke::new(1.5, accent_strong));
+            }
             if let Some(b) = sel_box {
                 let sr = screen_rect(b);
                 painter.rect_stroke(
@@ -1644,13 +1757,17 @@ impl Editor {
 
     /// The page and box (page points) of the selected object or words, for placing the
     /// floating toolbar. For words, the part on the page where the selection's moving end
-    /// is.
+    /// is. A drawing's box includes its rotate handle, so the toolbar doesn't cover it.
     pub fn selection_box(&self) -> Option<(usize, [f32; 4])> {
         if let Some(o) = self.selected_object() {
             return Some((self.sel()?.0, o.bbox));
         }
         if let Some(a) = self.selected_annot() {
-            return Some((a.page, a.bbox));
+            let mut b = a.bbox;
+            if a.kind == AnnotKind::Ink && self.tool == Tool::Select && movable(a) {
+                b[1] -= (ROTATE_GAP + 8.0) / self.zoom.max(0.01);
+            }
+            return Some((a.page, b));
         }
         let Selection::Words { end: (page, _), .. } = self.selection else {
             return None;

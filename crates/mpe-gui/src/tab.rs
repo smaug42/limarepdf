@@ -357,6 +357,9 @@ impl Tab {
                 Action::LineEnds(p, id, ends) => {
                     self.edit_pages(ctx, &[p], |pdf| pdf.set_line_ends(p, id, ends));
                 }
+                Action::RotateInk(p, id, degrees) => {
+                    self.edit_pages(ctx, &[p], |pdf| pdf.rotate_ink(p, id, degrees));
+                }
                 Action::AddNote(p, at, text) => {
                     let (color, author) = (self.ed.note_color, self.ed.author.clone());
                     let mut new = None;

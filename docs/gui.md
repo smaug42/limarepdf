@@ -136,6 +136,11 @@ With the arrow, a selected line has a round handle on each end instead of a box:
 or point an arrow somewhere else (Shift keeps it at a multiple of 45° from the other end). Drag the line itself to
 move it.
 
+A selected freehand drawing has a round rotate handle above its box; the pointer becomes a circular arrow over it.
+Drag it around to turn the drawing about the
+middle of its box; the angle shows while you drag, and Shift keeps to steps of 15°. Rectangles, ellipses and text
+boxes can't be turned: PDF stores them as upright boxes.
+
 ## Filling in forms
 
 Form fields work with the read tool, like links: hovering tints a field and shows its description, and a click

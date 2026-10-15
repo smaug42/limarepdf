@@ -698,6 +698,23 @@ fn pen_strokes_are_simplified_and_join_one_drawing() {
 }
 
 #[test]
+fn a_drawing_turns_about_its_middle() {
+    let mut p = page();
+    p.rotate_pages(&[0], 90).unwrap();
+    // Shown 200 wide and 300 high: a stroke across, then turned a quarter clockwise.
+    let id = p
+        .add_ink(0, &[vec![(50.0, 100.0), (150.0, 100.0)]], [0.0; 3], 2.0, "")
+        .unwrap();
+    p.rotate_ink(0, id, 90.0).unwrap();
+    let a = &p.annotations()[0];
+    let s = &a.paths[0];
+    let near = |q: (f32, f32), x: f32, y: f32| (q.0 - x).abs() < 0.01 && (q.1 - y).abs() < 0.01;
+    assert!(near(s[0], 100.0, 50.0) && near(s[1], 100.0, 150.0), "{s:?}");
+    assert!(a.bbox[0] > 95.0 && a.bbox[2] < 105.0, "{:?}", a.bbox);
+    assert!(p.rotate_ink(0, (999, 0), 10.0).is_err());
+}
+
+#[test]
 fn replies_are_listed_but_not_drawn() {
     let mut p = page();
     let note = p

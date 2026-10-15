@@ -325,6 +325,34 @@ impl Pdf {
         Ok(())
     }
 
+    /// Turn the drawing `id` on page `page_index` (zero-based) by `degrees` about the
+    /// middle of its box, clockwise as the page is shown, and draw it again.
+    pub fn rotate_ink(&mut self, page_index: usize, id: (u32, u16), degrees: f32) -> Result<()> {
+        let page = self.page_id_at(page_index)?;
+        let (to_user, _, _) = self.vis_down(page);
+        let to_vis = mx::inv(to_user).ok_or_else(|| anyhow!("degenerate page transform"))?;
+        let d = self.doc.get_dictionary(id)?;
+        if d.get(b"Subtype").and_then(|o| o.as_name()).ok() != Some(b"Ink") {
+            bail!("not a drawing");
+        }
+        let pad = ink_pad(self.border(d).0);
+        let strokes = self.strokes(d);
+        // The middle of the strokes as shown; y runs down, so a positive angle turns
+        // clockwise.
+        let r = points_rect(&strokes, 0.0);
+        let (cx, cy) = mx::apply(to_vis, (r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0);
+        let (s, c) = degrees.to_radians().sin_cos();
+        let turn = [c, s, -s, c, cx - c * cx + s * cy, cy - s * cx - c * cy];
+        let m = mx::mul(mx::mul(to_vis, turn), to_user);
+        let list: Vec<Vec<f32>> = strokes.iter().map(|v| map_points(m, v)).collect();
+        let d = self.doc.get_dictionary_mut(id)?;
+        d.set("InkList", ink_list(&list));
+        d.set("Rect", nums(&points_rect(&list, pad)));
+        d.set("M", Object::string_literal(pdf_now()));
+        self.draw_annotations(&[id]);
+        Ok(())
+    }
+
     /// A drawing's strokes as numbers, as `/InkList` holds them.
     fn strokes(&self, d: &Dictionary) -> Vec<Vec<f32>> {
         d.get(b"InkList")
