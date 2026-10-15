@@ -85,7 +85,8 @@ available.
 
 ## Planned and proposed
 
-Ideas for what comes next. None of these are available yet, and the list is not a commitment or an order.
+Ideas for what comes next. None of these are available yet, and the list is not a commitment or an order. A wider
+pool of features other PDF tools have is in [ideas.md](ideas.md).
 
 ### XFA forms
 
