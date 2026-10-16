@@ -253,8 +253,19 @@ impl Pdf {
     /// Locked ones are removed too; the app checks [`Annot::locked`] first. Returns how
     /// many were removed, replies included.
     pub fn remove_annotations(&mut self, pick: impl Fn(&Annot) -> bool) -> Result<usize> {
+        let gone = self
+            .annotations()
+            .iter()
+            .filter(|a| pick(a))
+            .map(|a| a.id)
+            .collect();
+        self.drop_annotations(gone)
+    }
+
+    /// Remove the annotations `gone` (of any kind, links and form widgets too), with the
+    /// replies to them and their popups. Returns how many were removed, replies included.
+    pub(crate) fn drop_annotations(&mut self, mut gone: HashSet<ObjectId>) -> Result<usize> {
         let all = self.annotations();
-        let mut gone: HashSet<ObjectId> = all.iter().filter(|a| pick(a)).map(|a| a.id).collect();
         loop {
             let before = gone.len();
             for a in &all {
@@ -340,7 +351,7 @@ impl Pdf {
     }
 
     /// The page's `/Annots` array, resolved.
-    fn annots_array(&self, page: ObjectId) -> Option<Vec<Object>> {
+    pub(crate) fn annots_array(&self, page: ObjectId) -> Option<Vec<Object>> {
         self.doc
             .get_dictionary(page)
             .ok()?

@@ -102,7 +102,7 @@ impl Pdf {
     }
 
     /// Write `ops` back as the page's only content stream. Open `q` operators are closed first.
-    fn commit(
+    pub(crate) fn commit(
         &mut self,
         page: ObjectId,
         mut ops: Vec<Operation>,

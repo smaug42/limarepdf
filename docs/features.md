@@ -1,8 +1,8 @@
 # Features and status
 
 **Status: 0.6, for testing.** Most testing has been on Linux. Annotations can be viewed, moved, deleted and flattened;
-text can be highlighted and marked; notes, text boxes, shapes, lines, freehand drawings and replies added. Digital
-signatures and redaction are not started.
+text can be highlighted and marked; notes, text boxes, shapes, lines, freehand drawings and replies added. Redaction
+works from the command line; the app's part is next. Digital signatures are not started.
 
 ## What MPE does
 
@@ -69,7 +69,7 @@ available.
 | Links | Partial | Followed: to pages, and to web and email addresses after asking. Links to other PDF files, and adding or editing links: No. [Details](gui.md#links) |
 | Layers, attachments | No | |
 | Installers and packages | Done | `.deb` and `.rpm` packages with apt and dnf repositories, a macOS `.dmg`, a Windows MSI, and archives; GPG-signed. [Install](install.md); more package managers planned, see below |
-| Redaction | No | |
+| Redaction | Partial | Text, drawings, pictures (whole), comments and links under areas or wherever some text occurs are removed for good, then checked: `mpe redact`. Not yet: marking and applying in the app, blacking out part of a picture, removing hidden information. [Details](redaction.md) |
 | Digital signatures, certificate encryption | No | |
 | PDF/A, optimised saving | No | Saved files are pruned and compressed |
 | Comparing documents | No | |
@@ -145,8 +145,9 @@ archives stay.
 
 ### Features that would set MPE apart
 
-- **Redaction you can check.** Remove the text, images and metadata under a redaction, not just cover them, then
-  report what was removed and verify that none of it remains in the saved file.
+- **Redaction you can check**, the rest of it: mark areas, selected text and search results in the app, review the
+  marks, then apply them; black out only the covered part of a picture. Removing and checking work today with
+  `mpe redact`.
 - **Sanitise before sharing.** One command that strips metadata (including XMP), JavaScript, attachments and hidden
   layers. It pairs with redaction and with MPE making no network connections.
 - **Offline AI.** Summaries, questions and answers, and meaning-based search, run by a model on your own computer, so

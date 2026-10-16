@@ -17,12 +17,20 @@
   one down or drag to size it, then move, resize or fade it like other annotations. Your name can be changed right
   in the stamp tool's pane. The last five wordings and pictures are remembered. Also `mpe stamp` (`--text` and
   `--color` for your own wording).
+- Redaction from the command line: `mpe redact --text` or `--area` removes the text, drawings, pictures, comments,
+  links and form fields under the areas from the file (not just covering them) and paints the areas black, then
+  checks that nothing readable is left there and warns where the removed text still appears elsewhere.
 
 ### Changed
 
 - Link addresses, bookmark names, comments and their authors, tab and window titles and print job titles are
   cleaned before they are shown: direction-changing (bidi), invisible and control characters are removed and very
   long text is shortened, so a link can't disguise where it goes.
+
+### Fixed
+
+- Text in Type 3 fonts whose glyphs aren't measured in thousandths of an em is placed correctly for selection,
+  search highlights and copying.
 
 ## [0.6.0] - 2026-10-15
 

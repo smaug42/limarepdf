@@ -130,6 +130,12 @@ pub(crate) struct FontCtx<'a> {
     wmap: HashMap<u32, f32>,
     has_widths: bool,
     encoding_ok: bool,
+    /// Glyph widths to 1/1000 em: 1, except for Type 3 fonts, whose widths are in their
+    /// own glyph space (`/FontMatrix`).
+    scale: f32,
+    /// Whether [`FontCtx::codes`] splits strings the way the font does: always for simple
+    /// fonts, and for Type 0 fonts with a fixed two-byte encoding.
+    pub codes_known: bool,
 }
 
 fn f(doc: &Document, o: &Object) -> Option<f32> {
@@ -175,7 +181,24 @@ impl<'a> FontCtx<'a> {
             wmap: HashMap::new(),
             has_widths: false,
             encoding_ok,
+            scale: 1.0,
+            codes_known: !type0
+                || enc_name.as_deref().is_some_and(|n| {
+                    n.starts_with("Identity-") || n.contains("UCS2") || n.contains("UTF16")
+                }),
         };
+        if name(dict, b"Subtype").as_deref() == Some("Type3") {
+            let fm = dict
+                .get(b"FontMatrix")
+                .ok()
+                .and_then(|o| doc.dereference(o).ok())
+                .and_then(|(_, o)| o.as_array().ok())
+                .and_then(|a| a.first())
+                .and_then(|o| f(doc, o));
+            if let Some(a) = fm.filter(|a| a.is_finite() && *a != 0.0) {
+                ctx.scale = a * 1000.0;
+            }
+        }
         if type0 {
             let desc = dict
                 .get(b"DescendantFonts")
@@ -273,7 +296,8 @@ impl<'a> FontCtx<'a> {
                 .checked_sub(self.first)
                 .and_then(|i| self.widths.get(i as usize))
                 .copied()
-                .unwrap_or(self.missing);
+                .unwrap_or(self.missing)
+                * self.scale;
         }
         // No widths in the document: a standard font. Symbol and ZapfDingbats are
         // measured by code, the others by the character shown.
