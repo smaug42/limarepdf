@@ -32,7 +32,7 @@ available.
 | Tabs, thumbnails, opening by drag and drop | Done | |
 | Recent files | Done | Start screen and ☰ > File > Open recent; 10 files, kept on your computer only |
 | Notices about the document | Done | Password-protected, scanned pages, form fields, large files. [Details](gui.md#notices-about-the-document) |
-| Zoom, fit width, continuous scrolling, page navigation | Done | Pages fit the window's width by default and follow resizing; zooming turns that off. Single-page and facing-page layouts: No |
+| Zoom, fit width, continuous scrolling, page navigation | Done | Pages fit the window's width by default and follow resizing; zooming turns that off. Single-page and facing-page layouts (top-bar button or View > Page layout; cover page alone or paired), per document, following the document's own preference when it has one |
 | Open at a page from the command line | Done | `mpe-gui file.pdf --page N` |
 | Command palette, right-click menus, floating toolbar | Done | Toolbar customisation: No |
 | App icon | Done | Window, taskbar and Windows `.exe`. Wayland needs the desktop entry installed. [Details](install.md#menu-entry-and-icon-on-linux) |
@@ -57,13 +57,15 @@ available.
 | Printing | Partial | No paper size or scaling options. Tried on Windows; not yet with a real printer on Linux or macOS. [Details](export-and-printing.md#printing) |
 | Driving scanners | No | Not planned: scan with your system's tool and import the images |
 | Export to Word, Excel, CSV | No | |
-| Annotations and comments | Partial | Shown (MPE draws the common types when the file has no drawing), listed in the Comments tab with replies, deleted, flattened; `mpe annot list\|remove\|flatten`. Highlight, underline, strike out and squiggly-underline selected text; add sticky notes and text boxes (Helvetica, Latin-1 only), rectangles, ellipses, lines with an optional arrowhead, and freehand pen drawings; reply to any annotation; select any annotation to change its colour, opacity and comment (and a shape's width, fill and arrowhead), and move or resize it with the arrow; drag a line's ends to turn it, and turn freehand drawings with their rotate handle. Not yet: turning rectangles, ellipses and text boxes (see below), stamps, polygons, measuring, attachments, XFDF. [Details](gui.md#shapes-lines-and-drawings) |
-| Stamps, measuring | No | |
+| Annotations and comments | Partial | Shown (MPE draws the common types when the file has no drawing), listed in the Comments tab with replies, deleted, flattened; `mpe annot list\|remove\|flatten`. Highlight, underline, strike out and squiggly-underline selected text; add sticky notes and text boxes (Helvetica, Latin-1 only), rectangles, ellipses, lines with an optional arrowhead, freehand pen drawings and stamps; reply to any annotation; select any annotation to change its colour, opacity and comment (and a shape's width, fill and arrowhead), and move or resize it with the arrow; drag a line's ends to turn it, and turn freehand drawings with their rotate handle. Not yet: turning rectangles, ellipses and text boxes (see below), polygons, measuring, attachments, XFDF. [Details](gui.md#shapes-lines-and-drawings) |
+| Stamps | Done | Approved, Not approved, Draft, Final, Confidential, For comment and Void, or your own wording in green, red or blue (Western European characters only), optionally with the author's name and the date, or a PNG or JPEG picture; click to place or drag to size, then move and resize; `mpe stamp`. Not yet: stamps made from selected content, or wording in other scripts. [Details](gui.md#stamps) |
+| Measuring | No | |
 | Forms | Partial | Fill in text fields, checkboxes, radio buttons and lists in the app (Tab between fields, highlight, reset, flatten) and from the command line (`mpe form`, values as JSON, flatten all or some pages). Latin-1 text only; JavaScript doesn't run; creating fields and signing: No. [Details](gui.md#filling-in-forms) |
 | XFA-only forms (made for Adobe Reader) | No | Recognised and explained in a notice and by `mpe form`; showing or filling them is not planned (see below). Hybrid forms are filled through their ordinary fields |
 | Form data import/export (FDF, XFDF), barcodes, JavaScript | No | |
+| Viewer preferences | Done | The layout, side panel (Pages or Bookmarks) and page a document opens with: followed when opening, set in the inspector's Opening view or with `mpe view-prefs`. Full screen and hiding the toolbar or menu: No. [Details](cli.md#viewer-preferences) |
 | Page labels | Done | Numbering such as i, ii, 1, 2 or A-1: shown in the status bar, thumbnails and bookmark tips; set from the selected pages in the inspector or with `mpe labels`; kept with their pages when pages move. Going to a page by its label: No. [Details](cli.md#page-labels) |
-| Bookmarks | Partial | Shown in the Bookmarks tab (also from the command palette) and followed; adding, editing or deleting them: No. [Details](gui.md#the-window) |
+| Bookmarks | Partial | Shown in the Bookmarks tab (also from the command palette) and followed; added, renamed and deleted in that tab or with `mpe bookmarks`. Moving or reordering them, styles and colours: No. [Details](gui.md#the-window), [CLI](cli.md#bookmarks) |
 | Links | Partial | Followed: to pages, and to web and email addresses after asking. Links to other PDF files, and adding or editing links: No. [Details](gui.md#links) |
 | Layers, attachments | No | |
 | Installers and packages | No | Releases are archives of the programs. Packages are planned for later; see below |
@@ -132,8 +134,7 @@ Linux `.deb` and `.rpm` packages (the rpm signed), signed apt and dnf repositori
 (rebuilt when a release is published), a universal macOS `MPE.app` in a `.dmg`, and a Windows MSI installer. The
 archives stay.
 
-- **Untested:** whether a PDF opened from Finder's Open With loads in MPE, rather than just starting it; installing
-  the MSI on Windows.
+- **Untested:** whether a PDF opened from Finder's Open With loads in MPE, rather than just starting it.
 - **Next:** an AUR package, a Homebrew cask in MPE's own tap, and winget and Scoop manifests. Maybe Flatpak.
 - **Code signing** (macOS notarization, Windows Authenticode) needs certificates MPE doesn't have yet, so those builds
   stay unsigned; the GPG signatures and attestations cover them meanwhile.

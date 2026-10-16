@@ -27,9 +27,8 @@ Small or medium additions that build on what MPE already has:
 
 ## Structure and metadata
 
-- Bookmarks: add, edit, sort and delete; import and export as JSON; generate from headings or a table of contents (M)
+- Bookmarks: move and sort; import and export as JSON; generate from headings or a table of contents (M)
 - XMP metadata editing, keywords and custom properties (M)
-- Viewer preferences: the page and layout a document opens with (S)
 - Attachments (add, list, extract) and portfolios (M)
 - Create and edit links, turn URLs in text into links, links from bookmarks (M)
 - A full report on a file: its fonts, images and structure, beyond today's `mpe info` (S–M)
@@ -55,7 +54,9 @@ Small or medium additions that build on what MPE already has:
 
 ## Annotations and review
 
-- Stamps: custom, made from selected content, or with the date and name filled in (M)
+- Stamps made from selected content (S–M)
+- Stamp wording (and the name-and-date line) in scripts beyond Western European: Greek, Cyrillic, CJK and so on
+  (needs an embedded font, like the Unicode text item under Content editing)
 - Callouts, clouds, polylines, carets, typewriter text, file attachments, an eraser for pen strokes (M each)
 - Measurement tools with scale calibration and CSV export (L)
 - Comment summary and export, saved comment styles (M)

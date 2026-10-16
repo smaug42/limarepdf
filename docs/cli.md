@@ -91,6 +91,27 @@ carry on the numbering of the page before them.
 | `mpe labels set in.pdf -o out.pdf --from 5 --style decimal --start 1` | Number from page 5 on, up to the next range after it. Styles: `decimal`, `lower-roman`, `upper-roman`, `lower-letters`, `upper-letters`, `none` (the prefix alone); `--prefix "A-"` puts text before each number. Pages before the first range keep plain numbers |
 | `mpe labels remove in.pdf -o out.pdf` | Remove all page labels |
 
+### Viewer preferences
+
+How viewers that follow them show a document when it opens: its layout, side panel and opening page.
+
+| Command | What it does |
+| --- | --- |
+| `mpe view-prefs list in.pdf` | Show the layout, side panel and opening page, or "not set" |
+| `mpe view-prefs set in.pdf -o out.pdf --layout facing-cover --panel bookmarks --page 3` | Set any of them; those not given are kept. Layouts: `continuous`, `facing`, `facing-cover` (first page alone), `single`; panels: `pages`, `bookmarks`; `none` removes one (`--page none` too) |
+| `mpe view-prefs clear in.pdf -o out.pdf` | Remove all three. An opening action that isn't a page (such as a script) is kept |
+
+### Bookmarks
+
+Bookmarks are numbered from 1 in the order `list` shows them, each followed by the bookmarks inside it.
+
+| Command | What it does |
+| --- | --- |
+| `mpe bookmarks list in.pdf` | List the bookmarks, numbered and indented by level, with the page each goes to (`-` for another file or a web address) |
+| `mpe bookmarks add in.pdf -o out.pdf --title "Results" --page 12` | Add a bookmark to page 12, last at the top level. `--after N` puts it just after bookmark N, at its level; `--under N` puts it last inside bookmark N |
+| `mpe bookmarks rename in.pdf -o out.pdf 3 --title "Method"` | Rename bookmark 3 |
+| `mpe bookmarks remove in.pdf -o out.pdf 3` | Remove bookmark 3 and the bookmarks inside it |
+
 ## Images and scans
 
 | Command | What it does |
@@ -106,6 +127,9 @@ See [Scanning and OCR](scanning-and-ocr.md) for what these do.
 
 | Command | What it does |
 | --- | --- |
+| `mpe stamp in.pdf -o out.pdf --kind approved --date --author "Sam Lee"` | Put an Approved stamp, with a name-and-date line, in the top right corner of page 1; kinds are `approved`, `not-approved`, `draft`, `final`, `confidential`, `for-comment` and `void` |
+| `mpe stamp in.pdf -o out.pdf --text "Paid in full" --color green` | Put a stamp with your own wording (shown in capitals) in the top right corner of page 1; colours are `green`, `red` (the default) and `blue`; Western European characters only; `--date` and `--author` work as with `--kind` |
+| `mpe stamp in.pdf -o out.pdf --image seal.png --pages all --at 300,700 --scale 50` | Put a picture stamp on every page, centred 300 points from the left and 700 from the top, at half its own size (longer side 160 points) |
 | `mpe watermark in.pdf -o out.pdf --text CONFIDENTIAL --opacity 0.3` | Add a text watermark |
 | `mpe watermark in.pdf -o out.pdf --image logo.png --scale 40 --background` | Add a picture watermark, fitted inside 40% of the page, behind the content |
 | `mpe header-footer in.pdf -o out.pdf --footer-center "Page {page} of {pages}" --header-right "{date}"` | Add headers and footers; tokens `{page}`, `{pages}`, `{date}`, `{bates}` |

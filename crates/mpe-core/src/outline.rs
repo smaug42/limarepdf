@@ -1,9 +1,9 @@
 //! The document outline (bookmarks) and the destinations it points to.
 
-use crate::doc::decode_text;
+use crate::doc::{decode_text, encode_text};
 use crate::{Pdf, Result};
-use anyhow::bail;
-use lopdf::{Dictionary, Object, ObjectId};
+use anyhow::{bail, Context};
+use lopdf::{dictionary, Dictionary, Object, ObjectId, StringFormat};
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -27,6 +27,18 @@ pub struct OutlineItem {
     pub has_children: bool,
 }
 
+/// Where [`Pdf::add_bookmark`] puts a new bookmark. The numbers are positions in
+/// [`Pdf::outline`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BookmarkPlace {
+    /// Last at the top level.
+    End,
+    /// Just after this bookmark (and its children), at its level.
+    After(usize),
+    /// Last among this bookmark's children.
+    Under(usize),
+}
+
 impl Pdf {
     /// Split where the bookmarks down to `level` (1 = top level only) point: one part per bookmarked page, in page
     /// order, titled by its first bookmark. Pages before the first bookmark are a part of their own, untitled.
@@ -44,6 +56,217 @@ impl Pdf {
     /// The bookmarks; empty when the document has none. Broken entries are skipped,
     /// never fatal: a bookmark whose target can't be found gets `page: None`.
     pub fn outline(&self) -> Vec<OutlineItem> {
+        self.outline_nodes().into_iter().map(|(_, i)| i).collect()
+    }
+
+    /// Add a bookmark to `page` (zero-based) and return its position in [`Pdf::outline`].
+    /// It goes to the top of the page, keeping the zoom.
+    pub fn add_bookmark(
+        &mut self,
+        title: &str,
+        page: usize,
+        place: BookmarkPlace,
+    ) -> Result<usize> {
+        let Some(&page_id) = self.page_ids().get(page) else {
+            bail!(
+                "page {} does not exist (document has {})",
+                page + 1,
+                self.page_count()
+            );
+        };
+        let nodes = self.outline_nodes();
+        let node = |i: usize| match nodes.get(i) {
+            Some((id, item)) => Ok((*id, item.depth)),
+            None => bail!("bookmark {} does not exist", i + 1),
+        };
+        let (parent, prev, next) = match place {
+            BookmarkPlace::End => {
+                let root = self.outline_root()?;
+                (root, self.last_child(root), None)
+            }
+            BookmarkPlace::After(i) => {
+                let (id, _) = node(i)?;
+                let parent = self.outline_link(id, b"Parent");
+                let parent = parent.map_or_else(|| self.outline_root(), Ok)?;
+                (parent, Some(id), self.outline_link(id, b"Next"))
+            }
+            BookmarkPlace::Under(i) => {
+                let (id, depth) = node(i)?;
+                if depth + 1 >= MAX_DEPTH {
+                    bail!("bookmarks can't be nested deeper than {MAX_DEPTH} levels");
+                }
+                // Open it, so the new bookmark shows.
+                let d = self.doc.get_dictionary_mut(id)?;
+                if d.get(b"Count")
+                    .ok()
+                    .and_then(|o| o.as_i64().ok())
+                    .unwrap_or(0)
+                    <= 0
+                {
+                    d.set("Count", 1);
+                }
+                (id, self.last_child(id), None)
+            }
+        };
+        let top = self.page_box(page_id)[3];
+        let mut item = dictionary! {
+            "Title" => Object::String(encode_text(title), StringFormat::Literal),
+            "Parent" => parent,
+            "Dest" => vec![page_id.into(), "XYZ".into(), Object::Null, top.into(), Object::Null],
+        };
+        if let Some(p) = prev {
+            item.set("Prev", p);
+        }
+        if let Some(n) = next {
+            item.set("Next", n);
+        }
+        let id = self.doc.add_object(item);
+        match prev {
+            Some(p) => self.doc.get_dictionary_mut(p)?.set("Next", id),
+            None => self.doc.get_dictionary_mut(parent)?.set("First", id),
+        }
+        match next {
+            Some(n) => self.doc.get_dictionary_mut(n)?.set("Prev", id),
+            None => self.doc.get_dictionary_mut(parent)?.set("Last", id),
+        }
+        self.fix_outline_counts()?;
+        self.outline_nodes()
+            .iter()
+            .position(|(n, _)| *n == id)
+            .context("the new bookmark is not in the outline")
+    }
+
+    /// Give bookmark `index` (a position in [`Pdf::outline`]) a new title.
+    pub fn rename_bookmark(&mut self, index: usize, title: &str) -> Result<()> {
+        let Some(&(id, _)) = self.outline_nodes().get(index) else {
+            bail!("bookmark {} does not exist", index + 1);
+        };
+        let title = Object::String(encode_text(title), StringFormat::Literal);
+        self.doc.get_dictionary_mut(id)?.set("Title", title);
+        Ok(())
+    }
+
+    /// Remove bookmark `index` (a position in [`Pdf::outline`]) and its children.
+    pub fn remove_bookmark(&mut self, index: usize) -> Result<()> {
+        let Some(&(id, _)) = self.outline_nodes().get(index) else {
+            bail!("bookmark {} does not exist", index + 1);
+        };
+        let parent = self.outline_link(id, b"Parent");
+        let parent = parent.map_or_else(|| self.outline_root(), Ok)?;
+        let next = self.outline_link(id, b"Next");
+        // Find the one before it by walking the list; a file's Prev links can be wrong.
+        let mut prev = None;
+        let mut seen = HashSet::new();
+        let mut at = self.outline_link(parent, b"First");
+        while let Some(a) = at.filter(|&a| a != id && seen.insert(a)) {
+            prev = Some(a);
+            at = self.outline_link(a, b"Next");
+        }
+        let set = |d: &mut Dictionary, key: &str, to: Option<ObjectId>| match to {
+            Some(to) => d.set(key, to),
+            None => {
+                d.remove(key.as_bytes());
+            }
+        };
+        match prev {
+            Some(p) => set(self.doc.get_dictionary_mut(p)?, "Next", next),
+            None => set(self.doc.get_dictionary_mut(parent)?, "First", next),
+        }
+        match next {
+            Some(n) => set(self.doc.get_dictionary_mut(n)?, "Prev", prev),
+            None => set(self.doc.get_dictionary_mut(parent)?, "Last", prev),
+        }
+        self.fix_outline_counts()?;
+        // With the last bookmark gone, drop the outline altogether.
+        let root = self.outline_root()?;
+        if self.outline_link(root, b"First").is_none() {
+            self.doc.catalog_mut()?.remove(b"Outlines");
+        }
+        Ok(())
+    }
+
+    /// The outline root's object, made (or moved out of the catalog) when needed.
+    fn outline_root(&mut self) -> Result<ObjectId> {
+        let current = self.doc.catalog()?.get(b"Outlines").ok().cloned();
+        if let Some(Object::Reference(id)) = current {
+            if self.doc.get_dictionary(id).is_ok() {
+                return Ok(id);
+            }
+        }
+        let root = match current {
+            Some(Object::Dictionary(d)) => d,
+            _ => dictionary! { "Type" => "Outlines" },
+        };
+        let id = self.doc.add_object(root);
+        self.doc.catalog_mut()?.set("Outlines", id);
+        Ok(id)
+    }
+
+    fn outline_link(&self, id: ObjectId, key: &[u8]) -> Option<ObjectId> {
+        let d = self.doc.get_dictionary(id).ok()?;
+        d.get(key).ok()?.as_reference().ok()
+    }
+
+    /// The last of `parent`'s children, found by walking them.
+    fn last_child(&self, parent: ObjectId) -> Option<ObjectId> {
+        let mut seen = HashSet::new();
+        let mut last = None;
+        let mut at = self.outline_link(parent, b"First");
+        while let Some(a) = at.filter(|&a| seen.insert(a)) {
+            last = Some(a);
+            at = self.outline_link(a, b"Next");
+        }
+        last
+    }
+
+    /// Set every `Count` from the tree as it now is: the number of descendants shown,
+    /// negative for a closed bookmark.
+    fn fix_outline_counts(&mut self) -> Result<()> {
+        let root = self.outline_root()?;
+        let shown = self.fix_counts(root, 0, &mut HashSet::new())?;
+        let d = self.doc.get_dictionary_mut(root)?;
+        match shown {
+            0 => {
+                d.remove(b"Count");
+            }
+            n => d.set("Count", n),
+        }
+        Ok(())
+    }
+
+    /// Fix the counts below `id`, returning how many descendants it shows when open.
+    fn fix_counts(
+        &mut self,
+        id: ObjectId,
+        depth: usize,
+        seen: &mut HashSet<ObjectId>,
+    ) -> Result<i64> {
+        let mut shown = 0;
+        let mut child = self.outline_link(id, b"First");
+        while let Some(c) = child.filter(|&c| depth < MAX_DEPTH && seen.insert(c)) {
+            let below = self.fix_counts(c, depth + 1, seen)?;
+            let d = self.doc.get_dictionary_mut(c)?;
+            let open = d
+                .get(b"Count")
+                .ok()
+                .and_then(|o| o.as_i64().ok())
+                .unwrap_or(0)
+                > 0;
+            match below {
+                0 => {
+                    d.remove(b"Count");
+                }
+                n if open => d.set("Count", n),
+                n => d.set("Count", -n),
+            }
+            shown += 1 + if open { below } else { 0 };
+            child = self.outline_link(c, b"Next");
+        }
+        Ok(shown)
+    }
+
+    /// The bookmarks with their objects, in [`Pdf::outline`] order.
+    fn outline_nodes(&self) -> Vec<(ObjectId, OutlineItem)> {
         let mut out = Vec::new();
         let first = self
             .doc
@@ -68,7 +291,7 @@ impl Pdf {
         depth: usize,
         pages: &HashMap<ObjectId, usize>,
         seen: &mut HashSet<ObjectId>,
-        out: &mut Vec<OutlineItem>,
+        out: &mut Vec<(ObjectId, OutlineItem)>,
     ) {
         let mut next = Some(first);
         while let Some(id) = next {
@@ -99,13 +322,14 @@ impl Pdf {
                 .ok()
                 .and_then(|o| o.as_i64().ok())
                 .is_some_and(|n| n > 0);
-            out.push(OutlineItem {
+            let item = OutlineItem {
                 title,
                 depth,
                 page: self.item_target(node, pages),
                 open,
                 has_children: child.is_some() && depth + 1 < MAX_DEPTH,
-            });
+            };
+            out.push((id, item));
             if let Some(child) = child.filter(|_| depth + 1 < MAX_DEPTH) {
                 self.walk_outline(child, depth + 1, pages, seen, out);
             }

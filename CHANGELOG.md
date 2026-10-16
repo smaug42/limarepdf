@@ -1,5 +1,23 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Bookmark editing: add a bookmark to the current page, rename one, add one inside another, or delete one with the
+  bookmarks inside it, from the Bookmarks tab (Undo reverses each), and list, add, rename and remove them with
+  `mpe bookmarks`.
+- Page layouts, from a top-bar button or View > Page layout: facing pages (two side by side, with the first page shown alone like a book
+  cover, or paired) and single page (one at a time; scrolling past a page's end turns it), besides continuous
+  pages. The choice applies to the document being viewed and is remembered for documents opened later.
+- Viewer preferences: a document that sets the layout, side panel (Pages or Bookmarks) or page it opens with now
+  opens that way. Set them in the inspector's Opening view section, or with `mpe view-prefs list|set|clear`.
+- Stamps: Approved, Not approved, Draft, Final, Confidential, For comment and Void, your own wording in green, red
+  or blue, with your name and the date if you like, or a picture of your own, from the Annotate menu. Click to put
+  one down or drag to size it, then move, resize or fade it like other annotations. Your name can be changed right
+  in the stamp tool's pane. The last five wordings and pictures are remembered. Also `mpe stamp` (`--text` and
+  `--color` for your own wording).
+
 ## [0.6.0] - 2026-10-15
 
 Page tools and sturdier handling of damaged files: remove blank pages, split at bookmarks, page labels and picture

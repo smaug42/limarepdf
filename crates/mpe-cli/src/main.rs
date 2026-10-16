@@ -10,9 +10,10 @@ macro_rules! out {
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use mpe_core::{
     format_page_range, parse_page_range, part_file_name, print, render, Annot, AnnotKind, Bates,
-    Cipher, Encryption, Field, FieldKind, FieldValue, HeaderFooter, ImageImport, ImageWatermark,
-    Info, LabelRange, LabelStyle, Ocr, OcrResult, Pdf, Restrictions, ScanMode, ScanOptions,
-    ScanResult, Watermark,
+    BookmarkPlace, Cipher, Encryption, Field, FieldKind, FieldValue, HeaderFooter, ImageImport,
+    ImageWatermark, Info, LabelRange, LabelStyle, Ocr, OcrResult, OpenLayout, OpenPanel, Pdf,
+    Restrictions, ScanMode, ScanOptions, ScanResult, Stamp, StampColor, StampKind, StampPlace,
+    ViewPrefs, Watermark,
 };
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
@@ -210,6 +211,38 @@ enum Cmd {
         #[arg(long)]
         background: bool,
     },
+    /// Put a stamp on pages: Approved, Draft and so on, your own wording, or a picture
+    Stamp {
+        #[command(flatten)]
+        io: Io,
+        /// approved, not-approved, draft, final, confidential, for-comment or void
+        #[arg(long, required_unless_present_any = ["image", "text"], conflicts_with_all = ["image", "text"])]
+        kind: Option<String>,
+        /// Your own wording instead, shown in capitals
+        #[arg(long, conflicts_with = "image")]
+        text: Option<String>,
+        /// The colour of your own wording: green, red or blue; default red
+        #[arg(long)]
+        color: Option<String>,
+        /// Use a PNG, JPEG or TIFF picture instead
+        #[arg(long)]
+        image: Option<PathBuf>,
+        #[arg(long, default_value = "1")]
+        pages: String,
+        /// Centre of the stamp as X,Y in points from the page's top left as shown;
+        /// default: the top right corner
+        #[arg(long)]
+        at: Option<String>,
+        /// Size, as a percentage of the stamp's own size
+        #[arg(long, default_value_t = 100.0)]
+        scale: f32,
+        /// Add a line with the author's name and today's date
+        #[arg(long, conflicts_with = "image")]
+        date: bool,
+        /// The stamp's author, also written on the date line
+        #[arg(long, default_value = "")]
+        author: String,
+    },
     /// Add header/footer text; tokens: {page} {pages} {date} {bates}
     HeaderFooter {
         #[command(flatten)]
@@ -310,6 +343,16 @@ enum Cmd {
         #[command(subcommand)]
         cmd: LabelsCmd,
     },
+    /// Work with bookmarks (the document outline)
+    Bookmarks {
+        #[command(subcommand)]
+        cmd: BookmarksCmd,
+    },
+    /// Work with viewer preferences: the layout, side panel and page a document opens with
+    ViewPrefs {
+        #[command(subcommand)]
+        cmd: ViewPrefsCmd,
+    },
     /// List the printers; the default is marked
     Printers,
     /// Print (CUPS on Linux and macOS, the print spooler on Windows)
@@ -403,6 +446,114 @@ enum LabelsCmd {
     Remove {
         #[command(flatten)]
         io: Io,
+    },
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum OpenLayoutArg {
+    /// One column of pages, scrolled
+    Continuous,
+    /// Two pages side by side, odd pages on the left
+    Facing,
+    /// Two pages side by side, the first page alone on the right
+    FacingCover,
+    /// One page at a time
+    Single,
+    /// Remove the preference
+    None,
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum OpenPanelArg {
+    /// Page thumbnails
+    Pages,
+    /// The bookmarks
+    Bookmarks,
+    /// Remove the preference
+    None,
+}
+
+#[derive(Subcommand)]
+enum ViewPrefsCmd {
+    /// List the document's viewer preferences
+    List {
+        input: PathBuf,
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Set viewer preferences; those not given are kept
+    Set {
+        #[command(flatten)]
+        io: Io,
+        #[arg(long, value_enum)]
+        layout: Option<OpenLayoutArg>,
+        /// The side panel shown on opening
+        #[arg(long, value_enum)]
+        panel: Option<OpenPanelArg>,
+        /// The page the document opens on (1-based), or "none"
+        #[arg(long, value_parser = parse_open_page)]
+        page: Option<OpenPageArg>,
+    },
+    /// Remove all viewer preferences MPE knows (an opening action that isn't a page is kept)
+    Clear {
+        #[command(flatten)]
+        io: Io,
+    },
+}
+
+#[derive(Copy, Clone)]
+enum OpenPageArg {
+    Page(usize),
+    None,
+}
+
+fn parse_open_page(s: &str) -> std::result::Result<OpenPageArg, String> {
+    match s {
+        "none" => Ok(OpenPageArg::None),
+        _ => match s.parse::<usize>() {
+            Ok(n) if n >= 1 => Ok(OpenPageArg::Page(n)),
+            _ => Err("expected a page number from 1, or \"none\"".into()),
+        },
+    }
+}
+
+#[derive(Subcommand)]
+enum BookmarksCmd {
+    /// List the bookmarks, numbered, indented by level, with the page each goes to
+    List {
+        input: PathBuf,
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Add a bookmark to a page. Without --after or --under it goes last at the top level
+    Add {
+        #[command(flatten)]
+        io: Io,
+        #[arg(long)]
+        title: String,
+        /// The page it goes to (1-based)
+        #[arg(long)]
+        page: usize,
+        /// Put it just after bookmark N (from `list`), at its level
+        #[arg(long, value_name = "N", conflicts_with = "under")]
+        after: Option<usize>,
+        /// Put it last among bookmark N's children
+        #[arg(long, value_name = "N")]
+        under: Option<usize>,
+    },
+    /// Give bookmark N (from `list`) a new title
+    Rename {
+        #[command(flatten)]
+        io: Io,
+        number: usize,
+        #[arg(long)]
+        title: String,
+    },
+    /// Remove bookmark N (from `list`) and its children
+    Remove {
+        #[command(flatten)]
+        io: Io,
+        number: usize,
     },
 }
 
@@ -888,6 +1039,11 @@ fn run_edit(io: &Io, f: impl FnOnce(&mut Pdf) -> Result<()>) -> Result<()> {
     Ok(())
 }
 
+/// A bookmark number from `mpe bookmarks list` as a position in the outline.
+fn bookmark_index(n: usize) -> Result<usize> {
+    n.checked_sub(1).context("bookmarks are numbered from 1")
+}
+
 fn some(s: &Option<String>) -> String {
     s.clone().unwrap_or_default()
 }
@@ -1151,6 +1307,71 @@ fn main() -> Result<()> {
                 }
             })?
         }
+        Cmd::Stamp {
+            io,
+            kind,
+            text,
+            color,
+            image,
+            pages,
+            at,
+            scale,
+            date,
+            author,
+        } => {
+            if !(scale > 0.0 && scale.is_finite()) {
+                bail!("--scale must be above 0");
+            }
+            if color.is_some() && text.is_none() {
+                bail!("--color is for --text stamps only");
+            }
+            let image = match image {
+                Some(path) => Some(
+                    std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?,
+                ),
+                None => None,
+            };
+            let stamp = match (&image, &text) {
+                (Some(bytes), _) => Stamp::Picture(bytes),
+                (None, Some(text)) => Stamp::Custom {
+                    text,
+                    color: match color {
+                        Some(c) => StampColor::from_name(&c)
+                            .with_context(|| format!("no colour called {c:?}"))?,
+                        None => StampColor::Red,
+                    },
+                    name_and_date: date,
+                },
+                (None, None) => {
+                    let name = kind.unwrap_or_default();
+                    Stamp::Text {
+                        kind: StampKind::from_name(&name)
+                            .with_context(|| format!("no stamp called {name:?}"))?,
+                        name_and_date: date,
+                    }
+                }
+            };
+            let at = match at {
+                Some(s) => {
+                    let (x, y) = s.split_once(',').context("--at takes X,Y")?;
+                    Some((x.trim().parse::<f32>()?, y.trim().parse::<f32>()?))
+                }
+                None => None,
+            };
+            let (w, h) = stamp.size(&author)?;
+            let (w, h) = (w * scale / 100.0, h * scale / 100.0);
+            run_edit(&io, |p| {
+                for i in parse_page_range(&pages, p.page_count())? {
+                    let (x, y) = match at {
+                        Some(xy) => xy,
+                        None => (p.page_size(i)?.0 - 36.0 - w / 2.0, 36.0 + h / 2.0),
+                    };
+                    let r = [x - w / 2.0, y - h / 2.0, x + w / 2.0, y + h / 2.0];
+                    p.add_stamp(i, &stamp, StampPlace::Fill(r), &author)?;
+                }
+                Ok(())
+            })?
+        }
         Cmd::HeaderFooter {
             io,
             pages,
@@ -1377,6 +1598,92 @@ fn main() -> Result<()> {
                 })
             })?,
             LabelsCmd::Remove { io } => run_edit(&io, |p| p.set_label_ranges(&[]))?,
+        },
+        Cmd::ViewPrefs { cmd } => match cmd {
+            ViewPrefsCmd::List { input, password } => {
+                let p = open(&input, &password)?;
+                let prefs = p.view_prefs();
+                let labels = p.page_labels();
+                let page = prefs.page.map(|n| match &labels {
+                    Some(l) if l[n] != (n + 1).to_string() => format!("{} (label {})", n + 1, l[n]),
+                    _ => (n + 1).to_string(),
+                });
+                out!("layout: {}", prefs.layout.map_or("not set", |l| l.name()));
+                out!("panel:  {}", prefs.panel.map_or("not set", |s| s.name()));
+                out!("page:   {}", page.as_deref().unwrap_or("not set"));
+            }
+            ViewPrefsCmd::Set {
+                io,
+                layout,
+                panel,
+                page,
+            } => run_edit(&io, |p| {
+                let mut prefs = p.view_prefs();
+                if let Some(l) = layout {
+                    prefs.layout = match l {
+                        OpenLayoutArg::Continuous => Some(OpenLayout::Continuous),
+                        OpenLayoutArg::Facing => Some(OpenLayout::Facing),
+                        OpenLayoutArg::FacingCover => Some(OpenLayout::FacingCover),
+                        OpenLayoutArg::Single => Some(OpenLayout::Single),
+                        OpenLayoutArg::None => None,
+                    };
+                }
+                if let Some(s) = panel {
+                    prefs.panel = match s {
+                        OpenPanelArg::Pages => Some(OpenPanel::Pages),
+                        OpenPanelArg::Bookmarks => Some(OpenPanel::Bookmarks),
+                        OpenPanelArg::None => None,
+                    };
+                }
+                if let Some(n) = page {
+                    prefs.page = match n {
+                        OpenPageArg::Page(n) => Some(n - 1),
+                        OpenPageArg::None => None,
+                    };
+                }
+                p.set_view_prefs(&prefs)
+            })?,
+            ViewPrefsCmd::Clear { io } => {
+                run_edit(&io, |p| p.set_view_prefs(&ViewPrefs::default()))?
+            }
+        },
+        Cmd::Bookmarks { cmd } => match cmd {
+            BookmarksCmd::List { input, password } => {
+                let p = open(&input, &password)?;
+                let items = p.outline();
+                if items.is_empty() {
+                    out!("no bookmarks");
+                }
+                let width = items.len().to_string().len();
+                for (n, item) in items.iter().enumerate() {
+                    let page = item.page.map_or("-".into(), |p| (p + 1).to_string());
+                    let indent = "  ".repeat(item.depth);
+                    out!("{:>width$}  p. {page:<5} {indent}{}", n + 1, item.title);
+                }
+            }
+            BookmarksCmd::Add {
+                io,
+                title,
+                page,
+                after,
+                under,
+            } => run_edit(&io, |p| {
+                let place = match (after, under) {
+                    (Some(n), _) => BookmarkPlace::After(bookmark_index(n)?),
+                    (_, Some(n)) => BookmarkPlace::Under(bookmark_index(n)?),
+                    _ => BookmarkPlace::End,
+                };
+                if page == 0 {
+                    bail!("pages are numbered from 1");
+                }
+                p.add_bookmark(&title, page - 1, place).map(|_| ())
+            })?,
+            BookmarksCmd::Rename { io, number, title } => {
+                run_edit(&io, |p| p.rename_bookmark(bookmark_index(number)?, &title))?
+            }
+            BookmarksCmd::Remove { io, number } => {
+                run_edit(&io, |p| p.remove_bookmark(bookmark_index(number)?))?
+            }
         },
         Cmd::Annot { cmd } => match cmd {
             AnnotCmd::List {

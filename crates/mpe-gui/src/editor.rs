@@ -8,9 +8,11 @@ use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeK
 use egui_phosphor::regular as icon;
 use mpe_core::{
     words_text, Annot, AnnotKind, Family, FieldValue, FontChoice, Link, LinkTarget, ObjectKind,
-    PageObject, PageWord, PathStyle, Shape, ShapeLook, TextEdit, TextStyle,
+    PageObject, PageWord, PathStyle, Shape, ShapeLook, StampColor, StampKind, StampPlace, TextEdit,
+    TextStyle,
 };
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tool {
@@ -29,18 +31,30 @@ pub enum Tool {
     TextBox,
     /// Draw freehand; strokes made in quick succession make one drawing.
     Pen,
+    /// Click to put down a stamp, or drag a box to size it.
+    Stamp,
 }
 
 impl Tool {
     /// The tools behind the toolbar's Annotate button.
-    pub const ANNOTATE: [Tool; 6] = [
+    pub const ANNOTATE: [Tool; 7] = [
         Tool::Note,
         Tool::TextBox,
         Tool::Rect,
         Tool::Ellipse,
         Tool::Line,
         Tool::Pen,
+        Tool::Stamp,
     ];
+}
+
+/// The stamp the stamp tool puts down.
+#[derive(Clone, PartialEq, Debug)]
+pub enum StampPick {
+    Text(StampKind),
+    /// Your own wording, already in capitals.
+    Custom(String, StampColor),
+    Picture(PathBuf),
 }
 
 /// A pen stroke strictly sooner than this (seconds) after the last one joins its drawing.
@@ -136,6 +150,8 @@ pub enum Action {
     AddInk(usize, Vec<(f32, f32)>),
     /// Another stroke for a drawing.
     AddInkStroke(usize, (u32, u16), Vec<(f32, f32)>),
+    /// The stamp tool's stamp.
+    AddStamp(usize, StampPlace),
     /// Answer an annotation.
     Reply(usize, (u32, u16), String),
 }
@@ -298,6 +314,16 @@ pub struct Editor {
     ink_at: f64,
     /// A reply being typed in the inspector.
     reply: String,
+    pub stamp: StampPick,
+    /// Text stamps get a line with the author's name and the date (from the settings).
+    pub stamp_name_date: bool,
+    /// Pictures used as stamps, the latest first (from the settings).
+    pub stamp_pictures: Vec<PathBuf>,
+    /// Stamp wordings of your own, the latest first (from the settings).
+    pub stamp_wordings: Vec<(String, StampColor)>,
+    /// A stamp wording being typed in the inspector, and its colour.
+    stamp_draft: String,
+    stamp_draft_color: StampColor,
     /// Put the keyboard in the reply box (and show the inspector).
     pub reply_focus: bool,
 }
@@ -350,6 +376,12 @@ impl Default for Editor {
             ink: None,
             ink_at: f64::NEG_INFINITY,
             reply: String::new(),
+            stamp: StampPick::Text(StampKind::Approved),
+            stamp_name_date: true,
+            stamp_pictures: Vec::new(),
+            stamp_wordings: Vec::new(),
+            stamp_draft: String::new(),
+            stamp_draft_color: StampColor::Red,
             reply_focus: false,
         }
     }
@@ -1373,7 +1405,7 @@ impl Editor {
                     resp = resp.on_hover_text_at_pointer(annot_tip(a));
                 }
             }
-            Tool::Image | Tool::Rect | Tool::Ellipse | Tool::Line | Tool::TextBox => {
+            Tool::Image | Tool::Rect | Tool::Ellipse | Tool::Line | Tool::TextBox | Tool::Stamp => {
                 ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
                 if resp.drag_started() {
                     if let Some(p) = ui.input(|i| i.pointer.press_origin()).map(to_pt) {
@@ -1401,6 +1433,11 @@ impl Editor {
                         if d.page == page {
                             finish = Some((d.start, d.cur));
                         }
+                    }
+                } else if resp.clicked() && self.tool == Tool::Stamp {
+                    if let Some(p) = resp.interact_pointer_pos().map(to_pt) {
+                        let at = StampPlace::Centre(p.x, p.y);
+                        self.actions.push(Action::AddStamp(page, at));
                     }
                 } else if resp.clicked() {
                     if let Some(p) = resp.interact_pointer_pos().map(to_pt) {
@@ -1431,6 +1468,9 @@ impl Editor {
                             Tool::Rect => self.actions.push(shape(Shape::Rect, n)),
                             Tool::Ellipse => self.actions.push(shape(Shape::Ellipse, n)),
                             Tool::Line => self.actions.push(shape(Shape::Line, rect)),
+                            Tool::Stamp => self
+                                .actions
+                                .push(Action::AddStamp(page, StampPlace::Fill(n))),
                             Tool::TextBox => {
                                 let size = self.box_style.size;
                                 self.start_writing(Writing::new(page, false, n, size));
@@ -1750,6 +1790,7 @@ impl Editor {
                 | Tool::Note
                 | Tool::TextBox
                 | Tool::Pen
+                | Tool::Stamp
         ) || self.sel().is_some()
             || self.selection.words().is_some()
             || self.selection.annot().is_some()
@@ -1965,6 +2006,8 @@ impl Editor {
             match e.text.as_mut() {
                 // A text box's colour is its fill, set with its text.
                 Some(s) => text_style_ui(ui, s),
+                // A stamp's colours are part of its drawing.
+                None if a.kind == AnnotKind::Stamp => {}
                 None => {
                     ui.horizontal(|ui| {
                         let mut on = e.color.is_some();
@@ -2080,6 +2123,142 @@ impl Editor {
     }
 
     /// The right-hand inspector: tool options, new-text entry and properties of the selected object.
+    /// The stamp tool's options: the ready-made stamps, your own wordings, the
+    /// name-and-date switch and the pictures used before.
+    fn stamp_ui(&mut self, ui: &mut egui::Ui) {
+        let look = |word: &str, color: StampColor| {
+            let [r, g, b] = color.rgb().map(|c| (c * 255.0) as u8);
+            egui::RichText::new(word)
+                .strong()
+                .color(Color32::from_rgb(r, g, b))
+        };
+        ui.strong("New stamp");
+        for k in StampKind::ALL {
+            let pick = StampPick::Text(k);
+            let text = look(&k.label().to_uppercase(), k.color());
+            if ui.selectable_label(self.stamp == pick, text).clicked() {
+                self.stamp = pick;
+            }
+        }
+        let mut remove = None;
+        for (i, (word, color)) in self.stamp_wordings.iter().enumerate() {
+            let pick = StampPick::Custom(word.clone(), *color);
+            let r = ui.selectable_label(self.stamp == pick, look(word, *color));
+            if r.clicked() {
+                self.stamp = pick;
+            }
+            r.context_menu(|ui| {
+                if ui.button("Remove from the list").clicked() {
+                    remove = Some(i);
+                    ui.close();
+                }
+            });
+        }
+        if let Some(i) = remove {
+            let (word, color) = self.stamp_wordings.remove(i);
+            if self.stamp == StampPick::Custom(word, color) {
+                self.stamp = StampPick::Text(StampKind::Approved);
+            }
+        }
+        ui.label("Your own wording");
+        // A colour applies to what is typed next and to the picked wording of your own.
+        ui.horizontal(|ui| {
+            for c in StampColor::ALL {
+                let name = format!("{}{}", c.name()[..1].to_uppercase(), &c.name()[1..]);
+                if ui
+                    .selectable_label(self.stamp_draft_color == c, look(&name, c))
+                    .clicked()
+                {
+                    self.stamp_draft_color = c;
+                    if let StampPick::Custom(word, color) = &mut self.stamp {
+                        *color = c;
+                        for w in self.stamp_wordings.iter_mut().filter(|w| w.0 == *word) {
+                            w.1 = c;
+                        }
+                    }
+                }
+            }
+        });
+        let entry = ui.add(
+            egui::TextEdit::singleline(&mut self.stamp_draft)
+                .hint_text("Type, then click on the page")
+                .desired_width(f32::INFINITY),
+        );
+        // What is typed is the stamp to put down straight away; it joins the list when
+        // the box is left (Enter, or a click on the page or elsewhere).
+        let wording = mpe_core::stamp_wording(&self.stamp_draft);
+        if let (true, Ok(word)) = (entry.changed(), &wording) {
+            self.stamp = StampPick::Custom(word.clone(), self.stamp_draft_color);
+        }
+        match wording {
+            Ok(word) if entry.lost_focus() => {
+                let pick = (word, self.stamp_draft_color);
+                self.stamp_wordings.retain(|w| w.0 != pick.0);
+                self.stamp_wordings.insert(0, pick.clone());
+                self.stamp_wordings
+                    .truncate(crate::settings::STAMP_WORDINGS);
+                self.stamp = StampPick::Custom(pick.0, pick.1);
+                self.stamp_draft.clear();
+            }
+            Err(e) if !self.stamp_draft.trim().is_empty() => {
+                let e = e.to_string();
+                let e = format!("{}{}", e[..1].to_uppercase(), &e[1..]);
+                ui.colored_label(ui.visuals().error_fg_color, e);
+            }
+            _ => {}
+        }
+        ui.checkbox(&mut self.stamp_name_date, "Add my name and the date");
+        ui.add_enabled_ui(self.stamp_name_date, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Name");
+                ui.add(egui::TextEdit::singleline(&mut self.author).hint_text("No name"))
+                    .on_hover_text("Also signs your comments (Edit > Your name for comments)");
+            });
+        });
+        ui.separator();
+        ui.label("Pictures");
+        let mut remove = None;
+        for (i, path) in self.stamp_pictures.iter().enumerate() {
+            let name = path.file_name().map_or_else(
+                || path.display().to_string(),
+                |n| n.to_string_lossy().into(),
+            );
+            let pick = StampPick::Picture(path.clone());
+            let r = ui
+                .selectable_label(self.stamp == pick, name)
+                .on_hover_text(path.display().to_string());
+            if r.clicked() {
+                self.stamp = pick;
+            }
+            r.context_menu(|ui| {
+                if ui.button("Remove from the list").clicked() {
+                    remove = Some(i);
+                    ui.close();
+                }
+            });
+        }
+        if let Some(i) = remove {
+            let path = self.stamp_pictures.remove(i);
+            if self.stamp == StampPick::Picture(path) {
+                self.stamp = StampPick::Text(StampKind::Approved);
+            }
+        }
+        if ui.button("Choose a picture…").clicked() {
+            if let Some(path) = pick_image_path() {
+                self.stamp_pictures.retain(|p| *p != path);
+                self.stamp_pictures.insert(0, path.clone());
+                self.stamp_pictures
+                    .truncate(crate::settings::STAMP_PICTURES);
+                self.stamp = StampPick::Picture(path);
+            }
+        }
+        ui.separator();
+        ui.label(
+            "Click on the page to put the stamp down, or drag a box to size it. The arrow \
+             moves and resizes it afterwards. Ctrl+click selects an annotation.",
+        );
+    }
+
     pub fn inspector(&mut self, ui: &mut egui::Ui) {
         if self.selection.annot().is_some() {
             self.annot_inspector(ui);
@@ -2216,6 +2395,10 @@ impl Editor {
                     "Click on the page to place a note, type its comment, then press Done \
                      (or Ctrl+Enter). Ctrl+click selects an annotation.",
                 );
+                return;
+            }
+            Tool::Stamp => {
+                self.stamp_ui(ui);
                 return;
             }
             Tool::TextBox => {
@@ -2456,10 +2639,13 @@ fn text_style_ui(ui: &mut egui::Ui, s: &mut TextStyle) {
 
 /// Ask for an image file and return its bytes if it can be decoded.
 pub fn pick_image() -> Option<Vec<u8>> {
-    let path = rfd::FileDialog::new()
+    std::fs::read(pick_image_path()?).ok()
+}
+
+pub fn pick_image_path() -> Option<PathBuf> {
+    rfd::FileDialog::new()
         .add_filter("Images", &["png", "jpg", "jpeg"])
-        .pick_file()?;
-    std::fs::read(path).ok()
+        .pick_file()
 }
 
 #[cfg(test)]

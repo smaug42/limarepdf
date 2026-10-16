@@ -32,9 +32,11 @@ mod reading;
 pub mod render;
 mod scan;
 mod security;
+mod stamps;
 mod std14;
 mod text;
 mod tounicode;
+mod viewprefs;
 
 pub use annots::{Annot, AnnotKind, ShapeLook, TextStyle};
 pub use blank::BLANK_TOLERANCE;
@@ -47,12 +49,14 @@ pub use labels::{LabelRange, LabelStyle};
 pub use links::{Link, LinkTarget};
 pub use objects::{words_text, ObjectKind, PageObject, PageWord};
 pub use ocr::{Ocr, OcrLine, OcrResult, OcrWord};
-pub use outline::OutlineItem;
+pub use outline::{BookmarkPlace, OutlineItem};
 pub use overlay::{text_width, Bates, HeaderFooter, ImageWatermark, Watermark};
 pub use pagerange::{format_page_range, parse_page_range};
 pub use scan::{ScanMode, ScanOptions, ScanResult};
 pub use security::{Cipher, Encryption, Restrictions};
+pub use stamps::{stamp_wording, Stamp, StampColor, StampKind, StampPlace};
 pub use text::SearchHit;
+pub use viewprefs::{OpenLayout, OpenPanel, ViewPrefs};
 
 pub type Result<T> = anyhow::Result<T>;
 
