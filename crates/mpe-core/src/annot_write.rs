@@ -77,6 +77,53 @@ impl Pdf {
         self.insert_annot(page, d, author)
     }
 
+    /// Mark areas of page `page_index` (zero-based) for redaction: one redaction mark
+    /// (`/Redact`) covering `areas`, in displayed-page points (y down). Nothing is removed
+    /// until the marks are applied ([`Pdf::apply_redactions`]). Returns the mark's id.
+    pub fn add_redaction_mark(
+        &mut self,
+        page_index: usize,
+        areas: &[[f32; 4]],
+        author: &str,
+    ) -> Result<(u32, u16)> {
+        let areas: Vec<[f32; 4]> = areas
+            .iter()
+            .map(|b| {
+                [
+                    b[0].min(b[2]),
+                    b[1].min(b[3]),
+                    b[0].max(b[2]),
+                    b[1].max(b[3]),
+                ]
+            })
+            .filter(|b| b[2] - b[0] > 0.1 && b[3] - b[1] > 0.1)
+            .collect();
+        if areas.is_empty() {
+            bail!("nothing to mark");
+        }
+        let page = self.page_id_at(page_index)?;
+        let (to_user, _, _) = self.vis_down(page);
+        let mut quads = Vec::with_capacity(areas.len() * 8);
+        let mut r = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        for b in &areas {
+            for (x, y) in [(b[0], b[1]), (b[2], b[1]), (b[0], b[3]), (b[2], b[3])] {
+                let (u, v) = mx::apply(to_user, x, y);
+                quads.extend([u, v]);
+                (r[0], r[1]) = (r[0].min(u), r[1].min(v));
+                (r[2], r[3]) = (r[2].max(u), r[3].max(v));
+            }
+        }
+        // `/IC` is the colour the area is painted when applied. Not printed while a mark.
+        let d = dictionary! {
+            "Subtype" => "Redact",
+            "Rect" => nums(&[r[0] - PAD, r[1] - PAD, r[2] + PAD, r[3] + PAD]),
+            "QuadPoints" => nums(&quads),
+            "C" => nums(&crate::annot_ap::REDACT_COLOR),
+            "IC" => nums(&[0.0, 0.0, 0.0]),
+        };
+        self.insert_annot(page, d, author)
+    }
+
     /// Put a sticky note on page `page_index` (zero-based), its icon centred on `at`
     /// (displayed-page points, y down), with the comment `contents`. Returns its id.
     pub fn add_note(

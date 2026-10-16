@@ -422,3 +422,42 @@ fn rejects_marks_with_no_size_or_page() {
     assert!(p.redact(&[(0, [10.0, 10.0, 10.0, 50.0])]).is_err());
     assert!(p.redact(&[(3, [10.0, 10.0, 20.0, 50.0])]).is_err());
 }
+
+#[test]
+fn marks_are_kept_until_applied() {
+    let mut p = make(&["BT /F1 20 Tf 30 100 Td (Keep Zebra Keep) Tj ET"]);
+    let boxes: Vec<[f32; 4]> = p
+        .find_redaction_marks("zebra")
+        .unwrap()
+        .into_iter()
+        .map(|m| m.1)
+        .collect();
+    p.add_redaction_mark(0, &boxes, "Sam").unwrap();
+    assert!(p.apply_redactions().is_ok_and(|r| r.pages[0].chars == 5));
+    assert!(p.redaction_marks().is_empty(), "applied marks are removed");
+    assert!(!p.page_text(0).contains("Zebra"));
+    assert!(p.apply_redactions().is_err(), "nothing left to apply");
+}
+
+#[test]
+fn marks_survive_saving_and_are_not_flattened() {
+    let mut p = make(&["BT /F1 20 Tf 30 100 Td (Zebra) Tj ET"]);
+    p.add_redaction_mark(
+        0,
+        &[[30.0, 80.0, 90.0, 105.0], [10.0, 10.0, 20.0, 20.0]],
+        "",
+    )
+    .unwrap();
+    let bytes = p.to_bytes().unwrap();
+    let mut q = Pdf::from_bytes(&bytes, None).unwrap();
+    let marks = q.redaction_marks();
+    assert_eq!(marks.len(), 2);
+    assert!(near(marks[0].1, [30.0, 80.0, 90.0, 105.0]), "{marks:?}");
+    assert_eq!(q.annotations()[0].kind.label(), "Redaction mark");
+    assert!(
+        q.page_text(0).contains("Zebra"),
+        "a mark removes nothing by itself"
+    );
+    q.flatten_annotations(None).unwrap();
+    assert_eq!(q.redaction_marks().len(), 2);
+}

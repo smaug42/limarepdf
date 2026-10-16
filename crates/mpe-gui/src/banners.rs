@@ -16,6 +16,8 @@ const LARGE_BYTES: u64 = 100_000_000;
 pub enum Kind {
     /// The file was encrypted: saving drops the protection unless it is set again.
     Protected,
+    /// Areas are marked for redaction but nothing under them is removed yet.
+    Redactions,
     /// An XFA-only form: only Adobe software builds its pages.
     Xfa,
     /// Pages are images without text.
@@ -36,6 +38,7 @@ impl Banner {
     pub fn icon(&self) -> &'static str {
         match self.kind {
             Kind::Protected => icon::LOCK_KEY,
+            Kind::Redactions => icon::EYE_SLASH,
             Kind::Xfa => icon::WARNING,
             Kind::Scanned => icon::SCAN,
             Kind::Forms => icon::TEXTBOX,
@@ -47,10 +50,28 @@ impl Banner {
     pub fn action(&self) -> Option<(&'static str, Act)> {
         match self.kind {
             Kind::Protected => Some(("Password security", Act::Security)),
+            Kind::Redactions => Some(("Apply redactions…", Act::ApplyRedactions)),
             Kind::Scanned => Some(("Recognise text", Act::Ocr)),
             Kind::Forms => Some(("Highlight fields", Act::ToggleFields)),
             Kind::Xfa | Kind::Large => None,
         }
+    }
+}
+
+/// The banner for `marks` areas marked for redaction and not yet applied. Unlike the
+/// others it follows the document as it changes (see `Tab::refresh_marks_banner`).
+pub fn redactions(marks: usize) -> Banner {
+    Banner {
+        kind: Kind::Redactions,
+        text: format!(
+            "{} marked for redaction (outlined in red) but not yet applied: nothing under them \
+             has been removed.",
+            if marks == 1 {
+                "An area is".to_string()
+            } else {
+                format!("{marks} areas are")
+            }
+        ),
     }
 }
 

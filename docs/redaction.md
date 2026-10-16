@@ -4,8 +4,10 @@ Redaction removes content from a document for good. It doesn't just cover it: th
 a redacted area are taken out of the file, and the area is painted black. Copying, searching, moving the black box
 or reading the file's bytes can't bring them back.
 
-Today redaction is done with `mpe redact` (see [the command line](cli.md#redaction)). Marking areas in the app,
-reviewing the marks and then applying them is coming next.
+In the app, mark areas, selected text or search results, check the marks, then apply them (see
+[Redaction in the app](gui.md#redaction)). From the command line, use `mpe redact` (see
+[the command line](cli.md#redaction)), which can also just mark, or apply marks already in a file. Marks are
+standard PDF redaction marks, so marks made in other apps can be applied in MPE and the other way round.
 
 ## What is removed
 
@@ -34,8 +36,8 @@ Pictures and drawings that no page uses any more are left out of the saved file.
 ## The check afterwards
 
 When it is done, MPE reads the redacted pages again and checks that no text is left under the areas, and decodes
-each picture there to check that its pixels under the areas are blacked out. If anything is left, `mpe redact` lists
-it and doesn't write the file.
+each picture there to check that its pixels under the areas are blacked out. If anything is left, the app changes
+nothing and says what it found, and `mpe redact` lists it and doesn't write the file.
 
 It then looks for the removed text elsewhere in the document: on any page, in bookmarks, comments, form fields and the
 document's title, author, subject and keywords. Anything it finds is listed as a warning, since redaction only

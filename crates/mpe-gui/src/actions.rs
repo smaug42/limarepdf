@@ -43,6 +43,12 @@ pub enum Act {
         line: bool,
         index: usize,
     },
+    /// Mark the selected words for redaction.
+    MarkRedact,
+    /// Mark every result of the last search for redaction.
+    MarkResultsRedact,
+    /// Remove everything under the redaction marks, after asking.
+    ApplyRedactions,
     /// Set the name written into comments and markup.
     CommentName,
     /// Delete the selected object, or the selected pages.
@@ -226,6 +232,9 @@ fn words(c: &Ctx) -> bool {
 }
 fn words_idle(c: &Ctx) -> bool {
     c.words && !c.busy
+}
+fn doc_idle(c: &Ctx) -> bool {
+    c.doc && !c.busy
 }
 fn object(c: &Ctx) -> bool {
     c.object
@@ -439,6 +448,25 @@ pub static ACTIONS: &[Action] = &[
         label: "Squiggly underline",
         icon: icon::WAVE_SINE,
         enabled: words_idle,
+        ..BASE
+    },
+    Action {
+        act: Act::MarkRedact,
+        group: Group::Edit,
+        label: "Mark for redaction",
+        icon: icon::EYE_SLASH,
+        enabled: words_idle,
+        sep: true,
+        hint: "Mark the selected text to be removed for good when the marks are applied.",
+        ..BASE
+    },
+    Action {
+        act: Act::MarkResultsRedact,
+        group: Group::Edit,
+        label: "Mark all search results for redaction",
+        icon: icon::EYE_SLASH,
+        enabled: doc_idle,
+        hint: "Mark every match of the last search to be removed when the marks are applied.",
         ..BASE
     },
     Action {
@@ -877,6 +905,14 @@ pub static ACTIONS: &[Action] = &[
         menu: false,
         ..BASE
     },
+    Action {
+        act: Act::Tool(Tool::Redact),
+        group: Group::Tools,
+        label: "Mark areas for redaction",
+        icon: icon::EYE_SLASH,
+        menu: false,
+        ..BASE
+    },
     // ------------------------------------------------------------ Document
     Action {
         act: Act::RotR,
@@ -1015,6 +1051,16 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::ApplyRedactions,
+        group: Group::Document,
+        label: "Apply redactions…",
+        icon: icon::EYE_SLASH,
+        enabled: doc_idle,
+        hint: "Remove the text, pictures and drawings under the redaction marks for good, \
+               and paint the areas black.",
+        ..BASE
+    },
+    Action {
         act: Act::Security,
         group: Group::Document,
         label: "Password security…",
@@ -1065,6 +1111,7 @@ pub fn context_items(sel: &Selection) -> &'static [&'static [Act]] {
         Selection::Words { .. } => &[
             &[Act::Copy, Act::SelectAllText],
             &[Act::Mark(Mark::Highlight)],
+            &[Act::MarkRedact],
             &[Act::PrintSelection, Act::SaveSelection],
         ],
         Selection::Annot { .. } => &[&[Act::DeleteSelection]],

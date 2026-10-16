@@ -106,6 +106,11 @@ pub struct Tab {
     thumb_drag: Option<usize>,
     /// Notices about the document shown above the pages, most important first.
     pub banners: Vec<Banner>,
+    /// The revision the redaction marks were last counted at (into `ed.redact_marks`).
+    marks_rev: u64,
+    /// The mark count when the redaction banner was dismissed: it stays hidden until
+    /// there are more marks.
+    marks_hidden: usize,
     /// The bookmarks, read when first shown and again after the document changes:
     /// the revision they were read at, and the items.
     outline: Option<(u64, Vec<OutlineItem>)>,
@@ -150,6 +155,8 @@ impl Tab {
         Ok(Self {
             labels,
             banners,
+            marks_rev: u64::MAX,
+            marks_hidden: 0,
             id,
             pdf,
             path,
@@ -497,6 +504,13 @@ impl Tab {
                         self.after_annot(p, new);
                     }
                 }
+                Action::AddRedactMark(p, rect) => {
+                    // The tool stays, so several areas can be marked in a row.
+                    let author = self.ed.author.clone();
+                    self.edit_pages(ctx, &[p], |pdf| {
+                        pdf.add_redaction_mark(p, &[rect], &author).map(drop)
+                    });
+                }
                 Action::AddStamp(p, place) => {
                     let pick = self.ed.stamp.clone();
                     let picture = match &pick {
@@ -615,6 +629,53 @@ impl Tab {
         };
         if self.edit_pages(ctx, &pages, add) {
             self.ed.selection.clear_words();
+        }
+    }
+
+    /// Mark the selected words for redaction: one mark per page, a box per line.
+    pub fn mark_selection_for_redaction(&mut self, ctx: &egui::Context, author: &str) {
+        let lines = self.ed.selected_lines();
+        if lines.is_empty() {
+            return;
+        }
+        let pages: Vec<usize> = lines.iter().map(|(p, _)| *p).collect();
+        let add = |pdf: &mut Pdf| {
+            for (p, boxes) in &lines {
+                pdf.add_redaction_mark(*p, boxes, author)?;
+            }
+            Ok(())
+        };
+        if self.edit_pages(ctx, &pages, add) {
+            self.ed.selection.clear_words();
+            self.notice = Some("Marked for redaction; apply the marks to remove the text".into());
+        }
+    }
+
+    /// Mark every match of the last search for redaction: one mark per page.
+    pub fn mark_results_for_redaction(&mut self, ctx: &egui::Context, author: &str) {
+        let marks: Vec<(usize, Vec<[f32; 4]>)> = self
+            .matches
+            .iter()
+            .map(|(p, m)| (*p, m.iter().flatten().copied().collect()))
+            .filter(|(_, b): &(usize, Vec<[f32; 4]>)| !b.is_empty())
+            .collect();
+        if marks.is_empty() {
+            self.notice = Some("Search first: there are no results to mark".into());
+            return;
+        }
+        let pages: Vec<usize> = marks.iter().map(|(p, _)| *p).collect();
+        let n: usize = marks.iter().map(|(_, b)| b.len()).sum();
+        let add = |pdf: &mut Pdf| {
+            for (p, boxes) in &marks {
+                pdf.add_redaction_mark(*p, boxes, author)?;
+            }
+            Ok(())
+        };
+        if self.edit_pages(ctx, &pages, add) {
+            self.notice = Some(format!(
+                "Marked {n} areas on {} pages for redaction; apply the marks to remove them",
+                pages.len()
+            ));
         }
     }
 
@@ -1190,6 +1251,7 @@ impl Tab {
     /// Up to two banners above the pages: icon, text, the banner's button if it has one,
     /// and a close button. A button's command is queued in `requested`.
     fn banners_ui(&mut self, ui: &mut egui::Ui) {
+        self.refresh_marks_banner();
         let mut close = None;
         let fill = ui.visuals().selection.bg_fill;
         for (i, b) in self.banners.iter().take(2).enumerate() {
@@ -1224,7 +1286,27 @@ impl Tab {
                 });
         }
         if let Some(i) = close {
+            if self.banners[i].kind == banners::Kind::Redactions {
+                self.marks_hidden = self.ed.redact_marks;
+            }
             self.banners.remove(i);
+        }
+    }
+
+    /// After the document changes, count the redaction marks again and show, update or
+    /// take away the redaction banner, which goes first while there are marks.
+    fn refresh_marks_banner(&mut self) {
+        if self.marks_rev == self.revision {
+            return;
+        }
+        self.marks_rev = self.revision;
+        let n = self.pdf.redaction_marks().len();
+        self.ed.redact_marks = n;
+        // Fewer marks lower the bar, so the next one added shows the banner again.
+        self.marks_hidden = self.marks_hidden.min(n);
+        self.banners.retain(|b| b.kind != banners::Kind::Redactions);
+        if n > self.marks_hidden {
+            self.banners.insert(0, banners::redactions(n));
         }
     }
 

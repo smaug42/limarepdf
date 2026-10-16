@@ -10,7 +10,8 @@ use lopdf::content::Operation;
 use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream};
 
 /// The subtypes MPE can draw.
-pub(crate) const DRAWN: [&[u8]; 12] = [
+pub(crate) const DRAWN: [&[u8]; 13] = [
+    b"Redact",
     b"Highlight",
     b"Underline",
     b"StrikeOut",
@@ -33,6 +34,9 @@ const KAPPA: f32 = 0.5523;
 /// A note's icon: its size in points and its colour when the note has none.
 pub(crate) const NOTE_SIZE: f32 = 20.0;
 const NOTE_COLOR: [f32; 3] = [1.0, 0.85, 0.2];
+/// A redaction mark's outline: its colour when the mark has none, and its width.
+pub(crate) const REDACT_COLOR: [f32; 3] = [0.85, 0.0, 0.0];
+const REDACT_LINE: f32 = 1.5;
 /// Text size for a text box whose `/DA` gives none.
 const TEXT_SIZE: f32 = 12.0;
 /// Most points read from one geometry entry, against hostile files.
@@ -175,6 +179,26 @@ impl Pdf {
                     }
                 }
                 line.paint(&mut ops, false);
+            }
+            b"Redact" => {
+                // A red outline around each marked area.
+                let quads = self
+                    .points(d.get(b"QuadPoints").ok())
+                    .filter(|p| p.len() >= 4)
+                    .map(|p| p.as_chunks::<4>().0.to_vec())
+                    .unwrap_or_else(|| vec![rect_corners(rect)]);
+                let c = line.c.clone().unwrap_or_else(|| REDACT_COLOR.to_vec());
+                ops.extend(stroke_color(&c));
+                ops.push(op("w", nums(&[REDACT_LINE])));
+                for q in &quads {
+                    let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+                    for &(x, y) in q {
+                        (b[0], b[1]) = (b[0].min(x), b[1].min(y));
+                        (b[2], b[3]) = (b[2].max(x), b[3].max(y));
+                    }
+                    ops.push(op("re", nums(&[b[0], b[1], b[2] - b[0], b[3] - b[1]])));
+                }
+                ops.push(op("S", vec![]));
             }
             b"Text" => note(&mut ops, rect, line.c.as_deref()),
             b"FreeText" => return Some(self.free_text(d, rect, alpha)),

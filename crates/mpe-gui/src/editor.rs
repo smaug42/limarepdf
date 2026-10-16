@@ -33,11 +33,13 @@ pub enum Tool {
     Pen,
     /// Click to put down a stamp, or drag a box to size it.
     Stamp,
+    /// Drag boxes to mark areas for redaction; nothing is removed until applied.
+    Redact,
 }
 
 impl Tool {
     /// The tools behind the toolbar's Annotate button.
-    pub const ANNOTATE: [Tool; 7] = [
+    pub const ANNOTATE: [Tool; 8] = [
         Tool::Note,
         Tool::TextBox,
         Tool::Rect,
@@ -45,6 +47,7 @@ impl Tool {
         Tool::Line,
         Tool::Pen,
         Tool::Stamp,
+        Tool::Redact,
     ];
 }
 
@@ -152,6 +155,8 @@ pub enum Action {
     AddInkStroke(usize, (u32, u16), Vec<(f32, f32)>),
     /// The stamp tool's stamp.
     AddStamp(usize, StampPlace),
+    /// Mark an area (displayed-page points) for redaction.
+    AddRedactMark(usize, [f32; 4]),
     /// Answer an annotation.
     Reply(usize, (u32, u16), String),
 }
@@ -299,6 +304,10 @@ pub struct Editor {
     pub box_style: TextStyle,
     /// The name new annotations are signed with (from the settings).
     pub author: String,
+    /// How many areas are marked for redaction (counted by the tab).
+    pub redact_marks: usize,
+    /// The Redact tool's Apply button was pressed; the tab runs the command.
+    pub apply_redactions: bool,
     /// Pixels per page point, as the pages are drawn now.
     zoom: f32,
     /// The shape tools draw into the page's content instead of adding annotations.
@@ -367,6 +376,8 @@ impl Default for Editor {
                 ..TextStyle::default()
             },
             author: String::new(),
+            redact_marks: 0,
+            apply_redactions: false,
             zoom: 1.0,
             draw_permanent: false,
             arrow: false,
@@ -1407,7 +1418,13 @@ impl Editor {
                     resp = resp.on_hover_text_at_pointer(annot_tip(a));
                 }
             }
-            Tool::Image | Tool::Rect | Tool::Ellipse | Tool::Line | Tool::TextBox | Tool::Stamp => {
+            Tool::Image
+            | Tool::Rect
+            | Tool::Ellipse
+            | Tool::Line
+            | Tool::TextBox
+            | Tool::Stamp
+            | Tool::Redact => {
                 ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
                 if resp.drag_started() {
                     if let Some(p) = ui.input(|i| i.pointer.press_origin()).map(to_pt) {
@@ -1441,7 +1458,8 @@ impl Editor {
                         let at = StampPlace::Centre(p.x, p.y);
                         self.actions.push(Action::AddStamp(page, at));
                     }
-                } else if resp.clicked() {
+                } else if resp.clicked() && self.tool != Tool::Redact {
+                    // A click makes a default size; a redaction mark has none.
                     if let Some(p) = resp.interact_pointer_pos().map(to_pt) {
                         let (w, h) = match (self.tool, &self.pending_image) {
                             (Tool::Image, Some((_, aspect))) => (200.0, 200.0 / aspect.max(0.01)),
@@ -1473,6 +1491,7 @@ impl Editor {
                             Tool::Stamp => self
                                 .actions
                                 .push(Action::AddStamp(page, StampPlace::Fill(n))),
+                            Tool::Redact => self.actions.push(Action::AddRedactMark(page, n)),
                             Tool::TextBox => {
                                 let size = self.box_style.size;
                                 self.start_writing(Writing::new(page, false, n, size));
@@ -1793,6 +1812,7 @@ impl Editor {
                 | Tool::TextBox
                 | Tool::Pen
                 | Tool::Stamp
+                | Tool::Redact
         ) || self.sel().is_some()
             || self.selection.words().is_some()
             || self.selection.annot().is_some()
@@ -2402,6 +2422,29 @@ impl Editor {
             }
             Tool::Stamp => {
                 self.stamp_ui(ui);
+                return;
+            }
+            Tool::Redact => {
+                ui.strong("Mark for redaction");
+                ui.label(
+                    "Drag a box over anything to remove: text, pictures, drawings. Each box \
+                     becomes a red-outlined mark; nothing is removed yet. Check the marks, then \
+                     choose Document > Apply redactions to remove what is under them for good. \
+                     Selected text and search results can be marked too.",
+                );
+                ui.add_space(6.0);
+                let n = self.redact_marks;
+                ui.label(match n {
+                    0 => "No areas are marked yet.".to_string(),
+                    1 => "1 area is marked.".to_string(),
+                    n => format!("{n} areas are marked."),
+                });
+                if ui
+                    .add_enabled(n > 0, egui::Button::new("Apply redactions…"))
+                    .clicked()
+                {
+                    self.apply_redactions = true;
+                }
                 return;
             }
             Tool::TextBox => {

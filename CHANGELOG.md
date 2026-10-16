@@ -17,10 +17,14 @@
   one down or drag to size it, then move, resize or fade it like other annotations. Your name can be changed right
   in the stamp tool's pane. The last five wordings and pictures are remembered. Also `mpe stamp` (`--text` and
   `--color` for your own wording).
-- Redaction from the command line: `mpe redact --text` or `--area` removes the text, drawings, comments, links and
-  form fields under the areas from the file (not just covering them), blacks out the pixels of pictures and scanned
-  pages there, and paints the areas black, then checks that nothing readable is left there and warns where the
-  removed text still appears elsewhere.
+- Redaction: mark areas (Annotate > Mark areas for redaction), selected text or every search result, check the
+  red-outlined marks, then Document > Apply redactions… removes the text, drawings, comments, links and form fields
+  under them from the file (not just covering them), blacks out the pixels of pictures and scanned pages there, and
+  paints the areas black. It then checks that nothing readable is left there, and reports what was removed and
+  where the removed text still appears elsewhere. Marks are standard PDF redaction marks, so they can be reviewed
+  in other apps. While there are marks, a notice above the pages offers Apply redactions…; saving with marks not
+  yet applied asks first. Also `mpe redact` (`--text`, `--area`,
+  `--mark-only`, `--apply`).
 
 ### Changed
 

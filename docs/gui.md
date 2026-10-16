@@ -182,6 +182,32 @@ Stamps are annotations: other readers list them as comments. Select one to chang
 its colours are part of the stamp. A stamp reads upright on a turned page. The text is Helvetica Bold, Latin-1
 only, so a name in other scripts shows as `?`.
 
+## Redaction
+
+Redacting is done in two steps: mark what to remove, then apply the marks. Marks are outlined in red and remove
+nothing by themselves, so they can be checked first, here or by someone else in another app (they are standard PDF
+redaction marks). See [Redaction](redaction.md) for exactly what applying removes.
+
+- **Mark areas:** Annotate > Mark areas for redaction, then drag a box over anything: text, pictures, drawings. The
+  tool stays on, so several areas can be marked in a row.
+- **Mark text:** select it with the read tool, then right-click > Mark for redaction (or Edit > Mark for redaction).
+- **Mark search results:** search in the side panel's Search tab, then press Mark all for redaction (or Edit > Mark
+  all search results for redaction). Every match is marked.
+
+Marks are listed in the Comments tab as "Redaction mark" and can be moved, resized and deleted like other
+annotations.
+
+**Apply:** Document > Apply redactions… asks first, then removes everything under the marks, paints the areas black
+and removes the marks. It then checks that nothing readable is left under them; if anything is, nothing is changed
+and an error says what was found. A report lists what was removed from each page and where the removed text can
+still be found elsewhere in the document (other pages, bookmarks, comments, form fields, document properties).
+Undo brings it all back until the document is closed; once saved, the removed content is gone from the file.
+
+While a document has marks, a notice above the pages says how many and has an Apply redactions… button; it comes
+first, and goes once the marks are applied or deleted. Dismissed, it comes back when another area is marked. The
+Redact tool's pane has the same button with the count. Saving a document that still has marks asks first, since
+nothing under them has been removed.
+
 ## Filling in forms
 
 Form fields work with the read tool, like links: hovering tints a field and shows its description, and a click
@@ -215,6 +241,7 @@ something to do and × to dismiss it. At most two show at a time.
 | Notice | Button |
 | --- | --- |
 | The document was password-protected: saving removes the protection unless you set it again | Password security |
+| Areas are marked for redaction but the marks haven't been applied (kept up to date while you work) | Apply redactions… |
 | Its pages are scans without text, so they cannot be searched or copied (checked on the first 20 pages) | Recognise text |
 | It is a form made for Adobe Reader (an XFA form), which only Adobe software can show or fill in; MPE shows the placeholder page the file contains, often "Please wait..." | |
 | It has a form: click a field to fill it in, or press Tab | Highlight fields |

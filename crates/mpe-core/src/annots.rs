@@ -40,6 +40,8 @@ pub enum AnnotKind {
     /// Freehand drawing (`/Ink`).
     Ink,
     Stamp,
+    /// An area marked for redaction (`/Redact`), not yet applied.
+    Redact,
     /// Any other subtype, as the file names it.
     Other(String),
 }
@@ -62,6 +64,7 @@ impl AnnotKind {
             b"PolyLine" => Self::PolyLine,
             b"Ink" => Self::Ink,
             b"Stamp" => Self::Stamp,
+            b"Redact" => Self::Redact,
             other => Self::Other(String::from_utf8_lossy(other).into_owned()),
         })
     }
@@ -82,6 +85,7 @@ impl AnnotKind {
             Self::PolyLine => "polyline",
             Self::Ink => "ink",
             Self::Stamp => "stamp",
+            Self::Redact => "redact",
             Self::Other(s) => s,
         }
     }
@@ -103,6 +107,7 @@ impl AnnotKind {
             Self::PolyLine,
             Self::Ink,
             Self::Stamp,
+            Self::Redact,
         ];
         let lower = s.to_ascii_lowercase();
         known
@@ -118,6 +123,7 @@ impl AnnotKind {
             Self::TextBox => "Text box".into(),
             Self::PolyLine => "Polyline".into(),
             Self::Ink => "Drawing".into(),
+            Self::Redact => "Redaction mark".into(),
             Self::Other(s) => s.clone(),
             k => {
                 let n = k.name();
@@ -413,6 +419,7 @@ impl Pdf {
                 | AnnotKind::Underline
                 | AnnotKind::StrikeOut
                 | AnnotKind::Squiggly
+                | AnnotKind::Redact
         );
         let quads = if markup {
             self.numbers(d.get(b"QuadPoints").ok())
@@ -531,8 +538,11 @@ fn flat_annot(pdf: &Pdf, d: &Dictionary) -> Flat {
     fn sub(d: &Dictionary) -> Option<&[u8]> {
         d.get(b"Subtype").and_then(|o| o.as_name()).ok()
     }
+    // Redaction marks stay marks: drawing them in would hide nothing.
     let marks = |s: Option<&[u8]>| {
-        s.is_some_and(|s| DRAWN.contains(&s) || matches!(s, b"Stamp" | b"Caret"))
+        s.is_some_and(|s| {
+            (DRAWN.contains(&s) || matches!(s, b"Stamp" | b"Caret")) && s != b"Redact"
+        })
     };
     match sub(d) {
         Some(b"Popup") => {

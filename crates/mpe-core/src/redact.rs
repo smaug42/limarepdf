@@ -976,6 +976,41 @@ impl Pdf {
         (v.len() == 6).then(|| [v[0], v[1], v[2], v[3], v[4], v[5]])
     }
 
+    /// The areas the document's redaction marks cover: (page, box in displayed-page
+    /// points, y down), one per marked area.
+    pub fn redaction_marks(&self) -> Vec<(usize, [f32; 4])> {
+        self.annotations()
+            .into_iter()
+            .filter(|a| a.kind == crate::AnnotKind::Redact)
+            .flat_map(|a| {
+                let boxes = if a.quads.is_empty() {
+                    vec![a.bbox]
+                } else {
+                    a.quads
+                };
+                boxes.into_iter().map(move |b| (a.page, b))
+            })
+            .collect()
+    }
+
+    /// Apply the document's redaction marks: remove everything under them as
+    /// [`Pdf::redact`] does, then remove the marks.
+    pub fn apply_redactions(&mut self) -> Result<RedactReport> {
+        let marks = self.redaction_marks();
+        if marks.is_empty() {
+            bail!("the document has no redaction marks");
+        }
+        let report = self.redact(&marks)?;
+        let ids = self
+            .annotations()
+            .into_iter()
+            .filter(|a| a.kind == crate::AnnotKind::Redact)
+            .map(|a| a.id)
+            .collect();
+        self.drop_annotations(ids)?;
+        Ok(report)
+    }
+
     /// Marks covering every match of `query` (as [`Pdf::find_text_matches`] finds them):
     /// (page, box in displayed-page points, y down), one box per line of each match.
     pub fn find_redaction_marks(&self, query: &str) -> Result<Vec<(usize, [f32; 4])>> {

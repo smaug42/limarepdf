@@ -218,11 +218,18 @@ enum Cmd {
         io: Io,
         /// An area as PAGE:X,Y,W,H, in points from the page's top left as shown; repeat
         /// for more
-        #[arg(long = "area", required_unless_present = "texts")]
+        #[arg(long = "area", required_unless_present_any = ["texts", "apply"])]
         areas: Vec<String>,
         /// Text to remove wherever it occurs (case is ignored); repeat for more
         #[arg(long = "text")]
         texts: Vec<String>,
+        /// Only mark the areas for redaction, to be checked (in MPE or another app) and
+        /// applied later; nothing is removed
+        #[arg(long, conflicts_with = "apply")]
+        mark_only: bool,
+        /// Also apply the redaction marks already in the file
+        #[arg(long)]
+        apply: bool,
         /// Print what was removed as JSON
         #[arg(long)]
         json: bool,
@@ -1055,9 +1062,25 @@ fn run_edit(io: &Io, f: impl FnOnce(&mut Pdf) -> Result<()>) -> Result<()> {
     Ok(())
 }
 
+/// Areas grouped by page, in page order.
+fn by_page(marks: &[(usize, [f32; 4])]) -> std::collections::BTreeMap<usize, Vec<[f32; 4]>> {
+    let mut out: std::collections::BTreeMap<usize, Vec<[f32; 4]>> = Default::default();
+    for &(p, b) in marks {
+        out.entry(p).or_default().push(b);
+    }
+    out
+}
+
 /// `mpe redact`: the file is written only when the check afterwards finds nothing left
 /// under the marks.
-fn redact(io: &Io, areas: &[String], texts: &[String], json: bool) -> Result<()> {
+fn redact(
+    io: &Io,
+    areas: &[String],
+    texts: &[String],
+    mark_only: bool,
+    apply: bool,
+    json: bool,
+) -> Result<()> {
     let mut pdf = open(&io.input, &io.password)?;
     let mut marks = Vec::new();
     for a in areas {
@@ -1081,10 +1104,30 @@ fn redact(io: &Io, areas: &[String], texts: &[String], json: bool) -> Result<()>
         }
         marks.extend(found);
     }
-    if marks.is_empty() {
-        bail!("nothing to redact; the file was not written");
+    if mark_only {
+        if marks.is_empty() {
+            bail!("nothing to mark; the file was not written");
+        }
+        for (p, boxes) in by_page(&marks) {
+            pdf.add_redaction_mark(p, &boxes, "")?;
+            out!("page {}: marked {} areas", p + 1, boxes.len());
+        }
+        pdf.save(&io.output)?;
+        out!("nothing was removed yet; apply the marks with --apply");
+        out!("wrote {}", io.output.display());
+        return Ok(());
     }
-    let rep = pdf.redact(&marks)?;
+    let rep = if apply {
+        // The new areas become marks too, and applying takes every mark away.
+        for (p, boxes) in by_page(&marks) {
+            pdf.add_redaction_mark(p, &boxes, "")?;
+        }
+        pdf.apply_redactions()?
+    } else if marks.is_empty() {
+        bail!("nothing to redact; the file was not written");
+    } else {
+        pdf.redact(&marks)?
+    };
     if !rep.left.is_empty() {
         for l in &rep.left {
             eprintln!("{l}");
@@ -1431,8 +1474,10 @@ fn main() -> Result<()> {
             io,
             areas,
             texts,
+            mark_only,
+            apply,
             json,
-        } => redact(&io, &areas, &texts, json)?,
+        } => redact(&io, &areas, &texts, mark_only, apply, json)?,
         Cmd::Stamp {
             io,
             kind,
