@@ -103,6 +103,8 @@ Small or medium additions that build on what MPE already has:
 - Full-screen presentation mode (S–M)
 - Reflow view (L); read aloud (L)
 - Right-to-left layout, touch layout (M)
+- A top-bar button for the page layout, at least facing pages (now only in View > Page layout and the command
+  palette) (S)
 
 ## Printing
 
