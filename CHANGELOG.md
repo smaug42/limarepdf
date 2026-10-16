@@ -30,6 +30,8 @@
 - Search highlights follow the page's reading order, as the results list does, so every match listed is highlighted
   and stepping through results goes to the right place.
 - On Windows, a console window no longer opens behind the app.
+- The start screen card's outline stays lit while the pointer is over its buttons and recent files, instead of
+  flickering.
 - Two watermarks with different opacities on the same page each keep their own opacity.
 - Headers, footers, watermarks and OCR text no longer break the page's own text and images on pages that take their
   resources from the page tree.

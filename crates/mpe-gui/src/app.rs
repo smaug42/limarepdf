@@ -1696,7 +1696,9 @@ fn empty_state(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
         .on_hover_cursor(egui::CursorIcon::PointingHand);
     let v = ui.visuals();
     let accent = theme::accent(v.dark_mode);
-    let stroke = if dragging || r.hovered() {
+    // Lit while the pointer is anywhere on the card: the buttons inside take the hover
+    // from the card, so `r.hovered()` would flicker as the pointer crosses them.
+    let stroke = if dragging || ui.rect_contains_pointer(card) {
         egui::Stroke::new(2.0, accent)
     } else {
         egui::Stroke::new(1.0, v.widgets.noninteractive.bg_stroke.color)
