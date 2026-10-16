@@ -18,6 +18,12 @@
   in the stamp tool's pane. The last five wordings and pictures are remembered. Also `mpe stamp` (`--text` and
   `--color` for your own wording).
 
+### Changed
+
+- Link addresses, bookmark names, comments and their authors, tab and window titles and print job titles are
+  cleaned before they are shown: direction-changing (bidi), invisible and control characters are removed and very
+  long text is shortened, so a link can't disguise where it goes.
+
 ## [0.6.0] - 2026-10-15
 
 Page tools and sturdier handling of damaged files: remove blank pages, split at bookmarks, page labels and picture

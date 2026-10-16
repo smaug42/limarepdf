@@ -68,7 +68,7 @@ available.
 | Bookmarks | Partial | Shown in the Bookmarks tab (also from the command palette) and followed; added, renamed and deleted in that tab or with `mpe bookmarks`. Moving or reordering them, styles and colours: No. [Details](gui.md#the-window), [CLI](cli.md#bookmarks) |
 | Links | Partial | Followed: to pages, and to web and email addresses after asking. Links to other PDF files, and adding or editing links: No. [Details](gui.md#links) |
 | Layers, attachments | No | |
-| Installers and packages | No | Releases are archives of the programs. Packages are planned for later; see below |
+| Installers and packages | Done | `.deb` and `.rpm` packages with apt and dnf repositories, a macOS `.dmg`, a Windows MSI, and archives; GPG-signed. [Install](install.md); more package managers planned, see below |
 | Redaction | No | |
 | Digital signatures, certificate encryption | No | |
 | PDF/A, optimised saving | No | Saved files are pruned and compressed |
@@ -89,6 +89,10 @@ available.
   leaves the document as it was. A failure while showing the document (pages, thumbnails, search, bookmarks,
   comments, the inspector) turns that tab into an error page with Save a copy and Close; other tabs carry on. A
   failure in a menu command outside those can still close the app.
+- Text from a file that the app shows as a label or message (link addresses, bookmark names, comment authors and
+  text, file names in tab and window titles and print job titles) has direction-changing (bidi), invisible and
+  control characters removed and is shortened when very long, so a link can't pretend to go somewhere else. Form
+  field values and the command line's output are shown as they are.
 
 ## Planned and proposed
 

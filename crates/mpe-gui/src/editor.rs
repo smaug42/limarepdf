@@ -417,6 +417,7 @@ fn constrain(tool: Tool, a: Pos2, b: Pos2) -> Pos2 {
 pub fn annot_tip(a: &Annot) -> String {
     let mut tip = a.kind.label();
     for extra in [&a.author, &a.modified] {
+        let extra = mpe_core::display_line(extra, 80);
         if !extra.is_empty() {
             tip += &format!(" · {extra}");
         }
@@ -424,8 +425,9 @@ pub fn annot_tip(a: &Annot) -> String {
     if a.hidden() {
         tip += " · hidden";
     }
-    if !a.contents.is_empty() {
-        tip += &format!("\n\n{}", a.contents);
+    let contents = mpe_core::display_text(&a.contents, 2000);
+    if !contents.is_empty() {
+        tip += &format!("\n\n{contents}");
     }
     tip
 }
@@ -2087,8 +2089,9 @@ impl Editor {
         // locked ones can be answered too.
         ui.separator();
         for r in &replies {
-            let who: Vec<&str> = [r.author.as_str(), r.modified.as_str()]
+            let who: Vec<String> = [&r.author, &r.modified]
                 .into_iter()
+                .map(|s| mpe_core::display_line(s, 80))
                 .filter(|s| !s.is_empty())
                 .collect();
             ui.weak(if who.is_empty() {
@@ -2096,7 +2099,7 @@ impl Editor {
             } else {
                 who.join(" · ")
             });
-            ui.label(&r.contents);
+            ui.label(mpe_core::display_text(&r.contents, 2000));
             ui.add_space(4.0);
         }
         let out = ui.add(

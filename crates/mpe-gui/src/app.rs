@@ -1255,7 +1255,8 @@ impl App {
                 ctx,
                 "Open link",
                 &format!(
-                    "This link goes to:\n\n{url}\n\nOpen it in your browser or email program?"
+                    "This link goes to:\n\n{}\n\nOpen it in your browser or email program?",
+                    mpe_core::display_line(url, 300)
                 ),
                 "Open link",
             ) {

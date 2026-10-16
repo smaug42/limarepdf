@@ -7,6 +7,7 @@ mod annot_ap;
 mod annot_write;
 mod annots;
 mod blank;
+mod display;
 mod doc;
 mod edit;
 mod excerpt;
@@ -40,6 +41,7 @@ mod viewprefs;
 
 pub use annots::{Annot, AnnotKind, ShapeLook, TextStyle};
 pub use blank::BLANK_TOLERANCE;
+pub use display::{display_line, display_text};
 pub use doc::{part_file_name, Info, Pdf};
 pub use edit::{PathStyle, Shape, TextEdit};
 pub use fonts::{Family, FontChoice};
