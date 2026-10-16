@@ -33,5 +33,11 @@ blacked out and saved again in `redact_img.rs`. Afterwards the pages are parsed 
 is left under the marks. Hidden information (metadata, scripts, attachments, hidden layers) is removed by
 `sanitise.rs`. See [Redaction](redaction.md).
 
+Fill-and-sign signatures (`crates/mpe-core/src/sign.rs`) are stamp annotations whose artwork MPE draws once:
+pen strokes smoothed into curves, typed names as the glyph outlines of a bundled handwriting font (read with the
+`skrifa` crate, so no font goes into the PDF), or a picture with its paper made transparent. Finish signing
+flattens just those annotations. The app's saved signatures and the Create signature window are in
+`crates/mpe-gui/src/signing.rs`.
+
 In the desktop app, every command is defined once in `crates/mpe-gui/src/actions.rs`; the menu, the top bar, the
 command palette, the right-click menus, the floating toolbar and the keyboard shortcuts are all built from that list.

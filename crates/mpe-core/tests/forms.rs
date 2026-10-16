@@ -331,3 +331,23 @@ fn places_widgets_on_rotated_pages() {
         [150.0, 10.0, 170.0, 110.0]
     );
 }
+
+#[test]
+fn only_empty_signature_fields_are_offered_for_signing() {
+    let mut p = two_pages();
+    let empty = p.doc.add_object(widget(dictionary! {
+        "FT" => "Sig", "T" => text("Sign here"), "Rect" => rect(10, 20),
+    }));
+    let signed = p.doc.add_object(widget(dictionary! {
+        "FT" => "Sig", "T" => text("Signed"), "Rect" => rect(10, 100),
+        "V" => dictionary! { "Type" => "Sig" },
+    }));
+    let other = p.doc.add_object(widget(dictionary! {
+        "FT" => "Tx", "T" => text("Name"), "Rect" => rect(150, 20),
+    }));
+    on_page(&mut p, 0, &[empty, signed, other]);
+    set_form(&mut p, &[empty, signed, other]);
+    // 20 to 40 points up from the bottom of a 200-point page.
+    assert_eq!(p.empty_signature_boxes(0), [[10.0, 160.0, 110.0, 180.0]]);
+    assert!(p.empty_signature_boxes(1).is_empty());
+}

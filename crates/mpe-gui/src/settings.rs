@@ -7,6 +7,7 @@
 //! `settings.txt` holds `key = value` lines; unknown keys and bad values are ignored. The
 //! files stay on this computer, and failing to read or write them is not an error.
 
+use crate::signing::SignKit;
 use eframe::egui::ThemePreference;
 use mpe_core::{OpenLayout, StampColor};
 use std::path::PathBuf;
@@ -93,6 +94,8 @@ pub struct Settings {
     /// Stamp wordings of your own and their colours, the latest first, at most
     /// [`STAMP_WORDINGS`].
     pub stamp_wordings: Vec<(String, StampColor)>,
+    /// Saved signatures and initials, kept in their own file beside this one.
+    pub sign: SignKit,
     /// Where they are saved; `None` when there is no settings folder.
     file: Option<PathBuf>,
 }
@@ -135,6 +138,11 @@ impl Settings {
             stamp_name_date: true,
             stamp_pictures: Vec::new(),
             stamp_wordings: Vec::new(),
+            sign: SignKit::from_file(
+                file.as_ref()
+                    .and_then(|f| f.parent())
+                    .map(|d| d.join("signatures.txt")),
+            ),
             file,
         };
         let text = s

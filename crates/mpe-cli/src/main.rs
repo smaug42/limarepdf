@@ -15,6 +15,7 @@ use mpe_core::{
     Restrictions, ScanMode, ScanOptions, ScanResult, Stamp, StampColor, StampKind, StampPlace,
     ViewPrefs, Watermark,
 };
+use mpe_core::{sign_label, InkColor, SignArt, SignRole, SignStyle};
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 
@@ -256,17 +257,25 @@ enum Cmd {
         #[arg(long)]
         list: bool,
     },
-    /// Put a stamp on pages: Approved, Draft and so on, your own wording, or a picture
+    /// Put a stamp on pages: Approved, Draft and so on, your own wording, a picture, or a
+    /// typed signature
     Stamp {
         #[command(flatten)]
         io: Io,
         /// approved, not-approved, draft, final, confidential, for-comment or void
-        #[arg(long, required_unless_present_any = ["image", "text"], conflicts_with_all = ["image", "text"])]
+        #[arg(long, required_unless_present_any = ["image", "text", "signature"], conflicts_with_all = ["image", "text", "signature"])]
         kind: Option<String>,
         /// Your own wording instead, shown in capitals
-        #[arg(long, conflicts_with = "image")]
+        #[arg(long, conflicts_with_all = ["image", "signature"])]
         text: Option<String>,
-        /// The colour of your own wording: green, red or blue; default red
+        /// Sign with this name, in handwriting (not a digital signature)
+        #[arg(long, conflicts_with = "image")]
+        signature: Option<String>,
+        /// The handwriting: 1 casual, 2 formal
+        #[arg(long, requires = "signature", default_value_t = 1)]
+        style: u8,
+        /// The colour of your own wording: green, red or blue (default red); of a
+        /// signature: black or blue (default black)
         #[arg(long)]
         color: Option<String>,
         /// Use a PNG, JPEG or TIFF picture instead
@@ -281,7 +290,8 @@ enum Cmd {
         /// Size, as a percentage of the stamp's own size
         #[arg(long, default_value_t = 100.0)]
         scale: f32,
-        /// Add a line with the author's name and today's date
+        /// Add a line with the author's name and today's date; under a signature, the
+        /// date only
         #[arg(long, conflicts_with = "image")]
         date: bool,
         /// The stamp's author, also written on the date line
@@ -812,7 +822,10 @@ fn annot_list(input: &Path, pages: &Option<String>, json: bool, pw: &Option<Stri
             "#{:<3} page {:<4} {:<10} {:<16} {:<16} {:?}{}",
             i + 1,
             a.page + 1,
-            a.kind.name(),
+            match sign_label(&a.name) {
+                Some(l) if a.kind == AnnotKind::Stamp => l.to_lowercase(),
+                _ => a.kind.name().to_string(),
+            },
             dash(&a.author),
             dash(&a.modified),
             a.contents,
@@ -1544,6 +1557,8 @@ fn main() -> Result<()> {
             io,
             kind,
             text,
+            signature,
+            style,
             color,
             image,
             pages,
@@ -1555,9 +1570,10 @@ fn main() -> Result<()> {
             if !(scale > 0.0 && scale.is_finite()) {
                 bail!("--scale must be above 0");
             }
-            if color.is_some() && text.is_none() {
-                bail!("--color is for --text stamps only");
+            if color.is_some() && text.is_none() && signature.is_none() {
+                bail!("--color is for --text stamps and signatures only");
             }
+            let style = SignStyle::from_number(style).context("--style is 1 or 2")?;
             let image = match image {
                 Some(path) => Some(
                     std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?,
@@ -1566,6 +1582,19 @@ fn main() -> Result<()> {
             };
             let stamp = match (&image, &text) {
                 (Some(bytes), _) => Stamp::Picture(bytes),
+                (None, None) if signature.is_some() => Stamp::Signature {
+                    art: SignArt::Typed {
+                        text: signature.as_deref().unwrap_or_default(),
+                        style,
+                    },
+                    role: SignRole::Signature,
+                    color: match color {
+                        Some(c) => InkColor::from_name(&c)
+                            .with_context(|| format!("a signature is black or blue, not {c:?}"))?,
+                        None => InkColor::Black,
+                    },
+                    date,
+                },
                 (None, Some(text)) => Stamp::Custom {
                     text,
                     color: match color {

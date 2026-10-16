@@ -52,6 +52,8 @@ assets = [
     ["../../LICENSE-APACHE", "usr/share/doc/mpe/", "644"],
     ["../mpe-core/models/README.md", "usr/share/doc/mpe/OCR-MODEL.md", "644"],
     ["assets/fonts/OFL.txt", "usr/share/doc/mpe/FONT-LICENSE-Inter.txt", "644"],
+    ["../mpe-core/assets/fonts/OFL-DancingScript.txt", "usr/share/doc/mpe/FONT-LICENSE-DancingScript.txt", "644"],
+    ["../mpe-core/assets/fonts/OFL-GreatVibes.txt", "usr/share/doc/mpe/FONT-LICENSE-GreatVibes.txt", "644"],
 ]
 
 [package.metadata.generate-rpm]
@@ -72,6 +74,8 @@ assets = [
     { source = "../../LICENSE-APACHE", dest = "/usr/share/licenses/mpe/LICENSE-APACHE", mode = "644" },
     { source = "../mpe-core/models/README.md", dest = "/usr/share/doc/mpe/OCR-MODEL.md", mode = "644", doc = true },
     { source = "assets/fonts/OFL.txt", dest = "/usr/share/licenses/mpe/FONT-LICENSE-Inter.txt", mode = "644" },
+    { source = "../mpe-core/assets/fonts/OFL-DancingScript.txt", dest = "/usr/share/licenses/mpe/FONT-LICENSE-DancingScript.txt", mode = "644" },
+    { source = "../mpe-core/assets/fonts/OFL-GreatVibes.txt", dest = "/usr/share/licenses/mpe/FONT-LICENSE-GreatVibes.txt", mode = "644" },
 ]
 
 # Library sonames rather than package names, so the same rpm works on Fedora and openSUSE.

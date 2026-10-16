@@ -74,7 +74,7 @@ pub(crate) fn decode_upright_size(bytes: &[u8]) -> Result<(f32, f32)> {
     })
 }
 
-fn first(rasters: Vec<Raster>) -> Result<Raster> {
+pub(crate) fn first(rasters: Vec<Raster>) -> Result<Raster> {
     rasters
         .into_iter()
         .next()
@@ -400,7 +400,7 @@ fn corners(o: Orientation) -> [(f32, f32); 3] {
     }
 }
 
-fn swaps_axes(o: Orientation) -> bool {
+pub(crate) fn swaps_axes(o: Orientation) -> bool {
     use Orientation::*;
     matches!(o, Rotate90 | Rotate270 | Rotate90FlipH | Rotate270FlipH)
 }
@@ -441,7 +441,7 @@ impl Pdf {
         Ok((self.add_raster(r), w, h, o))
     }
 
-    fn add_raster(&mut self, r: Raster) -> ObjectId {
+    pub(crate) fn add_raster(&mut self, r: Raster) -> ObjectId {
         let mut dict = dictionary! {
             "Type" => "XObject", "Subtype" => "Image",
             "Width" => r.w as i64, "Height" => r.h as i64,

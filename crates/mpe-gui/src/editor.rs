@@ -3,6 +3,7 @@
 
 use crate::fields::FormUi;
 use crate::selection::{ObjKind, Selection, WordAt};
+use crate::signing::{SignKit, SignPane, SignPick};
 use crate::theme;
 use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use egui_phosphor::regular as icon;
@@ -35,6 +36,9 @@ pub enum Tool {
     Stamp,
     /// Drag boxes to mark areas for redaction; nothing is removed until applied.
     Redact,
+    /// Fill and sign: put down your signature, initials, the date, your name, text or a
+    /// tick, cross or dot.
+    Sign,
 }
 
 impl Tool {
@@ -157,6 +161,10 @@ pub enum Action {
     AddStamp(usize, StampPlace),
     /// Mark an area (displayed-page points) for redaction.
     AddRedactMark(usize, [f32; 4]),
+    /// The Sign tool's picked item.
+    AddSign(usize, StampPlace),
+    /// Sign in an empty signature field: its page and box. Switches to the Sign tool.
+    SignHere(usize, [f32; 4]),
     /// Answer an annotation.
     Reply(usize, (u32, u16), String),
 }
@@ -335,6 +343,16 @@ pub struct Editor {
     stamp_draft_color: StampColor,
     /// Put the keyboard in the reply box (and show the inspector).
     pub reply_focus: bool,
+    /// Saved signatures and the ink and date choices (from the settings).
+    pub sign_kit: SignKit,
+    /// The Sign tool's pane.
+    pub sign: SignPane,
+    /// Fill-and-sign items still movable in the document, for the Sign tool's pane.
+    pub sign_items: usize,
+    /// The pane's Finish signing button was pressed.
+    pub finish_signing: bool,
+    /// Why the Sign tool couldn't put something down.
+    sign_error: Option<String>,
 }
 
 impl Default for Editor {
@@ -394,6 +412,11 @@ impl Default for Editor {
             stamp_draft: String::new(),
             stamp_draft_color: StampColor::Red,
             reply_focus: false,
+            sign_kit: SignKit::from_file(None),
+            sign: SignPane::default(),
+            sign_items: 0,
+            finish_signing: false,
+            sign_error: None,
         }
     }
 }
@@ -426,7 +449,7 @@ fn constrain(tool: Tool, a: Pos2, b: Pos2) -> Pos2 {
 
 /// Hover text for an annotation: its kind, author and date, then its comment.
 pub fn annot_tip(a: &Annot) -> String {
-    let mut tip = a.kind.label();
+    let mut tip = a.label();
     for extra in [&a.author, &a.modified] {
         let extra = mpe_core::display_line(extra, 80);
         if !extra.is_empty() {
@@ -704,6 +727,22 @@ impl Editor {
     pub fn selected_annot(&self) -> Option<&Annot> {
         let (page, id) = self.selection.annot()?;
         self.annots.get(&page)?.iter().find(|a| a.id == id)
+    }
+
+    /// Put the Sign tool's picked item at `place` on `page`; with no signature saved yet,
+    /// open the Create window first and put the new one there.
+    pub fn place_sign(&mut self, page: usize, place: StampPlace) {
+        self.sign_error = None;
+        match self.sign.pick {
+            _ if self.sign.ready(&self.sign_kit) => {
+                self.actions.push(Action::AddSign(page, place));
+            }
+            SignPick::Saved(role, _) => {
+                let author = self.author.clone();
+                self.sign.start_create(role, &author, Some((page, place)));
+            }
+            _ => self.sign_error = Some("Type the text to put down first.".into()),
+        }
     }
 
     pub fn set_tool(&mut self, t: Tool) {
@@ -1136,7 +1175,7 @@ impl Editor {
         }
         let ctrl_annot = click_pt(&resp)
             .filter(|_| ctrl && resp.clicked())
-            .filter(|_| Tool::ANNOTATE.contains(&self.tool))
+            .filter(|_| Tool::ANNOTATE.contains(&self.tool) || self.tool == Tool::Sign)
             .and_then(|p| self.annot_at(pdf, page, p))
             .map(|a| a.id);
 
@@ -1424,7 +1463,8 @@ impl Editor {
             | Tool::Line
             | Tool::TextBox
             | Tool::Stamp
-            | Tool::Redact => {
+            | Tool::Redact
+            | Tool::Sign => {
                 ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
                 if resp.drag_started() {
                     if let Some(p) = ui.input(|i| i.pointer.press_origin()).map(to_pt) {
@@ -1452,6 +1492,16 @@ impl Editor {
                         if d.page == page {
                             finish = Some((d.start, d.cur));
                         }
+                    }
+                } else if resp.clicked() && self.tool == Tool::Sign {
+                    // In an empty signature field, the item fills the field.
+                    if let Some(p) = resp.interact_pointer_pos().map(to_pt) {
+                        let field = crate::signing::box_at(&pdf.empty_signature_boxes(page), p);
+                        let place = match field {
+                            Some(b) => StampPlace::Fill(b),
+                            None => StampPlace::Centre(p.x, p.y),
+                        };
+                        self.place_sign(page, place);
                     }
                 } else if resp.clicked() && self.tool == Tool::Stamp {
                     if let Some(p) = resp.interact_pointer_pos().map(to_pt) {
@@ -1492,6 +1542,7 @@ impl Editor {
                                 .actions
                                 .push(Action::AddStamp(page, StampPlace::Fill(n))),
                             Tool::Redact => self.actions.push(Action::AddRedactMark(page, n)),
+                            Tool::Sign => self.place_sign(page, StampPlace::Fill(n)),
                             Tool::TextBox => {
                                 let size = self.box_style.size;
                                 self.start_writing(Writing::new(page, false, n, size));
@@ -1725,7 +1776,8 @@ impl Editor {
     /// (keeping a word selection the click falls inside); otherwise, or over nothing,
     /// the page (keeping a page selection that includes it).
     fn select_for_menu(&mut self, pdf: &mpe_core::Pdf, page: usize, p: Option<Pos2>, tol: f32) {
-        let annotating = self.tool == Tool::Select || Tool::ANNOTATE.contains(&self.tool);
+        let annotating =
+            matches!(self.tool, Tool::Select | Tool::Sign) || Tool::ANNOTATE.contains(&self.tool);
         match (self.tool, p) {
             (_, Some(p)) if annotating && self.annot_at(pdf, page, p).is_some() => {
                 if let Some(id) = self.annot_at(pdf, page, p).map(|a| a.id) {
@@ -1813,6 +1865,7 @@ impl Editor {
                 | Tool::Pen
                 | Tool::Stamp
                 | Tool::Redact
+                | Tool::Sign
         ) || self.sel().is_some()
             || self.selection.words().is_some()
             || self.selection.annot().is_some()
@@ -2010,7 +2063,7 @@ impl Editor {
         ui.strong(if a.reply_to.is_some() {
             "Reply".into()
         } else {
-            a.kind.label()
+            a.label()
         });
         let mut about = vec![format!("Page {}", a.page + 1)];
         about.extend(
@@ -2283,6 +2336,14 @@ impl Editor {
     }
 
     pub fn inspector(&mut self, ui: &mut egui::Ui) {
+        // The Create signature window, opened from the Sign tool's pane or a click.
+        let ctx = ui.ctx().clone();
+        if let Some((page, place)) =
+            self.sign
+                .create_ui(&ctx, &mut self.sign_kit, &mut self.sign_error)
+        {
+            self.actions.push(Action::AddSign(page, place));
+        }
         if self.selection.annot().is_some() {
             self.annot_inspector(ui);
             return;
@@ -2422,6 +2483,16 @@ impl Editor {
             }
             Tool::Stamp => {
                 self.stamp_ui(ui);
+                return;
+            }
+            Tool::Sign => {
+                let out = self
+                    .sign
+                    .ui(ui, &mut self.sign_kit, &mut self.author, self.sign_items);
+                self.finish_signing |= out.finish;
+                if let Some(e) = &self.sign_error {
+                    ui.colored_label(ui.visuals().error_fg_color, e);
+                }
                 return;
             }
             Tool::Redact => {

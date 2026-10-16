@@ -8,6 +8,7 @@ use crate::form_ap::nums;
 use crate::imgs::{decode_upright_size, orient_matrix};
 use crate::matrix as mx;
 use crate::overlay::{escape, utc_now};
+use crate::sign::{mark_art, sign_label, signature_art, InkColor, Mark, SignArt, SignRole};
 use crate::{std14, Pdf, Result};
 use anyhow::{anyhow, bail};
 use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream};
@@ -31,7 +32,7 @@ const CAP: f32 = 0.72;
 /// The longer side of a picture stamp at its own size, in points.
 const PICTURE: f32 = 160.0;
 /// Control-point distance for a quarter circle drawn as a Bézier curve.
-const KAPPA: f32 = 0.5523;
+pub(crate) const KAPPA: f32 = 0.5523;
 
 /// The ready-made stamps.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -179,6 +180,15 @@ pub enum Stamp<'a> {
     },
     /// A PNG, JPEG or TIFF picture.
     Picture(&'a [u8]),
+    /// A signature or initials, with a line under it giving today's date when `date`.
+    Signature {
+        art: SignArt<'a>,
+        role: SignRole,
+        color: InkColor,
+        date: bool,
+    },
+    /// A tick, cross or dot.
+    Mark { mark: Mark, color: InkColor },
 }
 
 /// Where a stamp goes, in displayed-page points (y down).
@@ -250,7 +260,7 @@ impl Stamp<'_> {
                 color,
                 name_and_date,
             } => (stamp_wording(text)?, *color, None, *name_and_date),
-            Stamp::Picture(_) => return Ok(None),
+            Stamp::Picture(_) | Stamp::Signature { .. } | Stamp::Mark { .. } => return Ok(None),
         };
         Ok(Some(TextStamp {
             word,
@@ -268,8 +278,45 @@ impl Stamp<'_> {
                 let (w, h) = decode_upright_size(bytes)?;
                 picture_size(w, h)
             }
-            _ => unreachable!("only pictures have no wording"),
+            (Stamp::Mark { mark, color }, None) => {
+                let a = mark_art(*mark, *color);
+                (a.w, a.h)
+            }
+            (
+                Stamp::Signature {
+                    art,
+                    role,
+                    color,
+                    date,
+                },
+                None,
+            ) => {
+                let a = signature_art(art, *role, *color, *date)?;
+                (a.w, a.h)
+            }
+            _ => unreachable!("stamps with wording have it"),
         })
+    }
+
+    /// A picture of the stamp at `scale` pixels per point, on white, for showing in lists.
+    pub fn preview(&self, author: &str, scale: f32) -> Result<crate::render::Bitmap> {
+        let (w, h) = self.size(author)?;
+        let mut p = Pdf::new();
+        p.insert_blank(0, w, h)?;
+        p.add_stamp(0, self, StampPlace::Fill([0.0, 0.0, w, h]), author)?;
+        let doc = crate::render::load(p.render_snapshot()?, None)?;
+        crate::render::Renderer::new(&doc).render(0, scale)
+    }
+
+    /// A fill-and-sign stamp's `/Name`, `/Subj` and colour.
+    fn sign_entries(&self) -> Option<(&'static str, &'static str, InkColor)> {
+        match self {
+            Stamp::Signature { role, color, .. } => {
+                Some((role.name(), sign_label(role.name())?, *color))
+            }
+            Stamp::Mark { mark, color } => Some((mark.name(), mark.label(), *color)),
+            _ => None,
+        }
     }
 }
 
@@ -310,7 +357,25 @@ impl Pdf {
                 (self.text_art(t, size), size)
             }
             (None, Stamp::Picture(bytes)) => self.picture_art(bytes)?,
-            (None, _) => unreachable!("only pictures have no wording"),
+            (
+                None,
+                Stamp::Signature {
+                    art,
+                    role,
+                    color,
+                    date,
+                },
+            ) => {
+                let a = signature_art(art, *role, *color, *date)?;
+                let size = (a.w, a.h);
+                (self.add_art(a), size)
+            }
+            (None, Stamp::Mark { mark, color }) => {
+                let a = mark_art(*mark, *color);
+                let size = (a.w, a.h);
+                (self.add_art(a), size)
+            }
+            (None, _) => unreachable!("stamps with wording have it"),
         };
         let shown = match place {
             StampPlace::Centre(x, y) => [x - w / 2.0, y - h / 2.0, x + w / 2.0, y + h / 2.0],
@@ -345,6 +410,11 @@ impl Pdf {
                 d.set("Name", name);
             }
             d.set("C", nums(&t.color.rgb()));
+        }
+        if let Some((name, subject, color)) = stamp.sign_entries() {
+            d.set("Name", name);
+            d.set("Subj", Object::string_literal(subject));
+            d.set("C", nums(&color.rgb()));
         }
         self.insert_annot(page, d, author)
     }

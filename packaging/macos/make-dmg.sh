@@ -38,6 +38,8 @@ res="$app/Contents/Resources"
 cp README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE "$res/"
 cp crates/mpe-core/models/README.md "$res/OCR-MODEL.md"
 cp crates/mpe-gui/assets/fonts/OFL.txt "$res/FONT-LICENSE-Inter.txt"
+cp crates/mpe-core/assets/fonts/OFL-DancingScript.txt "$res/FONT-LICENSE-DancingScript.txt"
+cp crates/mpe-core/assets/fonts/OFL-GreatVibes.txt "$res/FONT-LICENSE-GreatVibes.txt"
 
 # lipo drops the linker's ad hoc signatures; Apple Silicon won't run unsigned code.
 codesign --force --sign - "$app/Contents/MacOS/mpe"

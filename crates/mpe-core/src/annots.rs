@@ -155,6 +155,8 @@ pub struct Annot {
     /// Who made it (`/T`).
     pub author: String,
     pub subject: String,
+    /// Its icon name (`/Name`), for stamps, notes and attachments; empty when none.
+    pub name: String,
     /// When it was last changed, as `YYYY-MM-DD HH:MM`, or empty when unknown.
     pub modified: String,
     /// The annotation flags (`/F`).
@@ -218,6 +220,15 @@ impl Default for TextStyle {
 }
 
 impl Annot {
+    /// A label for people: its kind, or "Signature", "Initials", "Tick" and so on for
+    /// MPE's fill-and-sign stamps.
+    pub fn label(&self) -> String {
+        match crate::sign_label(&self.name) {
+            Some(l) if self.kind == AnnotKind::Stamp => l.into(),
+            _ => self.kind.label(),
+        }
+    }
+
     pub fn hidden(&self) -> bool {
         self.flags & HIDDEN != 0
     }
@@ -515,6 +526,11 @@ impl Pdf {
             contents: text(b"Contents"),
             author: text(b"T"),
             subject: text(b"Subj"),
+            name: d
+                .get(b"Name")
+                .and_then(|o| o.as_name())
+                .map(|n| String::from_utf8_lossy(n).into_owned())
+                .unwrap_or_default(),
             modified: date(b"M")
                 .or_else(|| date(b"CreationDate"))
                 .unwrap_or_default(),

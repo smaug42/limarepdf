@@ -740,7 +740,7 @@ fn user_stroke(to_user: mx::M, stroke: &[(f32, f32)]) -> Vec<f32> {
 
 /// Fewer points along much the same line (Douglas–Peucker): every point dropped is within
 /// `tol` of the line kept. The first and last points always stay.
-fn simplify(p: &[(f32, f32)], tol: f32) -> Vec<(f32, f32)> {
+pub(crate) fn simplify(p: &[(f32, f32)], tol: f32) -> Vec<(f32, f32)> {
     if p.len() < 3 {
         return p.to_vec();
     }

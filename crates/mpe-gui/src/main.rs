@@ -12,6 +12,7 @@ mod markup;
 mod recent;
 mod selection;
 mod settings;
+mod signing;
 mod tab;
 mod theme;
 mod worker;

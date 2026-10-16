@@ -22,7 +22,7 @@ invalid; when a document is signed, MPE asks first. Save As to a new file keeps 
 
 ## The window
 
-- **Top bar:** the menu (☰), Open, Save, Undo and Redo, the tools, the page layout, zoom, search, Print, an Export menu (pages as
+- **Top bar:** the menu (☰), Open, Save, Undo and Redo, the tools (Sign among them), the page layout, zoom, search, Print, an Export menu (pages as
   images, text), and the theme. On narrow windows the search field and the tools fold into single buttons.
 - **Left:** four tabs. Pages shows the thumbnails, Search the search results, and Bookmarks the document's
   outline. Click a bookmark to go to its page; the arrow beside one shows or hides the bookmarks inside it, which
@@ -231,13 +231,63 @@ Each value you change is one undo step. ☰ > View > Highlight fields tints ever
 in red. The inspector's Form section shows the field you are in (its name, description and whether it is required),
 with Clear field, Highlight fields and Reset form, which puts every field back to its default. Flatten form… (also
 in the command palette) makes the fields part of the pages as they look now, so nobody can change the values,
-here or in other readers; it asks first, and Undo brings the fields back until you close the document. Read-only fields,
-buttons (they run scripts, which MPE doesn't) and signature fields can't be filled in; hovering says why.
+here or in other readers; it asks first, and Undo brings the fields back until you close the document. Read-only fields
+and buttons (they run scripts, which MPE doesn't) can't be filled in; hovering says why. Clicking an empty signature
+field puts your signature in it (see [Filling and signing](#filling-and-signing)).
 
 MPE draws the filled fields itself, so the values show the same in other readers. Text must be Latin-1 (Western
 European) for now; anything else is refused with a message rather than saved wrongly. Fields that have a value but
 no drawing of their own are drawn when the file opens. See [Command line](cli.md#forms) for filling forms in
 scripts.
+
+## Filling and signing
+
+The Sign button in the top bar (its icon is a signature; "Fill and sign" in the command palette) puts your
+signature, initials, the date, your name, other text or a tick, cross or dot on the page, for signing a document
+someone sent you. It is a picture of your signature, not a digital signature: it doesn't prove who signed, and
+anyone can copy it. Digital signatures are a later feature.
+
+**Making a signature:** in the Sign pane, Create signature… (or New… beside Signatures) opens a window with three
+ways to make one:
+
+- **Draw:** sign on the white pad with the mouse, touchpad or a pen; Clear starts again. The strokes are smoothed
+  into curves and stay sharp at any zoom.
+- **Type:** type your name (it starts as your name for comments) and pick one of two handwriting styles, Casual or
+  Formal, shown as they will look. Western European characters only; for other scripts, draw or use a picture.
+- **Picture:** choose a photo or scan of your signature on paper (PNG, JPEG or TIFF). "Make the paper transparent"
+  (on by default) keeps only the ink and cuts off the empty margins, so the signature sits on the page like ink.
+
+Initials are made the same way, with New… beside Initials; typing starts with your name's initials. "Remember it"
+(on by default) keeps the signature for next time: up to five signatures and five sets of initials are kept, the
+newest first, and right-click one to take it off the list. Unticked, it is kept until MPE closes. Remembered
+signatures are stored unencrypted in MPE's settings folder (`signatures.txt`, and pictures copied into its
+`signatures` folder), on this computer only; taking a picture off the list deletes its copy.
+
+**Putting things down:** pick an item in the pane, then click on the page to put it down at its usual size, centred
+on the click, or drag a box to size it (it keeps its shape inside the box). The tool stays on, so you can sign
+several places in a row.
+
+- **Signatures and initials:** a signature is up to 150 by 50 points, initials up to 50 by 30. With no signature
+  saved yet, clicking the page opens the window first and puts the new signature where you clicked.
+- **Date:** today's date, in the style picked beside it: 2026-10-16, 16 October 2026 or October 16, 2026. The date
+  is in UTC, as stamps use, so late in the evening west of Greenwich it can already be tomorrow's; the date is a
+  text box, so double-click it to change it.
+- **Name:** your name for comments (the same as Edit > Your name for comments).
+- **Text:** type in the box, then click; for anything else a form asks for.
+- **Marks:** a tick, cross or dot, for boxes that aren't real form fields.
+- **Ink:** black or blue, for what is put down next.
+
+The style choices are remembered. Signature fields: clicking an empty one, with the Sign tool or the read tool, puts
+the picked signature (or initials) inside its box. The field itself stays digitally unsigned, so other readers don't
+report a broken signature.
+
+**Moving and finishing:** what you put down is added as annotations, so it can still be moved, resized or deleted:
+Ctrl+click an item (or use the arrow) to select it. While there are such items, a notice above the pages says how
+many and has a Finish signing… button; the Sign pane has the same button. Finish signing (also in the Document menu)
+draws them into the pages as they look, after asking, so they can no longer be moved or removed as comments; Undo
+brings them back until you close the document. Saving without finishing keeps them movable, and the notice comes
+back when the document is opened again. Other comments and stamps are left alone. Signatures are listed in the
+Comments tab as "Signature", "Initials", "Tick" and so on.
 
 ## Notices about the document
 
@@ -248,6 +298,7 @@ something to do and × to dismiss it. At most two show at a time.
 | --- | --- |
 | The document was password-protected: saving removes the protection unless you set it again | Password security |
 | Areas are marked for redaction but the marks haven't been applied (kept up to date while you work) | Apply redactions… |
+| Signatures and other items put down with the Sign tool can still be moved (kept up to date while you work) | Finish signing… |
 | Its pages are scans without text, so they cannot be searched or copied (checked on the first 20 pages) | Recognise text |
 | It is a form made for Adobe Reader (an XFA form), which only Adobe software can show or fill in; MPE shows the placeholder page the file contains, often "Please wait..." | |
 | It has a form: click a field to fill it in, or press Tab | Highlight fields |
