@@ -32,6 +32,7 @@ mod reading;
 pub mod render;
 mod scan;
 mod security;
+mod stamps;
 mod std14;
 mod text;
 mod tounicode;
@@ -52,6 +53,7 @@ pub use overlay::{text_width, Bates, HeaderFooter, ImageWatermark, Watermark};
 pub use pagerange::{format_page_range, parse_page_range};
 pub use scan::{ScanMode, ScanOptions, ScanResult};
 pub use security::{Cipher, Encryption, Restrictions};
+pub use stamps::{Stamp, StampKind, StampPlace};
 pub use text::SearchHit;
 
 pub type Result<T> = anyhow::Result<T>;

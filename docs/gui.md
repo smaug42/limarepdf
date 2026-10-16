@@ -154,6 +154,26 @@ Drag it around to turn the drawing about the
 middle of its box; the angle shows while you drag, and Shift keeps to steps of 15°. Rectangles, ellipses and text
 boxes can't be turned: PDF stores them as upright boxes.
 
+### Stamps
+
+The stamp tool is in the Annotate button's menu ("Add a stamp" in the command palette). Its inspector lists the
+ready-made stamps (Approved, Not approved, Draft, Final, Confidential, For comment and Void), each a coloured frame
+with the word in capitals, and the pictures used as stamps before. Pick one, then click on the page to put it down
+at its own size, centred on the click, or drag a box to size it (it keeps its shape inside the box). It is then
+selected with the arrow, to move or resize.
+
+- **Add my name and the date:** on by default; adds a small line under the word with your name and today's
+  date. The Name box under it is the same name as Edit > Your name for comments, so changing either changes both.
+  The date is in UTC, as headers and footers use. The name and date are fixed when the stamp is put down. The
+  choice is remembered.
+- **Pictures:** Choose a picture… takes a PNG or JPEG file; it is put down with its longer side 160 points. The
+  last five pictures are remembered by path (right-click one to take it off the list). Transparent parts of a PNG
+  stay transparent.
+
+Stamps are annotations: other readers list them as comments. Select one to change its opacity and comment;
+its colours are part of the stamp. A stamp reads upright on a turned page. The text is Helvetica Bold, Latin-1
+only, so a name in other scripts shows as `?`.
+
 ## Filling in forms
 
 Form fields work with the read tool, like links: hovering tints a field and shows its description, and a click

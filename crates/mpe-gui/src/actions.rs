@@ -869,6 +869,14 @@ pub static ACTIONS: &[Action] = &[
         menu: false,
         ..BASE
     },
+    Action {
+        act: Act::Tool(Tool::Stamp),
+        group: Group::Tools,
+        label: "Add a stamp",
+        icon: icon::STAMP,
+        menu: false,
+        ..BASE
+    },
     // ------------------------------------------------------------ Document
     Action {
         act: Act::RotR,

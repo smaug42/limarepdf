@@ -10,6 +10,10 @@
 - Page layouts, in View > Page layout: facing pages (two side by side, with the first page shown alone like a book
   cover, or paired) and single page (one at a time; scrolling past a page's end turns it), besides continuous
   pages. The choice is remembered.
+- Stamps: Approved, Not approved, Draft, Final, Confidential, For comment and Void, with your name and the date
+  if you like, or a picture of your own, from the Annotate menu. Click to put one down or drag to size it, then
+  move, resize or fade it like other annotations. Your name can be changed right in the stamp tool's pane. The
+  last five pictures are remembered. Also `mpe stamp`.
 
 ## [0.6.0] - 2026-10-15
 

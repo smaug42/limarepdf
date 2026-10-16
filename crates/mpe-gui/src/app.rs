@@ -2138,7 +2138,25 @@ impl eframe::App for App {
                     .show(ui, |ui| {
                         t.guarded(|t| {
                             if t.ed.owns_panel() {
+                                // Stamp choices and the author's name are app-wide:
+                                // lent to the tab's inspector and saved when it
+                                // changes them.
+                                let s = &mut self.settings;
+                                let author = s.author();
+                                t.ed.author = author.clone();
+                                t.ed.stamp_name_date = s.stamp_name_date;
+                                t.ed.stamp_pictures = s.stamp_pictures.clone();
                                 t.ed.inspector(ui);
+                                if (t.ed.stamp_name_date, &t.ed.stamp_pictures, &t.ed.author)
+                                    != (s.stamp_name_date, &s.stamp_pictures, &author)
+                                {
+                                    s.stamp_name_date = t.ed.stamp_name_date;
+                                    s.stamp_pictures = t.ed.stamp_pictures.clone();
+                                    if t.ed.author != author {
+                                        s.author = Some(t.ed.author.clone());
+                                    }
+                                    s.save();
+                                }
                             } else {
                                 panel_apply = inspector::show(ui, t, &c);
                             }

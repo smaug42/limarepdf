@@ -1,6 +1,6 @@
 use crate::actions::{self, Act, Ctx};
 use crate::banners::{self, Banner};
-use crate::editor::{annot_tip, Action, Editor, Tool};
+use crate::editor::{annot_tip, Action, Editor, StampPick, Tool};
 use crate::inspector::{Forms, Sec};
 use crate::markup::{self, Mark};
 use crate::selection::Selection;
@@ -485,6 +485,34 @@ impl Tab {
                     let mut new = None;
                     let add = |pdf: &mut Pdf| {
                         new = Some(pdf.add_note(p, at, color, &text, &author)?);
+                        Ok(())
+                    };
+                    if self.edit_pages(ctx, &[p], add) {
+                        self.after_annot(p, new);
+                    }
+                }
+                Action::AddStamp(p, place) => {
+                    let picture = match &self.ed.stamp {
+                        StampPick::Picture(path) => match std::fs::read(path) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                self.error = Some(format!("Can't read {}: {e}", path.display()));
+                                continue;
+                            }
+                        },
+                        StampPick::Text(_) => Vec::new(),
+                    };
+                    let stamp = match &self.ed.stamp {
+                        StampPick::Text(kind) => mpe_core::Stamp::Text {
+                            kind: *kind,
+                            name_and_date: self.ed.stamp_name_date,
+                        },
+                        StampPick::Picture(_) => mpe_core::Stamp::Picture(&picture),
+                    };
+                    let author = self.ed.author.clone();
+                    let mut new = None;
+                    let add = |pdf: &mut Pdf| {
+                        new = Some(pdf.add_stamp(p, &stamp, place, &author)?);
                         Ok(())
                     };
                     if self.edit_pages(ctx, &[p], add) {

@@ -495,7 +495,7 @@ impl Pdf {
     }
 
     /// Add the entries every new annotation has, put it on `page` and draw it.
-    fn insert_annot(
+    pub(crate) fn insert_annot(
         &mut self,
         page: ObjectId,
         mut d: Dictionary,
@@ -566,6 +566,9 @@ impl Pdf {
         }
         if drawn && looks_new {
             self.draw_annotations(&[id]);
+        }
+        if old.kind == AnnotKind::Stamp && (old.opacity - opacity).abs() > 1e-3 {
+            self.restamp(id)?;
         }
         Ok(())
     }

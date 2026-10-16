@@ -48,6 +48,9 @@ impl Layout {
     }
 }
 
+/// How many stamp pictures are remembered.
+pub const STAMP_PICTURES: usize = 5;
+
 pub struct Settings {
     pub theme: ThemePreference,
     pub layout: Layout,
@@ -60,6 +63,10 @@ pub struct Settings {
     /// The name written into comments and markup; `None` until it is set, meaning the
     /// system user name. Empty writes no name.
     pub author: Option<String>,
+    /// Text stamps get a line with the author's name and the date.
+    pub stamp_name_date: bool,
+    /// Pictures used as stamps, the latest first, at most [`STAMP_PICTURES`].
+    pub stamp_pictures: Vec<PathBuf>,
     /// Where they are saved; `None` when there is no settings folder.
     file: Option<PathBuf>,
 }
@@ -99,6 +106,8 @@ impl Settings {
             highlight: 0,
             line: 0,
             author: None,
+            stamp_name_date: true,
+            stamp_pictures: Vec::new(),
             file,
         };
         let text = s
@@ -142,6 +151,10 @@ impl Settings {
                         .unwrap_or(0);
                 }
                 "comment_name" => s.author = Some(value.to_string()),
+                "stamp_name_and_date" => s.stamp_name_date = value != "false",
+                "stamp_picture" if !value.is_empty() && s.stamp_pictures.len() < STAMP_PICTURES => {
+                    s.stamp_pictures.push(PathBuf::from(value));
+                }
                 _ => {}
             }
         }
@@ -171,6 +184,10 @@ impl Settings {
             // One line: a name pasted with line breaks keeps its first line.
             let name = name.lines().next().unwrap_or("").trim();
             text += &format!("comment_name = {name}\n");
+        }
+        text += &format!("stamp_name_and_date = {}\n", self.stamp_name_date);
+        for p in &self.stamp_pictures {
+            text += &format!("stamp_picture = {}\n", p.display());
         }
         let _ = std::fs::write(file, text);
     }
@@ -231,6 +248,23 @@ mod tests {
             let s = Settings::from_file(Some(f.clone()));
             assert_eq!((s.layout, s.cover), (layout, cover));
         }
+    }
+
+    #[test]
+    fn stamp_choices_are_saved_and_read_back() {
+        let f = file("stamps");
+        let s = Settings::from_file(Some(f.clone()));
+        assert!(s.stamp_name_date && s.stamp_pictures.is_empty());
+        let mut s = Settings::from_file(Some(f.clone()));
+        s.stamp_name_date = false;
+        s.stamp_pictures = vec!["/a/b c.png".into(), "/d.jpg".into()];
+        s.save();
+        let s = Settings::from_file(Some(f));
+        assert!(!s.stamp_name_date);
+        assert_eq!(
+            s.stamp_pictures,
+            [PathBuf::from("/a/b c.png"), "/d.jpg".into()]
+        );
     }
 
     #[test]

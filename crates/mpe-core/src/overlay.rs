@@ -16,7 +16,7 @@ pub fn text_width(s: &str, size: f32) -> f32 {
         / 1000.0
 }
 
-fn escape(s: &str) -> String {
+pub(crate) fn escape(s: &str) -> String {
     let mut o = String::new();
     for c in s.chars() {
         let u = c as u32;

@@ -3,7 +3,7 @@
 
 use lopdf::{dictionary, Dictionary, Object, ObjectId, StringFormat};
 use mpe_core::render::{self, Renderer};
-use mpe_core::{AnnotKind, Pdf, Shape, ShapeLook};
+use mpe_core::{AnnotKind, Pdf, Shape, ShapeLook, Stamp, StampKind, StampPlace};
 
 fn text(s: &str) -> Object {
     Object::String(s.as_bytes().to_vec(), StringFormat::Literal)
@@ -733,4 +733,97 @@ fn replies_are_listed_but_not_drawn() {
     assert!(p.add_reply(note, "  ", "").is_err());
     // Deleting what it answers takes the reply too.
     assert_eq!(p.remove_annotations(|a| a.id == note).unwrap(), 2);
+}
+
+fn png(w: u32, h: u32, c: [u8; 4]) -> Vec<u8> {
+    let img = image::RgbaImage::from_pixel(w, h, image::Rgba(c));
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+    out.into_inner()
+}
+
+#[test]
+fn a_stamp_is_centred_where_clicked_and_survives_flattening() {
+    let mut p = page();
+    let stamp = Stamp::Text {
+        kind: StampKind::Approved,
+        name_and_date: true,
+    };
+    let (w, h) = stamp.size("Sam").unwrap();
+    p.add_stamp(0, &stamp, StampPlace::Centre(150.0, 100.0), "Sam")
+        .unwrap();
+    let a = &p.annotations()[0];
+    assert_eq!(a.kind, AnnotKind::Stamp);
+    assert_eq!(a.author, "Sam");
+    let c = ((a.bbox[0] + a.bbox[2]) / 2.0, (a.bbox[1] + a.bbox[3]) / 2.0);
+    assert!((c.0 - 150.0).abs() < 0.01 && (c.1 - 100.0).abs() < 0.01);
+    assert!((a.bbox[2] - a.bbox[0] - w).abs() < 0.01 && (a.bbox[3] - a.bbox[1] - h).abs() < 0.01);
+    let before = ink(&mut p, [0, 0, 300, 200]);
+    assert!(before.0 > 100, "the stamp is drawn");
+    let bytes = p.to_bytes().unwrap();
+    let mut p = Pdf::from_bytes(&bytes, None).unwrap();
+    assert_eq!(p.flatten_annotations(None).unwrap(), 1);
+    assert_eq!(ink(&mut p, [0, 0, 300, 200]), before);
+}
+
+#[test]
+fn a_picture_stamp_fills_its_box_keeping_its_shape_and_stretches_when_resized() {
+    let mut p = page();
+    let black = png(40, 20, [0, 0, 0, 255]);
+    let id = p
+        .add_stamp(
+            0,
+            &Stamp::Picture(&black),
+            StampPlace::Fill([0.0, 0.0, 300.0, 200.0]),
+            "",
+        )
+        .unwrap();
+    let a = &p.annotations()[0];
+    let want = [0.0, 25.0, 300.0, 175.0];
+    assert!(a.bbox.iter().zip(want).all(|(a, b)| (a - b).abs() < 0.01));
+    assert!(ink(&mut p, [5, 30, 295, 170]).1 > 290 * 140 - 10);
+    assert_eq!(ink(&mut p, [0, 0, 300, 20]).0, 0);
+    // Resizing changes only the box; the drawing is fitted to it.
+    p.move_annotation(0, id, [10.0, 10.0, 60.0, 60.0]).unwrap();
+    assert!(ink(&mut p, [12, 12, 58, 58]).1 > 46 * 46 - 10);
+    assert_eq!(ink(&mut p, [100, 100, 300, 200]).0, 0);
+}
+
+#[test]
+fn a_stamps_opacity_can_be_changed() {
+    let mut p = page();
+    let black = png(10, 10, [0, 0, 0, 255]);
+    let id = p
+        .add_stamp(
+            0,
+            &Stamp::Picture(&black),
+            StampPlace::Fill([50.0, 50.0, 150.0, 150.0]),
+            "",
+        )
+        .unwrap();
+    assert!(ink(&mut p, [55, 55, 145, 145]).1 > 8000);
+    p.set_annotation(id, None, 0.3, "").unwrap();
+    assert!((p.annotations()[0].opacity - 0.3).abs() < 1e-3);
+    let (any, dark) = ink(&mut p, [55, 55, 145, 145]);
+    assert!(any > 8000 && dark == 0, "faded, not gone");
+}
+
+#[test]
+fn a_stamp_reads_upright_on_a_turned_page() {
+    let mut p = page();
+    p.rotate_pages(&[0], 90).unwrap();
+    let stamp = Stamp::Text {
+        kind: StampKind::Confidential,
+        name_and_date: false,
+    };
+    p.add_stamp(0, &stamp, StampPlace::Centre(100.0, 150.0), "")
+        .unwrap();
+    // Wider than tall as the page is shown, and drawn across that width.
+    let b = p.annotations()[0].bbox;
+    assert!(b[2] - b[0] > 2.0 * (b[3] - b[1]));
+    let (x0, x1) = (b[0] as usize, b[2] as usize);
+    let (y0, y1) = (b[1] as usize, b[3] as usize);
+    let mid = (x0 + x1) / 2;
+    assert!(ink(&mut p, [x0 + 12, y0 + 8, mid, y1 - 8]).0 > 50);
+    assert!(ink(&mut p, [mid, y0 + 8, x1 - 12, y1 - 8]).0 > 50);
 }

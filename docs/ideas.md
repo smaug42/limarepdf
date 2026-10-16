@@ -55,7 +55,7 @@ Small or medium additions that build on what MPE already has:
 
 ## Annotations and review
 
-- Stamps: custom, made from selected content, or with the date and name filled in (M)
+- Stamps with your own wording, or made from selected content (S–M)
 - Callouts, clouds, polylines, carets, typewriter text, file attachments, an eraser for pen strokes (M each)
 - Measurement tools with scale calibration and CSV export (L)
 - Comment summary and export, saved comment styles (M)

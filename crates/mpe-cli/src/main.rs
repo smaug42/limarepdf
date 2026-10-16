@@ -12,7 +12,7 @@ use mpe_core::{
     format_page_range, parse_page_range, part_file_name, print, render, Annot, AnnotKind, Bates,
     BookmarkPlace, Cipher, Encryption, Field, FieldKind, FieldValue, HeaderFooter, ImageImport,
     ImageWatermark, Info, LabelRange, LabelStyle, Ocr, OcrResult, Pdf, Restrictions, ScanMode,
-    ScanOptions, ScanResult, Watermark,
+    ScanOptions, ScanResult, Stamp, StampKind, StampPlace, Watermark,
 };
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
@@ -209,6 +209,32 @@ enum Cmd {
         /// Put the watermark behind the page content
         #[arg(long)]
         background: bool,
+    },
+    /// Put a stamp on pages: Approved, Draft and so on, or a picture
+    Stamp {
+        #[command(flatten)]
+        io: Io,
+        /// approved, not-approved, draft, final, confidential, for-comment or void
+        #[arg(long, required_unless_present = "image", conflicts_with = "image")]
+        kind: Option<String>,
+        /// Use a PNG, JPEG or TIFF picture instead
+        #[arg(long)]
+        image: Option<PathBuf>,
+        #[arg(long, default_value = "1")]
+        pages: String,
+        /// Centre of the stamp as X,Y in points from the page's top left as shown;
+        /// default: the top right corner
+        #[arg(long)]
+        at: Option<String>,
+        /// Size, as a percentage of the stamp's own size
+        #[arg(long, default_value_t = 100.0)]
+        scale: f32,
+        /// Add a line with the author's name and today's date
+        #[arg(long, conflicts_with = "image")]
+        date: bool,
+        /// The stamp's author, also written on the date line
+        #[arg(long, default_value = "")]
+        author: String,
     },
     /// Add header/footer text; tokens: {page} {pages} {date} {bates}
     HeaderFooter {
@@ -1199,6 +1225,57 @@ fn main() -> Result<()> {
                         },
                     ),
                 }
+            })?
+        }
+        Cmd::Stamp {
+            io,
+            kind,
+            image,
+            pages,
+            at,
+            scale,
+            date,
+            author,
+        } => {
+            if !(scale > 0.0 && scale.is_finite()) {
+                bail!("--scale must be above 0");
+            }
+            let image = match image {
+                Some(path) => Some(
+                    std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?,
+                ),
+                None => None,
+            };
+            let stamp = match &image {
+                Some(bytes) => Stamp::Picture(bytes),
+                None => {
+                    let name = kind.unwrap_or_default();
+                    Stamp::Text {
+                        kind: StampKind::from_name(&name)
+                            .with_context(|| format!("no stamp called {name:?}"))?,
+                        name_and_date: date,
+                    }
+                }
+            };
+            let at = match at {
+                Some(s) => {
+                    let (x, y) = s.split_once(',').context("--at takes X,Y")?;
+                    Some((x.trim().parse::<f32>()?, y.trim().parse::<f32>()?))
+                }
+                None => None,
+            };
+            let (w, h) = stamp.size(&author)?;
+            let (w, h) = (w * scale / 100.0, h * scale / 100.0);
+            run_edit(&io, |p| {
+                for i in parse_page_range(&pages, p.page_count())? {
+                    let (x, y) = match at {
+                        Some(xy) => xy,
+                        None => (p.page_size(i)?.0 - 36.0 - w / 2.0, 36.0 + h / 2.0),
+                    };
+                    let r = [x - w / 2.0, y - h / 2.0, x + w / 2.0, y + h / 2.0];
+                    p.add_stamp(i, &stamp, StampPlace::Fill(r), &author)?;
+                }
+                Ok(())
             })?
         }
         Cmd::HeaderFooter {

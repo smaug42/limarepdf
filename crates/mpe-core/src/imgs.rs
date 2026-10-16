@@ -62,6 +62,18 @@ pub fn image_dimensions(bytes: &[u8]) -> Result<(u32, u32)> {
     Ok((r.w, r.h))
 }
 
+/// A picture's width and height in pixels as it is meant to be seen, after its EXIF
+/// orientation.
+pub(crate) fn decode_upright_size(bytes: &[u8]) -> Result<(f32, f32)> {
+    let r = first(decode(bytes)?)?;
+    let (w, h) = (r.w as f32, r.h as f32);
+    Ok(if swaps_axes(r.orientation) {
+        (h, w)
+    } else {
+        (w, h)
+    })
+}
+
 fn first(rasters: Vec<Raster>) -> Result<Raster> {
     rasters
         .into_iter()
