@@ -17,9 +17,10 @@
   one down or drag to size it, then move, resize or fade it like other annotations. Your name can be changed right
   in the stamp tool's pane. The last five wordings and pictures are remembered. Also `mpe stamp` (`--text` and
   `--color` for your own wording).
-- Redaction from the command line: `mpe redact --text` or `--area` removes the text, drawings, pictures, comments,
-  links and form fields under the areas from the file (not just covering them) and paints the areas black, then
-  checks that nothing readable is left there and warns where the removed text still appears elsewhere.
+- Redaction from the command line: `mpe redact --text` or `--area` removes the text, drawings, comments, links and
+  form fields under the areas from the file (not just covering them), blacks out the pixels of pictures and scanned
+  pages there, and paints the areas black, then checks that nothing readable is left there and warns where the
+  removed text still appears elsewhere.
 
 ### Changed
 

@@ -1101,7 +1101,8 @@ fn redact(io: &Io, areas: &[String], texts: &[String], json: bool) -> Result<()>
                     "page": p.page + 1,
                     "characters": p.chars,
                     "text": p.text,
-                    "pictures": p.images,
+                    "pictures_removed": p.images,
+                    "pictures_blacked_out": p.images_cut,
                     "drawings": p.paths,
                     "clipped": p.clipped,
                     "annotations": p.annots,
@@ -1125,13 +1126,16 @@ fn redact(io: &Io, areas: &[String], texts: &[String], json: bool) -> Result<()>
         let mut parts = Vec::new();
         for (n, what) in [
             (p.chars, "characters"),
-            (p.images, "pictures"),
+            (p.images, "unreadable pictures (whole)"),
             (p.paths, "parts of drawings"),
             (p.annots, "comments, links or fields"),
         ] {
             if n > 0 {
                 parts.push(format!("{n} {what}"));
             }
+        }
+        if p.images_cut > 0 {
+            parts.push(format!("{} pictures blacked out", p.images_cut));
         }
         if p.clipped > 0 {
             parts.push(format!("{} drawings cut around the area", p.clipped));

@@ -20,6 +20,7 @@
 use crate::fonts::FontCtx;
 use crate::matrix::{self as mx, apply, mul, M};
 use crate::objects::span_boxes;
+use crate::redact_img::{black_out, inline_stream, is_clear};
 use crate::{Pdf, Result};
 use anyhow::{anyhow, bail};
 use lopdf::content::{Content, Operation};
@@ -36,8 +37,10 @@ pub struct PageRedaction {
     pub chars: usize,
     /// The removed text, one entry per run of removed characters.
     pub text: Vec<String>,
-    /// Pictures removed.
+    /// Pictures removed whole: those MPE can't read (such as JPEG 2000 and JBIG2).
     pub images: usize,
+    /// Pictures blacked out where they are under a mark.
+    pub images_cut: usize,
     /// Parts of drawings removed.
     pub paths: usize,
     /// Drawings and shadings that cross a mark's edge: kept, but cut out of the mark.
@@ -71,6 +74,17 @@ const FAR: f32 = 1.0e5;
 const MAX_NESTING: usize = 8;
 /// Places listed for each piece of removed text found elsewhere.
 const MAX_PLACES: usize = 10;
+
+/// The unit square pictures are drawn in.
+const UNIT: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
+
+/// A name for a new entry in a resource dictionary.
+fn fresh_name(d: &Dictionary) -> Vec<u8> {
+    (1..)
+        .map(|n| format!("MPERd{n}").into_bytes())
+        .find(|k| !d.has(k))
+        .unwrap_or_default()
+}
 
 fn op(name: &str, operands: Vec<Object>) -> Operation {
     Operation::new(name, operands)
@@ -224,6 +238,28 @@ impl<'a> Redactor<'a> {
         char_under(norm(b), &self.areas)
     }
 
+    /// Black out the part of picture `s` (drawn with `ctm`) under the marks, as a new
+    /// object. `Ok(None)` when none of it is under them; `Err` when it can't be read.
+    fn cut_image(
+        &mut self,
+        s: &Stream,
+        spaces: &Dictionary,
+        ctm: M,
+    ) -> std::result::Result<Option<ObjectId>, String> {
+        let Some(cut) = black_out(&self.pdf.doc, s, spaces, ctm, &self.areas)? else {
+            return Ok(None);
+        };
+        let mut image = cut.image;
+        for (key, mask) in cut.masks {
+            let id = self.alloc();
+            self.added.push((id, Object::Stream(mask)));
+            image.dict.set(key, Object::Reference(id));
+        }
+        let id = self.alloc();
+        self.added.push((id, Object::Stream(image)));
+        Ok(Some(id))
+    }
+
     fn removed_char(&mut self, s: &str) {
         self.out.chars += s.chars().count();
     }
@@ -279,6 +315,7 @@ impl<'a> Redactor<'a> {
         let fonts = pdf.resolved_dict(res.get(b"Font").ok());
         let mut xobjs = pdf.resolved_dict(res.get(b"XObject").ok());
         let props = pdf.resolved_dict(res.get(b"Properties").ok());
+        let spaces = pdf.resolved_dict(res.get(b"ColorSpace").ok());
         let mut font_cache: HashMap<Vec<u8>, Option<FontCtx>> = HashMap::new();
 
         let mut out: Vec<Operation> = Vec::with_capacity(ops.len());
@@ -423,14 +460,30 @@ impl<'a> Redactor<'a> {
                         .and_then(|o| o.as_name())
                         .unwrap_or(b"");
                     match sub {
-                        b"Image" => {
-                            if self.hit(mx::transform_rect(gs.ctm, [0.0, 0.0, 1.0, 1.0])) {
-                                self.out.images += 1;
-                                unnamed.insert(nm);
-                                self.dropped.extend(id);
+                        b"Image" if self.hit(mx::transform_rect(gs.ctm, UNIT)) => {
+                            let cut = self.cut_image(s, &spaces, gs.ctm);
+                            if !matches!(cut, Ok(None)) {
                                 changed = true;
                                 marked.iter_mut().for_each(|m| m.touched = true);
-                                continue;
+                            }
+                            match cut {
+                                Ok(None) => {}
+                                Ok(Some(new)) => {
+                                    let fresh = fresh_name(&xobjs);
+                                    xobjs.set(fresh.clone(), Object::Reference(new));
+                                    xobjs_changed = true;
+                                    unnamed.insert(nm);
+                                    self.dropped.extend(id);
+                                    self.out.images_cut += 1;
+                                    out.push(op("Do", vec![Object::Name(fresh)]));
+                                    continue;
+                                }
+                                Err(_) => {
+                                    self.out.images += 1;
+                                    unnamed.insert(nm);
+                                    self.dropped.extend(id);
+                                    continue;
+                                }
                             }
                         }
                         b"Form" => {
@@ -463,10 +516,7 @@ impl<'a> Redactor<'a> {
                                     continue;
                                 };
                                 if let Some(new) = new {
-                                    let fresh = (1..)
-                                        .map(|n| format!("MPERd{n}").into_bytes())
-                                        .find(|k| !xobjs.has(k))
-                                        .unwrap_or_default();
+                                    let fresh = fresh_name(&xobjs);
                                     xobjs.set(fresh.clone(), new);
                                     xobjs_changed = true;
                                     unnamed.insert(nm);
@@ -482,11 +532,31 @@ impl<'a> Redactor<'a> {
                     }
                 }
                 t if t.starts_with(crate::inline::TAG)
-                    && self.hit(mx::transform_rect(gs.ctm, [0.0, 0.0, 1.0, 1.0])) =>
+                    && self.hit(mx::transform_rect(gs.ctm, UNIT)) =>
                 {
-                    self.out.images += 1;
+                    // An inline image becomes a picture object, cut like any other.
+                    let pic = crate::inline::placeholder_index(t)
+                        .and_then(|k| inline.get(k))
+                        .and_then(|raw| inline_stream(raw, &spaces));
+                    let cut = match &pic {
+                        Some(s) => self.cut_image(s, &spaces, gs.ctm),
+                        None => Err("unreadable inline image".into()),
+                    };
+                    if let Ok(None) = cut {
+                        out.push(o);
+                        continue;
+                    }
                     changed = true;
                     marked.iter_mut().for_each(|m| m.touched = true);
+                    if let Ok(Some(new)) = cut {
+                        let fresh = fresh_name(&xobjs);
+                        xobjs.set(fresh.clone(), Object::Reference(new));
+                        xobjs_changed = true;
+                        self.out.images_cut += 1;
+                        out.push(op("Do", vec![Object::Name(fresh)]));
+                    } else {
+                        self.out.images += 1;
+                    }
                     continue;
                 }
                 _ => {}
@@ -1315,14 +1385,42 @@ impl Pdf {
                     p + 1
                 ));
             }
-            let pics = parsed
-                .objs
-                .iter()
-                .filter(|o| o.kind == crate::ObjectKind::Image && under(o.bbox))
-                .count();
+            // Pictures under a mark must have been blacked out there.
+            let res = self.resolved_dict(self.inherited(page, b"Resources").as_ref());
+            let xobjs = self.resolved_dict(res.get(b"XObject").ok());
+            let spaces = self.resolved_dict(res.get(b"ColorSpace").ok());
+            let mut pics = 0;
+            for o in &parsed.objs {
+                if o.kind != crate::ObjectKind::Image || !under(o.bbox) {
+                    continue;
+                }
+                let Some(draw) = parsed.ops.get(o.first) else {
+                    continue;
+                };
+                let pic = match crate::inline::placeholder_index(&draw.operator) {
+                    Some(k) => parsed
+                        .inline
+                        .get(k)
+                        .and_then(|raw| inline_stream(raw, &spaces)),
+                    None => draw
+                        .operands
+                        .first()
+                        .and_then(|n| n.as_name().ok())
+                        .and_then(|n| xobjs.get(n).ok())
+                        .and_then(|e| self.doc.dereference(e).ok())
+                        .and_then(|(_, s)| s.as_stream().ok())
+                        .cloned(),
+                };
+                let clear = pic.is_some_and(|s| {
+                    is_clear(&self.doc, &s, &spaces, o.ctm, &areas).unwrap_or(false)
+                });
+                if !clear {
+                    pics += 1;
+                }
+            }
             if pics > 0 {
                 left.push(format!(
-                    "page {}: {pics} picture(s) still under a mark",
+                    "page {}: {pics} picture(s) still show something under a mark",
                     p + 1
                 ));
             }

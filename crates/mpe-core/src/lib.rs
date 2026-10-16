@@ -31,6 +31,7 @@ pub mod print;
 mod print_win;
 mod reading;
 mod redact;
+mod redact_img;
 pub mod render;
 mod scan;
 mod security;

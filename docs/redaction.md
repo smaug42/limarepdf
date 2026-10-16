@@ -13,7 +13,12 @@ For each area:
 
 - **Text**, visible or invisible (such as a scanned page's recognised text layer): each character at least a quarter
   under the area is removed. The characters left keep their exact places on the line.
-- **Pictures** touching the area are removed whole. Blacking out only the covered part of a picture is planned.
+- **Pictures**, scanned pages included: the pixels under the area are blacked out in the picture itself, which is
+  then saved again (JPEG pictures as JPEG at about their own quality, black-and-white scans as CCITT, others without
+  loss). Pixels only partly under the area are blacked out too. A picture's transparency (soft mask) is cut the same
+  way. A picture shared with other pages or drawn elsewhere on the page is copied first, so only the covered copy
+  changes. Pictures MPE can't read (JPEG 2000, JBIG2, CMYK JPEG, some unusual formats) are removed whole, and the
+  report counts them.
 - **Drawings**: the parts of a drawing mostly under the area are removed. Lines and fills that only cross the
   area's edge (a table border, a coloured background) are kept but cut out of the area. Colour gradients are cut
   out the same way.
@@ -28,8 +33,9 @@ Pictures and drawings that no page uses any more are left out of the saved file.
 
 ## The check afterwards
 
-When it is done, MPE reads the redacted pages again and checks that no text or picture is left under the areas. If
-anything is, `mpe redact` lists it and doesn't write the file.
+When it is done, MPE reads the redacted pages again and checks that no text is left under the areas, and decodes
+each picture there to check that its pixels under the areas are blacked out. If anything is left, `mpe redact` lists
+it and doesn't write the file.
 
 It then looks for the removed text elsewhere in the document: on any page, in bookmarks, comments, form fields and the
 document's title, author, subject and keywords. Anything it finds is listed as a warning, since redaction only
@@ -42,6 +48,9 @@ changes the areas you give it.
   itself).
 - Text in fonts whose characters can't be told apart reliably (some Asian-language encodings) is removed a whole
   piece at a time when any of it is under the area.
-- Text set in vertical writing, and text inside tiling patterns, isn't redacted.
+- Text set in vertical writing, and text and pictures inside tiling patterns, aren't redacted.
+- A picture drawn at an angle (not a quarter turn) is blacked out over a rectangle in the picture that holds the
+  whole area, so a little more than the area can go black.
+- Saving a JPEG picture again loses a little quality across the whole picture.
 - The removed text can still be in bookmarks, comments, file attachments or metadata; the check warns about the
   places it can search.

@@ -1,6 +1,6 @@
 use lopdf::content::Content;
 use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream};
-use mpe_core::{render, ObjectKind, Pdf};
+use mpe_core::{render, Pdf};
 
 const W: f32 = 300.0;
 const H: f32 = 200.0;
@@ -65,6 +65,48 @@ fn images_in_file(p: &mut Pdf) -> usize {
             })
         })
         .count()
+}
+
+/// Every picture in the saved file: its last filter, components and decoded samples
+/// (JPEGs decoded to 8-bit grey or RGB).
+fn pictures(p: &mut Pdf) -> Vec<(String, usize, Vec<u8>)> {
+    let bytes = p.to_bytes().unwrap();
+    let q = Pdf::from_bytes(&bytes, None).unwrap();
+    let mut out = Vec::new();
+    for o in q.doc.objects.values() {
+        let Ok(s) = o.as_stream() else { continue };
+        if s.dict.get(b"Subtype").and_then(|x| x.as_name()).ok() != Some(b"Image") {
+            continue;
+        }
+        let filter = s
+            .filters()
+            .ok()
+            .and_then(|f| f.last().map(|n| String::from_utf8_lossy(n).into_owned()))
+            .unwrap_or_default();
+        let gray = s.dict.get(b"ColorSpace").and_then(|x| x.as_name()).ok() != Some(b"DeviceRGB");
+        if filter == "DCTDecode" {
+            let img = image::load_from_memory(&s.content).unwrap();
+            let (n, data) = if gray {
+                (1, img.to_luma8().into_raw())
+            } else {
+                (3, img.to_rgb8().into_raw())
+            };
+            out.push((filter, n, data));
+        } else {
+            out.push((
+                filter,
+                if gray { 1 } else { 3 },
+                s.decompressed_content().unwrap(),
+            ));
+        }
+    }
+    out
+}
+
+fn render_page(p: &mut Pdf) -> render::Bitmap {
+    let bytes = p.snapshot().unwrap();
+    let doc = render::load(bytes, None).unwrap();
+    render::Renderer::new(&doc).render(0, 1.0).unwrap()
 }
 
 fn near(a: [f32; 4], b: [f32; 4]) -> bool {
@@ -159,20 +201,92 @@ fn removes_drawings_under_a_mark_and_clips_those_crossing_it() {
 }
 
 #[test]
-fn removes_a_picture_under_a_mark_from_the_file() {
+fn blacks_out_the_covered_part_of_a_picture() {
     let mut p = make(&["BT /F1 20 Tf 30 30 Td (Caption) Tj ET"]);
-    let img = image::RgbaImage::from_pixel(8, 8, image::Rgba([0, 200, 0, 255]));
+    // A 10×10 picture filling 100..200 × 50..150 (displayed), translucent so it gets a
+    // soft mask, which must be cut too.
+    let img = image::RgbaImage::from_pixel(10, 10, image::Rgba([0, 200, 0, 200]));
     let mut png = std::io::Cursor::new(Vec::new());
     img.write_to(&mut png, image::ImageFormat::Png).unwrap();
-    p.add_image(0, [100.0, 50.0, 150.0, 100.0], &png.into_inner())
+    p.add_image(0, [100.0, 50.0, 200.0, 150.0], &png.into_inner())
         .unwrap();
-    assert_eq!(images_in_file(&mut p), 1);
-    let rep = p.redact(&[(0, [120.0, 60.0, 130.0, 70.0])]).unwrap();
-    assert_eq!(rep.pages[0].images, 1);
+    assert_eq!(images_in_file(&mut p), 2, "the picture and its soft mask");
+    // Pixel columns 2..4 and rows 1..3 of the picture.
+    let rep = p.redact(&[(0, [120.0, 60.0, 140.0, 80.0])]).unwrap();
+    assert_eq!((rep.pages[0].images, rep.pages[0].images_cut), (0, 1));
     assert!(rep.left.is_empty(), "{:?}", rep.left);
-    let objs = p.page_objects(0).unwrap();
-    assert!(objs.iter().all(|o| o.kind != ObjectKind::Image));
     assert!(p.page_text(0).contains("Caption"));
+    let pics = pictures(&mut p);
+    assert_eq!(pics.len(), 2, "the old picture and mask are gone");
+    for (_, n, data) in pics {
+        let px = |x: usize, y: usize| &data[(y * 10 + x) * n..(y * 10 + x + 1) * n];
+        assert!(px(2, 1).iter().all(|&v| v == 0) && px(3, 2).iter().all(|&v| v == 0));
+        assert!(px(1, 1).iter().any(|&v| v != 0) && px(4, 2).iter().any(|&v| v != 0));
+        assert!(px(2, 3).iter().any(|&v| v != 0) && px(2, 0).iter().any(|&v| v != 0));
+    }
+    let bmp = render_page(&mut p);
+    let at = |x: usize, y: usize| bmp.rgba[(y * bmp.width + x) * 4 + 1];
+    assert!(at(170, 120) > 100, "the rest of the picture still shows");
+}
+
+#[test]
+fn keeps_a_jpeg_picture_as_jpeg() {
+    let mut p = make(&[""]);
+    let img = image::RgbImage::from_pixel(16, 16, image::Rgb([240, 240, 240]));
+    let mut jpg = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut jpg, image::ImageFormat::Jpeg).unwrap();
+    p.add_image(0, [100.0, 50.0, 260.0, 210.0], &jpg.into_inner())
+        .unwrap();
+    let rep = p.redact(&[(0, [100.0, 50.0, 180.0, 130.0])]).unwrap();
+    assert_eq!(rep.pages[0].images_cut, 1);
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    let pics = pictures(&mut p);
+    assert_eq!(pics.len(), 1);
+    assert_eq!(pics[0].0, "DCTDecode");
+    let (n, data) = (pics[0].1, &pics[0].2);
+    let v = |x: usize, y: usize| data[(y * 16 + x) * n] as i32;
+    assert!(v(2, 2) < 20 && v(13, 13) > 200, "{} {}", v(2, 2), v(13, 13));
+}
+
+#[test]
+fn turns_an_inline_image_into_a_cut_picture() {
+    // A 4×4 grey inline image drawn at 50..150 (user space); the mark covers its top half.
+    let mut c = b"q 100 0 0 100 50 50 cm BI /W 4 /H 4 /CS /G /BPC 8 ID ".to_vec();
+    c.extend([0xC8u8; 16]);
+    c.extend(b" EI Q");
+    let mut p = make(&[""]);
+    let page = p.page_ids()[0];
+    let s = p.doc.add_object(Stream::new(Dictionary::new(), c));
+    p.doc.get_dictionary_mut(page).unwrap().set("Contents", s);
+    assert_eq!(p.page_objects(0).unwrap().len(), 1);
+    let rep = p.redact(&[(0, [50.0, 50.0, 150.0, 100.0])]).unwrap();
+    assert_eq!(rep.pages[0].images_cut, 1);
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    assert!(!content(&p, 0).contains("BI"));
+    let pics = pictures(&mut p);
+    assert_eq!(pics.len(), 1);
+    let mut want = vec![0u8; 8];
+    want.extend([0xC8; 8]);
+    assert_eq!(pics[0].2, want);
+}
+
+#[test]
+fn removes_a_picture_it_cannot_read_whole() {
+    let mut p = make(&["q 100 0 0 100 50 50 cm /Im1 Do Q"]);
+    let img = p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Image", "Width" => 4, "Height" => 4,
+            "ColorSpace" => "DeviceRGB", "BitsPerComponent" => 8, "Filter" => "JPXDecode",
+        },
+        vec![1, 2, 3],
+    ));
+    let page = p.page_ids()[0];
+    let d = p.doc.get_dictionary_mut(page).unwrap();
+    let mut res = d.get(b"Resources").unwrap().as_dict().unwrap().clone();
+    res.set("XObject", dictionary! { "Im1" => img });
+    d.set("Resources", res);
+    let rep = p.redact(&[(0, [60.0, 60.0, 70.0, 70.0])]).unwrap();
+    assert_eq!((rep.pages[0].images, rep.pages[0].images_cut), (1, 0));
     assert_eq!(images_in_file(&mut p), 0);
 }
 
@@ -207,8 +321,11 @@ fn drops_a_picture_from_shared_resources_when_no_page_draws_it() {
     }
     assert_eq!(images_in_file(&mut p), 1);
     let rep = p.redact(&[(0, [110.0, 100.0, 120.0, 110.0])]).unwrap();
-    assert_eq!(rep.pages[0].images, 1);
-    assert_eq!(images_in_file(&mut p), 0);
+    assert_eq!(rep.pages[0].images_cut, 1);
+    // Only the blacked-out copy is left: the shared resources no longer list the old one.
+    let pics = pictures(&mut p);
+    assert_eq!(pics.len(), 1);
+    assert_eq!(pics[0].2, vec![0]);
     assert!(p.page_text(1).contains("Two"));
 }
 
