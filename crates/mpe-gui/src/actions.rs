@@ -5,6 +5,7 @@
 use crate::editor::Tool;
 use crate::markup::{self, Mark};
 use crate::selection::{ObjKind, Selection};
+use crate::settings::Layout;
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, ThemePreference};
 use egui_phosphor::regular as icon;
 
@@ -66,6 +67,9 @@ pub enum Act {
     PrevPage,
     FirstPage,
     LastPage,
+    Layout(Layout),
+    /// In the facing layout, show the first page alone, or pair it with the second.
+    ToggleCover,
     ToggleSide,
     /// Show the side panel's Bookmarks tab.
     Bookmarks,
@@ -159,6 +163,9 @@ pub struct Ctx {
     pub inspector: bool,
     /// The active tab's zoom follows the width of the view.
     pub fit: bool,
+    pub layout: Layout,
+    /// See [`Act::ToggleCover`].
+    pub cover: bool,
     pub hidden_text: bool,
     /// The document has form fields.
     pub form: bool,
@@ -615,6 +622,51 @@ pub static ACTIONS: &[Action] = &[
         label: "Last page",
         keys: &[k(N, Key::End)],
         menu: false,
+        ..BASE
+    },
+    Action {
+        act: Act::Layout(Layout::Continuous),
+        group: Group::View,
+        label: "Continuous pages",
+        icon: icon::ROWS,
+        enabled: always,
+        checked: Some(|c| c.layout == Layout::Continuous),
+        hint: "One column of pages, scrolling through the document.",
+        submenu: "Page layout",
+        ..BASE
+    },
+    Action {
+        act: Act::Layout(Layout::Facing),
+        group: Group::View,
+        label: "Facing pages",
+        icon: icon::BOOK_OPEN,
+        enabled: always,
+        checked: Some(|c| c.layout == Layout::Facing),
+        hint: "Two pages side by side, scrolling through the document.",
+        submenu: "Page layout",
+        ..BASE
+    },
+    Action {
+        act: Act::Layout(Layout::Single),
+        group: Group::View,
+        label: "Single page",
+        icon: icon::FILE,
+        enabled: always,
+        checked: Some(|c| c.layout == Layout::Single),
+        hint: "One page at a time. Scrolling past its top or bottom turns the page.",
+        submenu: "Page layout",
+        ..BASE
+    },
+    Action {
+        act: Act::ToggleCover,
+        group: Group::View,
+        label: "Show cover page alone",
+        enabled: |c| c.layout == Layout::Facing,
+        checked: Some(|c| c.cover),
+        hint: "In facing pages, show the first page on its own, as in a book, so even \
+               pages are on the left. Off pairs the first page with the second.",
+        sep: true,
+        submenu: "Page layout",
         ..BASE
     },
     Action {

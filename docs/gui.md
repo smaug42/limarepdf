@@ -35,7 +35,11 @@ invalid; when a document is signed, MPE asks first. Save As to a new file keeps 
 - **Middle:** the pages, scrolling continuously. By default they fit the width between the side panels, and keep
   fitting as you resize the window or open and close the panels. Zooming in or out, actual size, Ctrl+scroll or a
   pinch turns fitting off, and your zoom then stays as it is; the Fit width button (highlighted while fitting is on)
-  or Ctrl+0 turns it back on.
+  or Ctrl+0 turns it back on. ☰ > View > Page layout chooses how pages are laid out, for every document, and is
+  remembered: **Continuous pages** (one column, the default), **Facing pages** (two side by side, still scrolling;
+  fitting fits both) or **Single page** (one at a time; a wheel step past the page's top or bottom turns the page).
+  In facing pages, **Show cover page alone** (on by default) puts the first page on its own on the right, as in a
+  book; off pairs pages 1 and 2. PageUp and PageDown move a pair at a time when facing.
 - **Right:** the inspector, which shows options for what is selected. On windows narrower than about 960 pixels it
   collapses to a thin rail; click the rail to slide it out. ☰ > View > Inspector shows or hides it.
 

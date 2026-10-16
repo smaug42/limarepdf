@@ -7,6 +7,9 @@
 - Bookmark editing: add a bookmark to the current page, rename one, add one inside another, or delete one with the
   bookmarks inside it, from the Bookmarks tab (Undo reverses each), and list, add, rename and remove them with
   `mpe bookmarks`.
+- Page layouts, in View > Page layout: facing pages (two side by side, with the first page shown alone like a book
+  cover, or paired) and single page (one at a time; scrolling past a page's end turns it), besides continuous
+  pages. The choice is remembered.
 
 ## [0.6.0] - 2026-10-15
 

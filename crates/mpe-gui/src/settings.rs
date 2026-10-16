@@ -26,8 +26,33 @@ pub fn settings_dir() -> Option<PathBuf> {
     Some(base.join("mpe"))
 }
 
+/// How pages are laid out in the view.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Layout {
+    /// One column, scrolling through the document.
+    #[default]
+    Continuous,
+    /// Two pages side by side, scrolling through the document.
+    Facing,
+    /// One page at a time.
+    Single,
+}
+
+impl Layout {
+    fn name(self) -> &'static str {
+        match self {
+            Layout::Continuous => "continuous",
+            Layout::Facing => "facing",
+            Layout::Single => "single",
+        }
+    }
+}
+
 pub struct Settings {
     pub theme: ThemePreference,
+    pub layout: Layout,
+    /// In the facing layout, the first page is shown alone on the right, as in a book.
+    pub cover: bool,
     /// The colours text markup was last made in: indices into
     /// [`crate::markup::HIGHLIGHTS`] and [`crate::markup::LINES`].
     pub highlight: usize,
@@ -69,6 +94,8 @@ impl Settings {
     pub fn from_file(file: Option<PathBuf>) -> Self {
         let mut s = Self {
             theme: ThemePreference::System,
+            layout: Layout::Continuous,
+            cover: true,
             highlight: 0,
             line: 0,
             author: None,
@@ -92,6 +119,14 @@ impl Settings {
                         _ => ThemePreference::System,
                     };
                 }
+                "page_layout" => {
+                    s.layout = match value {
+                        "facing" => Layout::Facing,
+                        "single" => Layout::Single,
+                        _ => Layout::Continuous,
+                    };
+                }
+                "cover_page_alone" => s.cover = value != "false",
                 "highlight_colour" => {
                     s.highlight = value
                         .parse()
@@ -124,8 +159,11 @@ impl Settings {
             let _ = std::fs::create_dir_all(dir);
         }
         let mut text = format!(
-            "theme = {}\nhighlight_colour = {}\nline_colour = {}\n",
+            "theme = {}\npage_layout = {}\ncover_page_alone = {}\nhighlight_colour = {}\n\
+             line_colour = {}\n",
             theme_name(self.theme),
+            self.layout.name(),
+            self.cover,
             self.highlight,
             self.line
         );
@@ -178,6 +216,21 @@ mod tests {
         let s = Settings::from_file(Some(f));
         assert_eq!(s.highlight, 0, "out of range falls back to the first");
         assert_eq!(s.author(), "Sam Lee");
+    }
+
+    #[test]
+    fn page_layout_is_saved_and_read_back() {
+        let f = file("layout");
+        let s = Settings::from_file(Some(f.clone()));
+        assert_eq!((s.layout, s.cover), (Layout::Continuous, true));
+        for (layout, cover) in [(Layout::Facing, false), (Layout::Single, true)] {
+            let mut s = Settings::from_file(Some(f.clone()));
+            s.layout = layout;
+            s.cover = cover;
+            s.save();
+            let s = Settings::from_file(Some(f.clone()));
+            assert_eq!((s.layout, s.cover), (layout, cover));
+        }
     }
 
     #[test]

@@ -4,6 +4,7 @@ use crate::editor::{annot_tip, Action, Editor, Tool};
 use crate::inspector::{Forms, Sec};
 use crate::markup::{self, Mark};
 use crate::selection::Selection;
+use crate::settings::Layout;
 use crate::theme;
 use crate::worker::{Key, Worker};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptions, Vec2};
@@ -119,6 +120,12 @@ pub struct Tab {
     /// The annotations, read when the Comments tab is first shown and again after the
     /// document changes: the revision they were read at, and the list.
     comments: Option<(u64, Vec<Annot>)>,
+    /// Single-page layout: whether the view was at the page's top and bottom at the end
+    /// of the last frame, so the next wheel step past it turns the page.
+    edge: (bool, bool),
+    /// When the wheel last turned the page (egui time), so one long trackpad swipe turns
+    /// one page.
+    flipped: f64,
 }
 
 impl Tab {
@@ -182,6 +189,8 @@ impl Tab {
             outline_rename: None,
             outline_focus: false,
             comments: None,
+            edge: (false, false),
+            flipped: 0.0,
         })
     }
 
@@ -239,6 +248,20 @@ impl Tab {
         let p = page.min(self.page_count().saturating_sub(1));
         self.current = p;
         self.goto = Some(p);
+    }
+
+    /// The page `delta` rows on from the current one: in facing pages, the first page
+    /// of the next or previous pair.
+    pub fn step_page(&self, delta: isize, layout: Layout, cover: bool) -> usize {
+        let rows = rows_of(self.page_count(), layout, cover);
+        let r = rows
+            .iter()
+            .position(|row| row.iter().any(|&(p, _)| p == self.current))
+            .unwrap_or(0);
+        let r = r
+            .saturating_add_signed(delta)
+            .min(rows.len().saturating_sub(1));
+        rows.get(r).map_or(0, |row| row[0].0)
     }
 
     // ------------------------------------------------------------ editing
@@ -1169,23 +1192,75 @@ impl Tab {
         if zd != 1.0 {
             self.set_zoom(self.zoom * zd);
         }
-        // Fitting: the widest page fills the width between the side panels, whatever the
-        // window size or which panels are open.
+        // Fitting: the widest page (two side by side when facing) fills the width between
+        // the side panels, whatever the window size or which panels are open.
+        let cols = if base.layout == Layout::Facing { 2 } else { 1 };
         if self.fit {
-            let z = fit_zoom(&self.sizes, ui.available_width());
+            let z = fit_zoom(&self.sizes, ui.available_width(), cols);
             self.zoom_to(z);
         }
 
-        let page_w: Vec<f32> = self.sizes.iter().map(|s| s.0 * BASE * self.zoom).collect();
-        let page_h: Vec<f32> = self.sizes.iter().map(|s| s.1 * BASE * self.zoom).collect();
-        let mut tops = Vec::with_capacity(page_h.len());
+        // The rows of pages shown: in single-page layout, just the page being gone to or
+        // the current one.
+        let n = self.sizes.len();
+        let single = base.layout == Layout::Single;
+        // Single-page layout: a wheel step past the page's top or bottom turns the page.
+        // Positive: scrolling up. Ctrl or Cmd with the wheel zooms instead.
+        let (wheel, now) = ui.input(|i| {
+            let steps = i.events.iter().filter_map(|e| match e {
+                egui::Event::MouseWheel {
+                    delta, modifiers, ..
+                } if !modifiers.command && !modifiers.ctrl => Some(delta.y),
+                _ => None,
+            });
+            (steps.sum::<f32>(), i.time)
+        });
+        if single && wheel != 0.0 && self.goto.is_none() && ui.ui_contains_pointer() {
+            let (top, bottom) = self.edge;
+            let p = self.current;
+            if now - self.flipped > 0.4 {
+                if wheel < 0.0 && bottom && p + 1 < n {
+                    self.go_to(p + 1);
+                    self.flipped = now;
+                } else if wheel > 0.0 && top && p > 0 {
+                    // Back to the previous page's bottom, as if scrolling up into it.
+                    self.go_to(p - 1);
+                    self.goto_y = Some(self.sizes[p - 1].1);
+                    self.flipped = now;
+                }
+            }
+        }
+        let shown = self.goto.unwrap_or(self.current).min(n.saturating_sub(1));
+        let rows = match (single, n) {
+            (_, 0) => Vec::new(),
+            (true, _) => vec![vec![(shown, Place::Middle)]],
+            (false, _) => rows_of(n, base.layout, base.cover),
+        };
+        let scale = BASE * self.zoom;
+        let page_w: Vec<f32> = self.sizes.iter().map(|s| s.0 * scale).collect();
+        let page_h: Vec<f32> = self.sizes.iter().map(|s| s.1 * scale).collect();
+        let mut row_of = vec![usize::MAX; n];
+        let (mut row_top, mut row_h) = (Vec::with_capacity(rows.len()), Vec::new());
+        let mut widest = 0.0f32;
         let mut y = GAP;
-        for h in &page_h {
-            tops.push(y);
+        for (r, row) in rows.iter().enumerate() {
+            let mut h = 0.0f32;
+            for &(p, _) in row {
+                row_of[p] = r;
+                h = h.max(page_h[p]);
+                widest = widest.max(page_w[p]);
+            }
+            row_top.push(y);
+            row_h.push(h);
             y += h + GAP;
         }
         let total_h = y;
-        let content_w = page_w.iter().cloned().fold(0.0, f32::max) + 2.0 * GAP;
+        let content_w = cols as f32 * (widest + GAP) + GAP;
+        // A page's top, below its row's top when it is shorter than the row.
+        let page_top = |p: usize| match row_of.get(p) {
+            Some(&r) if r != usize::MAX => Some(row_top[r] + (row_h[r] - page_h[p]) / 2.0),
+            _ => None,
+        };
 
         // egui fades scroll edges towards the background, which smears grey over pages.
         ui.style_mut().spacing.scroll.fade.strength = 0.0;
@@ -1195,35 +1270,41 @@ impl Tab {
         let rezoom = self.rezoom.take();
         if let Some(p) = self.goto.take() {
             // Within the page, keep a little context above the target.
-            let within = self
-                .goto_y
-                .take()
-                .map_or(0.0, |y| (y * BASE * self.zoom - 80.0).max(0.0));
-            let top = tops.get(p).copied().unwrap_or(0.0) - GAP + within;
+            let top = match self.goto_y.take() {
+                Some(y) => page_top(p).unwrap_or(0.0) - GAP + (y * scale - 80.0).max(0.0),
+                None => row_of
+                    .get(p)
+                    .and_then(|&r| row_top.get(r))
+                    .map_or(0.0, |t| t - GAP),
+            };
             area = area.vertical_scroll_offset(top.max(0.0));
         } else if let Some((p, y)) = rezoom {
             // After a zoom change, put the same place back at the top of the view.
-            let top = tops.get(p).copied().unwrap_or(0.0) + y * BASE * self.zoom;
-            area = area.vertical_scroll_offset(top.max(0.0));
+            let top = row_of.get(p).and_then(|&r| row_top.get(r)).copied();
+            area = area.vertical_scroll_offset((top.unwrap_or(0.0) + y * scale).max(0.0));
         }
         let current = self.current_match();
         let mut wanted: Vec<(Key, f32)> = Vec::new();
         let mut visible = (usize::MAX, 0usize);
-        let mut probe = self.current;
+        let mut probe = shown;
         let out = area.show_viewport(ui, |ui, vp| {
             let avail_w = ui.available_width().max(content_w);
             let (rect, _) = ui.allocate_exact_size(Vec2::new(avail_w, total_h), Sense::hover());
             let painter = ui.painter().clone();
-            let first = tops.partition_point(|&t| t < vp.min.y).saturating_sub(1);
-            for i in first..tops.len() {
-                if tops[i] > vp.max.y {
-                    break;
-                }
+            let spine = rect.min.x + avail_w / 2.0;
+            let first = row_top.partition_point(|&t| t < vp.min.y).saturating_sub(1);
+            let on_view = (first..rows.len()).take_while(|&r| row_top[r] <= vp.max.y);
+            for i in on_view.flat_map(|r| rows[r].iter().copied()) {
+                let (i, place) = i;
                 visible.0 = visible.0.min(i);
-                visible.1 = i;
-                let x = rect.min.x + (avail_w - page_w[i]) / 2.0;
+                visible.1 = visible.1.max(i);
+                let x = match place {
+                    Place::Middle => spine - page_w[i] / 2.0,
+                    Place::Left => spine - GAP / 2.0 - page_w[i],
+                    Place::Right => spine + GAP / 2.0,
+                };
                 let r = Rect::from_min_size(
-                    Pos2::new(x, rect.min.y + tops[i]),
+                    Pos2::new(x, rect.min.y + page_top(i).unwrap_or(0.0)),
                     Vec2::new(page_w[i], page_h[i]),
                 );
                 painter.add(theme::page_shadow(dark).as_shape(r, 0));
@@ -1272,18 +1353,20 @@ impl Tab {
                 edge_scroll(ui);
             }
             let mid = vp.min.y + vp.height() / 3.0;
-            probe = tops
-                .partition_point(|&t| t <= mid)
-                .saturating_sub(1)
-                .min(tops.len().saturating_sub(1));
+            let r = row_top.partition_point(|&t| t <= mid).saturating_sub(1);
+            if let Some(row) = rows.get(r) {
+                probe = row[0].0;
+            }
         });
-        // Remember the place at the top of the view (page, and points down it), so a zoom
-        // change can keep it there.
+        // Remember the place at the top of the view (the row's first page, and points down
+        // the row), so a zoom change can keep it there.
         let top = out.state.offset.y;
-        let p = tops.partition_point(|&t| t <= top).saturating_sub(1);
-        if let Some(&t) = tops.get(p) {
-            self.view = (p, (top - t) / (BASE * self.zoom));
+        let r = row_top.partition_point(|&t| t <= top).saturating_sub(1);
+        if let (Some(row), Some(&t)) = (rows.get(r), row_top.get(r)) {
+            self.view = (row[0].0, (top - t) / scale);
         }
+        let room = out.content_size.y - out.inner_rect.height();
+        self.edge = (top <= 0.5, top >= room - 0.5);
         let ed = &mut self.ed;
         ed.form.keys(&ctx, &mut ed.actions);
         self.apply_actions(&ctx);
@@ -1487,10 +1570,38 @@ impl Tab {
 /// The zoom at which the widest of the pages (`sizes`, in points) fits in `room` screen
 /// points beside the gaps, in whole percent so resizing the window does not re-render
 /// the pages at every step.
-fn fit_zoom(sizes: &[(f32, f32)], room: f32) -> f32 {
+/// The zoom at which `cols` of the widest page, with gaps around them, fill `room`.
+fn fit_zoom(sizes: &[(f32, f32)], room: f32, cols: usize) -> f32 {
     let widest = sizes.iter().map(|s| s.0).fold(1.0, f32::max);
-    let room = room - 2.0 * GAP - FIT_MARGIN;
-    ((room / (widest * BASE)) * 100.0).floor() / 100.0
+    let room = room - (cols + 1) as f32 * GAP - FIT_MARGIN;
+    ((room / (cols as f32 * widest * BASE)) * 100.0).floor() / 100.0
+}
+
+/// Which side of the middle of the view a page is drawn on.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Place {
+    Middle,
+    Left,
+    Right,
+}
+
+/// The pages of an `n`-page document in rows, for continuous or facing pages (single
+/// page shows one of these rows at a time). Facing with `cover` puts the first page
+/// alone on the right, as in a book.
+fn rows_of(n: usize, layout: Layout, cover: bool) -> Vec<Vec<(usize, Place)>> {
+    if layout != Layout::Facing {
+        return (0..n).map(|p| vec![(p, Place::Middle)]).collect();
+    }
+    let start = usize::from(cover).min(n);
+    let mut rows: Vec<_> = (0..start).map(|p| vec![(p, Place::Right)]).collect();
+    for p in (start..n).step_by(2) {
+        let mut row = vec![(p, Place::Left)];
+        if p + 1 < n {
+            row.push((p + 1, Place::Right));
+        }
+        rows.push(row);
+    }
+    rows
 }
 
 fn sizes_of(pdf: &Pdf) -> Vec<(f32, f32)> {
@@ -1682,13 +1793,42 @@ mod tests {
     fn fitting_uses_the_widest_page_and_whole_percent() {
         let pages = [(612.0, 792.0), (792.0, 612.0), (300.0, 300.0)];
         let room = 900.0;
-        let z = fit_zoom(&pages, room);
+        let z = fit_zoom(&pages, room, 1);
         // The landscape page decides, and it fits beside the gaps and margin.
         let (width, space) = (792.0 * BASE * z, room - 2.0 * GAP - FIT_MARGIN);
         assert!(width <= space, "{z}");
         // Within one percent step of filling it.
         assert!(width > space - 792.0 * BASE * 0.01, "{z}");
         assert_eq!((z * 100.0).round() / 100.0, z);
+        // Facing: two of the widest page and the gap between them fit.
+        let z = fit_zoom(&pages, room, 2);
+        let (width, space) = (2.0 * 792.0 * BASE * z, room - 3.0 * GAP - FIT_MARGIN);
+        assert!(
+            width <= space && width > space - 2.0 * 792.0 * BASE * 0.01,
+            "{z}"
+        );
+    }
+
+    #[test]
+    fn facing_rows_pair_pages_after_the_cover() {
+        use Place::{Left, Middle, Right};
+        assert_eq!(
+            rows_of(4, Layout::Facing, true),
+            [
+                vec![(0, Right)],
+                vec![(1, Left), (2, Right)],
+                vec![(3, Left)]
+            ]
+        );
+        assert_eq!(
+            rows_of(3, Layout::Facing, false),
+            [vec![(0, Left), (1, Right)], vec![(2, Left)]]
+        );
+        assert_eq!(
+            rows_of(2, Layout::Single, true),
+            [[(0, Middle)], [(1, Middle)]]
+        );
+        assert!(rows_of(0, Layout::Facing, true).is_empty());
     }
 
     #[test]

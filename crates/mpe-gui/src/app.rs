@@ -753,15 +753,31 @@ impl App {
             }
             Act::Escape => self.tabs[self.active].ed.escape(),
             Act::NextPage | Act::PrevPage | Act::FirstPage | Act::LastPage => {
+                let (layout, cover) = (self.settings.layout, self.settings.cover);
                 let t = &mut self.tabs[self.active];
                 let last = t.page_count().saturating_sub(1);
                 let to = match a {
-                    Act::NextPage => (t.current + 1).min(last),
-                    Act::PrevPage => t.current.saturating_sub(1),
+                    Act::NextPage => t.step_page(1, layout, cover),
+                    Act::PrevPage => t.step_page(-1, layout, cover),
                     Act::FirstPage => 0,
                     _ => last,
                 };
                 t.go_to(to);
+            }
+            Act::Layout(l) => {
+                self.settings.layout = l;
+                self.settings.save();
+                // Keep each document at the page it was on.
+                for t in &mut self.tabs {
+                    t.go_to(t.current);
+                }
+            }
+            Act::ToggleCover => {
+                self.settings.cover = !self.settings.cover;
+                self.settings.save();
+                for t in &mut self.tabs {
+                    t.go_to(t.current);
+                }
             }
             Act::Undo => self.tabs[self.active].undo(ctx),
             Act::Redo => self.tabs[self.active].redo(ctx),
@@ -1396,6 +1412,8 @@ impl App {
             side: self.show_side,
             inspector: self.show_inspector,
             theme: ctx.options(|o| o.theme_preference),
+            layout: self.settings.layout,
+            cover: self.settings.cover,
             highlight: self.settings.highlight,
             line: self.settings.line,
             ..Default::default()
@@ -1433,7 +1451,10 @@ impl App {
                         .take_while(|b| b.submenu == a.submenu)
                         .count();
                     ui.menu_button(a.submenu, |ui| {
-                        for b in &items[i..i + n] {
+                        for (j, b) in items[i..i + n].iter().enumerate() {
+                            if b.sep && j > 0 {
+                                ui.separator();
+                            }
                             menu_item(ui, b, c, acts);
                         }
                     });
