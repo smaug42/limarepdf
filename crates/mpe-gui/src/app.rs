@@ -453,7 +453,7 @@ impl App {
         let (tab, revision, mut pdf) = (t.id, t.revision, t.pdf.clone());
         let (tx, ctx) = (self.tx.clone(), ctx.clone());
         std::thread::spawn(move || {
-            let result = work(&mut pdf)
+            let result = crate::guard(|| work(&mut pdf))
                 .map(|(changed, text)| (pdf, changed, text))
                 .map_err(|e| format!("{e:#}"));
             let _ = tx.send(Loaded::Job {
@@ -818,6 +818,17 @@ impl App {
                     self.notify(ctx, format!("Deleted {what}"));
                 }
             }
+            Act::RemoveBlank => self.spawn_job(ctx, "Remove blank pages", |p| {
+                let gone = p.remove_blank_pages(mpe_core::BLANK_TOLERANCE)?;
+                let text = match gone.len() {
+                    0 => "No blank pages were found.".to_string(),
+                    n => format!(
+                        "Removed {n} blank page(s): {}. Undo brings them back.",
+                        mpe_core::format_page_range(&gone)
+                    ),
+                };
+                Ok((!gone.is_empty(), text))
+            }),
             Act::Extract => {
                 let t = &mut self.tabs[self.active];
                 match t.pdf.extract(&t.targets()) {

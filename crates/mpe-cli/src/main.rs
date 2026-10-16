@@ -9,9 +9,9 @@ macro_rules! out {
 }
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use mpe_core::{
-    parse_page_range, print, render, Annot, AnnotKind, Bates, Cipher, Encryption, Field, FieldKind,
-    FieldValue, HeaderFooter, ImageImport, Info, Ocr, OcrResult, Pdf, Restrictions, ScanMode,
-    ScanOptions, ScanResult, Watermark,
+    format_page_range, parse_page_range, print, render, Annot, AnnotKind, Bates, Cipher,
+    Encryption, Field, FieldKind, FieldValue, HeaderFooter, ImageImport, Info, Ocr, OcrResult, Pdf,
+    Restrictions, ScanMode, ScanOptions, ScanResult, Watermark,
 };
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
@@ -86,6 +86,14 @@ enum Cmd {
         io: Io,
         #[arg(long)]
         pages: String,
+    },
+    /// Remove pages that look blank: one even colour, give or take specks or a lone page number
+    RemoveBlank {
+        #[command(flatten)]
+        io: Io,
+        /// Percent of a page that may differ from its background (0 = nothing at all)
+        #[arg(long, default_value_t = mpe_core::BLANK_TOLERANCE)]
+        tolerance: f32,
     },
     /// Rotate pages clockwise by 90, 180 or 270
     Rotate {
@@ -904,6 +912,14 @@ fn main() -> Result<()> {
         Cmd::Delete { io, pages } => run_edit(&io, |p| {
             let idx = parse_page_range(&pages, p.page_count())?;
             p.delete_pages(&idx)
+        })?,
+        Cmd::RemoveBlank { io, tolerance } => run_edit(&io, |p| {
+            let gone = p.remove_blank_pages(tolerance)?;
+            match gone.len() {
+                0 => out!("no blank pages"),
+                n => out!("removed {n} blank page(s): {}", format_page_range(&gone)),
+            }
+            Ok(())
         })?,
         Cmd::Rotate { io, pages, degrees } => run_edit(&io, |p| {
             let idx = parse_page_range(&pages, p.page_count())?;

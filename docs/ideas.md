@@ -10,7 +10,6 @@ Sizes are rough guesses: **S** small, **M** medium, **L** large. A dash means no
 
 Small or medium additions that build on what MPE already has:
 
-- **Remove blank pages** (S): MPE already renders pages and can measure how empty they are.
 - **Split by bookmarks** (S): the bookmark reader and splitting already exist.
 - **Extract images** (S–M): save a document's embedded images as files.
 - **N-up and booklet layouts** (M): several pages on one sheet, or pages ordered for folding.
@@ -25,7 +24,7 @@ Small or medium additions that build on what MPE already has:
 - Resize or scale to a paper size, make all pages the same size, join everything into one tall page (M)
 - Overlay or underlay one PDF on another (M)
 - Page boxes: view, add and remove the trim, bleed and art boxes (S)
-- Turn pages automatically by text direction (M); remove blank pages (S)
+- Turn pages automatically by text direction (M)
 - Split by bookmarks or blank pages (S); split by file size (M)
 
 ## Structure and metadata

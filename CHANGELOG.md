@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- Remove blank pages: pages of one even colour, give or take specks or a lone page number. In the app (☰ menu and
+  command palette; Undo brings them back) and as `mpe remove-blank`, with `--tolerance` for how much may be on a
+  page.
+
 ### Changed
 
 - New rectangles and ellipses have no fill; turn Fill on in the inspector to fill them.

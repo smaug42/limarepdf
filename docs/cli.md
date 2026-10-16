@@ -70,6 +70,7 @@ sound and video, and redaction marks are kept. Annotations stored without a draw
 | --- | --- |
 | `mpe extract in.pdf -o out.pdf --pages 1-3,7` | Keep only the listed pages |
 | `mpe delete in.pdf -o out.pdf --pages 2` | Delete pages |
+| `mpe remove-blank in.pdf -o out.pdf` | Delete pages that look blank and list them. `--tolerance` is the percent of a page that may differ from its background: 0.05 by default (specks or a page number), 0 for nothing at all |
 | `mpe rotate in.pdf -o out.pdf --pages all --degrees 90` | Rotate clockwise by 90, 180 or 270 |
 | `mpe reorder in.pdf -o out.pdf --order 3,1,2` | Put all pages in a new order |
 | `mpe insert-blank in.pdf -o out.pdf --after 0` | Insert a blank page after page N (0 = at the start) |

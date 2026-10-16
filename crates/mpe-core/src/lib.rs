@@ -6,6 +6,7 @@
 mod annot_ap;
 mod annot_write;
 mod annots;
+mod blank;
 mod doc;
 mod edit;
 mod excerpt;
@@ -35,6 +36,7 @@ mod text;
 mod tounicode;
 
 pub use annots::{Annot, AnnotKind, ShapeLook, TextStyle};
+pub use blank::BLANK_TOLERANCE;
 pub use doc::{Info, Pdf};
 pub use edit::{PathStyle, Shape, TextEdit};
 pub use fonts::{Family, FontChoice};
@@ -45,7 +47,7 @@ pub use objects::{words_text, ObjectKind, PageObject, PageWord};
 pub use ocr::{Ocr, OcrLine, OcrResult, OcrWord};
 pub use outline::OutlineItem;
 pub use overlay::{text_width, Bates, HeaderFooter, Watermark};
-pub use pagerange::parse_page_range;
+pub use pagerange::{format_page_range, parse_page_range};
 pub use scan::{ScanMode, ScanOptions, ScanResult};
 pub use security::{Cipher, Encryption, Restrictions};
 pub use text::SearchHit;

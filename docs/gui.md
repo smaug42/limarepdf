@@ -213,6 +213,10 @@ the selected pages.
 
 Delete removes the selected object or pages. Deleting shows a notice with an Undo button.
 
+Remove blank pages (☰ > Document, or the command palette) deletes every page that is one even colour, give or take
+scanner specks, faint show-through or a lone page number, and lists the pages it removed. Undo brings them back. A
+document whose pages are all blank is left alone.
+
 ## Editing page content
 
 Pick a tool in the top bar. Documents open with the read tool (the text cursor), which selects text, follows links
