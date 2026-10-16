@@ -36,6 +36,12 @@
   pages and removes what you tick: metadata (including XMP), JavaScript and automatic actions, attachments, hidden
   layers and their content, thumbnails and private data, and if you like comments, form values, bookmarks and what
   lies outside the crop box. Also `mpe sanitise` (`--list`, `--keep`, `--also`).
+- Checking digital signatures: `mpe verify` tells for each signature whether the signed part is unchanged, who
+  signed according to their certificate and who issued it, when (from a timestamp authority or the signer's
+  computer), certification and locked fields, and warnings such as SHA-1, short keys or an expired certificate, and
+  whether the document was changed after signing. RSA and ECDSA (P-256, P-384) signatures, embedded and document
+  timestamps; copied, moved and wrapped signatures are refused. `--json` for scripts. See
+  [Digital signatures](docs/signatures.md).
 
 ### Changed
 
@@ -45,6 +51,8 @@
 
 ### Fixed
 
+- Files whose trailer says `/Encrypt null` (not encrypted, written by some signing tools) open instead of asking
+  for a password that doesn't exist.
 - Text in Type 3 fonts whose glyphs aren't measured in thousandths of an em is placed correctly for selection,
   search highlights and copying.
 

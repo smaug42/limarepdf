@@ -37,11 +37,22 @@ impl Pdf {
     }
 
     pub fn from_bytes(bytes: &[u8], password: Option<&str>) -> Result<Self> {
-        let doc = Document::load_from_with_options(
-            Cursor::new(bytes),
-            lopdf::LoadOptions::with_password(password.unwrap_or("")),
-        )
-        .map_err(|e| anyhow!("cannot open PDF: {e}"))?;
+        let load = |b: &[u8]| {
+            Document::load_from_with_options(
+                Cursor::new(b),
+                lopdf::LoadOptions::with_password(password.unwrap_or("")),
+            )
+        };
+        let doc = match load(bytes) {
+            Ok(doc) => doc,
+            // Some writers put `/Encrypt null` (meaning not encrypted) in the trailer, and
+            // lopdf takes any `/Encrypt` entry as encryption. Read a copy with those
+            // entries blanked; they are the same length, so every offset holds.
+            Err(e) => match blank_null_encrypt(bytes) {
+                Some(copy) => load(&copy).map_err(|_| anyhow!("cannot open PDF: {e}"))?,
+                None => bail!("cannot open PDF: {e}"),
+            },
+        };
         Ok(Self {
             doc,
             encryption: None,
@@ -622,6 +633,29 @@ fn rotate_sides(sides: [f32; 4], rotation: i64) -> [f32; 4] {
 }
 
 /// Decode a PDF text string (UTF-16BE with BOM, UTF-8 with BOM, or PDFDocEncoding ~ Latin-1).
+/// `bytes` with each `/Encrypt null` entry turned into spaces, or `None` when there is
+/// none. A null value means the entry is absent, so this doesn't change the document.
+fn blank_null_encrypt(bytes: &[u8]) -> Option<Vec<u8>> {
+    let mut copy: Option<Vec<u8>> = None;
+    let mut from = 0;
+    while let Some(i) = bytes[from..].windows(8).position(|w| w == b"/Encrypt") {
+        let start = from + i;
+        let mut end = start + 8;
+        while bytes.get(end).is_some_and(|b| b" \t\r\n\x0c\0".contains(b)) {
+            end += 1;
+        }
+        let after = bytes.get(end + 4);
+        if bytes[end..].starts_with(b"null")
+            && after.is_none_or(|b| !b.is_ascii_alphanumeric() && !b"#_.-".contains(b))
+        {
+            end += 4;
+            copy.get_or_insert_with(|| bytes.to_vec())[start..end].fill(b' ');
+        }
+        from = end;
+    }
+    copy
+}
+
 pub(crate) fn decode_text(b: &[u8]) -> String {
     if b.starts_with(&[0xFE, 0xFF]) {
         let u: Vec<u16> = b[2..]

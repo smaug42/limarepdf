@@ -16,6 +16,9 @@ use mpe_core::{
     ViewPrefs, Watermark,
 };
 use mpe_core::{sign_label, InkColor, SignArt, SignRole, SignStyle};
+use mpe_core::{
+    CertInfo, FieldLock, LockAction, Permissions, SigKind, SigStatus, SignatureReport, TimeSource,
+};
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 
@@ -355,6 +358,16 @@ enum Cmd {
     Decrypt {
         #[command(flatten)]
         io: Io,
+    },
+    /// Check the digital signatures in a PDF. Exits with status 1 unless every signature
+    /// checks as valid
+    Verify {
+        input: PathBuf,
+        /// Print the results as JSON
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        password: Option<String>,
     },
     /// Search page text
     Search {
@@ -1246,6 +1259,298 @@ fn some(s: &Option<String>) -> String {
     s.clone().unwrap_or_default()
 }
 
+/// How `mpe verify` writes times: 2026-10-16 14:23:05 -04:00.
+const VERIFY_TIME: &str = "%Y-%m-%d %H:%M:%S %:z";
+
+/// `mpe verify` as text. Everything taken from the file is cleaned for display.
+fn print_verify(input: &Path, rep: &SignatureReport) {
+    let clean = |s: &str| mpe_core::display_line(s, 80);
+    let n = rep.signatures.len();
+    match n {
+        0 => out!("{}: no digital signatures", input.display()),
+        1 => out!("{}: 1 digital signature", input.display()),
+        _ => out!("{}: {n} digital signatures", input.display()),
+    }
+    let row = |label: &str, value: String| out!("   {label:<12} {value}");
+    for (i, s) in rep.signatures.iter().enumerate() {
+        out!("");
+        let fields: Vec<String> = s
+            .fields
+            .iter()
+            .map(|f| format!("\"{}\"", clean(f)))
+            .collect();
+        let kind = match s.kind {
+            SigKind::Approval => "Signature",
+            SigKind::Certification(_) => "Certification",
+            SigKind::DocumentTimestamp => "Document timestamp",
+        };
+        let page = s
+            .page
+            .map(|p| format!(" on page {}", p + 1))
+            .unwrap_or_default();
+        out!("{}. {kind} in field {}{page}", i + 1, fields.join(", "));
+        let who = s.signer.as_ref().map(|c| clean(c.display_name()));
+        row(
+            "Status:",
+            match &s.status {
+                SigStatus::Valid if s.kind == SigKind::DocumentTimestamp => {
+                    "valid: the document existed like this at the time shown".into()
+                }
+                SigStatus::Valid => format!(
+                    "valid: not changed since {} signed it; MPE can't confirm who that is",
+                    who.as_deref().unwrap_or("the signer")
+                ),
+                SigStatus::Broken(why) => format!("BROKEN: {why}"),
+                SigStatus::CantCheck(why) => format!("can't check: {why}"),
+            },
+        );
+        if !s.covers_whole_file && s.status == SigStatus::Valid {
+            if let Some([_, _, c, d]) = s.byte_range {
+                row(
+                    "Changes:",
+                    format!(
+                        "the file was changed after this signature ({} of {} bytes signed)",
+                        c + d,
+                        rep.file_len
+                    ),
+                );
+            }
+        }
+        if let SigKind::Certification(p) = s.kind {
+            row("Certified:", p.to_string());
+        }
+        if let Some(c) = &s.signer {
+            let mut who = clean(c.display_name());
+            if let Some(e) = c
+                .email
+                .as_deref()
+                .filter(|e| Some(*e) != c.common_name.as_deref())
+            {
+                who.push_str(&format!(" <{}>", clean(e)));
+            }
+            if let Some(o) = c
+                .organisation
+                .as_deref()
+                .filter(|o| Some(*o) != c.common_name.as_deref())
+            {
+                who.push_str(&format!(", {}", clean(o)));
+            }
+            let label = if s.kind == SigKind::DocumentTimestamp {
+                "Authority:"
+            } else {
+                "Signed by:"
+            };
+            row(label, who);
+            let issuer = if c.self_issued {
+                "itself (a self-made digital ID)".into()
+            } else {
+                clean(c.issuer_common_name.as_deref().unwrap_or(&c.issuer))
+            };
+            row("Issued by:", issuer);
+        }
+        if let Some(t) = &s.time {
+            let from = match t.source {
+                TimeSource::Timestamp => "from a timestamp authority",
+                TimeSource::SignerClock | TimeSource::Dictionary => "from the signer's computer",
+            };
+            let label = if s.kind == SigKind::DocumentTimestamp {
+                "Time:"
+            } else {
+                "Signed at:"
+            };
+            row(label, format!("{} ({from})", t.time.format(VERIFY_TIME)));
+        }
+        if let Some(ts) = s
+            .timestamp
+            .as_ref()
+            .filter(|_| s.kind != SigKind::DocumentTimestamp)
+        {
+            row(
+                "Timestamp:",
+                format!(
+                    "{} by {}",
+                    ts.time.format(VERIFY_TIME),
+                    clean(ts.authority.display_name())
+                ),
+            );
+        }
+        for (label, v) in [
+            ("Name:", &s.name),
+            ("Reason:", &s.reason),
+            ("Location:", &s.location),
+            ("Contact:", &s.contact),
+        ] {
+            if let Some(v) = v.as_deref().filter(|v| !v.trim().is_empty()) {
+                row(label, clean(v));
+            }
+        }
+        let mut alg: Vec<String> = Vec::new();
+        if let Some(c) = &s.signer {
+            alg.push(c.key.clone());
+        }
+        alg.extend(s.algorithm.map(String::from));
+        alg.extend(s.digest.map(String::from));
+        if !s.sub_filter.is_empty() {
+            alg.push(clean(&s.sub_filter));
+        }
+        if !alg.is_empty() {
+            row("Algorithm:", alg.join(", "));
+        }
+        if let Some(l) = &s.locks {
+            row("Locked:", lock_text(l, &clean));
+        }
+        if let Some(c) = &s.signer {
+            row(
+                "Certificate:",
+                format!(
+                    "serial {}, valid {} to {}",
+                    c.serial,
+                    c.not_before.format("%Y-%m-%d"),
+                    c.not_after.format("%Y-%m-%d")
+                ),
+            );
+            row("SHA-256:", c.sha256.clone());
+        }
+        for w in &s.warnings {
+            row("Warning:", w.to_string());
+        }
+    }
+    for f in &rep.empty_fields {
+        out!("");
+        let page = f
+            .page
+            .map(|p| format!(" on page {}", p + 1))
+            .unwrap_or_default();
+        out!("Empty signature field \"{}\"{page}", clean(&f.name));
+        if let Some(l) = &f.lock {
+            out!("   {:<12} {}", "Locks:", lock_text(l, &clean));
+        }
+    }
+}
+
+fn lock_text(l: &FieldLock, clean: &dyn Fn(&str) -> String) -> String {
+    let names = || {
+        l.fields
+            .iter()
+            .map(|f| format!("\"{}\"", clean(f)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    match l.action {
+        LockAction::All => "every form field".into(),
+        LockAction::Include => format!("the fields {}", names()),
+        LockAction::Exclude => format!("every form field except {}", names()),
+    }
+}
+
+/// `mpe verify --json`.
+fn verify_json(rep: &SignatureReport) -> serde_json::Value {
+    use serde_json::json;
+    let cert = |c: &CertInfo| {
+        json!({
+            "subject": c.subject,
+            "common_name": c.common_name,
+            "organisation": c.organisation,
+            "email": c.email,
+            "issuer": c.issuer,
+            "self_issued": c.self_issued,
+            "serial": c.serial,
+            "not_before": c.not_before.to_rfc3339(),
+            "not_after": c.not_after.to_rfc3339(),
+            "sha256": c.sha256,
+            "key": c.key,
+        })
+    };
+    let lock = |l: &FieldLock| {
+        json!({
+            "action": match l.action {
+                LockAction::All => "all",
+                LockAction::Include => "include",
+                LockAction::Exclude => "exclude",
+            },
+            "fields": l.fields,
+        })
+    };
+    let rect = |b: &[f32; 4]| -> Vec<f64> {
+        b.iter()
+            .map(|&x| (f64::from(x) * 1000.0).round() / 1000.0)
+            .collect()
+    };
+    let sigs: Vec<serde_json::Value> = rep
+        .signatures
+        .iter()
+        .map(|s| {
+            let (status, problem) = match &s.status {
+                SigStatus::Valid => ("valid", None),
+                SigStatus::Broken(why) => ("broken", Some(why)),
+                SigStatus::CantCheck(why) => ("cant_check", Some(why)),
+            };
+            let (kind, permissions) = match s.kind {
+                SigKind::Approval => ("approval", None),
+                SigKind::Certification(p) => (
+                    "certification",
+                    Some(match p {
+                        Permissions::NoChanges => "no_changes",
+                        Permissions::FormFilling => "form_filling",
+                        Permissions::FormFillingAndComments => "form_filling_and_comments",
+                    }),
+                ),
+                SigKind::DocumentTimestamp => ("document_timestamp", None),
+            };
+            json!({
+                "fields": s.fields,
+                "page": s.page.map(|p| p + 1),
+                "rect": s.bbox.as_ref().map(rect),
+                "kind": kind,
+                "permissions": permissions,
+                "sub_filter": s.sub_filter,
+                "status": status,
+                "problem": problem,
+                "byte_range": s.byte_range,
+                "covers_whole_file": s.covers_whole_file,
+                "signer": s.signer.as_ref().map(cert),
+                "certificates": s.certificates.iter().map(cert).collect::<Vec<_>>(),
+                "name": s.name,
+                "reason": s.reason,
+                "location": s.location,
+                "contact": s.contact,
+                "time": s.time.map(|t| t.time.to_rfc3339()),
+                "time_source": s.time.map(|t| match t.source {
+                    TimeSource::Timestamp => "timestamp",
+                    TimeSource::SignerClock => "signer_clock",
+                    TimeSource::Dictionary => "signature_dictionary",
+                }),
+                "timestamp": s.timestamp.as_ref().map(|t| json!({
+                    "time": t.time.to_rfc3339(),
+                    "authority": cert(&t.authority),
+                })),
+                "digest": s.digest,
+                "algorithm": s.algorithm,
+                "locks": s.locks.as_ref().map(lock),
+                "warnings": s.warnings.iter().map(|w| w.to_string()).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let empty: Vec<serde_json::Value> = rep
+        .empty_fields
+        .iter()
+        .map(|f| {
+            json!({
+                "field": f.name,
+                "page": f.page.map(|p| p + 1),
+                "rect": f.bbox.as_ref().map(rect),
+                "lock": f.lock.as_ref().map(lock),
+            })
+        })
+        .collect();
+    json!({
+        "all_valid": rep.all_valid(),
+        "file_size": rep.file_len,
+        "signatures": sigs,
+        "empty_fields": empty,
+    })
+}
+
 fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Info { input, password } => {
@@ -1716,6 +2021,23 @@ fn main() -> Result<()> {
             Ok(())
         })?,
         Cmd::Decrypt { io } => run_edit(&io, |_| Ok(()))?,
+        Cmd::Verify {
+            input,
+            json,
+            password,
+        } => {
+            let bytes =
+                std::fs::read(&input).with_context(|| format!("reading {}", input.display()))?;
+            let rep = mpe_core::verify_signatures(&bytes, password.as_deref())?;
+            if json {
+                out!("{}", serde_json::to_string_pretty(&verify_json(&rep))?);
+            } else {
+                print_verify(&input, &rep);
+            }
+            if !rep.all_valid() {
+                std::process::exit(1);
+            }
+        }
         Cmd::Search {
             input,
             query,

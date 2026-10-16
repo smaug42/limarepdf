@@ -6,7 +6,9 @@
 mod annot_ap;
 mod annot_write;
 mod annots;
+mod asn1;
 mod blank;
+mod cms_check;
 mod display;
 mod doc;
 mod edit;
@@ -36,6 +38,7 @@ pub mod render;
 mod sanitise;
 mod scan;
 mod security;
+mod sig_verify;
 mod sign;
 mod stamps;
 mod std14;
@@ -45,6 +48,7 @@ mod viewprefs;
 
 pub use annots::{Annot, AnnotKind, ShapeLook, TextStyle};
 pub use blank::BLANK_TOLERANCE;
+pub use cms_check::CertInfo;
 pub use display::{display_line, display_text};
 pub use doc::{part_file_name, Info, Pdf};
 pub use edit::{PathStyle, Shape, TextEdit};
@@ -62,6 +66,10 @@ pub use redact::{PageRedaction, RedactReport};
 pub use sanitise::{Hidden, HiddenReport};
 pub use scan::{ScanMode, ScanOptions, ScanResult};
 pub use security::{Cipher, Encryption, Restrictions};
+pub use sig_verify::{
+    verify_signatures, DigitalSignature, EmptySignatureField, FieldLock, LockAction, Permissions,
+    SigKind, SigStatus, SigWarning, SignatureReport, SigningTime, TimeSource, Timestamp,
+};
 pub use sign::{
     sign_label, typed_signature, DateStyle, InkColor, Mark, SignArt, SignRole, SignStyle, SIGN_TEXT,
 };

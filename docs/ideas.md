@@ -81,6 +81,8 @@ Small or medium additions that build on what MPE already has:
   trusted lists (large, changing XML with its own signatures) (L)
 - Smart cards, USB tokens, the Windows certificate store and macOS Keychain (L)
 - Signing encrypted documents (M)
+- Checking signatures on Brainpool curves, used by some European ID cards, and P-521 (S each; the `bp256`,
+  `bp384` or `p521` crates, new dependencies)
 - Remove signatures (S)
 - Fill and sign: typed signatures and text in other scripts (M; more fonts), variable-width strokes from pen
   pressure (M; egui doesn't report pressure yet), `--signature-image` with the paper made transparent from the

@@ -40,6 +40,19 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.rten-vecmath]
 opt-level = 3
+# Signature checks and the tests that sign: RSA is very slow unoptimised.
+[profile.dev.package.crypto-bigint]
+opt-level = 3
+[profile.dev.package.rsa]
+opt-level = 3
+[profile.dev.package.p256]
+opt-level = 3
+[profile.dev.package.p384]
+opt-level = 3
+[profile.dev.package.primeorder]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
 
 [profile.release]
 opt-level = 3

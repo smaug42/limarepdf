@@ -39,5 +39,11 @@ pen strokes smoothed into curves, typed names as the glyph outlines of a bundled
 flattens just those annotations. The app's saved signatures and the Create signature window are in
 `crates/mpe-gui/src/signing.rs`.
 
+Digital signatures are checked in `crates/mpe-core/src/sig_verify.rs` (finding them, the byte-range rules, and
+tying each signature value to its dictionary in the version it signed, by position) and `cms_check.rs` (the CMS
+signature, certificates, timestamps), over a small BER/DER reader, `asn1.rs`, that walks the data exactly as written
+so signed attributes are never re-encoded before checking. The cryptography is RustCrypto's (`rsa`, `p256`, `p384`,
+`sha1`, `sha2`, `x509-cert`). See [Digital signatures](signatures.md).
+
 In the desktop app, every command is defined once in `crates/mpe-gui/src/actions.rs`; the menu, the top bar, the
 command palette, the right-click menus, the floating toolbar and the keyboard shortcuts are all built from that list.

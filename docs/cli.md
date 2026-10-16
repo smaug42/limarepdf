@@ -160,6 +160,16 @@ nothing readable is left under the areas. It warns when removed text is still fo
 
 See [Removing hidden information](redaction.md#removing-hidden-information).
 
+## Digital signatures
+
+| Command | What it does |
+| --- | --- |
+| `mpe verify in.pdf` | Check every digital signature: whether the signed part is unchanged, who signed by their certificate, when, and warnings; also lists signature fields not signed yet |
+| `mpe verify in.pdf --json` | The same as JSON, for scripts |
+
+Exit status 0 means every signature checked as valid (or there are none); 1 means at least one is broken or can't
+be checked, or the file can't be opened. See [Digital signatures](signatures.md) for what each result means.
+
 ## Properties and security
 
 | Command | What it does |
