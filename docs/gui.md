@@ -22,7 +22,7 @@ invalid; when a document is signed, MPE asks first. Save As to a new file keeps 
 
 ## The window
 
-- **Top bar:** the menu (☰), Open, Save, Undo and Redo, the tools, zoom, search, Print, an Export menu (pages as
+- **Top bar:** the menu (☰), Open, Save, Undo and Redo, the tools, the page layout, zoom, search, Print, an Export menu (pages as
   images, text), and the theme. On narrow windows the search field and the tools fold into single buttons.
 - **Left:** four tabs. Pages shows the thumbnails, Search the search results, and Bookmarks the document's
   outline. Click a bookmark to go to its page; the arrow beside one shows or hides the bookmarks inside it, which
@@ -35,8 +35,8 @@ invalid; when a document is signed, MPE asks first. Save As to a new file keeps 
 - **Middle:** the pages, scrolling continuously. By default they fit the width between the side panels, and keep
   fitting as you resize the window or open and close the panels. Zooming in or out, actual size, Ctrl+scroll or a
   pinch turns fitting off, and your zoom then stays as it is; the Fit width button (highlighted while fitting is on)
-  or Ctrl+0 turns it back on. ☰ > View > Page layout chooses how pages are laid out, for every document, and is
-  remembered: **Continuous pages** (one column, the default), **Facing pages** (two side by side, still scrolling;
+  or Ctrl+0 turns it back on. The page layout button left of the zoom buttons (its icon shows the current layout),
+  or ☰ > View > Page layout, chooses how pages are laid out, for every document, and is remembered: **Continuous pages** (one column, the default), **Facing pages** (two side by side, still scrolling;
   fitting fits both) or **Single page** (one at a time; a wheel step past the page's top or bottom turns the page).
   In facing pages, **Show cover page alone** (on by default) puts the first page on its own on the right, as in a
   book; off pairs pages 1 and 2. PageUp and PageDown move a pair at a time when facing.

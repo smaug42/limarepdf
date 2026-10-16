@@ -32,7 +32,7 @@ available.
 | Tabs, thumbnails, opening by drag and drop | Done | |
 | Recent files | Done | Start screen and ☰ > File > Open recent; 10 files, kept on your computer only |
 | Notices about the document | Done | Password-protected, scanned pages, form fields, large files. [Details](gui.md#notices-about-the-document) |
-| Zoom, fit width, continuous scrolling, page navigation | Done | Pages fit the window's width by default and follow resizing; zooming turns that off. Single-page and facing-page layouts (View > Page layout; cover page alone or paired) |
+| Zoom, fit width, continuous scrolling, page navigation | Done | Pages fit the window's width by default and follow resizing; zooming turns that off. Single-page and facing-page layouts (top-bar button or View > Page layout; cover page alone or paired) |
 | Open at a page from the command line | Done | `mpe-gui file.pdf --page N` |
 | Command palette, right-click menus, floating toolbar | Done | Toolbar customisation: No |
 | App icon | Done | Window, taskbar and Windows `.exe`. Wayland needs the desktop entry installed. [Details](install.md#menu-entry-and-icon-on-linux) |

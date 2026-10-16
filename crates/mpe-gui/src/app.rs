@@ -1884,10 +1884,11 @@ impl eframe::App for App {
                 let sep = 2.0 * sp.item_spacing.x;
                 // Search field with its icon, and the zoom percentage.
                 let (field, pct) = (180.0 + 18.0 + 2.0 * sp.item_spacing.x, 64.0);
-                // Theme, Export menu, Print, search, then fit, zoom in and zoom out.
+                // Theme, Export menu, Print, search, then fit, zoom in, zoom out and the
+                // page layout menu.
                 let right = |with_field: bool| {
                     let search = if with_field { field } else { btn };
-                    3.0 * btn + search + sep + 3.0 * btn + pct
+                    3.0 * btn + search + sep + 3.0 * btn + pct + sep + btn
                 };
                 // Menu, Open, Save, Undo, Redo and three separators, then the tools.
                 let left = |tools: f32| 5.0 * btn + 3.0 * sep + tools;
@@ -1987,6 +1988,20 @@ impl eframe::App for App {
                         acts.push(Act::Actual);
                     }
                     bar(ui, Act::ZoomOut, false, acts);
+                    ui.separator();
+                    // The page layout, its icon showing the current one.
+                    let glyph = actions::get(Act::Layout(c.layout)).icon;
+                    ui.menu_button(menu_icon(glyph), |ui| {
+                        let layouts = ACTIONS.iter().filter(|a| a.submenu == "Page layout");
+                        for a in layouts {
+                            if a.sep {
+                                ui.separator();
+                            }
+                            menu_item(ui, a, &c, acts);
+                        }
+                    })
+                    .response
+                    .on_hover_text("Page layout");
                 };
                 // The right side is laid out first; the left gets what remains.
                 egui::Sides::new()
