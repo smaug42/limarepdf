@@ -131,12 +131,23 @@ boxes, with no angle, so turning them needs a workaround:
 
 ### Digital signatures
 
-A future task, not yet scheduled. Create your own signing identity (a self-signed certificate), sign documents with
-a standard PDF signature that other readers check, and verify signatures, in the app and from the command line.
-Readers show such a signature as valid but from an unknown signer until the recipient trusts the certificate by
-checking its fingerprint with you. Signing adds to the end of the file, so earlier signatures stay valid. Not
-planned for the first
-version: timestamps, revocation checks, hardware tokens and signing encrypted files.
+Being built, following Acrobat's rules so signed documents go back and forth between MPE and Acrobat or other
+editors:
+
+- **Checking** signed PDFs: who signed, when, whether the signed part is unchanged, and which changes were made
+  afterwards, judged by the same rules Acrobat uses (filling, signing and comments allowed after a signature;
+  page changes not; certified documents stricter). View the version that was signed.
+- **Trust** individual signers or certificate authorities, in MPE only; until then a signature shows as unchanged
+  but from an unknown signer, as it does in Acrobat.
+- **Digital IDs:** create your own (RSA-3072, five years, as Acrobat does) or import a `.p12`/`.pfx`; export one
+  for Acrobat, or export your certificate for others to trust.
+- **Signing** a signature field or a box, visible with your fill-and-sign signature, name and date; **certifying**
+  with Acrobat's three permission levels. Signing adds to the end of the file, so earlier signatures stay valid.
+- **Saving a signed document** adds the changes to the end of the file instead of rewriting it, so its
+  signatures stay valid, and asks first when a change would show as not allowed.
+
+Not in the first version: timestamps from a timestamp server, long-term validation, revocation checks, Adobe's
+and the EU's lists of trusted authorities, smart cards and system keystores, signing encrypted files.
 
 ### Packaging
 
@@ -165,8 +176,8 @@ archives stay.
 - **Editing paragraphs.** Edit text as paragraphs that reflow, not line by line, as a command you choose ("Edit as
   paragraph") rather than the default: MPE outlines the lines it takes to be the paragraph, you adjust or confirm,
   and the reflow is one undo step. Line-by-line editing stays as it is.
-- **Incremental saving.** Save only what changed, which is faster for large files and keeps existing digital
-  signatures valid when you add comments or fill in forms.
+- **Incremental saving.** Save only what changed, which is faster for large files. Signed documents get this with
+  digital signatures (above); this item is about using it for every document.
 - **Standards output.** PDF/A for archiving, and PDF/UA tagging for accessibility.
 - **Verifiable signatures.** Apply and validate digital signatures, including certificate-based ones, with revocation
   checked offline.

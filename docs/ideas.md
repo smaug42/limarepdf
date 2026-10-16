@@ -73,11 +73,18 @@ Small or medium additions that build on what MPE already has:
 
 ## Signing, beyond the planned digital signatures
 
-- Certify documents with permission levels, timestamps, long-term validation (L)
+- **First after digital signatures:** timestamps from a timestamp server when signing (M; needs network access
+  and an HTTP crate; Acrobat has none set up by default), then long-term validation, adding revocation answers
+  to the document (L)
+- Revocation checking (OCSP, CRL) for certificates from authorities (M; network)
+- Adobe's list of trusted authorities (AATL; only distributed to Adobe products as far as known) or the EU
+  trusted lists (large, changing XML with its own signatures) (L)
+- Smart cards, USB tokens, the Windows certificate store and macOS Keychain (L)
+- Signing encrypted documents (M)
 - Remove signatures (S)
-- Fill and sign: dates in local time instead of UTC (S; needs a time-zone crate), typed signatures and text in
-  other scripts (M; more fonts), variable-width strokes from pen pressure (M; egui doesn't report pressure yet),
-  `--signature-image` with the paper made transparent from the command line (S)
+- Fill and sign: typed signatures and text in other scripts (M; more fonts), variable-width strokes from pen
+  pressure (M; egui doesn't report pressure yet), `--signature-image` with the paper made transparent from the
+  command line (S)
 
 ## Redaction, beyond what MPE does
 
