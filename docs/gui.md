@@ -200,6 +200,13 @@ What you select decides what the inspector, the right-click menu and the floatin
 
 Menu commands for document and page settings open the matching section of the inspector.
 
+A watermark is text or a picture (PNG, JPEG or TIFF), centred on each page. After you apply a watermark or headers
+and footers, the section's button becomes Update: change a setting and press it to redo what you just added rather
+than stamping a second copy. Add another keeps it and adds a new one. Any other change returns the button to Apply.
+
+If a damaged file makes MPE fail while showing a document, that tab shows an error page with Save a copy and Close
+this tab; other tabs carry on.
+
 Page labels are the page numbers viewers show, such as i, ii, 1, 2 or A-1; they don't change what is printed on the
 pages. When a document has them, the status bar shows the label with the page's place, such as "Page i (3 of 477)",
 and the thumbnails show the labels. To set them, select the first page to number, open Page labels in the
