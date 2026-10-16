@@ -63,7 +63,7 @@ available.
 | XFA-only forms (made for Adobe Reader) | No | Recognised and explained in a notice and by `mpe form`; showing or filling them is not planned (see below). Hybrid forms are filled through their ordinary fields |
 | Form data import/export (FDF, XFDF), barcodes, JavaScript | No | |
 | Page labels | Done | Numbering such as i, ii, 1, 2 or A-1: shown in the status bar, thumbnails and bookmark tips; set from the selected pages in the inspector or with `mpe labels`; kept with their pages when pages move. Going to a page by its label: No. [Details](cli.md#page-labels) |
-| Bookmarks | Partial | Shown in the Bookmarks tab (also from the command palette) and followed; adding, editing or deleting them: No. [Details](gui.md#the-window) |
+| Bookmarks | Partial | Shown in the Bookmarks tab (also from the command palette) and followed; added, renamed and deleted in that tab or with `mpe bookmarks`. Moving or reordering them, styles and colours: No. [Details](gui.md#the-window), [CLI](cli.md#bookmarks) |
 | Links | Partial | Followed: to pages, and to web and email addresses after asking. Links to other PDF files, and adding or editing links: No. [Details](gui.md#links) |
 | Layers, attachments | No | |
 | Installers and packages | No | Releases are archives of the programs. Packages are planned for later; see below |
@@ -132,8 +132,7 @@ Linux `.deb` and `.rpm` packages (the rpm signed), signed apt and dnf repositori
 (rebuilt when a release is published), a universal macOS `MPE.app` in a `.dmg`, and a Windows MSI installer. The
 archives stay.
 
-- **Untested:** whether a PDF opened from Finder's Open With loads in MPE, rather than just starting it; installing
-  the MSI on Windows.
+- **Untested:** whether a PDF opened from Finder's Open With loads in MPE, rather than just starting it.
 - **Next:** an AUR package, a Homebrew cask in MPE's own tap, and winget and Scoop manifests. Maybe Flatpak.
 - **Code signing** (macOS notarization, Windows Authenticode) needs certificates MPE doesn't have yet, so those builds
   stay unsigned; the GPG signatures and attestations cover them meanwhile.

@@ -18,6 +18,10 @@ How a release is made, for maintainers.
    git push origin vX.Y.Z
    ```
 
+   The merge starts a CI run on `main` too. There is no need to wait for it: the tag run doesn't depend on it, and
+   the two run side by side. The `main` run is still worth having, because it refreshes the build cache that pull
+   requests and tags start from.
+
 4. CI runs again for the tag. Its `release` job checks that the tag matches `Cargo.toml`, takes the release notes
    from the matching `CHANGELOG.md` section, ends them with a link comparing the tag with the previous version tag,
    and creates a draft GitHub Release with the four archives, `SHA256SUMS`, and a GPG signature (`.asc`) for each.

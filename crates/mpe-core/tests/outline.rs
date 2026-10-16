@@ -1,7 +1,7 @@
 //! Reading bookmarks from made-up outlines, including the broken shapes real files have.
 
 use lopdf::{dictionary, Object, ObjectId, StringFormat};
-use mpe_core::{OutlineItem, Pdf};
+use mpe_core::{BookmarkPlace, OutlineItem, Pdf};
 
 fn four_pages() -> Pdf {
     let mut p = Pdf::new();
@@ -167,4 +167,124 @@ fn splits_at_bookmarks() {
             (s("Part two"), 1)
         ]
     );
+}
+
+/// The outline's titles with their depths, and each `Count` from the root down.
+fn shape(p: &Pdf) -> Vec<(String, usize)> {
+    p.outline()
+        .into_iter()
+        .map(|i| (i.title, i.depth))
+        .collect()
+}
+
+fn counts(p: &Pdf) -> Vec<Option<i64>> {
+    let mut out = Vec::new();
+    let root = p.doc.catalog().unwrap().get(b"Outlines").unwrap();
+    let root = root.as_reference().unwrap();
+    fn walk(p: &Pdf, id: ObjectId, out: &mut Vec<Option<i64>>) {
+        let d = p.doc.get_dictionary(id).unwrap();
+        out.push(d.get(b"Count").ok().and_then(|o| o.as_i64().ok()));
+        let mut kid = d.get(b"First").ok().and_then(|o| o.as_reference().ok());
+        while let Some(k) = kid {
+            walk(p, k, out);
+            kid = p
+                .doc
+                .get_dictionary(k)
+                .unwrap()
+                .get(b"Next")
+                .ok()
+                .and_then(|o| o.as_reference().ok());
+        }
+    }
+    walk(p, root, &mut out);
+    out
+}
+
+#[test]
+fn adds_renames_and_removes_bookmarks() {
+    let mut p = four_pages();
+    assert_eq!(p.add_bookmark("One", 0, BookmarkPlace::End).unwrap(), 0);
+    assert_eq!(p.add_bookmark("Three", 2, BookmarkPlace::End).unwrap(), 1);
+    assert_eq!(
+        p.add_bookmark("Two", 1, BookmarkPlace::After(0)).unwrap(),
+        1
+    );
+    assert_eq!(
+        p.add_bookmark("One A", 0, BookmarkPlace::Under(0)).unwrap(),
+        1
+    );
+    assert_eq!(
+        p.add_bookmark("One B", 3, BookmarkPlace::Under(0)).unwrap(),
+        2
+    );
+    // After a bookmark with children goes after the children too.
+    assert_eq!(
+        p.add_bookmark("One and a half", 1, BookmarkPlace::After(0))
+            .unwrap(),
+        3
+    );
+    assert_eq!(
+        p.add_bookmark("Ünïcode", 3, BookmarkPlace::Under(5))
+            .unwrap(),
+        6
+    );
+    let s = |t: &str, d| (t.to_string(), d);
+    assert_eq!(
+        shape(&p),
+        vec![
+            s("One", 0),
+            s("One A", 1),
+            s("One B", 1),
+            s("One and a half", 0),
+            s("Two", 0),
+            s("Three", 0),
+            s("Ünïcode", 1),
+        ]
+    );
+    let pages: Vec<_> = p.outline().iter().map(|i| i.page).collect();
+    assert_eq!(pages, [0, 0, 3, 1, 1, 2, 3].map(Some));
+    // Adding under a bookmark opens it; the root counts everything shown.
+    assert!(p.outline()[0].open && p.outline()[5].open);
+    assert_eq!(
+        counts(&p),
+        [Some(7), Some(2), None, None, None, None, Some(1), None]
+    );
+
+    p.rename_bookmark(3, "Interlude").unwrap();
+    assert_eq!(p.outline()[3].title, "Interlude");
+
+    // Removing takes the children with it, and the file still reads after a save.
+    p.remove_bookmark(0).unwrap();
+    p.remove_bookmark(3).unwrap();
+    let mut p = Pdf::from_bytes(&p.to_bytes().unwrap(), None).unwrap();
+    assert_eq!(
+        shape(&p),
+        vec![s("Interlude", 0), s("Two", 0), s("Three", 0)]
+    );
+    assert_eq!(counts(&p), [Some(3), None, None, None]);
+    assert!(p.rename_bookmark(3, "x").is_err());
+    assert!(p.add_bookmark("x", 4, BookmarkPlace::End).is_err());
+
+    // Removing the last one drops the outline.
+    for _ in 0..3 {
+        p.remove_bookmark(0).unwrap();
+    }
+    assert!(p.outline().is_empty());
+    assert!(p.doc.catalog().unwrap().get(b"Outlines").is_err());
+}
+
+#[test]
+fn closed_bookmarks_keep_negative_counts() {
+    let mut p = four_pages();
+    p.add_bookmark("Parent", 0, BookmarkPlace::End).unwrap();
+    p.add_bookmark("Child", 1, BookmarkPlace::Under(0)).unwrap();
+    // Close the parent, as a file might have it, then add after it.
+    let root = p.doc.catalog().unwrap().get(b"Outlines").unwrap();
+    let root = root.as_reference().unwrap();
+    let first = p.doc.get_dictionary(root).unwrap().get(b"First").unwrap();
+    let first = first.as_reference().unwrap();
+    p.doc.get_dictionary_mut(first).unwrap().set("Count", -1);
+    p.add_bookmark("Next", 2, BookmarkPlace::After(0)).unwrap();
+    assert!(!p.outline()[0].open);
+    assert_eq!(counts(&p), [Some(2), Some(-1), None, None]);
 }

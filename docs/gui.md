@@ -26,8 +26,11 @@ invalid; when a document is signed, MPE asks first. Save As to a new file keeps 
   images, text), and the theme. On narrow windows the search field and the tools fold into single buttons.
 - **Left:** four tabs. Pages shows the thumbnails, Search the search results, and Bookmarks the document's
   outline. Click a bookmark to go to its page; the arrow beside one shows or hides the bookmarks inside it, which
-  start shown or hidden as the file asks. Bookmarks that go to another file or a web address are greyed out. They
-  can't be edited yet. ☰ > View > Bookmarks, or "Bookmarks" in the command palette, opens this tab. Comments
+  start shown or hidden as the file asks. Bookmarks that go to another file or a web address are greyed out. Add
+  bookmark bookmarks the page you are on, after the bookmark last clicked (or last, when none is), and opens its name
+  for typing: Enter keeps it, Escape keeps "Page N". Double-click a bookmark to rename it; right-click it to rename
+  it, add a bookmark under it, or delete it with the bookmarks inside it. Undo reverses each of these. Moving
+  bookmarks isn't possible yet. ☰ > View > Bookmarks, or "Bookmarks" in the command palette, opens this tab. Comments
   lists the document's annotations; see [Comments and markup](#comments-and-markup).
 - **Middle:** the pages, scrolling continuously. By default they fit the width between the side panels, and keep
   fitting as you resize the window or open and close the panels. Zooming in or out, actual size, Ctrl+scroll or a

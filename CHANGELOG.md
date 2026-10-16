@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Bookmark editing: add a bookmark to the current page, rename one, add one inside another, or delete one with the
+  bookmarks inside it, from the Bookmarks tab (Undo reverses each), and list, add, rename and remove them with
+  `mpe bookmarks`.
+
 ## [0.6.0] - 2026-10-15
 
 Page tools and sturdier handling of damaged files: remove blank pages, split at bookmarks, page labels and picture

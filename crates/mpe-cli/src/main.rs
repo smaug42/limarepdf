@@ -10,9 +10,9 @@ macro_rules! out {
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use mpe_core::{
     format_page_range, parse_page_range, part_file_name, print, render, Annot, AnnotKind, Bates,
-    Cipher, Encryption, Field, FieldKind, FieldValue, HeaderFooter, ImageImport, ImageWatermark,
-    Info, LabelRange, LabelStyle, Ocr, OcrResult, Pdf, Restrictions, ScanMode, ScanOptions,
-    ScanResult, Watermark,
+    BookmarkPlace, Cipher, Encryption, Field, FieldKind, FieldValue, HeaderFooter, ImageImport,
+    ImageWatermark, Info, LabelRange, LabelStyle, Ocr, OcrResult, Pdf, Restrictions, ScanMode,
+    ScanOptions, ScanResult, Watermark,
 };
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
@@ -310,6 +310,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: LabelsCmd,
     },
+    /// Work with bookmarks (the document outline)
+    Bookmarks {
+        #[command(subcommand)]
+        cmd: BookmarksCmd,
+    },
     /// List the printers; the default is marked
     Printers,
     /// Print (CUPS on Linux and macOS, the print spooler on Windows)
@@ -403,6 +408,46 @@ enum LabelsCmd {
     Remove {
         #[command(flatten)]
         io: Io,
+    },
+}
+
+#[derive(Subcommand)]
+enum BookmarksCmd {
+    /// List the bookmarks, numbered, indented by level, with the page each goes to
+    List {
+        input: PathBuf,
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Add a bookmark to a page. Without --after or --under it goes last at the top level
+    Add {
+        #[command(flatten)]
+        io: Io,
+        #[arg(long)]
+        title: String,
+        /// The page it goes to (1-based)
+        #[arg(long)]
+        page: usize,
+        /// Put it just after bookmark N (from `list`), at its level
+        #[arg(long, value_name = "N", conflicts_with = "under")]
+        after: Option<usize>,
+        /// Put it last among bookmark N's children
+        #[arg(long, value_name = "N")]
+        under: Option<usize>,
+    },
+    /// Give bookmark N (from `list`) a new title
+    Rename {
+        #[command(flatten)]
+        io: Io,
+        number: usize,
+        #[arg(long)]
+        title: String,
+    },
+    /// Remove bookmark N (from `list`) and its children
+    Remove {
+        #[command(flatten)]
+        io: Io,
+        number: usize,
     },
 }
 
@@ -886,6 +931,11 @@ fn run_edit(io: &Io, f: impl FnOnce(&mut Pdf) -> Result<()>) -> Result<()> {
     pdf.save(&io.output)?;
     out!("wrote {}", io.output.display());
     Ok(())
+}
+
+/// A bookmark number from `mpe bookmarks list` as a position in the outline.
+fn bookmark_index(n: usize) -> Result<usize> {
+    n.checked_sub(1).context("bookmarks are numbered from 1")
 }
 
 fn some(s: &Option<String>) -> String {
@@ -1377,6 +1427,44 @@ fn main() -> Result<()> {
                 })
             })?,
             LabelsCmd::Remove { io } => run_edit(&io, |p| p.set_label_ranges(&[]))?,
+        },
+        Cmd::Bookmarks { cmd } => match cmd {
+            BookmarksCmd::List { input, password } => {
+                let p = open(&input, &password)?;
+                let items = p.outline();
+                if items.is_empty() {
+                    out!("no bookmarks");
+                }
+                let width = items.len().to_string().len();
+                for (n, item) in items.iter().enumerate() {
+                    let page = item.page.map_or("-".into(), |p| (p + 1).to_string());
+                    let indent = "  ".repeat(item.depth);
+                    out!("{:>width$}  p. {page:<5} {indent}{}", n + 1, item.title);
+                }
+            }
+            BookmarksCmd::Add {
+                io,
+                title,
+                page,
+                after,
+                under,
+            } => run_edit(&io, |p| {
+                let place = match (after, under) {
+                    (Some(n), _) => BookmarkPlace::After(bookmark_index(n)?),
+                    (_, Some(n)) => BookmarkPlace::Under(bookmark_index(n)?),
+                    _ => BookmarkPlace::End,
+                };
+                if page == 0 {
+                    bail!("pages are numbered from 1");
+                }
+                p.add_bookmark(&title, page - 1, place).map(|_| ())
+            })?,
+            BookmarksCmd::Rename { io, number, title } => {
+                run_edit(&io, |p| p.rename_bookmark(bookmark_index(number)?, &title))?
+            }
+            BookmarksCmd::Remove { io, number } => {
+                run_edit(&io, |p| p.remove_bookmark(bookmark_index(number)?))?
+            }
         },
         Cmd::Annot { cmd } => match cmd {
             AnnotCmd::List {

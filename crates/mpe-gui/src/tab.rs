@@ -8,7 +8,9 @@ use crate::theme;
 use crate::worker::{Key, Worker};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptions, Vec2};
 use egui_phosphor::regular as icon;
-use mpe_core::{Annot, Encryption, LinkTarget, OutlineItem, Pdf, SearchHit, Shape, ShapeLook};
+use mpe_core::{
+    Annot, BookmarkPlace, Encryption, LinkTarget, OutlineItem, Pdf, SearchHit, Shape, ShapeLook,
+};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -108,6 +110,12 @@ pub struct Tab {
     outline: Option<(u64, Vec<OutlineItem>)>,
     /// For each bookmark, whether its children are shown.
     outline_open: Vec<bool>,
+    /// The bookmark last clicked; a new one goes after it.
+    outline_sel: Option<usize>,
+    /// A bookmark being renamed, and its title so far; `outline_focus` until the box
+    /// has been given the keyboard.
+    outline_rename: Option<(usize, String)>,
+    outline_focus: bool,
     /// The annotations, read when the Comments tab is first shown and again after the
     /// document changes: the revision they were read at, and the list.
     comments: Option<(u64, Vec<Annot>)>,
@@ -170,6 +178,9 @@ impl Tab {
             stale: HashSet::new(),
             outline: None,
             outline_open: Vec::new(),
+            outline_sel: None,
+            outline_rename: None,
+            outline_focus: false,
             comments: None,
         })
     }
@@ -652,23 +663,53 @@ impl Tab {
     }
 
     /// The Bookmarks side tab: the outline indented by level, with a caret to show or
-    /// hide an entry's children. Clicking an entry goes to its page.
+    /// hide an entry's children. Clicking an entry goes to its page; double-click or
+    /// right-click to rename, add under it or delete it.
     pub fn show_outline(&mut self, ui: &mut egui::Ui) {
         let rev = self.revision;
         if self.outline.as_ref().is_none_or(|(r, _)| *r != rev) {
             let items = self.pdf.outline();
             self.outline_open = items.iter().map(|i| i.open).collect();
+            if self.outline_sel.is_some_and(|s| s >= items.len()) {
+                self.outline_sel = None;
+            }
+            // Keep the selected bookmark (a new one, say) in view: open the ones above it.
+            if let Some(s) = self.outline_sel {
+                let mut depth = items[s].depth;
+                for k in (0..s).rev() {
+                    if items[k].depth < depth {
+                        depth = items[k].depth;
+                        self.outline_open[k] = true;
+                    }
+                }
+            }
             self.outline = Some((rev, items));
         }
         let Some((_, items)) = &self.outline else {
             return;
         };
+        let add = ui
+            .button((theme::icon(icon::PLUS), "Add bookmark"))
+            .on_hover_text(match self.outline_sel {
+                Some(_) => "Bookmark the current page, after the selected bookmark",
+                None => "Bookmark the current page",
+            })
+            .clicked();
+        let mut place = add.then_some(match self.outline_sel {
+            Some(s) => BookmarkPlace::After(s),
+            None => BookmarkPlace::End,
+        });
         if items.is_empty() {
             ui.weak("This document has no bookmarks.");
-            return;
         }
         let mut jump = None;
         let mut toggle = None;
+        let mut rename = None;
+        let mut renamed = None;
+        let mut delete = None;
+        let mut editing = self.outline_rename.take();
+        let mut focus = std::mem::take(&mut self.outline_focus);
+        let mut sel = self.outline_sel;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -693,26 +734,103 @@ impl Tab {
                         if ui.add_visible(item.has_children, caret).clicked() {
                             toggle = Some(i);
                         }
-                        let row = egui::Button::selectable(false, &item.title).truncate();
+                        if let Some((at, title)) = &mut editing {
+                            if *at == i {
+                                let r = ui.add(
+                                    egui::TextEdit::singleline(title).desired_width(f32::INFINITY),
+                                );
+                                if std::mem::take(&mut focus) {
+                                    r.request_focus();
+                                }
+                                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                    rename = Some(None);
+                                } else if r.lost_focus() {
+                                    let title = title.trim().to_string();
+                                    renamed = Some((i, title, item.title.clone()));
+                                }
+                                return;
+                            }
+                        }
+                        let mut text = egui::RichText::new(&item.title);
+                        if item.page.is_none() {
+                            text = text.weak();
+                        }
+                        let selected = sel == Some(i);
+                        let row = egui::Button::selectable(selected, text).truncate();
                         let tip = match item.page {
                             Some(p) => format!("{}\nPage {}", item.title, self.page_name(p)),
                             None => format!("{}\nGoes outside this document", item.title),
                         };
-                        let r = ui.add_enabled(item.page.is_some(), row);
-                        if r.on_hover_text(tip).clicked() {
+                        let r = ui.add(row).on_hover_text(tip);
+                        if r.clicked() {
+                            sel = Some(i);
                             jump = item.page;
                         }
+                        if r.double_clicked() {
+                            rename = Some(Some((i, item.title.clone())));
+                        }
+                        r.context_menu(|ui| {
+                            let pencil = theme::icon(icon::PENCIL_SIMPLE);
+                            if ui.button((pencil, "Rename")).clicked() {
+                                rename = Some(Some((i, item.title.clone())));
+                            }
+                            let plus = theme::icon(icon::PLUS);
+                            if ui.button((plus, "Add bookmark under this")).clicked() {
+                                place = Some(BookmarkPlace::Under(i));
+                            }
+                            let label = match item.has_children {
+                                true => "Delete, with its children",
+                                false => "Delete",
+                            };
+                            if ui.button((theme::icon(icon::TRASH), label)).clicked() {
+                                delete = Some(i);
+                            }
+                        });
                     });
                     if item.has_children && !open {
                         closed_at = Some(item.depth);
                     }
                 }
             });
+        self.outline_rename = editing;
+        self.outline_focus = focus;
+        self.outline_sel = sel;
         if let Some(i) = toggle {
             self.outline_open[i] = !self.outline_open[i];
         }
         if let Some(p) = jump {
             self.go_to(p);
+        }
+        let ctx = ui.ctx().clone();
+        if let Some(r) = rename {
+            self.outline_rename = r;
+            self.outline_focus = true;
+        }
+        if let Some((i, title, old)) = renamed {
+            self.outline_rename = None;
+            if !title.is_empty() && title != old {
+                self.edit(&ctx, |p| p.rename_bookmark(i, &title));
+            }
+        }
+        if let Some(i) = delete {
+            if self.edit(&ctx, |p| p.remove_bookmark(i)) {
+                self.outline_sel = None;
+                self.notice = Some("Deleted the bookmark".into());
+            }
+        }
+        if let Some(place) = place {
+            let page = self.current;
+            let title = format!("Page {}", self.page_name(page));
+            let mut added = None;
+            let ok = self.edit(&ctx, |p| {
+                added = Some(p.add_bookmark(&title, page, place)?);
+                Ok(())
+            });
+            if let Some(i) = added.filter(|_| ok) {
+                self.outline_sel = Some(i);
+                self.outline_rename = Some((i, title));
+                self.outline_focus = true;
+            }
         }
     }
 

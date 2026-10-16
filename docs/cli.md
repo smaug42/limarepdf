@@ -91,6 +91,17 @@ carry on the numbering of the page before them.
 | `mpe labels set in.pdf -o out.pdf --from 5 --style decimal --start 1` | Number from page 5 on, up to the next range after it. Styles: `decimal`, `lower-roman`, `upper-roman`, `lower-letters`, `upper-letters`, `none` (the prefix alone); `--prefix "A-"` puts text before each number. Pages before the first range keep plain numbers |
 | `mpe labels remove in.pdf -o out.pdf` | Remove all page labels |
 
+### Bookmarks
+
+Bookmarks are numbered from 1 in the order `list` shows them, each followed by the bookmarks inside it.
+
+| Command | What it does |
+| --- | --- |
+| `mpe bookmarks list in.pdf` | List the bookmarks, numbered and indented by level, with the page each goes to (`-` for another file or a web address) |
+| `mpe bookmarks add in.pdf -o out.pdf --title "Results" --page 12` | Add a bookmark to page 12, last at the top level. `--after N` puts it just after bookmark N, at its level; `--under N` puts it last inside bookmark N |
+| `mpe bookmarks rename in.pdf -o out.pdf 3 --title "Method"` | Rename bookmark 3 |
+| `mpe bookmarks remove in.pdf -o out.pdf 3` | Remove bookmark 3 and the bookmarks inside it |
+
 ## Images and scans
 
 | Command | What it does |
