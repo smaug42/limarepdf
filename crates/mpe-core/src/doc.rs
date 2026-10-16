@@ -311,7 +311,10 @@ impl Pdf {
         Ok(self.doc.catalog()?.get(b"Pages")?.as_reference()?)
     }
 
+    /// Every change to which pages there are, or their order, comes through here. Page labels move with their
+    /// pages.
     fn set_page_order(&mut self, ids: &[ObjectId]) -> Result<()> {
+        let labels = self.label_specs();
         let root = self.pages_root()?;
         {
             let d = self.doc.get_dictionary_mut(root)?;
@@ -330,7 +333,10 @@ impl Pdf {
                 .get_dictionary_mut(id)?
                 .set("Parent", Object::Reference(root));
         }
-        Ok(())
+        match labels {
+            Some(specs) => self.relabel(ids, &specs),
+            None => Ok(()),
+        }
     }
 
     fn check_indices(&self, idx: &[usize]) -> Result<()> {

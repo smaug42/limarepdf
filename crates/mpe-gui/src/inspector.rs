@@ -14,7 +14,7 @@ use crate::tab::Tab;
 use crate::theme;
 use eframe::egui::{self, Ui};
 use mpe_core::render::{ImageFormat, MAX_DPI};
-use mpe_core::{Cipher, Encryption, Info, Restrictions, ScanMode, ScanOptions};
+use mpe_core::{Cipher, Encryption, Info, LabelStyle, Restrictions, ScanMode, ScanOptions};
 use std::collections::BTreeSet;
 
 /// A section of the panel, for opening it from a menu command.
@@ -55,6 +55,9 @@ pub enum Apply {
     Split,
     /// Insert a blank page after this page (0-based), at the form's size.
     Blank(usize),
+    /// Number the pages from this page (0-based) on, as the form says.
+    Label(usize),
+    RemoveLabels,
 }
 
 pub struct Wm {
@@ -191,6 +194,23 @@ impl Export {
     }
 }
 
+/// Page numbering to set from the first selected page.
+pub struct Label {
+    /// `None`: the prefix alone.
+    pub style: Option<LabelStyle>,
+    pub prefix: String,
+    pub start: u32,
+}
+impl Default for Label {
+    fn default() -> Self {
+        Self {
+            style: Some(LabelStyle::Decimal),
+            prefix: String::new(),
+            start: 1,
+        }
+    }
+}
+
 /// The panel's form state, kept per tab.
 #[derive(Default)]
 pub struct Forms {
@@ -210,6 +230,7 @@ pub struct Forms {
     pub split_level: usize,
     /// Size of a new blank page, in points.
     pub blank: (f32, f32),
+    pub label: Label,
     /// Section to open and scroll to on the next frame.
     pub reveal: Option<Section>,
     /// Document revision the properties were read at.
@@ -322,6 +343,13 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
             section(ui, reveal, None, "Insert blank page", |ui| {
                 if blank_ui(ui, &mut f.blank, last) {
                     apply = Some(Apply::Blank(last));
+                }
+            });
+            let first = pages.first().copied().unwrap_or(0);
+            let labelled = t.labels.is_some();
+            section(ui, reveal, None, "Page labels", |ui| {
+                if let Some(a) = label_ui(ui, &mut f.label, first, labelled) {
+                    apply = Some(a);
                 }
             });
         }
@@ -526,6 +554,46 @@ fn blank_ui(ui: &mut Ui, size: &mut (f32, f32), after: usize) -> bool {
     });
     ui.button(format!("Insert after page {}", after + 1))
         .clicked()
+}
+
+/// The numbering to set from page `first` on, until the next numbering the document has after it.
+fn label_ui(ui: &mut Ui, s: &mut Label, first: usize, labelled: bool) -> Option<Apply> {
+    let name = |st: Option<LabelStyle>| st.map_or("Prefix only", LabelStyle::name);
+    ui.weak("The page numbers viewers show, such as i, ii, 1, 2. Nothing is printed on the pages.");
+    ui.horizontal(|ui| {
+        ui.label("Style");
+        egui::ComboBox::from_id_salt("label-style")
+            .selected_text(name(s.style))
+            .show_ui(ui, |ui| {
+                for st in LabelStyle::ALL.map(Some).into_iter().chain([None]) {
+                    ui.selectable_value(&mut s.style, st, name(st));
+                }
+            });
+    });
+    ui.horizontal(|ui| {
+        ui.label("Prefix");
+        ui.add(egui::TextEdit::singleline(&mut s.prefix).desired_width(80.0));
+        ui.label("Start at");
+        ui.add_enabled(
+            s.style.is_some(),
+            egui::DragValue::new(&mut s.start).range(1..=99_999),
+        );
+    });
+    let preview = match s.style {
+        Some(st) => format!("{}{}", s.prefix, st.format(s.start)),
+        None => s.prefix.clone(),
+    };
+    ui.weak(format!("Page {} will be labelled “{preview}”.", first + 1));
+    if ui
+        .button(format!("Number from page {}", first + 1))
+        .clicked()
+    {
+        return Some(Apply::Label(first));
+    }
+    if labelled && ui.button("Remove all page labels").clicked() {
+        return Some(Apply::RemoveLabels);
+    }
+    None
 }
 
 /// Margins to trim, and the buttons to crop or show the whole page. Removing the crop

@@ -10,8 +10,8 @@ macro_rules! out {
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use mpe_core::{
     format_page_range, parse_page_range, part_file_name, print, render, Annot, AnnotKind, Bates,
-    Cipher, Encryption, Field, FieldKind, FieldValue, HeaderFooter, ImageImport, Info, Ocr,
-    OcrResult, Pdf, Restrictions, ScanMode, ScanOptions, ScanResult, Watermark,
+    Cipher, Encryption, Field, FieldKind, FieldValue, HeaderFooter, ImageImport, Info, LabelRange,
+    LabelStyle, Ocr, OcrResult, Pdf, Restrictions, ScanMode, ScanOptions, ScanResult, Watermark,
 };
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
@@ -297,6 +297,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: AnnotCmd,
     },
+    /// Work with page labels: the page numbers a document shows, such as i, ii, 1, 2
+    Labels {
+        #[command(subcommand)]
+        cmd: LabelsCmd,
+    },
     /// List the printers; the default is marked
     Printers,
     /// Print (CUPS on Linux and macOS, the print spooler on Windows)
@@ -343,6 +348,54 @@ enum Cmd {
 enum FormatArg {
     Png,
     Jpeg,
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum LabelStyleArg {
+    /// 1, 2, 3
+    Decimal,
+    /// i, ii, iii
+    LowerRoman,
+    /// I, II, III
+    UpperRoman,
+    /// a, b, c
+    LowerLetters,
+    /// A, B, C
+    UpperLetters,
+    /// The prefix alone
+    None,
+}
+
+#[derive(Subcommand)]
+enum LabelsCmd {
+    /// List the label ranges: the pages each covers and their first and last labels
+    List {
+        input: PathBuf,
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Number the pages from page N on, up to the next range that starts after it. Pages before the first
+    /// range keep plain numbers
+    Set {
+        #[command(flatten)]
+        io: Io,
+        /// The first page to number (1-based)
+        #[arg(long, default_value_t = 1)]
+        from: usize,
+        #[arg(long, value_enum, default_value_t = LabelStyleArg::Decimal)]
+        style: LabelStyleArg,
+        /// Text before each number, such as "A-"
+        #[arg(long, default_value = "")]
+        prefix: String,
+        /// The number of the first page
+        #[arg(long, default_value_t = 1)]
+        start: u32,
+    },
+    /// Remove all page labels
+    Remove {
+        #[command(flatten)]
+        io: Io,
+    },
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -1242,6 +1295,58 @@ fn main() -> Result<()> {
                     io.output.display()
                 );
             }
+        },
+        Cmd::Labels { cmd } => match cmd {
+            LabelsCmd::List { input, password } => {
+                let p = open(&input, &password)?;
+                let (ranges, labels) = (p.label_ranges(), p.page_labels());
+                let Some(labels) = labels else {
+                    out!("no page labels");
+                    return Ok(());
+                };
+                // Pages before the first range are numbered plainly.
+                let mut starts: Vec<usize> = ranges.iter().map(|r| r.page).collect();
+                if starts.first() != Some(&0) {
+                    starts.insert(0, 0);
+                }
+                for (k, &s) in starts.iter().enumerate() {
+                    let e = starts.get(k + 1).map_or(labels.len(), |&n| n) - 1;
+                    let pages = format_page_range(&(s..=e).collect::<Vec<_>>());
+                    match s == e {
+                        true => out!("{pages:<12} {}", labels[s]),
+                        false => out!("{pages:<12} {} to {}", labels[s], labels[e]),
+                    }
+                }
+            }
+            LabelsCmd::Set {
+                io,
+                from,
+                style,
+                prefix,
+                start,
+            } => run_edit(&io, |p| {
+                if from == 0 || from > p.page_count() {
+                    bail!(
+                        "page {from} does not exist (document has {})",
+                        p.page_count()
+                    );
+                }
+                let style = match style {
+                    LabelStyleArg::Decimal => Some(LabelStyle::Decimal),
+                    LabelStyleArg::LowerRoman => Some(LabelStyle::LowerRoman),
+                    LabelStyleArg::UpperRoman => Some(LabelStyle::UpperRoman),
+                    LabelStyleArg::LowerLetters => Some(LabelStyle::LowerLetters),
+                    LabelStyleArg::UpperLetters => Some(LabelStyle::UpperLetters),
+                    LabelStyleArg::None => None,
+                };
+                p.set_label_range(LabelRange {
+                    page: from - 1,
+                    style,
+                    prefix,
+                    first: start.max(1),
+                })
+            })?,
+            LabelsCmd::Remove { io } => run_edit(&io, |p| p.set_label_ranges(&[]))?,
         },
         Cmd::Annot { cmd } => match cmd {
             AnnotCmd::List {

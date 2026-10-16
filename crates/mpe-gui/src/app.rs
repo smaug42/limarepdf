@@ -995,6 +995,20 @@ impl App {
                 let size = self.tabs[active].forms.blank;
                 self.insert_blank(ctx, after, size);
             }
+            Apply::Label(page) => {
+                let t = &mut self.tabs[active];
+                let l = &t.forms.label;
+                let range = mpe_core::LabelRange {
+                    page,
+                    style: l.style,
+                    prefix: l.prefix.clone(),
+                    first: l.start.max(1),
+                };
+                t.edit(ctx, |p| p.set_label_range(range));
+            }
+            Apply::RemoveLabels => {
+                self.tabs[active].edit(ctx, |p| p.set_label_ranges(&[]));
+            }
             Apply::Props => {
                 let t = &mut self.tabs[active];
                 let info = t.forms.meta.clone();
@@ -1944,7 +1958,12 @@ impl eframe::App for App {
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
                 if let Some(t) = self.tabs.get(self.active) {
-                    ui.label(format!("Page {} of {}", t.current + 1, t.page_count()));
+                    let (n, name) = (t.current + 1, t.page_name(t.current));
+                    ui.label(if name == n.to_string() {
+                        format!("Page {n} of {}", t.page_count())
+                    } else {
+                        format!("Page {name} ({n} of {})", t.page_count())
+                    });
                     ui.separator();
                     ui.label(format!("{:.0}%", t.zoom * 100.0));
                     if t.encryption.is_some() {

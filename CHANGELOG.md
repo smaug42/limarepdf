@@ -9,6 +9,9 @@
   page.
 - Split at bookmarks, down to a chosen level, with each file named after its bookmark: in the app's Split into
   files section and as `mpe split --bookmarks [LEVEL]`. Splitting in the app runs in the background.
+- Page labels (page numbering such as i, ii, 1, 2 or A-1): shown in the status bar, thumbnails and bookmark tips, set
+  from the selected pages in the inspector, and listed, set and removed with `mpe labels`. Labels stay with their
+  pages when pages are deleted, inserted, moved, extracted or appended.
 
 ### Changed
 

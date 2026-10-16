@@ -12,7 +12,6 @@ Small or medium additions that build on what MPE already has:
 
 - **Extract images** (S–M): save a document's embedded images as files.
 - **N-up and booklet layouts** (M): several pages on one sheet, or pages ordered for folding.
-- **Page labels** (S–M): show and set page numbering like i, ii, 1, 2.
 - **Fill-and-sign with a drawn or typed signature** (M): a natural step before digital signatures.
 - **Page colour modes** (S–M): dark pages, inverted or high contrast, to match the app's dark mode.
 - **Shell completions** for `mpe` (S): needs the `clap_complete` crate.
@@ -29,7 +28,6 @@ Small or medium additions that build on what MPE already has:
 ## Structure and metadata
 
 - Bookmarks: add, edit, sort and delete; import and export as JSON; generate from headings or a table of contents (M)
-- Page labels and numbering ranges (S–M)
 - XMP metadata editing, keywords and custom properties (M)
 - Viewer preferences: the page and layout a document opens with (S)
 - Attachments (add, list, extract) and portfolios (M)

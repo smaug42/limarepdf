@@ -59,6 +59,8 @@ pub struct Tab {
     /// After a zoom change: the place to put back at the top of the view.
     rezoom: Option<(usize, f32)>,
     pub current: usize,
+    /// Each page's label, when the document has page labels.
+    pub labels: Option<Vec<String>>,
     anchor: usize,
     goto: Option<usize>,
     undo: Vec<Step>,
@@ -112,8 +114,10 @@ impl Tab {
         pdf.refresh_appearances();
         let bytes = pdf.app_snapshot().map_err(|e| e.to_string())?;
         let sizes = sizes_of(&pdf);
+        let labels = pdf.page_labels();
         let signed = pdf.signature_count() > 0;
         Ok(Self {
+            labels,
             banners,
             id,
             pdf,
@@ -181,6 +185,14 @@ impl Tab {
 
     pub fn page_count(&self) -> usize {
         self.sizes.len()
+    }
+
+    /// What to call page `p` (0-based): its label, or its number.
+    pub fn page_name(&self, p: usize) -> String {
+        self.labels
+            .as_ref()
+            .and_then(|l| l.get(p).cloned())
+            .unwrap_or_else(|| (p + 1).to_string())
     }
 
     pub fn can_undo(&self) -> bool {
@@ -551,6 +563,7 @@ impl Tab {
             Ok(bytes) => {
                 self.worker = Worker::spawn(ctx.clone(), bytes);
                 self.sizes = sizes_of(&self.pdf);
+                self.labels = self.pdf.page_labels();
                 self.pages.clear();
                 self.thumbs.clear();
                 self.pending.clear();
@@ -613,7 +626,7 @@ impl Tab {
                         }
                         let row = egui::Button::selectable(false, &item.title).truncate();
                         let tip = match item.page {
-                            Some(p) => format!("{}\nPage {}", item.title, p + 1),
+                            Some(p) => format!("{}\nPage {}", item.title, self.page_name(p)),
                             None => format!("{}\nGoes outside this document", item.title),
                         };
                         let r = ui.add_enabled(item.page.is_some(), row);
@@ -1200,7 +1213,7 @@ impl Tab {
                     ui.painter().text(
                         Pos2::new(rect.center().x, rect.max.y - 9.0),
                         egui::Align2::CENTER_CENTER,
-                        (i + 1).to_string(),
+                        self.page_name(i),
                         egui::FontId::proportional(12.0),
                         ui.visuals().text_color(),
                     );

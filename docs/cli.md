@@ -79,6 +79,18 @@ sound and video, and redaction marks are kept. Annotations stored without a draw
 | `mpe split big.pdf --every 50 --out-dir parts` | Split into files of N pages: `parts/big-001.pdf`, … |
 | `mpe split big.pdf --bookmarks --out-dir parts` | Split where the top-level bookmarks go: `parts/big-002 Introduction.pdf`, … Pages before the first bookmark go in a file of their own. `--bookmarks 2` also splits at the bookmarks one level down |
 
+### Page labels
+
+Page labels are the page numbers viewers show, such as i, ii, 1, 2 or A-1. They don't change what is printed on
+the pages. Labels stay with their pages when pages are deleted, moved or extracted; inserted and appended pages
+carry on the numbering of the page before them.
+
+| Command | What it does |
+| --- | --- |
+| `mpe labels list in.pdf` | List the ranges: their pages and first and last labels |
+| `mpe labels set in.pdf -o out.pdf --from 5 --style decimal --start 1` | Number from page 5 on, up to the next range after it. Styles: `decimal`, `lower-roman`, `upper-roman`, `lower-letters`, `upper-letters`, `none` (the prefix alone); `--prefix "A-"` puts text before each number. Pages before the first range keep plain numbers |
+| `mpe labels remove in.pdf -o out.pdf` | Remove all page labels |
+
 ## Images and scans
 
 | Command | What it does |

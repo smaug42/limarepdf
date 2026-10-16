@@ -195,10 +195,16 @@ What you select decides what the inspector, the right-click menu and the floatin
 | Selected | Inspector |
 | --- | --- |
 | Nothing | The document: properties, password security, crop, watermark, headers/footers/Bates, OCR, optimise scanned pages, export pages as images, split into files, and buttons for export text, print and append PDFs |
-| Pages (click thumbnails; Shift for a range, Ctrl for one more) | Rotate, delete, extract to a new tab, insert images or a blank page after them, and the crop, watermark, headers/footers, OCR and optimise tools with the pages filled in |
+| Pages (click thumbnails; Shift for a range, Ctrl for one more) | Rotate, delete, extract to a new tab, insert images or a blank page after them, page labels from the first selected page, and the crop, watermark, headers/footers, OCR and optimise tools with the pages filled in |
 | An object, words, or a tool that adds content | That object's or tool's options |
 
 Menu commands for document and page settings open the matching section of the inspector.
+
+Page labels are the page numbers viewers show, such as i, ii, 1, 2 or A-1; they don't change what is printed on the
+pages. When a document has them, the status bar shows the label with the page's place, such as "Page i (3 of 477)",
+and the thumbnails show the labels. To set them, select the first page to number, open Page labels in the
+inspector, and pick a style, an optional prefix and the number to start at; the numbering runs to the next labelled
+range. Labels stay with their pages when pages are deleted or moved.
 
 Split into files makes files of a set number of pages, or starts a file at each bookmark down to the chosen level
 (1 is the top level only). Files are named after their bookmark, such as `book-002 Introduction.pdf`, and the pages
