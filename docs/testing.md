@@ -22,7 +22,7 @@ Run them with `cargo test --workspace`.
 | `crates/mpe-core/tests/ocr.rs` | OCR text layers, their placement, search and correction |
 | `crates/mpe-core/tests/export.rs` | Exporting pages as images and text |
 | `crates/mpe-core/tests/print.rs` | What is sent to the printer, with a stand-in for `lp` |
-| `crates/mpe-core/tests/outline.rs` | Reading bookmarks: nesting, every kind of destination, broken and looping outlines |
+| `crates/mpe-core/tests/outline.rs` | Bookmarks: reading nesting, every kind of destination, broken and looping outlines; adding, renaming and removing them, with the open/closed counts kept right |
 | `crates/mpe-core/tests/links.rs` | Reading links: every kind of target, links that can't be followed, placement on turned pages |
 | `crates/mpe-core/tests/annots.rs` | Annotations: reading them, drawing each type that has no drawing (on screen only), removing them with replies and popups, flattening all or some pages |
 | `crates/mpe-core/tests/forms.rs` | Reading form fields: every kind, inherited values, broken field trees, turned pages, XFA-only and hybrid forms |
@@ -41,8 +41,9 @@ unit-tested, and the operations behind it are covered by the core tests and the 
 (top bar, inspector, command palette, right-click menus, floating toolbar, thumbnail dragging, collapsing inspector)
 has been used by hand on Linux. Later additions (recent files, document notices, fit width, the theme button, crop)
 were checked by screenshot under a virtual X server; not every one has been clicked through by hand. Of the newest:
-filling in forms has been used by hand on one form; the Bookmarks tab and links were checked through their core
-tests and real PDFs, and the XFA notice by screenshot, but none of these was clicked through. Filled forms were also opened in poppler and
+filling in forms has been used by hand on one form; the Bookmarks tab (including adding, renaming and deleting
+bookmarks) and links were checked through their core tests, `mpe bookmarks` and real PDFs, and the XFA notice by
+screenshot, but none of these was clicked through. Filled forms were also opened in poppler and
 Ghostscript, including encrypted ones; not yet in Adobe Reader.
 
 Each feature page says what was not tested, under "How this was tested".
