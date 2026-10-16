@@ -84,7 +84,9 @@ available.
   signed; the command line doesn't.
 - Files the renderer cannot read show "Rendering…" on their pages; editing may still work.
 - A malformed file that makes MPE fail while opening, editing or saving gets an error message, and a failed edit
-  leaves the document as it was. A failure elsewhere, such as searching or listing comments, can still close the app.
+  leaves the document as it was. A failure while showing the document (pages, thumbnails, search, bookmarks,
+  comments, the inspector) turns that tab into an error page with Save a copy and Close; other tabs carry on. A
+  failure in a menu command outside those can still close the app.
 
 ## Planned and proposed
 

@@ -1675,6 +1675,25 @@ fn file_name(path: &Path) -> String {
     }
 }
 
+/// A tab whose document could not be shown: what happened, and ways out that don't
+/// need the pages drawn.
+fn broken_state(ui: &mut egui::Ui, why: &str, acts: &mut Vec<Act>) {
+    ui.vertical_centered(|ui| {
+        ui.add_space(ui.available_height() / 3.0);
+        ui.heading("This document can't be shown");
+        ui.add_space(8.0);
+        ui.label(why);
+        ui.weak("Your other tabs are not affected. Changes made here can still be saved.");
+        ui.add_space(16.0);
+        if ui.button("Save a copy…").clicked() {
+            acts.push(Act::SaveAs);
+        }
+        if ui.button("Close this tab").clicked() {
+            acts.push(Act::CloseTab);
+        }
+    });
+}
+
 /// The window with no document: a card to open a PDF or start from images. The card
 /// is a drop target and is clickable as a whole; it lights up while files are dragged
 /// over the window.
@@ -2017,7 +2036,7 @@ impl eframe::App for App {
                         ui.selectable_value(&mut t.side, Side::Comments, "Comments");
                     });
                     ui.separator();
-                    match t.side {
+                    t.guarded(|t| match t.side {
                         Side::Pages => t.show_thumbs(ui, &c),
                         Side::Bookmarks => t.show_outline(ui),
                         Side::Comments => t.show_comments(ui),
@@ -2051,7 +2070,7 @@ impl eframe::App for App {
                                 t.go_to(p);
                             }
                         }
-                    }
+                    });
                 });
         }
 
@@ -2096,11 +2115,13 @@ impl eframe::App for App {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        if t.ed.owns_panel() {
-                            t.ed.inspector(ui);
-                        } else {
-                            panel_apply = inspector::show(ui, t, &c);
-                        }
+                        t.guarded(|t| {
+                            if t.ed.owns_panel() {
+                                t.ed.inspector(ui);
+                            } else {
+                                panel_apply = inspector::show(ui, t, &c);
+                            }
+                        })
                     });
             });
             if toggle {
@@ -2125,7 +2146,10 @@ impl eframe::App for App {
         egui::CentralPanel::default().frame(canvas).show(ui, |ui| {
             if let Some(t) = self.tabs.get_mut(self.active) {
                 t.ed.author = author;
-                t.show_pages(ui, &c);
+                t.guarded(|t| t.show_pages(ui, &c));
+                if let Some(why) = &t.broken {
+                    broken_state(ui, why, &mut acts);
+                }
             } else {
                 empty_state(ui, &recent, &mut acts);
             }

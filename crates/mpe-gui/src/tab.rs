@@ -84,6 +84,9 @@ pub struct Tab {
     /// Scroll to this height on the `goto` page (points from its top), with `goto`.
     goto_y: Option<f32>,
     pub error: Option<String>,
+    /// Showing the document failed with an internal error (see [`Tab::guarded`]); the tab
+    /// shows this message instead of the pages.
+    pub broken: Option<String>,
     pub ed: Editor,
     /// Pages whose texture is out of date but still shown until the new render arrives.
     stale: HashSet<usize>,
@@ -157,6 +160,7 @@ impl Tab {
             matches: HashMap::new(),
             goto_y: None,
             error: None,
+            broken: None,
             ed: Editor::default(),
             requested: Vec::new(),
             forms: Forms::default(),
@@ -227,6 +231,20 @@ impl Tab {
     }
 
     // ------------------------------------------------------------ editing
+
+    /// Draw part of the tab, unless it is broken. A panic while drawing (reading a damaged
+    /// file) marks the tab broken instead of closing the app with every other tab.
+    pub fn guarded(&mut self, f: impl FnOnce(&mut Self)) {
+        if self.broken.is_some() {
+            return;
+        }
+        if let Err(e) = crate::guard(|| {
+            f(self);
+            Ok(())
+        }) {
+            self.broken = Some(e.to_string());
+        }
+    }
 
     /// Run an edit with undo support. On failure the document is left unchanged, and
     /// false is returned.

@@ -36,7 +36,9 @@
 - Headers, footers, watermarks and OCR text no longer break the page's own text and images on pages that take their
   resources from the page tree.
 - A malformed file that makes MPE fail while opening, editing or saving shows an error instead of closing the app.
-  A failed edit leaves the document as it was.
+  A failed edit leaves the document as it was. A failure while showing a document (pages, thumbnails, search,
+  bookmarks, comments, the inspector) puts an error page in that tab, with Save a copy and Close, instead of
+  closing the app with all its tabs.
 - Release builds check integer arithmetic for overflow, so a malformed file stops with an error instead of producing
   wrong results.
 
