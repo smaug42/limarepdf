@@ -1,6 +1,10 @@
 # Changelog
 
-## [Unreleased]
+## [0.6.0] - 2026-10-15
+
+Page tools and sturdier handling of damaged files: remove blank pages, split at bookmarks, page labels and picture
+watermarks; search that finds hyphenated words; and a malformed file now shows an error instead of closing the app.
+The Windows installer shows its steps.
 
 ### Added
 
