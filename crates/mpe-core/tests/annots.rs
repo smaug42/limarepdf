@@ -864,7 +864,7 @@ fn a_typed_signature_is_drawn_as_shapes_labelled_and_survives_flattening() {
     let stamp = Stamp::Signature {
         art: SignArt::Typed {
             text: "Sam Smith",
-            style: SignStyle::Casual,
+            style: SignStyle::Caveat,
         },
         role: SignRole::Signature,
         color: InkColor::Blue,
@@ -983,7 +983,7 @@ fn a_signature_reads_upright_on_a_turned_page() {
     let stamp = Stamp::Signature {
         art: SignArt::Typed {
             text: "Sam",
-            style: SignStyle::Formal,
+            style: SignStyle::Zeyada,
         },
         role: SignRole::Signature,
         color: InkColor::Black,

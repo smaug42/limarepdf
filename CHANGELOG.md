@@ -26,7 +26,7 @@
   yet applied asks first. Also `mpe redact` (`--text`, `--area`, `--mark-only`, `--apply`).
 - Fill and sign: the Sign button in the top bar puts your signature, initials, the date (in three styles), your
   name, text or a tick, cross or dot on the page, in black or blue. Signatures and initials are drawn on a pad,
-  typed in one of two handwriting styles (Dancing Script and Great Vibes, bundled), or taken from a photo or scan
+  typed in one of four handwriting styles (Caveat, Cedarville Cursive, Homemade Apple and Zeyada, bundled), or taken from a photo or scan
   with the paper made transparent; up to five of each are remembered. Click to put one down or drag to size it;
   clicking an empty signature field signs in it. Items stay movable until Finish signing (in a notice above the
   pages, the Sign pane and the Document menu) draws them into the pages. Typed signatures from the command line with

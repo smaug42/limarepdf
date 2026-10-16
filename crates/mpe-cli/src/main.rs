@@ -271,7 +271,7 @@ enum Cmd {
         /// Sign with this name, in handwriting (not a digital signature)
         #[arg(long, conflicts_with = "image")]
         signature: Option<String>,
-        /// The handwriting: 1 casual, 2 formal
+        /// The handwriting: 1 Caveat, 2 Cedarville Cursive, 3 Homemade Apple, 4 Zeyada
         #[arg(long, requires = "signature", default_value_t = 1)]
         style: u8,
         /// The colour of your own wording: green, red or blue (default red); of a
@@ -1573,7 +1573,7 @@ fn main() -> Result<()> {
             if color.is_some() && text.is_none() && signature.is_none() {
                 bail!("--color is for --text stamps and signatures only");
             }
-            let style = SignStyle::from_number(style).context("--style is 1 or 2")?;
+            let style = SignStyle::from_number(style).context("--style is 1, 2, 3 or 4")?;
             let image = match image {
                 Some(path) => Some(
                     std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?,

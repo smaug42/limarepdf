@@ -17,9 +17,12 @@ use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::prelude::{FontRef, LocationRef, MetadataProvider, Size};
 use std::collections::HashSet;
 
-/// The handwriting fonts, under the SIL Open Font Licence (see docs/licence.md).
-static CASUAL: &[u8] = include_bytes!("../assets/fonts/DancingScript.ttf");
-static FORMAL: &[u8] = include_bytes!("../assets/fonts/GreatVibes-Regular.ttf");
+/// The handwriting fonts, under the SIL Open Font Licence or Apache 2.0 (see
+/// docs/licence.md).
+static CAVEAT: &[u8] = include_bytes!("../assets/fonts/Caveat.ttf");
+static CEDARVILLE: &[u8] = include_bytes!("../assets/fonts/Cedarville-Cursive.ttf");
+static HOMEMADE_APPLE: &[u8] = include_bytes!("../assets/fonts/HomemadeApple-Regular.ttf");
+static ZEYADA: &[u8] = include_bytes!("../assets/fonts/Zeyada.ttf");
 
 /// The size typed signatures are drawn at before they are fitted, in points.
 const TYPE_SIZE: f32 = 40.0;
@@ -38,30 +41,43 @@ const MARK: f32 = 12.0;
 const MAX_POINTS: usize = 20_000;
 const MAX_STROKES: usize = 500;
 
-/// A handwriting style for typed signatures.
+/// A handwriting style for typed signatures, named after its font.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SignStyle {
-    /// Dancing Script: casual, joined-up.
-    Casual,
-    /// Great Vibes: a formal script.
-    Formal,
+    /// Caveat: everyday handwriting, mostly unjoined.
+    Caveat,
+    /// Cedarville Cursive: joined school cursive.
+    Cedarville,
+    /// Homemade Apple: joined, as with a felt pen.
+    HomemadeApple,
+    /// Zeyada: a quick scrawl.
+    Zeyada,
 }
 
 impl SignStyle {
-    pub const ALL: [SignStyle; 2] = [SignStyle::Casual, SignStyle::Formal];
+    pub const ALL: [SignStyle; 4] = [
+        SignStyle::Caveat,
+        SignStyle::Cedarville,
+        SignStyle::HomemadeApple,
+        SignStyle::Zeyada,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
-            SignStyle::Casual => "Casual",
-            SignStyle::Formal => "Formal",
+            SignStyle::Caveat => "Caveat",
+            SignStyle::Cedarville => "Cedarville Cursive",
+            SignStyle::HomemadeApple => "Homemade Apple",
+            SignStyle::Zeyada => "Zeyada",
         }
     }
 
-    /// Its number, 1 or 2, as the command line and the settings file give it.
+    /// Its number, 1 to 4, as the command line and the settings file give it.
     pub fn number(self) -> u8 {
         match self {
-            SignStyle::Casual => 1,
-            SignStyle::Formal => 2,
+            SignStyle::Caveat => 1,
+            SignStyle::Cedarville => 2,
+            SignStyle::HomemadeApple => 3,
+            SignStyle::Zeyada => 4,
         }
     }
 
@@ -71,8 +87,10 @@ impl SignStyle {
 
     fn font(self) -> &'static [u8] {
         match self {
-            SignStyle::Casual => CASUAL,
-            SignStyle::Formal => FORMAL,
+            SignStyle::Caveat => CAVEAT,
+            SignStyle::Cedarville => CEDARVILLE,
+            SignStyle::HomemadeApple => HOMEMADE_APPLE,
+            SignStyle::Zeyada => ZEYADA,
         }
     }
 }
@@ -212,7 +230,7 @@ pub fn typed_signature(text: &str, style: SignStyle) -> Result<String> {
     if !bad.is_empty() {
         bail!(
             "the {} handwriting can't show {bad:?}; draw your signature or use a picture instead",
-            style.label().to_lowercase()
+            style.label()
         );
     }
     Ok(text)
@@ -781,7 +799,7 @@ mod tests {
     fn typed_signatures_fit_the_signature_box() {
         let art = SignArt::Typed {
             text: "Jane Doe",
-            style: SignStyle::Casual,
+            style: SignStyle::Caveat,
         };
         let a = signature_art(&art, SignRole::Signature, InkColor::Black, false).unwrap();
         assert!(a.w <= 150.01 && a.h <= 50.01, "{} x {}", a.w, a.h);
@@ -851,6 +869,7 @@ mod tests {
         assert_eq!(sign_label("Approved"), None);
         assert_eq!(Mark::from_name("TICK"), Some(Mark::Tick));
         assert_eq!(InkColor::from_name("Blue"), Some(InkColor::Blue));
-        assert_eq!(SignStyle::from_number(2), Some(SignStyle::Formal));
+        assert_eq!(SignStyle::from_number(3), Some(SignStyle::HomemadeApple));
+        assert_eq!(SignStyle::from_number(5), None);
     }
 }

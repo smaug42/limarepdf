@@ -49,7 +49,7 @@ Opening view section were not clicked through;
 the stamp tool (including your own wording) was checked through its core tests and `mpe stamp` renders (including
 turned pages), not clicked through;
 fill and sign was checked through its core tests (including empty signature fields), unit tests of the saved
-signatures file, `mpe stamp --signature` renders in both handwriting styles, and screenshots of the Sign pane, the
+signatures file, `mpe stamp --signature` renders in all four handwriting styles, and screenshots of the Sign pane, the
 notice and the Create signature window (Draw and Type); drawing on the pad, placing, signature fields, Finish
 signing and the Picture tab were not clicked through;
 redaction was checked through its core tests and `mpe redact` on real and scanned PDFs (renders checked), and its

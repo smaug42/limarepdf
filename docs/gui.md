@@ -252,15 +252,15 @@ ways to make one:
 
 - **Draw:** sign on the white pad with the mouse, touchpad or a pen; Clear starts again. The strokes are smoothed
   into curves and stay sharp at any zoom.
-- **Type:** type your name (it starts as your name for comments) and pick one of two handwriting styles, Casual or
-  Formal, shown as they will look. Western European characters only; for other scripts, draw or use a picture.
+- **Type:** type your name (it starts as your name for comments) and pick one of four handwriting styles (Caveat,
+  Cedarville Cursive, Homemade Apple and Zeyada), shown as they will look. Western European characters only; for other scripts, draw or use a picture.
 - **Picture:** choose a photo or scan of your signature on paper (PNG, JPEG or TIFF). "Make the paper transparent"
   (on by default) keeps only the ink and cuts off the empty margins, so the signature sits on the page like ink.
 
-Initials are made the same way, with New… beside Initials; typing starts with your name's initials. "Remember it"
-(on by default) keeps the signature for next time: up to five signatures and five sets of initials are kept, the
-newest first, and right-click one to take it off the list. Unticked, it is kept until MPE closes. Remembered
-signatures are stored unencrypted in MPE's settings folder (`signatures.txt`, and pictures copied into its
+Initials are made the same way, with New… beside Initials; typing starts with your name's initials. Each new one
+goes first in its list in the pane, up to five signatures and five sets of initials; right-click one to take it off
+the list. "Save for next time" (on by default) keeps it there when MPE starts again. Unticked, it is still in the
+list to use until MPE closes, marked "until MPE closes", and is then gone. Saved signatures are stored unencrypted in MPE's settings folder (`signatures.txt`, and pictures copied into its
 `signatures` folder), on this computer only; taking a picture off the list deletes its copy.
 
 **Putting things down:** pick an item in the pane, then click on the page to put it down at its usual size, centred

@@ -375,7 +375,7 @@ impl Create {
             strokes: Vec::new(),
             stroke: None,
             text,
-            style: SignStyle::Casual,
+            style: SignStyle::Caveat,
             picture: None,
             clear_paper: true,
             keep: true,
@@ -421,10 +421,11 @@ impl Create {
                     Way::Picture => self.picture(ui, previews, color),
                 }
                 ui.add_space(6.0);
-                ui.checkbox(&mut self.keep, "Remember it").on_hover_text(
-                    "Keep it in MPE's settings folder on this computer for next time. \
-                         Untick to use it until MPE closes only.",
-                );
+                ui.checkbox(&mut self.keep, "Save for next time")
+                    .on_hover_text(
+                        "Keep it in MPE's settings folder on this computer, so it is there the \
+                     next time MPE starts. Unticked, it stays in the list only until MPE closes.",
+                    );
                 if let Some(e) = &self.error {
                     ui.colored_label(ui.visuals().error_fg_color, e);
                 }
@@ -729,18 +730,23 @@ impl SignPane {
             let mut remove = None;
             for (i, e) in kit.list(role).iter().enumerate() {
                 let picked = self.pick == SignPick::Saved(role, i);
-                let r = match self.previews.get(ui.ctx(), &e.saved, role, kit.color) {
-                    Some(tex) => {
-                        let img = egui::Image::new((tex.id(), Previews::size(&tex, PREVIEW)));
-                        ui.add(egui::Button::image(img).selected(picked))
-                    }
-                    None => ui.selectable_label(picked, "Picture not found"),
-                };
-                let r = if e.keep {
-                    r
-                } else {
-                    r.on_hover_text("Not remembered: kept until MPE closes")
-                };
+                // Not saved for next time: tagged beside it, so it's clear it will go.
+                let r = ui
+                    .horizontal(|ui| {
+                        let r = match self.previews.get(ui.ctx(), &e.saved, role, kit.color) {
+                            Some(tex) => {
+                                let size = Previews::size(&tex, PREVIEW);
+                                let img = egui::Image::new((tex.id(), size));
+                                ui.add(egui::Button::image(img).selected(picked))
+                            }
+                            None => ui.selectable_label(picked, "Picture not found"),
+                        };
+                        if !e.keep {
+                            ui.label(egui::RichText::new("until MPE closes").small().weak());
+                        }
+                        r
+                    })
+                    .inner;
                 if r.clicked() {
                     self.pick = SignPick::Saved(role, i);
                 }
@@ -899,7 +905,7 @@ mod tests {
         };
         let typed = Saved::Typed {
             text: "Sam Lee".into(),
-            style: SignStyle::Formal,
+            style: SignStyle::Zeyada,
         };
         k.add(
             SignRole::Signature,
@@ -920,7 +926,7 @@ mod tests {
         // Not remembered: listed now, gone next time.
         let other = Saved::Typed {
             text: "Sam".into(),
-            style: SignStyle::Casual,
+            style: SignStyle::Caveat,
         };
         k.add(
             SignRole::Signature,
@@ -978,7 +984,7 @@ mod tests {
         for i in 0..7 {
             let saved = Saved::Typed {
                 text: format!("Sam {i}"),
-                style: SignStyle::Casual,
+                style: SignStyle::Cedarville,
             };
             k.add(SignRole::Signature, Entry { saved, keep: true })
                 .unwrap();
