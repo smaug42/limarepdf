@@ -48,7 +48,7 @@ pub use links::{Link, LinkTarget};
 pub use objects::{words_text, ObjectKind, PageObject, PageWord};
 pub use ocr::{Ocr, OcrLine, OcrResult, OcrWord};
 pub use outline::OutlineItem;
-pub use overlay::{text_width, Bates, HeaderFooter, Watermark};
+pub use overlay::{text_width, Bates, HeaderFooter, ImageWatermark, Watermark};
 pub use pagerange::{format_page_range, parse_page_range};
 pub use scan::{ScanMode, ScanOptions, ScanResult};
 pub use security::{Cipher, Encryption, Restrictions};

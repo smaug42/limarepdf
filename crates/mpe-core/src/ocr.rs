@@ -186,7 +186,7 @@ impl Pdf {
                     let page = self.page_id_at(p)?;
                     let font = *font.get_or_insert_with(|| self.make_font());
                     let layer = self.text_layer(page, &lines, scale);
-                    self.add_layers(page, None, Some(layer), font, None)?;
+                    self.add_layers(page, None, Some(layer), font)?;
                     OcrResult::Added {
                         lines: lines.len(),
                         words: lines.iter().map(|l| l.words.len()).sum(),

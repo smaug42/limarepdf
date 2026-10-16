@@ -130,7 +130,7 @@ impl Pdf {
     }
 
     /// Register `obj` in the page's resource category (`Font`, `XObject`) under a fresh name.
-    fn add_resource(
+    pub(crate) fn add_resource(
         &mut self,
         page: ObjectId,
         cat: &str,

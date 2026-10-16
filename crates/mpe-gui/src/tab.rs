@@ -35,6 +35,13 @@ struct Step {
     encryption: Option<Encryption>,
 }
 
+/// Inspector edits that applying again replaces, while nothing else has changed since.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Stamp {
+    Watermark,
+    HeaderFooter,
+}
+
 pub struct Tab {
     pub id: u64,
     pub pdf: Pdf,
@@ -65,6 +72,8 @@ pub struct Tab {
     goto: Option<usize>,
     undo: Vec<Step>,
     redo: Vec<Step>,
+    /// The last edit made by [`Tab::edit_stamp`]: its kind, and the revision and undo depth just after it.
+    last_stamp: Option<(Stamp, u64, usize)>,
     pub side: Side,
     pub query: String,
     pub hits: Vec<SearchHit>,
@@ -140,6 +149,7 @@ impl Tab {
             goto: None,
             undo: Vec::new(),
             redo: Vec::new(),
+            last_stamp: None,
             side: Side::Pages,
             query: String::new(),
             hits: Vec::new(),
@@ -226,6 +236,47 @@ impl Tab {
         f: impl FnOnce(&mut Pdf) -> mpe_core::Result<()>,
     ) -> bool {
         self.edit_inner(ctx, None, f)
+    }
+
+    /// Like [`Tab::edit`], but if the last change was the same kind of stamp, it is replaced rather than
+    /// added to, so adjusting a setting and applying again doesn't pile up copies. One undo step either way.
+    pub fn edit_stamp(
+        &mut self,
+        ctx: &egui::Context,
+        kind: Stamp,
+        f: impl FnOnce(&mut Pdf) -> mpe_core::Result<()>,
+    ) -> bool {
+        let mut replaced = None;
+        if self.replaces_stamp(kind) {
+            if let Some(Step {
+                pdf: Some(bytes), ..
+            }) = self.undo.last()
+            {
+                if let Ok(before) = Pdf::from_bytes(bytes, None) {
+                    let step = self.undo.pop();
+                    replaced = Some((std::mem::replace(&mut self.pdf, before), step));
+                }
+            }
+        }
+        let ok = self.edit(ctx, f);
+        if ok {
+            self.last_stamp = Some((kind, self.revision, self.undo.len()));
+        } else if let Some((pdf, step)) = replaced {
+            // Put the earlier stamp back.
+            self.pdf = pdf;
+            self.undo.extend(step);
+        }
+        ok
+    }
+
+    /// Keep the last stamp: the next one is added alongside it.
+    pub fn forget_stamp(&mut self) {
+        self.last_stamp = None;
+    }
+
+    /// Whether applying a stamp of this kind now would replace the previous one.
+    pub fn replaces_stamp(&self, kind: Stamp) -> bool {
+        self.last_stamp == Some((kind, self.revision, self.undo.len()))
     }
 
     /// Like [`Tab::edit`] for changes confined to the given pages: the old picture stays visible until the new

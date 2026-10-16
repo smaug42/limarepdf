@@ -7,19 +7,19 @@ use crate::markup;
 use crate::recent::Recent;
 use crate::selection::Selection;
 use crate::settings::Settings;
-use crate::tab::{Side, Tab};
+use crate::tab::{Side, Stamp, Tab};
 use crate::theme;
 use eframe::egui::{self, AtomExt as _, Key};
 use egui_phosphor::regular as icon;
 use mpe_core::render::{image_names, ImageFormat};
 use mpe_core::{
-    parse_page_range, part_file_name, print, Bates, HeaderFooter, ImageImport, OcrResult, Pdf,
-    ScanResult, Watermark,
+    parse_page_range, part_file_name, print, Bates, HeaderFooter, ImageImport, ImageWatermark,
+    OcrResult, Pdf, ScanResult, Watermark,
 };
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 
-const IMAGE_EXTS: [&str; 5] = ["png", "jpg", "jpeg", "tif", "tiff"];
+pub const IMAGE_EXTS: [&str; 5] = ["png", "jpg", "jpeg", "tif", "tiff"];
 
 fn is_image(p: &Path) -> bool {
     p.extension()
@@ -1034,11 +1034,31 @@ impl App {
                     Err(e) => t.error = Some(e.to_string()),
                 }
             }
-            Apply::Watermark => {
+            Apply::Watermark { replace } => {
                 let t = &mut self.tabs[active];
+                if !replace {
+                    t.forget_stamp();
+                }
                 let s = &t.forms.wm;
-                match parse_page_range(&s.range, n) {
-                    Ok(idx) => {
+                let image = match (&s.picture, &s.image) {
+                    (false, _) => Ok(None),
+                    (true, None) => Err(anyhow::anyhow!("choose a picture first")),
+                    (true, Some(path)) => std::fs::read(path)
+                        .map(Some)
+                        .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display())),
+                };
+                match image.and_then(|im| Ok((im, parse_page_range(&s.range, n)?))) {
+                    Ok((Some(image), idx)) => {
+                        let wm = ImageWatermark {
+                            image,
+                            scale: s.scale / 100.0,
+                            opacity: s.opacity,
+                            rotation: s.rotation,
+                            foreground: s.foreground,
+                        };
+                        t.edit_stamp(ctx, Stamp::Watermark, |p| p.add_image_watermark(&idx, &wm));
+                    }
+                    Ok((None, idx)) => {
                         let wm = Watermark {
                             text: s.text.clone(),
                             font_size: s.size,
@@ -1047,13 +1067,16 @@ impl App {
                             color: (s.color[0], s.color[1], s.color[2]),
                             foreground: s.foreground,
                         };
-                        t.edit(ctx, |p| p.add_watermark(&idx, &wm));
+                        t.edit_stamp(ctx, Stamp::Watermark, |p| p.add_watermark(&idx, &wm));
                     }
                     Err(e) => t.error = Some(e.to_string()),
                 }
             }
-            Apply::HeaderFooter => {
+            Apply::HeaderFooter { replace } => {
                 let t = &mut self.tabs[active];
+                if !replace {
+                    t.forget_stamp();
+                }
                 let s = &t.forms.hf;
                 match parse_page_range(&s.range, n) {
                     Ok(idx) => {
@@ -1070,7 +1093,7 @@ impl App {
                                 start: s.start,
                             }),
                         };
-                        t.edit(ctx, |p| p.add_header_footer(&idx, &hf));
+                        t.edit_stamp(ctx, Stamp::HeaderFooter, |p| p.add_header_footer(&idx, &hf));
                     }
                     Err(e) => t.error = Some(e.to_string()),
                 }

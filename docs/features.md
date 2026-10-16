@@ -12,7 +12,7 @@ signatures and redaction are not started.
 - **Edit content:** move, resize, restyle and delete text, images and shapes; edit text; add text, shapes and images.
 - **Fill in forms:** text fields, checkboxes, radio buttons and lists, in the app or from JSON on the command line;
   flatten them so the values can't be changed.
-- **Stamp pages:** headers, footers, page numbers, Bates numbers and text watermarks.
+- **Stamp pages:** headers, footers, page numbers, Bates numbers, and text or picture watermarks.
 - **Scans:** turn images into PDFs, shrink and straighten scanned pages, and add a searchable text layer with
   built-in OCR (Latin script).
 - **Copy text,** including recognised text.
@@ -45,7 +45,7 @@ available.
 | Merge and split | Done | Split by page count or at bookmarks, files named after them. Bookmarks, forms and named destinations of appended files are not carried over, and split parts have no bookmarks. Split by file size: No |
 | Undo and redo | Done | 20 levels, including password settings |
 | Headers, footers, page numbers, dates, Bates numbers | Done | Helvetica and Latin-1 characters only |
-| Watermarks | Partial | Text only |
+| Watermarks | Done | Text or a PNG, JPEG or TIFF picture; centred, with size, opacity, rotation, above or behind |
 | Document properties | Done | Title, author, subject, keywords, creator, producer |
 | Password security | Done | All four ciphers and permission flags. [Things to know](security.md) |
 | Opening protected files | Done | With the open (user) password |

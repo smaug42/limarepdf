@@ -353,6 +353,20 @@ fn swaps_axes(o: Orientation) -> bool {
     matches!(o, Rotate90 | Rotate270 | Rotate90FlipH | Rotate270FlipH)
 }
 
+/// Matrix that draws an image upright in a `pw` x `ph` box at the origin, following the
+/// file's orientation.
+pub(crate) fn orient_matrix(o: Orientation, pw: f32, ph: f32) -> [f32; 6] {
+    let [tl, bl, br] = corners(o).map(|(x, y)| (x * pw, y * ph));
+    [
+        br.0 - bl.0,
+        br.1 - bl.1,
+        tl.0 - bl.0,
+        tl.1 - bl.1,
+        bl.0,
+        bl.1,
+    ]
+}
+
 impl Pdf {
     /// Decode an image file and add it to the document as an image XObject.
     /// Returns the object id and the stored pixel size. JPEG data is embedded as is.
@@ -360,6 +374,19 @@ impl Pdf {
         let r = first(decode(bytes)?)?;
         let (w, h) = (r.w, r.h);
         Ok((self.add_raster(r), w, h))
+    }
+
+    /// Like [`Pdf::add_image_object`], but returns the pixel size as displayed and the
+    /// orientation to draw it with (see [`orient_matrix`]).
+    pub(crate) fn add_upright_image(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<(ObjectId, f32, f32, Orientation)> {
+        let r = first(decode(bytes)?)?;
+        let o = r.orientation;
+        let (w, h) = (r.w as f32, r.h as f32);
+        let (w, h) = if swaps_axes(o) { (h, w) } else { (w, h) };
+        Ok((self.add_raster(r), w, h, o))
     }
 
     fn add_raster(&mut self, r: Raster) -> ObjectId {
@@ -442,15 +469,7 @@ impl Pdf {
             let (iw, ih) = (r.w as f32 * 72.0 / dx, r.h as f32 * 72.0 / dy);
             let o = r.orientation;
             let (pw, ph) = if swaps_axes(o) { (ih, iw) } else { (iw, ih) };
-            let [tl, bl, br] = corners(o).map(|(x, y)| (x * pw, y * ph));
-            let m = [
-                br.0 - bl.0,
-                br.1 - bl.1,
-                tl.0 - bl.0,
-                tl.1 - bl.1,
-                bl.0,
-                bl.1,
-            ];
+            let m = orient_matrix(o, pw, ph);
             let img = self.add_raster(r);
             self.insert_blank(at + k, pw, ph)?;
             let page = self.page_ids()[at + k];

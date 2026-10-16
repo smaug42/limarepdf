@@ -10,8 +10,9 @@ macro_rules! out {
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use mpe_core::{
     format_page_range, parse_page_range, part_file_name, print, render, Annot, AnnotKind, Bates,
-    Cipher, Encryption, Field, FieldKind, FieldValue, HeaderFooter, ImageImport, Info, LabelRange,
-    LabelStyle, Ocr, OcrResult, Pdf, Restrictions, ScanMode, ScanOptions, ScanResult, Watermark,
+    Cipher, Encryption, Field, FieldKind, FieldValue, HeaderFooter, ImageImport, ImageWatermark,
+    Info, LabelRange, LabelStyle, Ocr, OcrResult, Pdf, Restrictions, ScanMode, ScanOptions,
+    ScanResult, Watermark,
 };
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
@@ -184,16 +185,23 @@ enum Cmd {
         #[arg(long)]
         order: String,
     },
-    /// Add a text watermark
+    /// Add a text or picture watermark
     Watermark {
         #[command(flatten)]
         io: Io,
+        #[arg(long, required_unless_present = "image", conflicts_with = "image")]
+        text: Option<String>,
+        /// Use a PNG, JPEG or TIFF picture instead of text
         #[arg(long)]
-        text: String,
+        image: Option<PathBuf>,
         #[arg(long, default_value = "all")]
         pages: String,
-        #[arg(long, default_value_t = 96.0)]
+        /// Font size of text
+        #[arg(long, default_value_t = 96.0, conflicts_with = "image")]
         size: f32,
+        /// Picture size, as a percentage of the page it fits inside
+        #[arg(long, default_value_t = 50.0, conflicts_with = "text")]
+        scale: f32,
         #[arg(long, default_value_t = 0.25)]
         opacity: f32,
         #[arg(long, default_value_t = 45.0)]
@@ -1102,25 +1110,47 @@ fn main() -> Result<()> {
         Cmd::Watermark {
             io,
             text,
+            image,
             pages,
             size,
+            scale,
             opacity,
             rotation,
             background,
-        } => run_edit(&io, |p| {
-            let idx = parse_page_range(&pages, p.page_count())?;
-            p.add_watermark(
-                &idx,
-                &Watermark {
-                    text,
-                    font_size: size,
-                    opacity,
-                    rotation,
-                    foreground: !background,
-                    ..Default::default()
-                },
-            )
-        })?,
+        } => {
+            let image = match image {
+                Some(path) => Some(
+                    std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?,
+                ),
+                None => None,
+            };
+            run_edit(&io, |p| {
+                let idx = parse_page_range(&pages, p.page_count())?;
+                match image {
+                    Some(image) => p.add_image_watermark(
+                        &idx,
+                        &ImageWatermark {
+                            image,
+                            scale: scale / 100.0,
+                            opacity,
+                            rotation,
+                            foreground: !background,
+                        },
+                    ),
+                    None => p.add_watermark(
+                        &idx,
+                        &Watermark {
+                            text: text.unwrap_or_default(),
+                            font_size: size,
+                            opacity,
+                            rotation,
+                            foreground: !background,
+                            ..Default::default()
+                        },
+                    ),
+                }
+            })?
+        }
         Cmd::HeaderFooter {
             io,
             pages,

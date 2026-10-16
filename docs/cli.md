@@ -107,6 +107,7 @@ See [Scanning and OCR](scanning-and-ocr.md) for what these do.
 | Command | What it does |
 | --- | --- |
 | `mpe watermark in.pdf -o out.pdf --text CONFIDENTIAL --opacity 0.3` | Add a text watermark |
+| `mpe watermark in.pdf -o out.pdf --image logo.png --scale 40 --background` | Add a picture watermark, fitted inside 40% of the page, behind the content |
 | `mpe header-footer in.pdf -o out.pdf --footer-center "Page {page} of {pages}" --header-right "{date}"` | Add headers and footers; tokens `{page}`, `{pages}`, `{date}`, `{bates}` |
 | `mpe bates in.pdf -o out.pdf --prefix ACME- --digits 6` | Bates-number the pages |
 

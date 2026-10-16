@@ -8,14 +8,16 @@
 //! pressed as an [`Apply`]; the app carries it out.
 
 use crate::actions::{self, Act, Ctx};
+use crate::app::IMAGE_EXTS;
 use crate::fields::{self, FormUi};
 use crate::selection::Selection;
-use crate::tab::Tab;
+use crate::tab::{Stamp, Tab};
 use crate::theme;
 use eframe::egui::{self, Ui};
 use mpe_core::render::{ImageFormat, MAX_DPI};
 use mpe_core::{Cipher, Encryption, Info, LabelStyle, Restrictions, ScanMode, ScanOptions};
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 
 /// A section of the panel, for opening it from a menu command.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -47,8 +49,14 @@ pub enum Apply {
     Props,
     Security,
     Crop,
-    HeaderFooter,
-    Watermark,
+    /// `replace`: update the headers and footers just added instead of adding more.
+    HeaderFooter {
+        replace: bool,
+    },
+    /// `replace`: update the watermark just added instead of adding another.
+    Watermark {
+        replace: bool,
+    },
     Ocr,
     Scans,
     Export,
@@ -61,8 +69,13 @@ pub enum Apply {
 }
 
 pub struct Wm {
+    /// A picture instead of text.
+    pub picture: bool,
     pub text: String,
     pub size: f32,
+    pub image: Option<PathBuf>,
+    /// Picture size, percent of the page.
+    pub scale: f32,
     pub opacity: f32,
     pub rotation: f32,
     pub color: [f32; 3],
@@ -72,8 +85,11 @@ pub struct Wm {
 impl Default for Wm {
     fn default() -> Self {
         Self {
+            picture: false,
             text: "DRAFT".into(),
             size: 96.0,
+            image: None,
+            scale: 50.0,
             opacity: 0.25,
             rotation: 45.0,
             color: [0.6, 0.0, 0.0],
@@ -320,6 +336,8 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
     let mut apply = None;
     let reveal = t.forms.reveal.take();
     let pages = t.ed.selection.pages().cloned();
+    let wm_again = t.replaces_stamp(Stamp::Watermark);
+    let hf_again = t.replaces_stamp(Stamp::HeaderFooter);
     let f = &mut t.forms;
     match &pages {
         Some(pages) => {
@@ -383,14 +401,14 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
         }
     });
     section(ui, reveal, Some(Section::Watermark), "Watermark", |ui| {
-        if watermark_ui(ui, &mut f.wm) {
-            apply = Some(Apply::Watermark);
+        if let Some(replace) = watermark_ui(ui, &mut f.wm, wm_again) {
+            apply = Some(Apply::Watermark { replace });
         }
     });
     let hf_title = "Headers, footers, Bates";
     section(ui, reveal, Some(Section::HeaderFooter), hf_title, |ui| {
-        if header_footer_ui(ui, &mut f.hf) {
-            apply = Some(Apply::HeaderFooter);
+        if let Some(replace) = header_footer_ui(ui, &mut f.hf, hf_again) {
+            apply = Some(Apply::HeaderFooter { replace });
         }
     });
     let ocr = "Recognise text (OCR)";
@@ -689,31 +707,78 @@ fn security_ui(ui: &mut Ui, s: &mut Sec) -> bool {
     ui.button("Apply").clicked()
 }
 
-fn watermark_ui(ui: &mut Ui, s: &mut Wm) -> bool {
+/// The buttons of a stamp section. `again`: the stamp was just added, so it can be updated or
+/// another added. Returns whether to replace it, when a button was pressed.
+fn stamp_apply(ui: &mut Ui, again: bool, what: &str) -> Option<bool> {
+    if !again {
+        return ui.button("Apply").clicked().then_some(false);
+    }
+    ui.weak(format!("Update changes the {what} just added."));
+    ui.horizontal(|ui| {
+        if ui.button("Update").clicked() {
+            Some(true)
+        } else if ui.button("Add another").clicked() {
+            Some(false)
+        } else {
+            None
+        }
+    })
+    .inner
+}
+
+fn watermark_ui(ui: &mut Ui, s: &mut Wm, again: bool) -> Option<bool> {
+    ui.horizontal(|ui| {
+        ui.radio_value(&mut s.picture, false, "Text");
+        ui.radio_value(&mut s.picture, true, "Picture");
+    });
     grid(ui, "wm", |ui| {
-        ui.label("Text");
-        ui.add(egui::TextEdit::singleline(&mut s.text).desired_width(f32::INFINITY));
-        ui.end_row();
-        ui.label("Size");
-        ui.add(egui::Slider::new(&mut s.size, 12.0..=300.0));
-        ui.end_row();
+        if s.picture {
+            ui.label("Picture");
+            ui.horizontal(|ui| {
+                if ui.button("Choose…").clicked() {
+                    if let Some(p) = rfd::FileDialog::new()
+                        .add_filter("Images (PNG, JPEG, TIFF)", &IMAGE_EXTS)
+                        .pick_file()
+                    {
+                        s.image = Some(p);
+                    }
+                }
+                match s.image.as_ref().and_then(|p| p.file_name()) {
+                    Some(n) => ui.label(n.to_string_lossy()),
+                    None => ui.weak("none chosen"),
+                };
+            });
+            ui.end_row();
+            ui.label("Size");
+            ui.add(egui::Slider::new(&mut s.scale, 5.0..=100.0).suffix("% of page"));
+            ui.end_row();
+        } else {
+            ui.label("Text");
+            ui.add(egui::TextEdit::singleline(&mut s.text).desired_width(f32::INFINITY));
+            ui.end_row();
+            ui.label("Size");
+            ui.add(egui::Slider::new(&mut s.size, 12.0..=300.0));
+            ui.end_row();
+        }
         ui.label("Opacity");
         ui.add(egui::Slider::new(&mut s.opacity, 0.02..=1.0));
         ui.end_row();
         ui.label("Rotation");
         ui.add(egui::Slider::new(&mut s.rotation, -90.0..=90.0).suffix("°"));
         ui.end_row();
-        ui.label("Colour");
-        ui.color_edit_button_rgb(&mut s.color);
-        ui.end_row();
+        if !s.picture {
+            ui.label("Colour");
+            ui.color_edit_button_rgb(&mut s.color);
+            ui.end_row();
+        }
     });
     ui.radio_value(&mut s.foreground, true, "Above the content");
     ui.radio_value(&mut s.foreground, false, "Behind the content");
     range_row(ui, &mut s.range);
-    ui.button("Apply").clicked()
+    stamp_apply(ui, again, "watermark")
 }
 
-fn header_footer_ui(ui: &mut Ui, s: &mut Hf) -> bool {
+fn header_footer_ui(ui: &mut Ui, s: &mut Hf, again: bool) -> Option<bool> {
     ui.weak("Tokens: {page}  {pages}  {date}  {bates}");
     grid(ui, "hf", |ui| {
         let sides = ["left", "centre", "right"];
@@ -754,7 +819,7 @@ fn header_footer_ui(ui: &mut Ui, s: &mut Hf) -> bool {
         ui.weak("Without a {bates} token the number goes at the bottom right.");
     });
     range_row(ui, &mut s.range);
-    ui.button("Apply").clicked()
+    stamp_apply(ui, again, "headers and footers")
 }
 
 fn scan_ui(ui: &mut Ui, pages: &mut String, o: &mut ScanOptions, busy: bool) -> bool {

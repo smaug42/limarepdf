@@ -12,10 +12,15 @@
 - Page labels (page numbering such as i, ii, 1, 2 or A-1): shown in the status bar, thumbnails and bookmark tips, set
   from the selected pages in the inspector, and listed, set and removed with `mpe labels`. Labels stay with their
   pages when pages are deleted, inserted, moved, extracted or appended.
+- Picture watermarks: a PNG, JPEG or TIFF picture centred on each page, sized as a share of the page, with opacity,
+  rotation, and above or behind the content. In the app's Watermark section (Text or Picture) and as
+  `mpe watermark --image FILE [--scale PERCENT]`. The picture is stored once, however many pages it is on.
 
 ### Changed
 
 - New rectangles and ellipses have no fill; turn Fill on in the inspector to fill them.
+- In the app, after adding a watermark or headers and footers, the section's Update button changes what was just
+  added instead of stamping another copy on top; Add another keeps it and adds a second.
 - The Windows installer shows its steps, says in plain words that MPE is free and open source, and lets you choose
   where to install MPE.
 
@@ -25,6 +30,9 @@
 - Search highlights follow the page's reading order, as the results list does, so every match listed is highlighted
   and stepping through results goes to the right place.
 - On Windows, a console window no longer opens behind the app.
+- Two watermarks with different opacities on the same page each keep their own opacity.
+- Headers, footers, watermarks and OCR text no longer break the page's own text and images on pages that take their
+  resources from the page tree.
 - A malformed file that makes MPE fail while opening, editing or saving shows an error instead of closing the app.
   A failed edit leaves the document as it was.
 - Release builds check integer arithmetic for overflow, so a malformed file stops with an error instead of producing

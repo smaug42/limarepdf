@@ -48,7 +48,8 @@ Small or medium additions that build on what MPE already has:
 - Layers: add, merge, reorder, flatten (L)
 - Unicode, CJK and right-to-left text with embedded fonts (L: font subsetting, text shaping and bidirectional
   layout, likely new crates)
-- Background images (M; image watermarks are already queued)
+- Background images (S: a picture watermark at 100%, opaque and behind the content comes close; filling the page
+  edge to edge is what's missing)
 - QR codes and barcodes stamped onto pages (S–M, needs a crate)
 - Guides, rulers, a grid and snapping (M)
 
