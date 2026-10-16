@@ -8,14 +8,16 @@
 //! pressed as an [`Apply`]; the app carries it out.
 
 use crate::actions::{self, Act, Ctx};
+use crate::app::IMAGE_EXTS;
 use crate::fields::{self, FormUi};
 use crate::selection::Selection;
-use crate::tab::Tab;
+use crate::tab::{Stamp, Tab};
 use crate::theme;
 use eframe::egui::{self, Ui};
 use mpe_core::render::{ImageFormat, MAX_DPI};
-use mpe_core::{Cipher, Encryption, Info, Restrictions, ScanMode, ScanOptions};
+use mpe_core::{Cipher, Encryption, Info, LabelStyle, Restrictions, ScanMode, ScanOptions};
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 
 /// A section of the panel, for opening it from a menu command.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -47,19 +49,33 @@ pub enum Apply {
     Props,
     Security,
     Crop,
-    HeaderFooter,
-    Watermark,
+    /// `replace`: update the headers and footers just added instead of adding more.
+    HeaderFooter {
+        replace: bool,
+    },
+    /// `replace`: update the watermark just added instead of adding another.
+    Watermark {
+        replace: bool,
+    },
     Ocr,
     Scans,
     Export,
     Split,
     /// Insert a blank page after this page (0-based), at the form's size.
     Blank(usize),
+    /// Number the pages from this page (0-based) on, as the form says.
+    Label(usize),
+    RemoveLabels,
 }
 
 pub struct Wm {
+    /// A picture instead of text.
+    pub picture: bool,
     pub text: String,
     pub size: f32,
+    pub image: Option<PathBuf>,
+    /// Picture size, percent of the page.
+    pub scale: f32,
     pub opacity: f32,
     pub rotation: f32,
     pub color: [f32; 3],
@@ -69,8 +85,11 @@ pub struct Wm {
 impl Default for Wm {
     fn default() -> Self {
         Self {
+            picture: false,
             text: "DRAFT".into(),
             size: 96.0,
+            image: None,
+            scale: 50.0,
             opacity: 0.25,
             rotation: 45.0,
             color: [0.6, 0.0, 0.0],
@@ -191,6 +210,23 @@ impl Export {
     }
 }
 
+/// Page numbering to set from the first selected page.
+pub struct Label {
+    /// `None`: the prefix alone.
+    pub style: Option<LabelStyle>,
+    pub prefix: String,
+    pub start: u32,
+}
+impl Default for Label {
+    fn default() -> Self {
+        Self {
+            style: Some(LabelStyle::Decimal),
+            prefix: String::new(),
+            start: 1,
+        }
+    }
+}
+
 /// The panel's form state, kept per tab.
 #[derive(Default)]
 pub struct Forms {
@@ -205,8 +241,12 @@ pub struct Forms {
     pub export: Export,
     /// Pages per file when splitting.
     pub split: usize,
+    /// Split at bookmarks instead, down to this level (1 = top level only).
+    pub split_at_marks: bool,
+    pub split_level: usize,
     /// Size of a new blank page, in points.
     pub blank: (f32, f32),
+    pub label: Label,
     /// Section to open and scroll to on the next frame.
     pub reveal: Option<Section>,
     /// Document revision the properties were read at.
@@ -245,6 +285,7 @@ impl Tab {
             if self.forms.meta_rev.is_none() {
                 self.forms.sec = Sec::of(self.encryption.as_ref());
                 self.forms.split = 1;
+                self.forms.split_level = 1;
             }
             self.forms.meta = self.pdf.info();
             self.forms.meta_rev = Some(self.revision);
@@ -295,6 +336,8 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
     let mut apply = None;
     let reveal = t.forms.reveal.take();
     let pages = t.ed.selection.pages().cloned();
+    let wm_again = t.replaces_stamp(Stamp::Watermark);
+    let hf_again = t.replaces_stamp(Stamp::HeaderFooter);
     let f = &mut t.forms;
     match &pages {
         Some(pages) => {
@@ -318,6 +361,13 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
             section(ui, reveal, None, "Insert blank page", |ui| {
                 if blank_ui(ui, &mut f.blank, last) {
                     apply = Some(Apply::Blank(last));
+                }
+            });
+            let first = pages.first().copied().unwrap_or(0);
+            let labelled = t.labels.is_some();
+            section(ui, reveal, None, "Page labels", |ui| {
+                if let Some(a) = label_ui(ui, &mut f.label, first, labelled) {
+                    apply = Some(a);
                 }
             });
         }
@@ -351,14 +401,14 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
         }
     });
     section(ui, reveal, Some(Section::Watermark), "Watermark", |ui| {
-        if watermark_ui(ui, &mut f.wm) {
-            apply = Some(Apply::Watermark);
+        if let Some(replace) = watermark_ui(ui, &mut f.wm, wm_again) {
+            apply = Some(Apply::Watermark { replace });
         }
     });
     let hf_title = "Headers, footers, Bates";
     section(ui, reveal, Some(Section::HeaderFooter), hf_title, |ui| {
-        if header_footer_ui(ui, &mut f.hf) {
-            apply = Some(Apply::HeaderFooter);
+        if let Some(replace) = header_footer_ui(ui, &mut f.hf, hf_again) {
+            apply = Some(Apply::HeaderFooter { replace });
         }
     });
     let ocr = "Recognise text (OCR)";
@@ -385,8 +435,18 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
         });
         section(ui, reveal, Some(Section::Split), "Split into files", |ui| {
             ui.horizontal(|ui| {
-                ui.label("Pages per file");
-                ui.add(egui::DragValue::new(&mut f.split).range(1..=100_000));
+                ui.radio_value(&mut f.split_at_marks, false, "Pages per file");
+                ui.add_enabled(
+                    !f.split_at_marks,
+                    egui::DragValue::new(&mut f.split).range(1..=100_000),
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut f.split_at_marks, true, "At bookmarks, levels");
+                ui.add_enabled(
+                    f.split_at_marks,
+                    egui::DragValue::new(&mut f.split_level).range(1..=9),
+                );
             });
             if ui.button("Choose folder…").clicked() {
                 apply = Some(Apply::Split);
@@ -514,6 +574,46 @@ fn blank_ui(ui: &mut Ui, size: &mut (f32, f32), after: usize) -> bool {
         .clicked()
 }
 
+/// The numbering to set from page `first` on, until the next numbering the document has after it.
+fn label_ui(ui: &mut Ui, s: &mut Label, first: usize, labelled: bool) -> Option<Apply> {
+    let name = |st: Option<LabelStyle>| st.map_or("Prefix only", LabelStyle::name);
+    ui.weak("The page numbers viewers show, such as i, ii, 1, 2. Nothing is printed on the pages.");
+    ui.horizontal(|ui| {
+        ui.label("Style");
+        egui::ComboBox::from_id_salt("label-style")
+            .selected_text(name(s.style))
+            .show_ui(ui, |ui| {
+                for st in LabelStyle::ALL.map(Some).into_iter().chain([None]) {
+                    ui.selectable_value(&mut s.style, st, name(st));
+                }
+            });
+    });
+    ui.horizontal(|ui| {
+        ui.label("Prefix");
+        ui.add(egui::TextEdit::singleline(&mut s.prefix).desired_width(80.0));
+        ui.label("Start at");
+        ui.add_enabled(
+            s.style.is_some(),
+            egui::DragValue::new(&mut s.start).range(1..=99_999),
+        );
+    });
+    let preview = match s.style {
+        Some(st) => format!("{}{}", s.prefix, st.format(s.start)),
+        None => s.prefix.clone(),
+    };
+    ui.weak(format!("Page {} will be labelled “{preview}”.", first + 1));
+    if ui
+        .button(format!("Number from page {}", first + 1))
+        .clicked()
+    {
+        return Some(Apply::Label(first));
+    }
+    if labelled && ui.button("Remove all page labels").clicked() {
+        return Some(Apply::RemoveLabels);
+    }
+    None
+}
+
 /// Margins to trim, and the buttons to crop or show the whole page. Removing the crop
 /// sets the margins to zero.
 fn crop_ui(ui: &mut Ui, s: &mut Crop) -> bool {
@@ -607,31 +707,78 @@ fn security_ui(ui: &mut Ui, s: &mut Sec) -> bool {
     ui.button("Apply").clicked()
 }
 
-fn watermark_ui(ui: &mut Ui, s: &mut Wm) -> bool {
+/// The buttons of a stamp section. `again`: the stamp was just added, so it can be updated or
+/// another added. Returns whether to replace it, when a button was pressed.
+fn stamp_apply(ui: &mut Ui, again: bool, what: &str) -> Option<bool> {
+    if !again {
+        return ui.button("Apply").clicked().then_some(false);
+    }
+    ui.weak(format!("Update changes the {what} just added."));
+    ui.horizontal(|ui| {
+        if ui.button("Update").clicked() {
+            Some(true)
+        } else if ui.button("Add another").clicked() {
+            Some(false)
+        } else {
+            None
+        }
+    })
+    .inner
+}
+
+fn watermark_ui(ui: &mut Ui, s: &mut Wm, again: bool) -> Option<bool> {
+    ui.horizontal(|ui| {
+        ui.radio_value(&mut s.picture, false, "Text");
+        ui.radio_value(&mut s.picture, true, "Picture");
+    });
     grid(ui, "wm", |ui| {
-        ui.label("Text");
-        ui.add(egui::TextEdit::singleline(&mut s.text).desired_width(f32::INFINITY));
-        ui.end_row();
-        ui.label("Size");
-        ui.add(egui::Slider::new(&mut s.size, 12.0..=300.0));
-        ui.end_row();
+        if s.picture {
+            ui.label("Picture");
+            ui.horizontal(|ui| {
+                if ui.button("Choose…").clicked() {
+                    if let Some(p) = rfd::FileDialog::new()
+                        .add_filter("Images (PNG, JPEG, TIFF)", &IMAGE_EXTS)
+                        .pick_file()
+                    {
+                        s.image = Some(p);
+                    }
+                }
+                match s.image.as_ref().and_then(|p| p.file_name()) {
+                    Some(n) => ui.label(n.to_string_lossy()),
+                    None => ui.weak("none chosen"),
+                };
+            });
+            ui.end_row();
+            ui.label("Size");
+            ui.add(egui::Slider::new(&mut s.scale, 5.0..=100.0).suffix("% of page"));
+            ui.end_row();
+        } else {
+            ui.label("Text");
+            ui.add(egui::TextEdit::singleline(&mut s.text).desired_width(f32::INFINITY));
+            ui.end_row();
+            ui.label("Size");
+            ui.add(egui::Slider::new(&mut s.size, 12.0..=300.0));
+            ui.end_row();
+        }
         ui.label("Opacity");
         ui.add(egui::Slider::new(&mut s.opacity, 0.02..=1.0));
         ui.end_row();
         ui.label("Rotation");
         ui.add(egui::Slider::new(&mut s.rotation, -90.0..=90.0).suffix("°"));
         ui.end_row();
-        ui.label("Colour");
-        ui.color_edit_button_rgb(&mut s.color);
-        ui.end_row();
+        if !s.picture {
+            ui.label("Colour");
+            ui.color_edit_button_rgb(&mut s.color);
+            ui.end_row();
+        }
     });
     ui.radio_value(&mut s.foreground, true, "Above the content");
     ui.radio_value(&mut s.foreground, false, "Behind the content");
     range_row(ui, &mut s.range);
-    ui.button("Apply").clicked()
+    stamp_apply(ui, again, "watermark")
 }
 
-fn header_footer_ui(ui: &mut Ui, s: &mut Hf) -> bool {
+fn header_footer_ui(ui: &mut Ui, s: &mut Hf, again: bool) -> Option<bool> {
     ui.weak("Tokens: {page}  {pages}  {date}  {bates}");
     grid(ui, "hf", |ui| {
         let sides = ["left", "centre", "right"];
@@ -672,7 +819,7 @@ fn header_footer_ui(ui: &mut Ui, s: &mut Hf) -> bool {
         ui.weak("Without a {bates} token the number goes at the bottom right.");
     });
     range_row(ui, &mut s.range);
-    ui.button("Apply").clicked()
+    stamp_apply(ui, again, "headers and footers")
 }
 
 fn scan_ui(ui: &mut Ui, pages: &mut String, o: &mut ScanOptions, busy: bool) -> bool {

@@ -88,6 +88,7 @@ pub enum Act {
     RotL,
     Crop,
     Delete,
+    RemoveBlank,
     Extract,
     Blank,
     InsertImages,
@@ -845,6 +846,15 @@ pub static ACTIONS: &[Action] = &[
         label: "Delete pages",
         icon: icon::TRASH,
         hint: "The selected pages, or the current page. Undo brings them back.",
+        ..BASE
+    },
+    Action {
+        act: Act::RemoveBlank,
+        group: Group::Document,
+        label: "Remove blank pages",
+        icon: icon::BROOM,
+        hint: "Pages of one even colour, give or take specks or a lone page number. Undo brings them back.",
+        enabled: idle,
         ..BASE
     },
     Action {

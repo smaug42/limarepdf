@@ -1,6 +1,7 @@
 //! Page overlays: watermarks, headers/footers, page numbers and Bates numbering.
 //! All text uses the PDF standard Helvetica font (WinAnsi, Latin-1 range).
 
+use crate::imgs::orient_matrix;
 use crate::{std14, Pdf, Result};
 use anyhow::bail;
 use lopdf::dictionary;
@@ -58,6 +59,42 @@ impl Default for Watermark {
     }
 }
 
+/// A picture placed in the middle of each page, such as a logo.
+#[derive(Clone, Debug)]
+pub struct ImageWatermark {
+    /// PNG, JPEG or TIFF file contents (the first image of a TIFF is used).
+    pub image: Vec<u8>,
+    /// Size as a fraction of the page: the picture fits inside a box this fraction of
+    /// the page's width and height, keeping its proportions.
+    pub scale: f32,
+    /// 0.0 (invisible) to 1.0 (opaque)
+    pub opacity: f32,
+    /// Counter-clockwise rotation in degrees.
+    pub rotation: f32,
+    /// Draw above the page content (true) or behind it (false).
+    pub foreground: bool,
+}
+
+impl ImageWatermark {
+    /// Half the page, a quarter opaque, upright, above the content.
+    pub fn new(image: Vec<u8>) -> Self {
+        Self {
+            image,
+            scale: 0.5,
+            opacity: 0.25,
+            rotation: 0.0,
+            foreground: true,
+        }
+    }
+}
+
+fn matrix(m: [f32; 6]) -> String {
+    format!(
+        "{:.5} {:.5} {:.5} {:.5} {:.3} {:.3} cm",
+        m[0], m[1], m[2], m[3], m[4], m[5]
+    )
+}
+
 #[derive(Clone, Debug)]
 pub struct Bates {
     pub prefix: String,
@@ -103,7 +140,6 @@ impl Default for HeaderFooter {
 }
 
 pub(crate) const FONT_NAME: &str = "MPEF1";
-const GS_NAME: &str = "MPEGS";
 
 impl Pdf {
     pub(crate) fn make_font(&mut self) -> ObjectId {
@@ -154,26 +190,19 @@ impl Pdf {
     }
 
     /// Wrap the page's existing content in q/Q, add `below` and `above` streams,
-    /// and register the font / graphics state in the page resources.
+    /// and register the font in the page resources as [`FONT_NAME`].
     pub(crate) fn add_layers(
         &mut self,
         page: ObjectId,
         below: Option<Vec<u8>>,
         above: Option<Vec<u8>>,
         font: ObjectId,
-        gs: Option<ObjectId>,
     ) -> Result<()> {
         self.wrap_contents(page, below, above)?;
-        let pd = self.doc.get_dictionary(page)?;
-        let mut res = self.resolved_dict(pd.get(b"Resources").ok());
+        let mut res = self.resolved_dict(self.inherited(page, b"Resources").as_ref());
         let mut fonts = self.resolved_dict(res.get(b"Font").ok());
         fonts.set(FONT_NAME, Object::Reference(font));
         res.set("Font", fonts);
-        if let Some(gs) = gs {
-            let mut egs = self.resolved_dict(res.get(b"ExtGState").ok());
-            egs.set(GS_NAME, Object::Reference(gs));
-            res.set("ExtGState", egs);
-        }
         self.doc.get_dictionary_mut(page)?.set("Resources", res);
         Ok(())
     }
@@ -233,24 +262,66 @@ impl Pdf {
             let (m, vw, vh) = self.visual_matrix(page);
             let (s, c) = wm.rotation.to_radians().sin_cos();
             let tw = text_width(&wm.text, wm.font_size);
+            let font_nm = self.add_resource(page, "Font", "MPEWf", font.into())?;
+            let gs_nm = self.add_resource(page, "ExtGState", "MPEGS", gs.into())?;
             let stream = format!(
-                "q\n{:.5} {:.5} {:.5} {:.5} {:.3} {:.3} cm\n/{GS_NAME} gs\n{:.3} {:.3} {:.3} rg\n\
-                 {:.5} {:.5} {:.5} {:.5} {:.3} {:.3} cm\nBT /{FONT_NAME} {:.2} Tf {:.3} {:.3} Td ({}) Tj ET\nQ\n",
-                m[0], m[1], m[2], m[3], m[4], m[5],
-                wm.color.0, wm.color.1, wm.color.2,
-                c, s, -s, c, vw / 2.0, vh / 2.0,
-                wm.font_size, -tw / 2.0, -wm.font_size * 0.35,
+                "q\n{}\n/{gs_nm} gs\n{:.3} {:.3} {:.3} rg\n{}\n\
+                 BT /{font_nm} {:.2} Tf {:.3} {:.3} Td ({}) Tj ET\nQ\n",
+                matrix(m),
+                wm.color.0,
+                wm.color.1,
+                wm.color.2,
+                matrix([c, s, -s, c, vw / 2.0, vh / 2.0]),
+                wm.font_size,
+                -tw / 2.0,
+                -wm.font_size * 0.35,
                 escape(&wm.text),
-            )
-            .into_bytes();
-            let (below, above) = if wm.foreground {
-                (None, Some(stream))
-            } else {
-                (Some(stream), None)
-            };
-            self.add_layers(page, below, above, font, Some(gs))?;
+            );
+            self.add_overlay(page, stream, wm.foreground)?;
         }
         Ok(())
+    }
+
+    /// Apply a picture watermark, centred, to the given pages (0-based). The image is
+    /// stored once and shared by every page.
+    pub fn add_image_watermark(&mut self, idx: &[usize], wm: &ImageWatermark) -> Result<()> {
+        if !(wm.scale > 0.0 && wm.scale <= 1.0) {
+            bail!("watermark size must be above 0% and at most 100% of the page");
+        }
+        let ids = self.page_ids();
+        if let Some(&bad) = idx.iter().find(|&&i| i >= ids.len()) {
+            bail!("page {} does not exist", bad + 1);
+        }
+        let (img, iw, ih, o) = self.add_upright_image(&wm.image)?;
+        let gs = self.make_gs(wm.opacity);
+        for &i in idx {
+            let page = ids[i];
+            let (m, vw, vh) = self.visual_matrix(page);
+            let k = (wm.scale * vw / iw).min(wm.scale * vh / ih);
+            let (pw, ph) = (iw * k, ih * k);
+            let (s, c) = wm.rotation.to_radians().sin_cos();
+            let img_nm = self.add_resource(page, "XObject", "MPEWi", img.into())?;
+            let gs_nm = self.add_resource(page, "ExtGState", "MPEGS", gs.into())?;
+            let stream = format!(
+                "q\n{}\n/{gs_nm} gs\n{}\n{}\n{}\n/{img_nm} Do\nQ\n",
+                matrix(m),
+                matrix([c, s, -s, c, vw / 2.0, vh / 2.0]),
+                matrix([1.0, 0.0, 0.0, 1.0, -pw / 2.0, -ph / 2.0]),
+                matrix(orient_matrix(o, pw, ph)),
+            );
+            self.add_overlay(page, stream, wm.foreground)?;
+        }
+        Ok(())
+    }
+
+    /// Add a self-contained stream above or below the page's (wrapped) content.
+    fn add_overlay(&mut self, page: ObjectId, stream: String, foreground: bool) -> Result<()> {
+        let s = Some(stream.into_bytes());
+        if foreground {
+            self.wrap_contents(page, None, s)
+        } else {
+            self.wrap_contents(page, s, None)
+        }
     }
 
     /// Apply headers, footers, page numbers and Bates numbers to the given pages (0-based).
@@ -323,7 +394,7 @@ impl Pdf {
                     vw - hf.margin - tw, hf.margin / 2.0, escape(&t)
                 ));
             }
-            self.add_layers(page, None, Some(s.into_bytes()), font, None)?;
+            self.add_layers(page, None, Some(s.into_bytes()), font)?;
         }
         Ok(())
     }

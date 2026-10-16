@@ -138,3 +138,29 @@ fn search_finds_text() {
     assert_eq!(hits.len(), 2, "{hits:?}");
     assert_eq!(hits[0].page, 0);
 }
+
+#[test]
+fn search_joins_words_hyphenated_at_a_line_end() {
+    let p = Pdf::from_text(
+        "the infor-\nmation age, self-\nemployed\nnot - joined",
+        (300.0, 200.0),
+    )
+    .unwrap();
+    for q in [
+        "information",
+        "INFOR- MATION",
+        "self-employed",
+        "selfemployed",
+        "the information age",
+    ] {
+        assert_eq!(p.search(q).unwrap().len(), 1, "{q}");
+        assert_eq!(p.find_text_matches(0, q).unwrap().len(), 1, "{q}");
+    }
+    // Both halves are highlighted.
+    assert_eq!(p.find_text_matches(0, "information").unwrap()[0].len(), 2);
+    // Only a hyphen between letters at a line end joins; other line breaks and hyphens stay.
+    for q in ["employednot", "not-joined", "notjoined"] {
+        assert!(p.search(q).unwrap().is_empty(), "{q}");
+        assert!(p.find_text_matches(0, q).unwrap().is_empty(), "{q}");
+    }
+}

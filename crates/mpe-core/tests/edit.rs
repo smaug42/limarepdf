@@ -1,5 +1,5 @@
 use lopdf::{dictionary, Dictionary, Object, Stream};
-use mpe_core::{render, FontChoice, ObjectKind, PathStyle, Pdf, Shape, TextEdit};
+use mpe_core::{render, FontChoice, ImageWatermark, ObjectKind, PathStyle, Pdf, Shape, TextEdit};
 
 const W: u32 = 300;
 const H: u32 = 200;
@@ -76,6 +76,23 @@ fn finds_text_boxes_in_visible_text() {
     assert!(b[3] > 52.0 && b[3] < 58.0, "{b:?}");
     assert_eq!(p.find_text_boxes(0, "l").unwrap().len(), 2);
     assert!(p.find_text_boxes(0, "   ").unwrap().is_empty());
+}
+
+#[test]
+fn finds_text_in_reading_order_not_drawing_order() {
+    // The lower line is drawn first.
+    let p =
+        make("BT /F1 18 Tf 20 100 Td (gamma) Tj ET\nBT /F1 18 Tf 20 150 Td (alpha beta) Tj ET\n");
+    let m = p.find_text_matches(0, "beta gamma").unwrap();
+    assert_eq!(m.len(), 1, "{m:?}");
+    assert_eq!(m[0].len(), 2, "{m:?}");
+    assert!(
+        m[0][0][1] < m[0][1][1],
+        "beta's box is above gamma's: {m:?}"
+    );
+    assert_eq!(p.search("beta gamma").unwrap().len(), 1);
+    assert!(p.find_text_matches(0, "gamma alpha").unwrap().is_empty());
+    assert!(p.search("gamma alpha").unwrap().is_empty());
 }
 
 #[test]
@@ -701,4 +718,49 @@ fn inline_images_survive_edits() {
     let s = Shot(render::Renderer::new(&hp).render(0, 1.0).unwrap());
     assert!(s.is(200, 200, RED), "inline image moved and still drawn");
     assert!(s.is(100, 200, WHITE));
+}
+
+#[test]
+fn image_watermark_is_fitted_centred_and_layered() {
+    const GREEN: [u8; 3] = [0, 200, 0];
+    for foreground in [true, false] {
+        let mut p = make(BASE);
+        // 40 x 20 at half the page fits a 150 x 100 box by width: 150 x 75, centred,
+        // so x 75..225 and y 62.5..137.5 from the top.
+        let mut wm = ImageWatermark::new(png(40, 20, [0, 200, 0, 255]));
+        wm.opacity = 1.0;
+        wm.foreground = foreground;
+        p.add_image_watermark(&[0], &wm).unwrap();
+        let s = shot(&mut p);
+        assert!(s.is(200, 70, GREEN));
+        assert!(s.is(80, 130, if foreground { GREEN } else { RED }));
+        assert!(s.is(70, 130, RED));
+        assert!(s.is(230, 100, WHITE));
+        assert!(s.is(150, 55, WHITE));
+    }
+}
+
+#[test]
+fn watermarks_keep_their_own_opacity_and_inherited_resources() {
+    let mut p = make(BASE);
+    // Move the page's resources up to the page tree, as many files do.
+    let page = p.page_ids()[0];
+    let d = p.doc.get_dictionary_mut(page).unwrap();
+    let res = d.remove(b"Resources").unwrap();
+    let parent = d.get(b"Parent").unwrap().as_reference().unwrap();
+    p.doc
+        .get_dictionary_mut(parent)
+        .unwrap()
+        .set("Resources", res);
+    p.add_header_footer(&[0], &Default::default()).unwrap();
+    let mut wm = ImageWatermark::new(png(4, 4, [0, 0, 0, 255]));
+    wm.opacity = 0.2;
+    p.add_image_watermark(&[0], &wm).unwrap();
+    wm.opacity = 0.6;
+    p.add_image_watermark(&[0], &wm).unwrap();
+    let s = shot(&mut p);
+    assert!(s.is(62, 45, [0, 0, 255]), "page text keeps its font");
+    let res = p.doc.get_dictionary(page).unwrap().get(b"Resources");
+    let gs = res.unwrap().as_dict().unwrap().get(b"ExtGState").unwrap();
+    assert_eq!(gs.as_dict().unwrap().len(), 2);
 }

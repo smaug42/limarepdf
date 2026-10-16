@@ -1,6 +1,50 @@
 # Changelog
 
-## [Unreleased]
+## [0.6.0] - 2026-10-15
+
+Page tools and sturdier handling of damaged files: remove blank pages, split at bookmarks, page labels and picture
+watermarks; search that finds hyphenated words; and a malformed file now shows an error instead of closing the app.
+The Windows installer shows its steps.
+
+### Added
+
+- Remove blank pages: pages of one even colour, give or take specks or a lone page number. In the app (☰ menu and
+  command palette; Undo brings them back) and as `mpe remove-blank`, with `--tolerance` for how much may be on a
+  page.
+- Split at bookmarks, down to a chosen level, with each file named after its bookmark: in the app's Split into
+  files section and as `mpe split --bookmarks [LEVEL]`. Splitting in the app runs in the background.
+- Page labels (page numbering such as i, ii, 1, 2 or A-1): shown in the status bar, thumbnails and bookmark tips, set
+  from the selected pages in the inspector, and listed, set and removed with `mpe labels`. Labels stay with their
+  pages when pages are deleted, inserted, moved, extracted or appended.
+- Picture watermarks: a PNG, JPEG or TIFF picture centred on each page, sized as a share of the page, with opacity,
+  rotation, and above or behind the content. In the app's Watermark section (Text or Picture) and as
+  `mpe watermark --image FILE [--scale PERCENT]`. The picture is stored once, however many pages it is on.
+
+### Changed
+
+- New rectangles and ellipses have no fill; turn Fill on in the inspector to fill them.
+- In the app, after adding a watermark or headers and footers, the section's Update button changes what was just
+  added instead of stamping another copy on top; Add another keeps it and adds a second.
+- The Windows installer shows its steps, says in plain words that MPE is free and open source, and lets you choose
+  where to install MPE.
+
+### Fixed
+
+- Search finds words hyphenated at a line end, with or without the hyphen, in the app and in `mpe search`.
+- Search highlights follow the page's reading order, as the results list does, so every match listed is highlighted
+  and stepping through results goes to the right place.
+- On Windows, a console window no longer opens behind the app.
+- The start screen card's outline stays lit while the pointer is over its buttons and recent files, instead of
+  flickering.
+- Two watermarks with different opacities on the same page each keep their own opacity.
+- Headers, footers, watermarks and OCR text no longer break the page's own text and images on pages that take their
+  resources from the page tree.
+- A malformed file that makes MPE fail while opening, editing or saving shows an error instead of closing the app.
+  A failed edit leaves the document as it was. A failure while showing a document (pages, thumbnails, search,
+  bookmarks, comments, the inspector) puts an error page in that tab, with Save a copy and Close, instead of
+  closing the app with all its tabs.
+- Release builds check integer arithmetic for overflow, so a malformed file stops with an error instead of producing
+  wrong results.
 
 ## [0.5.0] - 2026-10-15
 

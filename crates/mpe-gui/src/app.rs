@@ -7,19 +7,19 @@ use crate::markup;
 use crate::recent::Recent;
 use crate::selection::Selection;
 use crate::settings::Settings;
-use crate::tab::{Side, Tab};
+use crate::tab::{Side, Stamp, Tab};
 use crate::theme;
 use eframe::egui::{self, AtomExt as _, Key};
 use egui_phosphor::regular as icon;
 use mpe_core::render::{image_names, ImageFormat};
 use mpe_core::{
-    parse_page_range, print, Bates, HeaderFooter, ImageImport, OcrResult, Pdf, ScanResult,
-    Watermark,
+    parse_page_range, part_file_name, print, Bates, HeaderFooter, ImageImport, ImageWatermark,
+    OcrResult, Pdf, ScanResult, Watermark,
 };
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 
-const IMAGE_EXTS: [&str; 5] = ["png", "jpg", "jpeg", "tif", "tiff"];
+pub const IMAGE_EXTS: [&str; 5] = ["png", "jpg", "jpeg", "tif", "tiff"];
 
 fn is_image(p: &Path) -> bool {
     p.extension()
@@ -309,7 +309,7 @@ impl App {
         let tx = self.tx.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let msg = match Pdf::open(&path, password.as_deref()) {
+            let msg = match crate::guard(|| Pdf::open(&path, password.as_deref())) {
                 Ok(pdf) => Loaded::Ok { path, pdf, page },
                 Err(e) => {
                     let s = format!("{e:#}");
@@ -336,7 +336,9 @@ impl App {
         page: Option<usize>,
         dirty: bool,
     ) {
-        match Tab::new(ctx, self.next_id, pdf, path) {
+        let tab =
+            crate::guard(|| Tab::new(ctx, self.next_id, pdf, path).map_err(anyhow::Error::msg));
+        match tab {
             Ok(mut t) => {
                 self.next_id += 1;
                 t.dirty = dirty;
@@ -346,7 +348,7 @@ impl App {
                 self.tabs.push(t);
                 self.active = self.tabs.len() - 1;
             }
-            Err(e) => self.dialog = Dialog::Message("Cannot open".into(), e),
+            Err(e) => self.dialog = Dialog::Message("Cannot open".into(), format!("{e:#}")),
         }
     }
 
@@ -451,7 +453,7 @@ impl App {
         let (tab, revision, mut pdf) = (t.id, t.revision, t.pdf.clone());
         let (tx, ctx) = (self.tx.clone(), ctx.clone());
         std::thread::spawn(move || {
-            let result = work(&mut pdf)
+            let result = crate::guard(|| work(&mut pdf))
                 .map(|(changed, text)| (pdf, changed, text))
                 .map_err(|e| format!("{e:#}"));
             let _ = tx.send(Loaded::Job {
@@ -530,9 +532,11 @@ impl App {
         }
         let result: mpe_core::Result<()> = match layout {
             dlg::Layout::TextFile => std::fs::write(&path, text).map_err(Into::into),
-            _ => Excerpt::new(t, layout)
-                .build(&t.pdf)
-                .and_then(|mut d| d.save(&path)),
+            _ => crate::guard(|| {
+                Excerpt::new(t, layout)
+                    .build(&t.pdf)
+                    .and_then(|mut d| d.save(&path))
+            }),
         };
         match result {
             Ok(()) => self.status = format!("Saved the selected text to {}", path.display()),
@@ -586,7 +590,7 @@ impl App {
             tab.path.clone().unwrap()
         };
         tab.pdf.set_encryption(tab.encryption.clone());
-        match tab.pdf.save(&path) {
+        match crate::guard(|| tab.pdf.save(&path)) {
             Ok(()) => {
                 self.status = format!("Saved {}", path.display());
                 self.recent.add(&path);
@@ -814,6 +818,17 @@ impl App {
                     self.notify(ctx, format!("Deleted {what}"));
                 }
             }
+            Act::RemoveBlank => self.spawn_job(ctx, "Remove blank pages", |p| {
+                let gone = p.remove_blank_pages(mpe_core::BLANK_TOLERANCE)?;
+                let text = match gone.len() {
+                    0 => "No blank pages were found.".to_string(),
+                    n => format!(
+                        "Removed {n} blank page(s): {}. Undo brings them back.",
+                        mpe_core::format_page_range(&gone)
+                    ),
+                };
+                Ok((!gone.is_empty(), text))
+            }),
             Act::Extract => {
                 let t = &mut self.tabs[self.active];
                 match t.pdf.extract(&t.targets()) {
@@ -834,7 +849,7 @@ impl App {
                 };
                 let mut docs = Vec::new();
                 for f in &files {
-                    match Pdf::open(f, None) {
+                    match crate::guard(|| Pdf::open(f, None)) {
                         Ok(d) => docs.push(d),
                         Err(e) => {
                             self.dialog = Dialog::Message(
@@ -980,6 +995,20 @@ impl App {
                 let size = self.tabs[active].forms.blank;
                 self.insert_blank(ctx, after, size);
             }
+            Apply::Label(page) => {
+                let t = &mut self.tabs[active];
+                let l = &t.forms.label;
+                let range = mpe_core::LabelRange {
+                    page,
+                    style: l.style,
+                    prefix: l.prefix.clone(),
+                    first: l.start.max(1),
+                };
+                t.edit(ctx, |p| p.set_label_range(range));
+            }
+            Apply::RemoveLabels => {
+                self.tabs[active].edit(ctx, |p| p.set_label_ranges(&[]));
+            }
             Apply::Props => {
                 let t = &mut self.tabs[active];
                 let info = t.forms.meta.clone();
@@ -1005,11 +1034,31 @@ impl App {
                     Err(e) => t.error = Some(e.to_string()),
                 }
             }
-            Apply::Watermark => {
+            Apply::Watermark { replace } => {
                 let t = &mut self.tabs[active];
+                if !replace {
+                    t.forget_stamp();
+                }
                 let s = &t.forms.wm;
-                match parse_page_range(&s.range, n) {
-                    Ok(idx) => {
+                let image = match (&s.picture, &s.image) {
+                    (false, _) => Ok(None),
+                    (true, None) => Err(anyhow::anyhow!("choose a picture first")),
+                    (true, Some(path)) => std::fs::read(path)
+                        .map(Some)
+                        .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display())),
+                };
+                match image.and_then(|im| Ok((im, parse_page_range(&s.range, n)?))) {
+                    Ok((Some(image), idx)) => {
+                        let wm = ImageWatermark {
+                            image,
+                            scale: s.scale / 100.0,
+                            opacity: s.opacity,
+                            rotation: s.rotation,
+                            foreground: s.foreground,
+                        };
+                        t.edit_stamp(ctx, Stamp::Watermark, |p| p.add_image_watermark(&idx, &wm));
+                    }
+                    Ok((None, idx)) => {
                         let wm = Watermark {
                             text: s.text.clone(),
                             font_size: s.size,
@@ -1018,13 +1067,16 @@ impl App {
                             color: (s.color[0], s.color[1], s.color[2]),
                             foreground: s.foreground,
                         };
-                        t.edit(ctx, |p| p.add_watermark(&idx, &wm));
+                        t.edit_stamp(ctx, Stamp::Watermark, |p| p.add_watermark(&idx, &wm));
                     }
                     Err(e) => t.error = Some(e.to_string()),
                 }
             }
-            Apply::HeaderFooter => {
+            Apply::HeaderFooter { replace } => {
                 let t = &mut self.tabs[active];
+                if !replace {
+                    t.forget_stamp();
+                }
                 let s = &t.forms.hf;
                 match parse_page_range(&s.range, n) {
                     Ok(idx) => {
@@ -1041,7 +1093,7 @@ impl App {
                                 start: s.start,
                             }),
                         };
-                        t.edit(ctx, |p| p.add_header_footer(&idx, &hf));
+                        t.edit_stamp(ctx, Stamp::HeaderFooter, |p| p.add_header_footer(&idx, &hf));
                     }
                     Err(e) => t.error = Some(e.to_string()),
                 }
@@ -1099,30 +1151,31 @@ impl App {
                 }
             }
             Apply::Split => {
-                let every = self.tabs[active].forms.split.max(1);
+                let f = &self.tabs[active].forms;
+                let level = f.split_at_marks.then_some(f.split_level.max(1));
+                let every = f.split.max(1);
                 let Some(dir) = rfd::FileDialog::new()
                     .set_title("Choose output folder")
                     .pick_folder()
                 else {
                     return;
                 };
-                let t = &mut self.tabs[active];
-                let stem = t.stem("part");
-                match t.pdf.split_every(every) {
-                    Ok(parts) => {
-                        let count = parts.len();
-                        for (i, mut part) in parts.into_iter().enumerate() {
-                            let path = dir.join(format!("{stem}-{:03}.pdf", i + 1));
-                            if let Err(e) = part.save(path) {
-                                let text = format!("{e:#}");
-                                self.dialog = Dialog::Message("Split failed".into(), text);
-                                return;
-                            }
-                        }
-                        self.status = format!("Wrote {count} files to {}", dir.display());
+                let stem = self.tabs[active].stem("part");
+                self.spawn_job(ctx, "Split into files", move |p| {
+                    let parts = match level {
+                        Some(level) => p.split_at_bookmarks(level)?,
+                        None => p
+                            .split_every(every)?
+                            .into_iter()
+                            .map(|d| (None, d))
+                            .collect(),
+                    };
+                    let n = parts.len();
+                    for (i, (title, mut part)) in parts.into_iter().enumerate() {
+                        part.save(dir.join(part_file_name(&stem, i + 1, title.as_deref())))?;
                     }
-                    Err(e) => t.error = Some(format!("{e:#}")),
-                }
+                    Ok((false, format!("Wrote {n} files to {}.", dir.display())))
+                });
             }
         }
     }
@@ -1622,6 +1675,25 @@ fn file_name(path: &Path) -> String {
     }
 }
 
+/// A tab whose document could not be shown: what happened, and ways out that don't
+/// need the pages drawn.
+fn broken_state(ui: &mut egui::Ui, why: &str, acts: &mut Vec<Act>) {
+    ui.vertical_centered(|ui| {
+        ui.add_space(ui.available_height() / 3.0);
+        ui.heading("This document can't be shown");
+        ui.add_space(8.0);
+        ui.label(why);
+        ui.weak("Your other tabs are not affected. Changes made here can still be saved.");
+        ui.add_space(16.0);
+        if ui.button("Save a copy…").clicked() {
+            acts.push(Act::SaveAs);
+        }
+        if ui.button("Close this tab").clicked() {
+            acts.push(Act::CloseTab);
+        }
+    });
+}
+
 /// The window with no document: a card to open a PDF or start from images. The card
 /// is a drop target and is clickable as a whole; it lights up while files are dragged
 /// over the window.
@@ -1643,7 +1715,9 @@ fn empty_state(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
         .on_hover_cursor(egui::CursorIcon::PointingHand);
     let v = ui.visuals();
     let accent = theme::accent(v.dark_mode);
-    let stroke = if dragging || r.hovered() {
+    // Lit while the pointer is anywhere on the card: the buttons inside take the hover
+    // from the card, so `r.hovered()` would flicker as the pointer crosses them.
+    let stroke = if dragging || ui.rect_contains_pointer(card) {
         egui::Stroke::new(2.0, accent)
     } else {
         egui::Stroke::new(1.0, v.widgets.noninteractive.bg_stroke.color)
@@ -1928,7 +2002,12 @@ impl eframe::App for App {
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
                 if let Some(t) = self.tabs.get(self.active) {
-                    ui.label(format!("Page {} of {}", t.current + 1, t.page_count()));
+                    let (n, name) = (t.current + 1, t.page_name(t.current));
+                    ui.label(if name == n.to_string() {
+                        format!("Page {n} of {}", t.page_count())
+                    } else {
+                        format!("Page {name} ({n} of {})", t.page_count())
+                    });
                     ui.separator();
                     ui.label(format!("{:.0}%", t.zoom * 100.0));
                     if t.encryption.is_some() {
@@ -1957,7 +2036,7 @@ impl eframe::App for App {
                         ui.selectable_value(&mut t.side, Side::Comments, "Comments");
                     });
                     ui.separator();
-                    match t.side {
+                    t.guarded(|t| match t.side {
                         Side::Pages => t.show_thumbs(ui, &c),
                         Side::Bookmarks => t.show_outline(ui),
                         Side::Comments => t.show_comments(ui),
@@ -1991,7 +2070,7 @@ impl eframe::App for App {
                                 t.go_to(p);
                             }
                         }
-                    }
+                    });
                 });
         }
 
@@ -2036,11 +2115,13 @@ impl eframe::App for App {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        if t.ed.owns_panel() {
-                            t.ed.inspector(ui);
-                        } else {
-                            panel_apply = inspector::show(ui, t, &c);
-                        }
+                        t.guarded(|t| {
+                            if t.ed.owns_panel() {
+                                t.ed.inspector(ui);
+                            } else {
+                                panel_apply = inspector::show(ui, t, &c);
+                            }
+                        })
                     });
             });
             if toggle {
@@ -2065,7 +2146,10 @@ impl eframe::App for App {
         egui::CentralPanel::default().frame(canvas).show(ui, |ui| {
             if let Some(t) = self.tabs.get_mut(self.active) {
                 t.ed.author = author;
-                t.show_pages(ui, &c);
+                t.guarded(|t| t.show_pages(ui, &c));
+                if let Some(why) = &t.broken {
+                    broken_state(ui, why, &mut acts);
+                }
             } else {
                 empty_state(ui, &recent, &mut acts);
             }

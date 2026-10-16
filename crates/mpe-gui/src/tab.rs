@@ -35,6 +35,13 @@ struct Step {
     encryption: Option<Encryption>,
 }
 
+/// Inspector edits that applying again replaces, while nothing else has changed since.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Stamp {
+    Watermark,
+    HeaderFooter,
+}
+
 pub struct Tab {
     pub id: u64,
     pub pdf: Pdf,
@@ -59,10 +66,14 @@ pub struct Tab {
     /// After a zoom change: the place to put back at the top of the view.
     rezoom: Option<(usize, f32)>,
     pub current: usize,
+    /// Each page's label, when the document has page labels.
+    pub labels: Option<Vec<String>>,
     anchor: usize,
     goto: Option<usize>,
     undo: Vec<Step>,
     redo: Vec<Step>,
+    /// The last edit made by [`Tab::edit_stamp`]: its kind, and the revision and undo depth just after it.
+    last_stamp: Option<(Stamp, u64, usize)>,
     pub side: Side,
     pub query: String,
     pub hits: Vec<SearchHit>,
@@ -73,6 +84,9 @@ pub struct Tab {
     /// Scroll to this height on the `goto` page (points from its top), with `goto`.
     goto_y: Option<f32>,
     pub error: Option<String>,
+    /// Showing the document failed with an internal error (see [`Tab::guarded`]); the tab
+    /// shows this message instead of the pages.
+    pub broken: Option<String>,
     pub ed: Editor,
     /// Pages whose texture is out of date but still shown until the new render arrives.
     stale: HashSet<usize>,
@@ -112,8 +126,10 @@ impl Tab {
         pdf.refresh_appearances();
         let bytes = pdf.app_snapshot().map_err(|e| e.to_string())?;
         let sizes = sizes_of(&pdf);
+        let labels = pdf.page_labels();
         let signed = pdf.signature_count() > 0;
         Ok(Self {
+            labels,
             banners,
             id,
             pdf,
@@ -136,6 +152,7 @@ impl Tab {
             goto: None,
             undo: Vec::new(),
             redo: Vec::new(),
+            last_stamp: None,
             side: Side::Pages,
             query: String::new(),
             hits: Vec::new(),
@@ -143,6 +160,7 @@ impl Tab {
             matches: HashMap::new(),
             goto_y: None,
             error: None,
+            broken: None,
             ed: Editor::default(),
             requested: Vec::new(),
             forms: Forms::default(),
@@ -183,6 +201,14 @@ impl Tab {
         self.sizes.len()
     }
 
+    /// What to call page `p` (0-based): its label, or its number.
+    pub fn page_name(&self, p: usize) -> String {
+        self.labels
+            .as_ref()
+            .and_then(|l| l.get(p).cloned())
+            .unwrap_or_else(|| (p + 1).to_string())
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
@@ -206,6 +232,20 @@ impl Tab {
 
     // ------------------------------------------------------------ editing
 
+    /// Draw part of the tab, unless it is broken. A panic while drawing (reading a damaged
+    /// file) marks the tab broken instead of closing the app with every other tab.
+    pub fn guarded(&mut self, f: impl FnOnce(&mut Self)) {
+        if self.broken.is_some() {
+            return;
+        }
+        if let Err(e) = crate::guard(|| {
+            f(self);
+            Ok(())
+        }) {
+            self.broken = Some(e.to_string());
+        }
+    }
+
     /// Run an edit with undo support. On failure the document is left unchanged, and
     /// false is returned.
     pub fn edit(
@@ -214,6 +254,47 @@ impl Tab {
         f: impl FnOnce(&mut Pdf) -> mpe_core::Result<()>,
     ) -> bool {
         self.edit_inner(ctx, None, f)
+    }
+
+    /// Like [`Tab::edit`], but if the last change was the same kind of stamp, it is replaced rather than
+    /// added to, so adjusting a setting and applying again doesn't pile up copies. One undo step either way.
+    pub fn edit_stamp(
+        &mut self,
+        ctx: &egui::Context,
+        kind: Stamp,
+        f: impl FnOnce(&mut Pdf) -> mpe_core::Result<()>,
+    ) -> bool {
+        let mut replaced = None;
+        if self.replaces_stamp(kind) {
+            if let Some(Step {
+                pdf: Some(bytes), ..
+            }) = self.undo.last()
+            {
+                if let Ok(before) = Pdf::from_bytes(bytes, None) {
+                    let step = self.undo.pop();
+                    replaced = Some((std::mem::replace(&mut self.pdf, before), step));
+                }
+            }
+        }
+        let ok = self.edit(ctx, f);
+        if ok {
+            self.last_stamp = Some((kind, self.revision, self.undo.len()));
+        } else if let Some((pdf, step)) = replaced {
+            // Put the earlier stamp back.
+            self.pdf = pdf;
+            self.undo.extend(step);
+        }
+        ok
+    }
+
+    /// Keep the last stamp: the next one is added alongside it.
+    pub fn forget_stamp(&mut self) {
+        self.last_stamp = None;
+    }
+
+    /// Whether applying a stamp of this kind now would replace the previous one.
+    pub fn replaces_stamp(&self, kind: Stamp) -> bool {
+        self.last_stamp == Some((kind, self.revision, self.undo.len()))
     }
 
     /// Like [`Tab::edit`] for changes confined to the given pages: the old picture stays visible until the new
@@ -233,14 +314,15 @@ impl Tab {
         soft: Option<&[usize]>,
         f: impl FnOnce(&mut Pdf) -> mpe_core::Result<()>,
     ) -> bool {
-        let before = match self.pdf.snapshot() {
+        let before = match crate::guard(|| self.pdf.snapshot()) {
             Ok(b) => b,
             Err(e) => {
-                self.error = Some(e.to_string());
+                self.error = Some(format!("{e:#}"));
                 return false;
             }
         };
-        if let Err(e) = f(&mut self.pdf) {
+        // A panic leaves the document half changed, so it is put back like any other failure.
+        if let Err(e) = crate::guard(|| f(&mut self.pdf)) {
             if let Ok(p) = Pdf::from_bytes(&before, None) {
                 self.pdf = p;
             }
@@ -550,6 +632,7 @@ impl Tab {
             Ok(bytes) => {
                 self.worker = Worker::spawn(ctx.clone(), bytes);
                 self.sizes = sizes_of(&self.pdf);
+                self.labels = self.pdf.page_labels();
                 self.pages.clear();
                 self.thumbs.clear();
                 self.pending.clear();
@@ -612,7 +695,7 @@ impl Tab {
                         }
                         let row = egui::Button::selectable(false, &item.title).truncate();
                         let tip = match item.page {
-                            Some(p) => format!("{}\nPage {}", item.title, p + 1),
+                            Some(p) => format!("{}\nPage {}", item.title, self.page_name(p)),
                             None => format!("{}\nGoes outside this document", item.title),
                         };
                         let r = ui.add_enabled(item.page.is_some(), row);
@@ -1199,7 +1282,7 @@ impl Tab {
                     ui.painter().text(
                         Pos2::new(rect.center().x, rect.max.y - 9.0),
                         egui::Align2::CENTER_CENTER,
-                        (i + 1).to_string(),
+                        self.page_name(i),
                         egui::FontId::proportional(12.0),
                         ui.visuals().text_color(),
                     );

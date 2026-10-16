@@ -1,9 +1,12 @@
 //! The document outline (bookmarks) and the destinations it points to.
 
 use crate::doc::decode_text;
-use crate::Pdf;
+use crate::{Pdf, Result};
+use anyhow::bail;
 use lopdf::{Dictionary, Object, ObjectId};
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 
 /// Limits that keep a malformed or hostile file from running away.
 const MAX_ITEMS: usize = 100_000;
@@ -25,6 +28,19 @@ pub struct OutlineItem {
 }
 
 impl Pdf {
+    /// Split where the bookmarks down to `level` (1 = top level only) point: one part per bookmarked page, in page
+    /// order, titled by its first bookmark. Pages before the first bookmark are a part of their own, untitled.
+    pub fn split_at_bookmarks(&self, level: usize) -> Result<Vec<(Option<String>, Pdf)>> {
+        let parts = bookmark_parts(&self.outline(), level, self.page_count());
+        if parts.is_empty() {
+            bail!("this document has no bookmarks that go to its pages");
+        }
+        parts
+            .into_par_iter()
+            .map(|(title, pages)| Ok((title, self.extract(&pages.collect::<Vec<_>>())?)))
+            .collect()
+    }
+
     /// The bookmarks; empty when the document has none. Broken entries are skipped,
     /// never fatal: a bookmark whose target can't be found gets `page: None`.
     pub fn outline(&self) -> Vec<OutlineItem> {
@@ -211,5 +227,79 @@ impl Pdf {
             .into_iter()
             .map(|(n, id)| (id, n as usize - 1))
             .collect()
+    }
+}
+
+/// The page ranges that bookmarks down to `level` start, in page order, each titled by the first bookmark on its
+/// first page. Pages before the first bookmark come first, untitled. Empty when no such bookmark has a page.
+fn bookmark_parts(
+    items: &[OutlineItem],
+    level: usize,
+    total: usize,
+) -> Vec<(Option<String>, Range<usize>)> {
+    let mut starts: Vec<(usize, &str)> = items
+        .iter()
+        .filter(|i| i.depth < level)
+        .filter_map(|i| Some((i.page.filter(|&p| p < total)?, i.title.trim())))
+        .collect();
+    // A stable sort, so the first bookmark in the outline names a page several go to.
+    starts.sort_by_key(|s| s.0);
+    starts.dedup_by_key(|s| s.0);
+    let mut parts = Vec::new();
+    if let Some(&(first, _)) = starts.first().filter(|s| s.0 > 0) {
+        parts.push((None, 0..first));
+    }
+    for (k, &(start, title)) in starts.iter().enumerate() {
+        let end = starts.get(k + 1).map_or(total, |s| s.0);
+        parts.push((Some(title.to_string()), start..end));
+    }
+    parts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(title: &str, depth: usize, page: Option<usize>) -> OutlineItem {
+        OutlineItem {
+            title: title.into(),
+            depth,
+            page,
+            open: false,
+            has_children: false,
+        }
+    }
+
+    #[test]
+    fn parts_start_at_bookmarked_pages() {
+        let items = [
+            item("One", 0, Some(2)),
+            item("One A", 1, Some(3)),
+            item("Elsewhere", 0, None),
+            item("Two", 0, Some(5)),
+            item("Also two", 0, Some(5)),
+            item("Past the end", 0, Some(99)),
+        ];
+        let titled = |t: &str, r: Range<usize>| (Some(t.to_string()), r);
+        assert_eq!(
+            bookmark_parts(&items, 1, 8),
+            vec![(None, 0..2), titled("One", 2..5), titled("Two", 5..8)]
+        );
+        assert_eq!(
+            bookmark_parts(&items, 2, 8),
+            vec![
+                (None, 0..2),
+                titled("One", 2..3),
+                titled("One A", 3..5),
+                titled("Two", 5..8)
+            ]
+        );
+        // Out of page order in the outline, and a bookmark on the first page.
+        let items = [item("B", 0, Some(1)), item("A", 0, Some(0))];
+        assert_eq!(
+            bookmark_parts(&items, 1, 3),
+            vec![titled("A", 0..1), titled("B", 1..3)]
+        );
+        assert!(bookmark_parts(&[item("x", 0, None)], 1, 3).is_empty());
     }
 }

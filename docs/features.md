@@ -1,6 +1,6 @@
 # Features and status
 
-**Status: 0.5, for testing.** Most testing has been on Linux. Annotations can be viewed, moved, deleted and flattened;
+**Status: 0.6, for testing.** Most testing has been on Linux. Annotations can be viewed, moved, deleted and flattened;
 text can be highlighted and marked; notes, text boxes, shapes, lines, freehand drawings and replies added. Digital
 signatures and redaction are not started.
 
@@ -12,7 +12,7 @@ signatures and redaction are not started.
 - **Edit content:** move, resize, restyle and delete text, images and shapes; edit text; add text, shapes and images.
 - **Fill in forms:** text fields, checkboxes, radio buttons and lists, in the app or from JSON on the command line;
   flatten them so the values can't be changed.
-- **Stamp pages:** headers, footers, page numbers, Bates numbers and text watermarks.
+- **Stamp pages:** headers, footers, page numbers, Bates numbers, and text or picture watermarks.
 - **Scans:** turn images into PDFs, shrink and straighten scanned pages, and add a searchable text layer with
   built-in OCR (Latin script).
 - **Copy text,** including recognised text.
@@ -38,14 +38,14 @@ available.
 | App icon | Done | Window, taskbar and Windows `.exe`. Wayland needs the desktop entry installed. [Details](install.md#menu-entry-and-icon-on-linux) |
 | Light and dark themes | Done | Follows the system, or chosen with the top bar's theme button; remembered between runs |
 | Rendering | Partial | Some transparency groups are drawn wrongly. Annotations without a drawing of their own are drawn by MPE for the common types only. [Details](rendering.md) |
-| Search | Done | Phrases across line breaks are found and highlighted; hyphenated words split over lines are not. [Details](search-and-text.md) |
+| Search | Done | Phrases across line breaks, and words hyphenated at a line end, are found and highlighted. [Details](search-and-text.md) |
 | Select and copy text | Done | With the default read tool; across pages, scrolling while you drag; in the order on the page, not the file's drawing order; includes recognised text |
 | Print or save selected text | Done | As the pages look, full width, cut down to the selected lines, or as plain text in Helvetica (Western European characters only); also saves a .txt file |
-| Page operations: insert, delete, rotate, extract, reorder, crop | Done | Crop by margins; no dragging a crop box on the page |
-| Merge and split | Done | Bookmarks, forms and named destinations of appended files are not carried over. Split by file size: No |
+| Page operations: insert, delete, rotate, extract, reorder, crop, remove blank pages | Done | Crop by margins; no dragging a crop box on the page. Blank means one even colour, give or take specks or a lone page number |
+| Merge and split | Done | Split by page count or at bookmarks, files named after them. Bookmarks, forms and named destinations of appended files are not carried over, and split parts have no bookmarks. Split by file size: No |
 | Undo and redo | Done | 20 levels, including password settings |
 | Headers, footers, page numbers, dates, Bates numbers | Done | Helvetica and Latin-1 characters only |
-| Watermarks | Partial | Text only |
+| Watermarks | Done | Text or a PNG, JPEG or TIFF picture; centred, with size, opacity, rotation, above or behind |
 | Document properties | Done | Title, author, subject, keywords, creator, producer |
 | Password security | Done | All four ciphers and permission flags. [Things to know](security.md) |
 | Opening protected files | Done | With the open (user) password |
@@ -62,6 +62,7 @@ available.
 | Forms | Partial | Fill in text fields, checkboxes, radio buttons and lists in the app (Tab between fields, highlight, reset, flatten) and from the command line (`mpe form`, values as JSON, flatten all or some pages). Latin-1 text only; JavaScript doesn't run; creating fields and signing: No. [Details](gui.md#filling-in-forms) |
 | XFA-only forms (made for Adobe Reader) | No | Recognised and explained in a notice and by `mpe form`; showing or filling them is not planned (see below). Hybrid forms are filled through their ordinary fields |
 | Form data import/export (FDF, XFDF), barcodes, JavaScript | No | |
+| Page labels | Done | Numbering such as i, ii, 1, 2 or A-1: shown in the status bar, thumbnails and bookmark tips; set from the selected pages in the inspector or with `mpe labels`; kept with their pages when pages move. Going to a page by its label: No. [Details](cli.md#page-labels) |
 | Bookmarks | Partial | Shown in the Bookmarks tab (also from the command palette) and followed; adding, editing or deleting them: No. [Details](gui.md#the-window) |
 | Links | Partial | Followed: to pages, and to web and email addresses after asking. Links to other PDF files, and adding or editing links: No. [Details](gui.md#links) |
 | Layers, attachments | No | |
@@ -82,6 +83,10 @@ available.
 - Saving removes the validity of digital signatures, as any rewrite does. The app asks first when a document is
   signed; the command line doesn't.
 - Files the renderer cannot read show "Rendering…" on their pages; editing may still work.
+- A malformed file that makes MPE fail while opening, editing or saving gets an error message, and a failed edit
+  leaves the document as it was. A failure while showing the document (pages, thumbnails, search, bookmarks,
+  comments, the inspector) turns that tab into an error page with Save a copy and Close; other tabs carry on. A
+  failure in a menu command outside those can still close the app.
 
 ## Planned and proposed
 

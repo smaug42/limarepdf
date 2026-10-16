@@ -9,9 +9,10 @@ macro_rules! out {
 }
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use mpe_core::{
-    parse_page_range, print, render, Annot, AnnotKind, Bates, Cipher, Encryption, Field, FieldKind,
-    FieldValue, HeaderFooter, ImageImport, Info, Ocr, OcrResult, Pdf, Restrictions, ScanMode,
-    ScanOptions, ScanResult, Watermark,
+    format_page_range, parse_page_range, part_file_name, print, render, Annot, AnnotKind, Bates,
+    Cipher, Encryption, Field, FieldKind, FieldValue, HeaderFooter, ImageImport, ImageWatermark,
+    Info, LabelRange, LabelStyle, Ocr, OcrResult, Pdf, Restrictions, ScanMode, ScanOptions,
+    ScanResult, Watermark,
 };
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
@@ -63,11 +64,14 @@ enum Cmd {
         #[arg(short, long)]
         output: PathBuf,
     },
-    /// Split into parts of N pages: out-dir/<stem>-001.pdf, ...
+    /// Split into parts of N pages (out-dir/<stem>-001.pdf, ...) or at bookmarks (out-dir/<stem>-001 Title.pdf, ...)
     Split {
         input: PathBuf,
         #[arg(long, default_value_t = 1)]
         every: usize,
+        /// Start a part at each bookmark down to this level (1 = top level only)
+        #[arg(long, num_args = 0..=1, default_missing_value = "1", conflicts_with = "every")]
+        bookmarks: Option<usize>,
         #[arg(long)]
         out_dir: PathBuf,
         #[arg(long)]
@@ -86,6 +90,14 @@ enum Cmd {
         io: Io,
         #[arg(long)]
         pages: String,
+    },
+    /// Remove pages that look blank: one even colour, give or take specks or a lone page number
+    RemoveBlank {
+        #[command(flatten)]
+        io: Io,
+        /// Percent of a page that may differ from its background (0 = nothing at all)
+        #[arg(long, default_value_t = mpe_core::BLANK_TOLERANCE)]
+        tolerance: f32,
     },
     /// Rotate pages clockwise by 90, 180 or 270
     Rotate {
@@ -173,16 +185,23 @@ enum Cmd {
         #[arg(long)]
         order: String,
     },
-    /// Add a text watermark
+    /// Add a text or picture watermark
     Watermark {
         #[command(flatten)]
         io: Io,
+        #[arg(long, required_unless_present = "image", conflicts_with = "image")]
+        text: Option<String>,
+        /// Use a PNG, JPEG or TIFF picture instead of text
         #[arg(long)]
-        text: String,
+        image: Option<PathBuf>,
         #[arg(long, default_value = "all")]
         pages: String,
-        #[arg(long, default_value_t = 96.0)]
+        /// Font size of text
+        #[arg(long, default_value_t = 96.0, conflicts_with = "image")]
         size: f32,
+        /// Picture size, as a percentage of the page it fits inside
+        #[arg(long, default_value_t = 50.0, conflicts_with = "text")]
+        scale: f32,
         #[arg(long, default_value_t = 0.25)]
         opacity: f32,
         #[arg(long, default_value_t = 45.0)]
@@ -286,6 +305,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: AnnotCmd,
     },
+    /// Work with page labels: the page numbers a document shows, such as i, ii, 1, 2
+    Labels {
+        #[command(subcommand)]
+        cmd: LabelsCmd,
+    },
     /// List the printers; the default is marked
     Printers,
     /// Print (CUPS on Linux and macOS, the print spooler on Windows)
@@ -332,6 +356,54 @@ enum Cmd {
 enum FormatArg {
     Png,
     Jpeg,
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum LabelStyleArg {
+    /// 1, 2, 3
+    Decimal,
+    /// i, ii, iii
+    LowerRoman,
+    /// I, II, III
+    UpperRoman,
+    /// a, b, c
+    LowerLetters,
+    /// A, B, C
+    UpperLetters,
+    /// The prefix alone
+    None,
+}
+
+#[derive(Subcommand)]
+enum LabelsCmd {
+    /// List the label ranges: the pages each covers and their first and last labels
+    List {
+        input: PathBuf,
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Number the pages from page N on, up to the next range that starts after it. Pages before the first
+    /// range keep plain numbers
+    Set {
+        #[command(flatten)]
+        io: Io,
+        /// The first page to number (1-based)
+        #[arg(long, default_value_t = 1)]
+        from: usize,
+        #[arg(long, value_enum, default_value_t = LabelStyleArg::Decimal)]
+        style: LabelStyleArg,
+        /// Text before each number, such as "A-"
+        #[arg(long, default_value = "")]
+        prefix: String,
+        /// The number of the first page
+        #[arg(long, default_value_t = 1)]
+        start: u32,
+    },
+    /// Remove all page labels
+    Remove {
+        #[command(flatten)]
+        io: Io,
+    },
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -873,28 +945,32 @@ fn main() -> Result<()> {
         Cmd::Split {
             input,
             every,
+            bookmarks,
             out_dir,
             password,
         } => {
             let p = open(&input, &password)?;
-            std::fs::create_dir_all(&out_dir)?;
             let stem = input
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("part")
                 .to_string();
-            let parts = p.split_every(every)?;
-            parts
-                .into_par_iter()
-                .enumerate()
-                .try_for_each(|(i, mut part)| -> Result<()> {
-                    part.save(out_dir.join(format!("{stem}-{:03}.pdf", i + 1)))
-                })?;
-            out!(
-                "split into {} files in {}",
-                p.page_count().div_ceil(every),
-                out_dir.display()
-            );
+            let parts = match bookmarks {
+                Some(level) => p.split_at_bookmarks(level)?,
+                None => p
+                    .split_every(every)?
+                    .into_iter()
+                    .map(|d| (None, d))
+                    .collect(),
+            };
+            std::fs::create_dir_all(&out_dir)?;
+            let n = parts.len();
+            parts.into_par_iter().enumerate().try_for_each(
+                |(i, (title, mut part))| -> Result<()> {
+                    part.save(out_dir.join(part_file_name(&stem, i + 1, title.as_deref())))
+                },
+            )?;
+            out!("split into {n} files in {}", out_dir.display());
         }
         Cmd::Extract { io, pages } => run_edit(&io, |p| {
             let idx = parse_page_range(&pages, p.page_count())?;
@@ -904,6 +980,14 @@ fn main() -> Result<()> {
         Cmd::Delete { io, pages } => run_edit(&io, |p| {
             let idx = parse_page_range(&pages, p.page_count())?;
             p.delete_pages(&idx)
+        })?,
+        Cmd::RemoveBlank { io, tolerance } => run_edit(&io, |p| {
+            let gone = p.remove_blank_pages(tolerance)?;
+            match gone.len() {
+                0 => out!("no blank pages"),
+                n => out!("removed {n} blank page(s): {}", format_page_range(&gone)),
+            }
+            Ok(())
         })?,
         Cmd::Rotate { io, pages, degrees } => run_edit(&io, |p| {
             let idx = parse_page_range(&pages, p.page_count())?;
@@ -1026,25 +1110,47 @@ fn main() -> Result<()> {
         Cmd::Watermark {
             io,
             text,
+            image,
             pages,
             size,
+            scale,
             opacity,
             rotation,
             background,
-        } => run_edit(&io, |p| {
-            let idx = parse_page_range(&pages, p.page_count())?;
-            p.add_watermark(
-                &idx,
-                &Watermark {
-                    text,
-                    font_size: size,
-                    opacity,
-                    rotation,
-                    foreground: !background,
-                    ..Default::default()
-                },
-            )
-        })?,
+        } => {
+            let image = match image {
+                Some(path) => Some(
+                    std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?,
+                ),
+                None => None,
+            };
+            run_edit(&io, |p| {
+                let idx = parse_page_range(&pages, p.page_count())?;
+                match image {
+                    Some(image) => p.add_image_watermark(
+                        &idx,
+                        &ImageWatermark {
+                            image,
+                            scale: scale / 100.0,
+                            opacity,
+                            rotation,
+                            foreground: !background,
+                        },
+                    ),
+                    None => p.add_watermark(
+                        &idx,
+                        &Watermark {
+                            text: text.unwrap_or_default(),
+                            font_size: size,
+                            opacity,
+                            rotation,
+                            foreground: !background,
+                            ..Default::default()
+                        },
+                    ),
+                }
+            })?
+        }
         Cmd::HeaderFooter {
             io,
             pages,
@@ -1219,6 +1325,58 @@ fn main() -> Result<()> {
                     io.output.display()
                 );
             }
+        },
+        Cmd::Labels { cmd } => match cmd {
+            LabelsCmd::List { input, password } => {
+                let p = open(&input, &password)?;
+                let (ranges, labels) = (p.label_ranges(), p.page_labels());
+                let Some(labels) = labels else {
+                    out!("no page labels");
+                    return Ok(());
+                };
+                // Pages before the first range are numbered plainly.
+                let mut starts: Vec<usize> = ranges.iter().map(|r| r.page).collect();
+                if starts.first() != Some(&0) {
+                    starts.insert(0, 0);
+                }
+                for (k, &s) in starts.iter().enumerate() {
+                    let e = starts.get(k + 1).map_or(labels.len(), |&n| n) - 1;
+                    let pages = format_page_range(&(s..=e).collect::<Vec<_>>());
+                    match s == e {
+                        true => out!("{pages:<12} {}", labels[s]),
+                        false => out!("{pages:<12} {} to {}", labels[s], labels[e]),
+                    }
+                }
+            }
+            LabelsCmd::Set {
+                io,
+                from,
+                style,
+                prefix,
+                start,
+            } => run_edit(&io, |p| {
+                if from == 0 || from > p.page_count() {
+                    bail!(
+                        "page {from} does not exist (document has {})",
+                        p.page_count()
+                    );
+                }
+                let style = match style {
+                    LabelStyleArg::Decimal => Some(LabelStyle::Decimal),
+                    LabelStyleArg::LowerRoman => Some(LabelStyle::LowerRoman),
+                    LabelStyleArg::UpperRoman => Some(LabelStyle::UpperRoman),
+                    LabelStyleArg::LowerLetters => Some(LabelStyle::LowerLetters),
+                    LabelStyleArg::UpperLetters => Some(LabelStyle::UpperLetters),
+                    LabelStyleArg::None => None,
+                };
+                p.set_label_range(LabelRange {
+                    page: from - 1,
+                    style,
+                    prefix,
+                    first: start.max(1),
+                })
+            })?,
+            LabelsCmd::Remove { io } => run_edit(&io, |p| p.set_label_ranges(&[]))?,
         },
         Cmd::Annot { cmd } => match cmd {
             AnnotCmd::List {

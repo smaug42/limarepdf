@@ -10,11 +10,8 @@ Sizes are rough guesses: **S** small, **M** medium, **L** large. A dash means no
 
 Small or medium additions that build on what MPE already has:
 
-- **Remove blank pages** (S): MPE already renders pages and can measure how empty they are.
-- **Split by bookmarks** (S): the bookmark reader and splitting already exist.
 - **Extract images** (S–M): save a document's embedded images as files.
 - **N-up and booklet layouts** (M): several pages on one sheet, or pages ordered for folding.
-- **Page labels** (S–M): show and set page numbering like i, ii, 1, 2.
 - **Fill-and-sign with a drawn or typed signature** (M): a natural step before digital signatures.
 - **Page colour modes** (S–M): dark pages, inverted or high contrast, to match the app's dark mode.
 - **Shell completions** for `mpe` (S): needs the `clap_complete` crate.
@@ -25,13 +22,12 @@ Small or medium additions that build on what MPE already has:
 - Resize or scale to a paper size, make all pages the same size, join everything into one tall page (M)
 - Overlay or underlay one PDF on another (M)
 - Page boxes: view, add and remove the trim, bleed and art boxes (S)
-- Turn pages automatically by text direction (M); remove blank pages (S)
-- Split by bookmarks or blank pages (S); split by file size (M)
+- Turn pages automatically by text direction (M)
+- Split at blank pages (S); split by file size (M)
 
 ## Structure and metadata
 
 - Bookmarks: add, edit, sort and delete; import and export as JSON; generate from headings or a table of contents (M)
-- Page labels and numbering ranges (S–M)
 - XMP metadata editing, keywords and custom properties (M)
 - Viewer preferences: the page and layout a document opens with (S)
 - Attachments (add, list, extract) and portfolios (M)
@@ -52,7 +48,8 @@ Small or medium additions that build on what MPE already has:
 - Layers: add, merge, reorder, flatten (L)
 - Unicode, CJK and right-to-left text with embedded fonts (L: font subsetting, text shaping and bidirectional
   layout, likely new crates)
-- Background images (M; image watermarks are already queued)
+- Background images (S: a picture watermark at 100%, opaque and behind the content comes close; filling the page
+  edge to edge is what's missing)
 - QR codes and barcodes stamped onto pages (S–M, needs a crate)
 - Guides, rulers, a grid and snapping (M)
 

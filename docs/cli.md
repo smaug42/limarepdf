@@ -70,12 +70,26 @@ sound and video, and redaction marks are kept. Annotations stored without a draw
 | --- | --- |
 | `mpe extract in.pdf -o out.pdf --pages 1-3,7` | Keep only the listed pages |
 | `mpe delete in.pdf -o out.pdf --pages 2` | Delete pages |
+| `mpe remove-blank in.pdf -o out.pdf` | Delete pages that look blank and list them. `--tolerance` is the percent of a page that may differ from its background: 0.05 by default (specks or a page number), 0 for nothing at all |
 | `mpe rotate in.pdf -o out.pdf --pages all --degrees 90` | Rotate clockwise by 90, 180 or 270 |
 | `mpe reorder in.pdf -o out.pdf --order 3,1,2` | Put all pages in a new order |
 | `mpe insert-blank in.pdf -o out.pdf --after 0` | Insert a blank page after page N (0 = at the start) |
 | `mpe crop in.pdf -o out.pdf --page 1 --rect 50,600,400,780` | Set a page's crop box in points: left, bottom, right, top |
 | `mpe merge a.pdf b.pdf -o out.pdf` | Join PDFs in the order given |
 | `mpe split big.pdf --every 50 --out-dir parts` | Split into files of N pages: `parts/big-001.pdf`, … |
+| `mpe split big.pdf --bookmarks --out-dir parts` | Split where the top-level bookmarks go: `parts/big-002 Introduction.pdf`, … Pages before the first bookmark go in a file of their own. `--bookmarks 2` also splits at the bookmarks one level down |
+
+### Page labels
+
+Page labels are the page numbers viewers show, such as i, ii, 1, 2 or A-1. They don't change what is printed on
+the pages. Labels stay with their pages when pages are deleted, moved or extracted; inserted and appended pages
+carry on the numbering of the page before them.
+
+| Command | What it does |
+| --- | --- |
+| `mpe labels list in.pdf` | List the ranges: their pages and first and last labels |
+| `mpe labels set in.pdf -o out.pdf --from 5 --style decimal --start 1` | Number from page 5 on, up to the next range after it. Styles: `decimal`, `lower-roman`, `upper-roman`, `lower-letters`, `upper-letters`, `none` (the prefix alone); `--prefix "A-"` puts text before each number. Pages before the first range keep plain numbers |
+| `mpe labels remove in.pdf -o out.pdf` | Remove all page labels |
 
 ## Images and scans
 
@@ -93,6 +107,7 @@ See [Scanning and OCR](scanning-and-ocr.md) for what these do.
 | Command | What it does |
 | --- | --- |
 | `mpe watermark in.pdf -o out.pdf --text CONFIDENTIAL --opacity 0.3` | Add a text watermark |
+| `mpe watermark in.pdf -o out.pdf --image logo.png --scale 40 --background` | Add a picture watermark, fitted inside 40% of the page, behind the content |
 | `mpe header-footer in.pdf -o out.pdf --footer-center "Page {page} of {pages}" --header-right "{date}"` | Add headers and footers; tokens `{page}`, `{pages}`, `{date}`, `{bates}` |
 | `mpe bates in.pdf -o out.pdf --prefix ACME- --digits 6` | Bates-number the pages |
 

@@ -43,6 +43,25 @@ pub fn parse_page_range(spec: &str, total: usize) -> Result<Vec<usize>> {
     Ok(out)
 }
 
+/// Write sorted 0-based indices as 1-based pages and runs, such as `2-4, 7`.
+pub fn format_page_range(idx: &[usize]) -> String {
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    for &i in idx {
+        match runs.last_mut() {
+            Some((_, b)) if *b + 1 == i => *b = i,
+            _ => runs.push((i, i)),
+        }
+    }
+    runs.iter()
+        .map(|&(a, b)| match b - a {
+            0 => format!("{}", a + 1),
+            1 => format!("{}, {}", a + 1, b + 1),
+            _ => format!("{}-{}", a + 1, b + 1),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -56,5 +75,12 @@ mod tests {
         assert!(parse_page_range("11", 10).is_err());
         assert!(parse_page_range("0", 10).is_err());
         assert!(parse_page_range("5-2", 10).is_err());
+    }
+
+    #[test]
+    fn formatting() {
+        assert_eq!(format_page_range(&[1, 2, 3, 6, 8, 9]), "2-4, 7, 9, 10");
+        assert_eq!(format_page_range(&[0]), "1");
+        assert_eq!(format_page_range(&[]), "");
     }
 }

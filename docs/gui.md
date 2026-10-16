@@ -125,7 +125,7 @@ like notes.
 
 - **Rectangle, ellipse, line:** drag, or click for a default size. Shift keeps squares, circles and lines at
   multiples of 45°. The inspector sets the outline (or line) colour and width, the fill of rectangles and
-  ellipses, and an arrowhead at the end of a line, before you start.
+  ellipses (off until you turn it on), and an arrowhead at the end of a line, before you start.
 - **Pen:** drag to draw; a click makes a dot. Strokes started within 1.5 seconds of the last one, on the same page,
   join the same drawing, so a word or a circle with a tick is one annotation. Each stroke is still its own undo
   step. Points closer together than about a third of a point to the line drawn are dropped, which keeps files
@@ -195,10 +195,27 @@ What you select decides what the inspector, the right-click menu and the floatin
 | Selected | Inspector |
 | --- | --- |
 | Nothing | The document: properties, password security, crop, watermark, headers/footers/Bates, OCR, optimise scanned pages, export pages as images, split into files, and buttons for export text, print and append PDFs |
-| Pages (click thumbnails; Shift for a range, Ctrl for one more) | Rotate, delete, extract to a new tab, insert images or a blank page after them, and the crop, watermark, headers/footers, OCR and optimise tools with the pages filled in |
+| Pages (click thumbnails; Shift for a range, Ctrl for one more) | Rotate, delete, extract to a new tab, insert images or a blank page after them, page labels from the first selected page, and the crop, watermark, headers/footers, OCR and optimise tools with the pages filled in |
 | An object, words, or a tool that adds content | That object's or tool's options |
 
 Menu commands for document and page settings open the matching section of the inspector.
+
+A watermark is text or a picture (PNG, JPEG or TIFF), centred on each page. After you apply a watermark or headers
+and footers, the section's button becomes Update: change a setting and press it to redo what you just added rather
+than stamping a second copy. Add another keeps it and adds a new one. Any other change returns the button to Apply.
+
+If a damaged file makes MPE fail while showing a document, that tab shows an error page with Save a copy and Close
+this tab; other tabs carry on.
+
+Page labels are the page numbers viewers show, such as i, ii, 1, 2 or A-1; they don't change what is printed on the
+pages. When a document has them, the status bar shows the label with the page's place, such as "Page i (3 of 477)",
+and the thumbnails show the labels. To set them, select the first page to number, open Page labels in the
+inspector, and pick a style, an optional prefix and the number to start at; the numbering runs to the next labelled
+range. Labels stay with their pages when pages are deleted or moved.
+
+Split into files makes files of a set number of pages, or starts a file at each bookmark down to the chosen level
+(1 is the top level only). Files are named after their bookmark, such as `book-002 Introduction.pdf`, and the pages
+before the first bookmark get a file of their own.
 
 Crop trims margins from each side of the page as it is shown, measured from the full page; the fields start with
 the first page's current crop. Remove crop shows the whole page again. Cropping hides content but does not delete
@@ -212,6 +229,10 @@ Drag thumbnails to put pages in a new order. A line shows where they will go. Dr
 the selected pages.
 
 Delete removes the selected object or pages. Deleting shows a notice with an Undo button.
+
+Remove blank pages (☰ > Document, or the command palette) deletes every page that is one even colour, give or take
+scanner specks, faint show-through or a lone page number, and lists the pages it removed. Undo brings them back. A
+document whose pages are all blank is left alone.
 
 ## Editing page content
 

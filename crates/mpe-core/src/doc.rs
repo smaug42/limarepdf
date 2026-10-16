@@ -311,7 +311,10 @@ impl Pdf {
         Ok(self.doc.catalog()?.get(b"Pages")?.as_reference()?)
     }
 
+    /// Every change to which pages there are, or their order, comes through here. Page labels move with their
+    /// pages.
     fn set_page_order(&mut self, ids: &[ObjectId]) -> Result<()> {
+        let labels = self.label_specs();
         let root = self.pages_root()?;
         {
             let d = self.doc.get_dictionary_mut(root)?;
@@ -330,7 +333,10 @@ impl Pdf {
                 .get_dictionary_mut(id)?
                 .set("Parent", Object::Reference(root));
         }
-        Ok(())
+        match labels {
+            Some(specs) => self.relabel(ids, &specs),
+            None => Ok(()),
+        }
     }
 
     fn check_indices(&self, idx: &[usize]) -> Result<()> {
@@ -505,7 +511,39 @@ impl Pdf {
             .collect();
         chunks.par_iter().map(|c| self.extract(c)).collect()
     }
+}
 
+/// The file name for part `n` (1-based) of a split: `stem-003.pdf`, or `stem-003 Title.pdf` with the title cut to
+/// 60 characters and kept to what every file system accepts.
+pub fn part_file_name(stem: &str, n: usize, title: Option<&str>) -> String {
+    let safe: String = title
+        .unwrap_or("")
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || " -_.,()&'".contains(c) {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    let safe: String = safe
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(60)
+        .collect();
+    // Windows drops trailing dots and spaces from names.
+    let safe = safe.trim_end_matches(['.', ' ']);
+    if safe.is_empty() {
+        format!("{stem}-{n:03}.pdf")
+    } else {
+        format!("{stem}-{n:03} {safe}.pdf")
+    }
+}
+
+impl Pdf {
     // ----------------------------------------------------------- metadata
 
     fn info_id(&self) -> Option<ObjectId> {
@@ -661,6 +699,21 @@ mod tests {
             p.insert_blank(i, 200.0 + i as f32, 300.0).unwrap();
         }
         p
+    }
+
+    #[test]
+    fn part_file_names() {
+        assert_eq!(part_file_name("book", 3, None), "book-003.pdf");
+        assert_eq!(
+            part_file_name("book", 12, Some("Chapter 2: Over/Under?")),
+            "book-012 Chapter 2 Over Under.pdf"
+        );
+        assert_eq!(part_file_name("book", 1, Some(" ... ")), "book-001.pdf");
+        let long = "x".repeat(100);
+        assert_eq!(
+            part_file_name("b", 1, Some(&long)).len(),
+            "b-001 .pdf".len() + 60
+        );
     }
 
     #[test]
