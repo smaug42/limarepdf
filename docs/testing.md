@@ -50,8 +50,8 @@ the stamp tool (including your own wording) was checked through its core tests a
 turned pages), not clicked through;
 fill and sign was checked through its core tests (including empty signature fields), unit tests of the saved
 signatures file, `mpe stamp --signature` renders in all four handwriting styles, and screenshots of the Sign pane, the
-notice and the Create signature window (Draw and Type); drawing on the pad, placing, signature fields, Finish
-signing and the Picture tab were not clicked through;
+notice and the Create signature window (Draw and Type), then used by hand on Linux, including placing a scanned
+signature and checking that unsaved signatures are gone after a restart;
 redaction was checked through its core tests and `mpe redact` on real and scanned PDFs (renders checked), and its
 app part (Redact tool, marking selected text and search results, the notice, Apply, the save warning) was used by
 hand; removing hidden information was checked through its core tests and `mpe sanitise` on real PDFs, its dialog not
