@@ -7,6 +7,8 @@
 - Remove blank pages: pages of one even colour, give or take specks or a lone page number. In the app (☰ menu and
   command palette; Undo brings them back) and as `mpe remove-blank`, with `--tolerance` for how much may be on a
   page.
+- Split at bookmarks, down to a chosen level, with each file named after its bookmark: in the app's Split into
+  files section and as `mpe split --bookmarks [LEVEL]`. Splitting in the app runs in the background.
 
 ### Changed
 

@@ -13,8 +13,8 @@ use eframe::egui::{self, AtomExt as _, Key};
 use egui_phosphor::regular as icon;
 use mpe_core::render::{image_names, ImageFormat};
 use mpe_core::{
-    parse_page_range, print, Bates, HeaderFooter, ImageImport, OcrResult, Pdf, ScanResult,
-    Watermark,
+    parse_page_range, part_file_name, print, Bates, HeaderFooter, ImageImport, OcrResult, Pdf,
+    ScanResult, Watermark,
 };
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -1114,30 +1114,31 @@ impl App {
                 }
             }
             Apply::Split => {
-                let every = self.tabs[active].forms.split.max(1);
+                let f = &self.tabs[active].forms;
+                let level = f.split_at_marks.then_some(f.split_level.max(1));
+                let every = f.split.max(1);
                 let Some(dir) = rfd::FileDialog::new()
                     .set_title("Choose output folder")
                     .pick_folder()
                 else {
                     return;
                 };
-                let t = &mut self.tabs[active];
-                let stem = t.stem("part");
-                match t.pdf.split_every(every) {
-                    Ok(parts) => {
-                        let count = parts.len();
-                        for (i, mut part) in parts.into_iter().enumerate() {
-                            let path = dir.join(format!("{stem}-{:03}.pdf", i + 1));
-                            if let Err(e) = part.save(path) {
-                                let text = format!("{e:#}");
-                                self.dialog = Dialog::Message("Split failed".into(), text);
-                                return;
-                            }
-                        }
-                        self.status = format!("Wrote {count} files to {}", dir.display());
+                let stem = self.tabs[active].stem("part");
+                self.spawn_job(ctx, "Split into files", move |p| {
+                    let parts = match level {
+                        Some(level) => p.split_at_bookmarks(level)?,
+                        None => p
+                            .split_every(every)?
+                            .into_iter()
+                            .map(|d| (None, d))
+                            .collect(),
+                    };
+                    let n = parts.len();
+                    for (i, (title, mut part)) in parts.into_iter().enumerate() {
+                        part.save(dir.join(part_file_name(&stem, i + 1, title.as_deref())))?;
                     }
-                    Err(e) => t.error = Some(format!("{e:#}")),
-                }
+                    Ok((false, format!("Wrote {n} files to {}.", dir.display())))
+                });
             }
         }
     }

@@ -42,7 +42,7 @@ available.
 | Select and copy text | Done | With the default read tool; across pages, scrolling while you drag; in the order on the page, not the file's drawing order; includes recognised text |
 | Print or save selected text | Done | As the pages look, full width, cut down to the selected lines, or as plain text in Helvetica (Western European characters only); also saves a .txt file |
 | Page operations: insert, delete, rotate, extract, reorder, crop, remove blank pages | Done | Crop by margins; no dragging a crop box on the page. Blank means one even colour, give or take specks or a lone page number |
-| Merge and split | Done | Bookmarks, forms and named destinations of appended files are not carried over. Split by file size: No |
+| Merge and split | Done | Split by page count or at bookmarks, files named after them. Bookmarks, forms and named destinations of appended files are not carried over, and split parts have no bookmarks. Split by file size: No |
 | Undo and redo | Done | 20 levels, including password settings |
 | Headers, footers, page numbers, dates, Bates numbers | Done | Helvetica and Latin-1 characters only |
 | Watermarks | Partial | Text only |

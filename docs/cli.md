@@ -77,6 +77,7 @@ sound and video, and redaction marks are kept. Annotations stored without a draw
 | `mpe crop in.pdf -o out.pdf --page 1 --rect 50,600,400,780` | Set a page's crop box in points: left, bottom, right, top |
 | `mpe merge a.pdf b.pdf -o out.pdf` | Join PDFs in the order given |
 | `mpe split big.pdf --every 50 --out-dir parts` | Split into files of N pages: `parts/big-001.pdf`, … |
+| `mpe split big.pdf --bookmarks --out-dir parts` | Split where the top-level bookmarks go: `parts/big-002 Introduction.pdf`, … Pages before the first bookmark go in a file of their own. `--bookmarks 2` also splits at the bookmarks one level down |
 
 ## Images and scans
 

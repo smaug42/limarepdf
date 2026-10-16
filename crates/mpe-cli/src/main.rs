@@ -9,9 +9,9 @@ macro_rules! out {
 }
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use mpe_core::{
-    format_page_range, parse_page_range, print, render, Annot, AnnotKind, Bates, Cipher,
-    Encryption, Field, FieldKind, FieldValue, HeaderFooter, ImageImport, Info, Ocr, OcrResult, Pdf,
-    Restrictions, ScanMode, ScanOptions, ScanResult, Watermark,
+    format_page_range, parse_page_range, part_file_name, print, render, Annot, AnnotKind, Bates,
+    Cipher, Encryption, Field, FieldKind, FieldValue, HeaderFooter, ImageImport, Info, Ocr,
+    OcrResult, Pdf, Restrictions, ScanMode, ScanOptions, ScanResult, Watermark,
 };
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
@@ -63,11 +63,14 @@ enum Cmd {
         #[arg(short, long)]
         output: PathBuf,
     },
-    /// Split into parts of N pages: out-dir/<stem>-001.pdf, ...
+    /// Split into parts of N pages (out-dir/<stem>-001.pdf, ...) or at bookmarks (out-dir/<stem>-001 Title.pdf, ...)
     Split {
         input: PathBuf,
         #[arg(long, default_value_t = 1)]
         every: usize,
+        /// Start a part at each bookmark down to this level (1 = top level only)
+        #[arg(long, num_args = 0..=1, default_missing_value = "1", conflicts_with = "every")]
+        bookmarks: Option<usize>,
         #[arg(long)]
         out_dir: PathBuf,
         #[arg(long)]
@@ -881,28 +884,32 @@ fn main() -> Result<()> {
         Cmd::Split {
             input,
             every,
+            bookmarks,
             out_dir,
             password,
         } => {
             let p = open(&input, &password)?;
-            std::fs::create_dir_all(&out_dir)?;
             let stem = input
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("part")
                 .to_string();
-            let parts = p.split_every(every)?;
-            parts
-                .into_par_iter()
-                .enumerate()
-                .try_for_each(|(i, mut part)| -> Result<()> {
-                    part.save(out_dir.join(format!("{stem}-{:03}.pdf", i + 1)))
-                })?;
-            out!(
-                "split into {} files in {}",
-                p.page_count().div_ceil(every),
-                out_dir.display()
-            );
+            let parts = match bookmarks {
+                Some(level) => p.split_at_bookmarks(level)?,
+                None => p
+                    .split_every(every)?
+                    .into_iter()
+                    .map(|d| (None, d))
+                    .collect(),
+            };
+            std::fs::create_dir_all(&out_dir)?;
+            let n = parts.len();
+            parts.into_par_iter().enumerate().try_for_each(
+                |(i, (title, mut part))| -> Result<()> {
+                    part.save(out_dir.join(part_file_name(&stem, i + 1, title.as_deref())))
+                },
+            )?;
+            out!("split into {n} files in {}", out_dir.display());
         }
         Cmd::Extract { io, pages } => run_edit(&io, |p| {
             let idx = parse_page_range(&pages, p.page_count())?;

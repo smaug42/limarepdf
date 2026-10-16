@@ -37,7 +37,7 @@ mod tounicode;
 
 pub use annots::{Annot, AnnotKind, ShapeLook, TextStyle};
 pub use blank::BLANK_TOLERANCE;
-pub use doc::{Info, Pdf};
+pub use doc::{part_file_name, Info, Pdf};
 pub use edit::{PathStyle, Shape, TextEdit};
 pub use fonts::{Family, FontChoice};
 pub use forms::{Field, FieldKind, FieldValue, Widget};

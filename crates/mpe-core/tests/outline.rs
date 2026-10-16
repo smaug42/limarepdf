@@ -126,3 +126,45 @@ fn bookmarks_follow_pages_that_move() {
     p.delete_pages(&[0]).unwrap();
     assert_eq!(p.outline()[0].page, None);
 }
+
+#[test]
+fn splits_at_bookmarks() {
+    let mut p = four_pages();
+    assert!(p.split_at_bookmarks(1).is_err());
+    let pg = p.page_ids();
+    let ids: Vec<ObjectId> = (0..3).map(|_| p.doc.new_object_id()).collect();
+    let items = [
+        dictionary! {
+            "Title" => text("Part one"), "Dest" => vec![pg[1].into(), "Fit".into()],
+            "First" => ids[1], "Count" => 1, "Next" => ids[2],
+        },
+        dictionary! { "Title" => text("Inside"), "Dest" => vec![pg[2].into(), "Fit".into()] },
+        dictionary! { "Title" => text("Part two"), "Dest" => vec![pg[3].into(), "Fit".into()] },
+    ];
+    for (id, d) in ids.iter().zip(items) {
+        p.doc.objects.insert(*id, d.into());
+    }
+    set_outline(&mut p, ids[0]);
+
+    let summary = |level| -> Vec<(Option<String>, usize)> {
+        let parts = p.split_at_bookmarks(level).unwrap();
+        parts
+            .into_iter()
+            .map(|(t, d)| (t, d.page_count()))
+            .collect()
+    };
+    let s = |t: &str| Some(t.to_string());
+    assert_eq!(
+        summary(1),
+        vec![(None, 1), (s("Part one"), 2), (s("Part two"), 1)]
+    );
+    assert_eq!(
+        summary(2),
+        vec![
+            (None, 1),
+            (s("Part one"), 1),
+            (s("Inside"), 1),
+            (s("Part two"), 1)
+        ]
+    );
+}

@@ -205,6 +205,9 @@ pub struct Forms {
     pub export: Export,
     /// Pages per file when splitting.
     pub split: usize,
+    /// Split at bookmarks instead, down to this level (1 = top level only).
+    pub split_at_marks: bool,
+    pub split_level: usize,
     /// Size of a new blank page, in points.
     pub blank: (f32, f32),
     /// Section to open and scroll to on the next frame.
@@ -245,6 +248,7 @@ impl Tab {
             if self.forms.meta_rev.is_none() {
                 self.forms.sec = Sec::of(self.encryption.as_ref());
                 self.forms.split = 1;
+                self.forms.split_level = 1;
             }
             self.forms.meta = self.pdf.info();
             self.forms.meta_rev = Some(self.revision);
@@ -385,8 +389,18 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
         });
         section(ui, reveal, Some(Section::Split), "Split into files", |ui| {
             ui.horizontal(|ui| {
-                ui.label("Pages per file");
-                ui.add(egui::DragValue::new(&mut f.split).range(1..=100_000));
+                ui.radio_value(&mut f.split_at_marks, false, "Pages per file");
+                ui.add_enabled(
+                    !f.split_at_marks,
+                    egui::DragValue::new(&mut f.split).range(1..=100_000),
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut f.split_at_marks, true, "At bookmarks, levels");
+                ui.add_enabled(
+                    f.split_at_marks,
+                    egui::DragValue::new(&mut f.split_level).range(1..=9),
+                );
             });
             if ui.button("Choose folder…").clicked() {
                 apply = Some(Apply::Split);

@@ -200,6 +200,10 @@ What you select decides what the inspector, the right-click menu and the floatin
 
 Menu commands for document and page settings open the matching section of the inspector.
 
+Split into files makes files of a set number of pages, or starts a file at each bookmark down to the chosen level
+(1 is the top level only). Files are named after their bookmark, such as `book-002 Introduction.pdf`, and the pages
+before the first bookmark get a file of their own.
+
 Crop trims margins from each side of the page as it is shown, measured from the full page; the fields start with
 the first page's current crop. Remove crop shows the whole page again. Cropping hides content but does not delete
 it.
