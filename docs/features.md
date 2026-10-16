@@ -15,6 +15,9 @@ can be redacted for good. Digital signatures are not started.
 - **Stamp pages:** headers, footers, page numbers, Bates numbers, and text or picture watermarks.
 - **Scans:** turn images into PDFs, shrink and straighten scanned pages, and add a searchable text layer with
   built-in OCR (Latin script).
+- **Redact:** mark text, areas or search results, then remove what is under them for good (text, the covered parts
+  of pictures and scans, drawings), checked afterwards; and remove hidden information such as metadata, scripts,
+  attachments and hidden layers.
 - **Copy text,** including recognised text.
 - **Protect:** open and permissions passwords, RC4 or AES encryption, permission flags.
 - **Export and print:** pages as PNG or JPEG, text as a `.txt` file, and printing (through CUPS on Linux and macOS,
@@ -69,7 +72,7 @@ available.
 | Links | Partial | Followed: to pages, and to web and email addresses after asking. Links to other PDF files, and adding or editing links: No. [Details](gui.md#links) |
 | Layers, attachments | No | |
 | Installers and packages | Done | `.deb` and `.rpm` packages with apt and dnf repositories, a macOS `.dmg`, a Windows MSI, and archives; GPG-signed. [Install](install.md); more package managers planned, see below |
-| Redaction | Partial | Mark areas, selected text or search results (standard redaction marks), check them, then apply: text, drawings, comments and links under them are removed for good, pictures (scans included) blacked out there, then checked. In the app and with `mpe redact`. [Details](redaction.md) |
+| Redaction | Done | Mark areas, selected text or search results (standard redaction marks), check them, then apply: text, drawings, comments and links under them are removed for good, pictures (scans included) blacked out there, then checked. In the app and with `mpe redact`. [Details](redaction.md) |
 | Removing hidden information | Done | Metadata (including XMP), JavaScript and automatic actions, attachments, hidden layers and their content, thumbnails and private data; if chosen, comments, form values, bookmarks and what lies outside the crop box. Document > Remove hidden information… and `mpe sanitise`. [Details](redaction.md#removing-hidden-information) |
 | Digital signatures, certificate encryption | No | |
 | PDF/A, optimised saving | No | Saved files are pruned and compressed |

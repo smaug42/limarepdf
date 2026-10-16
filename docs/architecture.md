@@ -26,5 +26,12 @@ Page content is read by MPE's own parser (`crates/mpe-core/src/objects.rs`), whi
 editing works on and reads the text that search, copying and export use, with its own reader for fonts' ToUnicode
 maps and Adobe's widths for the standard fonts (see [Search and text](search-and-text.md#text-extraction)).
 
+Redaction (`crates/mpe-core/src/redact.rs`) has its own pass over the page content rather than editing the
+parser's objects: it rewrites each text-showing operator character by character, keeping the rest in place with
+spacing numbers, cuts drawings into sub-paths, and redacts inside form XObjects as copies. Pictures are decoded,
+blacked out and saved again in `redact_img.rs`. Afterwards the pages are parsed again to check that nothing readable
+is left under the marks. Hidden information (metadata, scripts, attachments, hidden layers) is removed by
+`sanitise.rs`. See [Redaction](redaction.md).
+
 In the desktop app, every command is defined once in `crates/mpe-gui/src/actions.rs`; the menu, the top bar, the
 command palette, the right-click menus, the floating toolbar and the keyboard shortcuts are all built from that list.

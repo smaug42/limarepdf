@@ -84,3 +84,18 @@ of the file aren't kept in it.
 - Saving a JPEG picture again loses a little quality across the whole picture.
 - The removed text can still be in bookmarks, comments, file attachments or metadata; the check warns about the
   places it can search.
+- Redaction marks can't be moved or resized; delete one and mark again.
+
+## How this was tested
+
+- Redaction: `crates/mpe-core/tests/redact.rs` (made-up files: text with kerning and spacing, turned pages, hidden
+  text, alternative text, drawings, pictures with soft masks, JPEG, inline images, shared pictures and forms,
+  unreadable pictures, annotations, redaction marks), and `mpe redact` on the PDFs in `/usr/share/doc` (common words
+  removed throughout, renders checked, nothing found by search afterwards) and on a scanned page in three forms
+  (plain, CCITT and JPEG) with a recognised text layer.
+- The app's part (the Redact tool, marking selected text and search results, the notice, Apply and its report, the
+  save warning) was used by hand on Linux.
+- Removing hidden information: `crates/mpe-core/tests/sanitise.rs` (made-up files for each kind) and `mpe sanitise`
+  on the PDFs in `/usr/share/doc`, which have metadata and bookmarks but no scripts, attachments or layers. Its dialog
+  was not clicked through.
+- Marks made by MPE were not yet opened in Acrobat or other apps, nor marks made by them applied in MPE.

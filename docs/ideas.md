@@ -77,7 +77,7 @@ Small or medium additions that build on what MPE already has:
 - Certify documents with permission levels, timestamps, long-term validation (L)
 - Remove signatures (S)
 
-## Redaction, beyond the planned redaction
+## Redaction, beyond what MPE does
 
 - Find and redact by pattern (regular expressions, saved sets) (M)
 - Blur or pixelate instead of a black box (M)

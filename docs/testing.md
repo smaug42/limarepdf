@@ -48,10 +48,10 @@ viewer preferences were checked through their core tests and `mpe view-prefs`; f
 Opening view section were not clicked through;
 the stamp tool (including your own wording) was checked through its core tests and `mpe stamp` renders (including
 turned pages), not clicked through;
-redaction was checked through its core tests and `mpe redact` on real and scanned PDFs (renders checked), and the
-notice for a file with redaction marks by screenshot; the Redact tool, marking selected text and search results, and
-the Apply and save dialogs were not clicked through; removing hidden information was checked through its core tests
-and `mpe sanitise` on real PDFs, its dialog not clicked through;
+redaction was checked through its core tests and `mpe redact` on real and scanned PDFs (renders checked), and its
+app part (Redact tool, marking selected text and search results, the notice, Apply, the save warning) was used by
+hand; removing hidden information was checked through its core tests and `mpe sanitise` on real PDFs, its dialog not
+clicked through;
 filling in forms has been used by hand on one form; the Bookmarks tab (including adding, renaming and deleting
 bookmarks) and links were checked through their core tests, `mpe bookmarks` and real PDFs, and the XFA notice by
 screenshot, but none of these was clicked through. Filled forms were also opened in poppler and

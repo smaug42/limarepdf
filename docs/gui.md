@@ -194,8 +194,9 @@ redaction marks). See [Redaction](redaction.md) for exactly what applying remove
 - **Mark search results:** search in the side panel's Search tab, then press Mark all for redaction (or Edit > Mark
   all search results for redaction). Every match is marked.
 
-Marks are listed in the Comments tab as "Redaction mark" and can be moved, resized and deleted like other
-annotations.
+Marks are listed in the Comments tab as "Redaction mark". Select one (Ctrl+click it, or click it in the Comments
+tab) to delete it or add a comment; like highlights, marks can't be moved or resized, so to change one, delete it
+and mark again.
 
 **Apply:** Document > Apply redactions… asks first, then removes everything under the marks, paints the areas black
 and removes the marks. It then checks that nothing readable is left under them; if anything is, nothing is changed
@@ -326,7 +327,8 @@ The other tools add content:
 - **Annotate:** sticky notes, text boxes, rectangles, ellipses, lines and the pen, saved as annotations rather
   than page content; see [Notes and text boxes](#notes-and-text-boxes) and
   [Shapes, lines and drawings](#shapes-lines-and-drawings). A rectangle, ellipse or line can still be drawn into
-  the page content with "Draw on page (permanent)".
+  the page content with "Draw on page (permanent)". Its menu also has the stamp tool (see [Stamps](#stamps)) and
+  the tool that marks areas for redaction (see [Redaction](#redaction)).
 
 Everything that changes the document can be undone with Ctrl+Z. See [Content editing](content-editing.md) for how
 editing works and its limits.

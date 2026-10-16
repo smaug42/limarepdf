@@ -23,8 +23,7 @@
   paints the areas black. It then checks that nothing readable is left there, and reports what was removed and
   where the removed text still appears elsewhere. Marks are standard PDF redaction marks, so they can be reviewed
   in other apps. While there are marks, a notice above the pages offers Apply redactions…; saving with marks not
-  yet applied asks first. Also `mpe redact` (`--text`, `--area`,
-  `--mark-only`, `--apply`).
+  yet applied asks first. Also `mpe redact` (`--text`, `--area`, `--mark-only`, `--apply`).
 - Remove hidden information: Document > Remove hidden information… lists what the document carries besides its
   pages and removes what you tick: metadata (including XMP), JavaScript and automatic actions, attachments, hidden
   layers and their content, thumbnails and private data, and if you like comments, form values, bookmarks and what
