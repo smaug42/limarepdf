@@ -2,7 +2,8 @@
 
 **Status: 0.6, for testing.** Most testing has been on Linux. Annotations can be viewed, moved, deleted and flattened;
 text can be highlighted and marked; notes, text boxes, shapes, lines, freehand drawings and replies added. Content
-can be redacted for good. Digital signatures are not started.
+can be redacted for good, and documents filled in and signed with a picture of your signature. Digital signatures are
+not started.
 
 ## What MPE does
 
@@ -12,6 +13,8 @@ can be redacted for good. Digital signatures are not started.
 - **Edit content:** move, resize, restyle and delete text, images and shapes; edit text; add text, shapes and images.
 - **Fill in forms:** text fields, checkboxes, radio buttons and lists, in the app or from JSON on the command line;
   flatten them so the values can't be changed.
+- **Fill and sign:** put a drawn, typed or picture signature, initials, the date, your name and ticks on any
+  document, then fix them into the pages. Not a digital signature.
 - **Stamp pages:** headers, footers, page numbers, Bates numbers, and text or picture watermarks.
 - **Scans:** turn images into PDFs, shrink and straighten scanned pages, and add a searchable text layer with
   built-in OCR (Latin script).
@@ -62,8 +65,9 @@ available.
 | Export to Word, Excel, CSV | No | |
 | Annotations and comments | Partial | Shown (MPE draws the common types when the file has no drawing), listed in the Comments tab with replies, deleted, flattened; `mpe annot list\|remove\|flatten`. Highlight, underline, strike out and squiggly-underline selected text; add sticky notes and text boxes (Helvetica, Latin-1 only), rectangles, ellipses, lines with an optional arrowhead, freehand pen drawings and stamps; reply to any annotation; select any annotation to change its colour, opacity and comment (and a shape's width, fill and arrowhead), and move or resize it with the arrow; drag a line's ends to turn it, and turn freehand drawings with their rotate handle. Not yet: turning rectangles, ellipses and text boxes (see below), polygons, measuring, attachments, XFDF. [Details](gui.md#shapes-lines-and-drawings) |
 | Stamps | Done | Approved, Not approved, Draft, Final, Confidential, For comment and Void, or your own wording in green, red or blue (Western European characters only), optionally with the author's name and the date, or a PNG or JPEG picture; click to place or drag to size, then move and resize; `mpe stamp`. Not yet: stamps made from selected content, or wording in other scripts. [Details](gui.md#stamps) |
+| Fill and sign | Done | A signature or initials drawn, typed in one of four handwriting styles or from a picture (paper made transparent), up to five of each saved for next time; the date in three styles, your name, text and tick, cross and dot marks, in black or blue ink; placed anywhere or in an empty signature field, movable until Finish signing draws them into the pages. Typed signatures from the command line: `mpe stamp --signature`. Not a digital signature; typed signatures and text are Latin-1 only; the date is in UTC. [Details](gui.md#filling-and-signing) |
 | Measuring | No | |
-| Forms | Partial | Fill in text fields, checkboxes, radio buttons and lists in the app (Tab between fields, highlight, reset, flatten) and from the command line (`mpe form`, values as JSON, flatten all or some pages). Latin-1 text only; JavaScript doesn't run; creating fields and signing: No. [Details](gui.md#filling-in-forms) |
+| Forms | Partial | Fill in text fields, checkboxes, radio buttons and lists in the app (Tab between fields, highlight, reset, flatten) and from the command line (`mpe form`, values as JSON, flatten all or some pages). Latin-1 text only; JavaScript doesn't run; creating fields: No; signature fields take a fill-and-sign signature, digital signing: No. [Details](gui.md#filling-in-forms) |
 | XFA-only forms (made for Adobe Reader) | No | Recognised and explained in a notice and by `mpe form`; showing or filling them is not planned (see below). Hybrid forms are filled through their ordinary fields |
 | Form data import/export (FDF, XFDF), barcodes, JavaScript | No | |
 | Viewer preferences | Done | The layout, side panel (Pages or Bookmarks) and page a document opens with: followed when opening, set in the inspector's Opening view or with `mpe view-prefs`. Full screen and hiding the toolbar or menu: No. [Details](cli.md#viewer-preferences) |
@@ -74,7 +78,7 @@ available.
 | Installers and packages | Done | `.deb` and `.rpm` packages with apt and dnf repositories, a macOS `.dmg`, a Windows MSI, and archives; GPG-signed. [Install](install.md); more package managers planned, see below |
 | Redaction | Done | Mark areas, selected text or search results (standard redaction marks), check them, then apply: text, drawings, comments and links under them are removed for good, pictures (scans included) blacked out there, then checked. In the app and with `mpe redact`. [Details](redaction.md) |
 | Removing hidden information | Done | Metadata (including XMP), JavaScript and automatic actions, attachments, hidden layers and their content, thumbnails and private data; if chosen, comments, form values, bookmarks and what lies outside the crop box. Document > Remove hidden information… and `mpe sanitise`. [Details](redaction.md#removing-hidden-information) |
-| Digital signatures, certificate encryption | No | |
+| Digital signatures, certificate encryption | No | Planned: see below. Signing an empty signature field that fill and sign has put a signature in is part of it |
 | PDF/A, optimised saving | No | Saved files are pruned and compressed |
 | Comparing documents | No | |
 | Sessions, autosave, backups, preferences, custom shortcuts, translations | No | You are asked before closing unsaved work |

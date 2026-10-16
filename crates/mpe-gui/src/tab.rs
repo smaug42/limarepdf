@@ -5,12 +5,14 @@ use crate::inspector::{Forms, Sec};
 use crate::markup::{self, Mark};
 use crate::selection::Selection;
 use crate::settings::Layout;
+use crate::signing::SignPick;
 use crate::theme;
 use crate::worker::{Key, Worker};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptions, Vec2};
 use egui_phosphor::regular as icon;
 use mpe_core::{
     Annot, BookmarkPlace, Encryption, LinkTarget, OutlineItem, Pdf, SearchHit, Shape, ShapeLook,
+    StampPlace,
 };
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
@@ -111,6 +113,9 @@ pub struct Tab {
     /// The mark count when the redaction banner was dismissed: it stays hidden until
     /// there are more marks.
     marks_hidden: usize,
+    /// The same for the fill-and-sign banner and its items (counted into
+    /// `ed.sign_items`).
+    signs_hidden: usize,
     /// The bookmarks, read when first shown and again after the document changes:
     /// the revision they were read at, and the items.
     outline: Option<(u64, Vec<OutlineItem>)>,
@@ -157,6 +162,7 @@ impl Tab {
             banners,
             marks_rev: u64::MAX,
             marks_hidden: 0,
+            signs_hidden: 0,
             id,
             pdf,
             path,
@@ -544,6 +550,68 @@ impl Tab {
                     if self.edit_pages(ctx, &[p], add) {
                         self.after_annot(p, new);
                     }
+                }
+                Action::AddSign(p, place) => {
+                    let ed = &self.ed;
+                    let (kit, author) = (&ed.sign_kit, ed.author.clone());
+                    let color = kit.color;
+                    let centre = match place {
+                        StampPlace::Centre(x, y) => (x, y),
+                        StampPlace::Fill(r) => ((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0),
+                    };
+                    let text = match ed.sign.pick {
+                        SignPick::Date => Some(kit.date.today()),
+                        SignPick::Name => Some(author.clone()),
+                        SignPick::Text => Some(ed.sign.text.clone()),
+                        SignPick::Saved(..) | SignPick::Mark(_) => None,
+                    };
+                    let saved = match ed.sign.pick {
+                        SignPick::Saved(role, i) => {
+                            kit.list(role).get(i).map(|e| (role, e.saved.clone()))
+                        }
+                        _ => None,
+                    };
+                    let mark = match ed.sign.pick {
+                        SignPick::Mark(m) => Some(m),
+                        _ => None,
+                    };
+                    let bytes = match saved.as_ref().map(|(_, s)| s.bytes()) {
+                        Some(Err(e)) => {
+                            self.error = Some(format!("Can't read the signature's picture: {e}"));
+                            continue;
+                        }
+                        Some(Ok(b)) => b,
+                        None => Vec::new(),
+                    };
+                    let mut new = None;
+                    let add = |pdf: &mut Pdf| {
+                        new = Some(match (&text, &saved, mark) {
+                            (Some(t), _, _) => pdf.add_sign_text(p, centre, t, color, &author)?,
+                            (_, Some((role, s)), _) => {
+                                pdf.add_stamp(p, &s.stamp(&bytes, *role, color), place, &author)?
+                            }
+                            (_, _, Some(mark)) => pdf.add_stamp(
+                                p,
+                                &mpe_core::Stamp::Mark { mark, color },
+                                place,
+                                &author,
+                            )?,
+                            _ => anyhow::bail!("pick something to put down first"),
+                        });
+                        Ok(())
+                    };
+                    if self.edit_pages(ctx, &[p], add) {
+                        self.after_annot(p, new);
+                    }
+                }
+                Action::SignHere(p, rect) => {
+                    // A signature field takes a signature (or the initials picked), made
+                    // first when none is saved.
+                    self.ed.set_tool(Tool::Sign);
+                    if !matches!(self.ed.sign.pick, SignPick::Saved(..)) {
+                        self.ed.sign.pick = SignPick::Saved(mpe_core::SignRole::Signature, 0);
+                    }
+                    self.ed.place_sign(p, StampPlace::Fill(rect));
                 }
                 Action::AddTextBox(p, rect, text) => {
                     let (style, author) = (self.ed.box_style, self.ed.author.clone());
@@ -1004,9 +1072,9 @@ impl Tab {
                         .find(|l| !l.is_empty());
                     let who = mpe_core::display_line(&a.author, 80);
                     let text = match (who.as_str(), first) {
-                        ("", None) => a.kind.label(),
-                        ("", Some(t)) => format!("{}: {t}", a.kind.label()),
-                        (w, None) => format!("{} · {w}", a.kind.label()),
+                        ("", None) => a.label(),
+                        ("", Some(t)) => format!("{}: {t}", a.label()),
+                        (w, None) => format!("{} · {w}", a.label()),
                         (w, Some(t)) => format!("{w}: {t}"),
                     };
                     let mut text = egui::RichText::new(text);
@@ -1286,15 +1354,18 @@ impl Tab {
                 });
         }
         if let Some(i) = close {
-            if self.banners[i].kind == banners::Kind::Redactions {
-                self.marks_hidden = self.ed.redact_marks;
+            match self.banners[i].kind {
+                banners::Kind::Redactions => self.marks_hidden = self.ed.redact_marks,
+                banners::Kind::Signing => self.signs_hidden = self.ed.sign_items,
+                _ => {}
             }
             self.banners.remove(i);
         }
     }
 
-    /// After the document changes, count the redaction marks again and show, update or
-    /// take away the redaction banner, which goes first while there are marks.
+    /// After the document changes, count the redaction marks and the fill-and-sign items
+    /// again and show, update or take away their banners, which go first while there are
+    /// any.
     fn refresh_marks_banner(&mut self) {
         if self.marks_rev == self.revision {
             return;
@@ -1307,6 +1378,17 @@ impl Tab {
         self.banners.retain(|b| b.kind != banners::Kind::Redactions);
         if n > self.marks_hidden {
             self.banners.insert(0, banners::redactions(n));
+        }
+        // Fill-and-sign items still movable, likewise; after the redaction banner.
+        let n = self.pdf.sign_items();
+        self.ed.sign_items = n;
+        self.signs_hidden = self.signs_hidden.min(n);
+        self.banners.retain(|b| b.kind != banners::Kind::Signing);
+        if n > self.signs_hidden {
+            let at = self
+                .banners
+                .partition_point(|b| b.kind < banners::Kind::Signing);
+            self.banners.insert(at, banners::signing(n));
         }
     }
 
@@ -1879,6 +1961,7 @@ mod tests {
             contents: String::new(),
             author: String::new(),
             subject: String::new(),
+            name: String::new(),
             modified: String::new(),
             flags: 0,
             reply_to: reply_to.map(|r| (r, 0)),

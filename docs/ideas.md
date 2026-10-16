@@ -15,7 +15,6 @@ Small or medium additions that build on what MPE already has:
 
 - **Extract images** (S–M): save a document's embedded images as files.
 - **N-up and booklet layouts** (M): several pages on one sheet, or pages ordered for folding.
-- **Fill-and-sign with a drawn or typed signature** (M): a natural step before digital signatures.
 - **Page colour modes** (S–M): dark pages, inverted or high contrast, to match the app's dark mode.
 - **Shell completions** for `mpe` (S): needs the `clap_complete` crate.
 
@@ -76,6 +75,9 @@ Small or medium additions that build on what MPE already has:
 
 - Certify documents with permission levels, timestamps, long-term validation (L)
 - Remove signatures (S)
+- Fill and sign: dates in local time instead of UTC (S; needs a time-zone crate), typed signatures and text in
+  other scripts (M; more fonts), variable-width strokes from pen pressure (M; egui doesn't report pressure yet),
+  `--signature-image` with the paper made transparent from the command line (S)
 
 ## Redaction, beyond what MPE does
 

@@ -3,7 +3,10 @@
 
 use lopdf::{dictionary, Dictionary, Object, ObjectId, StringFormat};
 use mpe_core::render::{self, Renderer};
-use mpe_core::{AnnotKind, Pdf, Shape, ShapeLook, Stamp, StampColor, StampKind, StampPlace};
+use mpe_core::{
+    AnnotKind, DateStyle, InkColor, Mark, Pdf, Shape, ShapeLook, SignArt, SignRole, SignStyle,
+    Stamp, StampColor, StampKind, StampPlace,
+};
 
 fn text(s: &str) -> Object {
     Object::String(s.as_bytes().to_vec(), StringFormat::Literal)
@@ -853,4 +856,183 @@ fn a_stamp_reads_upright_on_a_turned_page() {
     let mid = (x0 + x1) / 2;
     assert!(ink(&mut p, [x0 + 12, y0 + 8, mid, y1 - 8]).0 > 50);
     assert!(ink(&mut p, [mid, y0 + 8, x1 - 12, y1 - 8]).0 > 50);
+}
+
+#[test]
+fn a_typed_signature_is_drawn_as_shapes_labelled_and_survives_flattening() {
+    let mut p = page();
+    let stamp = Stamp::Signature {
+        art: SignArt::Typed {
+            text: "Sam Smith",
+            style: SignStyle::Caveat,
+        },
+        role: SignRole::Signature,
+        color: InkColor::Blue,
+        date: true,
+    };
+    let (w, h) = stamp.size("").unwrap();
+    assert!(w <= 150.01 && w > 100.0, "{w} x {h}");
+    let id = p
+        .add_stamp(0, &stamp, StampPlace::Centre(150.0, 100.0), "Sam")
+        .unwrap();
+    let d = p.doc.get_dictionary(id).unwrap();
+    assert_eq!(d.get(b"Name").unwrap().as_name().unwrap(), b"MpeSignature");
+    assert_eq!(d.get(b"C").unwrap(), &nums(&InkColor::Blue.rgb()));
+    let a = &p.annotations()[0];
+    assert_eq!(
+        (a.kind.clone(), a.label()),
+        (AnnotKind::Stamp, "Signature".into())
+    );
+    assert_eq!(a.subject, "Signature");
+    let before = ink(&mut p, [0, 0, 300, 200]);
+    assert!(before.0 > 200, "the signature is drawn");
+    let bytes = p.to_bytes().unwrap();
+    let mut p = Pdf::from_bytes(&bytes, None).unwrap();
+    assert_eq!(p.annotations()[0].label(), "Signature");
+    assert_eq!(p.flatten_annotations(None).unwrap(), 1);
+    assert_eq!(ink(&mut p, [0, 0, 300, 200]), before);
+}
+
+#[test]
+fn drawn_initials_are_smaller_than_a_signature_and_marks_are_small() {
+    let mut p = page();
+    let strokes = vec![
+        vec![(0.0, 0.0), (30.0, 40.0), (60.0, 0.0)],
+        vec![(80.0, 20.0)],
+    ];
+    let sig = |role| Stamp::Signature {
+        art: SignArt::Drawn {
+            strokes: &strokes,
+            width: 3.0,
+        },
+        role,
+        color: InkColor::Black,
+        date: false,
+    };
+    let (sw, _) = sig(SignRole::Signature).size("").unwrap();
+    let (iw, ih) = sig(SignRole::Initials).size("").unwrap();
+    assert!(iw < sw && ih <= 30.01);
+    p.add_stamp(
+        0,
+        &sig(SignRole::Initials),
+        StampPlace::Centre(60.0, 60.0),
+        "",
+    )
+    .unwrap();
+    assert!(
+        ink(&mut p, [20, 30, 100, 90]).1 > 20,
+        "the strokes are drawn"
+    );
+    for (i, mark) in Mark::ALL.into_iter().enumerate() {
+        let m = Stamp::Mark {
+            mark,
+            color: InkColor::Black,
+        };
+        assert_eq!(m.size("").unwrap(), (12.0, 12.0));
+        let x = 150.0 + 40.0 * i as f32;
+        p.add_stamp(0, &m, StampPlace::Centre(x, 150.0), "")
+            .unwrap();
+        let x = x as usize;
+        assert!(
+            ink(&mut p, [x - 6, 144, x + 6, 156]).1 > 5,
+            "{mark:?} drawn"
+        );
+    }
+    let labels: Vec<String> = p.annotations().iter().map(|a| a.label()).collect();
+    assert_eq!(labels, ["Initials", "Tick", "Cross", "Dot"]);
+}
+
+#[test]
+fn a_signature_picture_loses_its_paper_and_margins() {
+    // Light grey paper with a dark bar in the middle.
+    let mut img = image::RgbaImage::from_pixel(60, 30, image::Rgba([225, 225, 220, 255]));
+    for y in 12..18 {
+        for x in 10..50 {
+            img.put_pixel(x, y, image::Rgba([20, 20, 60, 255]));
+        }
+    }
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+    let bytes = out.into_inner();
+    let pic = |clear_paper| Stamp::Signature {
+        art: SignArt::Picture {
+            bytes: &bytes,
+            clear_paper,
+        },
+        role: SignRole::Signature,
+        color: InkColor::Black,
+        date: false,
+    };
+    // Cropped to the bar and a 2-pixel margin: 44 by 10.
+    let (w, h) = pic(true).size("").unwrap();
+    assert!((w / h - 4.4).abs() < 0.01, "{w} x {h}");
+    let (w, h) = pic(false).size("").unwrap();
+    assert!((w / h - 2.0).abs() < 0.01, "{w} x {h}");
+    let mut p = page();
+    p.add_stamp(0, &pic(true), StampPlace::Centre(150.0, 100.0), "")
+        .unwrap();
+    // The bar shows; the paper's margin around it doesn't.
+    assert!(ink(&mut p, [100, 95, 200, 105]).1 > 500);
+    assert_eq!(ink(&mut p, [0, 0, 300, 80]).0, 0);
+}
+
+#[test]
+fn a_signature_reads_upright_on_a_turned_page() {
+    let mut p = page();
+    p.rotate_pages(&[0], 90).unwrap();
+    let stamp = Stamp::Signature {
+        art: SignArt::Typed {
+            text: "Sam",
+            style: SignStyle::Zeyada,
+        },
+        role: SignRole::Signature,
+        color: InkColor::Black,
+        date: false,
+    };
+    let (w, h) = stamp.size("").unwrap();
+    p.add_stamp(0, &stamp, StampPlace::Centre(100.0, 150.0), "")
+        .unwrap();
+    let b = p.annotations()[0].bbox;
+    assert!((b[2] - b[0] - w).abs() < 0.01 && (b[3] - b[1] - h).abs() < 0.01);
+}
+
+#[test]
+fn finishing_signing_draws_in_only_the_fill_and_sign_items() {
+    let mut p = page();
+    let tick = Stamp::Mark {
+        mark: Mark::Tick,
+        color: InkColor::Black,
+    };
+    p.add_stamp(0, &tick, StampPlace::Centre(30.0, 30.0), "")
+        .unwrap();
+    let date = DateStyle::DayMonthYear.format(2026, 10, 6);
+    assert_eq!(date, "6 October 2026");
+    let id = p
+        .add_sign_text(0, (150.0, 100.0), &date, InkColor::Blue, "Sam")
+        .unwrap();
+    let a = p.annotations().into_iter().find(|a| a.id == id).unwrap();
+    assert_eq!(a.kind, AnnotKind::TextBox);
+    assert_eq!(a.contents, "6 October 2026");
+    // A stamp and a comment that aren't fill-and-sign items stay as they are.
+    let approved = Stamp::Text {
+        kind: StampKind::Approved,
+        name_and_date: false,
+    };
+    p.add_stamp(0, &approved, StampPlace::Centre(150.0, 170.0), "")
+        .unwrap();
+    p.add_note(0, (260.0, 20.0), [1.0, 1.0, 0.0], "a note", "")
+        .unwrap();
+    assert_eq!(p.sign_items(), 2);
+    // The tick and the date, away from the other stamp and the note.
+    let before = ink(&mut p, [0, 0, 240, 125]);
+    assert!(before.0 > 50);
+    assert_eq!(p.finish_signing().unwrap(), 2);
+    assert_eq!(p.sign_items(), 0);
+    let left: Vec<AnnotKind> = p.annotations().into_iter().map(|a| a.kind).collect();
+    assert_eq!(left, [AnnotKind::Stamp, AnnotKind::Note]);
+    assert_eq!(
+        ink(&mut p, [0, 0, 240, 125]),
+        before,
+        "drawn in where they were"
+    );
 }

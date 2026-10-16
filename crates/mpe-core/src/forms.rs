@@ -157,6 +157,21 @@ impl Pdf {
             .count()
     }
 
+    /// The boxes (displayed-page points) of the signature fields on page `page_index` that
+    /// hold no digital signature, where fill and sign puts a signature.
+    pub fn empty_signature_boxes(&self, page_index: usize) -> Vec<[f32; 4]> {
+        self.form_nodes()
+            .iter()
+            .filter(|(f, n)| {
+                f.kind == FieldKind::Signature
+                    && !self.doc.get_dictionary(n.id).is_ok_and(|d| d.has(b"V"))
+            })
+            .flat_map(|(f, _)| f.widgets.iter())
+            .filter(|w| w.page == page_index && !w.hidden)
+            .map(|w| w.bbox)
+            .collect()
+    }
+
     /// The fields with where each is in the file.
     pub(crate) fn form_nodes(&self) -> Vec<(Field, Node)> {
         let Some(form) = self.acro_form() else {

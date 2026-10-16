@@ -18,6 +18,8 @@ pub enum Kind {
     Protected,
     /// Areas are marked for redaction but nothing under them is removed yet.
     Redactions,
+    /// Signatures and other fill-and-sign items can still be moved.
+    Signing,
     /// An XFA-only form: only Adobe software builds its pages.
     Xfa,
     /// Pages are images without text.
@@ -39,6 +41,7 @@ impl Banner {
         match self.kind {
             Kind::Protected => icon::LOCK_KEY,
             Kind::Redactions => icon::EYE_SLASH,
+            Kind::Signing => icon::SIGNATURE,
             Kind::Xfa => icon::WARNING,
             Kind::Scanned => icon::SCAN,
             Kind::Forms => icon::TEXTBOX,
@@ -51,6 +54,7 @@ impl Banner {
         match self.kind {
             Kind::Protected => Some(("Password security", Act::Security)),
             Kind::Redactions => Some(("Apply redactions…", Act::ApplyRedactions)),
+            Kind::Signing => Some(("Finish signing…", Act::FinishSigning)),
             Kind::Scanned => Some(("Recognise text", Act::Ocr)),
             Kind::Forms => Some(("Highlight fields", Act::ToggleFields)),
             Kind::Xfa | Kind::Large => None,
@@ -71,6 +75,24 @@ pub fn redactions(marks: usize) -> Banner {
             } else {
                 format!("{marks} areas are")
             }
+        ),
+    }
+}
+
+/// The banner for `items` signatures, marks and other fill-and-sign items that can still
+/// be moved; it follows the document as the redaction banner does.
+pub fn signing(items: usize) -> Banner {
+    Banner {
+        kind: Kind::Signing,
+        text: format!(
+            "{} can still be moved or removed. Finish signing to draw {} into the pages for \
+             good.",
+            if items == 1 {
+                "A signature or other item you put down".to_string()
+            } else {
+                format!("{items} signatures and other items you put down")
+            },
+            if items == 1 { "it" } else { "them" }
         ),
     }
 }

@@ -49,6 +49,8 @@ pub enum Act {
     MarkResultsRedact,
     /// Remove everything under the redaction marks, after asking.
     ApplyRedactions,
+    /// Draw the fill-and-sign items into the pages, after asking.
+    FinishSigning,
     /// Choose kinds of hidden information (metadata, scripts…) to remove.
     RemoveHidden,
     /// Set the name written into comments and markup.
@@ -915,6 +917,16 @@ pub static ACTIONS: &[Action] = &[
         menu: false,
         ..BASE
     },
+    Action {
+        act: Act::Tool(Tool::Sign),
+        group: Group::Tools,
+        label: "Fill and sign",
+        icon: icon::SIGNATURE,
+        menu: false,
+        hint: "Put your signature, initials, the date or a tick on the page. Not a digital \
+               signature.",
+        ..BASE
+    },
     // ------------------------------------------------------------ Document
     Action {
         act: Act::RotR,
@@ -1060,6 +1072,16 @@ pub static ACTIONS: &[Action] = &[
         enabled: doc_idle,
         hint: "Remove the text, pictures and drawings under the redaction marks for good, \
                and paint the areas black.",
+        ..BASE
+    },
+    Action {
+        act: Act::FinishSigning,
+        group: Group::Document,
+        label: "Finish signing…",
+        icon: icon::SIGNATURE,
+        enabled: doc_idle,
+        hint: "Draw the signatures, dates, ticks and other items put down with the Sign \
+               tool into the pages, so they can no longer be moved or removed.",
         ..BASE
     },
     Action {

@@ -24,6 +24,14 @@
   where the removed text still appears elsewhere. Marks are standard PDF redaction marks, so they can be reviewed
   in other apps. While there are marks, a notice above the pages offers Apply redactions…; saving with marks not
   yet applied asks first. Also `mpe redact` (`--text`, `--area`, `--mark-only`, `--apply`).
+- Fill and sign: the Sign button in the top bar puts your signature, initials, the date (in three styles), your
+  name, text or a tick, cross or dot on the page, in black or blue. Signatures and initials are drawn on a pad,
+  typed in one of four handwriting styles (Caveat, Cedarville Cursive, Homemade Apple and Zeyada, bundled), or taken from a photo or scan
+  with the paper made transparent; up to five of each are remembered. Click to put one down or drag to size it;
+  clicking an empty signature field signs in it. Items stay movable until Finish signing (in a notice above the
+  pages, the Sign pane and the Document menu) draws them into the pages. Typed signatures from the command line with
+  `mpe stamp --signature` (`--style`, `--color`, `--date`). This is a picture of a signature, not a digital
+  signature.
 - Remove hidden information: Document > Remove hidden information… lists what the document carries besides its
   pages and removes what you tick: metadata (including XMP), JavaScript and automatic actions, attachments, hidden
   layers and their content, thumbnails and private data, and if you like comments, form values, bookmarks and what

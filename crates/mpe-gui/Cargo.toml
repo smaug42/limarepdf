@@ -52,6 +52,10 @@ assets = [
     ["../../LICENSE-APACHE", "usr/share/doc/mpe/", "644"],
     ["../mpe-core/models/README.md", "usr/share/doc/mpe/OCR-MODEL.md", "644"],
     ["assets/fonts/OFL.txt", "usr/share/doc/mpe/FONT-LICENSE-Inter.txt", "644"],
+    ["../mpe-core/assets/fonts/OFL-Caveat.txt", "usr/share/doc/mpe/FONT-LICENSE-Caveat.txt", "644"],
+    ["../mpe-core/assets/fonts/OFL-CedarvilleCursive.txt", "usr/share/doc/mpe/FONT-LICENSE-CedarvilleCursive.txt", "644"],
+    ["../mpe-core/assets/fonts/LICENSE-HomemadeApple.txt", "usr/share/doc/mpe/FONT-LICENSE-HomemadeApple.txt", "644"],
+    ["../mpe-core/assets/fonts/OFL-Zeyada.txt", "usr/share/doc/mpe/FONT-LICENSE-Zeyada.txt", "644"],
 ]
 
 [package.metadata.generate-rpm]
@@ -72,6 +76,10 @@ assets = [
     { source = "../../LICENSE-APACHE", dest = "/usr/share/licenses/mpe/LICENSE-APACHE", mode = "644" },
     { source = "../mpe-core/models/README.md", dest = "/usr/share/doc/mpe/OCR-MODEL.md", mode = "644", doc = true },
     { source = "assets/fonts/OFL.txt", dest = "/usr/share/licenses/mpe/FONT-LICENSE-Inter.txt", mode = "644" },
+    { source = "../mpe-core/assets/fonts/OFL-Caveat.txt", dest = "/usr/share/licenses/mpe/FONT-LICENSE-Caveat.txt", mode = "644" },
+    { source = "../mpe-core/assets/fonts/OFL-CedarvilleCursive.txt", dest = "/usr/share/licenses/mpe/FONT-LICENSE-CedarvilleCursive.txt", mode = "644" },
+    { source = "../mpe-core/assets/fonts/LICENSE-HomemadeApple.txt", dest = "/usr/share/licenses/mpe/FONT-LICENSE-HomemadeApple.txt", mode = "644" },
+    { source = "../mpe-core/assets/fonts/OFL-Zeyada.txt", dest = "/usr/share/licenses/mpe/FONT-LICENSE-Zeyada.txt", mode = "644" },
 ]
 
 # Library sonames rather than package names, so the same rpm works on Fedora and openSUSE.

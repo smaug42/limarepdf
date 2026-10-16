@@ -164,6 +164,8 @@ enum Dialog {
     ConfirmSaveSigned(bool),
     /// Remove everything under this many marked areas?
     ConfirmApplyRedactions(usize),
+    /// Draw this many fill-and-sign items into the pages?
+    ConfirmFinishSigning(usize),
     RemoveHidden(dlg::RemoveHidden),
     /// Save (`true`: as a new file) with this many marked areas not yet applied?
     ConfirmSaveMarks(bool, usize),
@@ -723,6 +725,18 @@ impl App {
                     );
                 } else {
                     self.dialog = Dialog::ConfirmApplyRedactions(n);
+                }
+            }
+            Act::FinishSigning if has => {
+                let n = self.tabs[self.active].pdf.sign_items();
+                if n == 0 {
+                    self.tabs[self.active].notice = Some(
+                        "There is nothing to finish: put down a signature, the date or a tick \
+                         with the Sign tool first"
+                            .into(),
+                    );
+                } else {
+                    self.dialog = Dialog::ConfirmFinishSigning(n);
                 }
             }
             Act::CloseTab if has => {
@@ -1446,6 +1460,31 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
+            Dialog::ConfirmFinishSigning(n) => match dlg::confirm(
+                ctx,
+                "Finish signing?",
+                &format!(
+                    "{} drawn into the pages, as {} now. After that {} can't be moved or \
+                     removed like a comment. Undo brings {} back until you close the document.",
+                    plural(
+                        *n,
+                        "The item you put down with the Sign tool is",
+                        "The {n} items you put down with the Sign tool are"
+                    ),
+                    if *n == 1 { "it looks" } else { "they look" },
+                    if *n == 1 { "it" } else { "they" },
+                    if *n == 1 { "it" } else { "them" },
+                ),
+                "Finish signing",
+            ) {
+                Outcome::Apply => {
+                    let t = &mut self.tabs[self.active];
+                    t.edit(ctx, |p| p.finish_signing().map(drop));
+                    done = true;
+                }
+                Outcome::Cancel => done = true,
+                Outcome::Open => {}
+            },
             Dialog::RemoveHidden(s) => match dlg::remove_hidden(ctx, s) {
                 Outcome::Apply => {
                     let what: Vec<mpe_core::Hidden> = s
@@ -2056,8 +2095,8 @@ impl eframe::App for App {
                 };
                 // Menu, Open, Save, Undo, Redo and three separators, then the tools.
                 let left = |tools: f32| 5.0 * btn + 3.0 * sep + tools;
-                // Seven tools, then the Annotate button with its menu.
-                let inline = 10.0 * btn;
+                // Eight tools (Sign among them), then the Annotate button with its menu.
+                let inline = 11.0 * btn;
                 let w = ui.available_width() - 16.0;
                 let search_field = w >= left(inline) + right(true);
                 let tools_inline = w >= left(inline) + right(search_field);
@@ -2336,9 +2375,17 @@ impl eframe::App for App {
                                 t.ed.stamp_name_date = s.stamp_name_date;
                                 t.ed.stamp_pictures = s.stamp_pictures.clone();
                                 t.ed.stamp_wordings = s.stamp_wordings.clone();
+                                t.ed.sign_kit = s.sign.clone();
                                 t.ed.inspector(ui);
                                 if std::mem::take(&mut t.ed.apply_redactions) {
                                     t.requested.push(Act::ApplyRedactions);
+                                }
+                                if std::mem::take(&mut t.ed.finish_signing) {
+                                    t.requested.push(Act::FinishSigning);
+                                }
+                                if t.ed.sign_kit != s.sign {
+                                    s.sign = t.ed.sign_kit.clone();
+                                    s.sign.save();
                                 }
                                 if (
                                     t.ed.stamp_name_date,

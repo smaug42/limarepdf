@@ -319,9 +319,20 @@ impl FormUi {
             };
             ui.ctx().set_cursor_icon(icon);
         }
+        // An empty signature field: a click signs in it with the Sign tool.
+        let sign_box = (f.kind == FieldKind::Signature)
+            .then(|| f.widgets[wi].bbox)
+            .filter(|b| pdf.empty_signature_boxes(page).contains(b));
+        if sign_box.is_some() {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        }
         resp.clone().on_hover_text_at_pointer(tip);
-        if resp.clicked() && why_not(f).is_none() {
-            self.activate(fi, wi, acts);
+        if resp.clicked() {
+            if let Some(b) = sign_box {
+                acts.push(Action::SignHere(page, b));
+            } else if why_not(f).is_none() {
+                self.activate(fi, wi, acts);
+            }
         }
         true
     }
@@ -528,7 +539,10 @@ pub fn why_not(f: &Field) -> Option<&'static str> {
     match f.kind {
         _ if f.read_only => Some("Read-only"),
         FieldKind::Button => Some("A button: it runs a script, which MPE doesn't do"),
-        FieldKind::Signature => Some("A signature field: MPE can't sign yet"),
+        FieldKind::Signature => Some(
+            "A signature field: click to put your signature in it (a picture of it, not a \
+             digital signature)",
+        ),
         _ => None,
     }
 }

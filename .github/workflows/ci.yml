@@ -56,6 +56,10 @@ jobs:
           cp crates/mpe-core/models/README.md "$dir/OCR-MODEL.md"
           # Licence for the Inter font built into mpe-gui.
           cp crates/mpe-gui/assets/fonts/OFL.txt "$dir/FONT-LICENSE-Inter.txt"
+          # Licences for the handwriting fonts built into mpe-core (typed signatures).
+          for f in OFL-Caveat OFL-CedarvilleCursive LICENSE-HomemadeApple OFL-Zeyada; do
+            cp "crates/mpe-core/assets/fonts/$f.txt" "$dir/FONT-LICENSE-${f#*-}.txt"
+          done
           # Linux desktop entry and icon; docs/install.md says where they go.
           if [ "${{ runner.os }}" = "Linux" ]; then
             cp crates/mpe-gui/assets/mpe.desktop "$dir/"

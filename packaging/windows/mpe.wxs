@@ -75,6 +75,18 @@
       <Component Directory="INSTALLFOLDER">
         <File Source="crates\mpe-gui\assets\fonts\OFL.txt" Name="FONT-LICENSE-Inter.txt" />
       </Component>
+      <Component Directory="INSTALLFOLDER">
+        <File Source="crates\mpe-core\assets\fonts\OFL-Caveat.txt" Name="FONT-LICENSE-Caveat.txt" />
+      </Component>
+      <Component Directory="INSTALLFOLDER">
+        <File Source="crates\mpe-core\assets\fonts\OFL-CedarvilleCursive.txt" Name="FONT-LICENSE-CedarvilleCursive.txt" />
+      </Component>
+      <Component Directory="INSTALLFOLDER">
+        <File Source="crates\mpe-core\assets\fonts\LICENSE-HomemadeApple.txt" Name="FONT-LICENSE-HomemadeApple.txt" />
+      </Component>
+      <Component Directory="INSTALLFOLDER">
+        <File Source="crates\mpe-core\assets\fonts\OFL-Zeyada.txt" Name="FONT-LICENSE-Zeyada.txt" />
+      </Component>
     </Feature>
   </Package>
 </Wix>

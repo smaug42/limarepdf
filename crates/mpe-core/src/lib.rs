@@ -36,6 +36,7 @@ pub mod render;
 mod sanitise;
 mod scan;
 mod security;
+mod sign;
 mod stamps;
 mod std14;
 mod text;
@@ -61,6 +62,9 @@ pub use redact::{PageRedaction, RedactReport};
 pub use sanitise::{Hidden, HiddenReport};
 pub use scan::{ScanMode, ScanOptions, ScanResult};
 pub use security::{Cipher, Encryption, Restrictions};
+pub use sign::{
+    sign_label, typed_signature, DateStyle, InkColor, Mark, SignArt, SignRole, SignStyle, SIGN_TEXT,
+};
 pub use stamps::{stamp_wording, Stamp, StampColor, StampKind, StampPlace};
 pub use text::SearchHit;
 pub use viewprefs::{OpenLayout, OpenPanel, ViewPrefs};

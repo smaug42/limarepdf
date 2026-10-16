@@ -8,6 +8,11 @@ MPE is dual-licensed under MIT or Apache-2.0, at your option. See [LICENSE-MIT](
 - **Icons:** Phosphor Icons (MIT, © Phosphor Icons), embedded as a font by `egui-phosphor`.
 - **Interface font:** Inter 4.1 by The Inter Project Authors, SIL Open Font License 1.1, included unmodified; see
   `crates/mpe-gui/assets/fonts/`. Release archives include the licence as `FONT-LICENSE-Inter.txt`.
+- **Handwriting fonts** for typed signatures, included unmodified; see `crates/mpe-core/assets/fonts/`: Caveat by
+  The Caveat Project Authors, Cedarville Cursive and Zeyada by Kimberly Geswein (SIL Open Font License 1.1), and
+  Homemade Apple by Font Diner (Apache License 2.0). They are drawn as shapes and never embedded in PDFs. Release
+  archives include the licences as `FONT-LICENSE-Caveat.txt`, `FONT-LICENSE-CedarvilleCursive.txt`,
+  `FONT-LICENSE-HomemadeApple.txt` and `FONT-LICENSE-Zeyada.txt`.
 - **Font metrics:** the glyph widths of the standard PDF fonts (Helvetica, Times, Symbol and ZapfDingbats),
   extracted from Adobe's Core 14 AFM files, © 1985–1997 Adobe Systems Incorporated, which may be used, copied and
   distributed for any purpose with their copyright notices kept. The notices, Adobe's permission notice and a note of

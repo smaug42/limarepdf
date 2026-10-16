@@ -2326,6 +2326,7 @@ dependencies = [
  "rayon",
  "rten",
  "rten-imageproc",
+ "skrifa 0.46.2",
  "thiserror 2.0.21",
  "tiff",
  "windows-sys 0.61.2",

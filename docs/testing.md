@@ -24,8 +24,8 @@ Run them with `cargo test --workspace`.
 | `crates/mpe-core/tests/print.rs` | What is sent to the printer, with a stand-in for `lp` |
 | `crates/mpe-core/tests/outline.rs` | Bookmarks: reading nesting, every kind of destination, broken and looping outlines; adding, renaming and removing them, with the open/closed counts kept right |
 | `crates/mpe-core/tests/links.rs` | Reading links: every kind of target, links that can't be followed, placement on turned pages |
-| `crates/mpe-core/tests/annots.rs` | Annotations: reading them, drawing each type that has no drawing (on screen only), removing them with replies and popups, flattening all or some pages; stamps placed, resized, faded, flattened and upright on turned pages; stamps with your own wording, and wording the font can't show refused |
-| `crates/mpe-core/tests/forms.rs` | Reading form fields: every kind, inherited values, broken field trees, turned pages, XFA-only and hybrid forms |
+| `crates/mpe-core/tests/annots.rs` | Annotations: reading them, drawing each type that has no drawing (on screen only), removing them with replies and popups, flattening all or some pages; stamps placed, resized, faded, flattened and upright on turned pages; stamps with your own wording, and wording the font can't show refused; fill and sign: typed, drawn and picture signatures (paper made transparent and margins cropped), initials and marks drawn, labelled and sized, upright on turned pages, and Finish signing drawing in only those items |
+| `crates/mpe-core/tests/forms.rs` | Reading form fields: every kind, inherited values, broken field trees, turned pages, XFA-only and hybrid forms; which signature fields are empty |
 | `crates/mpe-core/tests/redact.rs` | Redaction: characters removed with the rest kept in place (spacing, kerning, turned pages, hidden text, alternative text), drawings removed or clipped, pictures blacked out (soft masks, JPEG kept as JPEG, inline images, shared pictures) or removed when unreadable, shared forms, annotations, the after-check, redaction marks kept, saved and applied |
 | `crates/mpe-core/tests/sanitise.rs` | Removing hidden information: metadata and XMP, scripts (web links kept), attachments, hidden layers (marked content and a form in a hidden layer), content outside the crop box, finding without changing |
 | `crates/mpe-core/tests/form_fill.rs` | Filling in forms: values, drawn appearances (checked by rendering, including a turned field), fonts that can't be used, refused values, passwords, reset, drawing missing appearances |
@@ -48,6 +48,10 @@ viewer preferences were checked through their core tests and `mpe view-prefs`; f
 Opening view section were not clicked through;
 the stamp tool (including your own wording) was checked through its core tests and `mpe stamp` renders (including
 turned pages), not clicked through;
+fill and sign was checked through its core tests (including empty signature fields), unit tests of the saved
+signatures file, `mpe stamp --signature` renders in all four handwriting styles, and screenshots of the Sign pane, the
+notice and the Create signature window (Draw and Type); drawing on the pad, placing, signature fields, Finish
+signing and the Picture tab were not clicked through;
 redaction was checked through its core tests and `mpe redact` on real and scanned PDFs (renders checked), and its
 app part (Redact tool, marking selected text and search results, the notice, Apply, the save warning) was used by
 hand; removing hidden information was checked through its core tests and `mpe sanitise` on real PDFs, its dialog not
