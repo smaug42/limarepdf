@@ -25,6 +25,10 @@
   in other apps. While there are marks, a notice above the pages offers Apply redactions…; saving with marks not
   yet applied asks first. Also `mpe redact` (`--text`, `--area`,
   `--mark-only`, `--apply`).
+- Remove hidden information: Document > Remove hidden information… lists what the document carries besides its
+  pages and removes what you tick: metadata (including XMP), JavaScript and automatic actions, attachments, hidden
+  layers and their content, thumbnails and private data, and if you like comments, form values, bookmarks and what
+  lies outside the crop box. Also `mpe sanitise` (`--list`, `--keep`, `--also`).
 
 ### Changed
 

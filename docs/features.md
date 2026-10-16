@@ -69,7 +69,8 @@ available.
 | Links | Partial | Followed: to pages, and to web and email addresses after asking. Links to other PDF files, and adding or editing links: No. [Details](gui.md#links) |
 | Layers, attachments | No | |
 | Installers and packages | Done | `.deb` and `.rpm` packages with apt and dnf repositories, a macOS `.dmg`, a Windows MSI, and archives; GPG-signed. [Install](install.md); more package managers planned, see below |
-| Redaction | Partial | Mark areas, selected text or search results (standard redaction marks), check them, then apply: text, drawings, comments and links under them are removed for good, pictures (scans included) blacked out there, then checked. In the app and with `mpe redact`. Not yet: removing hidden information. [Details](redaction.md) |
+| Redaction | Partial | Mark areas, selected text or search results (standard redaction marks), check them, then apply: text, drawings, comments and links under them are removed for good, pictures (scans included) blacked out there, then checked. In the app and with `mpe redact`. [Details](redaction.md) |
+| Removing hidden information | Done | Metadata (including XMP), JavaScript and automatic actions, attachments, hidden layers and their content, thumbnails and private data; if chosen, comments, form values, bookmarks and what lies outside the crop box. Document > Remove hidden information… and `mpe sanitise`. [Details](redaction.md#removing-hidden-information) |
 | Digital signatures, certificate encryption | No | |
 | PDF/A, optimised saving | No | Saved files are pruned and compressed |
 | Comparing documents | No | |
@@ -145,8 +146,6 @@ archives stay.
 
 ### Features that would set MPE apart
 
-- **Sanitise before sharing.** One command that strips metadata (including XMP), JavaScript, attachments and hidden
-  layers. It pairs with redaction and with MPE making no network connections.
 - **Offline AI.** Summaries, questions and answers, and meaning-based search, run by a model on your own computer, so
   documents never leave it.
 - **Comparing documents.** Text and visual differences between two PDFs, also from the command line, so a comparison

@@ -1256,7 +1256,7 @@ impl Pdf {
 
     /// Of the pictures and forms `dropped`, take those no page draws any more out of the
     /// resources of pages and page-tree nodes, so they aren't kept in the file.
-    fn drop_unused_xobjects(&mut self, dropped: &HashSet<ObjectId>) -> Result<()> {
+    pub(crate) fn drop_unused_xobjects(&mut self, dropped: &HashSet<ObjectId>) -> Result<()> {
         if dropped.is_empty() {
             return Ok(());
         }

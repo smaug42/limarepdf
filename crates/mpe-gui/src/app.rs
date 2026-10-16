@@ -164,6 +164,7 @@ enum Dialog {
     ConfirmSaveSigned(bool),
     /// Remove everything under this many marked areas?
     ConfirmApplyRedactions(usize),
+    RemoveHidden(dlg::RemoveHidden),
     /// Save (`true`: as a new file) with this many marked areas not yet applied?
     ConfirmSaveMarks(bool, usize),
     Print(dlg::Print),
@@ -699,6 +700,19 @@ impl App {
                 let author = self.settings.author();
                 self.tabs[self.active].mark_results_for_redaction(ctx, &author);
             }
+            Act::RemoveHidden if has => match self.tabs[self.active].pdf.find_hidden() {
+                Ok(found) => {
+                    let kinds = mpe_core::Hidden::ALL
+                        .into_iter()
+                        .map(|h| (h, found.count(h), h.default_on()))
+                        .collect();
+                    self.dialog = Dialog::RemoveHidden(dlg::RemoveHidden { kinds });
+                }
+                Err(e) => {
+                    self.dialog =
+                        Dialog::Message("Remove hidden information".into(), format!("{e:#}"))
+                }
+            },
             Act::ApplyRedactions if has => {
                 let n = self.tabs[self.active].pdf.redaction_marks().len();
                 if n == 0 {
@@ -1426,6 +1440,35 @@ impl App {
                     });
                     if let Some(r) = report.filter(|_| ok) {
                         self.dialog = Dialog::Message("Redactions applied".into(), report_text(&r));
+                    }
+                    done = true;
+                }
+                Outcome::Cancel => done = true,
+                Outcome::Open => {}
+            },
+            Dialog::RemoveHidden(s) => match dlg::remove_hidden(ctx, s) {
+                Outcome::Apply => {
+                    let what: Vec<mpe_core::Hidden> = s
+                        .kinds
+                        .iter()
+                        .filter(|(_, n, on)| *on && *n > 0)
+                        .map(|(h, _, _)| *h)
+                        .collect();
+                    let t = &mut self.tabs[self.active];
+                    let mut report = None;
+                    let ok = t.edit(ctx, |p| {
+                        report = Some(p.remove_hidden(&what)?);
+                        Ok(())
+                    });
+                    if let Some(r) = report.filter(|_| ok) {
+                        let mut text = String::from("Removed:\n");
+                        for (h, n) in &r.removed {
+                            text.push_str(&format!("• {} ({n})\n", h.label()));
+                        }
+                        text.push_str(
+                            "\nSave the document to keep the changes; Undo brings it all back.",
+                        );
+                        self.dialog = Dialog::Message("Hidden information removed".into(), text);
                     }
                     done = true;
                 }
@@ -2435,6 +2478,10 @@ fn report_text(r: &mpe_core::RedactReport) -> String {
             ));
         }
     }
-    out.push_str("\n\nSave the document to keep the changes; Undo brings everything back.");
+    out.push_str(
+        "\n\nTo also remove metadata, attachments and other hidden information, choose Document > \
+         Remove hidden information.\n\nSave the document to keep the changes; Undo brings \
+         everything back.",
+    );
     out
 }

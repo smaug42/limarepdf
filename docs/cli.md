@@ -149,6 +149,16 @@ The command prints what it removed from each page, then the result of its check:
 nothing readable is left under the areas. It warns when removed text is still found elsewhere in the document. See
 [Redaction](redaction.md) for exactly what is removed.
 
+### Removing hidden information
+
+| Command | What it does |
+| --- | --- |
+| `mpe sanitise in.pdf --list` | List what the document has of each kind of hidden information |
+| `mpe sanitise in.pdf -o out.pdf` | Remove metadata, scripts, attachments, hidden layers and private data |
+| `mpe sanitise in.pdf -o out.pdf --keep metadata --also comments,bookmarks` | Keep some of those, or remove more: `comments`, `form-values`, `bookmarks`, `outside-crop` |
+
+See [Removing hidden information](redaction.md#removing-hidden-information).
+
 ## Properties and security
 
 | Command | What it does |

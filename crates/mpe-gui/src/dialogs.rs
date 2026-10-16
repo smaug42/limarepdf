@@ -195,6 +195,43 @@ pub fn save_selection(ctx: &Context, layout: &mut Layout) -> Outcome {
     })
 }
 
+/// Remove hidden information: each kind, how many the document has, and whether it is
+/// chosen.
+pub struct RemoveHidden {
+    pub kinds: Vec<(mpe_core::Hidden, usize, bool)>,
+}
+
+pub fn remove_hidden(ctx: &Context, s: &mut RemoveHidden) -> Outcome {
+    modal(ctx, "Remove hidden information", |ui| {
+        ui.label(
+            "Information that travels with the file but isn't on its pages. What is ticked is \
+             removed; once saved, it is gone from the file. Undo brings it back until you close \
+             the document.",
+        );
+        ui.add_space(6.0);
+        for (h, n, on) in &mut s.kinds {
+            if *h == mpe_core::Hidden::Comments {
+                ui.add_space(4.0);
+                ui.label("Often wanted, so not ticked at first:");
+            }
+            let found = if *n == 0 {
+                "none".to_string()
+            } else {
+                format!("{n} found")
+            };
+            ui.add_enabled(
+                *n > 0,
+                egui::Checkbox::new(on, format!("{} ({found})", h.label())),
+            );
+        }
+        let any = s.kinds.iter().any(|(_, n, on)| *on && *n > 0);
+        ui.add_space(8.0);
+        ui.separator();
+        ui.horizontal(|ui| ui.add_enabled(any, egui::Button::new("Remove")).clicked())
+            .inner
+    })
+}
+
 pub struct Password {
     pub path: PathBuf,
     pub input: String,

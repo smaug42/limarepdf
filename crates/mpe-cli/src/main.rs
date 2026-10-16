@@ -234,6 +234,28 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Remove hidden information before sharing: metadata, scripts, attachments, hidden
+    /// layers and private data (and, if asked, comments, form values, bookmarks and what
+    /// lies outside the page area)
+    Sanitise {
+        input: PathBuf,
+        /// Output PDF (not needed with --list)
+        #[arg(short, long, required_unless_present = "list")]
+        output: Option<PathBuf>,
+        #[arg(long)]
+        password: Option<String>,
+        /// Kinds to keep, comma-separated: metadata, scripts, attachments, hidden-layers,
+        /// private-data
+        #[arg(long, default_value = "")]
+        keep: String,
+        /// Kinds to remove as well, comma-separated: comments, form-values, bookmarks,
+        /// outside-crop
+        #[arg(long, default_value = "")]
+        also: String,
+        /// Only list what the document has of each kind; nothing is written
+        #[arg(long)]
+        list: bool,
+    },
     /// Put a stamp on pages: Approved, Draft and so on, your own wording, or a picture
     Stamp {
         #[command(flatten)]
@@ -1478,6 +1500,46 @@ fn main() -> Result<()> {
             apply,
             json,
         } => redact(&io, &areas, &texts, mark_only, apply, json)?,
+        Cmd::Sanitise {
+            input,
+            output,
+            password,
+            keep,
+            also,
+            list,
+        } => {
+            let mut pdf = open(&input, &password)?;
+            if list {
+                let found = pdf.find_hidden()?;
+                for h in mpe_core::Hidden::ALL {
+                    let n = found.count(h);
+                    let mark = if h.default_on() { "" } else { "  (--also)" };
+                    out!("{:<14} {n:>5}  {}{mark}", h.name(), h.label());
+                }
+                return Ok(());
+            }
+            let kinds = |s: &str| -> Result<Vec<mpe_core::Hidden>> {
+                s.split(',')
+                    .filter(|x| !x.trim().is_empty())
+                    .map(|x| mpe_core::Hidden::parse(x).with_context(|| format!("no kind {x:?}")))
+                    .collect()
+            };
+            let (keep, also) = (kinds(&keep)?, kinds(&also)?);
+            let what: Vec<mpe_core::Hidden> = mpe_core::Hidden::ALL
+                .into_iter()
+                .filter(|h| (h.default_on() && !keep.contains(h)) || also.contains(h))
+                .collect();
+            let rep = pdf.remove_hidden(&what)?;
+            if rep.removed.is_empty() {
+                out!("nothing to remove");
+            }
+            for (h, n) in &rep.removed {
+                out!("removed {n:>5}  {}", h.label());
+            }
+            let output = output.context("--output is needed")?;
+            pdf.save(&output)?;
+            out!("wrote {}", output.display());
+        }
         Cmd::Stamp {
             io,
             kind,

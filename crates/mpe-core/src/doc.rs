@@ -257,7 +257,7 @@ impl Pdf {
     }
 
     /// Full box (MediaBox, else Letter) of a page in user space.
-    fn media_box(&self, id: ObjectId) -> [f32; 4] {
+    pub(crate) fn media_box(&self, id: ObjectId) -> [f32; 4] {
         self.inherited(id, b"MediaBox")
             .and_then(|o| self.rect(&o))
             .unwrap_or([0.0, 0.0, 612.0, 792.0])

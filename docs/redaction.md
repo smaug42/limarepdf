@@ -43,6 +43,34 @@ It then looks for the removed text elsewhere in the document: on any page, in bo
 document's title, author, subject and keywords. Anything it finds is listed as a warning, since redaction only
 changes the areas you give it.
 
+## Removing hidden information
+
+A file can carry information that isn't on any page. Document > Remove hidden information… (or `mpe sanitise`)
+removes it. The app lists what this document has of each kind; what is ticked is removed:
+
+- **Document information and XMP metadata:** title, author, subject, keywords, the program that made it, and the
+  XML metadata in the document and in pictures and other parts.
+- **JavaScript and actions that run by themselves:** document scripts, actions run on opening, closing, saving or
+  printing, form field scripts (formatting, checking, calculating), and actions that launch programs, send form data,
+  import data or open attached files. Ordinary links to pages and web addresses stay. A form with both XFA and
+  ordinary fields loses its XFA part (it holds scripts); a form made only for Adobe Reader (XFA only) keeps it.
+- **Attached files:** files attached to the document or to comments.
+- **Hidden layers and their content:** the content of layers that are switched off is deleted, and those layers
+  leave the layer list. Layers that are shown stay.
+- **Thumbnails and private application data:** page thumbnail pictures, data other programs keep for themselves
+  (such as Illustrator's), and web capture information.
+
+Not ticked at first, as they are often wanted:
+
+- **Comments and markup** (redaction marks stay).
+- **Form field values:** fields go back to their default values.
+- **Bookmarks.**
+- **Content outside the visible page area:** what lies outside each page's crop box is redacted and the page becomes
+  the size it is shown at.
+
+Nothing else is kept: saving rewrites the whole file, leaving out everything no longer used, and earlier versions
+of the file aren't kept in it.
+
 ## Limits
 
 - The width of the gap shows how long the removed text was.

@@ -208,6 +208,11 @@ first, and goes once the marks are applied or deleted. Dismissed, it comes back 
 Redact tool's pane has the same button with the count. Saving a document that still has marks asks first, since
 nothing under them has been removed.
 
+**Remove hidden information:** Document > Remove hidden information… lists what the document carries besides its
+pages (metadata, scripts, attachments, hidden layers, private data, and comments, form values, bookmarks and content
+outside the crop box), with how many of each it has. Tick what to remove and press Remove; a summary follows. Undo
+brings it back. See [Removing hidden information](redaction.md#removing-hidden-information).
+
 ## Filling in forms
 
 Form fields work with the read tool, like links: hovering tints a field and shows its description, and a click

@@ -49,6 +49,8 @@ pub enum Act {
     MarkResultsRedact,
     /// Remove everything under the redaction marks, after asking.
     ApplyRedactions,
+    /// Choose kinds of hidden information (metadata, scripts…) to remove.
+    RemoveHidden,
     /// Set the name written into comments and markup.
     CommentName,
     /// Delete the selected object, or the selected pages.
@@ -1058,6 +1060,16 @@ pub static ACTIONS: &[Action] = &[
         enabled: doc_idle,
         hint: "Remove the text, pictures and drawings under the redaction marks for good, \
                and paint the areas black.",
+        ..BASE
+    },
+    Action {
+        act: Act::RemoveHidden,
+        group: Group::Document,
+        label: "Remove hidden information…",
+        icon: icon::BROOM,
+        enabled: doc_idle,
+        hint: "Remove metadata, scripts, attachments, hidden layers and other information that \
+               travels with the file but isn't on its pages.",
         ..BASE
     },
     Action {
