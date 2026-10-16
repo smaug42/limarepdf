@@ -36,10 +36,12 @@ invalid; when a document is signed, MPE asks first. Save As to a new file keeps 
   fitting as you resize the window or open and close the panels. Zooming in or out, actual size, Ctrl+scroll or a
   pinch turns fitting off, and your zoom then stays as it is; the Fit width button (highlighted while fitting is on)
   or Ctrl+0 turns it back on. The page layout button left of the zoom buttons (its icon shows the current layout),
-  or ☰ > View > Page layout, chooses how pages are laid out, for every document, and is remembered: **Continuous pages** (one column, the default), **Facing pages** (two side by side, still scrolling;
+  or ☰ > View > Page layout, chooses how the document's pages are laid out: **Continuous pages** (one column, the default), **Facing pages** (two side by side, still scrolling;
   fitting fits both) or **Single page** (one at a time; a wheel step past the page's top or bottom turns the page).
   In facing pages, **Show cover page alone** (on by default) puts the first page on its own on the right, as in a
-  book; off pairs pages 1 and 2. PageUp and PageDown move a pair at a time when facing.
+  book; off pairs pages 1 and 2. PageUp and PageDown move a pair at a time when facing. The choice changes the
+  document you are viewing and is remembered for documents opened later. A document that sets its own opening
+  view (see below) opens in its layout instead, and can also open the Pages or Bookmarks tab and go to a page.
 - **Right:** the inspector, which shows options for what is selected. On windows narrower than about 960 pixels it
   collapses to a thin rail; click the rail to slide it out. ☰ > View > Inspector shows or hides it.
 
@@ -227,7 +229,7 @@ What you select decides what the inspector, the right-click menu and the floatin
 
 | Selected | Inspector |
 | --- | --- |
-| Nothing | The document: properties, password security, crop, watermark, headers/footers/Bates, OCR, optimise scanned pages, export pages as images, split into files, and buttons for export text, print and append PDFs |
+| Nothing | The document: properties, opening view, password security, crop, watermark, headers/footers/Bates, OCR, optimise scanned pages, export pages as images, split into files, and buttons for export text, print and append PDFs |
 | Pages (click thumbnails; Shift for a range, Ctrl for one more) | Rotate, delete, extract to a new tab, insert images or a blank page after them, page labels from the first selected page, and the crop, watermark, headers/footers, OCR and optimise tools with the pages filled in |
 | An object, words, or a tool that adds content | That object's or tool's options |
 
@@ -245,6 +247,11 @@ pages. When a document has them, the status bar shows the label with the page's 
 and the thumbnails show the labels. To set them, select the first page to number, open Page labels in the
 inspector, and pick a style, an optional prefix and the number to start at; the numbering runs to the next labelled
 range. Labels stay with their pages when pages are deleted or moved.
+
+Opening view, in the document's inspector, is how viewers that follow it show the document when it opens: its
+layout (continuous, facing, facing with the cover alone, or single page), the side panel (Pages or Bookmarks) and
+the page it opens at. Each can be left as Not set. Use current view fills them in from how you are viewing the
+document now; Apply saves them into the document like any other change, and Undo reverses it.
 
 Split into files makes files of a set number of pages, or starts a file at each bookmark down to the chosen level
 (1 is the top level only). Files are named after their bookmark, such as `book-002 Introduction.pdf`, and the pages

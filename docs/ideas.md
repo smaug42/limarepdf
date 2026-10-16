@@ -29,7 +29,6 @@ Small or medium additions that build on what MPE already has:
 
 - Bookmarks: move and sort; import and export as JSON; generate from headings or a table of contents (M)
 - XMP metadata editing, keywords and custom properties (M)
-- Viewer preferences: the page and layout a document opens with (S)
 - Attachments (add, list, extract) and portfolios (M)
 - Create and edit links, turn URLs in text into links, links from bookmarks (M)
 - A full report on a file: its fonts, images and structure, beyond today's `mpe info` (S–M)

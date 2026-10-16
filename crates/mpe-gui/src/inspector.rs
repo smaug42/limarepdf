@@ -11,11 +11,14 @@ use crate::actions::{self, Act, Ctx};
 use crate::app::IMAGE_EXTS;
 use crate::fields::{self, FormUi};
 use crate::selection::Selection;
-use crate::tab::{Stamp, Tab};
+use crate::tab::{Side, Stamp, Tab};
 use crate::theme;
 use eframe::egui::{self, Ui};
 use mpe_core::render::{ImageFormat, MAX_DPI};
-use mpe_core::{Cipher, Encryption, Info, LabelStyle, Restrictions, ScanMode, ScanOptions};
+use mpe_core::{
+    Cipher, Encryption, Info, LabelStyle, OpenLayout, OpenPanel, Restrictions, ScanMode,
+    ScanOptions, ViewPrefs,
+};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -66,6 +69,7 @@ pub enum Apply {
     /// Number the pages from this page (0-based) on, as the form says.
     Label(usize),
     RemoveLabels,
+    ViewPrefs,
 }
 
 pub struct Wm {
@@ -247,6 +251,10 @@ pub struct Forms {
     /// Size of a new blank page, in points.
     pub blank: (f32, f32),
     pub label: Label,
+    /// The viewer preferences being edited, and the page shown in the page box (0-based)
+    /// while no opening page is set.
+    pub view: ViewPrefs,
+    pub view_page: usize,
     /// Section to open and scroll to on the next frame.
     pub reveal: Option<Section>,
     /// Document revision the properties were read at.
@@ -288,6 +296,8 @@ impl Tab {
                 self.forms.split_level = 1;
             }
             self.forms.meta = self.pdf.info();
+            self.forms.view = self.pdf.view_prefs();
+            self.forms.view_page = self.forms.view.page.unwrap_or(0);
             self.forms.meta_rev = Some(self.revision);
         }
         let sel = self.ed.selection.clone();
@@ -338,6 +348,16 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
     let pages = t.ed.selection.pages().cloned();
     let wm_again = t.replaces_stamp(Stamp::Watermark);
     let hf_again = t.replaces_stamp(Stamp::HeaderFooter);
+    let here = Here {
+        layout: t.layout.to_open(t.cover),
+        panel: match (c.side, t.side) {
+            (true, Side::Pages) => Some(OpenPanel::Pages),
+            (true, Side::Bookmarks) => Some(OpenPanel::Bookmarks),
+            _ => None,
+        },
+        page: t.current,
+        pages: t.page_count(),
+    };
     let f = &mut t.forms;
     match &pages {
         Some(pages) => {
@@ -377,6 +397,11 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
             section(ui, reveal, Some(Section::Properties), "Properties", |ui| {
                 if meta_ui(ui, &mut f.meta) {
                     apply = Some(Apply::Props);
+                }
+            });
+            section(ui, reveal, None, "Opening view", |ui| {
+                if view_ui(ui, &mut f.view, &mut f.view_page, &here) {
+                    apply = Some(Apply::ViewPrefs);
                 }
             });
             let sec = "Password security";
@@ -658,6 +683,80 @@ fn meta_ui(ui: &mut Ui, s: &mut Info) -> bool {
         }
     });
     ui.button("Apply").clicked()
+}
+
+/// How the document is being viewed now, for "Use current view".
+struct Here {
+    layout: OpenLayout,
+    /// The side tab shown, when the side panel is open and on a tab a document can ask for.
+    panel: Option<OpenPanel>,
+    page: usize,
+    pages: usize,
+}
+
+fn view_ui(ui: &mut Ui, v: &mut ViewPrefs, page: &mut usize, here: &Here) -> bool {
+    ui.weak("How viewers show this document when it opens, if they follow it. MPE does.");
+    let layout_name = |l: Option<OpenLayout>| match l {
+        None => "Not set",
+        Some(OpenLayout::Continuous) => "Continuous pages",
+        Some(OpenLayout::Facing) => "Facing pages",
+        Some(OpenLayout::FacingCover) => "Facing, cover alone",
+        Some(OpenLayout::Single) => "Single page",
+    };
+    let panel_name = |p: Option<OpenPanel>| match p {
+        None => "Not set",
+        Some(OpenPanel::Pages) => "Pages",
+        Some(OpenPanel::Bookmarks) => "Bookmarks",
+    };
+    grid(ui, "view", |ui| {
+        ui.label("Layout");
+        egui::ComboBox::from_id_salt("view-layout")
+            .selected_text(layout_name(v.layout))
+            .show_ui(ui, |ui| {
+                for l in [None].into_iter().chain(OpenLayout::ALL.map(Some)) {
+                    ui.selectable_value(&mut v.layout, l, layout_name(l));
+                }
+            });
+        ui.end_row();
+        ui.label("Side panel");
+        egui::ComboBox::from_id_salt("view-panel")
+            .selected_text(panel_name(v.panel))
+            .show_ui(ui, |ui| {
+                for p in [None].into_iter().chain(OpenPanel::ALL.map(Some)) {
+                    ui.selectable_value(&mut v.panel, p, panel_name(p));
+                }
+            });
+        ui.end_row();
+        ui.label("Page");
+        ui.horizontal(|ui| {
+            let mut set = v.page.is_some();
+            ui.checkbox(&mut set, "Open at");
+            let mut n = *page + 1;
+            let field = egui::DragValue::new(&mut n).range(1..=here.pages.max(1));
+            ui.add_enabled(set, field);
+            *page = n - 1;
+            v.page = set.then_some(*page);
+        });
+        ui.end_row();
+    });
+    ui.horizontal(|ui| {
+        if ui
+            .button("Use current view")
+            .on_hover_text(
+                "Fill in this document's layout, side panel and page as you see them now.",
+            )
+            .clicked()
+        {
+            *page = here.page;
+            *v = ViewPrefs {
+                layout: Some(here.layout),
+                panel: here.panel,
+                page: Some(here.page),
+            };
+        }
+        ui.button("Apply").clicked()
+    })
+    .inner
 }
 
 fn security_ui(ui: &mut Ui, s: &mut Sec) -> bool {

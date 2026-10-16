@@ -126,6 +126,10 @@ pub struct Tab {
     /// When the wheel last turned the page (egui time), so one long trackpad swipe turns
     /// one page.
     flipped: f64,
+    /// This document's page layout and cover page choice: the file's own preference
+    /// when it has one, else the app's default.
+    pub layout: Layout,
+    pub cover: bool,
 }
 
 impl Tab {
@@ -191,6 +195,8 @@ impl Tab {
             comments: None,
             edge: (false, false),
             flipped: 0.0,
+            layout: Layout::default(),
+            cover: true,
         })
     }
 
@@ -1077,6 +1083,8 @@ impl Tab {
     /// The command state for this tab's part: document, undo, selection and tool.
     pub fn fill_ctx(&self, c: &mut Ctx) {
         c.doc = true;
+        c.layout = self.layout;
+        c.cover = self.cover;
         c.can_undo = self.can_undo();
         c.can_redo = self.can_redo();
         c.words = self.ed.selected_text().is_some();

@@ -36,6 +36,7 @@ mod stamps;
 mod std14;
 mod text;
 mod tounicode;
+mod viewprefs;
 
 pub use annots::{Annot, AnnotKind, ShapeLook, TextStyle};
 pub use blank::BLANK_TOLERANCE;
@@ -55,6 +56,7 @@ pub use scan::{ScanMode, ScanOptions, ScanResult};
 pub use security::{Cipher, Encryption, Restrictions};
 pub use stamps::{stamp_wording, Stamp, StampColor, StampKind, StampPlace};
 pub use text::SearchHit;
+pub use viewprefs::{OpenLayout, OpenPanel, ViewPrefs};
 
 pub type Result<T> = anyhow::Result<T>;
 

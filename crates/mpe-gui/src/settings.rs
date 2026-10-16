@@ -8,7 +8,7 @@
 //! files stay on this computer, and failing to read or write them is not an error.
 
 use eframe::egui::ThemePreference;
-use mpe_core::StampColor;
+use mpe_core::{OpenLayout, StampColor};
 use std::path::PathBuf;
 
 /// The settings folder for MPE, from the environment.
@@ -45,6 +45,27 @@ impl Layout {
             Layout::Continuous => "continuous",
             Layout::Facing => "facing",
             Layout::Single => "single",
+        }
+    }
+
+    /// The layout and cover page choice a document's preference asks for; `cover` is kept
+    /// when the preference doesn't say.
+    pub fn from_open(l: OpenLayout, cover: bool) -> (Self, bool) {
+        match l {
+            OpenLayout::Continuous => (Layout::Continuous, cover),
+            OpenLayout::Single => (Layout::Single, cover),
+            OpenLayout::Facing => (Layout::Facing, false),
+            OpenLayout::FacingCover => (Layout::Facing, true),
+        }
+    }
+
+    /// This layout as a document's preference.
+    pub fn to_open(self, cover: bool) -> OpenLayout {
+        match self {
+            Layout::Continuous => OpenLayout::Continuous,
+            Layout::Single => OpenLayout::Single,
+            Layout::Facing if cover => OpenLayout::FacingCover,
+            Layout::Facing => OpenLayout::Facing,
         }
     }
 }

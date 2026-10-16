@@ -42,6 +42,8 @@ unit-tested, and the operations behind it are covered by the core tests and the 
 has been used by hand on Linux. Later additions (recent files, document notices, fit width, the theme button, crop)
 were checked by screenshot under a virtual X server; not every one has been clicked through by hand. Of the newest:
 the page layouts (facing and single page) have unit tests for pairing and fitting but were not clicked through;
+viewer preferences were checked through their core tests and `mpe view-prefs`; following them on opening and the
+Opening view section were not clicked through;
 the stamp tool (including your own wording) was checked through its core tests and `mpe stamp` renders (including
 turned pages), not clicked through;
 filling in forms has been used by hand on one form; the Bookmarks tab (including adding, renaming and deleting

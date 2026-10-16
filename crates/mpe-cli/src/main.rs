@@ -11,8 +11,9 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use mpe_core::{
     format_page_range, parse_page_range, part_file_name, print, render, Annot, AnnotKind, Bates,
     BookmarkPlace, Cipher, Encryption, Field, FieldKind, FieldValue, HeaderFooter, ImageImport,
-    ImageWatermark, Info, LabelRange, LabelStyle, Ocr, OcrResult, Pdf, Restrictions, ScanMode,
-    ScanOptions, ScanResult, Stamp, StampColor, StampKind, StampPlace, Watermark,
+    ImageWatermark, Info, LabelRange, LabelStyle, Ocr, OcrResult, OpenLayout, OpenPanel, Pdf,
+    Restrictions, ScanMode, ScanOptions, ScanResult, Stamp, StampColor, StampKind, StampPlace,
+    ViewPrefs, Watermark,
 };
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
@@ -347,6 +348,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: BookmarksCmd,
     },
+    /// Work with viewer preferences: the layout, side panel and page a document opens with
+    ViewPrefs {
+        #[command(subcommand)]
+        cmd: ViewPrefsCmd,
+    },
     /// List the printers; the default is marked
     Printers,
     /// Print (CUPS on Linux and macOS, the print spooler on Windows)
@@ -441,6 +447,74 @@ enum LabelsCmd {
         #[command(flatten)]
         io: Io,
     },
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum OpenLayoutArg {
+    /// One column of pages, scrolled
+    Continuous,
+    /// Two pages side by side, odd pages on the left
+    Facing,
+    /// Two pages side by side, the first page alone on the right
+    FacingCover,
+    /// One page at a time
+    Single,
+    /// Remove the preference
+    None,
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum OpenPanelArg {
+    /// Page thumbnails
+    Pages,
+    /// The bookmarks
+    Bookmarks,
+    /// Remove the preference
+    None,
+}
+
+#[derive(Subcommand)]
+enum ViewPrefsCmd {
+    /// List the document's viewer preferences
+    List {
+        input: PathBuf,
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Set viewer preferences; those not given are kept
+    Set {
+        #[command(flatten)]
+        io: Io,
+        #[arg(long, value_enum)]
+        layout: Option<OpenLayoutArg>,
+        /// The side panel shown on opening
+        #[arg(long, value_enum)]
+        panel: Option<OpenPanelArg>,
+        /// The page the document opens on (1-based), or "none"
+        #[arg(long, value_parser = parse_open_page)]
+        page: Option<OpenPageArg>,
+    },
+    /// Remove all viewer preferences MPE knows (an opening action that isn't a page is kept)
+    Clear {
+        #[command(flatten)]
+        io: Io,
+    },
+}
+
+#[derive(Copy, Clone)]
+enum OpenPageArg {
+    Page(usize),
+    None,
+}
+
+fn parse_open_page(s: &str) -> std::result::Result<OpenPageArg, String> {
+    match s {
+        "none" => Ok(OpenPageArg::None),
+        _ => match s.parse::<usize>() {
+            Ok(n) if n >= 1 => Ok(OpenPageArg::Page(n)),
+            _ => Err("expected a page number from 1, or \"none\"".into()),
+        },
+    }
 }
 
 #[derive(Subcommand)]
@@ -1524,6 +1598,54 @@ fn main() -> Result<()> {
                 })
             })?,
             LabelsCmd::Remove { io } => run_edit(&io, |p| p.set_label_ranges(&[]))?,
+        },
+        Cmd::ViewPrefs { cmd } => match cmd {
+            ViewPrefsCmd::List { input, password } => {
+                let p = open(&input, &password)?;
+                let prefs = p.view_prefs();
+                let labels = p.page_labels();
+                let page = prefs.page.map(|n| match &labels {
+                    Some(l) if l[n] != (n + 1).to_string() => format!("{} (label {})", n + 1, l[n]),
+                    _ => (n + 1).to_string(),
+                });
+                out!("layout: {}", prefs.layout.map_or("not set", |l| l.name()));
+                out!("panel:  {}", prefs.panel.map_or("not set", |s| s.name()));
+                out!("page:   {}", page.as_deref().unwrap_or("not set"));
+            }
+            ViewPrefsCmd::Set {
+                io,
+                layout,
+                panel,
+                page,
+            } => run_edit(&io, |p| {
+                let mut prefs = p.view_prefs();
+                if let Some(l) = layout {
+                    prefs.layout = match l {
+                        OpenLayoutArg::Continuous => Some(OpenLayout::Continuous),
+                        OpenLayoutArg::Facing => Some(OpenLayout::Facing),
+                        OpenLayoutArg::FacingCover => Some(OpenLayout::FacingCover),
+                        OpenLayoutArg::Single => Some(OpenLayout::Single),
+                        OpenLayoutArg::None => None,
+                    };
+                }
+                if let Some(s) = panel {
+                    prefs.panel = match s {
+                        OpenPanelArg::Pages => Some(OpenPanel::Pages),
+                        OpenPanelArg::Bookmarks => Some(OpenPanel::Bookmarks),
+                        OpenPanelArg::None => None,
+                    };
+                }
+                if let Some(n) = page {
+                    prefs.page = match n {
+                        OpenPageArg::Page(n) => Some(n - 1),
+                        OpenPageArg::None => None,
+                    };
+                }
+                p.set_view_prefs(&prefs)
+            })?,
+            ViewPrefsCmd::Clear { io } => {
+                run_edit(&io, |p| p.set_view_prefs(&ViewPrefs::default()))?
+            }
         },
         Cmd::Bookmarks { cmd } => match cmd {
             BookmarksCmd::List { input, password } => {

@@ -32,7 +32,7 @@ available.
 | Tabs, thumbnails, opening by drag and drop | Done | |
 | Recent files | Done | Start screen and ☰ > File > Open recent; 10 files, kept on your computer only |
 | Notices about the document | Done | Password-protected, scanned pages, form fields, large files. [Details](gui.md#notices-about-the-document) |
-| Zoom, fit width, continuous scrolling, page navigation | Done | Pages fit the window's width by default and follow resizing; zooming turns that off. Single-page and facing-page layouts (top-bar button or View > Page layout; cover page alone or paired) |
+| Zoom, fit width, continuous scrolling, page navigation | Done | Pages fit the window's width by default and follow resizing; zooming turns that off. Single-page and facing-page layouts (top-bar button or View > Page layout; cover page alone or paired), per document, following the document's own preference when it has one |
 | Open at a page from the command line | Done | `mpe-gui file.pdf --page N` |
 | Command palette, right-click menus, floating toolbar | Done | Toolbar customisation: No |
 | App icon | Done | Window, taskbar and Windows `.exe`. Wayland needs the desktop entry installed. [Details](install.md#menu-entry-and-icon-on-linux) |
@@ -63,6 +63,7 @@ available.
 | Forms | Partial | Fill in text fields, checkboxes, radio buttons and lists in the app (Tab between fields, highlight, reset, flatten) and from the command line (`mpe form`, values as JSON, flatten all or some pages). Latin-1 text only; JavaScript doesn't run; creating fields and signing: No. [Details](gui.md#filling-in-forms) |
 | XFA-only forms (made for Adobe Reader) | No | Recognised and explained in a notice and by `mpe form`; showing or filling them is not planned (see below). Hybrid forms are filled through their ordinary fields |
 | Form data import/export (FDF, XFDF), barcodes, JavaScript | No | |
+| Viewer preferences | Done | The layout, side panel (Pages or Bookmarks) and page a document opens with: followed when opening, set in the inspector's Opening view or with `mpe view-prefs`. Full screen and hiding the toolbar or menu: No. [Details](cli.md#viewer-preferences) |
 | Page labels | Done | Numbering such as i, ii, 1, 2 or A-1: shown in the status bar, thumbnails and bookmark tips; set from the selected pages in the inspector or with `mpe labels`; kept with their pages when pages move. Going to a page by its label: No. [Details](cli.md#page-labels) |
 | Bookmarks | Partial | Shown in the Bookmarks tab (also from the command palette) and followed; added, renamed and deleted in that tab or with `mpe bookmarks`. Moving or reordering them, styles and colours: No. [Details](gui.md#the-window), [CLI](cli.md#bookmarks) |
 | Links | Partial | Followed: to pages, and to web and email addresses after asking. Links to other PDF files, and adding or editing links: No. [Details](gui.md#links) |

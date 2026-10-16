@@ -6,7 +6,7 @@ use crate::inspector::{self, Apply, Section};
 use crate::markup;
 use crate::recent::Recent;
 use crate::selection::Selection;
-use crate::settings::Settings;
+use crate::settings::{Layout, Settings};
 use crate::tab::{Side, Stamp, Tab};
 use crate::theme;
 use eframe::egui::{self, AtomExt as _, Key};
@@ -14,7 +14,7 @@ use egui_phosphor::regular as icon;
 use mpe_core::render::{image_names, ImageFormat};
 use mpe_core::{
     parse_page_range, part_file_name, print, Bates, HeaderFooter, ImageImport, ImageWatermark,
-    OcrResult, Pdf, ScanResult, Watermark,
+    OcrResult, OpenPanel, Pdf, ScanResult, Watermark,
 };
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -342,8 +342,22 @@ impl App {
             Ok(mut t) => {
                 self.next_id += 1;
                 t.dirty = dirty;
-                if let Some(p) = page {
-                    t.go_to(p.saturating_sub(1));
+                // The document's own viewer preferences, else the app's defaults. A page
+                // asked for on the command line wins over the document's opening page.
+                let prefs = t.pdf.view_prefs();
+                (t.layout, t.cover) = match prefs.layout {
+                    Some(l) => Layout::from_open(l, self.settings.cover),
+                    None => (self.settings.layout, self.settings.cover),
+                };
+                if let Some(panel) = prefs.panel {
+                    t.side = match panel {
+                        OpenPanel::Pages => Side::Pages,
+                        OpenPanel::Bookmarks => Side::Bookmarks,
+                    };
+                    self.show_side = true;
+                }
+                if let Some(p) = page.map(|p| p.saturating_sub(1)).or(prefs.page) {
+                    t.go_to(p);
                 }
                 self.tabs.push(t);
                 self.active = self.tabs.len() - 1;
@@ -753,8 +767,8 @@ impl App {
             }
             Act::Escape => self.tabs[self.active].ed.escape(),
             Act::NextPage | Act::PrevPage | Act::FirstPage | Act::LastPage => {
-                let (layout, cover) = (self.settings.layout, self.settings.cover);
                 let t = &mut self.tabs[self.active];
+                let (layout, cover) = (t.layout, t.cover);
                 let last = t.page_count().saturating_sub(1);
                 let to = match a {
                     Act::NextPage => t.step_page(1, layout, cover),
@@ -764,18 +778,25 @@ impl App {
                 };
                 t.go_to(to);
             }
+            // The active document changes, kept at the page it was on; the choice also
+            // becomes the default for documents opened later without a preference.
             Act::Layout(l) => {
                 self.settings.layout = l;
                 self.settings.save();
-                // Keep each document at the page it was on.
-                for t in &mut self.tabs {
+                if let Some(t) = self.tabs.get_mut(self.active) {
+                    t.layout = l;
                     t.go_to(t.current);
                 }
             }
             Act::ToggleCover => {
-                self.settings.cover = !self.settings.cover;
+                let cover = match self.tabs.get(self.active) {
+                    Some(t) => !t.cover,
+                    None => !self.settings.cover,
+                };
+                self.settings.cover = cover;
                 self.settings.save();
-                for t in &mut self.tabs {
+                if let Some(t) = self.tabs.get_mut(self.active) {
+                    t.cover = cover;
                     t.go_to(t.current);
                 }
             }
@@ -1029,6 +1050,11 @@ impl App {
                 let t = &mut self.tabs[active];
                 let info = t.forms.meta.clone();
                 t.edit(ctx, |p| p.set_info(&info));
+            }
+            Apply::ViewPrefs => {
+                let t = &mut self.tabs[active];
+                let prefs = t.forms.view;
+                t.edit(ctx, |p| p.set_view_prefs(&prefs));
             }
             Apply::Security => {
                 let t = &mut self.tabs[active];

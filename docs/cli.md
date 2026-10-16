@@ -91,6 +91,16 @@ carry on the numbering of the page before them.
 | `mpe labels set in.pdf -o out.pdf --from 5 --style decimal --start 1` | Number from page 5 on, up to the next range after it. Styles: `decimal`, `lower-roman`, `upper-roman`, `lower-letters`, `upper-letters`, `none` (the prefix alone); `--prefix "A-"` puts text before each number. Pages before the first range keep plain numbers |
 | `mpe labels remove in.pdf -o out.pdf` | Remove all page labels |
 
+### Viewer preferences
+
+How viewers that follow them show a document when it opens: its layout, side panel and opening page.
+
+| Command | What it does |
+| --- | --- |
+| `mpe view-prefs list in.pdf` | Show the layout, side panel and opening page, or "not set" |
+| `mpe view-prefs set in.pdf -o out.pdf --layout facing-cover --panel bookmarks --page 3` | Set any of them; those not given are kept. Layouts: `continuous`, `facing`, `facing-cover` (first page alone), `single`; panels: `pages`, `bookmarks`; `none` removes one (`--page none` too) |
+| `mpe view-prefs clear in.pdf -o out.pdf` | Remove all three. An opening action that isn't a page (such as a script) is kept |
+
 ### Bookmarks
 
 Bookmarks are numbered from 1 in the order `list` shows them, each followed by the bookmarks inside it.
