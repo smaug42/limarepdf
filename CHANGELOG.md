@@ -17,6 +17,28 @@
   one down or drag to size it, then move, resize or fade it like other annotations. Your name can be changed right
   in the stamp tool's pane. The last five wordings and pictures are remembered. Also `mpe stamp` (`--text` and
   `--color` for your own wording).
+- Redaction: mark areas (Annotate > Mark areas for redaction), selected text or every search result, check the
+  red-outlined marks, then Document > Apply redactions… removes the text, drawings, comments, links and form fields
+  under them from the file (not just covering them), blacks out the pixels of pictures and scanned pages there, and
+  paints the areas black. It then checks that nothing readable is left there, and reports what was removed and
+  where the removed text still appears elsewhere. Marks are standard PDF redaction marks, so they can be reviewed
+  in other apps. While there are marks, a notice above the pages offers Apply redactions…; saving with marks not
+  yet applied asks first. Also `mpe redact` (`--text`, `--area`, `--mark-only`, `--apply`).
+- Remove hidden information: Document > Remove hidden information… lists what the document carries besides its
+  pages and removes what you tick: metadata (including XMP), JavaScript and automatic actions, attachments, hidden
+  layers and their content, thumbnails and private data, and if you like comments, form values, bookmarks and what
+  lies outside the crop box. Also `mpe sanitise` (`--list`, `--keep`, `--also`).
+
+### Changed
+
+- Link addresses, bookmark names, comments and their authors, tab and window titles and print job titles are
+  cleaned before they are shown: direction-changing (bidi), invisible and control characters are removed and very
+  long text is shortened, so a link can't disguise where it goes.
+
+### Fixed
+
+- Text in Type 3 fonts whose glyphs aren't measured in thousandths of an em is placed correctly for selection,
+  search highlights and copying.
 
 ## [0.6.0] - 2026-10-15
 

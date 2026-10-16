@@ -240,6 +240,47 @@ pub(crate) fn extract(d: &[u8]) -> Result<(Vec<u8>, Vec<Vec<u8>>), String> {
     Ok((out, raws))
 }
 
+/// The index of the raw inline image a placeholder operator stands for.
+pub(crate) fn placeholder_index(operator: &str) -> Option<usize> {
+    let code = operator.strip_prefix(TAG)?;
+    let digits: String = code
+        .bytes()
+        .map(|b| (b.wrapping_sub(b'A') + b'0') as char)
+        .collect();
+    digits.parse().ok()
+}
+
+/// A raw inline image's dictionary entries (the text between `BI` and `ID`) and its data
+/// (between `ID` and `EI`, without the whitespace that ends it).
+pub(crate) fn split(raw: &[u8]) -> Option<(&[u8], &[u8])> {
+    let n = raw.len();
+    let mut j = 2.min(n);
+    let id_at = loop {
+        while j < n && ws(raw[j]) {
+            j += 1;
+        }
+        if j >= n {
+            return None;
+        }
+        let te = token_end(raw, j).max(j + 1).min(n);
+        if &raw[j..te] == b"ID" {
+            break j;
+        }
+        j = te;
+    };
+    let mut d0 = id_at + 2;
+    if raw.get(d0) == Some(&b'\r') && raw.get(d0 + 1) == Some(&b'\n') {
+        d0 += 2;
+    } else if d0 < n && ws(raw[d0]) {
+        d0 += 1;
+    }
+    let mut end = n.checked_sub(2).filter(|&e| raw[e..] == *b"EI")?;
+    if end > d0 && ws(raw[end - 1]) {
+        end -= 1;
+    }
+    Some((&raw[2..id_at], &raw[d0.min(end)..end]))
+}
+
 /// Put the raw inline images back in place of their placeholders.
 pub(crate) fn restore(encoded: Vec<u8>, raws: &[Vec<u8>]) -> Vec<u8> {
     if raws.is_empty() {

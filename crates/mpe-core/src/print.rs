@@ -148,8 +148,9 @@ pub fn lp_args(o: &PrintOptions) -> Vec<String> {
         a.extend(["-o".into(), "collate=true".into()]);
     }
     a.extend(["-o".into(), format!("sides={}", o.sides.keyword())]);
-    if !o.title.is_empty() {
-        a.extend(["-t".into(), o.title.clone()]);
+    let title = crate::display_line(&o.title, 100);
+    if !title.is_empty() {
+        a.extend(["-t".into(), title]);
     }
     a
 }

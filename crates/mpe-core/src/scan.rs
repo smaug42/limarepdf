@@ -76,7 +76,7 @@ struct Target {
 }
 
 /// Decoded pixels. `Bits` holds 0 (black) or 255 (white).
-enum Img {
+pub(crate) enum Img {
     Bits(GrayImage),
     Gray(GrayImage),
     Rgb(RgbImage),
@@ -393,7 +393,7 @@ fn decode_raw(raw: &[u8], w: u32, h: u32, n: usize, bpc: i64) -> std::result::Re
     }
 }
 
-fn decode_ccitt(s: &Stream, w: u32, h: u32) -> std::result::Result<Img, String> {
+pub(crate) fn decode_ccitt(s: &Stream, w: u32, h: u32) -> std::result::Result<Img, String> {
     let parms = s.dict.get(b"DecodeParms").and_then(Object::as_dict).ok();
     let p = |k: &[u8]| parms.and_then(|d| d.get(k).ok()?.as_i64().ok());
     let aligned = parms

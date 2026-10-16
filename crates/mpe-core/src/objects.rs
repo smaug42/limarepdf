@@ -878,7 +878,7 @@ pub fn words_text(words: &[PageWord]) -> String {
 /// User-space boxes covering characters `a..b` of a line, one per piece they touch.
 /// Within a piece, characters are placed by their glyph widths, or spread evenly when
 /// those are not known.
-fn span_boxes(pieces: &[Piece], a: usize, b: usize) -> Vec<[f32; 4]> {
+pub(crate) fn span_boxes(pieces: &[Piece], a: usize, b: usize) -> Vec<[f32; 4]> {
     let lerp =
         |p: (f32, f32), q: (f32, f32), f: f32| (p.0 + (q.0 - p.0) * f, p.1 + (q.1 - p.1) * f);
     let mut out = Vec::new();

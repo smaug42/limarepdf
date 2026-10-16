@@ -24,6 +24,7 @@ This is a from-scratch implementation (with AI assistance): it contains no other
 - [Search and text](docs/search-and-text.md)
 - [Export and printing](docs/export-and-printing.md)
 - [Password security](docs/security.md)
+- [Redaction](docs/redaction.md)
 
 **Under the hood**
 

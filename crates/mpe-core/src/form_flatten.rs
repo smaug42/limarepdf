@@ -205,7 +205,7 @@ impl Pdf {
 
     /// Take the removed widgets out of the field tree, then the fields left without
     /// widgets, then the form when it has no fields left.
-    fn prune_fields(&mut self, removed: &HashSet<ObjectId>) -> Result<()> {
+    pub(crate) fn prune_fields(&mut self, removed: &HashSet<ObjectId>) -> Result<()> {
         let Some(form) = self.acro_form() else {
             return Ok(());
         };

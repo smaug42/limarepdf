@@ -6,6 +6,9 @@ Items already planned are in [features.md](features.md#planned-and-proposed) and
 
 Sizes are rough guesses: **S** small, **M** medium, **L** large. A dash means not yet judged.
 
+Standard features that everyday users of other editors rely on come first. Niche items, marked *(niche)*, stay here
+as possible later work but aren't picked ahead of them, so the app doesn't fill up with rarely used tools.
+
 ## Good first picks
 
 Small or medium additions that build on what MPE already has:
@@ -23,7 +26,7 @@ Small or medium additions that build on what MPE already has:
 - Overlay or underlay one PDF on another (M)
 - Page boxes: view, add and remove the trim, bleed and art boxes (S)
 - Turn pages automatically by text direction (M)
-- Split at blank pages (S); split by file size (M)
+- Split at blank pages (S, *niche*: scan batches with blank separator sheets); split by file size (M)
 
 ## Structure and metadata
 
@@ -74,7 +77,7 @@ Small or medium additions that build on what MPE already has:
 - Certify documents with permission levels, timestamps, long-term validation (L)
 - Remove signatures (S)
 
-## Redaction, beyond the planned redaction
+## Redaction, beyond what MPE does
 
 - Find and redact by pattern (regular expressions, saved sets) (M)
 - Blur or pixelate instead of a black box (M)

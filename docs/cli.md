@@ -135,6 +135,30 @@ See [Scanning and OCR](scanning-and-ocr.md) for what these do.
 | `mpe header-footer in.pdf -o out.pdf --footer-center "Page {page} of {pages}" --header-right "{date}"` | Add headers and footers; tokens `{page}`, `{pages}`, `{date}`, `{bates}` |
 | `mpe bates in.pdf -o out.pdf --prefix ACME- --digits 6` | Bates-number the pages |
 
+## Redaction
+
+| Command | What it does |
+| --- | --- |
+| `mpe redact in.pdf -o out.pdf --text "Sam Lee" --text 555-0142` | Remove every place the text occurs (case is ignored) and paint it black |
+| `mpe redact in.pdf -o out.pdf --area 2:72,100,200,30` | Remove everything in an area of page 2: 72 points from the left, 100 from the top, 200 wide and 30 high; repeat `--area` for more |
+| `mpe redact in.pdf -o out.pdf --text "Sam Lee" --json` | The same, printing what was removed as JSON |
+| `mpe redact in.pdf -o marked.pdf --text "Sam Lee" --mark-only` | Only mark the places for redaction (red outlines), so they can be checked in MPE or another app; nothing is removed |
+| `mpe redact marked.pdf -o out.pdf --apply` | Apply the redaction marks in the file (from MPE or another app), and any `--text` or `--area` given too |
+
+The command prints what it removed from each page, then the result of its check: it writes the file only when
+nothing readable is left under the areas. It warns when removed text is still found elsewhere in the document. See
+[Redaction](redaction.md) for exactly what is removed.
+
+### Removing hidden information
+
+| Command | What it does |
+| --- | --- |
+| `mpe sanitise in.pdf --list` | List what the document has of each kind of hidden information |
+| `mpe sanitise in.pdf -o out.pdf` | Remove metadata, scripts, attachments, hidden layers and private data |
+| `mpe sanitise in.pdf -o out.pdf --keep metadata --also comments,bookmarks` | Keep some of those, or remove more: `comments`, `form-values`, `bookmarks`, `outside-crop` |
+
+See [Removing hidden information](redaction.md#removing-hidden-information).
+
 ## Properties and security
 
 | Command | What it does |

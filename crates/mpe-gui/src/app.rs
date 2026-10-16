@@ -162,6 +162,11 @@ enum Dialog {
     ConfirmFlattenAnnots,
     /// Save (`true`: as a new file) although it breaks the document's signatures?
     ConfirmSaveSigned(bool),
+    /// Remove everything under this many marked areas?
+    ConfirmApplyRedactions(usize),
+    RemoveHidden(dlg::RemoveHidden),
+    /// Save (`true`: as a new file) with this many marked areas not yet applied?
+    ConfirmSaveMarks(bool, usize),
     Print(dlg::Print),
     SaveSelection(dlg::Layout),
     /// Open this web or email address from a link?
@@ -573,8 +578,21 @@ impl App {
         }
     }
 
-    /// Saves, first asking when that would break the document's digital signatures.
+    /// Saves, first asking when the document has redaction marks not yet applied, then
+    /// when saving would break its digital signatures.
     fn save(&mut self, as_new: bool) {
+        let marks = self
+            .tabs
+            .get(self.active)
+            .map_or(0, |t| t.pdf.redaction_marks().len());
+        if marks > 0 {
+            self.dialog = Dialog::ConfirmSaveMarks(as_new, marks);
+        } else {
+            self.save_signed(as_new);
+        }
+    }
+
+    fn save_signed(&mut self, as_new: bool) {
         if self.tabs.get(self.active).is_some_and(|t| t.signed) {
             self.dialog = Dialog::ConfirmSaveSigned(as_new);
         } else {
@@ -673,6 +691,39 @@ impl App {
             }
             Act::CommentName => {
                 self.dialog = Dialog::CommentName(self.settings.author());
+            }
+            Act::MarkRedact if has => {
+                let author = self.settings.author();
+                self.tabs[self.active].mark_selection_for_redaction(ctx, &author);
+            }
+            Act::MarkResultsRedact if has => {
+                let author = self.settings.author();
+                self.tabs[self.active].mark_results_for_redaction(ctx, &author);
+            }
+            Act::RemoveHidden if has => match self.tabs[self.active].pdf.find_hidden() {
+                Ok(found) => {
+                    let kinds = mpe_core::Hidden::ALL
+                        .into_iter()
+                        .map(|h| (h, found.count(h), h.default_on()))
+                        .collect();
+                    self.dialog = Dialog::RemoveHidden(dlg::RemoveHidden { kinds });
+                }
+                Err(e) => {
+                    self.dialog =
+                        Dialog::Message("Remove hidden information".into(), format!("{e:#}"))
+                }
+            },
+            Act::ApplyRedactions if has => {
+                let n = self.tabs[self.active].pdf.redaction_marks().len();
+                if n == 0 {
+                    self.tabs[self.active].notice = Some(
+                        "There are no redaction marks: mark areas with Annotate > Mark areas for \
+                         redaction, or mark selected text or search results"
+                            .into(),
+                    );
+                } else {
+                    self.dialog = Dialog::ConfirmApplyRedactions(n);
+                }
             }
             Act::CloseTab if has => {
                 if self.tabs[self.active].dirty {
@@ -1255,7 +1306,8 @@ impl App {
                 ctx,
                 "Open link",
                 &format!(
-                    "This link goes to:\n\n{url}\n\nOpen it in your browser or email program?"
+                    "This link goes to:\n\n{}\n\nOpen it in your browser or email program?",
+                    mpe_core::display_line(url, 300)
                 ),
                 "Open link",
             ) {
@@ -1359,6 +1411,92 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
+            Dialog::ConfirmApplyRedactions(n) => match dlg::confirm(
+                ctx,
+                "Apply redactions?",
+                &format!(
+                    "Everything under {} is removed from the document for good: text (hidden \
+                     text too), the covered parts of pictures, drawings, and comments, links and \
+                     form fields. The areas are painted black, and the marks go. MPE then checks \
+                     that nothing readable is left under them. Undo brings it all back until you \
+                     close the document; once saved, it is gone from the file.",
+                    plural(*n, "the marked area", "the {n} marked areas")
+                ),
+                "Apply",
+            ) {
+                Outcome::Apply => {
+                    let t = &mut self.tabs[self.active];
+                    let mut report = None;
+                    let ok = t.edit(ctx, |p| {
+                        let r = p.apply_redactions()?;
+                        if !r.left.is_empty() {
+                            anyhow::bail!(
+                                "Nothing was changed: the check after redacting found {}",
+                                r.left.join("; ")
+                            );
+                        }
+                        report = Some(r);
+                        Ok(())
+                    });
+                    if let Some(r) = report.filter(|_| ok) {
+                        self.dialog = Dialog::Message("Redactions applied".into(), report_text(&r));
+                    }
+                    done = true;
+                }
+                Outcome::Cancel => done = true,
+                Outcome::Open => {}
+            },
+            Dialog::RemoveHidden(s) => match dlg::remove_hidden(ctx, s) {
+                Outcome::Apply => {
+                    let what: Vec<mpe_core::Hidden> = s
+                        .kinds
+                        .iter()
+                        .filter(|(_, n, on)| *on && *n > 0)
+                        .map(|(h, _, _)| *h)
+                        .collect();
+                    let t = &mut self.tabs[self.active];
+                    let mut report = None;
+                    let ok = t.edit(ctx, |p| {
+                        report = Some(p.remove_hidden(&what)?);
+                        Ok(())
+                    });
+                    if let Some(r) = report.filter(|_| ok) {
+                        let mut text = String::from("Removed:\n");
+                        for (h, n) in &r.removed {
+                            text.push_str(&format!("• {} ({n})\n", h.label()));
+                        }
+                        text.push_str(
+                            "\nSave the document to keep the changes; Undo brings it all back.",
+                        );
+                        self.dialog = Dialog::Message("Hidden information removed".into(), text);
+                    }
+                    done = true;
+                }
+                Outcome::Cancel => done = true,
+                Outcome::Open => {}
+            },
+            Dialog::ConfirmSaveMarks(as_new, n) => {
+                let as_new = *as_new;
+                match dlg::confirm(
+                    ctx,
+                    "Save without applying the redactions?",
+                    &format!(
+                        "This document has {} marked for redaction but not applied: nothing \
+                         under the marks has been removed, and anyone can still read it. Apply \
+                         them first with Document > Apply redactions, or save the marks to \
+                         finish or review later.",
+                        plural(*n, "an area", "{n} areas")
+                    ),
+                    "Save with marks",
+                ) {
+                    Outcome::Apply => {
+                        self.save_signed(as_new);
+                        done = true;
+                    }
+                    Outcome::Cancel => done = true,
+                    Outcome::Open => {}
+                }
+            }
             Dialog::ConfirmSaveSigned(as_new) => {
                 let as_new = *as_new;
                 match dlg::confirm(
@@ -2117,6 +2255,16 @@ impl eframe::App for App {
                                 }
                             });
                             ui.label(format!("{} match(es)", t.hits.len()));
+                            if !t.hits.is_empty() {
+                                let a = actions::get(Act::MarkResultsRedact);
+                                if ui
+                                    .button(format!("{} Mark all for redaction", a.icon))
+                                    .on_hover_text(a.hint)
+                                    .clicked()
+                                {
+                                    acts.push(Act::MarkResultsRedact);
+                                }
+                            }
                             let mut jump = None;
                             egui::ScrollArea::vertical().show(ui, |ui| {
                                 for (i, h) in t.hits.iter().enumerate() {
@@ -2189,6 +2337,9 @@ impl eframe::App for App {
                                 t.ed.stamp_pictures = s.stamp_pictures.clone();
                                 t.ed.stamp_wordings = s.stamp_wordings.clone();
                                 t.ed.inspector(ui);
+                                if std::mem::take(&mut t.ed.apply_redactions) {
+                                    t.requested.push(Act::ApplyRedactions);
+                                }
                                 if (
                                     t.ed.stamp_name_date,
                                     &t.ed.stamp_pictures,
@@ -2281,4 +2432,56 @@ impl eframe::App for App {
             self.last_title = title;
         }
     }
+}
+
+/// `one` when `n` is 1, else `many` with `{n}` replaced by the number.
+fn plural(n: usize, one: &str, many: &str) -> String {
+    if n == 1 {
+        one.to_string()
+    } else {
+        many.replace("{n}", &n.to_string())
+    }
+}
+
+/// What applying redactions removed, page by page, and where the removed text still is.
+fn report_text(r: &mpe_core::RedactReport) -> String {
+    let mut out = String::new();
+    for p in &r.pages {
+        let mut parts = Vec::new();
+        for (n, what) in [
+            (p.chars, "characters"),
+            (p.images_cut, "pictures blacked out"),
+            (p.images, "unreadable pictures removed whole"),
+            (p.paths, "parts of drawings"),
+            (p.clipped, "drawings cut around the area"),
+            (p.annots, "comments, links or fields"),
+        ] {
+            if n > 0 {
+                parts.push(format!("{n} {what}"));
+            }
+        }
+        let what = if parts.is_empty() {
+            "nothing was under the marks".to_string()
+        } else {
+            parts.join(", ")
+        };
+        out.push_str(&format!("Page {}: {what}\n", p.page + 1));
+    }
+    out.push_str("\nChecked: nothing readable is left under the marked areas.");
+    if !r.elsewhere.is_empty() {
+        out.push_str("\n\nThe removed text can still be found elsewhere:");
+        for (t, places) in &r.elsewhere {
+            out.push_str(&format!(
+                "\n• \u{201c}{}\u{201d}: {}",
+                mpe_core::display_line(t, 60),
+                places.join(", ")
+            ));
+        }
+    }
+    out.push_str(
+        "\n\nTo also remove metadata, attachments and other hidden information, choose Document > \
+         Remove hidden information.\n\nSave the document to keep the changes; Undo brings \
+         everything back.",
+    );
+    out
 }

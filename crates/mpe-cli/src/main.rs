@@ -211,6 +211,51 @@ enum Cmd {
         #[arg(long)]
         background: bool,
     },
+    /// Remove text, pictures and drawings under areas or wherever some text occurs, for
+    /// good (not just covered), and paint the areas black
+    Redact {
+        #[command(flatten)]
+        io: Io,
+        /// An area as PAGE:X,Y,W,H, in points from the page's top left as shown; repeat
+        /// for more
+        #[arg(long = "area", required_unless_present_any = ["texts", "apply"])]
+        areas: Vec<String>,
+        /// Text to remove wherever it occurs (case is ignored); repeat for more
+        #[arg(long = "text")]
+        texts: Vec<String>,
+        /// Only mark the areas for redaction, to be checked (in MPE or another app) and
+        /// applied later; nothing is removed
+        #[arg(long, conflicts_with = "apply")]
+        mark_only: bool,
+        /// Also apply the redaction marks already in the file
+        #[arg(long)]
+        apply: bool,
+        /// Print what was removed as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove hidden information before sharing: metadata, scripts, attachments, hidden
+    /// layers and private data (and, if asked, comments, form values, bookmarks and what
+    /// lies outside the page area)
+    Sanitise {
+        input: PathBuf,
+        /// Output PDF (not needed with --list)
+        #[arg(short, long, required_unless_present = "list")]
+        output: Option<PathBuf>,
+        #[arg(long)]
+        password: Option<String>,
+        /// Kinds to keep, comma-separated: metadata, scripts, attachments, hidden-layers,
+        /// private-data
+        #[arg(long, default_value = "")]
+        keep: String,
+        /// Kinds to remove as well, comma-separated: comments, form-values, bookmarks,
+        /// outside-crop
+        #[arg(long, default_value = "")]
+        also: String,
+        /// Only list what the document has of each kind; nothing is written
+        #[arg(long)]
+        list: bool,
+    },
     /// Put a stamp on pages: Approved, Draft and so on, your own wording, or a picture
     Stamp {
         #[command(flatten)]
@@ -1039,6 +1084,146 @@ fn run_edit(io: &Io, f: impl FnOnce(&mut Pdf) -> Result<()>) -> Result<()> {
     Ok(())
 }
 
+/// Areas grouped by page, in page order.
+fn by_page(marks: &[(usize, [f32; 4])]) -> std::collections::BTreeMap<usize, Vec<[f32; 4]>> {
+    let mut out: std::collections::BTreeMap<usize, Vec<[f32; 4]>> = Default::default();
+    for &(p, b) in marks {
+        out.entry(p).or_default().push(b);
+    }
+    out
+}
+
+/// `mpe redact`: the file is written only when the check afterwards finds nothing left
+/// under the marks.
+fn redact(
+    io: &Io,
+    areas: &[String],
+    texts: &[String],
+    mark_only: bool,
+    apply: bool,
+    json: bool,
+) -> Result<()> {
+    let mut pdf = open(&io.input, &io.password)?;
+    let mut marks = Vec::new();
+    for a in areas {
+        let bad = || format!("--area {a:?} should be PAGE:X,Y,W,H");
+        let (page, rect) = a.split_once(':').with_context(bad)?;
+        let page: usize = page.trim().parse().with_context(bad)?;
+        let v: Vec<f32> = rect
+            .split(',')
+            .map(|x| x.trim().parse())
+            .collect::<Result<_, _>>()
+            .with_context(bad)?;
+        if page == 0 || v.len() != 4 || v[2] <= 0.0 || v[3] <= 0.0 {
+            bail!("{}", bad());
+        }
+        marks.push((page - 1, [v[0], v[1], v[0] + v[2], v[1] + v[3]]));
+    }
+    for t in texts {
+        let found = pdf.find_redaction_marks(t)?;
+        if found.is_empty() {
+            eprintln!("not found: {t:?}");
+        }
+        marks.extend(found);
+    }
+    if mark_only {
+        if marks.is_empty() {
+            bail!("nothing to mark; the file was not written");
+        }
+        for (p, boxes) in by_page(&marks) {
+            pdf.add_redaction_mark(p, &boxes, "")?;
+            out!("page {}: marked {} areas", p + 1, boxes.len());
+        }
+        pdf.save(&io.output)?;
+        out!("nothing was removed yet; apply the marks with --apply");
+        out!("wrote {}", io.output.display());
+        return Ok(());
+    }
+    let rep = if apply {
+        // The new areas become marks too, and applying takes every mark away.
+        for (p, boxes) in by_page(&marks) {
+            pdf.add_redaction_mark(p, &boxes, "")?;
+        }
+        pdf.apply_redactions()?
+    } else if marks.is_empty() {
+        bail!("nothing to redact; the file was not written");
+    } else {
+        pdf.redact(&marks)?
+    };
+    if !rep.left.is_empty() {
+        for l in &rep.left {
+            eprintln!("{l}");
+        }
+        bail!("the check after redacting failed, so the file was not written");
+    }
+    pdf.save(&io.output)?;
+    if json {
+        let pages: Vec<serde_json::Value> = rep
+            .pages
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "page": p.page + 1,
+                    "characters": p.chars,
+                    "text": p.text,
+                    "pictures_removed": p.images,
+                    "pictures_blacked_out": p.images_cut,
+                    "drawings": p.paths,
+                    "clipped": p.clipped,
+                    "annotations": p.annots,
+                })
+            })
+            .collect();
+        let elsewhere: Vec<serde_json::Value> = rep
+            .elsewhere
+            .iter()
+            .map(|(t, places)| serde_json::json!({ "text": t, "found": places }))
+            .collect();
+        out!(
+            "{}",
+            serde_json::to_string_pretty(
+                &serde_json::json!({ "pages": pages, "found_elsewhere": elsewhere })
+            )?
+        );
+        return Ok(());
+    }
+    for p in &rep.pages {
+        let mut parts = Vec::new();
+        for (n, what) in [
+            (p.chars, "characters"),
+            (p.images, "unreadable pictures (whole)"),
+            (p.paths, "parts of drawings"),
+            (p.annots, "comments, links or fields"),
+        ] {
+            if n > 0 {
+                parts.push(format!("{n} {what}"));
+            }
+        }
+        if p.images_cut > 0 {
+            parts.push(format!("{} pictures blacked out", p.images_cut));
+        }
+        if p.clipped > 0 {
+            parts.push(format!("{} drawings cut around the area", p.clipped));
+        }
+        let what = if parts.is_empty() {
+            "nothing under the areas".to_string()
+        } else {
+            parts.join(", ")
+        };
+        out!("page {}: removed {what}", p.page + 1);
+    }
+    out!("checked: nothing readable is left under the areas");
+    for (t, places) in &rep.elsewhere {
+        out!(
+            "warning: removed text {:?} is still in the file: {}",
+            mpe_core::display_line(t, 60),
+            places.join(", ")
+        );
+    }
+    out!("wrote {}", io.output.display());
+    Ok(())
+}
+
 /// A bookmark number from `mpe bookmarks list` as a position in the outline.
 fn bookmark_index(n: usize) -> Result<usize> {
     n.checked_sub(1).context("bookmarks are numbered from 1")
@@ -1306,6 +1491,54 @@ fn main() -> Result<()> {
                     ),
                 }
             })?
+        }
+        Cmd::Redact {
+            io,
+            areas,
+            texts,
+            mark_only,
+            apply,
+            json,
+        } => redact(&io, &areas, &texts, mark_only, apply, json)?,
+        Cmd::Sanitise {
+            input,
+            output,
+            password,
+            keep,
+            also,
+            list,
+        } => {
+            let mut pdf = open(&input, &password)?;
+            if list {
+                let found = pdf.find_hidden()?;
+                for h in mpe_core::Hidden::ALL {
+                    let n = found.count(h);
+                    let mark = if h.default_on() { "" } else { "  (--also)" };
+                    out!("{:<14} {n:>5}  {}{mark}", h.name(), h.label());
+                }
+                return Ok(());
+            }
+            let kinds = |s: &str| -> Result<Vec<mpe_core::Hidden>> {
+                s.split(',')
+                    .filter(|x| !x.trim().is_empty())
+                    .map(|x| mpe_core::Hidden::parse(x).with_context(|| format!("no kind {x:?}")))
+                    .collect()
+            };
+            let (keep, also) = (kinds(&keep)?, kinds(&also)?);
+            let what: Vec<mpe_core::Hidden> = mpe_core::Hidden::ALL
+                .into_iter()
+                .filter(|h| (h.default_on() && !keep.contains(h)) || also.contains(h))
+                .collect();
+            let rep = pdf.remove_hidden(&what)?;
+            if rep.removed.is_empty() {
+                out!("nothing to remove");
+            }
+            for (h, n) in &rep.removed {
+                out!("removed {n:>5}  {}", h.label());
+            }
+            let output = output.context("--output is needed")?;
+            pdf.save(&output)?;
+            out!("wrote {}", output.display());
         }
         Cmd::Stamp {
             io,

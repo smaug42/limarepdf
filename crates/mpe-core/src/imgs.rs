@@ -129,6 +129,24 @@ struct JpegInfo {
     adobe: bool,
     dpi: Option<(f32, f32)>,
     orientation: Orientation,
+    /// The sum of the luminance quantisation table.
+    luma_q: Option<u32>,
+}
+
+/// Sum of the IJG standard luminance quantisation table, which quality 50 uses as is.
+const IJG_LUMA_SUM: u32 = 3_688;
+
+/// The quality (1 to 100, IJG scale) a JPEG was most likely saved at, estimated from
+/// its luminance quantisation table.
+pub(crate) fn jpeg_quality(bytes: &[u8]) -> Option<u8> {
+    let sum = jpeg_info(bytes)?.luma_q?;
+    let scale = sum as f64 * 100.0 / IJG_LUMA_SUM as f64;
+    let q = if scale <= 100.0 {
+        (200.0 - scale) / 2.0
+    } else {
+        5000.0 / scale
+    };
+    Some(q.round().clamp(1.0, 100.0) as u8)
 }
 
 /// Read the JPEG markers up to the first scan.
@@ -141,6 +159,7 @@ fn jpeg_info(b: &[u8]) -> Option<JpegInfo> {
         adobe: false,
         dpi: None,
         orientation: Orientation::NoTransforms,
+        luma_q: None,
     };
     let mut i = 2;
     loop {
@@ -178,6 +197,27 @@ fn jpeg_info(b: &[u8]) -> Option<JpegInfo> {
                 }
             }
             0xEE if seg.starts_with(b"Adobe") => info.adobe = true,
+            0xDB => {
+                // Quantisation tables: the first (luminance) one gives the quality.
+                let mut k = 0;
+                while let Some(&pq) = seg.get(k) {
+                    let wide = pq >> 4 == 1;
+                    let n = if wide { 128 } else { 64 };
+                    let t = seg.get(k + 1..k + 1 + n)?;
+                    if pq & 0x0F == 0 {
+                        info.luma_q = Some(if wide {
+                            t.as_chunks::<2>()
+                                .0
+                                .iter()
+                                .map(|&c| u16::from_be_bytes(c) as u32)
+                                .sum()
+                        } else {
+                            t.iter().map(|&v| v as u32).sum()
+                        });
+                    }
+                    k += 1 + n;
+                }
+            }
             0xC0..=0xCF if !matches!(marker, 0xC4 | 0xC8 | 0xCC) && seg.len() >= 6 => {
                 info.h = u16::from_be_bytes([seg[1], seg[2]]) as u32;
                 info.w = u16::from_be_bytes([seg[3], seg[4]]) as u32;

@@ -1,8 +1,8 @@
 # Features and status
 
 **Status: 0.6, for testing.** Most testing has been on Linux. Annotations can be viewed, moved, deleted and flattened;
-text can be highlighted and marked; notes, text boxes, shapes, lines, freehand drawings and replies added. Digital
-signatures and redaction are not started.
+text can be highlighted and marked; notes, text boxes, shapes, lines, freehand drawings and replies added. Content
+can be redacted for good. Digital signatures are not started.
 
 ## What MPE does
 
@@ -15,6 +15,9 @@ signatures and redaction are not started.
 - **Stamp pages:** headers, footers, page numbers, Bates numbers, and text or picture watermarks.
 - **Scans:** turn images into PDFs, shrink and straighten scanned pages, and add a searchable text layer with
   built-in OCR (Latin script).
+- **Redact:** mark text, areas or search results, then remove what is under them for good (text, the covered parts
+  of pictures and scans, drawings), checked afterwards; and remove hidden information such as metadata, scripts,
+  attachments and hidden layers.
 - **Copy text,** including recognised text.
 - **Protect:** open and permissions passwords, RC4 or AES encryption, permission flags.
 - **Export and print:** pages as PNG or JPEG, text as a `.txt` file, and printing (through CUPS on Linux and macOS,
@@ -68,8 +71,9 @@ available.
 | Bookmarks | Partial | Shown in the Bookmarks tab (also from the command palette) and followed; added, renamed and deleted in that tab or with `mpe bookmarks`. Moving or reordering them, styles and colours: No. [Details](gui.md#the-window), [CLI](cli.md#bookmarks) |
 | Links | Partial | Followed: to pages, and to web and email addresses after asking. Links to other PDF files, and adding or editing links: No. [Details](gui.md#links) |
 | Layers, attachments | No | |
-| Installers and packages | No | Releases are archives of the programs. Packages are planned for later; see below |
-| Redaction | No | |
+| Installers and packages | Done | `.deb` and `.rpm` packages with apt and dnf repositories, a macOS `.dmg`, a Windows MSI, and archives; GPG-signed. [Install](install.md); more package managers planned, see below |
+| Redaction | Done | Mark areas, selected text or search results (standard redaction marks), check them, then apply: text, drawings, comments and links under them are removed for good, pictures (scans included) blacked out there, then checked. In the app and with `mpe redact`. [Details](redaction.md) |
+| Removing hidden information | Done | Metadata (including XMP), JavaScript and automatic actions, attachments, hidden layers and their content, thumbnails and private data; if chosen, comments, form values, bookmarks and what lies outside the crop box. Document > Remove hidden information… and `mpe sanitise`. [Details](redaction.md#removing-hidden-information) |
 | Digital signatures, certificate encryption | No | |
 | PDF/A, optimised saving | No | Saved files are pruned and compressed |
 | Comparing documents | No | |
@@ -89,6 +93,10 @@ available.
   leaves the document as it was. A failure while showing the document (pages, thumbnails, search, bookmarks,
   comments, the inspector) turns that tab into an error page with Save a copy and Close; other tabs carry on. A
   failure in a menu command outside those can still close the app.
+- Text from a file that the app shows as a label or message (link addresses, bookmark names, comment authors and
+  text, file names in tab and window titles and print job titles) has direction-changing (bidi), invisible and
+  control characters removed and is shortened when very long, so a link can't pretend to go somewhere else. Form
+  field values and the command line's output are shown as they are.
 
 ## Planned and proposed
 
@@ -141,10 +149,6 @@ archives stay.
 
 ### Features that would set MPE apart
 
-- **Redaction you can check.** Remove the text, images and metadata under a redaction, not just cover them, then
-  report what was removed and verify that none of it remains in the saved file.
-- **Sanitise before sharing.** One command that strips metadata (including XMP), JavaScript, attachments and hidden
-  layers. It pairs with redaction and with MPE making no network connections.
 - **Offline AI.** Summaries, questions and answers, and meaning-based search, run by a model on your own computer, so
   documents never leave it.
 - **Comparing documents.** Text and visual differences between two PDFs, also from the command line, so a comparison
