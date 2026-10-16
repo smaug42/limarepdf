@@ -55,7 +55,9 @@ Small or medium additions that build on what MPE already has:
 
 ## Annotations and review
 
-- Stamps with your own wording, or made from selected content (S–M)
+- Stamps made from selected content (S–M)
+- Stamp wording (and the name-and-date line) in scripts beyond Western European: Greek, Cyrillic, CJK and so on
+  (needs an embedded font, like the Unicode text item under Content editing)
 - Callouts, clouds, polylines, carets, typewriter text, file attachments, an eraser for pen strokes (M each)
 - Measurement tools with scale calibration and CSV export (L)
 - Comment summary and export, saved comment styles (M)

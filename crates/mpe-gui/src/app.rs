@@ -2146,12 +2146,22 @@ impl eframe::App for App {
                                 t.ed.author = author.clone();
                                 t.ed.stamp_name_date = s.stamp_name_date;
                                 t.ed.stamp_pictures = s.stamp_pictures.clone();
+                                t.ed.stamp_wordings = s.stamp_wordings.clone();
                                 t.ed.inspector(ui);
-                                if (t.ed.stamp_name_date, &t.ed.stamp_pictures, &t.ed.author)
-                                    != (s.stamp_name_date, &s.stamp_pictures, &author)
-                                {
+                                if (
+                                    t.ed.stamp_name_date,
+                                    &t.ed.stamp_pictures,
+                                    &t.ed.stamp_wordings,
+                                    &t.ed.author,
+                                ) != (
+                                    s.stamp_name_date,
+                                    &s.stamp_pictures,
+                                    &s.stamp_wordings,
+                                    &author,
+                                ) {
                                     s.stamp_name_date = t.ed.stamp_name_date;
                                     s.stamp_pictures = t.ed.stamp_pictures.clone();
+                                    s.stamp_wordings = t.ed.stamp_wordings.clone();
                                     if t.ed.author != author {
                                         s.author = Some(t.ed.author.clone());
                                     }

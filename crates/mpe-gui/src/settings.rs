@@ -8,6 +8,7 @@
 //! files stay on this computer, and failing to read or write them is not an error.
 
 use eframe::egui::ThemePreference;
+use mpe_core::StampColor;
 use std::path::PathBuf;
 
 /// The settings folder for MPE, from the environment.
@@ -48,8 +49,9 @@ impl Layout {
     }
 }
 
-/// How many stamp pictures are remembered.
+/// How many stamp pictures, and how many stamp wordings of your own, are remembered.
 pub const STAMP_PICTURES: usize = 5;
+pub const STAMP_WORDINGS: usize = 5;
 
 pub struct Settings {
     pub theme: ThemePreference,
@@ -67,6 +69,9 @@ pub struct Settings {
     pub stamp_name_date: bool,
     /// Pictures used as stamps, the latest first, at most [`STAMP_PICTURES`].
     pub stamp_pictures: Vec<PathBuf>,
+    /// Stamp wordings of your own and their colours, the latest first, at most
+    /// [`STAMP_WORDINGS`].
+    pub stamp_wordings: Vec<(String, StampColor)>,
     /// Where they are saved; `None` when there is no settings folder.
     file: Option<PathBuf>,
 }
@@ -108,6 +113,7 @@ impl Settings {
             author: None,
             stamp_name_date: true,
             stamp_pictures: Vec::new(),
+            stamp_wordings: Vec::new(),
             file,
         };
         let text = s
@@ -155,6 +161,14 @@ impl Settings {
                 "stamp_picture" if !value.is_empty() && s.stamp_pictures.len() < STAMP_PICTURES => {
                     s.stamp_pictures.push(PathBuf::from(value));
                 }
+                "stamp_wording" if s.stamp_wordings.len() < STAMP_WORDINGS => {
+                    let (color, text) = value.split_once(' ').unwrap_or((value, ""));
+                    if let (Some(color), Ok(text)) =
+                        (StampColor::from_name(color), mpe_core::stamp_wording(text))
+                    {
+                        s.stamp_wordings.push((text, color));
+                    }
+                }
                 _ => {}
             }
         }
@@ -188,6 +202,9 @@ impl Settings {
         text += &format!("stamp_name_and_date = {}\n", self.stamp_name_date);
         for p in &self.stamp_pictures {
             text += &format!("stamp_picture = {}\n", p.display());
+        }
+        for (wording, color) in &self.stamp_wordings {
+            text += &format!("stamp_wording = {} {wording}\n", color.name());
         }
         let _ = std::fs::write(file, text);
     }
@@ -258,12 +275,23 @@ mod tests {
         let mut s = Settings::from_file(Some(f.clone()));
         s.stamp_name_date = false;
         s.stamp_pictures = vec!["/a/b c.png".into(), "/d.jpg".into()];
+        s.stamp_wordings = vec![
+            ("PAID IN FULL".into(), StampColor::Green),
+            ("COPY".into(), StampColor::Blue),
+        ];
         s.save();
         let s = Settings::from_file(Some(f));
         assert!(!s.stamp_name_date);
         assert_eq!(
             s.stamp_pictures,
             [PathBuf::from("/a/b c.png"), "/d.jpg".into()]
+        );
+        assert_eq!(
+            s.stamp_wordings,
+            [
+                ("PAID IN FULL".into(), StampColor::Green),
+                ("COPY".into(), StampColor::Blue)
+            ]
         );
     }
 

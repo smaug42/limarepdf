@@ -3,7 +3,7 @@
 
 use lopdf::{dictionary, Dictionary, Object, ObjectId, StringFormat};
 use mpe_core::render::{self, Renderer};
-use mpe_core::{AnnotKind, Pdf, Shape, ShapeLook, Stamp, StampKind, StampPlace};
+use mpe_core::{AnnotKind, Pdf, Shape, ShapeLook, Stamp, StampColor, StampKind, StampPlace};
 
 fn text(s: &str) -> Object {
     Object::String(s.as_bytes().to_vec(), StringFormat::Literal)
@@ -764,6 +764,33 @@ fn a_stamp_is_centred_where_clicked_and_survives_flattening() {
     let mut p = Pdf::from_bytes(&bytes, None).unwrap();
     assert_eq!(p.flatten_annotations(None).unwrap(), 1);
     assert_eq!(ink(&mut p, [0, 0, 300, 200]), before);
+}
+
+#[test]
+fn a_stamp_with_your_own_wording_is_drawn_in_its_colour_and_unsupported_letters_are_refused() {
+    let mut p = page();
+    let stamp = Stamp::Custom {
+        text: "paid",
+        color: StampColor::Green,
+        name_and_date: false,
+    };
+    let id = p
+        .add_stamp(0, &stamp, StampPlace::Centre(150.0, 100.0), "")
+        .unwrap();
+    let d = p.doc.get_dictionary(id).unwrap();
+    assert!(d.get(b"Name").is_err(), "no standard icon name");
+    assert_eq!(d.get(b"C").unwrap(), &nums(&StampColor::Green.rgb()));
+    assert!(ink(&mut p, [0, 0, 300, 200]).0 > 100, "the stamp is drawn");
+    let bad = Stamp::Custom {
+        text: "Ωmega",
+        color: StampColor::Red,
+        name_and_date: false,
+    };
+    assert!(bad.size("").is_err());
+    assert!(p
+        .add_stamp(0, &bad, StampPlace::Centre(150.0, 100.0), "")
+        .is_err());
+    assert_eq!(p.annotations().len(), 1);
 }
 
 #[test]

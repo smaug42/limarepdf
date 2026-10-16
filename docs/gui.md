@@ -158,7 +158,7 @@ boxes can't be turned: PDF stores them as upright boxes.
 
 The stamp tool is in the Annotate button's menu ("Add a stamp" in the command palette). Its inspector lists the
 ready-made stamps (Approved, Not approved, Draft, Final, Confidential, For comment and Void), each a coloured frame
-with the word in capitals, and the pictures used as stamps before. Pick one, then click on the page to put it down
+with the word in capitals, your own wordings, and the pictures used as stamps before. Pick one, then click on the page to put it down
 at its own size, centred on the click, or drag a box to size it (it keeps its shape inside the box). It is then
 selected with the arrow, to move or resize.
 
@@ -166,6 +166,12 @@ selected with the arrow, to move or resize.
   date. The Name box under it is the same name as Edit > Your name for comments, so changing either changes both.
   The date is in UTC, as headers and footers use. The name and date are fixed when the stamp is put down. The
   choice is remembered.
+- **Your own wording:** pick green, red or blue and type it in the box under the ready-made stamps, then click
+  on the page; what you type is the stamp to put down. It is shown in capitals and goes into the list above when
+  you leave the box (Enter or a click elsewhere). Picking a colour also recolours the picked wording of your own.
+  The last five wordings are remembered with their colours (right-click one to take it off the list). The stamp's font covers
+  Western European languages only, so wording with other characters (Greek, Cyrillic, Chinese and so on) can't
+  be used yet; the pane says which characters.
 - **Pictures:** Choose a picture… takes a PNG or JPEG file; it is put down with its longer side 160 points. The
   last five pictures are remembered by path (right-click one to take it off the list). Transparent parts of a PNG
   stay transparent.

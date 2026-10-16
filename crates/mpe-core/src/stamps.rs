@@ -83,11 +83,11 @@ impl StampKind {
     }
 
     /// Green for yes, red for no or restricted, blue for work in progress.
-    pub fn color(self) -> [f32; 3] {
+    pub fn color(self) -> StampColor {
         match self {
-            StampKind::Approved | StampKind::Final => [0.1, 0.5, 0.15],
-            StampKind::NotApproved | StampKind::Confidential | StampKind::Void => [0.78, 0.1, 0.1],
-            StampKind::Draft | StampKind::ForComment => [0.1, 0.3, 0.75],
+            StampKind::Approved | StampKind::Final => StampColor::Green,
+            StampKind::NotApproved | StampKind::Confidential | StampKind::Void => StampColor::Red,
+            StampKind::Draft | StampKind::ForComment => StampColor::Blue,
         }
     }
 
@@ -105,12 +105,76 @@ impl StampKind {
     }
 }
 
+/// A text stamp's colour.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StampColor {
+    Green,
+    Red,
+    Blue,
+}
+
+impl StampColor {
+    pub const ALL: [StampColor; 3] = [StampColor::Green, StampColor::Red, StampColor::Blue];
+
+    pub fn rgb(self) -> [f32; 3] {
+        match self {
+            StampColor::Green => [0.1, 0.5, 0.15],
+            StampColor::Red => [0.78, 0.1, 0.1],
+            StampColor::Blue => [0.1, 0.3, 0.75],
+        }
+    }
+
+    /// Its name in lower case, as settings and the command line spell it.
+    pub fn name(self) -> &'static str {
+        match self {
+            StampColor::Green => "green",
+            StampColor::Red => "red",
+            StampColor::Blue => "blue",
+        }
+    }
+
+    /// The colour called `s`, in any case.
+    pub fn from_name(s: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|c| c.name().eq_ignore_ascii_case(s.trim()))
+    }
+}
+
+/// Your own wording as a stamp shows it: trimmed and in capitals. Fails when it is
+/// empty or has characters the stamp's font can't show (it covers Western European
+/// languages only).
+pub fn stamp_wording(text: &str) -> Result<String> {
+    let word = text.trim().to_uppercase();
+    if word.is_empty() {
+        bail!("the stamp needs some wording");
+    }
+    let mut bad = String::new();
+    for c in word.chars() {
+        let u = c as u32;
+        if !((0x20..=0x7E).contains(&u) || (0xA0..=0xFF).contains(&u)) && !bad.contains(c) {
+            bad.push(c);
+        }
+    }
+    if !bad.is_empty() {
+        bail!("a stamp can't show {bad:?} yet: its font covers Western European languages only");
+    }
+    Ok(word)
+}
+
 /// What a stamp shows.
 pub enum Stamp<'a> {
     /// A ready-made stamp, with a second line giving the author's name (when there is
     /// one) and today's date.
     Text {
         kind: StampKind,
+        name_and_date: bool,
+    },
+    /// A stamp with your own wording (see [`stamp_wording`]), with the same optional
+    /// name-and-date line.
+    Custom {
+        text: &'a str,
+        color: StampColor,
         name_and_date: bool,
     },
     /// A PNG, JPEG or TIFF picture.
@@ -126,18 +190,25 @@ pub enum StampPlace {
     Fill([f32; 4]),
 }
 
-/// A text stamp's lines: its word in capitals, and the name-and-date line.
-fn text_lines(kind: StampKind, name_and_date: bool, author: &str) -> (String, Option<String>) {
-    let word = kind.label().to_uppercase();
-    let line = name_and_date.then(|| {
-        let [y, m, d, ..] = utc_now();
-        let date = format!("{y:04}-{m:02}-{d:02}");
-        match author.trim() {
-            "" => date,
-            name => format!("{name}, {date}"),
-        }
-    });
-    (word, line)
+/// A text stamp's wording and look.
+struct TextStamp {
+    /// Its word, in capitals.
+    word: String,
+    /// The name-and-date line.
+    line: Option<String>,
+    color: StampColor,
+    /// The standard icon name; none for your own wording.
+    name: Option<&'static str>,
+}
+
+/// The name-and-date line.
+fn name_and_date_line(author: &str) -> String {
+    let [y, m, d, ..] = utc_now();
+    let date = format!("{y:04}-{m:02}-{d:02}");
+    match author.trim() {
+        "" => date,
+        name => format!("{name}, {date}"),
+    }
 }
 
 fn bold_width(s: &str, size: f32) -> f32 {
@@ -162,20 +233,42 @@ fn picture_size(w: f32, h: f32) -> (f32, f32) {
 }
 
 impl Stamp<'_> {
-    /// Its size on the page when placed with [`StampPlace::Centre`], in points.
-    pub fn size(&self, author: &str) -> Result<(f32, f32)> {
-        Ok(match self {
+    /// A text stamp's wording and look; `None` for a picture.
+    fn text(&self, author: &str) -> Result<Option<TextStamp>> {
+        let (word, color, name, name_and_date) = match self {
             Stamp::Text {
                 kind,
                 name_and_date,
-            } => {
-                let (word, line) = text_lines(*kind, *name_and_date, author);
-                text_size(&word, line.as_deref())
-            }
-            Stamp::Picture(bytes) => {
+            } => (
+                kind.label().to_uppercase(),
+                kind.color(),
+                Some(kind.name()),
+                *name_and_date,
+            ),
+            Stamp::Custom {
+                text,
+                color,
+                name_and_date,
+            } => (stamp_wording(text)?, *color, None, *name_and_date),
+            Stamp::Picture(_) => return Ok(None),
+        };
+        Ok(Some(TextStamp {
+            word,
+            line: name_and_date.then(|| name_and_date_line(author)),
+            color,
+            name,
+        }))
+    }
+
+    /// Its size on the page when placed with [`StampPlace::Centre`], in points.
+    pub fn size(&self, author: &str) -> Result<(f32, f32)> {
+        Ok(match (self, self.text(author)?) {
+            (_, Some(t)) => text_size(&t.word, t.line.as_deref()),
+            (Stamp::Picture(bytes), None) => {
                 let (w, h) = decode_upright_size(bytes)?;
                 picture_size(w, h)
             }
+            _ => unreachable!("only pictures have no wording"),
         })
     }
 }
@@ -210,16 +303,14 @@ impl Pdf {
         author: &str,
     ) -> Result<(u32, u16)> {
         let page = self.page_id_at(page_index)?;
-        let (art, (w, h)) = match stamp {
-            Stamp::Text {
-                kind,
-                name_and_date,
-            } => {
-                let (word, line) = text_lines(*kind, *name_and_date, author);
-                let size = text_size(&word, line.as_deref());
-                (self.text_art(*kind, &word, line.as_deref(), size), size)
+        let text = stamp.text(author)?;
+        let (art, (w, h)) = match (&text, stamp) {
+            (Some(t), _) => {
+                let size = text_size(&t.word, t.line.as_deref());
+                (self.text_art(t, size), size)
             }
-            Stamp::Picture(bytes) => self.picture_art(bytes)?,
+            (None, Stamp::Picture(bytes)) => self.picture_art(bytes)?,
+            (None, _) => unreachable!("only pictures have no wording"),
         };
         let shown = match place {
             StampPlace::Centre(x, y) => [x - w / 2.0, y - h / 2.0, x + w / 2.0, y + h / 2.0],
@@ -249,23 +340,20 @@ impl Pdf {
             "F" => PRINT,
             "AP" => dictionary! { "N" => ap },
         };
-        if let Stamp::Text { kind, .. } = stamp {
-            d.set("Name", kind.name());
-            d.set("C", nums(&kind.color()));
+        if let Some(t) = &text {
+            if let Some(name) = t.name {
+                d.set("Name", name);
+            }
+            d.set("C", nums(&t.color.rgb()));
         }
         self.insert_annot(page, d, author)
     }
 
     /// A text stamp's artwork: its word in bold capitals in a rounded frame, with the
     /// name-and-date line under it.
-    fn text_art(
-        &mut self,
-        kind: StampKind,
-        word: &str,
-        line: Option<&str>,
-        (w, h): (f32, f32),
-    ) -> ObjectId {
-        let [r, g, b] = kind.color();
+    fn text_art(&mut self, t: &TextStamp, (w, h): (f32, f32)) -> ObjectId {
+        let (word, line) = (t.word.as_str(), t.line.as_deref());
+        let [r, g, b] = t.color.rgb();
         let half = FRAME / 2.0;
         let mut s = format!(
             "q {r} {g} {b} RG {r} {g} {b} rg {FRAME} w {} S\n",
@@ -402,6 +490,21 @@ mod tests {
         );
         assert_eq!(StampKind::from_name("VOID"), Some(StampKind::Void));
         assert_eq!(StampKind::from_name("rejected"), None);
+    }
+
+    #[test]
+    fn own_wording_is_trimmed_in_capitals_and_western_european_only() {
+        assert_eq!(stamp_wording("  paid in full ").unwrap(), "PAID IN FULL");
+        assert_eq!(stamp_wording("reçu").unwrap(), "REÇU");
+        assert!(stamp_wording("  ").is_err());
+        let e = stamp_wording("Ωmega Ω 你").unwrap_err().to_string();
+        assert!(e.contains("Ω你"), "{e}");
+    }
+
+    #[test]
+    fn colours_match_in_any_case() {
+        assert_eq!(StampColor::from_name("RED"), Some(StampColor::Red));
+        assert_eq!(StampColor::from_name("pink"), None);
     }
 
     #[test]

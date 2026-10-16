@@ -492,7 +492,8 @@ impl Tab {
                     }
                 }
                 Action::AddStamp(p, place) => {
-                    let picture = match &self.ed.stamp {
+                    let pick = self.ed.stamp.clone();
+                    let picture = match &pick {
                         StampPick::Picture(path) => match std::fs::read(path) {
                             Ok(b) => b,
                             Err(e) => {
@@ -500,11 +501,16 @@ impl Tab {
                                 continue;
                             }
                         },
-                        StampPick::Text(_) => Vec::new(),
+                        StampPick::Text(_) | StampPick::Custom(..) => Vec::new(),
                     };
-                    let stamp = match &self.ed.stamp {
+                    let stamp = match &pick {
                         StampPick::Text(kind) => mpe_core::Stamp::Text {
                             kind: *kind,
+                            name_and_date: self.ed.stamp_name_date,
+                        },
+                        StampPick::Custom(text, color) => mpe_core::Stamp::Custom {
+                            text,
+                            color: *color,
                             name_and_date: self.ed.stamp_name_date,
                         },
                         StampPick::Picture(_) => mpe_core::Stamp::Picture(&picture),

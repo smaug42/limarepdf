@@ -8,7 +8,8 @@ use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeK
 use egui_phosphor::regular as icon;
 use mpe_core::{
     words_text, Annot, AnnotKind, Family, FieldValue, FontChoice, Link, LinkTarget, ObjectKind,
-    PageObject, PageWord, PathStyle, Shape, ShapeLook, StampKind, StampPlace, TextEdit, TextStyle,
+    PageObject, PageWord, PathStyle, Shape, ShapeLook, StampColor, StampKind, StampPlace, TextEdit,
+    TextStyle,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -51,6 +52,8 @@ impl Tool {
 #[derive(Clone, PartialEq, Debug)]
 pub enum StampPick {
     Text(StampKind),
+    /// Your own wording, already in capitals.
+    Custom(String, StampColor),
     Picture(PathBuf),
 }
 
@@ -316,6 +319,11 @@ pub struct Editor {
     pub stamp_name_date: bool,
     /// Pictures used as stamps, the latest first (from the settings).
     pub stamp_pictures: Vec<PathBuf>,
+    /// Stamp wordings of your own, the latest first (from the settings).
+    pub stamp_wordings: Vec<(String, StampColor)>,
+    /// A stamp wording being typed in the inspector, and its colour.
+    stamp_draft: String,
+    stamp_draft_color: StampColor,
     /// Put the keyboard in the reply box (and show the inspector).
     pub reply_focus: bool,
 }
@@ -371,6 +379,9 @@ impl Default for Editor {
             stamp: StampPick::Text(StampKind::Approved),
             stamp_name_date: true,
             stamp_pictures: Vec::new(),
+            stamp_wordings: Vec::new(),
+            stamp_draft: String::new(),
+            stamp_draft_color: StampColor::Red,
             reply_focus: false,
         }
     }
@@ -2112,19 +2123,89 @@ impl Editor {
     }
 
     /// The right-hand inspector: tool options, new-text entry and properties of the selected object.
-    /// The stamp tool's options: the ready-made stamps, the name-and-date switch and the
-    /// pictures used before.
+    /// The stamp tool's options: the ready-made stamps, your own wordings, the
+    /// name-and-date switch and the pictures used before.
     fn stamp_ui(&mut self, ui: &mut egui::Ui) {
+        let look = |word: &str, color: StampColor| {
+            let [r, g, b] = color.rgb().map(|c| (c * 255.0) as u8);
+            egui::RichText::new(word)
+                .strong()
+                .color(Color32::from_rgb(r, g, b))
+        };
         ui.strong("New stamp");
         for k in StampKind::ALL {
-            let [r, g, b] = k.color().map(|c| (c * 255.0) as u8);
-            let text = egui::RichText::new(k.label().to_uppercase())
-                .strong()
-                .color(Color32::from_rgb(r, g, b));
             let pick = StampPick::Text(k);
+            let text = look(&k.label().to_uppercase(), k.color());
             if ui.selectable_label(self.stamp == pick, text).clicked() {
                 self.stamp = pick;
             }
+        }
+        let mut remove = None;
+        for (i, (word, color)) in self.stamp_wordings.iter().enumerate() {
+            let pick = StampPick::Custom(word.clone(), *color);
+            let r = ui.selectable_label(self.stamp == pick, look(word, *color));
+            if r.clicked() {
+                self.stamp = pick;
+            }
+            r.context_menu(|ui| {
+                if ui.button("Remove from the list").clicked() {
+                    remove = Some(i);
+                    ui.close();
+                }
+            });
+        }
+        if let Some(i) = remove {
+            let (word, color) = self.stamp_wordings.remove(i);
+            if self.stamp == StampPick::Custom(word, color) {
+                self.stamp = StampPick::Text(StampKind::Approved);
+            }
+        }
+        ui.label("Your own wording");
+        // A colour applies to what is typed next and to the picked wording of your own.
+        ui.horizontal(|ui| {
+            for c in StampColor::ALL {
+                let name = format!("{}{}", c.name()[..1].to_uppercase(), &c.name()[1..]);
+                if ui
+                    .selectable_label(self.stamp_draft_color == c, look(&name, c))
+                    .clicked()
+                {
+                    self.stamp_draft_color = c;
+                    if let StampPick::Custom(word, color) = &mut self.stamp {
+                        *color = c;
+                        for w in self.stamp_wordings.iter_mut().filter(|w| w.0 == *word) {
+                            w.1 = c;
+                        }
+                    }
+                }
+            }
+        });
+        let entry = ui.add(
+            egui::TextEdit::singleline(&mut self.stamp_draft)
+                .hint_text("Type, then click on the page")
+                .desired_width(f32::INFINITY),
+        );
+        // What is typed is the stamp to put down straight away; it joins the list when
+        // the box is left (Enter, or a click on the page or elsewhere).
+        let wording = mpe_core::stamp_wording(&self.stamp_draft);
+        if let (true, Ok(word)) = (entry.changed(), &wording) {
+            self.stamp = StampPick::Custom(word.clone(), self.stamp_draft_color);
+        }
+        match wording {
+            Ok(word) if entry.lost_focus() => {
+                let pick = (word, self.stamp_draft_color);
+                self.stamp_wordings.retain(|w| w.0 != pick.0);
+                self.stamp_wordings.insert(0, pick.clone());
+                self.stamp_wordings
+                    .truncate(crate::settings::STAMP_WORDINGS);
+                self.stamp = StampPick::Custom(pick.0, pick.1);
+                self.stamp_draft.clear();
+            }
+            Err(e) if !self.stamp_draft.trim().is_empty() => {
+                let e = e.to_string();
+                let e = format!("{}{}", e[..1].to_uppercase(), &e[1..]);
+                ui.colored_label(ui.visuals().error_fg_color, e);
+            }
+            _ => {}
         }
         ui.checkbox(&mut self.stamp_name_date, "Add my name and the date");
         ui.add_enabled_ui(self.stamp_name_date, |ui| {

@@ -12,7 +12,7 @@ use mpe_core::{
     format_page_range, parse_page_range, part_file_name, print, render, Annot, AnnotKind, Bates,
     BookmarkPlace, Cipher, Encryption, Field, FieldKind, FieldValue, HeaderFooter, ImageImport,
     ImageWatermark, Info, LabelRange, LabelStyle, Ocr, OcrResult, Pdf, Restrictions, ScanMode,
-    ScanOptions, ScanResult, Stamp, StampKind, StampPlace, Watermark,
+    ScanOptions, ScanResult, Stamp, StampColor, StampKind, StampPlace, Watermark,
 };
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
@@ -210,13 +210,19 @@ enum Cmd {
         #[arg(long)]
         background: bool,
     },
-    /// Put a stamp on pages: Approved, Draft and so on, or a picture
+    /// Put a stamp on pages: Approved, Draft and so on, your own wording, or a picture
     Stamp {
         #[command(flatten)]
         io: Io,
         /// approved, not-approved, draft, final, confidential, for-comment or void
-        #[arg(long, required_unless_present = "image", conflicts_with = "image")]
+        #[arg(long, required_unless_present_any = ["image", "text"], conflicts_with_all = ["image", "text"])]
         kind: Option<String>,
+        /// Your own wording instead, shown in capitals
+        #[arg(long, conflicts_with = "image")]
+        text: Option<String>,
+        /// The colour of your own wording: green, red or blue; default red
+        #[arg(long)]
+        color: Option<String>,
         /// Use a PNG, JPEG or TIFF picture instead
         #[arg(long)]
         image: Option<PathBuf>,
@@ -1230,6 +1236,8 @@ fn main() -> Result<()> {
         Cmd::Stamp {
             io,
             kind,
+            text,
+            color,
             image,
             pages,
             at,
@@ -1240,15 +1248,27 @@ fn main() -> Result<()> {
             if !(scale > 0.0 && scale.is_finite()) {
                 bail!("--scale must be above 0");
             }
+            if color.is_some() && text.is_none() {
+                bail!("--color is for --text stamps only");
+            }
             let image = match image {
                 Some(path) => Some(
                     std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?,
                 ),
                 None => None,
             };
-            let stamp = match &image {
-                Some(bytes) => Stamp::Picture(bytes),
-                None => {
+            let stamp = match (&image, &text) {
+                (Some(bytes), _) => Stamp::Picture(bytes),
+                (None, Some(text)) => Stamp::Custom {
+                    text,
+                    color: match color {
+                        Some(c) => StampColor::from_name(&c)
+                            .with_context(|| format!("no colour called {c:?}"))?,
+                        None => StampColor::Red,
+                    },
+                    name_and_date: date,
+                },
+                (None, None) => {
                     let name = kind.unwrap_or_default();
                     Stamp::Text {
                         kind: StampKind::from_name(&name)
