@@ -2,6 +2,7 @@
 //! each thread owns its own (non-Send) render cache. Newest requests are served first
 //! so scrolling stays responsive.
 
+use mpe_core::page_colours::PageColours;
 use mpe_core::render::{self, Bitmap, Renderer};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
@@ -9,13 +10,24 @@ use std::sync::{Arc, Condvar, Mutex};
 /// (page index, quantised scale)
 pub type Key = (usize, u32);
 
+/// How pages are coloured on screen.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub struct Colours {
+    pub mode: PageColours,
+    /// Pictures are recoloured too; otherwise they keep their own colours.
+    pub pictures_too: bool,
+}
+
 pub struct Response {
     pub key: Key,
+    /// The colours it was drawn in; a response drawn before a change is dropped.
+    pub colours: Colours,
     pub bitmap: Result<Bitmap, String>,
 }
 
 struct Queue {
     items: Vec<(Key, f32)>,
+    colours: Colours,
     closed: bool,
 }
 
@@ -25,10 +37,11 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn spawn(ctx: eframe::egui::Context, bytes: Vec<u8>) -> Self {
+    pub fn spawn(ctx: eframe::egui::Context, bytes: Vec<u8>, colours: Colours) -> Self {
         let shared = Arc::new((
             Mutex::new(Queue {
                 items: Vec::new(),
+                colours,
                 closed: false,
             }),
             Condvar::new(),
@@ -51,7 +64,7 @@ impl Worker {
                     Err(_) => None,
                 };
                 loop {
-                    let job = {
+                    let (job, colours) = {
                         let (lock, cv) = &*shared;
                         let mut q = lock.lock().unwrap();
                         loop {
@@ -59,7 +72,7 @@ impl Worker {
                                 return;
                             }
                             if let Some(j) = q.items.pop() {
-                                break j;
+                                break (j, q.colours);
                             }
                             q = cv.wait(q).unwrap();
                         }
@@ -69,7 +82,7 @@ impl Worker {
                         (Some(r), _) => {
                             // A malformed page must not take the whole viewer down.
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                r.render(key.0, scale)
+                                r.render_in(key.0, scale, colours.mode, !colours.pictures_too)
                             }))
                             .map_err(|_| "renderer panicked on this page".to_string())
                             .and_then(|r| r.map_err(|e| e.to_string()))
@@ -77,7 +90,12 @@ impl Worker {
                         (None, Err(e)) => Err(e.clone()),
                         _ => Err("renderer unavailable".into()),
                     };
-                    if tx.send(Response { key, bitmap }).is_err() {
+                    let r = Response {
+                        key,
+                        colours,
+                        bitmap,
+                    };
+                    if tx.send(r).is_err() {
                         return;
                     }
                     ctx.request_repaint();
@@ -91,6 +109,13 @@ impl Worker {
         let (lock, cv) = &*self.shared;
         lock.lock().unwrap().items.push((key, scale));
         cv.notify_one();
+    }
+
+    /// Draw pages from now on in `colours`, dropping the queued jobs.
+    pub fn set_colours(&self, colours: Colours) {
+        let mut q = self.shared.0.lock().unwrap();
+        q.colours = colours;
+        q.items.clear();
     }
 
     /// Drop queued jobs that are no longer wanted.

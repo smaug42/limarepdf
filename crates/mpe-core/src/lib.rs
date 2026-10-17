@@ -27,6 +27,7 @@ mod objects;
 mod ocr;
 mod outline;
 mod overlay;
+pub mod page_colours;
 mod pagerange;
 pub mod print;
 #[cfg(windows)]

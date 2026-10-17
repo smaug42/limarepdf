@@ -4,6 +4,10 @@
 
 ### Added
 
+- Page colour modes, from View > Page colours: Dark (dark paper and light text, hues kept), High contrast (white on
+  black), Sepia, or Automatic (dark pages while the app's theme is dark). Pictures keep their own colours unless
+  "Recolour pictures too" is on. Remembered between runs. On screen only: the file, printing and exports are not
+  changed.
 - Bookmark editing: add a bookmark to the current page, rename one, add one inside another, or delete one with the
   bookmarks inside it, from the Bookmarks tab (Undo reverses each), and list, add, rename and remove them with
   `mpe bookmarks`.

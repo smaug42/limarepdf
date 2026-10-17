@@ -43,6 +43,7 @@ available.
 | Command palette, right-click menus, floating toolbar | Done | Toolbar customisation: No |
 | App icon | Done | Window, taskbar and Windows `.exe`. Wayland needs the desktop entry installed. [Details](install.md#menu-entry-and-icon-on-linux) |
 | Light and dark themes | Done | Follows the system, or chosen with the top bar's theme button; remembered between runs |
+| Page colour modes | Done | View > Page colours: Normal, Automatic (dark pages with the dark theme), Dark, High contrast, Sepia. Pictures keep their colours unless "Recolour pictures too" is on. On screen only: the file, printing and exports keep their colours. See [Rendering](rendering.md#page-colour-modes) |
 | Rendering | Partial | Some transparency groups are drawn wrongly. Annotations without a drawing of their own are drawn by MPE for the common types only. [Details](rendering.md) |
 | Search | Done | Phrases across line breaks, and words hyphenated at a line end, are found and highlighted. [Details](search-and-text.md) |
 | Select and copy text | Done | With the default read tool; across pages, scrolling while you drag; in the order on the page, not the file's drawing order; includes recognised text |

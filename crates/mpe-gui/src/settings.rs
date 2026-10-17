@@ -9,6 +9,7 @@
 
 use crate::signing::SignKit;
 use eframe::egui::ThemePreference;
+use mpe_core::page_colours::PageColours;
 pub use mpe_core::settings_dir;
 use mpe_core::{OpenLayout, StampColor};
 use std::path::PathBuf;
@@ -56,12 +57,59 @@ impl Layout {
     }
 }
 
+/// How pages are coloured on screen: a fixed mode, or Dark while the app's theme is dark.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PageLook {
+    Automatic,
+    Fixed(PageColours),
+}
+
+impl Default for PageLook {
+    fn default() -> Self {
+        PageLook::Fixed(PageColours::Normal)
+    }
+}
+
+impl PageLook {
+    fn name(self) -> &'static str {
+        match self {
+            PageLook::Automatic => "automatic",
+            PageLook::Fixed(PageColours::Normal) => "normal",
+            PageLook::Fixed(PageColours::Dark) => "dark",
+            PageLook::Fixed(PageColours::HighContrast) => "high_contrast",
+            PageLook::Fixed(PageColours::Sepia) => "sepia",
+        }
+    }
+
+    fn from_name(s: &str) -> Self {
+        match s {
+            "automatic" => PageLook::Automatic,
+            "dark" => PageLook::Fixed(PageColours::Dark),
+            "high_contrast" => PageLook::Fixed(PageColours::HighContrast),
+            "sepia" => PageLook::Fixed(PageColours::Sepia),
+            _ => PageLook::default(),
+        }
+    }
+
+    /// The mode in force while the app's theme is dark or light.
+    pub fn mode(self, dark_theme: bool) -> PageColours {
+        match self {
+            PageLook::Automatic if dark_theme => PageColours::Dark,
+            PageLook::Automatic => PageColours::Normal,
+            PageLook::Fixed(m) => m,
+        }
+    }
+}
+
 /// How many stamp pictures, and how many stamp wordings of your own, are remembered.
 pub const STAMP_PICTURES: usize = 5;
 pub const STAMP_WORDINGS: usize = 5;
 
 pub struct Settings {
     pub theme: ThemePreference,
+    /// Page colours on screen, and whether pictures are recoloured too.
+    pub page_look: PageLook,
+    pub pictures_too: bool,
     pub layout: Layout,
     /// In the facing layout, the first page is shown alone on the right, as in a book.
     pub cover: bool,
@@ -115,6 +163,8 @@ impl Settings {
     pub fn from_file(file: Option<PathBuf>) -> Self {
         let mut s = Self {
             theme: ThemePreference::System,
+            page_look: PageLook::default(),
+            pictures_too: false,
             layout: Layout::Continuous,
             cover: true,
             highlight: 0,
@@ -148,6 +198,8 @@ impl Settings {
                         _ => ThemePreference::System,
                     };
                 }
+                "page_colours" => s.page_look = PageLook::from_name(value),
+                "recolour_pictures" => s.pictures_too = value == "true",
                 "page_layout" => {
                     s.layout = match value {
                         "facing" => Layout::Facing,
@@ -200,9 +252,11 @@ impl Settings {
             let _ = std::fs::create_dir_all(dir);
         }
         let mut text = format!(
-            "theme = {}\npage_layout = {}\ncover_page_alone = {}\nhighlight_colour = {}\n\
-             line_colour = {}\n",
+            "theme = {}\npage_colours = {}\nrecolour_pictures = {}\npage_layout = {}\n\
+             cover_page_alone = {}\nhighlight_colour = {}\nline_colour = {}\n",
             theme_name(self.theme),
+            self.page_look.name(),
+            self.pictures_too,
             self.layout.name(),
             self.cover,
             self.highlight,
@@ -245,6 +299,31 @@ mod tests {
             s.save();
             assert_eq!(Settings::from_file(Some(f.clone())).theme, t);
         }
+    }
+
+    #[test]
+    fn page_colours_are_saved_and_read_back() {
+        let f = file("page-colours");
+        let s = Settings::from_file(Some(f.clone()));
+        assert_eq!(s.page_look, PageLook::Fixed(PageColours::Normal));
+        assert!(!s.pictures_too);
+        for look in [
+            PageLook::Automatic,
+            PageLook::Fixed(PageColours::Dark),
+            PageLook::Fixed(PageColours::HighContrast),
+            PageLook::Fixed(PageColours::Sepia),
+            PageLook::Fixed(PageColours::Normal),
+        ] {
+            let mut s = Settings::from_file(Some(f.clone()));
+            s.page_look = look;
+            s.pictures_too = !s.pictures_too;
+            let too = s.pictures_too;
+            s.save();
+            let back = Settings::from_file(Some(f.clone()));
+            assert_eq!((back.page_look, back.pictures_too), (look, too));
+        }
+        assert_eq!(PageLook::Automatic.mode(true), PageColours::Dark);
+        assert_eq!(PageLook::Automatic.mode(false), PageColours::Normal);
     }
 
     #[test]

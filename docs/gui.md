@@ -461,3 +461,18 @@ sun or moon, for the current choice) chooses System, Light or Dark; so does ☰ 
 remembered between runs, in `settings.txt` in the same folder as the recent-files list, along with the markup
 colours and your name for comments. The app uses the Inter font
 and Phosphor icons.
+
+☰ > View > Page colours changes how pages look on screen, for reading in the dark or with low vision:
+
+| Choice | Pages look like |
+|---|---|
+| Normal | Their own colours (the default) |
+| Automatic | Dark while the app's theme is dark, Normal while it is light |
+| Dark | Dark grey paper and light text; colours keep their hue, so red stays red |
+| High contrast | Black paper; text, lines and anything coloured turn white |
+| Sepia | Warm paper and dark brown text |
+
+Photos and other pictures keep their own colours. Turn on **Recolour pictures too** in the same menu to change them
+as well; a scanned page is one big picture, so this is what recolours scans. The choice applies to every open
+document and the thumbnails, and is remembered between runs. It is display only: the file, printing, exported
+images and everything else keep the page's own colours. The commands are also in the command palette.

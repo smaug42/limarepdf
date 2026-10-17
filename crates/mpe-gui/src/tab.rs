@@ -8,7 +8,7 @@ use crate::settings::Layout;
 use crate::signatures::{self, Check, PanelAct, SigState};
 use crate::signing::SignPick;
 use crate::theme;
-use crate::worker::{Key, Worker};
+use crate::worker::{Colours, Key, Worker};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptions, Vec2};
 use egui_phosphor::regular as icon;
 use mpe_core::{
@@ -61,6 +61,8 @@ pub struct Tab {
     /// The file holds digital signatures that saving would break; cleared once saved.
     pub signed: bool,
     worker: Worker,
+    /// The colours pages are drawn in on screen.
+    colours: Colours,
     pub sizes: Vec<(f32, f32)>,
     pages: HashMap<usize, (u32, TextureHandle)>,
     thumbs: HashMap<usize, TextureHandle>,
@@ -155,6 +157,7 @@ impl Tab {
         id: u64,
         mut pdf: Pdf,
         path: Option<PathBuf>,
+        colours: Colours,
     ) -> Result<Self, String> {
         let size = path.as_ref().and_then(|p| std::fs::metadata(p).ok());
         let banners = banners::detect(&pdf, size.map(|m| m.len()));
@@ -177,7 +180,8 @@ impl Tab {
             revision: 0,
             encryption: None,
             signed,
-            worker: Worker::spawn(ctx.clone(), bytes),
+            worker: Worker::spawn(ctx.clone(), bytes, colours),
+            colours,
             sizes,
             pages: HashMap::new(),
             thumbs: HashMap::new(),
@@ -402,10 +406,29 @@ impl Tab {
         true
     }
 
+    /// The colour of blank paper in the current colours, shown until a page is drawn.
+    fn paper(&self) -> Color32 {
+        let [r, g, b] = self.colours.mode.paper();
+        Color32::from_rgb(r, g, b)
+    }
+
+    /// Draw pages in `colours` from now on. Pages on screen keep their old drawing until
+    /// the new one arrives.
+    pub fn set_colours(&mut self, colours: Colours) {
+        if colours == self.colours {
+            return;
+        }
+        self.colours = colours;
+        self.worker.set_colours(colours);
+        self.pending.clear();
+        self.stale.extend(self.pages.keys().copied());
+        self.thumbs.clear();
+    }
+
     fn soft_refresh(&mut self, ctx: &egui::Context, pages: &[usize]) {
         match self.pdf.app_snapshot() {
             Ok(bytes) => {
-                self.worker = Worker::spawn(ctx.clone(), bytes);
+                self.worker = Worker::spawn(ctx.clone(), bytes, self.colours);
                 self.pending.clear();
                 for &p in pages {
                     self.stale.insert(p);
@@ -857,7 +880,7 @@ impl Tab {
     pub fn refresh(&mut self, ctx: &egui::Context) {
         match self.pdf.app_snapshot() {
             Ok(bytes) => {
-                self.worker = Worker::spawn(ctx.clone(), bytes);
+                self.worker = Worker::spawn(ctx.clone(), bytes, self.colours);
                 self.sizes = sizes_of(&self.pdf);
                 self.labels = self.pdf.page_labels();
                 self.pages.clear();
@@ -1254,6 +1277,9 @@ impl Tab {
     fn collect(&mut self, ctx: &egui::Context) {
         while let Ok(r) = self.worker.rx.try_recv() {
             self.pending.remove(&r.key);
+            if r.colours != self.colours {
+                continue;
+            }
             let Ok(b) = r.bitmap else { continue };
             let img = egui::ColorImage::from_rgba_premultiplied([b.width, b.height], &b.rgba);
             let tex = ctx.load_texture(
@@ -1481,6 +1507,7 @@ impl Tab {
         self.collect(&ctx);
         let ppp = ctx.pixels_per_point();
         let dark = ui.visuals().dark_mode;
+        let paper = self.paper();
 
         self.banners_ui(ui);
         let zd = ui.input(|i| i.zoom_delta());
@@ -1603,7 +1630,7 @@ impl Tab {
                     Vec2::new(page_w[i], page_h[i]),
                 );
                 painter.add(theme::page_shadow(dark).as_shape(r, 0));
-                painter.rect_filled(r, 0.0, Color32::WHITE);
+                painter.rect_filled(r, 0.0, paper);
                 let scale = self.zoom * BASE * ppp;
                 let key = (i, ((scale * 20.0).round() as u32).max(1));
                 match self.pages.get(&i) {
@@ -1713,6 +1740,7 @@ impl Tab {
     pub fn show_thumbs(&mut self, ui: &mut egui::Ui, base: &Ctx) {
         let ctx = ui.ctx().clone();
         let ppp = ctx.pixels_per_point();
+        let paper = self.paper();
         let mut click: Option<(usize, egui::Modifiers)> = None;
         // Thumbnail rectangles, for finding where a drag drops.
         let mut rects: Vec<Rect> = Vec::with_capacity(self.sizes.len());
@@ -1758,7 +1786,7 @@ impl Tab {
                         };
                         ui.painter().rect_filled(rect, 4.0, c);
                     }
-                    ui.painter().rect_filled(img, 0.0, Color32::WHITE);
+                    ui.painter().rect_filled(img, 0.0, paper);
                     match self.thumbs.get(&i) {
                         Some(t) => {
                             ui.painter().image(

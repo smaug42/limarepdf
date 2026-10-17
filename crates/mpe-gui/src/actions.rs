@@ -5,9 +5,10 @@
 use crate::editor::Tool;
 use crate::markup::{self, Mark};
 use crate::selection::{ObjKind, Selection};
-use crate::settings::Layout;
+use crate::settings::{Layout, PageLook};
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, ThemePreference};
 use egui_phosphor::regular as icon;
+use mpe_core::page_colours::PageColours;
 
 /// A command. Running one goes through `App::act`.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -106,6 +107,10 @@ pub enum Act {
     ResetForm,
     FlattenForm,
     Theme(ThemePreference),
+    /// How pages are coloured on screen (display only).
+    PageColours(PageLook),
+    /// Page colour modes recolour pictures too.
+    TogglePicturesToo,
     Palette,
     Tool(Tool),
     RotR,
@@ -193,6 +198,8 @@ pub struct Ctx {
     pub field: bool,
     pub fields_shown: bool,
     pub theme: ThemePreference,
+    pub page_look: PageLook,
+    pub pictures_too: bool,
     /// An annotation is selected, and whether it may be changed.
     pub annot: bool,
     pub annot_locked: bool,
@@ -836,6 +843,69 @@ pub static ACTIONS: &[Action] = &[
         enabled: always,
         checked: Some(|c| c.theme == ThemePreference::Dark),
         submenu: "Theme",
+        ..BASE
+    },
+    Action {
+        act: Act::PageColours(PageLook::Fixed(PageColours::Normal)),
+        group: Group::View,
+        label: "Normal",
+        enabled: always,
+        checked: Some(|c| c.page_look == PageLook::Fixed(PageColours::Normal)),
+        hint: "Pages in their own colours.",
+        submenu: "Page colours",
+        ..BASE
+    },
+    Action {
+        act: Act::PageColours(PageLook::Automatic),
+        group: Group::View,
+        label: "Automatic",
+        enabled: always,
+        checked: Some(|c| c.page_look == PageLook::Automatic),
+        hint: "Dark pages while the app's theme is dark, normal pages while it is light.",
+        submenu: "Page colours",
+        ..BASE
+    },
+    Action {
+        act: Act::PageColours(PageLook::Fixed(PageColours::Dark)),
+        group: Group::View,
+        label: "Dark",
+        enabled: always,
+        checked: Some(|c| c.page_look == PageLook::Fixed(PageColours::Dark)),
+        hint: "Dark grey paper and light text, colours kept. Only how pages look on \
+               screen: the file, printing and exports keep their colours.",
+        submenu: "Page colours",
+        ..BASE
+    },
+    Action {
+        act: Act::PageColours(PageLook::Fixed(PageColours::HighContrast)),
+        group: Group::View,
+        label: "High contrast",
+        enabled: always,
+        checked: Some(|c| c.page_look == PageLook::Fixed(PageColours::HighContrast)),
+        hint: "White text on black, in greys. Only how pages look on screen.",
+        submenu: "Page colours",
+        ..BASE
+    },
+    Action {
+        act: Act::PageColours(PageLook::Fixed(PageColours::Sepia)),
+        group: Group::View,
+        label: "Sepia",
+        enabled: always,
+        checked: Some(|c| c.page_look == PageLook::Fixed(PageColours::Sepia)),
+        hint: "Warm paper and dark brown text. Only how pages look on screen.",
+        submenu: "Page colours",
+        ..BASE
+    },
+    Action {
+        act: Act::TogglePicturesToo,
+        group: Group::View,
+        label: "Recolour pictures too",
+        enabled: always,
+        checked: Some(|c| c.pictures_too),
+        hint: "Off leaves photos and other pictures in their own colours. A scanned page \
+               is one picture, so turn this on to recolour scans.",
+        sep: true,
+        submenu: "Page colours",
         ..BASE
     },
     Action {

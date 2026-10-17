@@ -15,7 +15,6 @@ Small or medium additions that build on what MPE already has:
 
 - **Extract images** (S–M): save a document's embedded images as files.
 - **N-up and booklet layouts** (M): several pages on one sheet, or pages ordered for folding.
-- **Page colour modes** (S–M): dark pages, inverted or high contrast, to match the app's dark mode.
 - **Shell completions** for `mpe` (S): needs the `clap_complete` crate.
 
 ## Pages and layout
@@ -116,7 +115,6 @@ Small or medium additions that build on what MPE already has:
 
 ## Viewing
 
-- Page colour modes: dark pages, invert, high contrast (S–M)
 - Split view, several windows, a magnifier, a snapshot tool (M each)
 - Full-screen presentation mode (S–M)
 - Reflow view (L); read aloud (L)

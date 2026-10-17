@@ -10,6 +10,7 @@ use crate::settings::{Layout, Settings};
 use crate::signatures::{self as sigs, Check, SigState, TrustAsk, TrustedOut, TrustedWindow};
 use crate::tab::{Side, Stamp, Tab};
 use crate::theme;
+use crate::worker::Colours;
 use eframe::egui::{self, AtomExt as _, Key};
 use egui_phosphor::regular as icon;
 use mpe_core::render::{image_names, ImageFormat};
@@ -380,8 +381,10 @@ impl App {
         page: Option<usize>,
         dirty: bool,
     ) -> bool {
-        let tab =
-            crate::guard(|| Tab::new(ctx, self.next_id, pdf, path).map_err(anyhow::Error::msg));
+        let colours = self.colours(ctx);
+        let tab = crate::guard(|| {
+            Tab::new(ctx, self.next_id, pdf, path, colours).map_err(anyhow::Error::msg)
+        });
         match tab {
             Ok(mut t) => {
                 self.next_id += 1;
@@ -1092,6 +1095,15 @@ impl App {
             Act::Theme(p) => {
                 ctx.set_theme(p);
                 self.settings.theme = p;
+                self.settings.save();
+            }
+            // Open tabs pick the change up at the start of the next frame.
+            Act::PageColours(look) => {
+                self.settings.page_look = look;
+                self.settings.save();
+            }
+            Act::TogglePicturesToo => {
+                self.settings.pictures_too = !self.settings.pictures_too;
                 self.settings.save();
             }
             Act::ToggleSide => self.show_side = !self.show_side,
@@ -1953,6 +1965,17 @@ impl App {
         }
     }
 
+    /// The colours pages are drawn in on screen now.
+    fn colours(&self, ctx: &egui::Context) -> Colours {
+        Colours {
+            mode: self
+                .settings
+                .page_look
+                .mode(ctx.theme() == egui::Theme::Dark),
+            pictures_too: self.settings.pictures_too,
+        }
+    }
+
     /// The state the commands' conditions are checked against.
     fn state(&self, ctx: &egui::Context) -> Ctx {
         let mut c = Ctx {
@@ -1960,6 +1983,8 @@ impl App {
             side: self.show_side,
             inspector: self.show_inspector,
             theme: ctx.options(|o| o.theme_preference),
+            page_look: self.settings.page_look,
+            pictures_too: self.settings.pictures_too,
             layout: self.settings.layout,
             cover: self.settings.cover,
             highlight: self.settings.highlight,
@@ -2358,6 +2383,11 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll_loads(&ctx);
+        // Page colours follow the setting and, when automatic, the app's theme.
+        let colours = self.colours(&ctx);
+        for t in &mut self.tabs {
+            t.set_colours(colours);
+        }
 
         // Files dropped onto the window.
         let dropped: Vec<PathBuf> = ctx.input(|i| {
