@@ -2,8 +2,9 @@
 //! document was opened, each with at most one action and a way to dismiss it.
 
 use crate::actions::Act;
+use crate::theme::Tone;
 use egui_phosphor::regular as icon;
-use mpe_core::{ObjectKind, Pdf};
+use mpe_core::{FieldKind, ObjectKind, Pdf};
 
 /// Pages looked at for scans; enough to tell, and quick when opening a large file.
 const SCAN_PAGES: usize = 20;
@@ -14,6 +15,8 @@ const LARGE_BYTES: u64 = 100_000_000;
 /// What a banner is about, in order of importance.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Kind {
+    /// The document's digital signatures: being checked, or how they checked.
+    Signatures,
     /// The file was encrypted: saving drops the protection unless it is set again.
     Protected,
     /// Areas are marked for redaction but nothing under them is removed yet.
@@ -34,11 +37,28 @@ pub enum Kind {
 pub struct Banner {
     pub kind: Kind,
     pub text: String,
+    /// Colours the banner by how good or bad its news is (signatures only).
+    pub tone: Tone,
 }
 
 impl Banner {
+    /// A banner in the usual colours.
+    fn plain(kind: Kind, text: impl Into<String>) -> Self {
+        Self {
+            kind,
+            text: text.into(),
+            tone: Tone::Neutral,
+        }
+    }
+
     pub fn icon(&self) -> &'static str {
         match self.kind {
+            Kind::Signatures => match self.tone {
+                Tone::Good => icon::SEAL_CHECK,
+                Tone::Caution => icon::SEAL_QUESTION,
+                Tone::Bad => icon::SEAL_WARNING,
+                Tone::Neutral => icon::SEAL,
+            },
             Kind::Protected => icon::LOCK_KEY,
             Kind::Redactions => icon::EYE_SLASH,
             Kind::Signing => icon::SIGNATURE,
@@ -52,6 +72,7 @@ impl Banner {
     /// The button the banner offers: its label and command.
     pub fn action(&self) -> Option<(&'static str, Act)> {
         match self.kind {
+            Kind::Signatures => Some(("Signatures", Act::Signatures)),
             Kind::Protected => Some(("Password security", Act::Security)),
             Kind::Redactions => Some(("Apply redactions…", Act::ApplyRedactions)),
             Kind::Signing => Some(("Finish signing…", Act::FinishSigning)),
@@ -65,9 +86,9 @@ impl Banner {
 /// The banner for `marks` areas marked for redaction and not yet applied. Unlike the
 /// others it follows the document as it changes (see `Tab::refresh_marks_banner`).
 pub fn redactions(marks: usize) -> Banner {
-    Banner {
-        kind: Kind::Redactions,
-        text: format!(
+    Banner::plain(
+        Kind::Redactions,
+        format!(
             "{} marked for redaction (outlined in red) but not yet applied: nothing under them \
              has been removed.",
             if marks == 1 {
@@ -76,15 +97,15 @@ pub fn redactions(marks: usize) -> Banner {
                 format!("{marks} areas are")
             }
         ),
-    }
+    )
 }
 
 /// The banner for `items` signatures, marks and other fill-and-sign items that can still
 /// be moved; it follows the document as the redaction banner does.
 pub fn signing(items: usize) -> Banner {
-    Banner {
-        kind: Kind::Signing,
-        text: format!(
+    Banner::plain(
+        Kind::Signing,
+        format!(
             "{} can still be moved or removed. Finish signing to draw {} into the pages for \
              good.",
             if items == 1 {
@@ -94,6 +115,15 @@ pub fn signing(items: usize) -> Banner {
             },
             if items == 1 { "it" } else { "them" }
         ),
+    )
+}
+
+/// The banner for a signed document's digital signatures, coloured by `tone`.
+pub fn signatures(tone: Tone, text: String) -> Banner {
+    Banner {
+        kind: Kind::Signatures,
+        text,
+        tone,
     }
 }
 
@@ -102,22 +132,19 @@ pub fn signing(items: usize) -> Banner {
 pub fn detect(pdf: &Pdf, bytes: Option<u64>) -> Vec<Banner> {
     let mut v = Vec::new();
     if pdf.doc.was_encrypted() {
-        v.push(Banner {
-            kind: Kind::Protected,
-            text: "This document was password-protected. Saving removes the protection unless \
-                   you set it again."
-                .into(),
-        });
+        v.push(Banner::plain(
+            Kind::Protected,
+            "This document was password-protected. Saving removes the protection unless you \
+             set it again.",
+        ));
     }
     let xfa = pdf.xfa_only();
     if xfa {
-        v.push(Banner {
-            kind: Kind::Xfa,
-            text:
-                "This form was made for Adobe Reader (an XFA form). Only Adobe software can show \
-                   or fill it in; what you see is the placeholder page the file contains."
-                    .into(),
-        });
+        v.push(Banner::plain(
+            Kind::Xfa,
+            "This form was made for Adobe Reader (an XFA form). Only Adobe software can show \
+             or fill it in; what you see is the placeholder page the file contains.",
+        ));
     }
     let scans = scanned_pages(pdf);
     if scans > 0 {
@@ -126,16 +153,16 @@ pub fn detect(pdf: &Pdf, bytes: Option<u64>) -> Vec<Banner> {
         } else {
             "Some of its pages are"
         };
-        v.push(Banner {
-            kind: Kind::Scanned,
-            text: format!("{what} scans without text, so they cannot be searched or copied."),
-        });
+        v.push(Banner::plain(
+            Kind::Scanned,
+            format!("{what} scans without text, so they cannot be searched or copied."),
+        ));
     }
     if !xfa && has_form_fields(pdf) {
-        v.push(Banner {
-            kind: Kind::Forms,
-            text: "This document has a form. Click a field to fill it in, or press Tab.".into(),
-        });
+        v.push(Banner::plain(
+            Kind::Forms,
+            "This document has a form. Click a field to fill it in, or press Tab.",
+        ));
     }
     let pages = pdf.page_count();
     let big = bytes.is_some_and(|b| b > LARGE_BYTES);
@@ -143,12 +170,10 @@ pub fn detect(pdf: &Pdf, bytes: Option<u64>) -> Vec<Banner> {
         let size = bytes.map_or(String::new(), |b| {
             format!(", {:.0} MB", b as f64 / 1_000_000.0)
         });
-        v.push(Banner {
-            kind: Kind::Large,
-            text: format!(
-                "Large document ({pages} pages{size}): some operations may take a while."
-            ),
-        });
+        v.push(Banner::plain(
+            Kind::Large,
+            format!("Large document ({pages} pages{size}): some operations may take a while."),
+        ));
     }
     v
 }
@@ -171,22 +196,12 @@ fn scanned_pages(pdf: &Pdf) -> usize {
         .count()
 }
 
-/// Whether the document's form (the catalogue's `/AcroForm`) lists any fields.
+/// Whether the document's form has fields to fill in. Signature fields don't count: the
+/// signatures banner and the Sign tool cover them.
 fn has_form_fields(pdf: &Pdf) -> bool {
-    let doc = &pdf.doc;
-    let Ok(form) = doc.catalog().and_then(|c| c.get(b"AcroForm")) else {
-        return false;
-    };
-    let Ok((_, form)) = doc.dereference(form) else {
-        return false;
-    };
-    let Ok(fields) = form.as_dict().and_then(|d| d.get(b"Fields")) else {
-        return false;
-    };
-    doc.dereference(fields)
-        .ok()
-        .and_then(|(_, f)| f.as_array().ok())
-        .is_some_and(|a| !a.is_empty())
+    pdf.form_fields()
+        .iter()
+        .any(|f| f.kind != FieldKind::Signature)
 }
 
 #[cfg(test)]
@@ -257,6 +272,15 @@ mod tests {
         let catalog = p.doc.catalog_mut().unwrap();
         catalog.set("AcroForm", Object::Reference(form));
         assert_eq!(kinds(&p, None), [Kind::Forms]);
+        // Nor is a form of signature fields alone: there is nothing to fill in.
+        let mut s = blank(1);
+        let name = Object::string_literal("sig");
+        let field = s.doc.add_object(dictionary! { "FT" => "Sig", "T" => name });
+        let fields = vec![Object::Reference(field)];
+        let form = s.doc.add_object(dictionary! { "Fields" => fields });
+        let catalog = s.doc.catalog_mut().unwrap();
+        catalog.set("AcroForm", Object::Reference(form));
+        assert!(kinds(&s, None).is_empty());
         // An empty form is not.
         let mut q = blank(1);
         let empty: Vec<Object> = Vec::new();

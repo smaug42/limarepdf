@@ -54,8 +54,18 @@
   name, SHA-1 or 1024-bit links and unknown critical extensions aren't trusted. Embedded and document timestamps'
   authorities are judged the same way. `--require-trusted` makes `mpe verify` fail unless every signer is
   trusted, and `--trust-file` uses another list. Trust settings affect MPE only.
+- Digital signatures in the app: a signed document is checked when it opens, and a banner above the pages gives
+  the result, coloured green, amber, grey or red. The Signatures tab of the side panel (View > Signatures) lists
+  each signature with its result, the changes made after it and any warnings, then the empty signature fields.
+  Details (also by clicking a signed field) shows the signer, certificate, times, changes and certificates, with
+  Trust this signer…, Trust an authority…, View signed version (opens in a new tab) and Go to field. Edit >
+  Trusted certificates… lists, removes and adds trusted certificates (also from a `.cer`, `.pem` or `.p7c` file).
+  After saving, the saved file is checked again.
 
 ### Changed
+
+- The form notice ("This document has a form") no longer shows for documents whose only fields are signature
+  fields.
 
 - Link addresses, bookmark names, comments and their authors, tab and window titles and print job titles are
   cleaned before they are shown: direction-changing (bidi), invisible and control characters are removed and very

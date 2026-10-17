@@ -12,6 +12,7 @@ mod markup;
 mod recent;
 mod selection;
 mod settings;
+mod signatures;
 mod signing;
 mod tab;
 mod theme;

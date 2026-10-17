@@ -5,6 +5,7 @@ use crate::inspector::{Forms, Sec};
 use crate::markup::{self, Mark};
 use crate::selection::Selection;
 use crate::settings::Layout;
+use crate::signatures::{self, Check, PanelAct, SigState};
 use crate::signing::SignPick;
 use crate::theme;
 use crate::worker::{Key, Worker};
@@ -31,6 +32,7 @@ pub enum Side {
     Search,
     Bookmarks,
     Comments,
+    Signatures,
 }
 
 /// One undo or redo step: the state to go back to.
@@ -140,6 +142,11 @@ pub struct Tab {
     /// when it has one, else the app's default.
     pub layout: Layout,
     pub cover: bool,
+    /// The digital signature check of a file with signature fields; `None` for other
+    /// documents.
+    pub sigs: Option<SigState>,
+    /// What to call a document that has no file, such as a signed version.
+    pub label: Option<String>,
 }
 
 impl Tab {
@@ -210,6 +217,8 @@ impl Tab {
             flipped: 0.0,
             layout: Layout::default(),
             cover: true,
+            sigs: None,
+            label: None,
         })
     }
 
@@ -219,6 +228,7 @@ impl Tab {
             .as_ref()
             .and_then(|p| p.file_stem())
             .map(|s| s.to_string_lossy().into_owned())
+            .or_else(|| self.label.clone())
             .unwrap_or_else(|| fallback.into())
     }
 
@@ -228,6 +238,7 @@ impl Tab {
             .as_ref()
             .and_then(|p| p.file_name())
             .map(|n| mpe_core::display_line(&n.to_string_lossy(), 120))
+            .or_else(|| self.label.clone())
             .unwrap_or_else(|| "Untitled".into());
         if self.dirty {
             format!("{name} *")
@@ -612,6 +623,19 @@ impl Tab {
                         self.ed.sign.pick = SignPick::Saved(mpe_core::SignRole::Signature, 0);
                     }
                     self.ed.place_sign(p, StampPlace::Fill(rect));
+                }
+                Action::SignatureDetails(name) => {
+                    let found = self.sig_report().and_then(|c| {
+                        c.report
+                            .signatures
+                            .iter()
+                            .position(|s| s.fields.contains(&name))
+                    });
+                    // Still being checked, or not found: the Signatures tab says why.
+                    self.requested.push(match found {
+                        Some(i) => Act::SignatureDetails(i),
+                        None => Act::Signatures,
+                    });
                 }
                 Action::AddTextBox(p, rect, text) => {
                     let (style, author) = (self.ed.box_style, self.ed.author.clone());
@@ -1127,6 +1151,54 @@ impl Tab {
         }
     }
 
+    /// The Signatures side tab.
+    pub fn show_signatures(&mut self, ui: &mut egui::Ui) {
+        match signatures::panel(ui, self.sigs.as_ref(), self.dirty) {
+            Some(PanelAct::GoTo(page, top)) => self.go_to_at(page, top),
+            Some(PanelAct::Details(i)) => self.requested.push(Act::SignatureDetails(i)),
+            Some(PanelAct::SignedVersion(i)) => self.requested.push(Act::SignedVersion(i)),
+            Some(PanelAct::Trusted) => self.requested.push(Act::TrustedCertificates),
+            None => {}
+        }
+    }
+
+    /// Shows page `page` with the place `top` points down it at the top of the view.
+    pub fn go_to_at(&mut self, page: usize, top: f32) {
+        self.go_to(page);
+        self.goto_y = Some(top);
+    }
+
+    /// Takes the result of a signature check (dropped when a newer check has started)
+    /// and shows its banner first.
+    pub fn sig_checked(&mut self, generation: u64, check: Check) {
+        let Some(s) = self.sigs.as_mut().filter(|s| s.generation == generation) else {
+            return;
+        };
+        s.check = check;
+        self.sig_banner();
+    }
+
+    /// Shows the signatures banner for the current check, first; takes it away when
+    /// there is nothing to say.
+    pub fn sig_banner(&mut self) {
+        self.banners.retain(|b| b.kind != banners::Kind::Signatures);
+        if let Some(b) = self
+            .sigs
+            .as_ref()
+            .and_then(|s| signatures::banner(&s.check))
+        {
+            self.banners.insert(0, b);
+        }
+    }
+
+    /// The report of the last finished signature check, if any.
+    pub fn sig_report(&self) -> Option<&signatures::Checked> {
+        match &self.sigs.as_ref()?.check {
+            Check::Done(c) => Some(c),
+            _ => None,
+        }
+    }
+
     pub fn run_search(&mut self) {
         self.hit_idx = 0;
         self.matches.clear();
@@ -1321,9 +1393,13 @@ impl Tab {
     fn banners_ui(&mut self, ui: &mut egui::Ui) {
         self.refresh_marks_banner();
         let mut close = None;
-        let fill = ui.visuals().selection.bg_fill;
+        let dark = ui.visuals().dark_mode;
         for (i, b) in self.banners.iter().take(2).enumerate() {
             let top = if i == 0 { 12 } else { 6 };
+            let tone = theme::tone(dark, b.tone);
+            let fill = tone.map_or(ui.visuals().selection.bg_fill, |c| {
+                c.gamma_multiply(if dark { 0.22 } else { 0.14 })
+            });
             egui::Frame::new()
                 .fill(fill)
                 .corner_radius(theme::RADIUS)
@@ -1336,7 +1412,11 @@ impl Tab {
                 })
                 .show(ui, |ui| {
                     let text = |ui: &mut egui::Ui| {
-                        ui.label(theme::icon(b.icon()).size(16.0));
+                        let glyph = theme::icon(b.icon()).size(16.0);
+                        ui.label(match tone {
+                            Some(c) => glyph.color(c),
+                            None => glyph,
+                        });
                         ui.add(egui::Label::new(&b.text).wrap());
                     };
                     let buttons = |ui: &mut egui::Ui| {
@@ -1377,7 +1457,11 @@ impl Tab {
         self.marks_hidden = self.marks_hidden.min(n);
         self.banners.retain(|b| b.kind != banners::Kind::Redactions);
         if n > self.marks_hidden {
-            self.banners.insert(0, banners::redactions(n));
+            // After the signatures banner, which stays first.
+            let at = self
+                .banners
+                .partition_point(|b| b.kind < banners::Kind::Redactions);
+            self.banners.insert(at, banners::redactions(n));
         }
         // Fill-and-sign items still movable, likewise; after the redaction banner.
         let n = self.pdf.sign_items();

@@ -1,9 +1,9 @@
 # Digital signatures
 
-Digital signatures are being built in stages. What works now, from the command line: **checking** the signatures
-in a PDF (`mpe verify`), including what changed after each signature and whether the signer allowed it, saving the
-version a signature signed, and **trusting** signers and certificate authorities (`mpe trust`). Still to come:
-checking in the app, digital IDs, signing and certifying, and saving signed documents without breaking their
+Digital signatures are being built in stages. What works now, in the app and from the command line: **checking**
+the signatures in a PDF (`mpe verify`), including what changed after each signature and whether the signer allowed
+it, opening or saving the version a signature signed, and **trusting** signers and certificate authorities (`mpe
+trust`). Still to come: digital IDs, signing and certifying, and saving signed documents without breaking their
 signatures. This page grows with each stage.
 
 ## What a digital signature is and isn't
@@ -26,6 +26,42 @@ in person or on a website you trust. The certificate can come from the signed PD
 signer or your organisation sends you (`.cer`, `.crt`, `.pem`, or `.p7c` as Acrobat exports it).
 
 ## Checking a signed PDF
+
+### In the app
+
+Open a signed PDF and MPE checks its signatures in the background; a banner above the pages says "Checking the
+digital signatures…" meanwhile, and then gives the result, coloured by the worst signature:
+
+| Colour | Meaning |
+| --- | --- |
+| Green | Every signature is valid, nothing changed after any of them that the signer didn't allow, you trust every signer, and there are no warnings. |
+| Amber | Nothing is broken and nothing changed that the signers didn't allow, but MPE can't confirm who signed (you haven't trusted them), or there are warnings. |
+| Grey | MPE can't check a signature (see [Can't check](#what-each-result-means)). |
+| Red | A signature is broken, the document was changed after signing in ways the signer didn't allow, or a signer you trust has a certificate that fails a check. |
+
+With one signature the banner gives its result in a sentence, such as "Not changed since Jane Doe signed it. MPE
+can't confirm who Jane Doe is."; with several it sums them up. A certified document's banner starts with who
+certified it and what the certification allows. The banner's **Signatures** button opens the **Signatures** tab of
+the side panel (also View > Signatures).
+
+The Signatures tab lists the signatures in the order they were made. For each: what it is and who made it (click to
+go to it on the page), its result in a sentence, the changes made after it (those the signer didn't allow in red;
+the first five, all of them in Details), any warnings, and the buttons **Details…** and **Signed version**.
+Signature fields nobody has signed yet are listed below the signatures; click one to go to it, and hover to see the
+fields signing it would lock. Clicking a signed signature field on the page, with the read tool, opens its details.
+
+**Details** shows everything `mpe verify` does (below): the result, trust, who signed and who issued their
+certificate, the signing time and where it comes from, any timestamp, the reason, location and contact the signer
+gave (marked as their own words), the algorithm, locked fields, the certificate's serial number, validity and
+SHA-256 fingerprint, how much of the file the signature covers, every change after signing, warnings, and the
+certificates the signature carries. Its buttons trust the signer or an authority (see
+[Trusting signers](#trusting-signers)), open the signed version, and go to the field.
+
+The app checks the **file**: after you change the document, the Signatures tab says that your unsaved changes
+aren't checked. Saving rewrites the whole file, which breaks its signatures (MPE asks first, and Save as keeps the
+original); MPE then checks the saved file, so the tab shows what other readers will see in the saved copy.
+
+### From the command line
 
 ```
 mpe verify contract.pdf
@@ -57,6 +93,9 @@ anything added later. Open it to see what the signer saw, or compare it with the
 "View signed version". MPE refuses it for a broken signature, whose "signed version" isn't genuine, and warns when
 the signature couldn't be checked.
 
+In the app, **Signed version** in the Signatures tab (or **View signed version** in Details) opens it in a new tab
+named after the document, "(signed version N)", where it is checked like any signed file. Save as to keep it.
+
 The signer's name, reason, location and contact come from the file and are claims by whoever made it; MPE removes
 characters that could disguise them (direction changes, invisible characters) before showing them.
 
@@ -84,6 +123,17 @@ signer's own Acrobat knows nothing about your list.
 
 ### Adding and removing trust
 
+**In the app:** in a valid signature's Details, **Trust this signer…** shows the signer's certificate with its
+SHA-256 fingerprint, asks for the name to keep it under in your list, and trusts it when you choose Trust. **Trust
+an authority…** does the same for an authority from the certificates the signature carries (choose one when there
+are several). **Edit > Trusted certificates…** (also at the bottom of the Signatures tab) shows your list, removes
+an entry (Remove…, then Stop trusting), and adds a certificate from a file (Add certificate file…; as a signer
+unless you choose certificate authority, which only an authority's certificate allows). Every open document is
+judged again as soon as the list changes. A change made with `mpe trust` while the app is open counts for documents
+opened after it.
+
+**From the command line:**
+
 ```
 mpe verify contract.pdf                                   # read the SHA-256 line of signature 1
 mpe trust add contract.pdf --signature 1                  # trust that signer
@@ -107,7 +157,7 @@ to add it as one. `mpe trust add` on a PDF only takes the signer of a valid sign
 
 The list is `trust.txt` in MPE's settings folder (`$XDG_CONFIG_HOME/mpe/` or `~/.config/mpe/` on Linux,
 `~/Library/Application Support/mpe/` on macOS, `%APPDATA%\mpe\` on Windows), a text file with each certificate in
-PEM form, its label, the date it was added and its fingerprint. The app will use the same list. `--trust-file
+PEM form, its label, the date it was added and its fingerprint. The app uses the same list. `--trust-file
 FILE` on `mpe verify` and `mpe trust` uses another list, for example one shared by a team for a script that checks
 incoming documents with `mpe verify --require-trusted --trust-file team.txt`.
 
@@ -350,6 +400,10 @@ sign yet). Where MPE is stricter than Acrobat (see the limitations) is to be con
 - Adobe's Reader-enabling signatures (usage rights, which let the free Reader save forms) aren't listed, as in
   Acrobat.
 - Signature fields must be in the document's form; a signature drawn on a page without a field isn't one.
+- Saving in MPE rewrites the whole file, which breaks every signature in the saved copy (MPE asks first). Saving
+  signed documents without breaking them is planned.
+- The app checks the file as opened or last saved, not unsaved changes; after a trust change made with `mpe
+  trust`, reopen documents that were already open.
 - A file the PDF reader can't open at all can't be checked.
 
 ## Security notes
@@ -393,13 +447,15 @@ certificates a document carries never become trusted by being there.
 - **"the later additions are malformed"**: the file was saved by a program that wrote it incorrectly, or tampered
   with. The signed version is still available.
 - **"Can't check"**: try another reader, or ask the signer which algorithm they used; see the limitations above.
-- **"not confirmed"** for someone you know: compare the SHA-256 fingerprint `mpe verify` shows with them, then
-  trust them (`mpe trust add FILE --signature N`), or trust their organisation's authority.
+- **"not confirmed"** (amber in the app) for someone you know: compare the SHA-256 fingerprint in Details or `mpe
+  verify` with them, then trust them (Trust this signer…, or `mpe trust add FILE --signature N`), or trust their
+  organisation's authority.
 - **"MPE doesn't have the certificate of …"**: the signature doesn't carry its whole chain. Ask the signer's
   organisation for its authority's certificate and add it with `--authority`.
 - **"has the same name as … which you trust, but is a different certificate"**: someone used the name of a
   person or authority you trust. Ask them whether they have a new digital ID before trusting it.
-- **"… can be changed by other users of this computer, so MPE doesn't use it"**: the trust list's permissions
-  were changed. It is plain text: look through it for entries you didn't add, remove them, then `chmod 600` it.
+- **"… can be changed by other users of this computer, so MPE doesn't use it"** (shown by `mpe verify`, and at
+  the top of the app's Signatures tab, Details and Trusted certificates): the trust list's permissions were
+  changed; until fixed, nobody is trusted and the app won't change the list. It is plain text: look through it for entries you didn't add, remove them, then `chmod 600` it.
 - **A trusted signer shows "NOT TRUSTED"** after their certificate expired: only signatures made while it was valid
   are trusted. Signatures they make with a new ID need that ID trusted too.

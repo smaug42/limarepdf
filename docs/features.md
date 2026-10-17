@@ -3,7 +3,7 @@
 **Status: 0.6, for testing.** Most testing has been on Linux. Annotations can be viewed, moved, deleted and flattened;
 text can be highlighted and marked; notes, text boxes, shapes, lines, freehand drawings and replies added. Content
 can be redacted for good, and documents filled in and signed with a picture of your signature. Digital signatures are
-being built: checking them from the command line works.
+being built: checking them, in the app and from the command line, works.
 
 ## What MPE does
 
@@ -78,7 +78,7 @@ available.
 | Installers and packages | Done | `.deb` and `.rpm` packages with apt and dnf repositories, a macOS `.dmg`, a Windows MSI, and archives; GPG-signed. [Install](install.md); more package managers planned, see below |
 | Redaction | Done | Mark areas, selected text or search results (standard redaction marks), check them, then apply: text, drawings, comments and links under them are removed for good, pictures (scans included) blacked out there, then checked. In the app and with `mpe redact`. [Details](redaction.md) |
 | Removing hidden information | Done | Metadata (including XMP), JavaScript and automatic actions, attachments, hidden layers and their content, thumbnails and private data; if chosen, comments, form values, bookmarks and what lies outside the crop box. Document > Remove hidden information… and `mpe sanitise`. [Details](redaction.md#removing-hidden-information) |
-| Digital signatures | Partial | Checking from the command line (`mpe verify`): unchanged or not, signer's certificate, signing time and timestamps, certification and locked fields, warnings; RSA and ECDSA P-256/P-384; refuses the known wrapping and copying attacks; lists the changes made after each signature and judges them by Acrobat's rules (stricter when unsure), catching the shadow and incremental-saving attacks; saves the version a signature signed; trusting signers and certificate authorities (`mpe trust`), with chains checked by RFC 5280's rules at the signing time, in MPE only. Not yet: the app, signing. The rest is planned: see below. [Details](signatures.md) |
+| Digital signatures | Partial | Checking in the app (a coloured banner, the Signatures tab, Details, View signed version, trusting signers and authorities, Trusted certificates) and from the command line (`mpe verify`): unchanged or not, signer's certificate, signing time and timestamps, certification and locked fields, warnings; RSA and ECDSA P-256/P-384; refuses the known wrapping and copying attacks; lists the changes made after each signature and judges them by Acrobat's rules (stricter when unsure), catching the shadow and incremental-saving attacks; saves the version a signature signed; trusting signers and certificate authorities (`mpe trust`), with chains checked by RFC 5280's rules at the signing time, in MPE only. Not yet: digital IDs, signing. The rest is planned: see below. [Details](signatures.md) |
 | Certificate encryption | No | |
 | PDF/A, optimised saving | No | Saved files are pruned and compressed |
 | Comparing documents | No | |
@@ -136,10 +136,10 @@ Being built, following Acrobat's rules so signed documents go back and forth bet
 editors:
 
 - **Checking** signed PDFs: who signed, when, whether the signed part is unchanged, which changes were made
-  afterwards, judged by the same rules Acrobat uses, and the version that was signed (done, from the command
-  line). Checking in the app.
+  afterwards, judged by the same rules Acrobat uses, and the version that was signed (done, in the app and from
+  the command line).
 - **Trust** individual signers or certificate authorities, in MPE only; until then a signature shows as unchanged
-  but from an unknown signer, as it does in Acrobat (done, from the command line; in the app with checking).
+  but from an unknown signer, as it does in Acrobat (done, in the app and from the command line).
 - **Digital IDs:** create your own (RSA-3072, five years, as Acrobat does) or import a `.p12`/`.pfx`; export one
   for Acrobat, or export your certificate for others to trust.
 - **Signing** a signature field or a box, visible with your fill-and-sign signature, name and date; **certifying**

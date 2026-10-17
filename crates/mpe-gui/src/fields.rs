@@ -308,7 +308,17 @@ impl FormUi {
             return false;
         };
         let f = &self.fields()[fi];
+        // An empty signature field: a click signs in it with the Sign tool. Any other
+        // signature field holds a digital signature: a click shows its details.
+        let sign_box = (f.kind == FieldKind::Signature)
+            .then(|| f.widgets[wi].bbox)
+            .filter(|b| pdf.empty_signature_boxes(page).contains(b));
+        let signed = f.kind == FieldKind::Signature && sign_box.is_none();
         let tip = match why_not(f) {
+            _ if signed => format!(
+                "{}\nA digital signature: click to see who signed and whether it is valid",
+                label(f)
+            ),
             Some(why) => format!("{}\n{why}", label(f)),
             None => label(f),
         };
@@ -319,17 +329,15 @@ impl FormUi {
             };
             ui.ctx().set_cursor_icon(icon);
         }
-        // An empty signature field: a click signs in it with the Sign tool.
-        let sign_box = (f.kind == FieldKind::Signature)
-            .then(|| f.widgets[wi].bbox)
-            .filter(|b| pdf.empty_signature_boxes(page).contains(b));
-        if sign_box.is_some() {
+        if sign_box.is_some() || signed {
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
         }
         resp.clone().on_hover_text_at_pointer(tip);
         if resp.clicked() {
             if let Some(b) = sign_box {
                 acts.push(Action::SignHere(page, b));
+            } else if signed {
+                acts.push(Action::SignatureDetails(f.name.clone()));
             } else if why_not(f).is_none() {
                 self.activate(fi, wi, acts);
             }

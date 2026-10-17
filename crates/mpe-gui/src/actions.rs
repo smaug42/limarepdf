@@ -84,6 +84,16 @@ pub enum Act {
     /// Show the side panel's Bookmarks tab.
     Bookmarks,
     Comments,
+    /// Show the side panel's Signatures tab.
+    Signatures,
+    /// The details of the active document's nth digital signature. Opened from the
+    /// Signatures tab or a signed field, so not in [`ACTIONS`].
+    SignatureDetails(usize),
+    /// Open the version of the document the nth signature signed, in a new tab. Not in
+    /// [`ACTIONS`].
+    SignedVersion(usize),
+    /// The signers and certificate authorities trusted in MPE.
+    TrustedCertificates,
     FlattenAnnots,
     ToggleInspector,
     ToggleHidden,
@@ -483,6 +493,16 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::TrustedCertificates,
+        group: Group::Edit,
+        label: "Trusted certificates…",
+        icon: icon::CERTIFICATE,
+        enabled: always,
+        hint: "The signers and certificate authorities you trust when MPE checks digital \
+               signatures.",
+        ..BASE
+    },
+    Action {
         act: Act::EditObjectText,
         group: Group::Edit,
         label: "Edit text",
@@ -725,6 +745,15 @@ pub static ACTIONS: &[Action] = &[
         label: "Comments",
         icon: icon::CHAT_TEXT,
         hint: "List the document's comments, notes and markup in the side panel.",
+        ..BASE
+    },
+    Action {
+        act: Act::Signatures,
+        group: Group::View,
+        label: "Signatures",
+        icon: icon::SEAL_CHECK,
+        hint: "List the document's digital signatures and whether they are valid, in the \
+               side panel.",
         ..BASE
     },
     Action {

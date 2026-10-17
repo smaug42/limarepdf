@@ -206,6 +206,30 @@ pub fn accent(dark: bool) -> Color32 {
     palette(dark).accent
 }
 
+/// How good or bad a status is, for its colour: digital signature results and their
+/// banner.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Tone {
+    #[default]
+    Neutral,
+    Good,
+    Caution,
+    Bad,
+}
+
+/// The colour for a tone's icons and text; `None` for neutral (the usual text colour).
+pub fn tone(dark: bool, t: Tone) -> Option<Color32> {
+    Some(match (t, dark) {
+        (Tone::Neutral, _) => return None,
+        (Tone::Good, false) => Color32::from_rgb(21, 128, 61),
+        (Tone::Good, true) => Color32::from_rgb(74, 222, 128),
+        (Tone::Caution, false) => Color32::from_rgb(180, 83, 9),
+        (Tone::Caution, true) => Color32::from_rgb(251, 191, 36),
+        (Tone::Bad, false) => Color32::from_rgb(185, 28, 28),
+        (Tone::Bad, true) => Color32::from_rgb(248, 113, 113),
+    })
+}
+
 /// A button for the main thing to do on a screen: white text on the light theme's
 /// accent in both themes (the dark theme's lighter accent is too pale for white text).
 pub fn primary_button(text: &str) -> egui::Button<'static> {

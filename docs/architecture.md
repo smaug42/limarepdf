@@ -52,7 +52,10 @@ settings folder, whose location `mpe_core::settings_dir` gives both the app and 
 search from a signer's certificate to a trusted authority over the certificates the signature and the document's
 `/DSS` carry, with RFC 5280's checks at the signing time, including certificate policy processing; each link's
 signature is checked over the certificate as written (`cms_check::check_cert_signature`). Trust is applied after
-checking (`SignatureReport::apply_trust`), so a changed list can be applied again without checking again. See
+checking (`SignatureReport::apply_trust`), so a changed list can be applied again without checking again. In the
+app, `crates/mpe-gui/src/signatures.rs` runs the check on a background thread when a file with signature fields
+opens (and after a save), keeping the file's bytes for View signed version, and draws the banner, the Signatures
+tab, the Details window and the trust windows; a trust change re-applies the list to every open document. See
 [Digital signatures](signatures.md).
 
 In the desktop app, every command is defined once in `crates/mpe-gui/src/actions.rs`; the menu, the top bar, the

@@ -165,6 +165,9 @@ pub enum Action {
     AddSign(usize, StampPlace),
     /// Sign in an empty signature field: its page and box. Switches to the Sign tool.
     SignHere(usize, [f32; 4]),
+    /// A signed signature field was clicked: show its digital signature's details (the
+    /// field's full name).
+    SignatureDetails(String),
     /// Answer an annotation.
     Reply(usize, (u32, u16), String),
 }
