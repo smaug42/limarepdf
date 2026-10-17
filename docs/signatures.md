@@ -1,11 +1,11 @@
 # Digital signatures
 
-Digital signatures are being built in stages. What works now, in the app and from the command line: **checking**
-the signatures in a PDF (`mpe verify`), including what changed after each signature and whether the signer allowed
-it, opening or saving the version a signature signed, and **trusting** signers and certificate authorities (`mpe
-trust`), making, importing and exporting your **digital IDs** (`mpe id`), **signing and certifying** with them
-(`mpe sign`), and **saving** signed documents without breaking their signatures. Still to come: a final review and
-round-trip tests with Adobe Acrobat. This page grows with each stage.
+MPE does all of this in the app and from the command line: **checking** the signatures in a PDF (`mpe verify`),
+including what changed after each signature and whether the signer allowed it, opening or saving the version a
+signature signed, and **trusting** signers and certificate authorities (`mpe trust`), making, importing and
+exporting your **digital IDs** (`mpe id`), **signing and certifying** with them (`mpe sign`), and **saving** signed
+documents without breaking their signatures. It follows Adobe Acrobat's rules so signed documents can go back and
+forth between them; round trips with Acrobat itself are still to be tested (see [compatibility](#compatibility)).
 
 ## What a digital signature is and isn't
 
@@ -675,6 +675,9 @@ the limitations) is to be confirmed in those tests.
 - Page commands (turn, delete, insert, reorder) also rebuild the document's page tree, so on a signed document the
   signature reports "pages added, removed or reordered" as well as the change itself. Both are not allowed after
   signing anyway.
+- Each signature's signed version is opened to check it, so MPE opens at most 100 of them, 1 GB together, for one
+  file; signatures beyond that show *can't check*, saying why. This keeps a file crafted with very many versions
+  from using up the computer's memory; real documents come nowhere near it.
 - The app checks the file as opened or last saved, not unsaved changes; after a trust change made with `mpe
   trust`, reopen documents that were already open.
 - A file the PDF reader can't open at all can't be checked.
@@ -728,6 +731,14 @@ same project and review as the stable crates. MPE reads the signature data with 
 on the bytes as written and never re-encodes what was signed. It reads and writes PKCS#12 ID files with its own
 code on the same reader, checked against OpenSSL (see [compatibility](#compatibility)), and writes the signatures
 it makes with its own small writer, so the pre-release `cms` crate isn't used.
+
+**Checking** treats every signed file as possibly hostile. Malformed signature data, certificates, dates and
+cross-reference sections are refused with a reason, and work is bounded: how deeply data may nest,
+how many certificates are tried when building a chain, how many cross-reference sections and objects are read, and
+how many signed versions are opened (see the limitations). Text from the file (names, reasons, field names, and the
+reasons a check failed) is cleaned before it is shown, in the app and on the command line: line breaks, control
+characters (terminal escape codes among them) and invisible characters that reorder text are removed, so a name
+can't pose as a different one or rewrite the terminal. `--json` output keeps the text exact, as JSON escapes it.
 
 **Signing** never hands out a file it hasn't checked: the new revision is read back with MPE's strict reader and
 compared object by object with what was meant, and the signed file is then checked like any other (see

@@ -747,11 +747,6 @@ fn header_at(bytes: &[u8], offset: usize, id: ObjectId) -> bool {
         && matches!(lx.next(), Some((_, Tok::Word(b"obj"), _)))
 }
 
-/// Checks a revision MPE appended to the version ending at `base_end`, with this module's
-/// strict reader: the file must end with exactly one new revision building on that
-/// version, whose cross-reference section lists `written` and nothing else (besides the
-/// head of the free list and a cross-reference stream's own entry), each where its object
-/// starts in the new revision. Returns those positions.
 /// Whether the newest cross-reference section of `bytes` is a hybrid one (a table whose
 /// trailer names a cross-reference stream too, `/XRefStm`). lopdf reads such a section's
 /// stream only while it is the newest, so a revision appended after it would hide the
@@ -762,6 +757,11 @@ pub(crate) fn newest_is_hybrid(bytes: &[u8]) -> bool {
         .is_some_and(|s| s.xref_stm.is_some())
 }
 
+/// Checks a revision MPE appended to the version ending at `base_end`, with this module's
+/// strict reader: the file must end with exactly one new revision building on that
+/// version, whose cross-reference section lists `written` and nothing else (besides the
+/// head of the free list and a cross-reference stream's own entry), each where its object
+/// starts in the new revision. Returns those positions.
 pub(crate) fn check_appended(
     bytes: &[u8],
     base_end: usize,

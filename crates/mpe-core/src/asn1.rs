@@ -302,8 +302,8 @@ fn parse_time(s: &str, generalized: bool) -> Option<DateTime<FixedOffset>> {
     let (mo, d, h, mi) = (two(rest, 0)?, two(rest, 2)?, two(rest, 4)?, two(rest, 6)?);
     let mut rest = rest.get(8..)?;
     let mut sec = 0;
-    if rest.len() >= 2 && digits(&rest[..2]) {
-        sec = two(rest, 0)?;
+    if let Some(s) = two(rest, 0) {
+        sec = s;
         rest = &rest[2..];
     } else if generalized {
         return None;
@@ -436,6 +436,11 @@ mod tests {
             "20261016142305.Z",
         ] {
             assert!(parse_time(bad, bad.len() > 13).is_none(), "{bad}");
+        }
+        // Text after the minutes that isn't ASCII is refused, not a panic.
+        for bad in ["2610161423aé", "202610161423é", "2610161423\u{e9}Z"] {
+            assert!(parse_time(bad, false).is_none(), "{bad}");
+            assert!(parse_time(bad, true).is_none(), "{bad}");
         }
     }
 }

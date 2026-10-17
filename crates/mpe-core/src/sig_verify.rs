@@ -504,11 +504,24 @@ pub(crate) struct Versions<'a> {
     cache: HashMap<usize, Option<Pdf>>,
 }
 
+/// The most earlier versions opened while checking one file, and their combined size, so a
+/// file crafted with very many signed versions can't use up the computer's memory.
+const MAX_VERSIONS: usize = 100;
+const MAX_VERSION_BYTES: usize = 1 << 30;
+
 impl Versions<'_> {
-    /// Opens the version ending at `end`, if not open yet.
+    /// Whether the version ending at `end` is open or may be opened within the limits.
+    fn allowed(&self, end: usize) -> bool {
+        end == self.bytes.len()
+            || self.cache.contains_key(&end)
+            || (self.cache.len() < MAX_VERSIONS
+                && self.cache.keys().sum::<usize>().saturating_add(end) <= MAX_VERSION_BYTES)
+    }
+
+    /// Opens the version ending at `end`, if not open yet and within the limits.
     pub(crate) fn load(&mut self, end: usize) {
         let (bytes, password) = (self.bytes, self.password);
-        if end < bytes.len() {
+        if end < bytes.len() && self.allowed(end) {
             self.cache
                 .entry(end)
                 .or_insert_with(|| Pdf::from_bytes(&bytes[..end], password).ok());
@@ -631,6 +644,13 @@ fn check_into(
     }
 
     // The version this signature signed, and the signature dictionary in it.
+    if !versions.allowed(end) {
+        return cant(format!(
+            "the document has more signed versions than MPE checks (at most {MAX_VERSIONS}, \
+             {} MB together)",
+            MAX_VERSION_BYTES >> 20
+        ));
+    }
     let Some(signed) = versions.get(end) else {
         return cant("MPE can't read the version of the document this signature covers");
     };

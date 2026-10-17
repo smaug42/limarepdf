@@ -70,7 +70,7 @@ Small or medium additions that build on what MPE already has:
 - Calculations and validation (L, without running JavaScript)
 - Lock, unlock and remove fields (S); fill many copies from one CSV or data file (M)
 
-## Signing, beyond the planned digital signatures
+## Signing, beyond digital signatures
 
 - **First after digital signatures:** timestamps from a timestamp server when signing (M; needs network access
   and an HTTP crate; Acrobat has none set up by default), then long-term validation, adding revocation answers

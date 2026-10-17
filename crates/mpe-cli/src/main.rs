@@ -1612,8 +1612,8 @@ fn print_verify(input: &Path, rep: &SignatureReport) {
                 SigStatus::Valid => {
                     format!("valid: not changed since {who} signed it{unconfirmed}")
                 }
-                SigStatus::Broken(why) => format!("BROKEN: {why}"),
-                SigStatus::CantCheck(why) => format!("can't check: {why}"),
+                SigStatus::Broken(why) => format!("BROKEN: {}", display_line(why, 300)),
+                SigStatus::CantCheck(why) => format!("can't check: {}", display_line(why, 300)),
             },
         );
         if let Some(t) = &s.trust {
@@ -1753,7 +1753,7 @@ fn print_verify(input: &Path, rep: &SignatureReport) {
             row("SHA-256:", c.sha256.clone());
         }
         for w in &s.warnings {
-            row("Warning:", w.to_string());
+            row("Warning:", display_line(&w.to_string(), 300));
         }
     }
     for f in &rep.empty_fields {
@@ -1938,8 +1938,9 @@ fn run_trust(cmd: TrustCmd) -> Result<()> {
                 match &s.status {
                     SigStatus::Valid => {}
                     SigStatus::Broken(why) | SigStatus::CantCheck(why) => bail!(
-                        "signature {n} isn't valid ({why}); MPE only trusts the signer of a valid \
-                         signature"
+                        "signature {n} isn't valid ({}); MPE only trusts the signer of a valid \
+                         signature",
+                        display_line(why, 300)
                     ),
                 }
                 if authority {
@@ -3066,7 +3067,10 @@ fn main() -> Result<()> {
                         )
                     })?;
                 if let SigStatus::Broken(why) = &s.status {
-                    bail!("signature {n} is broken ({why}), so it has no genuine signed version");
+                    bail!(
+                        "signature {n} is broken ({}), so it has no genuine signed version",
+                        display_line(why, 300)
+                    );
                 }
                 let len = s.signed_len.with_context(|| {
                     format!("MPE can't tell which version signature {n} signed")
@@ -3082,7 +3086,10 @@ fn main() -> Result<()> {
                     output.display()
                 );
                 if let SigStatus::CantCheck(why) = &s.status {
-                    out!("Note: MPE couldn't check signature {n} ({why}), so this may not be what was signed.");
+                    out!(
+                        "Note: MPE couldn't check signature {n} ({}), so this may not be what was signed.",
+                        display_line(why, 300)
+                    );
                 }
                 return Ok(());
             }

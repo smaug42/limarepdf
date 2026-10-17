@@ -500,6 +500,7 @@ fn report_ui(ui: &mut Ui, c: &Checked, dirty: bool) -> Option<PanelAct> {
                     }
                 }
                 for w in &s.warnings {
+                    let w = clean_long(&w.to_string());
                     ui.add(
                         egui::Label::new(RichText::new(format!("Warning: {w}.")).small()).wrap(),
                     );
@@ -868,6 +869,7 @@ fn details_body(ui: &mut Ui, c: &Checked, s: &DigitalSignature) {
         ui.add_space(6.0);
         ui.label(RichText::new("Warnings").strong());
         for w in &s.warnings {
+            let w = clean_long(&w.to_string());
             ui.add(egui::Label::new(format!("The signature {w}.")).wrap());
         }
     }

@@ -944,6 +944,94 @@ fn hostile_numbers_and_structures() {
 }
 
 #[test]
+fn too_many_signed_versions_are_not_all_opened() {
+    // Signatures that each borrow the real one's value and end at a different `%%EOF`
+    // hidden in a stream, so each needs another version of the file opened.
+    let good = signed();
+    let [_, b, c, _] = last_range(&good);
+    let doc = lopdf::Document::load_mem(&good).unwrap();
+    let root = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+    let catalog = doc.get_dictionary(root).unwrap();
+    let pages = catalog.get(b"Pages").unwrap().as_reference().unwrap();
+    let mut fields: Vec<String> = catalog
+        .get(b"AcroForm")
+        .unwrap()
+        .as_dict()
+        .unwrap()
+        .get(b"Fields")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| format!("{} 0 R", f.as_reference().unwrap().0))
+        .collect();
+    let page = doc.page_iter().next().unwrap();
+    let n = 105u32;
+    let first = doc.max_id + 1;
+    let pad = "%%EOF\n".repeat(n as usize);
+    let mut objects = vec![(
+        first,
+        format!("<< /Length {} >>\nstream\n{pad}\nendstream", pad.len()),
+    )];
+    let placeholder = |i: u32| 9_000_000_000u64 + u64::from(i);
+    for i in 0..n {
+        let (sig, field) = (first + 1 + 2 * i, first + 2 + 2 * i);
+        objects.push((
+            sig,
+            format!(
+                "<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached \
+                 /ByteRange [0 {b} {c} {}] /Contents <00> >>",
+                placeholder(i)
+            ),
+        ));
+        objects.push((
+            field,
+            format!(
+                "<< /Type /Annot /Subtype /Widget /FT /Sig /T (Fake{i}) /V {sig} 0 R \
+                 /Rect [0 0 0 0] /P {} 0 R >>",
+                page.0
+            ),
+        ));
+        fields.push(format!("{field} 0 R"));
+    }
+    objects.push((
+        root.0,
+        format!(
+            "<< /Type /Catalog /Pages {} 0 R /AcroForm << /Fields [{}] /SigFlags 3 >> >>",
+            pages.0,
+            fields.join(" ")
+        ),
+    ));
+    let refs: Vec<(u32, &[u8])> = objects.iter().map(|(n, b)| (*n, b.as_bytes())).collect();
+    let mut x = append_raw(&good, &refs, &[], &[], "");
+    let data = x.windows(12).position(|w| w == b"%%EOF\n%%EOF\n").unwrap();
+    for i in 0..n {
+        let end = data + 6 * i as usize + 5;
+        replace_once(
+            &mut x,
+            placeholder(i).to_string().as_bytes(),
+            format!("{:010}", end - c).as_bytes(),
+        );
+    }
+    let r = report(&x);
+    assert_eq!(r.signatures.len(), n as usize + 1);
+    let limited = r
+        .signatures
+        .iter()
+        .filter(
+            |s| matches!(&s.status, SigStatus::CantCheck(w) if w.contains("more signed versions")),
+        )
+        .count();
+    // The real signature's version and 99 others are opened.
+    assert_eq!(
+        limited,
+        n as usize + 1 - 100,
+        "{:#?}",
+        r.signatures[..3].to_vec()
+    );
+}
+
+#[test]
 fn encrypt_null_is_not_encryption() {
     // `/Encrypt null` in the last trailer (a classic one or a cross-reference stream's
     // dictionary) means not encrypted; such files must open and check. The DSS spoofing
