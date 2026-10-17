@@ -1,0 +1,3 @@
+# PDFs are byte-exact: a signature covers the bytes as they are, so a line-ending change
+# on checkout (Windows autocrlf) breaks it.
+*.pdf binary

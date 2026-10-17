@@ -119,6 +119,8 @@
 
 ### Fixed
 
+- The Windows build's tests: git no longer changes line endings in PDFs on checkout, which broke the signed test
+  files. CI jobs now get a read-only token unless they need more.
 - Files whose trailer says `/Encrypt null` (not encrypted, written by some signing tools) open instead of asking
   for a password that doesn't exist.
 - Parts of a file that a later revision deletes, and copies in object streams that the file's index doesn't list,
