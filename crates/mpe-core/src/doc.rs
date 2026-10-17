@@ -136,14 +136,21 @@ impl Pdf {
 
     /// A snapshot in which annotations whose flags and subtype match `hide` are marked
     /// Hidden, and annotations without a drawing get MPE's (the document itself keeps
-    /// none).
+    /// none). In a signed document, form fields are drawn this way too, as
+    /// [`Pdf::refresh_appearances`] would draw them: the app doesn't draw a signed
+    /// document's fields into it when opening it, so that saving adds only the edits made
+    /// to what was signed.
     fn snapshot_hiding(&mut self, hide: impl Fn(i64, &[u8]) -> bool) -> Result<Vec<u8>> {
         let ids = self.annots_where(hide);
         let missing = self.missing_appearances(&self.page_ids());
-        if ids.is_empty() && missing.is_empty() {
+        let fields = self.signature_count() > 0 && !self.appearances_to_draw().is_empty();
+        if ids.is_empty() && missing.is_empty() && !fields {
             return self.snapshot();
         }
         let mut copy = self.clone();
+        if fields {
+            copy.refresh_appearances();
+        }
         copy.draw_annotations(&missing);
         for (id, flags) in ids {
             if let Ok(a) = copy.doc.get_dictionary_mut(id) {

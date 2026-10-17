@@ -75,6 +75,17 @@ by hand, so the pre-release `cms` crate isn't needed) and fills it in, and check
 doesn't allow, it returns a `DisallowedChanges` error naming each signer and change, so the app can ask before
 signing again with `accept_disallowed`. See [Digital signatures](signatures.md).
 
+Saving a signed document (`sig_save.rs`, `append_edits`) uses the same writer without a signature: nothing is
+appended when no object changed; otherwise every signature is checked before and after, each must check as it did
+(a signature gone, as flattening the form makes it, is refused), and `sig_sign::newly_disallowed`, shared with
+signing, names the signers whose signature now reports a disallowed change it didn't report before. The app's
+`save_signed` (and the CLI's `save_edited`) call it for a document that had signatures when opened, with the bytes
+kept for the Signatures tab as the base, and fall back to a full rewrite only after asking (encrypted, password
+set, damaged, a read-back failure, or `Tab::scrubbed`: redactions applied or hidden information removed since the
+last save, tracked through undo and redo, since the signed version would keep what was removed). A signed
+document's fields are not drawn into it when it opens (`Tab::new`); the snapshots for display and printing draw
+them on a copy instead (`snapshot_hiding`), so a save adds only real edits.
+
 In the app, `crates/mpe-gui/src/digital.rs` holds the Digital IDs window and the signing window; making, importing
 and exporting IDs, and unlocking and signing, run on a background thread each, with the password moved into that
 thread in a wrapper that overwrites it when dropped. The editor's `Tool::DigitalSign` takes the place (an empty

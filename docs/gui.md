@@ -17,8 +17,11 @@ The start screen also has Make a PDF from images…, which turns photos or scann
 Each document gets a tab. The tab shows its name, with `*` while it has unsaved changes.
 
 Saving writes a temporary file beside the document and then replaces the document with it, so a save that fails
-part way leaves the original as it was. MPE saves by rewriting the whole file, which makes any digital signatures
-invalid; when a document is signed, MPE asks first. Save As to a new file keeps the signed original.
+part way leaves the original as it was. MPE saves by rewriting the whole file, except for a digitally signed
+document: its changes are added after what was signed, so the signatures stay valid. MPE asks first when the
+signatures don't allow the changes, and before writing a signed document in full when it must (after redacting, for
+example), which breaks the signatures; see [Saving a signed document](signatures.md#saving-a-signed-document).
+Save As to a new file keeps the signed original.
 
 ## The window
 
@@ -307,8 +310,9 @@ certificates; Trust this signer… and Trust an authority… add to your trust l
 fingerprint to compare with the owner), and View signed version opens the document as it was when signed, in a new
 tab. ☰ > Edit > Trusted certificates… lists, removes and adds trusted certificates. Trust settings affect MPE only.
 
-The check is of the file as opened or last saved; saving rewrites the file, which breaks its signatures (MPE asks
-first), and MPE checks the saved copy. See [Digital signatures](signatures.md) for what each result means.
+The check is of the file as opened or last saved; saving adds your changes after what was signed (see
+[Saving a signed document](signatures.md#saving-a-signed-document)), and MPE checks the saved copy, listing your
+changes under each signature. See [Digital signatures](signatures.md) for what each result means.
 
 ### Signing with a digital ID
 

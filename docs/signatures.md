@@ -3,9 +3,9 @@
 Digital signatures are being built in stages. What works now, in the app and from the command line: **checking**
 the signatures in a PDF (`mpe verify`), including what changed after each signature and whether the signer allowed
 it, opening or saving the version a signature signed, and **trusting** signers and certificate authorities (`mpe
-trust`), making, importing and exporting your **digital IDs** (`mpe id`), and **signing and certifying** with them
-(`mpe sign`). Still to come: saving signed documents without breaking their signatures. This page grows with each
-stage.
+trust`), making, importing and exporting your **digital IDs** (`mpe id`), **signing and certifying** with them
+(`mpe sign`), and **saving** signed documents without breaking their signatures. Still to come: a final review and
+round-trip tests with Adobe Acrobat. This page grows with each stage.
 
 ## What a digital signature is and isn't
 
@@ -64,8 +64,9 @@ certificates the signature carries. Its buttons trust the signer or an authority
 [Trusting signers](#trusting-signers)), open the signed version, and go to the field.
 
 The app checks the **file**: after you change the document, the Signatures tab says that your unsaved changes
-aren't checked. Saving rewrites the whole file, which breaks its signatures (MPE asks first, and Save as keeps the
-original); MPE then checks the saved file, so the tab shows what other readers will see in the saved copy.
+aren't checked. Saving adds your changes after what was signed, so the signatures stay (see
+[Saving a signed document](#saving-a-signed-document)); MPE then checks the saved file, so the tab shows what other
+readers will see in the saved copy, your changes listed under each signature.
 
 ### From the command line
 
@@ -310,7 +311,9 @@ have an exported copy. Signatures already made with it stay valid.
 What you sign is the document as it is in MPE, with every change made since you opened it. Those changes go into
 the same new revision as your signature, so earlier signatures judge them (and fill-and-sign items are drawn in or
 locked, as described below). A document that had no signature fields when it was opened is written out in full
-first and then signed; it has no earlier signatures to keep.
+first and then signed; it has no earlier signatures to keep. So is one you applied redactions to or removed hidden
+information from, so that nothing removed stays in the file; if it already has signatures, MPE asks you to save it
+first (which breaks them, see [Saving a signed document](#saving-a-signed-document)).
 
 **When your changes would show on earlier signatures as not allowed** (a page turned or edited, for example), MPE
 stops before writing anything and says which earlier signatures would report which changes. **Sign anyway** goes
@@ -379,6 +382,58 @@ must be valid, cover the whole file, name your certificate and have no warnings,
 check as it did before. Before that, the new revision is read back and must hold exactly what was meant. If any of
 this fails, nothing is written. A file whose structure MPE had to repair to open it is written out in full first,
 when it has no signatures yet (the message says so); with signatures, MPE refuses rather than break them.
+
+## Saving a signed document
+
+**Save** and **Save as** keep a signed document's signatures. MPE adds your changes after what was signed, as one
+new revision, the way Acrobat saves signed files, and leaves every earlier byte as it was. Each signature stays
+valid for the version it signed and lists your changes (see [Changes after signing](#changes-after-signing)), so a
+comment or a filled-in field shows as an allowed change. Saving again adds another revision after that one. A
+document you haven't changed is saved exactly as it was.
+
+**MPE checks before writing**, as it does when signing: the new revision is read back and must hold exactly your
+changes, and every signature must check as it did before. If not, nothing is written.
+
+**When the signatures don't allow your changes** (a page edited, turned, added or deleted; a comment on a document
+certified for form filling only; any change to one certified for no changes), MPE asks first, naming each signer
+and what their signature will report. **Save anyway** writes it: the signatures stay valid for what was signed, and
+every reader shows that the document was changed afterwards in ways the signers didn't allow. Save as a new file to
+keep the signed original as it is. A change a signature already reports isn't asked about again.
+
+**When MPE can't add your changes after what was signed**, it says why and asks before writing the whole file
+instead (*Break the signatures?*), which breaks every signature in the saved copy. That happens when:
+
+- you applied redactions or removed hidden information: the signed version would still hold everything removed,
+  and anyone with the file could open it, so only writing the whole file really removes it;
+- the document is encrypted, or you set a password for it (MPE can add a password only by writing the whole file);
+- the file is damaged (MPE repaired it to open it), or MPE can't add to its cross-reference layout reliably (some
+  files from older Acrobat versions);
+- your changes remove a signature, as flattening the form does;
+- the result didn't read back or check correctly, which would be a fault in MPE.
+
+**What you delete stays in the signed version.** A comment you delete, a page you remove, a value you overwrite:
+the version that was signed still holds it, and anyone with the file can open that version
+([The version that was signed](#the-version-that-was-signed)). Signed PDFs work this way in every editor. To remove
+something for good, use Redact or Remove hidden information, which write the whole file and break the signatures.
+
+**Form fields are shown, not redrawn.** When a signed form has fields without a drawing of their own, MPE draws them
+on screen and in print but doesn't write those drawings into the document, so saving adds only what you changed.
+
+### From the command line
+
+Every command that edits a document (`mpe set-info`, `mpe stamp`, `mpe form fill`, `mpe annot remove`, `mpe
+rotate` and the others) saves a signed input the same way. Where the app would ask, the command writes nothing and
+says why, and a flag goes ahead:
+
+- `--accept-disallowed` saves even when the signatures don't allow the changes;
+- `--break-signatures` writes the whole file when the changes can't be added after what was signed (the cases
+  above), which breaks the signatures. `mpe redact` and `mpe sanitise` always need it on a signed input.
+
+```
+mpe form fill signed.pdf -o filled.pdf --set Name="Jane Doe"
+mpe rotate signed.pdf -o turned.pdf --pages 1 --degrees 90 --accept-disallowed
+mpe redact signed.pdf -o redacted.pdf --text "account number" --break-signatures
+```
 
 ## What each result means
 
@@ -562,9 +617,18 @@ a signature in the field a certified document left empty. Both call every one va
 earlier signature valid too. Signed files with classic cross-reference tables, cross-reference streams and object
 streams, and pages turned 90 degrees, were checked by MPE.
 
+Saving signed documents was checked on the 53 third-party samples MPE can open with a signature in them. Saved
+without changes, or after an undo, nothing is added. With a comment added, every signature checks as before, by
+MPE and by `pdfsig` alike, and MPE reports the comment as allowed except where the document's certification or a
+signer's lock forbids comments; with a page changed, MPE reports a change not allowed. MPE declines to add to five:
+three damaged files, one hybrid file whose objects its PDF library would misread afterwards (see the limitations),
+and one whose signature was already broken (its byte range ran past the end of the file). A document MPE signed and
+then saved with a comment and a filled-in field is in the `pdfsig` and OpenSSL cross-check above.
+
 Not yet tested: signatures made in Adobe Acrobat by MPE's testers, MPE-made signatures and certifications in
-Acrobat, and digital ID files exported from Acrobat or Windows, or MPE's exported files imported there. Where MPE is
-stricter than Acrobat (see the limitations) is to be confirmed in those tests.
+Acrobat, documents signed in Acrobat and saved with changes in MPE (and the other way round), and digital ID files
+exported from Acrobat or Windows, or MPE's exported files imported there. Where MPE is stricter than Acrobat (see
+the limitations) is to be confirmed in those tests.
 
 ## Limitations
 
@@ -598,16 +662,24 @@ stricter than Acrobat (see the limitations) is to be confirmed in those tests.
 - Adobe's Reader-enabling signatures (usage rights, which let the free Reader save forms) aren't listed, as in
   Acrobat.
 - Signature fields must be in the document's form; a signature drawn on a page without a field isn't one.
-- Saving in MPE rewrites the whole file, which breaks every signature in the saved copy (MPE asks first). Saving
-  signed documents without breaking them is planned.
+- Saving a signed document adds your changes after what was signed, so whatever you delete stays readable in the
+  signed version; redaction and removing hidden information write the whole file instead, which breaks the
+  signatures (see [Saving a signed document](#saving-a-signed-document)).
+- Encrypted signed documents, damaged ones and those with the older mixed (hybrid) cross-reference layout can be
+  saved only by writing the whole file, which breaks their signatures (MPE asks first). For hybrid files, MPE's PDF
+  library reads such a layout correctly only while it is the newest part of the file; MPE detects when that would go
+  wrong by reading the result back, so some hybrid files do save with their signatures kept.
+- Objects MPE writes again are written the way its PDF library writes them: a number stored as `612.0` comes out as
+  `612`, and decimals beyond about seven significant digits are rounded. MPE judges numbers by value, so this is no
+  change to it; whether Acrobat agrees is to be confirmed in the round trips.
+- Page commands (turn, delete, insert, reorder) also rebuild the document's page tree, so on a signed document the
+  signature reports "pages added, removed or reordered" as well as the change itself. Both are not allowed after
+  signing anyway.
 - The app checks the file as opened or last saved, not unsaved changes; after a trust change made with `mpe
   trust`, reopen documents that were already open.
 - A file the PDF reader can't open at all can't be checked.
 - In the app, a signature goes in a field or a box you choose on the page; it can't be moved or resized afterwards
   (sign again in a new copy instead).
-- Saving in the app after signing rewrites the file, which breaks the signatures in the saved copy (MPE asks
-  first); add further signatures with Sign with digital ID, which keeps them. Saving that keeps signatures is the
-  next stage.
 - Signatures carry no timestamp from a timestamp authority yet (planned), so their signing time is your computer's
   claim, and once your certificate expires, checkers can't tell the signature was made while it was valid. No
   long-term validation data is added either.
@@ -737,5 +809,14 @@ certificates a document carries never become trusted by being there.
   allowed on that earlier signature, so MPE didn't sign.
 - **"the file's cross-reference information is damaged"** on a signed document: MPE won't add to a file it had to
   repair, because the earlier signatures would break. Ask the sender for an undamaged copy.
-- **"the signed document didn't check correctly"** or **"the new revision didn't read back correctly"**: MPE's
-  check before writing found a problem, and nothing was written. Please report it, with the document if you can.
+- **"the signed document didn't check correctly"**, **"the saved document didn't check correctly"** or **"the new
+  revision didn't read back correctly"**: MPE's check before writing found a problem, and nothing was written.
+  Please report it, with the document if you can.
+- **"Save changes the signers didn't allow?"** when saving: your changes are ones the signatures will report as not
+  allowed (the list says which). Save as a new file to keep the signed original, or undo the changes.
+- **"Break the signatures?"** when saving a signed document: MPE can't add your changes after what was signed, for
+  the reason it gives (see [Saving a signed document](#saving-a-signed-document)). Save as a new file to keep the
+  signed original. On the command line the same cases stop with the reason and `--break-signatures` to go ahead.
+- **"uses the older mixed (hybrid) layout, and MPE can't add to it reliably"**: the file was saved by a program
+  (often an older Acrobat) in a way MPE's PDF library misreads once anything is added. Ask for a copy saved by a
+  current version, or add your changes in another editor.

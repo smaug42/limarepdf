@@ -1,16 +1,17 @@
 //! Signing with a digital ID: approval signatures and certification, in new boxes and in
-//! empty fields, locks, the document's own rules, edits that ride along, unusual files,
-//! and the check every signed file gets before it is handed out. The IDs are the
+//! empty fields, locks, the document's own rules, edits that ride along, saving signed
+//! documents without breaking them, unusual files, and the check every signed file gets
+//! before it is handed out. The IDs are the
 //! OpenSSL-made test files in `tests/data/signatures/ids` (password "mpe-test-password").
 
 mod sigkit;
 
 use lopdf::{dictionary, Dictionary, Object, ObjectId};
 use mpe_core::{
-    sign_document, verify_signatures, ChangeKind, Cipher, DisallowedChanges, Encryption,
-    FieldValue, IdStore, InkColor, LockAction, Pdf, Permissions, Restrictions, SigKind, SigStatus,
-    SignArt, SignPlace, SignRequest, SignRole, SignStyle, SignatureReport, SignedDocument, Stamp,
-    StampPlace, Trust, TrustList, TrustRole, UnlockedId,
+    append_edits, sign_document, verify_signatures, AnnotKind, AppendedEdits, ChangeKind, Cipher,
+    DisallowedChanges, Encryption, FieldValue, IdStore, InkColor, LockAction, Pdf, Permissions,
+    Restrictions, SigKind, SigStatus, SignArt, SignPlace, SignRequest, SignRole, SignStyle,
+    SignatureReport, SignedDocument, Stamp, StampPlace, Trust, TrustList, TrustRole, UnlockedId,
 };
 use sigkit::*;
 use std::sync::OnceLock;
@@ -612,6 +613,225 @@ fn fields_are_drawn_before_signing_when_the_form_asks_readers_to() {
     assert!(widget(&s.bytes, "Name").has(b"AP"));
 }
 
+// ------------------------------------------------------------------ saving signed documents
+
+/// `bytes` edited by `edit` and saved as the app saves a signed document.
+fn save(bytes: &[u8], edit: impl FnOnce(&mut Pdf)) -> AppendedEdits {
+    let mut p = Pdf::from_bytes(bytes, None).unwrap();
+    edit(&mut p);
+    append_edits(bytes, &p).unwrap()
+}
+
+fn note(p: &mut Pdf) {
+    p.add_note(0, (40.0, 40.0), [1.0, 0.8, 0.0], "A comment", "Jane")
+        .unwrap();
+}
+
+#[test]
+fn saving_without_changes_adds_nothing() {
+    let s = sign(&base_pdf(), &req(rsa(), new_box(0))).bytes;
+    let a = save(&s, |_| {});
+    assert_eq!(a.objects, 0);
+    assert_eq!(a.bytes, s);
+    assert!(a.disallowed.is_none());
+    // Nor after an undo, which reads the document back from a copy MPE wrote itself.
+    let mut p = Pdf::from_bytes(&s, None).unwrap();
+    let copy = p.snapshot().unwrap();
+    let back = Pdf::from_bytes(&copy, None).unwrap();
+    assert_eq!(append_edits(&s, &back).unwrap().objects, 0);
+}
+
+#[test]
+fn allowed_edits_are_added_after_what_was_signed() {
+    let doc = form_doc(&[("Approver", None)], false);
+    let s = sign(&doc, &req(rsa(), field("Approver"))).bytes;
+    let a = save(&s, |p| {
+        note(p);
+        p.set_field("Name", FieldValue::Text("Jane Doe".into()))
+            .unwrap();
+    });
+    assert!(a.disallowed.is_none());
+    assert!(a.objects > 0 && a.bytes.starts_with(&s));
+    let rep = report(&a.bytes);
+    let sig = &rep.signatures[0];
+    assert_eq!(sig.status, SigStatus::Valid);
+    assert!(!sig.covers_whole_file);
+    assert!(sig.changes_allowed(), "{:?}", sig.changes);
+    let k = kinds(&rep, 0);
+    assert!(k.contains(&ChangeKind::CommentAdded), "{k:?}");
+    assert!(k.contains(&ChangeKind::FieldFilled("Name".into())), "{k:?}");
+    // The saved file is what the next save adds to.
+    let b = save(&a.bytes, note);
+    assert!(b.disallowed.is_none());
+    assert!(b.bytes.starts_with(&a.bytes));
+    assert!(report(&b.bytes).signatures[0].changes_allowed());
+}
+
+#[test]
+fn disallowed_edits_are_named_before_saving() {
+    let s = sign(&base_pdf(), &req(rsa(), new_box(0))).bytes;
+    let a = save(&s, |p| p.rotate_pages(&[0], 90).unwrap());
+    let d = a.disallowed.as_ref().expect("the signer is named");
+    assert_eq!(d.signers.len(), 1);
+    assert!(d.signers[0].0.starts_with('"'), "{:?}", d.signers);
+    assert!(!d.signers[0].1.is_empty());
+    // Saved anyway: the signature stays valid for what was signed and reports the change.
+    let rep = report(&a.bytes);
+    assert_eq!(rep.signatures[0].status, SigStatus::Valid);
+    assert!(!rep.signatures[0].changes_allowed());
+    // A change the signature already reports isn't named again.
+    let b = save(&a.bytes, |p| p.rotate_pages(&[0], 90).unwrap());
+    assert!(b.disallowed.is_none(), "{:?}", b.disallowed);
+    // A new kind of change is.
+    let c = save(&a.bytes, |p| p.insert_blank(1, 300.0, 200.0).unwrap());
+    assert!(c.disallowed.is_some());
+}
+
+#[test]
+fn a_certification_decides_what_saving_may_add() {
+    for (level, comments) in [
+        (Permissions::NoChanges, false),
+        (Permissions::FormFilling, false),
+        (Permissions::FormFillingAndComments, true),
+    ] {
+        let mut r = req(rsa(), new_box(0));
+        r.certify = Some(level);
+        let s = sign(&form_doc(&[], false), &r).bytes;
+        let a = save(&s, note);
+        assert_eq!(a.disallowed.is_none(), comments, "{level:?}");
+        let fill = save(&s, |p| {
+            p.set_field("Name", FieldValue::Text("Jane".into()))
+                .unwrap()
+        });
+        assert_eq!(
+            fill.disallowed.is_none(),
+            level != Permissions::NoChanges,
+            "{level:?}"
+        );
+    }
+}
+
+#[test]
+fn a_signed_documents_fields_are_drawn_for_display_only() {
+    let s = sign(
+        &form_doc(&[("Approver", None)], false),
+        &req(rsa(), field("Approver")),
+    )
+    .bytes;
+    assert!(!widget(&s, "Name").has(b"AP"));
+    let mut p = Pdf::from_bytes(&s, None).unwrap();
+    let shown = p.app_snapshot().unwrap();
+    assert!(widget(&shown, "Name").has(b"AP"));
+    // Showing it changed nothing to save.
+    assert_eq!(append_edits(&s, &p).unwrap().objects, 0);
+}
+
+#[test]
+fn a_deleted_comment_stays_deleted_without_being_written_again() {
+    let s = sign(&base_pdf(), &req(rsa(), new_box(0))).bytes;
+    let a = save(&s, note);
+    let mut p = Pdf::from_bytes(&a.bytes, None).unwrap();
+    assert_eq!(
+        p.remove_annotations(|x| x.kind == AnnotKind::Note).unwrap(),
+        1
+    );
+    let b = append_edits(&a.bytes, &p).unwrap();
+    assert!(b.disallowed.is_none());
+    assert!(Pdf::from_bytes(&b.bytes, None)
+        .unwrap()
+        .annotations()
+        .iter()
+        .all(|x| x.kind != AnnotKind::Note));
+    // Saving the same document again adds nothing: the note was already written as gone.
+    assert_eq!(append_edits(&b.bytes, &p).unwrap().objects, 0);
+}
+
+#[test]
+fn edits_that_cant_be_added_after_the_signatures_are_refused() {
+    let s = sign(&base_pdf(), &req(rsa(), new_box(0))).bytes;
+    // A password set: only writing the whole file can add one.
+    let mut p = Pdf::from_bytes(&s, None).unwrap();
+    p.set_encryption(Some(Encryption {
+        user_password: String::new(),
+        owner_password: "owner".into(),
+        cipher: Cipher::Aes128,
+        restrictions: Restrictions::default(),
+    }));
+    refused(append_edits(&s, &p), "password");
+    // An encrypted signed file.
+    let enc = p.to_bytes().unwrap();
+    let opened = Pdf::from_bytes(&enc, Some("")).unwrap();
+    refused(append_edits(&enc, &opened), "encrypted");
+    // A damaged one, unless nothing changed.
+    let damaged = misplace_startxref(&sign(&table_pdf(), &req(rsa(), new_box(0))).bytes);
+    let mut p = Pdf::from_bytes(&damaged, None).unwrap();
+    assert_eq!(append_edits(&damaged, &p).unwrap().bytes, damaged);
+    note(&mut p);
+    refused(append_edits(&damaged, &p), "damaged");
+    // Edits that take a signature away.
+    let s = sign(
+        &form_doc(&[("Approver", None)], false),
+        &req(rsa(), field("Approver")),
+    )
+    .bytes;
+    let mut p = Pdf::from_bytes(&s, None).unwrap();
+    p.flatten_form(None).unwrap();
+    refused(append_edits(&s, &p), "remove 1 of its signatures");
+}
+
+/// A one-page document with an empty signature field, written by hand the way some
+/// writers write numbers: `300.0`, which lopdf writes back as `300`.
+fn handmade_pdf() -> Vec<u8> {
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] >> >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0.0 0.0 300.0 200.0] /Contents 4 0 R \
+         /Resources << >> /Annots [5 0 R] >>",
+        "<< /Length 0 >>\nstream\n\nendstream",
+        "<< /Type /Annot /Subtype /Widget /FT /Sig /T (Sig1) /Rect [20.0 20.0 220.0 70.0] \
+         /P 3 0 R /F 4 >>",
+    ];
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, o) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = out.len();
+    out.extend_from_slice(
+        format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+    );
+    for at in offsets {
+        out.extend_from_slice(format!("{at:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    out
+}
+
+#[test]
+fn numbers_written_again_without_their_decimals_are_no_change() {
+    let s = sign(&handmade_pdf(), &req(rsa(), field("Sig1"))).bytes;
+    // The signed version still has the page as written by hand.
+    let signed = Pdf::from_bytes(&s, None).unwrap();
+    let page = signed.page_ids()[0];
+    let media = signed
+        .doc
+        .get_dictionary(page)
+        .unwrap()
+        .get(b"MediaBox")
+        .unwrap();
+    assert!(matches!(media.as_array().unwrap()[2], Object::Real(_)));
+    let a = save(&s, note);
+    assert!(a.disallowed.is_none());
+    assert_eq!(kinds(&report(&a.bytes), 0), [ChangeKind::CommentAdded]);
+}
+
 // ------------------------------------------------------------------ unusual files
 
 /// The base page written with a classic cross-reference table (the test files are
@@ -657,22 +877,25 @@ fn signs_files_with_object_streams() {
     assert!(rep.signatures[0].changes_allowed());
 }
 
+/// `b` with its `startxref` a few bytes off: lopdf finds the table nearby and opens the
+/// file.
+fn misplace_startxref(b: &[u8]) -> Vec<u8> {
+    let at = b.windows(9).rposition(|w| w == b"startxref").unwrap() + 10;
+    let n: usize = std::str::from_utf8(&b[at..])
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut out = b[..at].to_vec();
+    out.extend_from_slice(format!("{}\n%%EOF\n", n - 3).as_bytes());
+    out
+}
+
 #[test]
 fn a_damaged_file_is_written_out_in_full_unless_signed() {
-    // `startxref` a few bytes off: lopdf finds the table nearby and opens the file.
-    let damage = |b: &[u8]| {
-        let at = b.windows(9).rposition(|w| w == b"startxref").unwrap() + 10;
-        let n: usize = std::str::from_utf8(&b[at..])
-            .unwrap()
-            .split_whitespace()
-            .next()
-            .unwrap()
-            .parse()
-            .unwrap();
-        let mut out = b[..at].to_vec();
-        out.extend_from_slice(format!("{}\n%%EOF\n", n - 3).as_bytes());
-        out
-    };
+    let damage = misplace_startxref;
     let damaged = damage(&table_pdf());
     let s = sign(&damaged, &req(rsa(), new_box(0)));
     assert!(s.rewritten);
@@ -734,6 +957,17 @@ fn cross_check_with_pdfsig_and_openssl() {
         ),
         ("two.pdf", sign(&rsa1, &req(p384(), new_box(1))).bytes, 2),
         ("certified.pdf", cert.clone(), 1),
+        // Saved with a comment and a filled field added after the signature.
+        (
+            "saved.pdf",
+            save(&sign(&doc, &req(rsa(), field("Approver"))).bytes, |p| {
+                note(p);
+                p.set_field("Name", FieldValue::Text("Jane Doe".into()))
+                    .unwrap();
+            })
+            .bytes,
+            1,
+        ),
         (
             "certified-then-signed.pdf",
             sign(&cert, &req(rsa(), field("Approver"))).bytes,

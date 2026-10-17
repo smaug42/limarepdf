@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 
 /// println! that ignores a closed pipe (e.g. `mpe text file.pdf | head`).
 macro_rules! out {
@@ -8,6 +8,7 @@ macro_rules! out {
     }};
 }
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use mpe_core::{display_line, DigitalId, IdStore, NewId, SignPlace, SignRequest};
 use mpe_core::{
     format_page_range, parse_page_range, part_file_name, print, render, Annot, AnnotKind, Bates,
     BookmarkPlace, Cipher, Encryption, Field, FieldKind, FieldValue, HeaderFooter, ImageImport,
@@ -20,7 +21,6 @@ use mpe_core::{
     CertInfo, ChangeKind, FieldLock, LockAction, Permissions, Refusal, SigKind, SigStatus,
     SignatureReport, TimeSource, Trust, TrustList, TrustRole,
 };
-use mpe_core::{DigitalId, IdStore, NewId, SignPlace, SignRequest};
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
@@ -42,6 +42,14 @@ struct Io {
     /// Password for an encrypted input
     #[arg(long)]
     password: Option<String>,
+    /// For a digitally signed input: save even when its signatures don't allow the
+    /// changes (they stay valid for what was signed, and report the changes)
+    #[arg(long)]
+    accept_disallowed: bool,
+    /// For a digitally signed input whose changes MPE can't add after what was signed:
+    /// write the whole file anyway, which breaks the signatures
+    #[arg(long)]
+    break_signatures: bool,
 }
 
 #[derive(Subcommand)]
@@ -262,6 +270,10 @@ enum Cmd {
         /// Only list what the document has of each kind; nothing is written
         #[arg(long)]
         list: bool,
+        /// For a digitally signed input: go ahead, although writing the cleaned file breaks
+        /// its signatures (what is removed would otherwise stay in the signed version)
+        #[arg(long)]
+        break_signatures: bool,
     },
     /// Put a stamp on pages: Approved, Draft and so on, your own wording, a picture, or a
     /// typed signature
@@ -1113,7 +1125,7 @@ const XFA_ONLY: &str =
                         Adobe software, so MPE can't list or fill them";
 
 fn form_fill(io: &Io, set: &[String], values: &Option<PathBuf>, flatten: bool) -> Result<()> {
-    let mut pdf = open(&io.input, &io.password)?;
+    let (mut pdf, original) = open_io(io)?;
     if pdf.xfa_only() {
         bail!("{XFA_ONLY}");
     }
@@ -1155,7 +1167,7 @@ fn form_fill(io: &Io, set: &[String], values: &Option<PathBuf>, flatten: bool) -
     if flatten {
         pdf.flatten_form(None)?;
     }
-    pdf.save(&io.output)?;
+    save_edited(io, &mut pdf, &original, false)?;
     out!(
         "filled {} field(s){}; wrote {}",
         todo.len(),
@@ -1309,10 +1321,86 @@ fn open(p: &Path, pw: &Option<String>) -> Result<Pdf> {
 }
 
 fn run_edit(io: &Io, f: impl FnOnce(&mut Pdf) -> Result<()>) -> Result<()> {
-    let mut pdf = open(&io.input, &io.password)?;
+    let (mut pdf, original) = open_io(io)?;
     f(&mut pdf)?;
-    pdf.save(&io.output)?;
+    save_edited(io, &mut pdf, &original, false)?;
     out!("wrote {}", io.output.display());
+    Ok(())
+}
+
+/// Opens `io.input`, with its bytes for [`save_edited`].
+fn open_io(io: &Io) -> Result<(Pdf, Vec<u8>)> {
+    let bytes =
+        std::fs::read(&io.input).with_context(|| format!("reading {}", io.input.display()))?;
+    let pdf = Pdf::from_bytes(&bytes, io.password.as_deref())?;
+    Ok((pdf, bytes))
+}
+
+/// Writes `pdf`, edited from `original` (the input's bytes), to `io.output`. A digitally
+/// signed input keeps its signatures: the edits are added after what was signed (see
+/// docs/signatures.md). That is refused when the signatures don't allow the edits, unless
+/// `--accept-disallowed`, and when the edits can't be added that way, unless
+/// `--break-signatures` (the whole file is written, and the signatures break). `removes`
+/// marks edits that remove information for good, which the signed version would still
+/// hold: those always need the whole file written.
+fn save_edited(io: &Io, pdf: &mut Pdf, original: &[u8], removes: bool) -> Result<()> {
+    if Pdf::from_bytes(original, io.password.as_deref())?.signature_count() == 0 {
+        return pdf.save(&io.output);
+    }
+    let input = display_line(&io.input.display().to_string(), 300);
+    let appended = if removes {
+        Err(anyhow!(
+            "these changes remove information for good, and the version that was signed would \
+             still hold it"
+        ))
+    } else {
+        mpe_core::append_edits(original, pdf)
+    };
+    match appended {
+        Ok(a) => {
+            if let Some(d) = &a.disallowed {
+                let mut list = String::new();
+                for (who, what) in &d.signers {
+                    let what: Vec<String> = what.iter().map(|w| display_line(w, 160)).collect();
+                    list.push_str(&format!(
+                        "\n  - {}: {}",
+                        display_line(who, 80),
+                        what.join("; ")
+                    ));
+                }
+                if !io.accept_disallowed {
+                    bail!(
+                        "{input} is digitally signed, and its signatures don't allow these \
+                         changes; anyone who checks them would be told:{list}\nNothing was \
+                         written. Add --accept-disallowed to save anyway (the signatures stay \
+                         valid for what was signed, and report the changes)."
+                    );
+                }
+                eprintln!("warning: the signatures will report changes they don't allow:{list}");
+            }
+            mpe_core::write_file(&io.output, &a.bytes)?;
+            if a.objects > 0 {
+                eprintln!(
+                    "note: the changes were added after what was signed, so the signatures stay"
+                );
+            }
+        }
+        Err(e) => {
+            if !io.break_signatures {
+                bail!(
+                    "{input} is digitally signed, and MPE can't add these changes after what was \
+                     signed: {}. Nothing was written. Add --break-signatures to write the whole \
+                     file anyway, which breaks the signatures.",
+                    display_line(&format!("{e:#}"), 300)
+                );
+            }
+            pdf.save(&io.output)?;
+            eprintln!(
+                "warning: the whole file was written, so the signatures in {} are broken",
+                display_line(&io.output.display().to_string(), 300)
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1335,7 +1423,7 @@ fn redact(
     apply: bool,
     json: bool,
 ) -> Result<()> {
-    let mut pdf = open(&io.input, &io.password)?;
+    let (mut pdf, original) = open_io(io)?;
     let mut marks = Vec::new();
     for a in areas {
         let bad = || format!("--area {a:?} should be PAGE:X,Y,W,H");
@@ -1366,7 +1454,7 @@ fn redact(
             pdf.add_redaction_mark(p, &boxes, "")?;
             out!("page {}: marked {} areas", p + 1, boxes.len());
         }
-        pdf.save(&io.output)?;
+        save_edited(io, &mut pdf, &original, false)?;
         out!("nothing was removed yet; apply the marks with --apply");
         out!("wrote {}", io.output.display());
         return Ok(());
@@ -1388,7 +1476,8 @@ fn redact(
         }
         bail!("the check after redacting failed, so the file was not written");
     }
-    pdf.save(&io.output)?;
+    // What was redacted must not stay in an earlier version of the file.
+    save_edited(io, &mut pdf, &original, true)?;
     if json {
         let pages: Vec<serde_json::Value> = rep
             .pages
@@ -2740,8 +2829,19 @@ fn main() -> Result<()> {
             keep,
             also,
             list,
+            break_signatures,
         } => {
             let mut pdf = open(&input, &password)?;
+            let signed = pdf.signature_count() > 0;
+            if !list && !break_signatures && signed {
+                bail!(
+                    "{} is digitally signed, and removing hidden information means writing the \
+                     whole file, which breaks the signatures (the signed version would \
+                     otherwise still hold what is removed). Nothing was written. Add \
+                     --break-signatures to go ahead.",
+                    display_line(&input.display().to_string(), 300)
+                );
+            }
             if list {
                 let found = pdf.find_hidden()?;
                 for h in mpe_core::Hidden::ALL {
@@ -2771,6 +2871,12 @@ fn main() -> Result<()> {
             }
             let output = output.context("--output is needed")?;
             pdf.save(&output)?;
+            if signed {
+                eprintln!(
+                    "warning: the whole file was written, so the signatures in {} are broken",
+                    display_line(&output.display().to_string(), 300)
+                );
+            }
             out!("wrote {}", output.display());
         }
         Cmd::Stamp {
@@ -3185,7 +3291,7 @@ fn main() -> Result<()> {
             } => form_fill(&io, &set, &values, flatten)?,
             FormCmd::Reset { io } => run_edit(&io, |p| p.reset_form())?,
             FormCmd::Flatten { io, pages } => {
-                let mut p = open(&io.input, &io.password)?;
+                let (mut p, original) = open_io(&io)?;
                 if p.xfa_only() {
                     bail!("{XFA_ONLY}");
                 }
@@ -3197,7 +3303,7 @@ fn main() -> Result<()> {
                     None => None,
                 };
                 let n = p.flatten_form(idx.as_deref())?;
-                p.save(&io.output)?;
+                save_edited(&io, &mut p, &original, false)?;
                 out!(
                     "flattened {n} field widget(s); wrote {}",
                     io.output.display()
@@ -3355,7 +3461,7 @@ fn main() -> Result<()> {
                 kinds,
                 author,
             } => {
-                let mut p = open(&io.input, &io.password)?;
+                let (mut p, original) = open_io(&io)?;
                 let pages = match pages {
                     Some(r) => Some(parse_page_range(&r, p.page_count())?),
                     None => None,
@@ -3372,17 +3478,17 @@ fn main() -> Result<()> {
                         && kinds.as_ref().is_none_or(|k| k.contains(&a.kind))
                         && author.as_ref().is_none_or(|w| *w == a.author)
                 })?;
-                p.save(&io.output)?;
+                save_edited(&io, &mut p, &original, false)?;
                 out!("removed {n} annotation(s); wrote {}", io.output.display());
             }
             AnnotCmd::Flatten { io, pages } => {
-                let mut p = open(&io.input, &io.password)?;
+                let (mut p, original) = open_io(&io)?;
                 let idx = match pages {
                     Some(r) => Some(parse_page_range(&r, p.page_count())?),
                     None => None,
                 };
                 let n = p.flatten_annotations(idx.as_deref())?;
-                p.save(&io.output)?;
+                save_edited(&io, &mut p, &original, false)?;
                 out!("flattened {n} annotation(s); wrote {}", io.output.display());
             }
         },

@@ -884,36 +884,57 @@ fn self_check(
     if new.kind != kind {
         return Err(fail(format!("the new signature is a {:?}", new.kind)));
     }
-    let mut disallowed = Vec::new();
-    for old in &before.signatures {
-        let now = after
-            .signatures
-            .iter()
-            .find(|s| s.fields == old.fields && s.byte_range == old.byte_range)
-            .ok_or_else(|| fail("an earlier signature is missing".into()))?;
-        if now.status != old.status {
-            return Err(fail(format!(
-                "an earlier signature changed from {:?} to {:?}",
-                old.status, now.status
-            )));
-        }
-        if old.changes_allowed() && !now.changes_allowed() && !req.accept_disallowed {
-            let changes = now
-                .changes
-                .iter()
-                .filter(|c| !c.allowed())
-                .map(|c| c.to_string())
-                .collect();
-            disallowed.push((signer_name(old), changes));
-        }
-    }
-    if !disallowed.is_empty() {
+    let disallowed = newly_disallowed(before, &after).map_err(fail)?;
+    if !disallowed.is_empty() && !req.accept_disallowed {
         return Err(DisallowedChanges {
             signers: disallowed,
         }
         .into());
     }
     Ok(())
+}
+
+/// Compares the earlier signatures (`before`) with the same signatures in a later version
+/// of the file (`after`): each must be there and check as it did. Returns each signer
+/// whose signature reports changes it doesn't allow that it didn't report before, with
+/// those changes. `Err` says which signature didn't check as before.
+pub(crate) fn newly_disallowed(
+    before: &SignatureReport,
+    after: &SignatureReport,
+) -> std::result::Result<Vec<(String, Vec<String>)>, String> {
+    let mut out = Vec::new();
+    for old in &before.signatures {
+        let now = after
+            .signatures
+            .iter()
+            .find(|s| s.fields == old.fields && s.byte_range == old.byte_range)
+            .ok_or_else(|| format!("the signature by {} is missing", signer_name(old)))?;
+        if now.status != old.status {
+            return Err(format!(
+                "the signature by {} changed from {:?} to {:?}",
+                signer_name(old),
+                old.status,
+                now.status
+            ));
+        }
+        let known: HashSet<String> = old
+            .changes
+            .iter()
+            .filter(|c| !c.allowed())
+            .map(|c| c.to_string())
+            .collect();
+        let mut new: Vec<String> = Vec::new();
+        for c in now.changes.iter().filter(|c| !c.allowed()) {
+            let c = c.to_string();
+            if !known.contains(&c) && !new.contains(&c) {
+                new.push(c);
+            }
+        }
+        if !new.is_empty() {
+            out.push((signer_name(old), new));
+        }
+    }
+    Ok(out)
 }
 
 /// Signing was refused because the edits going into the signed revision would make

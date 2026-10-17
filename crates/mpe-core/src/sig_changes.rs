@@ -752,6 +752,16 @@ fn header_at(bytes: &[u8], offset: usize, id: ObjectId) -> bool {
 /// version, whose cross-reference section lists `written` and nothing else (besides the
 /// head of the free list and a cross-reference stream's own entry), each where its object
 /// starts in the new revision. Returns those positions.
+/// Whether the newest cross-reference section of `bytes` is a hybrid one (a table whose
+/// trailer names a cross-reference stream too, `/XRefStm`). lopdf reads such a section's
+/// stream only while it is the newest, so a revision appended after it would hide the
+/// objects the stream lists.
+pub(crate) fn newest_is_hybrid(bytes: &[u8]) -> bool {
+    last_startxref(bytes)
+        .and_then(|at| read_section(bytes, at).ok())
+        .is_some_and(|s| s.xref_stm.is_some())
+}
+
 pub(crate) fn check_appended(
     bytes: &[u8],
     base_end: usize,
@@ -1067,6 +1077,11 @@ fn same_at(a: &Object, b: &Object, depth: usize) -> bool {
         (Object::Dictionary(x), Object::Dictionary(y)) => same_dict(x, y, depth),
         (Object::Stream(x), Object::Stream(y)) => {
             x.content == y.content && same_dict(&x.dict, &y.dict, depth)
+        }
+        // A whole number is the same written as `612` or `612.0` (writers, lopdf among
+        // them, drop the `.0`).
+        (Object::Real(r), Object::Integer(i)) | (Object::Integer(i), Object::Real(r)) => {
+            r.fract() == 0.0 && *r as i64 == *i
         }
         _ => a == b,
     }

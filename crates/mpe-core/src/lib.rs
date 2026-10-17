@@ -44,6 +44,7 @@ mod sanitise;
 mod scan;
 mod security;
 mod sig_changes;
+mod sig_save;
 mod sig_sign;
 mod sig_verify;
 mod sign;
@@ -78,6 +79,7 @@ pub use sanitise::{Hidden, HiddenReport};
 pub use scan::{ScanMode, ScanOptions, ScanResult};
 pub use security::{Cipher, Encryption, Restrictions};
 pub use sig_changes::{Change, ChangeKind, Refusal};
+pub use sig_save::{append_edits, AppendedEdits};
 pub use sig_sign::{
     sign_document, DisallowedChanges, SignPlace, SignRequest, SignedDocument, MIN_SIGNATURE_BOX,
 };

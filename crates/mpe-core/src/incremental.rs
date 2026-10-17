@@ -28,14 +28,12 @@ const TRAILER_KEYS: [&[u8]; 3] = [b"Root", b"Info", b"ID"];
 
 /// `original` (the file as it was opened, unencrypted) with a revision appended holding
 /// every object of `edited` that differs from it. Objects the edits deleted are written
-/// as `null` when something still refers to them, so they read as gone.
+/// as `null` when something still refers to them, so they read as gone. When nothing
+/// differs, nothing is appended: the result is `original` with no offsets.
 pub(crate) fn append_revision(original: &[u8], edited: &Document) -> Result<Appended> {
     let base = Pdf::from_bytes(original, None)?.doc;
     if base.encryption_state.is_some() || base.trailer.has(b"Encrypt") {
         bail!("MPE can't add to encrypted documents");
-    }
-    if let Some(why) = base_problem(original, &base) {
-        bail!("{why}");
     }
     let startxref = base.xref_start;
     if !edited.trailer.has(b"Root") {
@@ -59,11 +57,26 @@ pub(crate) fn append_revision(original: &[u8], edited: &Document) -> Result<Appe
     let nulled: Vec<ObjectId> = base
         .objects
         .iter()
-        .filter(|(id, o)| !edited.objects.contains_key(id) && used.contains(id) && !is_machinery(o))
+        .filter(|(id, o)| {
+            // An object an earlier save already wrote as `null` stays that way.
+            !edited.objects.contains_key(id)
+                && used.contains(id)
+                && !is_machinery(o)
+                && !matches!(o, Object::Null)
+        })
         .map(|(id, _)| *id)
         .collect();
     for id in &nulled {
         changed.insert(*id, Object::Null);
+    }
+    if changed.is_empty() {
+        return Ok(Appended {
+            bytes: original.to_vec(),
+            offsets: HashMap::new(),
+        });
+    }
+    if let Some(why) = base_problem(original, &base) {
+        bail!("{why}");
     }
     let written: Vec<ObjectId> = changed.keys().copied().collect();
     let top = written.iter().map(|id| id.0).max().unwrap_or(0);
@@ -84,9 +97,18 @@ pub(crate) fn append_revision(original: &[u8], edited: &Document) -> Result<Appe
     inc.save_to(&mut bytes)
         .map_err(|e| anyhow!("writing the new revision failed: {e}"))?;
 
-    // Read it back before handing it out.
+    // Read it back before handing it out. lopdf reads a hybrid section's stream only while
+    // it is the newest section, so after a hybrid file it can miss objects.
+    let hybrid = sig_changes::newest_is_hybrid(original);
     let lost = |why: String| {
-        anyhow!("the new revision didn't read back correctly ({why}); nothing was written")
+        if hybrid {
+            anyhow!(
+                "the file's cross-reference information uses the older mixed (hybrid) layout, \
+                 and MPE can't add to it reliably ({why}); nothing was written"
+            )
+        } else {
+            anyhow!("the new revision didn't read back correctly ({why}); nothing was written")
+        }
     };
     if !bytes.starts_with(original) {
         return Err(lost("earlier bytes changed".into()));
@@ -220,12 +242,11 @@ mod tests {
         let mut written: Vec<ObjectId> = out.offsets.keys().copied().collect();
         written.sort();
         assert_eq!(written, [page, new]);
-        // Nothing changed: an empty revision.
+        // Nothing changed: nothing appended.
         let same = Pdf::from_bytes(&original, None).unwrap();
-        assert!(append_revision(&original, &same.doc)
-            .unwrap()
-            .offsets
-            .is_empty());
+        let out = append_revision(&original, &same.doc).unwrap();
+        assert!(out.offsets.is_empty());
+        assert_eq!(out.bytes, original);
     }
 
     #[test]
@@ -259,6 +280,19 @@ mod tests {
             .add_object(dictionary! { "X" => Object::Real(f32::NAN) });
         let e = append_revision(&original, &p.doc).err().expect("refused");
         assert!(format!("{e:#}").contains("didn't read back"), "{e:#}");
+    }
+
+    #[test]
+    fn hybrid_files_are_recognised() {
+        let file = |trailer: &str| {
+            format!(
+                "%PDF-1.5\nxref\n0 1\n0000000000 65535 f \ntrailer\n<<{trailer}>>\nstartxref\n9\n\
+                 %%EOF\n"
+            )
+            .into_bytes()
+        };
+        assert!(sig_changes::newest_is_hybrid(&file("/Size 1 /XRefStm 0")));
+        assert!(!sig_changes::newest_is_hybrid(&file("/Size 1")));
     }
 
     #[test]

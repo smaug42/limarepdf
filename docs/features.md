@@ -3,8 +3,8 @@
 **Status: 0.6, for testing.** Most testing has been on Linux. Annotations can be viewed, moved, deleted and flattened;
 text can be highlighted and marked; notes, text boxes, shapes, lines, freehand drawings and replies added. Content
 can be redacted for good, and documents filled in and signed with a picture of your signature. Digital signatures are
-being built: checking, digital IDs, signing and certifying work, in the app and from the command line; saving a
-signed document without breaking its signatures is next.
+being built: checking, digital IDs, signing, certifying and saving signed documents with their signatures kept
+work, in the app and from the command line; a security review and round trips with Acrobat are next.
 
 ## What MPE does
 
@@ -81,7 +81,7 @@ available.
 | Installers and packages | Done | `.deb` and `.rpm` packages with apt and dnf repositories, a macOS `.dmg`, a Windows MSI, and archives; GPG-signed. [Install](install.md); more package managers planned, see below |
 | Redaction | Done | Mark areas, selected text or search results (standard redaction marks), check them, then apply: text, drawings, comments and links under them are removed for good, pictures (scans included) blacked out there, then checked. In the app and with `mpe redact`. [Details](redaction.md) |
 | Removing hidden information | Done | Metadata (including XMP), JavaScript and automatic actions, attachments, hidden layers and their content, thumbnails and private data; if chosen, comments, form values, bookmarks and what lies outside the crop box. Document > Remove hidden information… and `mpe sanitise`. [Details](redaction.md#removing-hidden-information) |
-| Digital signatures | Partial | Checking in the app (a coloured banner, the Signatures tab, Details, View signed version, trusting signers and authorities, Trusted certificates) and from the command line (`mpe verify`): unchanged or not, signer's certificate, signing time and timestamps, certification and locked fields, warnings; RSA and ECDSA P-256/P-384; refuses the known wrapping and copying attacks; lists the changes made after each signature and judges them by Acrobat's rules (stricter when unsure), catching the shadow and incremental-saving attacks; saves the version a signature signed; trusting signers and certificate authorities (`mpe trust`), with chains checked by RFC 5280's rules at the signing time, in MPE only. Digital IDs in the app (Edit > Digital IDs) and from the command line (`mpe id`): make a self-signed one (RSA 3072-bit, five years, like Acrobat's), import `.p12`/`.pfx` files from Acrobat, Windows, macOS or a certificate authority (old and new encryptions), export an ID or its certificate. Signing and certifying in the app (Document > Sign with digital ID, Certify; edits made since opening are signed with it, asking first when earlier signatures wouldn't allow them) and from the command line (`mpe sign`): in an empty signature field or a new box, as Acrobat signs (`adbe.pkcs7.detached`, SHA-256), with a visible look (your name in handwriting or a picture, "Digitally signed by" and the date), added after the file's bytes so earlier signatures stay valid; follows certifications and field locks; every signed file checked before it is written. Not yet: saving a signed document without breaking its signatures, timestamps when signing, encrypted documents. The rest is planned: see below. [Details](signatures.md) |
+| Digital signatures | Partial | Checking in the app (a coloured banner, the Signatures tab, Details, View signed version, trusting signers and authorities, Trusted certificates) and from the command line (`mpe verify`): unchanged or not, signer's certificate, signing time and timestamps, certification and locked fields, warnings; RSA and ECDSA P-256/P-384; refuses the known wrapping and copying attacks; lists the changes made after each signature and judges them by Acrobat's rules (stricter when unsure), catching the shadow and incremental-saving attacks; saves the version a signature signed; trusting signers and certificate authorities (`mpe trust`), with chains checked by RFC 5280's rules at the signing time, in MPE only. Digital IDs in the app (Edit > Digital IDs) and from the command line (`mpe id`): make a self-signed one (RSA 3072-bit, five years, like Acrobat's), import `.p12`/`.pfx` files from Acrobat, Windows, macOS or a certificate authority (old and new encryptions), export an ID or its certificate. Signing and certifying in the app (Document > Sign with digital ID, Certify; edits made since opening are signed with it, asking first when earlier signatures wouldn't allow them) and from the command line (`mpe sign`): in an empty signature field or a new box, as Acrobat signs (`adbe.pkcs7.detached`, SHA-256), with a visible look (your name in handwriting or a picture, "Digitally signed by" and the date), added after the file's bytes so earlier signatures stay valid; follows certifications and field locks; every signed file checked before it is written. Saving a signed document (Save in the app, every editing command) adds the changes after what was signed, so the signatures stay valid; asks first (the command line refuses without a flag) when they don't allow the changes, and before writing the whole file when it must (redactions, removed hidden information, passwords, damaged files). Not yet: timestamps when signing, encrypted documents. The rest is planned: see below. [Details](signatures.md) |
 | Certificate encryption | No | |
 | PDF/A, optimised saving | No | Saved files are pruned and compressed |
 | Comparing documents | No | |
@@ -93,9 +93,8 @@ available.
 - Header, footer, Bates and watermark text uses Helvetica and Latin-1 only; other characters print as `?`.
 - Headers, footers and watermarks are added to the page content. They are not annotations and cannot be removed one
   by one later; use Undo before saving.
-- Saving rewrites the whole file; incremental saving is not available.
-- Saving removes the validity of digital signatures, as any rewrite does. The app asks first when a document is
-  signed; the command line doesn't.
+- Saving rewrites the whole file, except for digitally signed documents, whose changes are added after what was
+  signed so the signatures stay valid ([details](signatures.md#saving-a-signed-document)).
 - Files the renderer cannot read show "Rendering…" on their pages; editing may still work.
 - A malformed file that makes MPE fail while opening, editing or saving gets an error message, and a failed edit
   leaves the document as it was. A failure while showing the document (pages, thumbnails, search, bookmarks,
@@ -149,7 +148,8 @@ editors:
   with Acrobat's three permission levels. Signing adds to the end of the file, so earlier signatures stay valid;
   in the app, edits made since opening are signed with it (done, in the app and from the command line).
 - **Saving a signed document** adds the changes to the end of the file instead of rewriting it, so its
-  signatures stay valid, and asks first when a change would show as not allowed.
+  signatures stay valid, and asks first when a change would show as not allowed (done, in the app and from the
+  command line).
 
 Not in the first version: timestamps from a timestamp server, long-term validation, revocation checks, Adobe's
 and the EU's lists of trusted authorities, smart cards and system keystores, signing encrypted files.
@@ -181,8 +181,8 @@ archives stay.
 - **Editing paragraphs.** Edit text as paragraphs that reflow, not line by line, as a command you choose ("Edit as
   paragraph") rather than the default: MPE outlines the lines it takes to be the paragraph, you adjust or confirm,
   and the reflow is one undo step. Line-by-line editing stays as it is.
-- **Incremental saving.** Save only what changed, which is faster for large files. Signed documents get this with
-  digital signatures (above); this item is about using it for every document.
+- **Incremental saving.** Save only what changed, which is faster for large files. Signed documents are already
+  saved this way (above); this item is about using it for every document.
 - **Standards output.** PDF/A for archiving, and PDF/UA tagging for accessibility.
 - **Verifiable signatures.** Apply and validate digital signatures, including certificate-based ones, with revocation
   checked offline.

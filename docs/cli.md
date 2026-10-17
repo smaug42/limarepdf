@@ -6,6 +6,13 @@ options with `mpe <command> --help`.
 Commands that change a document take the input file first and write the result to `-o out.pdf`; the input is
 never changed. Add `--password` to open a protected input.
 
+A digitally signed input keeps its signatures: the changes are added after what was signed. When its signatures
+don't allow the changes, the command writes nothing unless `--accept-disallowed` is given (the signatures then
+report the changes). When the changes can't be added that way (a password set, an encrypted or damaged file,
+redaction), it writes nothing unless `--break-signatures` is given, which writes the whole file and breaks them.
+`mpe sanitise` takes `--break-signatures` too. See
+[Saving a signed document](signatures.md#saving-a-signed-document).
+
 Page lists take numbers and ranges, counted from 1: `1-3,7`, `5-` (5 to the end) or `all`.
 
 ## Look at a document

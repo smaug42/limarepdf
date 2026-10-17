@@ -173,8 +173,11 @@ enum Dialog {
     ConfirmReplace(ImageExport, usize),
     ConfirmFlatten,
     ConfirmFlattenAnnots,
-    /// Save (`true`: as a new file) although it breaks the document's signatures?
-    ConfirmSaveSigned(bool),
+    /// Save (`true`: as a new file) by writing the whole file, which breaks the
+    /// document's signatures? With why the edits can't be added after what was signed.
+    ConfirmSaveSigned(bool, String),
+    /// Save edits the document's signatures don't allow?
+    ConfirmSaveDisallowed(Box<SaveDisallowed>),
     /// Remove everything under this many marked areas?
     ConfirmApplyRedactions(usize),
     /// Draw this many fill-and-sign items into the pages?
@@ -189,6 +192,22 @@ enum Dialog {
     /// The name for comments, being edited.
     CommentName(String),
     About(about::Page),
+}
+
+/// Why a signed document with redactions applied or hidden information removed is saved
+/// by writing the whole file.
+const SCRUBBED: &str = "you applied redactions or removed hidden information, and the version \
+                        that was signed would still hold everything removed";
+
+/// A signed document with its edits added after what was signed, ready to write once the
+/// user agrees that the signatures will report changes they don't allow.
+struct SaveDisallowed {
+    as_new: bool,
+    /// The tab and its revision the file was made from.
+    tab: u64,
+    revision: u64,
+    bytes: Vec<u8>,
+    disallowed: mpe_core::DisallowedChanges,
 }
 
 /// What selected text is printed or saved from, taken from the tab so a background job
@@ -758,10 +777,19 @@ impl App {
             }
             // A document opened with signature fields kept its bytes: the signature is
             // added after them, with the edits made since. Any other document has no
-            // signatures to keep, so it is written out as it is now and signed.
+            // signatures to keep, so it is written out as it is now and signed. So is one
+            // that had something removed for good, which its opened bytes still hold.
+            if t.scrubbed && t.signed {
+                anyhow::bail!(
+                    "You applied redactions or removed hidden information, and the version \
+                     already signed still holds everything removed. Save the document first \
+                     (which writes the whole file again and breaks the earlier signatures), \
+                     then sign it."
+                );
+            }
             let (base, edited): (Arc<[u8]>, _) = match &t.sigs {
-                Some(s) => (s.bytes.clone(), t.dirty.then(|| t.pdf.clone())),
-                None => (Arc::from(t.pdf.clone().to_bytes()?), None),
+                Some(s) if !t.scrubbed => (s.bytes.clone(), t.dirty.then(|| t.pdf.clone())),
+                _ => (Arc::from(t.pdf.clone().to_bytes()?), None),
             };
             let art = match self
                 .settings
@@ -1101,8 +1129,8 @@ impl App {
         }
     }
 
-    /// Saves, first asking when the document has redaction marks not yet applied, then
-    /// when saving would break its digital signatures.
+    /// Saves, first asking when the document has redaction marks not yet applied; a
+    /// signed document then goes through [`Self::save_signed`].
     fn save(&mut self, ctx: &egui::Context, as_new: bool) {
         let marks = self
             .tabs
@@ -1115,11 +1143,87 @@ impl App {
         }
     }
 
+    /// A signed document is saved by adding the edits after what was signed, so that its
+    /// signatures stay valid; this asks first when they don't allow the edits. When the
+    /// edits can't be added that way, it asks before writing the whole file, which breaks
+    /// the signatures.
     fn save_signed(&mut self, ctx: &egui::Context, as_new: bool) {
-        if self.tabs.get(self.active).is_some_and(|t| t.signed) {
-            self.dialog = Dialog::ConfirmSaveSigned(as_new);
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        if !tab.signed {
+            return self.save_now(ctx, as_new);
+        }
+        let appended = if tab.scrubbed {
+            Err(SCRUBBED.to_string())
+        } else if let Some(s) = &tab.sigs {
+            tab.pdf.set_encryption(tab.encryption.clone());
+            crate::guard(|| mpe_core::append_edits(&s.bytes, &tab.pdf))
+                .map_err(|e| format!("{e:#}"))
         } else {
-            self.save_now(ctx, as_new);
+            Err("MPE doesn't have the file as it was signed".to_string())
+        };
+        match appended {
+            Ok(a) => match a.disallowed {
+                None => self.save_appended(ctx, as_new, a.bytes),
+                Some(disallowed) => {
+                    self.dialog = Dialog::ConfirmSaveDisallowed(Box::new(SaveDisallowed {
+                        as_new,
+                        tab: tab.id,
+                        revision: tab.revision,
+                        bytes: a.bytes,
+                        disallowed,
+                    }))
+                }
+            },
+            Err(why) => self.dialog = Dialog::ConfirmSaveSigned(as_new, why),
+        }
+    }
+
+    /// Where to save the tab: its file, or one the user picks (for Save as, or a document
+    /// with no file yet).
+    fn save_path(tab: &Tab, as_new: bool) -> Option<PathBuf> {
+        if !as_new {
+            if let Some(p) = &tab.path {
+                return Some(p.clone());
+            }
+        }
+        let mut d = Self::pdf_dialog();
+        if let Some(n) = tab.path.as_ref().and_then(|p| p.file_name()) {
+            d = d.set_file_name(n.to_string_lossy());
+        } else if let Some(l) = &tab.label {
+            d = d.set_file_name(format!("{l}.pdf"));
+        }
+        let mut p = d.save_file()?;
+        if p.extension().is_none() {
+            p.set_extension("pdf");
+        }
+        Some(p)
+    }
+
+    /// Writes a signed document whose edits were added after what was signed (`bytes`).
+    /// The signatures stay, and the saved file becomes what later saves add to.
+    fn save_appended(&mut self, ctx: &egui::Context, as_new: bool, bytes: Vec<u8>) {
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        let Some(path) = Self::save_path(tab, as_new) else {
+            return;
+        };
+        match mpe_core::write_file(&path, &bytes) {
+            Ok(()) => {
+                self.status = format!(
+                    "Saved {}; the changes were added after what was signed, so the signatures \
+                     stay",
+                    path.display()
+                );
+                self.recent.add(&path);
+                tab.dirty = false;
+                tab.scrubbed = false;
+                tab.path = Some(path);
+                self.check_signatures(ctx, self.active, Arc::from(bytes), None);
+            }
+            Err(e) => self.dialog = Dialog::Message("Save failed".into(), format!("{e:#}")),
         }
     }
 
@@ -1127,24 +1231,8 @@ impl App {
         let Some(tab) = self.tabs.get_mut(self.active) else {
             return;
         };
-        let path = if as_new || tab.path.is_none() {
-            let mut d = Self::pdf_dialog();
-            if let Some(n) = tab.path.as_ref().and_then(|p| p.file_name()) {
-                d = d.set_file_name(n.to_string_lossy());
-            } else if let Some(l) = &tab.label {
-                d = d.set_file_name(format!("{l}.pdf"));
-            }
-            match d.save_file() {
-                Some(mut p) => {
-                    if p.extension().is_none() {
-                        p.set_extension("pdf");
-                    }
-                    p
-                }
-                None => return,
-            }
-        } else {
-            tab.path.clone().unwrap()
+        let Some(path) = Self::save_path(tab, as_new) else {
+            return;
         };
         tab.pdf.set_encryption(tab.encryption.clone());
         match crate::guard(|| tab.pdf.save(&path)) {
@@ -1152,6 +1240,7 @@ impl App {
                 self.status = format!("Saved {}", path.display());
                 self.recent.add(&path);
                 tab.dirty = false;
+                tab.scrubbed = false;
                 // The saved copy's signatures are already broken: no need to ask again.
                 tab.signed = false;
                 // The Signatures tab describes the file, so check the saved one.
@@ -2043,6 +2132,7 @@ impl App {
                         Ok(())
                     });
                     if let Some(r) = report.filter(|_| ok) {
+                        t.scrubbed = true;
                         self.dialog = Dialog::Message("Redactions applied".into(), report_text(&r));
                     }
                     done = true;
@@ -2090,6 +2180,7 @@ impl App {
                         Ok(())
                     });
                     if let Some(r) = report.filter(|_| ok) {
+                        t.scrubbed = true;
                         let mut text = String::from("Removed:\n");
                         for (h, n) in &r.removed {
                             text.push_str(&format!("• {} ({n})\n", h.label()));
@@ -2126,18 +2217,54 @@ impl App {
                     Outcome::Open => {}
                 }
             }
-            Dialog::ConfirmSaveSigned(as_new) => {
+            Dialog::ConfirmSaveSigned(as_new, why) => {
                 let as_new = *as_new;
                 match dlg::confirm(
                     ctx,
                     "Break the signatures?",
-                    "This document is digitally signed. MPE saves by rewriting the whole file, so \
-                     the saved copy's signatures will show as invalid in every reader. Save as a \
-                     new file to keep the signed original.",
+                    &format!(
+                        "This document is digitally signed, but MPE can't add your changes after \
+                         what was signed: {}. Saving instead writes the whole file again, so the \
+                         saved copy's signatures will show as invalid in every reader. Save as a \
+                         new file to keep the signed original.",
+                        mpe_core::display_line(why, 300)
+                    ),
                     "Save anyway",
                 ) {
                     Outcome::Apply => {
                         self.save_now(ctx, as_new);
+                        done = true;
+                    }
+                    Outcome::Cancel => done = true,
+                    Outcome::Open => {}
+                }
+            }
+            Dialog::ConfirmSaveDisallowed(s) => {
+                match dlg::confirm(
+                    ctx,
+                    "Save changes the signers didn't allow?",
+                    &format!(
+                        "Your changes are ones this document's signatures don't allow. If you \
+                         save, anyone who checks them will be told:\n{}\n\nThe signatures stay \
+                         valid for what was signed. Save as a new file to keep the signed \
+                         original as it is.",
+                        digital::disallowed_list(&s.disallowed)
+                    ),
+                    "Save anyway",
+                ) {
+                    Outcome::Apply => {
+                        let (as_new, tab, revision) = (s.as_new, s.tab, s.revision);
+                        let current = self
+                            .tabs
+                            .get(self.active)
+                            .is_some_and(|t| t.id == tab && t.revision == revision);
+                        if current {
+                            let bytes = std::mem::take(&mut s.bytes);
+                            self.save_appended(ctx, as_new, bytes);
+                        } else {
+                            // The document changed meanwhile: work it out again.
+                            self.save_signed(ctx, as_new);
+                        }
                         done = true;
                     }
                     Outcome::Cancel => done = true,

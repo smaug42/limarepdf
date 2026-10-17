@@ -53,22 +53,8 @@ impl Pdf {
     /// (`/NeedAppearances`). Fields MPE can't draw are left as they are. Returns how
     /// many widgets were drawn.
     pub fn refresh_appearances(&mut self) -> usize {
-        let all = self
-            .acro_form()
-            .and_then(|f| f.get(b"NeedAppearances").ok())
-            .and_then(|o| o.as_bool().ok())
-            .unwrap_or(false);
         let mut n = 0;
-        for (field, node) in self.form_nodes() {
-            let todo: Vec<ObjectId> = node
-                .widgets
-                .iter()
-                .copied()
-                .filter(|&w| !self.has_appearance(w) || (all && is_text_like(&field.kind)))
-                .collect();
-            if todo.is_empty() || check_value(&field, field.value.clone()).is_err() {
-                continue;
-            }
+        for (field, node, todo) in self.appearances_to_draw() {
             for w in todo {
                 let drawn = match &field.kind {
                     FieldKind::Text { .. } | FieldKind::Choice { .. } => {
@@ -85,6 +71,33 @@ impl Pdf {
             }
         }
         n
+    }
+
+    /// The widgets [`Pdf::refresh_appearances`] would draw, by field: only fields MPE can
+    /// draw.
+    pub(crate) fn appearances_to_draw(&self) -> Vec<(Field, Node, Vec<ObjectId>)> {
+        let all = self
+            .acro_form()
+            .and_then(|f| f.get(b"NeedAppearances").ok())
+            .and_then(|o| o.as_bool().ok())
+            .unwrap_or(false);
+        let mut out = Vec::new();
+        for (field, node) in self.form_nodes() {
+            let drawable = matches!(
+                field.kind,
+                FieldKind::Text { .. } | FieldKind::Choice { .. } | FieldKind::Check
+            );
+            let todo: Vec<ObjectId> = node
+                .widgets
+                .iter()
+                .copied()
+                .filter(|&w| !self.has_appearance(w) || (all && is_text_like(&field.kind)))
+                .collect();
+            if drawable && !todo.is_empty() && check_value(&field, field.value.clone()).is_ok() {
+                out.push((field, node, todo));
+            }
+        }
+        out
     }
 
     fn write_value(&mut self, field: &Field, node: &Node, value: &FieldValue) -> Result<()> {

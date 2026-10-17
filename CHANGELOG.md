@@ -81,7 +81,9 @@
   a certification, what others may change; your saved fill-and-sign signature can be the look's left part. The
   signed copy is saved as a new file (`NAME-signed.pdf` suggested) and opens in place of the document. Edits made
   since opening are signed with it; when they would show on earlier signatures as not allowed, MPE says which and
-  asks before signing. Signing runs in the background; a password is used once and overwritten.
+  asks before signing. After redacting or removing hidden information, the document is written out in full before
+  it is signed, so nothing removed stays in it (a document already signed is saved first). Signing runs in the
+  background; a password is used once and overwritten.
 - Digital IDs window (Edit > Digital IDs): create, import, export (certificate or with its key), make default and
   remove digital IDs, as `mpe id` does.
 - Digital signatures in the app: a signed document is checked when it opens, and a banner above the pages gives
@@ -91,6 +93,14 @@
   Trust this signer…, Trust an authority…, View signed version (opens in a new tab) and Go to field. Edit >
   Trusted certificates… lists, removes and adds trusted certificates (also from a `.cer`, `.pem` or `.p7c` file).
   After saving, the saved file is checked again.
+- Saving a signed document keeps its signatures: Save and Save as add your changes after what was signed, as
+  Acrobat does, so each signature stays valid and lists the changes. MPE asks first when the signatures don't allow
+  the changes, naming each signer and what they will be told, and asks before writing the whole file when it must,
+  which breaks the signatures: after redacting or removing hidden information (the signed version would still hold
+  what was removed), with a password set, or for encrypted or damaged files. Every editing command on the command
+  line does the same, refusing unless `--accept-disallowed` or `--break-signatures` is given; `mpe sanitise` takes
+  `--break-signatures` too. A signed form's fields without a drawing of their own are drawn on screen and in print
+  only, not into the document.
 
 ### Changed
 

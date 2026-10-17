@@ -1166,13 +1166,10 @@ impl SignWindow {
     }
 }
 
-/// The question asked when signing would make earlier signatures report disallowed
-/// changes.
-fn disallowed_text(d: &DisallowedChanges) -> String {
-    let mut s = String::from(
-        "This document was changed in ways its earlier signatures don't allow. If you sign \
-         now, anyone who checks them will be told:\n",
-    );
+/// Each signer of `d` with the changes their signature would report, one line each
+/// (each line starts with a line break).
+pub fn disallowed_list(d: &DisallowedChanges) -> String {
+    let mut s = String::new();
     for (who, what) in &d.signers {
         let what: Vec<String> = what.iter().take(5).map(|w| display_line(w, 120)).collect();
         s.push_str(&format!(
@@ -1181,6 +1178,17 @@ fn disallowed_text(d: &DisallowedChanges) -> String {
             what.join("; ")
         ));
     }
+    s
+}
+
+/// The question asked when signing would make earlier signatures report disallowed
+/// changes.
+fn disallowed_text(d: &DisallowedChanges) -> String {
+    let mut s = String::from(
+        "This document was changed in ways its earlier signatures don't allow. If you sign \
+         now, anyone who checks them will be told:\n",
+    );
+    s.push_str(&disallowed_list(d));
     s.push_str(
         "\n\nThe earlier signatures stay valid for the version they signed. Sign anyway? You \
          will be asked for the password again.",

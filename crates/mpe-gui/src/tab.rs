@@ -40,6 +40,7 @@ struct Step {
     /// The document's bytes; `None` when only the password settings changed.
     pdf: Option<Vec<u8>>,
     encryption: Option<Encryption>,
+    scrubbed: bool,
 }
 
 /// Inspector edits that applying again replaces, while nothing else has changed since.
@@ -58,8 +59,13 @@ pub struct Tab {
     /// is still current.
     pub revision: u64,
     pub encryption: Option<Encryption>,
-    /// The file holds digital signatures that saving would break; cleared once saved.
+    /// The file holds digital signatures, so saving adds the edits after what was signed;
+    /// cleared once a save had to write the file out in full, breaking them.
     pub signed: bool,
+    /// Redactions were applied or hidden information removed since the file was opened
+    /// or last saved. Saving then writes the file out in full, so that nothing removed is
+    /// left in an earlier version of it. Follows undo and redo.
+    pub scrubbed: bool,
     worker: Worker,
     /// The colours pages are drawn in on screen.
     colours: Colours,
@@ -161,12 +167,16 @@ impl Tab {
     ) -> Result<Self, String> {
         let size = path.as_ref().and_then(|p| std::fs::metadata(p).ok());
         let banners = banners::detect(&pdf, size.map(|m| m.len()));
-        // Form fields without drawings would show nothing; this isn't a change to save.
-        pdf.refresh_appearances();
+        let signed = pdf.signature_count() > 0;
+        // Form fields without drawings would show nothing; this isn't a change to save. A
+        // signed document's fields stay as they were signed (saving adds only the edits
+        // made to it); its snapshots draw them instead.
+        if !signed {
+            pdf.refresh_appearances();
+        }
         let bytes = pdf.app_snapshot().map_err(|e| e.to_string())?;
         let sizes = sizes_of(&pdf);
         let labels = pdf.page_labels();
-        let signed = pdf.signature_count() > 0;
         Ok(Self {
             labels,
             banners,
@@ -180,6 +190,7 @@ impl Tab {
             revision: 0,
             encryption: None,
             signed,
+            scrubbed: false,
             worker: Worker::spawn(ctx.clone(), bytes, colours),
             colours,
             sizes,
@@ -822,10 +833,14 @@ impl Tab {
     }
 
     /// Record the state before a change: the document's bytes (`None` if it did not
-    /// change) and the current password settings.
+    /// change), the current password settings and whether anything was removed for good.
     fn push_undo(&mut self, pdf: Option<Vec<u8>>) {
         let encryption = self.encryption.clone();
-        self.undo.push(Step { pdf, encryption });
+        self.undo.push(Step {
+            pdf,
+            encryption,
+            scrubbed: self.scrubbed,
+        });
         if self.undo.len() > MAX_UNDO {
             self.undo.remove(0);
         }
@@ -867,13 +882,18 @@ impl Tab {
             None => None,
         };
         let encryption = std::mem::replace(&mut self.encryption, step.encryption);
+        let scrubbed = std::mem::replace(&mut self.scrubbed, step.scrubbed);
         self.forms.sec = Sec::of(self.encryption.as_ref());
         self.dirty = true;
         if pdf.is_some() {
             self.revision += 1;
             self.refresh(ctx);
         }
-        Some(Step { pdf, encryption })
+        Some(Step {
+            pdf,
+            encryption,
+            scrubbed,
+        })
     }
 
     /// Re-render from the current document state.
