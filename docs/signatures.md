@@ -634,8 +634,11 @@ three damaged files, one hybrid file whose objects its PDF library would misread
 and one whose signature was already broken (its byte range ran past the end of the file). A document MPE signed and
 then saved with a comment and a filled-in field is in the `pdfsig` and OpenSSL cross-check above.
 
-Not yet tested: signatures made in Adobe Acrobat by MPE's testers, MPE-made signatures and certifications in
-Acrobat, documents signed in Acrobat and saved with changes in MPE (and the other way round), and digital ID files
+A document MPE signed with a self-signed digital ID, opened in Adobe Acrobat Reader on Windows, shows its signature
+as made with a self-signed certificate, with the signer's details in their places.
+
+Not yet tested: signatures made in Adobe Acrobat by MPE's testers, MPE-made certifications in Acrobat, MPE's
+signatures in Acrobat beyond that first look, documents signed in Acrobat and saved with changes in MPE (and the other way round), and digital ID files
 exported from Acrobat or Windows, or MPE's exported files imported there. Where MPE is stricter than Acrobat (see
 the limitations) is to be confirmed in those tests.
 
