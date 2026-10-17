@@ -15,7 +15,6 @@ Small or medium additions that build on what MPE already has:
 
 - **Extract images** (S–M): save a document's embedded images as files.
 - **N-up and booklet layouts** (M): several pages on one sheet, or pages ordered for folding.
-- **Page colour modes** (S–M): dark pages, inverted or high contrast, to match the app's dark mode.
 - **Shell completions** for `mpe` (S): needs the `clap_complete` crate.
 
 ## Pages and layout
@@ -71,13 +70,28 @@ Small or medium additions that build on what MPE already has:
 - Calculations and validation (L, without running JavaScript)
 - Lock, unlock and remove fields (S); fill many copies from one CSV or data file (M)
 
-## Signing, beyond the planned digital signatures
+## Signing, beyond digital signatures
 
-- Certify documents with permission levels, timestamps, long-term validation (L)
+- **First after digital signatures:** timestamps from a timestamp server when signing (M; needs network access
+  and an HTTP crate; Acrobat has none set up by default), then long-term validation, adding revocation answers
+  to the document (L)
+- Revocation checking (OCSP, CRL) for certificates from authorities (M; network)
+- Adobe's list of trusted authorities (AATL; only distributed to Adobe products as far as known) or the EU
+  trusted lists (large, changing XML with its own signatures) (L)
+- Name constraints in certificate authorities (a limit on the names an authority may issue for): checked as RFC
+  5280 says, instead of refusing to trust chains that set them (M)
+- Importing Acrobat's FDF certificate exchange files (`.fdf`) as trusted certificates (S; `.cer` and `.p7c` work)
+- Smart cards, USB tokens, the Windows certificate store and macOS Keychain (L)
+- Exporting digital IDs in the older 3DES form with less password stretching, for software that can't read MPE's
+  AES-256 exports (S; only if testing with Acrobat shows it is needed, as an explicit option with a warning)
+- Exporting certificates as PEM as well as DER `.cer` (S)
+- Signing encrypted documents (M)
+- Checking signatures on Brainpool curves, used by some European ID cards, and P-521 (S each; the `bp256`,
+  `bp384` or `p521` crates, new dependencies)
 - Remove signatures (S)
-- Fill and sign: dates in local time instead of UTC (S; needs a time-zone crate), typed signatures and text in
-  other scripts (M; more fonts), variable-width strokes from pen pressure (M; egui doesn't report pressure yet),
-  `--signature-image` with the paper made transparent from the command line (S)
+- Fill and sign: typed signatures and text in other scripts (M; more fonts), variable-width strokes from pen
+  pressure (M; egui doesn't report pressure yet), `--signature-image` with the paper made transparent from the
+  command line (S)
 
 ## Redaction, beyond what MPE does
 
@@ -104,7 +118,6 @@ Small or medium additions that build on what MPE already has:
 
 ## Viewing
 
-- Page colour modes: dark pages, invert, high contrast (S–M)
 - Split view, several windows, a magnifier, a snapshot tool (M each)
 - Full-screen presentation mode (S–M)
 - Reflow view (L); read aloud (L)

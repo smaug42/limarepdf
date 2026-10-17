@@ -5,9 +5,10 @@ use crate::inspector::{Forms, Sec};
 use crate::markup::{self, Mark};
 use crate::selection::Selection;
 use crate::settings::Layout;
+use crate::signatures::{self, Check, PanelAct, SigState};
 use crate::signing::SignPick;
 use crate::theme;
-use crate::worker::{Key, Worker};
+use crate::worker::{Colours, Key, Worker};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptions, Vec2};
 use egui_phosphor::regular as icon;
 use mpe_core::{
@@ -31,6 +32,7 @@ pub enum Side {
     Search,
     Bookmarks,
     Comments,
+    Signatures,
 }
 
 /// One undo or redo step: the state to go back to.
@@ -38,6 +40,7 @@ struct Step {
     /// The document's bytes; `None` when only the password settings changed.
     pdf: Option<Vec<u8>>,
     encryption: Option<Encryption>,
+    scrubbed: bool,
 }
 
 /// Inspector edits that applying again replaces, while nothing else has changed since.
@@ -56,9 +59,16 @@ pub struct Tab {
     /// is still current.
     pub revision: u64,
     pub encryption: Option<Encryption>,
-    /// The file holds digital signatures that saving would break; cleared once saved.
+    /// The file holds digital signatures, so saving adds the edits after what was signed;
+    /// cleared once a save had to write the file out in full, breaking them.
     pub signed: bool,
+    /// Redactions were applied or hidden information removed since the file was opened
+    /// or last saved. Saving then writes the file out in full, so that nothing removed is
+    /// left in an earlier version of it. Follows undo and redo.
+    pub scrubbed: bool,
     worker: Worker,
+    /// The colours pages are drawn in on screen.
+    colours: Colours,
     pub sizes: Vec<(f32, f32)>,
     pages: HashMap<usize, (u32, TextureHandle)>,
     thumbs: HashMap<usize, TextureHandle>,
@@ -140,6 +150,11 @@ pub struct Tab {
     /// when it has one, else the app's default.
     pub layout: Layout,
     pub cover: bool,
+    /// The digital signature check of a file with signature fields; `None` for other
+    /// documents.
+    pub sigs: Option<SigState>,
+    /// What to call a document that has no file, such as a signed version.
+    pub label: Option<String>,
 }
 
 impl Tab {
@@ -148,15 +163,20 @@ impl Tab {
         id: u64,
         mut pdf: Pdf,
         path: Option<PathBuf>,
+        colours: Colours,
     ) -> Result<Self, String> {
         let size = path.as_ref().and_then(|p| std::fs::metadata(p).ok());
         let banners = banners::detect(&pdf, size.map(|m| m.len()));
-        // Form fields without drawings would show nothing; this isn't a change to save.
-        pdf.refresh_appearances();
+        let signed = pdf.signature_count() > 0;
+        // Form fields without drawings would show nothing; this isn't a change to save. A
+        // signed document's fields stay as they were signed (saving adds only the edits
+        // made to it); its snapshots draw them instead.
+        if !signed {
+            pdf.refresh_appearances();
+        }
         let bytes = pdf.app_snapshot().map_err(|e| e.to_string())?;
         let sizes = sizes_of(&pdf);
         let labels = pdf.page_labels();
-        let signed = pdf.signature_count() > 0;
         Ok(Self {
             labels,
             banners,
@@ -170,7 +190,9 @@ impl Tab {
             revision: 0,
             encryption: None,
             signed,
-            worker: Worker::spawn(ctx.clone(), bytes),
+            scrubbed: false,
+            worker: Worker::spawn(ctx.clone(), bytes, colours),
+            colours,
             sizes,
             pages: HashMap::new(),
             thumbs: HashMap::new(),
@@ -210,6 +232,8 @@ impl Tab {
             flipped: 0.0,
             layout: Layout::default(),
             cover: true,
+            sigs: None,
+            label: None,
         })
     }
 
@@ -219,6 +243,7 @@ impl Tab {
             .as_ref()
             .and_then(|p| p.file_stem())
             .map(|s| s.to_string_lossy().into_owned())
+            .or_else(|| self.label.clone())
             .unwrap_or_else(|| fallback.into())
     }
 
@@ -228,6 +253,7 @@ impl Tab {
             .as_ref()
             .and_then(|p| p.file_name())
             .map(|n| mpe_core::display_line(&n.to_string_lossy(), 120))
+            .or_else(|| self.label.clone())
             .unwrap_or_else(|| "Untitled".into());
         if self.dirty {
             format!("{name} *")
@@ -391,10 +417,29 @@ impl Tab {
         true
     }
 
+    /// The colour of blank paper in the current colours, shown until a page is drawn.
+    fn paper(&self) -> Color32 {
+        let [r, g, b] = self.colours.mode.paper();
+        Color32::from_rgb(r, g, b)
+    }
+
+    /// Draw pages in `colours` from now on. Pages on screen keep their old drawing until
+    /// the new one arrives.
+    pub fn set_colours(&mut self, colours: Colours) {
+        if colours == self.colours {
+            return;
+        }
+        self.colours = colours;
+        self.worker.set_colours(colours);
+        self.pending.clear();
+        self.stale.extend(self.pages.keys().copied());
+        self.thumbs.clear();
+    }
+
     fn soft_refresh(&mut self, ctx: &egui::Context, pages: &[usize]) {
         match self.pdf.app_snapshot() {
             Ok(bytes) => {
-                self.worker = Worker::spawn(ctx.clone(), bytes);
+                self.worker = Worker::spawn(ctx.clone(), bytes, self.colours);
                 self.pending.clear();
                 for &p in pages {
                     self.stale.insert(p);
@@ -613,6 +658,19 @@ impl Tab {
                     }
                     self.ed.place_sign(p, StampPlace::Fill(rect));
                 }
+                Action::SignatureDetails(name) => {
+                    let found = self.sig_report().and_then(|c| {
+                        c.report
+                            .signatures
+                            .iter()
+                            .position(|s| s.fields.contains(&name))
+                    });
+                    // Still being checked, or not found: the Signatures tab says why.
+                    self.requested.push(match found {
+                        Some(i) => Act::SignatureDetails(i),
+                        None => Act::Signatures,
+                    });
+                }
                 Action::AddTextBox(p, rect, text) => {
                     let (style, author) = (self.ed.box_style, self.ed.author.clone());
                     let mut new = None;
@@ -775,10 +833,14 @@ impl Tab {
     }
 
     /// Record the state before a change: the document's bytes (`None` if it did not
-    /// change) and the current password settings.
+    /// change), the current password settings and whether anything was removed for good.
     fn push_undo(&mut self, pdf: Option<Vec<u8>>) {
         let encryption = self.encryption.clone();
-        self.undo.push(Step { pdf, encryption });
+        self.undo.push(Step {
+            pdf,
+            encryption,
+            scrubbed: self.scrubbed,
+        });
         if self.undo.len() > MAX_UNDO {
             self.undo.remove(0);
         }
@@ -820,20 +882,25 @@ impl Tab {
             None => None,
         };
         let encryption = std::mem::replace(&mut self.encryption, step.encryption);
+        let scrubbed = std::mem::replace(&mut self.scrubbed, step.scrubbed);
         self.forms.sec = Sec::of(self.encryption.as_ref());
         self.dirty = true;
         if pdf.is_some() {
             self.revision += 1;
             self.refresh(ctx);
         }
-        Some(Step { pdf, encryption })
+        Some(Step {
+            pdf,
+            encryption,
+            scrubbed,
+        })
     }
 
     /// Re-render from the current document state.
     pub fn refresh(&mut self, ctx: &egui::Context) {
         match self.pdf.app_snapshot() {
             Ok(bytes) => {
-                self.worker = Worker::spawn(ctx.clone(), bytes);
+                self.worker = Worker::spawn(ctx.clone(), bytes, self.colours);
                 self.sizes = sizes_of(&self.pdf);
                 self.labels = self.pdf.page_labels();
                 self.pages.clear();
@@ -1127,6 +1194,54 @@ impl Tab {
         }
     }
 
+    /// The Signatures side tab.
+    pub fn show_signatures(&mut self, ui: &mut egui::Ui) {
+        match signatures::panel(ui, self.sigs.as_ref(), self.dirty) {
+            Some(PanelAct::GoTo(page, top)) => self.go_to_at(page, top),
+            Some(PanelAct::Details(i)) => self.requested.push(Act::SignatureDetails(i)),
+            Some(PanelAct::SignedVersion(i)) => self.requested.push(Act::SignedVersion(i)),
+            Some(PanelAct::Trusted) => self.requested.push(Act::TrustedCertificates),
+            None => {}
+        }
+    }
+
+    /// Shows page `page` with the place `top` points down it at the top of the view.
+    pub fn go_to_at(&mut self, page: usize, top: f32) {
+        self.go_to(page);
+        self.goto_y = Some(top);
+    }
+
+    /// Takes the result of a signature check (dropped when a newer check has started)
+    /// and shows its banner first.
+    pub fn sig_checked(&mut self, generation: u64, check: Check) {
+        let Some(s) = self.sigs.as_mut().filter(|s| s.generation == generation) else {
+            return;
+        };
+        s.check = check;
+        self.sig_banner();
+    }
+
+    /// Shows the signatures banner for the current check, first; takes it away when
+    /// there is nothing to say.
+    pub fn sig_banner(&mut self) {
+        self.banners.retain(|b| b.kind != banners::Kind::Signatures);
+        if let Some(b) = self
+            .sigs
+            .as_ref()
+            .and_then(|s| signatures::banner(&s.check))
+        {
+            self.banners.insert(0, b);
+        }
+    }
+
+    /// The report of the last finished signature check, if any.
+    pub fn sig_report(&self) -> Option<&signatures::Checked> {
+        match &self.sigs.as_ref()?.check {
+            Check::Done(c) => Some(c),
+            _ => None,
+        }
+    }
+
     pub fn run_search(&mut self) {
         self.hit_idx = 0;
         self.matches.clear();
@@ -1182,6 +1297,9 @@ impl Tab {
     fn collect(&mut self, ctx: &egui::Context) {
         while let Ok(r) = self.worker.rx.try_recv() {
             self.pending.remove(&r.key);
+            if r.colours != self.colours {
+                continue;
+            }
             let Ok(b) = r.bitmap else { continue };
             let img = egui::ColorImage::from_rgba_premultiplied([b.width, b.height], &b.rgba);
             let tex = ctx.load_texture(
@@ -1321,9 +1439,13 @@ impl Tab {
     fn banners_ui(&mut self, ui: &mut egui::Ui) {
         self.refresh_marks_banner();
         let mut close = None;
-        let fill = ui.visuals().selection.bg_fill;
+        let dark = ui.visuals().dark_mode;
         for (i, b) in self.banners.iter().take(2).enumerate() {
             let top = if i == 0 { 12 } else { 6 };
+            let tone = theme::tone(dark, b.tone);
+            let fill = tone.map_or(ui.visuals().selection.bg_fill, |c| {
+                c.gamma_multiply(if dark { 0.22 } else { 0.14 })
+            });
             egui::Frame::new()
                 .fill(fill)
                 .corner_radius(theme::RADIUS)
@@ -1336,7 +1458,11 @@ impl Tab {
                 })
                 .show(ui, |ui| {
                     let text = |ui: &mut egui::Ui| {
-                        ui.label(theme::icon(b.icon()).size(16.0));
+                        let glyph = theme::icon(b.icon()).size(16.0);
+                        ui.label(match tone {
+                            Some(c) => glyph.color(c),
+                            None => glyph,
+                        });
                         ui.add(egui::Label::new(&b.text).wrap());
                     };
                     let buttons = |ui: &mut egui::Ui| {
@@ -1377,7 +1503,11 @@ impl Tab {
         self.marks_hidden = self.marks_hidden.min(n);
         self.banners.retain(|b| b.kind != banners::Kind::Redactions);
         if n > self.marks_hidden {
-            self.banners.insert(0, banners::redactions(n));
+            // After the signatures banner, which stays first.
+            let at = self
+                .banners
+                .partition_point(|b| b.kind < banners::Kind::Redactions);
+            self.banners.insert(at, banners::redactions(n));
         }
         // Fill-and-sign items still movable, likewise; after the redaction banner.
         let n = self.pdf.sign_items();
@@ -1397,6 +1527,7 @@ impl Tab {
         self.collect(&ctx);
         let ppp = ctx.pixels_per_point();
         let dark = ui.visuals().dark_mode;
+        let paper = self.paper();
 
         self.banners_ui(ui);
         let zd = ui.input(|i| i.zoom_delta());
@@ -1519,7 +1650,7 @@ impl Tab {
                     Vec2::new(page_w[i], page_h[i]),
                 );
                 painter.add(theme::page_shadow(dark).as_shape(r, 0));
-                painter.rect_filled(r, 0.0, Color32::WHITE);
+                painter.rect_filled(r, 0.0, paper);
                 let scale = self.zoom * BASE * ppp;
                 let key = (i, ((scale * 20.0).round() as u32).max(1));
                 match self.pages.get(&i) {
@@ -1629,6 +1760,7 @@ impl Tab {
     pub fn show_thumbs(&mut self, ui: &mut egui::Ui, base: &Ctx) {
         let ctx = ui.ctx().clone();
         let ppp = ctx.pixels_per_point();
+        let paper = self.paper();
         let mut click: Option<(usize, egui::Modifiers)> = None;
         // Thumbnail rectangles, for finding where a drag drops.
         let mut rects: Vec<Rect> = Vec::with_capacity(self.sizes.len());
@@ -1674,7 +1806,7 @@ impl Tab {
                         };
                         ui.painter().rect_filled(rect, 4.0, c);
                     }
-                    ui.painter().rect_filled(img, 0.0, Color32::WHITE);
+                    ui.painter().rect_filled(img, 0.0, paper);
                     match self.thumbs.get(&i) {
                         Some(t) => {
                             ui.painter().image(

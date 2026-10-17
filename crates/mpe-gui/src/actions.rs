@@ -5,9 +5,10 @@
 use crate::editor::Tool;
 use crate::markup::{self, Mark};
 use crate::selection::{ObjKind, Selection};
-use crate::settings::Layout;
+use crate::settings::{Layout, PageLook};
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, ThemePreference};
 use egui_phosphor::regular as icon;
+use mpe_core::page_colours::PageColours;
 
 /// A command. Running one goes through `App::act`.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -84,6 +85,25 @@ pub enum Act {
     /// Show the side panel's Bookmarks tab.
     Bookmarks,
     Comments,
+    /// Show the side panel's Signatures tab.
+    Signatures,
+    /// The details of the active document's nth digital signature. Opened from the
+    /// Signatures tab or a signed field, so not in [`ACTIONS`].
+    SignatureDetails(usize),
+    /// Open the version of the document the nth signature signed, in a new tab. Not in
+    /// [`ACTIONS`].
+    SignedVersion(usize),
+    /// The signers and certificate authorities trusted in MPE.
+    TrustedCertificates,
+    /// Create, import, export and remove digital IDs.
+    DigitalIds,
+    /// Sign with a digital ID: choose the place, then the ID.
+    SignDigital,
+    /// Certify the document with a digital ID.
+    Certify,
+    /// The digital signature tool has its place: open the signing window. Not in
+    /// [`ACTIONS`].
+    DigitalPlaced,
     FlattenAnnots,
     ToggleInspector,
     ToggleHidden,
@@ -96,6 +116,10 @@ pub enum Act {
     ResetForm,
     FlattenForm,
     Theme(ThemePreference),
+    /// How pages are coloured on screen (display only).
+    PageColours(PageLook),
+    /// Page colour modes recolour pictures too.
+    TogglePicturesToo,
     Palette,
     Tool(Tool),
     RotR,
@@ -183,6 +207,8 @@ pub struct Ctx {
     pub field: bool,
     pub fields_shown: bool,
     pub theme: ThemePreference,
+    pub page_look: PageLook,
+    pub pictures_too: bool,
     /// An annotation is selected, and whether it may be changed.
     pub annot: bool,
     pub annot_locked: bool,
@@ -483,6 +509,25 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::TrustedCertificates,
+        group: Group::Edit,
+        label: "Trusted certificates…",
+        icon: icon::CERTIFICATE,
+        enabled: always,
+        hint: "The signers and certificate authorities you trust when MPE checks digital \
+               signatures.",
+        ..BASE
+    },
+    Action {
+        act: Act::DigitalIds,
+        group: Group::Edit,
+        label: "Digital IDs…",
+        icon: icon::IDENTIFICATION_CARD,
+        enabled: always,
+        hint: "Create, import, export or remove the digital IDs you sign documents with.",
+        ..BASE
+    },
+    Action {
         act: Act::EditObjectText,
         group: Group::Edit,
         label: "Edit text",
@@ -728,6 +773,15 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::Signatures,
+        group: Group::View,
+        label: "Signatures",
+        icon: icon::SEAL_CHECK,
+        hint: "List the document's digital signatures and whether they are valid, in the \
+               side panel.",
+        ..BASE
+    },
+    Action {
         act: Act::ToggleInspector,
         group: Group::View,
         label: "Inspector",
@@ -807,6 +861,69 @@ pub static ACTIONS: &[Action] = &[
         enabled: always,
         checked: Some(|c| c.theme == ThemePreference::Dark),
         submenu: "Theme",
+        ..BASE
+    },
+    Action {
+        act: Act::PageColours(PageLook::Fixed(PageColours::Normal)),
+        group: Group::View,
+        label: "Normal",
+        enabled: always,
+        checked: Some(|c| c.page_look == PageLook::Fixed(PageColours::Normal)),
+        hint: "Pages in their own colours.",
+        submenu: "Page colours",
+        ..BASE
+    },
+    Action {
+        act: Act::PageColours(PageLook::Automatic),
+        group: Group::View,
+        label: "Automatic",
+        enabled: always,
+        checked: Some(|c| c.page_look == PageLook::Automatic),
+        hint: "Dark pages while the app's theme is dark, normal pages while it is light.",
+        submenu: "Page colours",
+        ..BASE
+    },
+    Action {
+        act: Act::PageColours(PageLook::Fixed(PageColours::Dark)),
+        group: Group::View,
+        label: "Dark",
+        enabled: always,
+        checked: Some(|c| c.page_look == PageLook::Fixed(PageColours::Dark)),
+        hint: "Dark grey paper and light text, colours kept. Only how pages look on \
+               screen: the file, printing and exports keep their colours.",
+        submenu: "Page colours",
+        ..BASE
+    },
+    Action {
+        act: Act::PageColours(PageLook::Fixed(PageColours::HighContrast)),
+        group: Group::View,
+        label: "High contrast",
+        enabled: always,
+        checked: Some(|c| c.page_look == PageLook::Fixed(PageColours::HighContrast)),
+        hint: "White text on black, in greys. Only how pages look on screen.",
+        submenu: "Page colours",
+        ..BASE
+    },
+    Action {
+        act: Act::PageColours(PageLook::Fixed(PageColours::Sepia)),
+        group: Group::View,
+        label: "Sepia",
+        enabled: always,
+        checked: Some(|c| c.page_look == PageLook::Fixed(PageColours::Sepia)),
+        hint: "Warm paper and dark brown text. Only how pages look on screen.",
+        submenu: "Page colours",
+        ..BASE
+    },
+    Action {
+        act: Act::TogglePicturesToo,
+        group: Group::View,
+        label: "Recolour pictures too",
+        enabled: always,
+        checked: Some(|c| c.pictures_too),
+        hint: "Off leaves photos and other pictures in their own colours. A scanned page \
+               is one picture, so turn this on to recolour scans.",
+        sep: true,
+        submenu: "Page colours",
         ..BASE
     },
     Action {
@@ -1082,6 +1199,26 @@ pub static ACTIONS: &[Action] = &[
         enabled: doc_idle,
         hint: "Draw the signatures, dates, ticks and other items put down with the Sign \
                tool into the pages, so they can no longer be moved or removed.",
+        ..BASE
+    },
+    Action {
+        act: Act::SignDigital,
+        group: Group::Document,
+        label: "Sign with digital ID…",
+        icon: icon::SEAL_CHECK,
+        enabled: doc_idle,
+        hint: "Sign so that others can check who signed and whether anything changed \
+               afterwards. The signed document is saved as a new file.",
+        ..BASE
+    },
+    Action {
+        act: Act::Certify,
+        group: Group::Document,
+        label: "Certify…",
+        icon: icon::CERTIFICATE,
+        enabled: doc_idle,
+        hint: "Sign as the document's author, choosing what others may change afterwards. \
+               Only before anyone has signed it.",
         ..BASE
     },
     Action {

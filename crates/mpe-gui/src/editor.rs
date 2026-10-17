@@ -9,8 +9,8 @@ use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeK
 use egui_phosphor::regular as icon;
 use mpe_core::{
     words_text, Annot, AnnotKind, Family, FieldValue, FontChoice, Link, LinkTarget, ObjectKind,
-    PageObject, PageWord, PathStyle, Shape, ShapeLook, StampColor, StampKind, StampPlace, TextEdit,
-    TextStyle,
+    PageObject, PageWord, PathStyle, Shape, ShapeLook, SignPlace, StampColor, StampKind,
+    StampPlace, TextEdit, TextStyle, MIN_SIGNATURE_BOX,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -39,6 +39,9 @@ pub enum Tool {
     /// Fill and sign: put down your signature, initials, the date, your name, text or a
     /// tick, cross or dot.
     Sign,
+    /// Choose where a digital signature goes: click an empty signature field or drag a
+    /// box. The signing window opens next.
+    DigitalSign,
 }
 
 impl Tool {
@@ -165,6 +168,9 @@ pub enum Action {
     AddSign(usize, StampPlace),
     /// Sign in an empty signature field: its page and box. Switches to the Sign tool.
     SignHere(usize, [f32; 4]),
+    /// A signed signature field was clicked: show its digital signature's details (the
+    /// field's full name).
+    SignatureDetails(String),
     /// Answer an annotation.
     Reply(usize, (u32, u16), String),
 }
@@ -353,6 +359,18 @@ pub struct Editor {
     pub finish_signing: bool,
     /// Why the Sign tool couldn't put something down.
     sign_error: Option<String>,
+    /// The Sign tool's pane asked for a digital signature.
+    pub sign_digital: bool,
+    /// The digital signature tool places a certification rather than a signature.
+    pub digital_certify: bool,
+    /// The empty signature fields (full name, page), listed in the digital signature
+    /// tool's pane; kept current by the app while the tool is on.
+    pub digital_fields: Vec<(String, usize)>,
+    /// Where the digital signature goes, once chosen: taken by the app, which opens the
+    /// signing window.
+    pub digital_place: Option<SignPlace>,
+    /// Why the digital signature tool couldn't take a place.
+    digital_error: Option<String>,
 }
 
 impl Default for Editor {
@@ -417,6 +435,11 @@ impl Default for Editor {
             sign_items: 0,
             finish_signing: false,
             sign_error: None,
+            sign_digital: false,
+            digital_certify: false,
+            digital_fields: Vec::new(),
+            digital_place: None,
+            digital_error: None,
         }
     }
 }
@@ -763,6 +786,10 @@ impl Editor {
         }
         if t != Tool::Text {
             self.new_text = None;
+        }
+        if t != Tool::DigitalSign {
+            self.digital_place = None;
+            self.digital_error = None;
         }
     }
 
@@ -1464,7 +1491,8 @@ impl Editor {
             | Tool::TextBox
             | Tool::Stamp
             | Tool::Redact
-            | Tool::Sign => {
+            | Tool::Sign
+            | Tool::DigitalSign => {
                 ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
                 if resp.drag_started() {
                     if let Some(p) = ui.input(|i| i.pointer.press_origin()).map(to_pt) {
@@ -1502,6 +1530,32 @@ impl Editor {
                             None => StampPlace::Centre(p.x, p.y),
                         };
                         self.place_sign(page, place);
+                    }
+                } else if resp.clicked() && self.tool == Tool::DigitalSign {
+                    // A click picks an empty signature field; anywhere else needs a box.
+                    if let Some(p) = resp.interact_pointer_pos().map(to_pt) {
+                        let inside = |b: &[f32; 4]| {
+                            let n = norm(*b);
+                            p.x >= n[0] && p.x <= n[2] && p.y >= n[1] && p.y <= n[3]
+                        };
+                        let field = pdf.empty_signature_fields().into_iter().find(|f| {
+                            f.widgets
+                                .iter()
+                                .any(|w| w.page == page && !w.hidden && inside(&w.bbox))
+                        });
+                        match field {
+                            Some(f) => {
+                                self.digital_error = None;
+                                self.digital_place = Some(SignPlace::Field(f.name));
+                            }
+                            None => {
+                                self.digital_error = Some(
+                                    "Click inside an empty signature field, or drag a box where \
+                                     the signature goes."
+                                        .into(),
+                                )
+                            }
+                        }
                     }
                 } else if resp.clicked() && self.tool == Tool::Stamp {
                     if let Some(p) = resp.interact_pointer_pos().map(to_pt) {
@@ -1543,6 +1597,19 @@ impl Editor {
                                 .push(Action::AddStamp(page, StampPlace::Fill(n))),
                             Tool::Redact => self.actions.push(Action::AddRedactMark(page, n)),
                             Tool::Sign => self.place_sign(page, StampPlace::Fill(n)),
+                            Tool::DigitalSign => {
+                                if n[2] - n[0] >= MIN_SIGNATURE_BOX
+                                    && n[3] - n[1] >= MIN_SIGNATURE_BOX
+                                {
+                                    self.digital_error = None;
+                                    self.digital_place = Some(SignPlace::NewBox { page, rect: n });
+                                } else {
+                                    self.digital_error = Some(format!(
+                                        "That box is too small: make it at least \
+                                         {MIN_SIGNATURE_BOX} points wide and high."
+                                    ));
+                                }
+                            }
                             Tool::TextBox => {
                                 let size = self.box_style.size;
                                 self.start_writing(Writing::new(page, false, n, size));
@@ -1866,6 +1933,7 @@ impl Editor {
                 | Tool::Stamp
                 | Tool::Redact
                 | Tool::Sign
+                | Tool::DigitalSign
         ) || self.sel().is_some()
             || self.selection.words().is_some()
             || self.selection.annot().is_some()
@@ -2490,8 +2558,41 @@ impl Editor {
                     .sign
                     .ui(ui, &mut self.sign_kit, &mut self.author, self.sign_items);
                 self.finish_signing |= out.finish;
+                self.sign_digital |= out.digital;
                 if let Some(e) = &self.sign_error {
                     ui.colored_label(ui.visuals().error_fg_color, e);
+                }
+                return;
+            }
+            Tool::DigitalSign => {
+                ui.strong(if self.digital_certify {
+                    "Certify with a digital ID"
+                } else {
+                    "Sign with a digital ID"
+                });
+                ui.label(
+                    "Click an empty signature field, or drag a box on the page where the \
+                     signature goes. You choose your digital ID next.",
+                );
+                if !self.digital_fields.is_empty() {
+                    ui.add_space(6.0);
+                    ui.label("Empty signature fields:");
+                    for (name, page) in &self.digital_fields {
+                        let text =
+                            format!("{} (page {})", mpe_core::display_line(name, 40), page + 1);
+                        if ui.button(text).clicked() {
+                            self.digital_error = None;
+                            self.digital_place = Some(SignPlace::Field(name.clone()));
+                        }
+                    }
+                }
+                if let Some(e) = &self.digital_error {
+                    ui.add_space(4.0);
+                    ui.colored_label(ui.visuals().error_fg_color, e);
+                }
+                ui.add_space(6.0);
+                if ui.button("Cancel").clicked() {
+                    self.set_tool(Tool::Read);
                 }
                 return;
             }

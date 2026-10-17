@@ -17,21 +17,25 @@ The start screen also has Make a PDF from images…, which turns photos or scann
 Each document gets a tab. The tab shows its name, with `*` while it has unsaved changes.
 
 Saving writes a temporary file beside the document and then replaces the document with it, so a save that fails
-part way leaves the original as it was. MPE saves by rewriting the whole file, which makes any digital signatures
-invalid; when a document is signed, MPE asks first. Save As to a new file keeps the signed original.
+part way leaves the original as it was. MPE saves by rewriting the whole file, except for a digitally signed
+document: its changes are added after what was signed, so the signatures stay valid. MPE asks first when the
+signatures don't allow the changes, and before writing a signed document in full when it must (after redacting, for
+example), which breaks the signatures; see [Saving a signed document](signatures.md#saving-a-signed-document).
+Save As to a new file keeps the signed original.
 
 ## The window
 
 - **Top bar:** the menu (☰), Open, Save, Undo and Redo, the tools (Sign among them), the page layout, zoom, search, Print, an Export menu (pages as
   images, text), and the theme. On narrow windows the search field and the tools fold into single buttons.
-- **Left:** four tabs. Pages shows the thumbnails, Search the search results, and Bookmarks the document's
+- **Left:** five tabs. Pages shows the thumbnails, Search the search results, and Bookmarks the document's
   outline. Click a bookmark to go to its page; the arrow beside one shows or hides the bookmarks inside it, which
   start shown or hidden as the file asks. Bookmarks that go to another file or a web address are greyed out. Add
   bookmark bookmarks the page you are on, after the bookmark last clicked (or last, when none is), and opens its name
   for typing: Enter keeps it, Escape keeps "Page N". Double-click a bookmark to rename it; right-click it to rename
   it, add a bookmark under it, or delete it with the bookmarks inside it. Undo reverses each of these. Moving
   bookmarks isn't possible yet. ☰ > View > Bookmarks, or "Bookmarks" in the command palette, opens this tab. Comments
-  lists the document's annotations; see [Comments and markup](#comments-and-markup).
+  lists the document's annotations; see [Comments and markup](#comments-and-markup). Signatures lists its digital
+  signatures and whether they are valid; see [Digital signatures](#digital-signatures).
 - **Middle:** the pages, scrolling continuously. By default they fit the width between the side panels, and keep
   fitting as you resize the window or open and close the panels. Zooming in or out, actual size, Ctrl+scroll or a
   pinch turns fitting off, and your zoom then stays as it is; the Fit width button (highlighted while fitting is on)
@@ -233,7 +237,8 @@ with Clear field, Highlight fields and Reset form, which puts every field back t
 in the command palette) makes the fields part of the pages as they look now, so nobody can change the values,
 here or in other readers; it asks first, and Undo brings the fields back until you close the document. Read-only fields
 and buttons (they run scripts, which MPE doesn't) can't be filled in; hovering says why. Clicking an empty signature
-field puts your signature in it (see [Filling and signing](#filling-and-signing)).
+field puts your signature in it (see [Filling and signing](#filling-and-signing)); clicking a digitally signed one
+shows its signature's details (see [Digital signatures](#digital-signatures)).
 
 MPE draws the filled fields itself, so the values show the same in other readers. Text must be Latin-1 (Western
 European) for now; anything else is refused with a message rather than saved wrongly. Fields that have a value but
@@ -245,7 +250,7 @@ scripts.
 The Sign button in the top bar (its icon is a signature; "Fill and sign" in the command palette) puts your
 signature, initials, the date, your name, other text or a tick, cross or dot on the page, for signing a document
 someone sent you. It is a picture of your signature, not a digital signature: it doesn't prove who signed, and
-anyone can copy it. Digital signatures are a later feature.
+anyone can copy it. For digital signatures, see [Digital signatures](#digital-signatures).
 
 **Making a signature:** in the Sign pane, Create signature… (or New… beside Signatures) opens a window with three
 ways to make one:
@@ -289,6 +294,37 @@ brings them back until you close the document. Saving without finishing keeps th
 back when the document is opened again. Other comments and stamps are left alone. Signatures are listed in the
 Comments tab as "Signature", "Initials", "Tick" and so on.
 
+## Digital signatures
+
+When a document with digital signatures opens, MPE checks them in the background and shows the result in a
+banner above the pages, coloured by the worst signature: green (valid, and you trust every signer), amber (nothing
+broken or changed against the signers' wishes, but MPE can't confirm who signed, or there are warnings), grey (MPE
+can't check a signature) or red (broken, changed in ways a signer didn't allow, or a trusted signer's certificate
+fails a check). Its Signatures button, or ☰ > View > Signatures, opens the Signatures tab of the side panel, which
+lists each signature with its result, the changes made after it, and Details… and Signed version buttons, then the
+signature fields nobody has signed yet. Click a signature's name to go to it; with the read tool, click a signed
+field on the page to see its details.
+
+Details shows who signed, who issued their certificate, when, the changes after signing, warnings and the
+certificates; Trust this signer… and Trust an authority… add to your trust list (after showing the SHA-256
+fingerprint to compare with the owner), and View signed version opens the document as it was when signed, in a new
+tab. ☰ > Edit > Trusted certificates… lists, removes and adds trusted certificates. Trust settings affect MPE only.
+
+The check is of the file as opened or last saved; saving adds your changes after what was signed (see
+[Saving a signed document](signatures.md#saving-a-signed-document)), and MPE checks the saved copy, listing your
+changes under each signature. See [Digital signatures](signatures.md) for what each result means.
+
+### Signing with a digital ID
+
+☰ > Document > Sign with digital ID… (also a button in the Sign tool's pane), or Certify… for the author's
+certification: click an empty signature field or drag a box on the page, then pick your digital ID, type its
+password, and optionally a reason and a location. Sign… asks where to save the signed copy (`NAME-signed.pdf` by
+default), signs in the background, and opens the signed copy in place of the document. Changes made since opening
+are signed with it; when they would show on earlier signatures as not allowed, MPE asks first.
+
+☰ > Edit > Digital IDs… makes, imports, exports and removes your digital IDs, and chooses the default. See
+[Signing](signatures.md#signing) and [Digital IDs](signatures.md#digital-ids).
+
 ## Notices about the document
 
 When a document opens, notices above the pages point out things worth knowing, each with a button where there is
@@ -296,12 +332,13 @@ something to do and × to dismiss it. At most two show at a time.
 
 | Notice | Button |
 | --- | --- |
+| Its digital signatures are being checked, and then how they checked, coloured green, amber, grey or red (always first; see [Digital signatures](#digital-signatures)) | Signatures |
 | The document was password-protected: saving removes the protection unless you set it again | Password security |
 | Areas are marked for redaction but the marks haven't been applied (kept up to date while you work) | Apply redactions… |
 | Signatures and other items put down with the Sign tool can still be moved (kept up to date while you work) | Finish signing… |
 | Its pages are scans without text, so they cannot be searched or copied (checked on the first 20 pages) | Recognise text |
 | It is a form made for Adobe Reader (an XFA form), which only Adobe software can show or fill in; MPE shows the placeholder page the file contains, often "Please wait..." | |
-| It has a form: click a field to fill it in, or press Tab | Highlight fields |
+| It has a form: click a field to fill it in, or press Tab (not for a form of signature fields alone) | Highlight fields |
 | It is large (more than 500 pages or 100 MB) | |
 
 The first two go away by themselves once dealt with: after password security is applied, or after text has been
@@ -439,3 +476,23 @@ sun or moon, for the current choice) chooses System, Light or Dark; so does ☰ 
 remembered between runs, in `settings.txt` in the same folder as the recent-files list, along with the markup
 colours and your name for comments. The app uses the Inter font
 and Phosphor icons.
+
+☰ > Help > About shows the version (the Copy button next to it copies the version and system, for a bug report),
+links to the website, the licence and the issue tracker, which open in your browser, and Credits for the bundled
+fonts, icons and text recognition model. Contributors switches the window to the people who made MPE; Back returns.
+MPE is made in Canada, which the About window and the foot of the start screen say beside a maple leaf.
+
+☰ > View > Page colours changes how pages look on screen, for reading in the dark or with low vision:
+
+| Choice | Pages look like |
+|---|---|
+| Normal | Their own colours (the default) |
+| Automatic | Dark while the app's theme is dark, Normal while it is light |
+| Dark | Dark grey paper and light text; colours keep their hue, so red stays red |
+| High contrast | Black paper; text, lines and anything coloured turn white |
+| Sepia | Warm paper and dark brown text |
+
+Photos and other pictures keep their own colours. Turn on **Recolour pictures too** in the same menu to change them
+as well; a scanned page is one big picture, so this is what recolours scans. The choice applies to every open
+document and the thumbnails, and is remembered between runs. It is display only: the file, printing, exported
+images and everything else keep the page's own colours. The commands are also in the command palette.

@@ -2,8 +2,9 @@
 
 **Status: 0.6, for testing.** Most testing has been on Linux. Annotations can be viewed, moved, deleted and flattened;
 text can be highlighted and marked; notes, text boxes, shapes, lines, freehand drawings and replies added. Content
-can be redacted for good, and documents filled in and signed with a picture of your signature. Digital signatures are
-not started.
+can be redacted for good, and documents filled in and signed with a picture of your signature. Digital signatures
+can be checked, made with your own or an imported digital ID, certified, and kept valid when a signed document is
+saved, in the app and from the command line; round trips with Adobe Acrobat are still to be tested.
 
 ## What MPE does
 
@@ -42,7 +43,9 @@ available.
 | Open at a page from the command line | Done | `mpe-gui file.pdf --page N` |
 | Command palette, right-click menus, floating toolbar | Done | Toolbar customisation: No |
 | App icon | Done | Window, taskbar and Windows `.exe`. Wayland needs the desktop entry installed. [Details](install.md#menu-entry-and-icon-on-linux) |
+| About window | Done | Version (copyable for bug reports), links, contributors, credits; "Made in Canada". [Details](gui.md#look-and-feel) |
 | Light and dark themes | Done | Follows the system, or chosen with the top bar's theme button; remembered between runs |
+| Page colour modes | Done | View > Page colours: Normal, Automatic (dark pages with the dark theme), Dark, High contrast, Sepia. Pictures keep their colours unless "Recolour pictures too" is on. On screen only: the file, printing and exports keep their colours. See [Rendering](rendering.md#page-colour-modes) |
 | Rendering | Partial | Some transparency groups are drawn wrongly. Annotations without a drawing of their own are drawn by MPE for the common types only. [Details](rendering.md) |
 | Search | Done | Phrases across line breaks, and words hyphenated at a line end, are found and highlighted. [Details](search-and-text.md) |
 | Select and copy text | Done | With the default read tool; across pages, scrolling while you drag; in the order on the page, not the file's drawing order; includes recognised text |
@@ -67,7 +70,7 @@ available.
 | Stamps | Done | Approved, Not approved, Draft, Final, Confidential, For comment and Void, or your own wording in green, red or blue (Western European characters only), optionally with the author's name and the date, or a PNG or JPEG picture; click to place or drag to size, then move and resize; `mpe stamp`. Not yet: stamps made from selected content, or wording in other scripts. [Details](gui.md#stamps) |
 | Fill and sign | Done | A signature or initials drawn, typed in one of four handwriting styles or from a picture (paper made transparent), up to five of each saved for next time; the date in three styles, your name, text and tick, cross and dot marks, in black or blue ink; placed anywhere or in an empty signature field, movable until Finish signing draws them into the pages. Typed signatures from the command line: `mpe stamp --signature`. Not a digital signature; typed signatures and text are Latin-1 only; the date is in UTC. [Details](gui.md#filling-and-signing) |
 | Measuring | No | |
-| Forms | Partial | Fill in text fields, checkboxes, radio buttons and lists in the app (Tab between fields, highlight, reset, flatten) and from the command line (`mpe form`, values as JSON, flatten all or some pages). Latin-1 text only; JavaScript doesn't run; creating fields: No; signature fields take a fill-and-sign signature, digital signing: No. [Details](gui.md#filling-in-forms) |
+| Forms | Partial | Fill in text fields, checkboxes, radio buttons and lists in the app (Tab between fields, highlight, reset, flatten) and from the command line (`mpe form`, values as JSON, flatten all or some pages). Latin-1 text only; JavaScript doesn't run; creating fields: No; signature fields take a fill-and-sign signature, or a digital signature (Document > Sign with digital ID, or `mpe sign --field`). [Details](gui.md#filling-in-forms) |
 | XFA-only forms (made for Adobe Reader) | No | Recognised and explained in a notice and by `mpe form`; showing or filling them is not planned (see below). Hybrid forms are filled through their ordinary fields |
 | Form data import/export (FDF, XFDF), barcodes, JavaScript | No | |
 | Viewer preferences | Done | The layout, side panel (Pages or Bookmarks) and page a document opens with: followed when opening, set in the inspector's Opening view or with `mpe view-prefs`. Full screen and hiding the toolbar or menu: No. [Details](cli.md#viewer-preferences) |
@@ -78,7 +81,8 @@ available.
 | Installers and packages | Done | `.deb` and `.rpm` packages with apt and dnf repositories, a macOS `.dmg`, a Windows MSI, and archives; GPG-signed. [Install](install.md); more package managers planned, see below |
 | Redaction | Done | Mark areas, selected text or search results (standard redaction marks), check them, then apply: text, drawings, comments and links under them are removed for good, pictures (scans included) blacked out there, then checked. In the app and with `mpe redact`. [Details](redaction.md) |
 | Removing hidden information | Done | Metadata (including XMP), JavaScript and automatic actions, attachments, hidden layers and their content, thumbnails and private data; if chosen, comments, form values, bookmarks and what lies outside the crop box. Document > Remove hidden information… and `mpe sanitise`. [Details](redaction.md#removing-hidden-information) |
-| Digital signatures, certificate encryption | No | Planned: see below. Signing an empty signature field that fill and sign has put a signature in is part of it |
+| Digital signatures | Done | Checking in the app (a coloured banner, the Signatures tab, Details, View signed version, trusting signers and authorities, Trusted certificates) and from the command line (`mpe verify`): unchanged or not, signer's certificate, signing time and timestamps, certification and locked fields, warnings; RSA and ECDSA P-256/P-384; refuses the known wrapping and copying attacks; lists the changes made after each signature and judges them by Acrobat's rules (stricter when unsure), catching the shadow and incremental-saving attacks, and won't vouch for or sign as it is a file PDF apps read differently; saves the version a signature signed; trusting signers and certificate authorities (`mpe trust`), with chains checked by RFC 5280's rules at the signing time, in MPE only. Digital IDs in the app (Edit > Digital IDs) and from the command line (`mpe id`): make a self-signed one (RSA 3072-bit, five years, like Acrobat's), import `.p12`/`.pfx` files from Acrobat, Windows, macOS or a certificate authority (old and new encryptions), export an ID or its certificate. Signing and certifying in the app (Document > Sign with digital ID, Certify; edits made since opening are signed with it, asking first when earlier signatures wouldn't allow them) and from the command line (`mpe sign`): in an empty signature field or a new box, as Acrobat signs (`adbe.pkcs7.detached`, SHA-256), with a visible look (your name in handwriting or a picture, "Digitally signed by" and the date), added after the file's bytes so earlier signatures stay valid; follows certifications and field locks; every signed file checked before it is written. Saving a signed document (Save in the app, every editing command) adds the changes after what was signed, so the signatures stay valid; asks first (the command line refuses without a flag) when they don't allow the changes, and before writing the whole file when it must (redactions, removed hidden information, passwords, damaged files). Not yet: timestamps when signing, encrypted documents; not yet tested with Adobe Acrobat (see below). [Details](signatures.md) |
+| Certificate encryption | No | |
 | PDF/A, optimised saving | No | Saved files are pruned and compressed |
 | Comparing documents | No | |
 | Sessions, autosave, backups, preferences, custom shortcuts, translations | No | You are asked before closing unsaved work |
@@ -89,9 +93,8 @@ available.
 - Header, footer, Bates and watermark text uses Helvetica and Latin-1 only; other characters print as `?`.
 - Headers, footers and watermarks are added to the page content. They are not annotations and cannot be removed one
   by one later; use Undo before saving.
-- Saving rewrites the whole file; incremental saving is not available.
-- Saving removes the validity of digital signatures, as any rewrite does. The app asks first when a document is
-  signed; the command line doesn't.
+- Saving rewrites the whole file, except for digitally signed documents, whose changes are added after what was
+  signed so the signatures stay valid ([details](signatures.md#saving-a-signed-document)).
 - Files the renderer cannot read show "Rendering…" on their pages; editing may still work.
 - A malformed file that makes MPE fail while opening, editing or saving gets an error message, and a failed edit
   leaves the document as it was. A failure while showing the document (pages, thumbnails, search, bookmarks,
@@ -131,12 +134,17 @@ boxes, with no angle, so turning them needs a workaround:
 
 ### Digital signatures
 
-A future task, not yet scheduled. Create your own signing identity (a self-signed certificate), sign documents with
-a standard PDF signature that other readers check, and verify signatures, in the app and from the command line.
-Readers show such a signature as valid but from an unknown signer until the recipient trusts the certificate by
-checking its fingerprint with you. Signing adds to the end of the file, so earlier signatures stay valid. Not
-planned for the first
-version: timestamps, revocation checks, hardware tokens and signing encrypted files.
+Checking, trust, digital IDs, signing, certifying and saving signed documents are done (see the table and
+[Digital signatures](signatures.md)). Still to come:
+
+- **Round trips with Adobe Acrobat**, on a tester's computer: Acrobat-signed and certified files checked in MPE,
+  MPE's signatures and exported digital IDs used in Acrobat, and signed files saved with changes going each way.
+  The compatibility list in [Digital signatures](signatures.md#compatibility) names only what has been tested.
+- **Timestamps** from a timestamp server when signing, then long-term validation (revocation answers added to the
+  document).
+
+Not planned for now: revocation checks, Adobe's and the EU's lists of trusted authorities, smart cards and system
+keystores, signing encrypted files (see [ideas](ideas.md)).
 
 ### Packaging
 
@@ -165,8 +173,8 @@ archives stay.
 - **Editing paragraphs.** Edit text as paragraphs that reflow, not line by line, as a command you choose ("Edit as
   paragraph") rather than the default: MPE outlines the lines it takes to be the paragraph, you adjust or confirm,
   and the reflow is one undo step. Line-by-line editing stays as it is.
-- **Incremental saving.** Save only what changed, which is faster for large files and keeps existing digital
-  signatures valid when you add comments or fill in forms.
+- **Incremental saving.** Save only what changed, which is faster for large files. Signed documents are already
+  saved this way (above); this item is about using it for every document.
 - **Standards output.** PDF/A for archiving, and PDF/UA tagging for accessibility.
-- **Verifiable signatures.** Apply and validate digital signatures, including certificate-based ones, with revocation
-  checked offline.
+- **Revocation checked offline.** Use the revocation answers a signed document carries to tell whether a signer's
+  certificate was withdrawn, without going online.

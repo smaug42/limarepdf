@@ -4,6 +4,10 @@
 
 ### Added
 
+- Page colour modes, from View > Page colours: Dark (dark paper and light text, hues kept), High contrast (white on
+  black), Sepia, or Automatic (dark pages while the app's theme is dark). Pictures keep their own colours unless
+  "Recolour pictures too" is on. Remembered between runs. On screen only: the file, printing and exports are not
+  changed.
 - Bookmark editing: add a bookmark to the current page, rename one, add one inside another, or delete one with the
   bookmarks inside it, from the Bookmarks tab (Undo reverses each), and list, add, rename and remove them with
   `mpe bookmarks`.
@@ -36,8 +40,78 @@
   pages and removes what you tick: metadata (including XMP), JavaScript and automatic actions, attachments, hidden
   layers and their content, thumbnails and private data, and if you like comments, form values, bookmarks and what
   lies outside the crop box. Also `mpe sanitise` (`--list`, `--keep`, `--also`).
+- Checking digital signatures: `mpe verify` tells for each signature whether the signed part is unchanged, who
+  signed according to their certificate and who issued it, when (from a timestamp authority or the signer's
+  computer), certification and locked fields, and warnings such as SHA-1, short keys or an expired certificate.
+  RSA and ECDSA (P-256, P-384) signatures, embedded and document timestamps; copied, moved and wrapped signatures
+  are refused. It also lists what changed after each signature (form filled in, signed again, comment added, page
+  content changed, and so on) and whether the signer allowed it, by Acrobat's rules: filling, signing and comments
+  are allowed after an ordinary signature, a certification allows less, a locked field may not change, and
+  anything MPE doesn't recognise counts as not allowed. Malformed additions and the published "shadow" and
+  incremental-saving attacks are caught. `--signed-version N -o FILE` saves the version a signature signed.
+  `--json` for scripts. See [Digital signatures](docs/signatures.md).
+- Trusting signers: `mpe trust add` trusts a signer (from a signed PDF or a `.cer`, `.pem` or `.p7c` file) or a
+  certificate authority, `mpe trust list` and `mpe trust remove` manage the list, and `mpe verify` then says
+  whether each signer is trusted and why not. Chains to a trusted authority are built from the certificates the
+  signature and the document carry and checked by RFC 5280's rules at the signing time (each issuer allowed to
+  issue, key usages, path lengths, certificate policies); forged issuers, look-alike certificates with a trusted
+  name, SHA-1 or 1024-bit links and unknown critical extensions aren't trusted. Embedded and document timestamps'
+  authorities are judged the same way. `--require-trusted` makes `mpe verify` fail unless every signer is
+  trusted, and `--trust-file` uses another list. Trust settings affect MPE only.
+- Digital IDs, for signing: `mpe id create` makes a self-signed ID like Acrobat's (RSA 3072-bit,
+  valid five years) protected by a password you choose; `mpe id import` imports a `.p12` or `.pfx` file from
+  Acrobat, Windows, macOS or a certificate authority, old and new encryptions alike, refusing ones MPE couldn't sign
+  with and saying why; `mpe id export` saves an ID with its key (`.p12`, for other apps or a backup) or its
+  certificate (`.cer`, for others to trust you); `mpe id list` and `mpe id remove` manage them. IDs are kept in
+  the settings folder, each encrypted with AES-256 under its own password (600,000 PBKDF2 iterations); passwords
+  are asked for without being shown, never taken on the command line, and never stored.
+- Signing with a digital ID: `mpe sign` signs in an empty signature field (`--field`) or a new box (`--page`,
+  `--rect`), or certifies the document (`--certify no-changes|forms|comments`), as Acrobat does
+  (`adbe.pkcs7.detached`, SHA-256, SHA-384 for P-384 keys), with your reason and location if given. The signature
+  is always visible: your name in handwriting (or a picture of your signature, `--image`) beside "Digitally signed
+  by NAME" and the date in your time zone. It is added after the file's existing bytes, so earlier signatures stay
+  valid. MPE refuses expired IDs, encrypted documents, and what a certification or an earlier signer's lock doesn't
+  allow; a field that locks others makes them read-only; fill-and-sign items are drawn in first (locked in place on
+  a document someone already signed). Every signed file is checked before it is written: the new revision read back
+  object by object, then the signatures checked as `mpe verify` would.
+- Checking: a form field made read-only when a field that locks it is signed is now an allowed change (form-filling
+  level), as Acrobat makes locked fields read-only when signing.
+- Signing in the app: Document > Sign with digital ID (also in the Sign tool's pane) and Certify. Click an empty
+  signature field or drag a box, then pick the ID, type its password, and optionally a reason, a location and, for
+  a certification, what others may change; your saved fill-and-sign signature can be the look's left part. The
+  signed copy is saved as a new file (`NAME-signed.pdf` suggested) and opens in place of the document. Edits made
+  since opening are signed with it; when they would show on earlier signatures as not allowed, MPE says which and
+  asks before signing. After redacting or removing hidden information, the document is written out in full before
+  it is signed, so nothing removed stays in it (a document already signed is saved first). Signing runs in the
+  background; a password is used once and overwritten.
+- Digital IDs window (Edit > Digital IDs): create, import, export (certificate or with its key), make default and
+  remove digital IDs, as `mpe id` does.
+- Digital signatures in the app: a signed document is checked when it opens, and a banner above the pages gives
+  the result, coloured green, amber, grey or red. The Signatures tab of the side panel (View > Signatures) lists
+  each signature with its result, the changes made after it and any warnings, then the empty signature fields.
+  Details (also by clicking a signed field) shows the signer, certificate, times, changes and certificates, with
+  Trust this signer…, Trust an authority…, View signed version (opens in a new tab) and Go to field. Edit >
+  Trusted certificates… lists, removes and adds trusted certificates (also from a `.cer`, `.pem` or `.p7c` file).
+  After saving, the saved file is checked again.
+- Saving a signed document keeps its signatures: Save and Save as add your changes after what was signed, as
+  Acrobat does, so each signature stays valid and lists the changes. MPE asks first when the signatures don't allow
+  the changes, naming each signer and what they will be told, and asks before writing the whole file when it must,
+  which breaks the signatures: after redacting or removing hidden information (the signed version would still hold
+  what was removed), with a password set, or for encrypted or damaged files. Every editing command on the command
+  line does the same, refusing unless `--accept-disallowed` or `--break-signatures` is given; `mpe sanitise` takes
+  `--break-signatures` too. A signed form's fields without a drawing of their own are drawn on screen and in print
+  only, not into the document.
 
 ### Changed
+
+- A new app icon: the PDF icon from the start page, on the window, the taskbar, the About window, the Windows `.exe`
+  and installer, the Mac app and the Linux packages.
+- A new About window (☰ > Help > About): the app icon, version with a Copy button (version and system, for bug
+  reports), "Made in Canada" with a maple leaf, links to the website, licence and issue tracker, a Contributors page,
+  and the credits for bundled fonts, icons and the text recognition model. The start screen also says "Made in
+  Canada".
+- The form notice ("This document has a form") no longer shows for documents whose only fields are signature
+  fields.
 
 - Link addresses, bookmark names, comments and their authors, tab and window titles and print job titles are
   cleaned before they are shown: direction-changing (bidi), invisible and control characters are removed and very
@@ -45,6 +119,12 @@
 
 ### Fixed
 
+- The Windows build's tests: git no longer changes line endings in PDFs on checkout, which broke the signed test
+  files. CI jobs now get a read-only token unless they need more.
+- Files whose trailer says `/Encrypt null` (not encrypted, written by some signing tools) open instead of asking
+  for a password that doesn't exist.
+- Parts of a file that a later revision deletes, and copies in object streams that the file's index doesn't list,
+  are no longer shown, edited or saved: MPE reads them as the PDF standard says.
 - Text in Type 3 fonts whose glyphs aren't measured in thousandths of an em is placed correctly for selection,
   search highlights and copying.
 

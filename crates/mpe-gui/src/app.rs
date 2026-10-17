@@ -1,23 +1,28 @@
+use crate::about;
 use crate::actions::{self, menu_item, tooltip, Act, Action, Ctx, Group, ACTIONS};
 use crate::banners::Kind as BannerKind;
 use crate::dialogs::{self as dlg, Outcome};
+use crate::digital::{self, IdsWindow, SignOut, SignWindow};
 use crate::editor::{Action as EdAction, Tool};
 use crate::inspector::{self, Apply, Section};
 use crate::markup;
 use crate::recent::Recent;
 use crate::selection::Selection;
 use crate::settings::{Layout, Settings};
+use crate::signatures::{self as sigs, Check, SigState, TrustAsk, TrustedOut, TrustedWindow};
 use crate::tab::{Side, Stamp, Tab};
 use crate::theme;
+use crate::worker::Colours;
 use eframe::egui::{self, AtomExt as _, Key};
 use egui_phosphor::regular as icon;
 use mpe_core::render::{image_names, ImageFormat};
 use mpe_core::{
     parse_page_range, part_file_name, print, Bates, HeaderFooter, ImageImport, ImageWatermark,
-    OcrResult, OpenPanel, Pdf, ScanResult, Watermark,
+    OcrResult, OpenPanel, Pdf, ScanResult, TrustRole, Watermark,
 };
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
 
 pub const IMAGE_EXTS: [&str; 5] = ["png", "jpg", "jpeg", "tif", "tiff"];
 
@@ -42,6 +47,14 @@ enum Loaded {
         path: PathBuf,
         pdf: Pdf,
         page: Option<usize>,
+        /// For a file with signature fields: its bytes and password, to check them.
+        signed: Option<(Arc<[u8]>, Option<String>)>,
+    },
+    /// The signature check of tab `tab` (its `generation`th) finished.
+    Signatures {
+        tab: u64,
+        generation: u64,
+        check: Check,
     },
     NeedPassword {
         path: PathBuf,
@@ -160,8 +173,11 @@ enum Dialog {
     ConfirmReplace(ImageExport, usize),
     ConfirmFlatten,
     ConfirmFlattenAnnots,
-    /// Save (`true`: as a new file) although it breaks the document's signatures?
-    ConfirmSaveSigned(bool),
+    /// Save (`true`: as a new file) by writing the whole file, which breaks the
+    /// document's signatures? With why the edits can't be added after what was signed.
+    ConfirmSaveSigned(bool, String),
+    /// Save edits the document's signatures don't allow?
+    ConfirmSaveDisallowed(Box<SaveDisallowed>),
     /// Remove everything under this many marked areas?
     ConfirmApplyRedactions(usize),
     /// Draw this many fill-and-sign items into the pages?
@@ -175,7 +191,23 @@ enum Dialog {
     OpenLink(String),
     /// The name for comments, being edited.
     CommentName(String),
-    About,
+    About(about::Page),
+}
+
+/// Why a signed document with redactions applied or hidden information removed is saved
+/// by writing the whole file.
+const SCRUBBED: &str = "you applied redactions or removed hidden information, and the version \
+                        that was signed would still hold everything removed";
+
+/// A signed document with its edits added after what was signed, ready to write once the
+/// user agrees that the signatures will report changes they don't allow.
+struct SaveDisallowed {
+    as_new: bool,
+    /// The tab and its revision the file was made from.
+    tab: u64,
+    revision: u64,
+    bytes: Vec<u8>,
+    disallowed: mpe_core::DisallowedChanges,
 }
 
 /// What selected text is printed or saved from, taken from the tab so a background job
@@ -267,6 +299,16 @@ pub struct App {
     recent: Recent,
     /// Settings kept between runs (the theme).
     settings: Settings,
+    /// The Details window: the tab's id and the signature's place in its report.
+    sig_details: Option<(u64, usize)>,
+    /// Asking before trusting a certificate.
+    trust_ask: Option<TrustAsk>,
+    /// The Trusted certificates window, when open.
+    trusted: Option<TrustedWindow>,
+    /// The Digital IDs window, when open.
+    ids_window: Option<IdsWindow>,
+    /// The signing window, when open.
+    sign_window: Option<SignWindow>,
 }
 
 impl App {
@@ -295,6 +337,11 @@ impl App {
             toast: None,
             recent: Recent::load(),
             settings,
+            sig_details: None,
+            trust_ask: None,
+            trusted: None,
+            ids_window: None,
+            sign_window: None,
         };
         let (images, pdfs): (Vec<_>, Vec<_>) = files.into_iter().partition(|p| is_image(p));
         for f in pdfs {
@@ -316,8 +363,26 @@ impl App {
         let tx = self.tx.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let msg = match crate::guard(|| Pdf::open(&path, password.as_deref())) {
-                Ok(pdf) => Loaded::Ok { path, pdf, page },
+            let open = || -> mpe_core::Result<(Pdf, Option<Arc<[u8]>>)> {
+                use anyhow::Context as _;
+                let bytes =
+                    std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+                let pdf = Pdf::from_bytes(&bytes, password.as_deref())?;
+                // Signed files keep their bytes, to check and for View signed version.
+                let fields = pdf.form_fields();
+                let signed = fields
+                    .iter()
+                    .any(|f| f.kind == mpe_core::FieldKind::Signature)
+                    .then(|| Arc::from(bytes));
+                Ok((pdf, signed))
+            };
+            let msg = match crate::guard(open) {
+                Ok((pdf, signed)) => Loaded::Ok {
+                    path,
+                    pdf,
+                    page,
+                    signed: signed.map(|b| (b, password)),
+                },
                 Err(e) => {
                     let s = format!("{e:#}");
                     if s.to_lowercase().contains("password") {
@@ -342,9 +407,11 @@ impl App {
         path: Option<PathBuf>,
         page: Option<usize>,
         dirty: bool,
-    ) {
-        let tab =
-            crate::guard(|| Tab::new(ctx, self.next_id, pdf, path).map_err(anyhow::Error::msg));
+    ) -> bool {
+        let colours = self.colours(ctx);
+        let tab = crate::guard(|| {
+            Tab::new(ctx, self.next_id, pdf, path, colours).map_err(anyhow::Error::msg)
+        });
         match tab {
             Ok(mut t) => {
                 self.next_id += 1;
@@ -368,17 +435,497 @@ impl App {
                 }
                 self.tabs.push(t);
                 self.active = self.tabs.len() - 1;
+                true
             }
-            Err(e) => self.dialog = Dialog::Message("Cannot open".into(), format!("{e:#}")),
+            Err(e) => {
+                self.dialog = Dialog::Message("Cannot open".into(), format!("{e:#}"));
+                false
+            }
         }
+    }
+
+    /// Checks the digital signatures of tab `i`, whose file is `bytes`, in the
+    /// background; its banner says so meanwhile.
+    fn check_signatures(
+        &mut self,
+        ctx: &egui::Context,
+        i: usize,
+        bytes: Arc<[u8]>,
+        password: Option<String>,
+    ) {
+        let Some(t) = self.tabs.get_mut(i) else {
+            return;
+        };
+        let generation = t.sigs.as_ref().map_or(0, |s| s.generation + 1);
+        t.sigs = Some(SigState {
+            bytes: bytes.clone(),
+            password: password.clone(),
+            check: Check::Pending,
+            generation,
+        });
+        // "Checking…" only when there is something to check, not for empty fields alone.
+        if t.pdf.signature_count() > 0 {
+            t.sig_banner();
+        } else {
+            t.banners.retain(|b| b.kind != BannerKind::Signatures);
+        }
+        let (tx, ctx, tab) = (self.tx.clone(), ctx.clone(), t.id);
+        std::thread::spawn(move || {
+            let check = sigs::run(&bytes, password.as_deref());
+            let _ = tx.send(Loaded::Signatures {
+                tab,
+                generation,
+                check,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    /// After the trust list changed: judges every open document's signatures again and
+    /// refreshes their banners.
+    fn retrust(&mut self) {
+        let (list, status) = sigs::load_trust();
+        for t in &mut self.tabs {
+            if let Some(SigState {
+                check: Check::Done(c),
+                ..
+            }) = &mut t.sigs
+            {
+                c.report.apply_trust(&list);
+                c.trust = status.clone();
+                t.sig_banner();
+            }
+        }
+        if let Some(w) = &mut self.trusted {
+            *w = TrustedWindow::load();
+        }
+    }
+
+    /// Adds the certificate `ask` settled on to the trust list file. On failure the
+    /// reason is kept in `ask` for its window.
+    fn trust_now(&mut self, ask: &mut TrustAsk) -> bool {
+        let Some(cert) = ask.cert().cloned() else {
+            return false;
+        };
+        let result = (|| -> mpe_core::Result<mpe_core::Added> {
+            let path = mpe_core::TrustList::default_path().ok_or_else(|| {
+                anyhow::anyhow!("MPE can't find its settings folder (HOME or APPDATA isn't set)")
+            })?;
+            let mut list = mpe_core::TrustList::load(&path)?;
+            let label = ask.label.trim();
+            let added = list.add(&cert.der, ask.role, (!label.is_empty()).then_some(label))?;
+            list.save(&path)?;
+            Ok(added)
+        })();
+        match result {
+            Ok(added) => {
+                let was = match added {
+                    mpe_core::Added::RoleChanged(old) => format!(" (instead of as {old})"),
+                    mpe_core::Added::New => String::new(),
+                };
+                let name = mpe_core::display_line(ask.label.trim(), 80);
+                self.status = format!(
+                    "Now trusting \"{name}\" as {}{was}. {}",
+                    ask.role,
+                    sigs::TRUST_NOTE
+                );
+                self.retrust();
+                true
+            }
+            Err(e) => {
+                ask.error = Some(format!("{e:#}"));
+                false
+            }
+        }
+    }
+
+    /// The Details, Trusted certificates and trust question windows, when open; the
+    /// question last, so it is drawn over the others.
+    fn signature_windows(&mut self, ctx: &egui::Context) {
+        if let Some((id, i)) = self.sig_details {
+            let found = self.tabs.iter().position(|t| t.id == id);
+            let shown = found.and_then(|ti| {
+                let t = &self.tabs[ti];
+                let c = t.sig_report()?;
+                let out = sigs::details(ctx, &t.title(), c, i);
+                let s = c.report.signatures.get(i);
+                let signer = s.and_then(|s| s.signer.clone());
+                let cas = s.map(sigs::authorities).unwrap_or_default();
+                Some((ti, out, signer, cas))
+            });
+            match shown {
+                None => self.sig_details = None,
+                Some((ti, out, signer, cas)) => {
+                    if out.close {
+                        self.sig_details = None;
+                    }
+                    if out.trust_signer {
+                        if let Some(cert) = signer {
+                            self.trust_ask =
+                                Some(TrustAsk::new(TrustRole::Signer, vec![cert], false));
+                        }
+                    }
+                    if out.trust_authority && !cas.is_empty() {
+                        self.trust_ask = Some(TrustAsk::new(TrustRole::Authority, cas, false));
+                    }
+                    if let Some((p, y)) = out.go_to {
+                        self.active = ti;
+                        self.tabs[ti].go_to_at(p, y);
+                    }
+                    if out.signed_version {
+                        self.active = ti;
+                        self.sig_details = None;
+                        self.open_signed_version(ctx, i);
+                    }
+                }
+            }
+        }
+        if let Some(mut w) = self.trusted.take() {
+            match w.ui(ctx) {
+                TrustedOut::Open => self.trusted = Some(w),
+                TrustedOut::Close => {}
+                TrustedOut::Add => {
+                    self.trusted = Some(w);
+                    self.add_certificate_file();
+                }
+                TrustedOut::Remove(i) => {
+                    let sha = w.list.entries.get(i).map(|e| e.cert.sha256.clone());
+                    self.trusted = Some(w);
+                    if let Some(sha) = sha {
+                        self.untrust(&sha);
+                    }
+                }
+            }
+        }
+        if let Some(mut ask) = self.trust_ask.take() {
+            match ask.ui(ctx) {
+                Outcome::Apply if self.trust_now(&mut ask) => {}
+                Outcome::Cancel => {}
+                _ => self.trust_ask = Some(ask),
+            }
+        }
+    }
+
+    /// Asks for a certificate file and what to trust it as.
+    fn add_certificate_file(&mut self) {
+        let Some(file) = rfd::FileDialog::new()
+            .add_filter("Certificates", &["cer", "crt", "pem", "der", "p7c", "p7b"])
+            .pick_file()
+        else {
+            return;
+        };
+        let read = std::fs::read(&file)
+            .map_err(anyhow::Error::from)
+            .and_then(|b| crate::guard(|| mpe_core::read_certificates(&b)));
+        match read {
+            Ok(certs) if certs.is_empty() => {
+                self.dialog = Dialog::Message(
+                    "No certificate".into(),
+                    format!("{} holds no certificates.", file.display()),
+                )
+            }
+            // As a signer unless chosen otherwise: the narrower trust.
+            Ok(certs) => self.trust_ask = Some(TrustAsk::new(TrustRole::Signer, certs, true)),
+            Err(e) => {
+                self.dialog = Dialog::Message(
+                    "Can't read the certificate".into(),
+                    format!("{}: {e:#}", file.display()),
+                )
+            }
+        }
+    }
+
+    /// Takes the certificate with this SHA-256 fingerprint out of the trust list file.
+    fn untrust(&mut self, sha256: &str) {
+        let result = (|| -> mpe_core::Result<mpe_core::TrustEntry> {
+            let path = mpe_core::TrustList::default_path().ok_or_else(|| {
+                anyhow::anyhow!("MPE can't find its settings folder (HOME or APPDATA isn't set)")
+            })?;
+            let mut list = mpe_core::TrustList::load(&path)?;
+            let i = list
+                .find(sha256)
+                .ok_or_else(|| anyhow::anyhow!("it is no longer in the trust list"))?;
+            let e = list
+                .remove(i)
+                .ok_or_else(|| anyhow::anyhow!("it is no longer in the trust list"))?;
+            list.save(&path)?;
+            Ok(e)
+        })();
+        match result {
+            Ok(e) => {
+                self.status = format!(
+                    "No longer trusting \"{}\". {}",
+                    mpe_core::display_line(&e.label, 80),
+                    sigs::TRUST_NOTE
+                );
+            }
+            Err(e) => {
+                self.dialog =
+                    Dialog::Message("Can't change the trust list".into(), format!("{e:#}"))
+            }
+        }
+        self.retrust();
+    }
+
+    /// Opens the version of the active document that its signature `i` signed, in a new
+    /// tab of its own.
+    fn open_signed_version(&mut self, ctx: &egui::Context, i: usize) {
+        let Some(t) = self.tabs.get(self.active) else {
+            return;
+        };
+        let (Some(state), Some(c)) = (t.sigs.as_ref(), t.sig_report()) else {
+            return;
+        };
+        let Some(len) = c.report.signatures.get(i).and_then(|s| s.signed_len) else {
+            return;
+        };
+        let Some(part) = state.bytes.get(..len) else {
+            return;
+        };
+        let bytes: Arc<[u8]> = Arc::from(part);
+        let password = state.password.clone();
+        let label = format!("{} (signed version {})", t.stem("Untitled"), i + 1);
+        match crate::guard(|| Pdf::from_bytes(&bytes, password.as_deref())) {
+            Ok(pdf) => {
+                if self.add_tab(ctx, pdf, None, None, false) {
+                    self.tabs[self.active].label = Some(label);
+                    self.check_signatures(ctx, self.active, bytes, password);
+                }
+            }
+            Err(e) => {
+                self.dialog =
+                    Dialog::Message("Can't open the signed version".into(), format!("{e:#}"))
+            }
+        }
+    }
+
+    /// The digital signature tool's place was chosen: opens the signing window for it.
+    fn open_sign_window(&mut self) {
+        let Some(t) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        let Some(place) = t.ed.digital_place.take() else {
+            return;
+        };
+        let certify = t.ed.digital_certify;
+        t.ed.set_tool(Tool::Read);
+        if self.sign_window.is_some() {
+            return;
+        }
+        let where_text = digital::where_text(&t.pdf, &place);
+        let has_saved = !self
+            .settings
+            .sign
+            .list(mpe_core::SignRole::Signature)
+            .is_empty();
+        self.sign_window = Some(SignWindow::new(
+            t.id, t.revision, place, where_text, certify, has_saved,
+        ));
+    }
+
+    /// The Digital IDs window and the signing window, while open.
+    fn digital_windows(&mut self, ctx: &egui::Context) {
+        if let Some(mut w) = self.ids_window.take() {
+            let out = w.ui(ctx, &self.settings.author());
+            if out.changed {
+                if let Some(s) = self.sign_window.as_mut() {
+                    s.reload();
+                }
+            }
+            if !out.close {
+                self.ids_window = Some(w);
+            }
+        }
+        let Some(mut w) = self.sign_window.take() else {
+            return;
+        };
+        match w.ui(ctx) {
+            SignOut::Open => self.sign_window = Some(w),
+            SignOut::Cancel => {}
+            SignOut::ManageIds => {
+                if self.ids_window.is_none() {
+                    self.ids_window = Some(IdsWindow::new());
+                }
+                self.sign_window = Some(w);
+            }
+            SignOut::Go => {
+                self.start_signing(ctx, &mut w);
+                self.sign_window = Some(w);
+            }
+            SignOut::Done(s) => self.signed(ctx, *s, w.tab, w.revision),
+        }
+    }
+
+    /// Gathers what signing needs from the window's tab, asks where to save the signed
+    /// document, and starts signing in the background.
+    fn start_signing(&mut self, ctx: &egui::Context, w: &mut SignWindow) {
+        let Some(t) = self.tabs.iter().find(|t| t.id == w.tab) else {
+            w.error = Some("The document's tab was closed.".into());
+            return;
+        };
+        if t.revision != w.revision {
+            w.error = Some(
+                "The document changed after you chose where to sign. Cancel, and choose the \
+                 place again."
+                    .into(),
+            );
+            return;
+        }
+        let gathered = crate::guard(|| {
+            if t.pdf.encrypted() {
+                anyhow::bail!("MPE can't sign encrypted (password-protected) documents");
+            }
+            // A document opened with signature fields kept its bytes: the signature is
+            // added after them, with the edits made since. Any other document has no
+            // signatures to keep, so it is written out as it is now and signed. So is one
+            // that had something removed for good, which its opened bytes still hold.
+            if t.scrubbed && t.signed {
+                anyhow::bail!(
+                    "You applied redactions or removed hidden information, and the version \
+                     already signed still holds everything removed. Save the document first \
+                     (which writes the whole file again and breaks the earlier signatures), \
+                     then sign it."
+                );
+            }
+            let (base, edited): (Arc<[u8]>, _) = match &t.sigs {
+                Some(s) if !t.scrubbed => (s.bytes.clone(), t.dirty.then(|| t.pdf.clone())),
+                _ => (Arc::from(t.pdf.clone().to_bytes()?), None),
+            };
+            let art = match self
+                .settings
+                .sign
+                .list(mpe_core::SignRole::Signature)
+                .first()
+            {
+                Some(e) if w.use_saved => {
+                    let bytes = e.saved.bytes().map_err(|e| {
+                        anyhow::anyhow!("MPE can't read your saved signature's picture: {e}")
+                    })?;
+                    Some((e.saved.clone(), bytes))
+                }
+                _ => None,
+            };
+            Ok((base, edited, art))
+        });
+        let (base, edited, art) = match gathered {
+            Ok(g) => g,
+            Err(e) => {
+                w.error = Some(format!("{e:#}"));
+                return;
+            }
+        };
+        let mut d = Self::pdf_dialog().set_file_name(format!("{}-signed.pdf", t.stem("document")));
+        if let Some(dir) = t.path.as_ref().and_then(|p| p.parent()) {
+            d = d.set_directory(dir);
+        }
+        let Some(mut out) = d.save_file() else {
+            return;
+        };
+        if out.extension().is_none() {
+            out.set_extension("pdf");
+        }
+        w.start(
+            ctx,
+            digital::Input {
+                base,
+                edited,
+                art,
+                out,
+            },
+        );
+    }
+
+    /// A document was signed and written: it opens in place of the tab it was signed
+    /// from, unless that tab changed or closed meanwhile.
+    fn signed(&mut self, ctx: &egui::Context, s: digital::Signed, tab: u64, revision: u64) {
+        self.recent.add(&s.path);
+        let replace = self
+            .tabs
+            .iter()
+            .position(|t| t.id == tab && t.revision == revision);
+        let page = replace.map(|i| self.tabs[i].current);
+        let what = if s.certified { "Certified" } else { "Signed" };
+        let mut text = format!(
+            "{what} as \"{}\" in the field \"{}\", and saved to {}.",
+            s.signer,
+            mpe_core::display_line(&s.field, 60),
+            s.path.display()
+        );
+        if s.rewritten {
+            text.push_str(
+                "\n\nThe file's structure was damaged, or other PDF apps may show it \
+                 differently, so MPE wrote it out in full, as shown here, before signing.",
+            );
+        }
+        if s.finished_items > 0 {
+            text.push_str(&format!(
+                "\n\n{} were drawn into the pages first.",
+                plural(
+                    s.finished_items,
+                    "1 fill-and-sign item",
+                    "{n} fill-and-sign items"
+                )
+            ));
+        }
+        if s.self_issued {
+            text.push_str(
+                "\n\nOthers see you as an unknown signer until they trust your certificate: \
+                 send it to them from Edit > Digital IDs (Export, certificate only). MPE shows \
+                 the same until you trust it.",
+            );
+        }
+        let bytes: Arc<[u8]> = Arc::from(s.bytes);
+        match crate::guard(|| Pdf::from_bytes(&bytes, None)) {
+            Ok(pdf) => {
+                if self.add_tab(ctx, pdf, Some(s.path), None, false) {
+                    if let Some(i) = replace {
+                        // add_tab put it last: it takes the signed tab's place.
+                        if let Some(new) = self.tabs.pop() {
+                            self.tabs[i] = new;
+                            self.active = i;
+                        }
+                    }
+                    if let Some(p) = page {
+                        self.tabs[self.active].go_to(p);
+                    }
+                    self.check_signatures(ctx, self.active, bytes, None);
+                }
+                if replace.is_none() {
+                    text.push_str(
+                        "\n\nThe document changed while it was being signed, so the signed \
+                         file opened in a new tab; the changes made meanwhile aren't in it.",
+                    );
+                }
+            }
+            Err(e) => text.push_str(&format!("\n\nMPE can't open the signed file: {e:#}")),
+        }
+        self.dialog = Dialog::Message(what.into(), text);
     }
 
     fn poll_loads(&mut self, ctx: &egui::Context) {
         while let Ok(m) = self.rx.try_recv() {
             match m {
-                Loaded::Ok { path, pdf, page } => {
+                Loaded::Ok {
+                    path,
+                    pdf,
+                    page,
+                    signed,
+                } => {
                     self.recent.add(&path);
-                    self.add_tab(ctx, pdf, Some(path), page, false);
+                    if self.add_tab(ctx, pdf, Some(path), page, false) {
+                        if let Some((bytes, password)) = signed {
+                            self.check_signatures(ctx, self.active, bytes, password);
+                        }
+                    }
+                }
+                Loaded::Signatures {
+                    tab,
+                    generation,
+                    check,
+                } => {
+                    if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) {
+                        t.sig_checked(generation, check);
+                    }
                 }
                 Loaded::NeedPassword { path, error } => {
                     self.dialog = Dialog::Password(dlg::Password {
@@ -573,16 +1120,18 @@ impl App {
         };
         let mut pdf = Pdf::new();
         match insert_images(&mut pdf, 0, &data) {
-            Ok(()) => self.add_tab(ctx, pdf, None, None, true),
+            Ok(()) => {
+                self.add_tab(ctx, pdf, None, None, true);
+            }
             Err(e) => {
                 self.dialog = Dialog::Message("Cannot import images".into(), format!("{e:#}"))
             }
         }
     }
 
-    /// Saves, first asking when the document has redaction marks not yet applied, then
-    /// when saving would break its digital signatures.
-    fn save(&mut self, as_new: bool) {
+    /// Saves, first asking when the document has redaction marks not yet applied; a
+    /// signed document then goes through [`Self::save_signed`].
+    fn save(&mut self, ctx: &egui::Context, as_new: bool) {
         let marks = self
             .tabs
             .get(self.active)
@@ -590,48 +1139,127 @@ impl App {
         if marks > 0 {
             self.dialog = Dialog::ConfirmSaveMarks(as_new, marks);
         } else {
-            self.save_signed(as_new);
+            self.save_signed(ctx, as_new);
         }
     }
 
-    fn save_signed(&mut self, as_new: bool) {
-        if self.tabs.get(self.active).is_some_and(|t| t.signed) {
-            self.dialog = Dialog::ConfirmSaveSigned(as_new);
-        } else {
-            self.save_now(as_new);
-        }
-    }
-
-    fn save_now(&mut self, as_new: bool) {
+    /// A signed document is saved by adding the edits after what was signed, so that its
+    /// signatures stay valid; this asks first when they don't allow the edits. When the
+    /// edits can't be added that way, it asks before writing the whole file, which breaks
+    /// the signatures.
+    fn save_signed(&mut self, ctx: &egui::Context, as_new: bool) {
         let Some(tab) = self.tabs.get_mut(self.active) else {
             return;
         };
-        let path = if as_new || tab.path.is_none() {
-            let mut d = Self::pdf_dialog();
-            if let Some(n) = tab.path.as_ref().and_then(|p| p.file_name()) {
-                d = d.set_file_name(n.to_string_lossy());
-            }
-            match d.save_file() {
-                Some(mut p) => {
-                    if p.extension().is_none() {
-                        p.set_extension("pdf");
-                    }
-                    p
-                }
-                None => return,
-            }
+        if !tab.signed {
+            return self.save_now(ctx, as_new);
+        }
+        let appended = if tab.scrubbed {
+            Err(SCRUBBED.to_string())
+        } else if let Some(s) = &tab.sigs {
+            tab.pdf.set_encryption(tab.encryption.clone());
+            crate::guard(|| mpe_core::append_edits(&s.bytes, &tab.pdf))
+                .map_err(|e| format!("{e:#}"))
         } else {
-            tab.path.clone().unwrap()
+            Err("MPE doesn't have the file as it was signed".to_string())
+        };
+        match appended {
+            Ok(a) => match a.disallowed {
+                None => self.save_appended(ctx, as_new, a.bytes),
+                Some(disallowed) => {
+                    self.dialog = Dialog::ConfirmSaveDisallowed(Box::new(SaveDisallowed {
+                        as_new,
+                        tab: tab.id,
+                        revision: tab.revision,
+                        bytes: a.bytes,
+                        disallowed,
+                    }))
+                }
+            },
+            Err(why) => self.dialog = Dialog::ConfirmSaveSigned(as_new, why),
+        }
+    }
+
+    /// Where to save the tab: its file, or one the user picks (for Save as, or a document
+    /// with no file yet).
+    fn save_path(tab: &Tab, as_new: bool) -> Option<PathBuf> {
+        if !as_new {
+            if let Some(p) = &tab.path {
+                return Some(p.clone());
+            }
+        }
+        let mut d = Self::pdf_dialog();
+        if let Some(n) = tab.path.as_ref().and_then(|p| p.file_name()) {
+            d = d.set_file_name(n.to_string_lossy());
+        } else if let Some(l) = &tab.label {
+            d = d.set_file_name(format!("{l}.pdf"));
+        }
+        let mut p = d.save_file()?;
+        if p.extension().is_none() {
+            p.set_extension("pdf");
+        }
+        Some(p)
+    }
+
+    /// Writes a signed document whose edits were added after what was signed (`bytes`).
+    /// The signatures stay, and the saved file becomes what later saves add to.
+    fn save_appended(&mut self, ctx: &egui::Context, as_new: bool, bytes: Vec<u8>) {
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        let Some(path) = Self::save_path(tab, as_new) else {
+            return;
+        };
+        match mpe_core::write_file(&path, &bytes) {
+            Ok(()) => {
+                self.status = format!(
+                    "Saved {}; the changes were added after what was signed, so the signatures \
+                     stay",
+                    path.display()
+                );
+                self.recent.add(&path);
+                tab.dirty = false;
+                tab.scrubbed = false;
+                tab.path = Some(path);
+                self.check_signatures(ctx, self.active, Arc::from(bytes), None);
+            }
+            Err(e) => self.dialog = Dialog::Message("Save failed".into(), format!("{e:#}")),
+        }
+    }
+
+    fn save_now(&mut self, ctx: &egui::Context, as_new: bool) {
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        let Some(path) = Self::save_path(tab, as_new) else {
+            return;
         };
         tab.pdf.set_encryption(tab.encryption.clone());
         match crate::guard(|| tab.pdf.save(&path)) {
             Ok(()) => {
                 self.status = format!("Saved {}", path.display());
                 self.recent.add(&path);
-                tab.path = Some(path);
                 tab.dirty = false;
+                tab.scrubbed = false;
                 // The saved copy's signatures are already broken: no need to ask again.
                 tab.signed = false;
+                // The Signatures tab describes the file, so check the saved one.
+                let password = tab.encryption.as_ref().map(|e| e.user_password.clone());
+                let recheck = tab.sigs.is_some();
+                let saved = recheck.then(|| std::fs::read(&path));
+                tab.path = Some(path);
+                match saved {
+                    Some(Ok(bytes)) => {
+                        self.check_signatures(ctx, self.active, Arc::from(bytes), password)
+                    }
+                    Some(Err(e)) => {
+                        let t = &mut self.tabs[self.active];
+                        t.sigs.as_mut().unwrap().check =
+                            Check::Failed(format!("MPE can't read the saved file again: {e}"));
+                        t.sig_banner();
+                    }
+                    None => {}
+                }
             }
             Err(e) => self.dialog = Dialog::Message("Save failed".into(), format!("{e:#}")),
         }
@@ -658,8 +1286,8 @@ impl App {
                     self.new_from_images(ctx, &files);
                 }
             }
-            Act::Save => self.save(false),
-            Act::SaveAs => self.save(true),
+            Act::Save => self.save(ctx, false),
+            Act::SaveAs => self.save(ctx, true),
             Act::ExportImages if has => self.reveal(Section::Export),
             Act::ExportText if has => self.export_text(),
             Act::Print | Act::PrintSelection if has && !self.busy => {
@@ -739,6 +1367,43 @@ impl App {
                     self.dialog = Dialog::ConfirmFinishSigning(n);
                 }
             }
+            Act::SignDigital | Act::Certify if has => {
+                let certify = a == Act::Certify;
+                let title = if certify {
+                    "Certify"
+                } else {
+                    "Sign with digital ID"
+                };
+                let t = &mut self.tabs[self.active];
+                if self.sign_window.is_some() {
+                    // One signing at a time; the open window says where it is.
+                } else if t.pdf.encrypted() {
+                    self.dialog = Dialog::Message(
+                        title.into(),
+                        "MPE can't sign encrypted (password-protected) documents. Save a copy \
+                         without the password (Document > Password security) and sign that \
+                         instead."
+                            .into(),
+                    );
+                } else if certify && t.pdf.signature_count() > 0 {
+                    self.dialog = Dialog::Message(
+                        title.into(),
+                        "Only a document no one has signed yet can be certified. Use Sign \
+                         with digital ID instead."
+                            .into(),
+                    );
+                } else {
+                    t.ed.set_tool(Tool::DigitalSign);
+                    t.ed.digital_certify = certify;
+                    self.show_inspector = true;
+                }
+            }
+            Act::DigitalPlaced if has => self.open_sign_window(),
+            Act::DigitalIds => {
+                if self.ids_window.is_none() {
+                    self.ids_window = Some(IdsWindow::new());
+                }
+            }
             Act::CloseTab if has => {
                 if self.tabs[self.active].dirty {
                     self.dialog = Dialog::ConfirmClose(self.active);
@@ -754,10 +1419,19 @@ impl App {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             }
-            Act::About => self.dialog = Dialog::About,
+            Act::About => self.dialog = Dialog::About(about::Page::Main),
             Act::Theme(p) => {
                 ctx.set_theme(p);
                 self.settings.theme = p;
+                self.settings.save();
+            }
+            // Open tabs pick the change up at the start of the next frame.
+            Act::PageColours(look) => {
+                self.settings.page_look = look;
+                self.settings.save();
+            }
+            Act::TogglePicturesToo => {
+                self.settings.pictures_too = !self.settings.pictures_too;
                 self.settings.save();
             }
             Act::ToggleSide => self.show_side = !self.show_side,
@@ -776,7 +1450,16 @@ impl App {
                 }
             }
             Act::Palette => self.palette = Some(Palette::default()),
+            Act::TrustedCertificates => self.trusted = Some(TrustedWindow::load()),
             _ if !has => {}
+            Act::Signatures => {
+                self.show_side = true;
+                self.tabs[self.active].side = Side::Signatures;
+            }
+            Act::SignatureDetails(i) => {
+                self.sig_details = Some((self.tabs[self.active].id, i));
+            }
+            Act::SignedVersion(i) => self.open_signed_version(ctx, i),
             Act::ToggleHidden => {
                 let ed = &mut self.tabs[self.active].ed;
                 ed.show_hidden = !ed.show_hidden;
@@ -934,7 +1617,9 @@ impl App {
             Act::Extract => {
                 let t = &mut self.tabs[self.active];
                 match t.pdf.extract(&t.targets()) {
-                    Ok(p) => self.add_tab(ctx, p, None, None, true),
+                    Ok(p) => {
+                        self.add_tab(ctx, p, None, None, true);
+                    }
                     Err(e) => t.error = Some(format!("{e:#}")),
                 }
             }
@@ -1299,13 +1984,7 @@ impl App {
         let mut done = false;
         match &mut dialog {
             Dialog::None => done = true,
-            Dialog::About => {
-                done = dlg::message(
-                    ctx,
-                    "About MPE",
-                    "MPE - a fast, pure-Rust PDF viewer and editor.\nLicensed under MIT OR Apache-2.0.\nRendering: hayro. Document engine: lopdf. UI: egui.\n\nOCR uses the ocrs text recognition model by Robert Knight\n(huggingface.co/robertknight/ocrs), licensed CC BY-SA 4.0\n(creativecommons.org/licenses/by-sa/4.0), included unmodified.\n\nText font: Inter by The Inter Project Authors (rsms.me/inter),\nlicensed under the SIL Open Font License 1.1, included unmodified.",
-                ) != Outcome::Open;
-            }
+            Dialog::About(page) => done = about::show(ctx, page),
             Dialog::Message(title, text) => done = dlg::message(ctx, title, text) != Outcome::Open,
             Dialog::CommentName(name) => match dlg::comment_name(ctx, name) {
                 Outcome::Apply => {
@@ -1453,6 +2132,7 @@ impl App {
                         Ok(())
                     });
                     if let Some(r) = report.filter(|_| ok) {
+                        t.scrubbed = true;
                         self.dialog = Dialog::Message("Redactions applied".into(), report_text(&r));
                     }
                     done = true;
@@ -1500,6 +2180,7 @@ impl App {
                         Ok(())
                     });
                     if let Some(r) = report.filter(|_| ok) {
+                        t.scrubbed = true;
                         let mut text = String::from("Removed:\n");
                         for (h, n) in &r.removed {
                             text.push_str(&format!("• {} ({n})\n", h.label()));
@@ -1529,25 +2210,61 @@ impl App {
                     "Save with marks",
                 ) {
                     Outcome::Apply => {
-                        self.save_signed(as_new);
+                        self.save_signed(ctx, as_new);
                         done = true;
                     }
                     Outcome::Cancel => done = true,
                     Outcome::Open => {}
                 }
             }
-            Dialog::ConfirmSaveSigned(as_new) => {
+            Dialog::ConfirmSaveSigned(as_new, why) => {
                 let as_new = *as_new;
                 match dlg::confirm(
                     ctx,
                     "Break the signatures?",
-                    "This document is digitally signed. MPE saves by rewriting the whole file, so \
-                     the saved copy's signatures will show as invalid in every reader. Save as a \
-                     new file to keep the signed original.",
+                    &format!(
+                        "This document is digitally signed, but MPE can't add your changes after \
+                         what was signed: {}. Saving instead writes the whole file again, so the \
+                         saved copy's signatures will show as invalid in every reader. Save as a \
+                         new file to keep the signed original.",
+                        mpe_core::display_line(why, 300)
+                    ),
                     "Save anyway",
                 ) {
                     Outcome::Apply => {
-                        self.save_now(as_new);
+                        self.save_now(ctx, as_new);
+                        done = true;
+                    }
+                    Outcome::Cancel => done = true,
+                    Outcome::Open => {}
+                }
+            }
+            Dialog::ConfirmSaveDisallowed(s) => {
+                match dlg::confirm(
+                    ctx,
+                    "Save changes the signers didn't allow?",
+                    &format!(
+                        "Your changes are ones this document's signatures don't allow. If you \
+                         save, anyone who checks them will be told:\n{}\n\nThe signatures stay \
+                         valid for what was signed. Save as a new file to keep the signed \
+                         original as it is.",
+                        digital::disallowed_list(&s.disallowed)
+                    ),
+                    "Save anyway",
+                ) {
+                    Outcome::Apply => {
+                        let (as_new, tab, revision) = (s.as_new, s.tab, s.revision);
+                        let current = self
+                            .tabs
+                            .get(self.active)
+                            .is_some_and(|t| t.id == tab && t.revision == revision);
+                        if current {
+                            let bytes = std::mem::take(&mut s.bytes);
+                            self.save_appended(ctx, as_new, bytes);
+                        } else {
+                            // The document changed meanwhile: work it out again.
+                            self.save_signed(ctx, as_new);
+                        }
                         done = true;
                     }
                     Outcome::Cancel => done = true,
@@ -1608,13 +2325,26 @@ impl App {
         }
     }
 
+    /// The colours pages are drawn in on screen now.
+    fn colours(&self, ctx: &egui::Context) -> Colours {
+        Colours {
+            mode: self
+                .settings
+                .page_look
+                .mode(ctx.theme() == egui::Theme::Dark),
+            pictures_too: self.settings.pictures_too,
+        }
+    }
+
     /// The state the commands' conditions are checked against.
     fn state(&self, ctx: &egui::Context) -> Ctx {
         let mut c = Ctx {
-            busy: self.busy,
+            busy: self.busy || self.sign_window.as_ref().is_some_and(SignWindow::busy),
             side: self.show_side,
             inspector: self.show_inspector,
             theme: ctx.options(|o| o.theme_preference),
+            page_look: self.settings.page_look,
+            pictures_too: self.settings.pictures_too,
             layout: self.settings.layout,
             cover: self.settings.cover,
             highlight: self.settings.highlight,
@@ -1931,7 +2661,7 @@ fn empty_state(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
     } else {
         0.0
     };
-    let size = egui::vec2(440.0, 280.0 + extra).min(room.size() - egui::vec2(32.0, 32.0));
+    let size = egui::vec2(440.0, 310.0 + extra).min(room.size() - egui::vec2(32.0, 32.0));
     let card = egui::Rect::from_center_size(room.center(), size.max(egui::vec2(1.0, 1.0)));
     let id = egui::Id::new("empty-card");
     let r = ui
@@ -2004,6 +2734,8 @@ fn empty_state(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
         keys(Act::Open),
         keys(Act::Palette)
     ));
+    ui.add_space(10.0);
+    about::made_in_canada(&mut ui, "start-canada", true);
     if r.clicked() {
         acts.push(Act::Open);
     }
@@ -2013,6 +2745,11 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll_loads(&ctx);
+        // Page colours follow the setting and, when automatic, the app's theme.
+        let colours = self.colours(&ctx);
+        for t in &mut self.tabs {
+            t.set_colours(colours);
+        }
 
         // Files dropped onto the window.
         let dropped: Vec<PathBuf> = ctx.input(|i| {
@@ -2273,12 +3010,14 @@ impl eframe::App for App {
                         ui.selectable_value(&mut t.side, Side::Search, "Search");
                         ui.selectable_value(&mut t.side, Side::Bookmarks, "Bookmarks");
                         ui.selectable_value(&mut t.side, Side::Comments, "Comments");
+                        ui.selectable_value(&mut t.side, Side::Signatures, "Signatures");
                     });
                     ui.separator();
                     t.guarded(|t| match t.side {
                         Side::Pages => t.show_thumbs(ui, &c),
                         Side::Bookmarks => t.show_outline(ui),
                         Side::Comments => t.show_comments(ui),
+                        Side::Signatures => t.show_signatures(ui),
                         Side::Search => {
                             let r = ui.text_edit_singleline(&mut t.query);
                             let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
@@ -2383,6 +3122,9 @@ impl eframe::App for App {
                                 if std::mem::take(&mut t.ed.finish_signing) {
                                     t.requested.push(Act::FinishSigning);
                                 }
+                                if std::mem::take(&mut t.ed.sign_digital) {
+                                    t.requested.push(Act::SignDigital);
+                                }
                                 if t.ed.sign_kit != s.sign {
                                     s.sign = t.ed.sign_kit.clone();
                                     s.sign.save();
@@ -2457,6 +3199,22 @@ impl eframe::App for App {
         // changes the editor reports.
         let mut notice = None;
         if let Some(t) = self.tabs.get_mut(self.active) {
+            // The digital signature tool lists the empty signature fields, and opens the
+            // signing window once its place is chosen.
+            if t.ed.tool == Tool::DigitalSign {
+                t.ed.digital_fields = t
+                    .pdf
+                    .empty_signature_fields()
+                    .into_iter()
+                    .filter_map(|f| {
+                        let w = f.widgets.iter().find(|w| !w.hidden)?;
+                        Some((f.name, w.page))
+                    })
+                    .collect();
+                if t.ed.digital_place.is_some() {
+                    t.requested.push(Act::DigitalPlaced);
+                }
+            }
             acts.append(&mut t.requested);
             notice = t.notice.take();
         }
@@ -2469,6 +3227,8 @@ impl eframe::App for App {
             self.act(&ctx, a);
         }
         self.dialogs(&ctx);
+        self.signature_windows(&ctx);
+        self.digital_windows(&ctx);
 
         let title = match self.tabs.get(self.active) {
             Some(t) => format!("{} - MPE", t.title()),

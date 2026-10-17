@@ -3,9 +3,10 @@
 //! `hayro`'s render cache is not `Send`, so a [`Renderer`] lives on one thread.
 //! For parallel work, create one renderer per worker (see [`render_pages_parallel`]).
 
+use crate::page_colours::{self, PageColours};
 use crate::{Pdf, Result};
 use anyhow::{anyhow, Context};
-use hayro::hayro_interpret::InterpreterSettings;
+use hayro::hayro_interpret::{InterpreterCache, InterpreterSettings};
 use hayro::hayro_syntax::Pdf as HPdf;
 use hayro::vello_cpu::color::palette::css::WHITE;
 use hayro::{render, PixmapSettings, RenderCache, RenderSettings};
@@ -24,6 +25,9 @@ pub struct Bitmap {
 pub struct Renderer<'a> {
     pdf: &'a HPdf,
     cache: RenderCache<'a>,
+    /// For finding pictures in [`Renderer::render_in`]; hayro keeps its own cache's
+    /// interpreter half private.
+    boxes: InterpreterCache<'a>,
     settings: InterpreterSettings,
 }
 
@@ -32,6 +36,7 @@ impl<'a> Renderer<'a> {
         Self {
             pdf,
             cache: RenderCache::new(),
+            boxes: InterpreterCache::new(),
             settings: InterpreterSettings::default(),
         }
     }
@@ -74,6 +79,34 @@ impl<'a> Renderer<'a> {
             height: pm.height() as usize,
             rgba: pm.data_as_u8_slice().to_vec(),
         })
+    }
+
+    /// Render a page at `scale` for display in a colour mode. With `keep_pictures`,
+    /// raster pictures keep their own colours. Never used for printing or export.
+    pub fn render_in(
+        &self,
+        index: usize,
+        scale: f32,
+        mode: PageColours,
+        keep_pictures: bool,
+    ) -> Result<Bitmap> {
+        let mut b = self.render(index, scale)?;
+        if mode == PageColours::Normal {
+            return Ok(b);
+        }
+        let keep = match (keep_pictures, self.pdf.pages().get(index)) {
+            (true, Some(page)) => page_colours::picture_boxes(
+                page,
+                &self.boxes,
+                &self.settings,
+                scale.clamp(0.05, 16.0),
+                b.width,
+                b.height,
+            ),
+            _ => Vec::new(),
+        };
+        page_colours::recolour(&mut b, mode, &keep);
+        Ok(b)
     }
 
     /// Render so the bitmap is `width_px` wide.

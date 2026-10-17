@@ -39,5 +39,59 @@ pen strokes smoothed into curves, typed names as the glyph outlines of a bundled
 flattens just those annotations. The app's saved signatures and the Create signature window are in
 `crates/mpe-gui/src/signing.rs`.
 
+Digital signatures are checked in `crates/mpe-core/src/sig_verify.rs` (finding them, the byte-range rules, and
+tying each signature value to its dictionary in the version it signed, by position) and `cms_check.rs` (the CMS
+signature, certificates, timestamps), over a small BER/DER reader, `asn1.rs`, that walks the data exactly as written
+so signed attributes are never re-encoded before checking. The cryptography is RustCrypto's (`rsa`, `p256`, `p384`,
+`sha1`, `sha2`, `x509-cert`). What changed after each signature is worked out in `sig_changes.rs`: it reads the
+appended revisions' cross-reference sections itself (lopdf ignores free entries and repairs broken tables, which
+would hide changes), checks that lopdf reads the same objects, then compares each signed version with the next,
+judging every object that differs by each role it plays (page content, comment, form field, signature, document
+structure) against the signer's permissions. Trust is in `trust.rs`: the trust list file (`trust.txt` in the
+settings folder, whose location `mpe_core::settings_dir` gives both the app and the command line), and the chain
+search from a signer's certificate to a trusted authority over the certificates the signature and the document's
+`/DSS` carry, with RFC 5280's checks at the signing time, including certificate policy processing; each link's
+signature is checked over the certificate as written (`cms_check::check_cert_signature`). Trust is applied after
+checking (`SignatureReport::apply_trust`), so a changed list can be applied again without checking again. In the
+app, `crates/mpe-gui/src/signatures.rs` runs the check on a background thread when a file with signature fields
+opens (and after a save), keeping the file's bytes for View signed version, and draws the banner, the Signatures
+tab, the Details window and the trust windows; a trust change re-applies the list to every open document. Digital
+IDs are in `ids.rs` (the ID folder, making self-signed certificates with `x509-cert`'s builder, finding an ID's
+certificate by checking a signature made with its key rather than by labels) over `pkcs12.rs`, MPE's own PKCS#12
+reader and writer on `asn1.rs` (which also writes DER): it derives and wipes the password keys itself (`pbkdf2`,
+`hmac`, the PKCS#12 derivation), so `pkcs5` isn't needed, and reads BER as Windows writes it. Private files (ID
+files, the trust list) go through `mpe_core::write_private`.
+
+Signing (`sig_sign.rs`, `sign_document`) adds the signature dictionary with placeholders, its field or widget and
+its look, locks and certification to the document, then hands it to the appended-revision writer,
+`incremental.rs`: every object that differs from the file as opened (by value: a real `150.0` and an integer `150`
+are the same once written) goes into one revision appended with lopdf's `IncrementalDocument`, with a trailer of
+its own (`/Root`, `/Info`, `/ID`, `/Prev`), and is read back twice before it is used: `sig_changes::check_appended`
+reads the new cross-reference section with the strict reader and must find exactly the objects written, and lopdf's
+reading of the result must give every object as it is in memory. Signing then finds the two placeholders in the
+signature object (where that section says it is), patches the byte range, makes the CMS with `cms_write.rs` (DER
+by hand, so the pre-release `cms` crate isn't needed) and fills it in, and checks the result with
+`verify_signatures` before returning it. When the edits would make an earlier signature report a change it
+doesn't allow, it returns a `DisallowedChanges` error naming each signer and change, so the app can ask before
+signing again with `accept_disallowed`. See [Digital signatures](signatures.md).
+
+Saving a signed document (`sig_save.rs`, `append_edits`) uses the same writer without a signature: nothing is
+appended when no object changed; otherwise every signature is checked before and after, each must check as it did
+(a signature gone, as flattening the form makes it, is refused), and `sig_sign::newly_disallowed`, shared with
+signing, names the signers whose signature now reports a disallowed change it didn't report before. The app's
+`save_signed` (and the CLI's `save_edited`) call it for a document that had signatures when opened, with the bytes
+kept for the Signatures tab as the base, and fall back to a full rewrite only after asking (encrypted, password
+set, damaged, a read-back failure, or `Tab::scrubbed`: redactions applied or hidden information removed since the
+last save, tracked through undo and redo, since the signed version would keep what was removed). A signed
+document's fields are not drawn into it when it opens (`Tab::new`); the snapshots for display and printing draw
+them on a copy instead (`snapshot_hiding`), so a save adds only real edits.
+
+In the app, `crates/mpe-gui/src/digital.rs` holds the Digital IDs window and the signing window; making, importing
+and exporting IDs, and unlocking and signing, run on a background thread each, with the password moved into that
+thread in a wrapper that overwrites it when dropped. The editor's `Tool::DigitalSign` takes the place (an empty
+field or a dragged box); the app then gathers what to sign: a document opened with signature fields kept its bytes
+(`SigState`) and signs those plus its edits, any other document is written out in full first. The signed file
+replaces the tab and is checked like any opened file.
+
 In the desktop app, every command is defined once in `crates/mpe-gui/src/actions.rs`; the menu, the top bar, the
 command palette, the right-click menus, the floating toolbar and the keyboard shortcuts are all built from that list.

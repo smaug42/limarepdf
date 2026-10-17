@@ -6,6 +6,13 @@ options with `mpe <command> --help`.
 Commands that change a document take the input file first and write the result to `-o out.pdf`; the input is
 never changed. Add `--password` to open a protected input.
 
+A digitally signed input keeps its signatures: the changes are added after what was signed. When its signatures
+don't allow the changes, the command writes nothing unless `--accept-disallowed` is given (the signatures then
+report the changes). When the changes can't be added that way (a password set, an encrypted or damaged file,
+redaction), it writes nothing unless `--break-signatures` is given, which writes the whole file and breaks them.
+`mpe sanitise` takes `--break-signatures` too. See
+[Saving a signed document](signatures.md#saving-a-signed-document).
+
 Page lists take numbers and ranges, counted from 1: `1-3,7`, `5-` (5 to the end) or `all`.
 
 ## Look at a document
@@ -159,6 +166,66 @@ nothing readable is left under the areas. It warns when removed text is still fo
 | `mpe sanitise in.pdf -o out.pdf --keep metadata --also comments,bookmarks` | Keep some of those, or remove more: `comments`, `form-values`, `bookmarks`, `outside-crop` |
 
 See [Removing hidden information](redaction.md#removing-hidden-information).
+
+## Digital signatures
+
+| Command | What it does |
+| --- | --- |
+| `mpe verify in.pdf` | Check every digital signature: whether the signed part is unchanged, who signed by their certificate, when, and warnings; what changed after each signature and whether the signer allowed it; also lists signature fields not signed yet |
+| `mpe verify in.pdf --json` | The same as JSON, for scripts |
+| `mpe verify in.pdf --signed-version 1 -o signed.pdf` | Save the version signature 1 (numbered as `mpe verify` lists them) signed: the file as it was when signed, without later changes. Refused for a broken signature |
+| `mpe verify in.pdf --require-trusted` | Also exit with status 1 unless the file has signatures and every signer is trusted |
+| `mpe verify in.pdf --trust-file team.txt` | Judge trust by this trust list instead of your own |
+| `mpe trust list` | The certificates you trust, with their fingerprints (`--json` for scripts) |
+| `mpe trust add contract.pdf --signature 1` | Trust the signer of signature 1. Compare the SHA-256 fingerprint with them first |
+| `mpe trust add contract.pdf --signature 1 --authority --pick 2` | Trust a certificate authority from the certificates signature 1 carries; `--pick` chooses when there are several (they are listed) |
+| `mpe trust add jane.cer` | Trust a signer from a certificate file: `.cer`, `.crt`, `.pem` (DER or PEM) or `.p7c` (as Acrobat exports); `--pick N` for a file with several |
+| `mpe trust add company-ca.cer --authority` | Trust a certificate authority: every signer it issued a certificate to, directly or through authorities it allowed to |
+| `mpe trust remove 2` | Stop trusting entry 2 of `mpe trust list`, or the certificate with this SHA-256 fingerprint |
+
+Exit status 0 means every signature checked as valid (or there are none) and nothing changed after any of them
+that its signer didn't allow; 1 means at least one is broken, can't be checked or has changes that aren't allowed,
+or the file can't be opened. A signer nobody vouches for doesn't change the exit status unless `--require-trusted`
+is given. See [Digital signatures](signatures.md) for what each result means.
+
+The trust list is `trust.txt` in MPE's settings folder (`~/.config/mpe/` on Linux), shared with the app; every
+`mpe trust` command takes `--trust-file FILE` to work on another one. Trust settings affect MPE only. See
+[Trusting signers](signatures.md#trusting-signers).
+
+### Digital IDs
+
+| Command | What it does |
+| --- | --- |
+| `mpe id create --name "Jane Doe"` | Make a self-signed digital ID (RSA 3072-bit, valid five years) and make it the default. Asks for a password twice (at least 8 characters). `--organisation` and `--email` add to the name signatures show |
+| `mpe id import work.p12` | Import a digital ID from a `.p12` or `.pfx` file (from Acrobat, Windows, macOS or a certificate authority), asking for its password, which it keeps. `--name` chooses its name in MPE |
+| `mpe id list` | Your digital IDs: number, name, certificate, key, validity and fingerprint; the default is marked (`--json` for scripts) |
+| `mpe id export jane-doe -o jane.cer` | Save the ID's certificate (no key), for others to trust your signatures |
+| `mpe id export jane-doe -o jane.p12` | Save the ID with its key, for another app or as a backup, protected by the ID's password; `--new-password` to choose another |
+| `mpe id remove 2` | Remove ID 2 of `mpe id list` (or by name), after you type `yes`; `--yes` doesn't ask. It can't be undone |
+
+Commands that need a password ask for it without showing it; for scripts, `--password-file FILE` (and
+`--new-password-file FILE` for `export`) reads it from the first line of a file instead. Passwords are never taken
+on the command line itself. IDs are kept in the `ids` folder of MPE's settings folder; every `mpe id` command takes
+`--id-folder FOLDER` to work on another one. An ID is chosen by its number in `mpe id list`, its name (the file
+name, such as `jane-doe`), the name in its certificate, or its SHA-256 fingerprint. See
+[Digital IDs](signatures.md#digital-ids).
+
+### Signing
+
+| Command | What it does |
+| --- | --- |
+| `mpe sign in.pdf -o signed.pdf --page 2 --rect 350,600,200,60` | Sign with your default digital ID in a new box on page 2: X,Y,W,H in points from the page's top left as shown |
+| `mpe sign in.pdf -o signed.pdf --field Approver` | Sign the empty signature field `Approver` (as `mpe verify` lists it) |
+| `mpe sign in.pdf -o signed.pdf --field Approver --reason "Approved" --location Ottawa` | Add your reason and location, shown with the signature |
+| `mpe sign in.pdf -o signed.pdf --page 1 --rect 50,700,200,60 --certify forms` | Certify the document as its author: `no-changes`, `forms` (others may fill in and sign) or `comments` (and comment). Only before anyone signs |
+| `mpe sign in.pdf -o signed.pdf --field Approver --id work` | Sign with another ID than the default |
+| `mpe sign in.pdf -o signed.pdf --field Approver --image signature.png` | Show a picture of your handwritten signature beside the text, instead of your name in handwriting (`--style 1` to `4` picks the handwriting) |
+
+`mpe sign` asks for the ID's password (or reads it with `--password-file FILE`) and takes `--id-folder` like
+`mpe id`. The signature is added after the file's existing bytes, so earlier signatures stay valid, and the signed
+copy is checked before it is written; the ID used becomes the default. It refuses expired IDs, encrypted documents,
+and what the document's certification or an earlier signer's lock doesn't allow, saying why. See
+[Signing](signatures.md#signing).
 
 ## Properties and security
 

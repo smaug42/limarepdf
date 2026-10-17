@@ -25,6 +25,7 @@ This is a from-scratch implementation (with AI assistance): it contains no other
 - [Export and printing](docs/export-and-printing.md)
 - [Password security](docs/security.md)
 - [Redaction](docs/redaction.md)
+- [Digital signatures](docs/signatures.md)
 
 **Under the hood**
 

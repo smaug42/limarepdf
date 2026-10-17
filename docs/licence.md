@@ -5,7 +5,8 @@ MPE is dual-licensed under MIT or Apache-2.0, at your option. See [LICENSE-MIT](
 
 ## Included works
 
-- **Icons:** Phosphor Icons (MIT, © Phosphor Icons), embedded as a font by `egui-phosphor`.
+- **Icons:** Phosphor Icons (MIT, © Phosphor Icons), embedded as a font by `egui-phosphor`. The app icon is
+  Phosphor's file-pdf icon, drawn by `crates/mpe-gui/tools/make_icon.py`.
 - **Interface font:** Inter 4.1 by The Inter Project Authors, SIL Open Font License 1.1, included unmodified; see
   `crates/mpe-gui/assets/fonts/`. Release archives include the licence as `FONT-LICENSE-Inter.txt`.
 - **Handwriting fonts** for typed signatures, included unmodified; see `crates/mpe-core/assets/fonts/`: Caveat by
@@ -23,6 +24,30 @@ MPE is dual-licensed under MIT or Apache-2.0, at your option. See [LICENSE-MIT](
   [ocrs](https://github.com/robertknight/ocrs) project, [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/),
   included unmodified; see `crates/mpe-core/models/README.md`, shipped as `OCR-MODEL.md` in release archives. With
   its inference code it adds about 14 MB to each binary.
+
+## Test data
+
+These are in the source repository only, never in release archives:
+
+- **Signed sample PDFs** in `crates/mpe-core/tests/data/signatures/`: from
+  [pyHanko](https://github.com/MatthiasValvekens/pyHanko) (`pyhanko/`, MIT License, © 2020-2026 Matthias
+  Valvekens) and [node-signpdf](https://github.com/vbuch/node-signpdf) (`node-signpdf/`, MIT License, © 2019 The
+  Authors), unmodified, with made-up identities. The MIT License's permission notice: Permission is hereby
+  granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the
+  "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy,
+  modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom
+  the Software is furnished to do so, subject to the following conditions: The above copyright notice and this
+  permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS
+  PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+  HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+  ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+- **Test keys and certificates** in `crates/mpe-core/tests/data/signatures/keys/`, and the digital ID files made
+  from them in `crates/mpe-core/tests/data/signatures/ids/`, made with OpenSSL by
+  `crates/mpe-core/tools/make-signature-keys.sh`, are MPE's own, with made-up identities; the keys and passwords are
+  public and for tests only.
+- The EU DSS project's samples (LGPL-2.1) are not included: `crates/mpe-core/tools/fetch-dss-samples.sh`
+  downloads them for an optional test.
 
 ## Dependencies
 

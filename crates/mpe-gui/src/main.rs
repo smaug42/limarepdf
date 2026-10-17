@@ -1,10 +1,12 @@
 // A release build on Windows is a GUI program, so no console window opens behind it.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod about;
 mod actions;
 mod app;
 mod banners;
 mod dialogs;
+mod digital;
 mod editor;
 mod fields;
 mod inspector;
@@ -12,6 +14,7 @@ mod markup;
 mod recent;
 mod selection;
 mod settings;
+mod signatures;
 mod signing;
 mod tab;
 mod theme;

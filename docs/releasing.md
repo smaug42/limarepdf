@@ -8,7 +8,10 @@ How a release is made, for maintainers.
    - set the new version in `Cargo.toml` (`[workspace.package]`), and run a build so `Cargo.lock` follows;
    - update the status line in `docs/features.md` if it names the version;
    - in `CHANGELOG.md`, rename the `## [Unreleased]` section to `## [x.y.z] - date`. Changes are added to
-     Unreleased as they are made.
+     Unreleased as they are made;
+   - check the signature crates listed in [Digital signatures](signatures.md#security-notes): if a pinned
+     pre-release (`rsa`, `pkcs1`) has a final version, move to it; if RUSTSEC-2023-0071 has a fixed `rsa`, take it
+     and remove the `--ignore` from the `audit` job in `ci.yml`; read any new advisory the `audit` job reports.
 2. Open a pull request. CI builds, tests and packages all four platforms; check the archives in the run's artifacts.
    Merge when it is green.
 3. On `main`, after pulling the merge, make a signed tag and push it:

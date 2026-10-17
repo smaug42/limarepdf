@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 
 /// println! that ignores a closed pipe (e.g. `mpe text file.pdf | head`).
 macro_rules! out {
@@ -8,6 +8,7 @@ macro_rules! out {
     }};
 }
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use mpe_core::{display_line, DigitalId, IdStore, NewId, SignPlace, SignRequest};
 use mpe_core::{
     format_page_range, parse_page_range, part_file_name, print, render, Annot, AnnotKind, Bates,
     BookmarkPlace, Cipher, Encryption, Field, FieldKind, FieldValue, HeaderFooter, ImageImport,
@@ -16,8 +17,13 @@ use mpe_core::{
     ViewPrefs, Watermark,
 };
 use mpe_core::{sign_label, InkColor, SignArt, SignRole, SignStyle};
+use mpe_core::{
+    CertInfo, ChangeKind, FieldLock, LockAction, Permissions, Refusal, SigKind, SigStatus,
+    SignatureReport, TimeSource, Trust, TrustList, TrustRole,
+};
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
+use zeroize::Zeroizing;
 
 #[derive(Parser)]
 #[command(name = "mpe", version, about = "Fast PDF toolkit (pure Rust)")]
@@ -36,6 +42,14 @@ struct Io {
     /// Password for an encrypted input
     #[arg(long)]
     password: Option<String>,
+    /// For a digitally signed input: save even when its signatures don't allow the
+    /// changes (they stay valid for what was signed, and report the changes)
+    #[arg(long)]
+    accept_disallowed: bool,
+    /// For a digitally signed input whose changes MPE can't add after what was signed:
+    /// write the whole file anyway, which breaks the signatures
+    #[arg(long)]
+    break_signatures: bool,
 }
 
 #[derive(Subcommand)]
@@ -256,6 +270,10 @@ enum Cmd {
         /// Only list what the document has of each kind; nothing is written
         #[arg(long)]
         list: bool,
+        /// For a digitally signed input: go ahead, although writing the cleaned file breaks
+        /// its signatures (what is removed would otherwise stay in the signed version)
+        #[arg(long)]
+        break_signatures: bool,
     },
     /// Put a stamp on pages: Approved, Draft and so on, your own wording, a picture, or a
     /// typed signature
@@ -356,6 +374,75 @@ enum Cmd {
         #[command(flatten)]
         io: Io,
     },
+    /// Check the digital signatures in a PDF. Exits with status 1 unless every signature
+    /// checks as valid
+    Verify {
+        input: PathBuf,
+        /// Print the results as JSON
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        password: Option<String>,
+        /// Use this trust list instead of MPE's own (see `mpe trust`)
+        #[arg(long, value_name = "FILE")]
+        trust_file: Option<PathBuf>,
+        /// Also exit with status 1 unless the file has signatures and every signer is
+        /// trusted
+        #[arg(long)]
+        require_trusted: bool,
+        /// Save the version signature N (numbered as listed) signed, instead of the
+        /// results
+        #[arg(long, value_name = "N", requires = "output")]
+        signed_version: Option<usize>,
+        /// Where to save the signed version
+        #[arg(short, long, requires = "signed_version")]
+        output: Option<PathBuf>,
+    },
+    /// Sign a PDF with your digital ID (see `mpe id`), in an empty signature field or in a
+    /// new box. The signature is added after the file's existing bytes, so earlier
+    /// signatures stay valid, and the signed copy is checked before it is written
+    Sign {
+        input: PathBuf,
+        /// Where to save the signed copy
+        #[arg(short, long)]
+        output: PathBuf,
+        /// The digital ID: its number or name in `mpe id list`; default: the default ID
+        #[arg(long)]
+        id: Option<String>,
+        /// Sign this empty signature field (its full name, as `mpe verify` lists it)
+        #[arg(long, conflicts_with_all = ["page", "rect"], required_unless_present = "rect")]
+        field: Option<String>,
+        /// The page for a new signature box
+        #[arg(long, requires = "rect")]
+        page: Option<usize>,
+        /// A new signature box as X,Y,W,H in points from the page's top left as shown
+        #[arg(long, requires = "page")]
+        rect: Option<String>,
+        /// Why you sign, shown with the signature
+        #[arg(long)]
+        reason: Option<String>,
+        /// Where you sign, shown with the signature
+        #[arg(long)]
+        location: Option<String>,
+        /// Certify the document as its author instead (only before anyone signs it), saying
+        /// what others may still do: no-changes, forms (fill in and sign) or comments (also
+        /// comment)
+        #[arg(long, value_enum)]
+        certify: Option<CertifyLevel>,
+        /// Show this PNG, JPEG or TIFF picture of your handwritten signature beside the
+        /// text; default: your name in handwriting
+        #[arg(long)]
+        image: Option<PathBuf>,
+        /// The handwriting your name is shown in: 1 Caveat, 2 Cedarville Cursive, 3 Homemade
+        /// Apple, 4 Zeyada
+        #[arg(long, conflicts_with = "image", default_value_t = 1)]
+        style: u8,
+        /// Read the ID's password from the first line of this file instead of asking
+        #[arg(long, value_name = "FILE")]
+        password_file: Option<PathBuf>,
+        #[command(flatten)]
+        folder: IdFolder,
+    },
     /// Search page text
     Search {
         input: PathBuf,
@@ -382,6 +469,18 @@ enum Cmd {
         pages: String,
         #[arg(long)]
         password: Option<String>,
+    },
+    /// Choose whose digital signatures MPE trusts: signers, and certificate authorities
+    /// that vouch for signers. Affects MPE only
+    Trust {
+        #[command(subcommand)]
+        cmd: TrustCmd,
+    },
+    /// Your digital IDs, for signing documents: make one, import one (.p12, .pfx), export,
+    /// list or remove them
+    Id {
+        #[command(subcommand)]
+        cmd: IdCmd,
     },
     /// Work with form fields
     Form {
@@ -448,6 +547,16 @@ enum Cmd {
         #[arg(long)]
         password: Option<String>,
     },
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum CertifyLevel {
+    /// No changes at all
+    NoChanges,
+    /// Filling in forms and signing
+    Forms,
+    /// Filling in forms, signing and comments
+    Comments,
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -667,6 +776,128 @@ fn read_all(paths: &[PathBuf]) -> Result<Vec<Vec<u8>>> {
         .iter()
         .map(|p| std::fs::read(p).with_context(|| format!("reading {}", p.display())))
         .collect()
+}
+
+#[derive(Subcommand)]
+enum TrustCmd {
+    /// List the certificates MPE trusts
+    List {
+        /// Print the list as JSON
+        #[arg(long)]
+        json: bool,
+        /// Use this trust list instead of MPE's own
+        #[arg(long, value_name = "FILE")]
+        trust_file: Option<PathBuf>,
+    },
+    /// Trust a certificate: from a certificate file (.cer, .crt, .pem, .p7c), or the
+    /// signer of a signature in a PDF. Compare its SHA-256 fingerprint with its owner first
+    Add {
+        input: PathBuf,
+        /// Trust it as a certificate authority: every signer it issued a certificate to
+        #[arg(long)]
+        authority: bool,
+        /// From a PDF: the signature whose signer to trust, numbered as `mpe verify`
+        /// lists them (needed when there are several)
+        #[arg(long, value_name = "N")]
+        signature: Option<usize>,
+        /// From a file holding several certificates: which one, numbered from 1
+        #[arg(long, value_name = "N")]
+        pick: Option<usize>,
+        /// A name to show for it; default: the name in the certificate
+        #[arg(long)]
+        label: Option<String>,
+        /// Opens an encrypted PDF
+        #[arg(long)]
+        password: Option<String>,
+        /// Use this trust list instead of MPE's own
+        #[arg(long, value_name = "FILE")]
+        trust_file: Option<PathBuf>,
+    },
+    /// Stop trusting a certificate: its number in `mpe trust list`, or its SHA-256
+    /// fingerprint
+    Remove {
+        which: String,
+        /// Use this trust list instead of MPE's own
+        #[arg(long, value_name = "FILE")]
+        trust_file: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum IdCmd {
+    /// List your digital IDs
+    List {
+        /// Print the list as JSON
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        folder: IdFolder,
+    },
+    /// Make a self-signed digital ID (RSA 3072-bit, valid five years), protected by a
+    /// password you choose. Others trust your signatures once you send them its certificate
+    Create {
+        /// Your name, as your signatures will show it
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        organisation: Option<String>,
+        #[arg(long)]
+        email: Option<String>,
+        /// Read the new password from the first line of this file instead of asking
+        #[arg(long, value_name = "FILE")]
+        password_file: Option<PathBuf>,
+        #[command(flatten)]
+        folder: IdFolder,
+    },
+    /// Import a digital ID from a .p12 or .pfx file (from Acrobat, Windows, macOS or a
+    /// certificate authority). It keeps its password
+    Import {
+        input: PathBuf,
+        /// A name for it in MPE; default: the name in its certificate
+        #[arg(long)]
+        name: Option<String>,
+        /// Read the file's password from the first line of this file instead of asking
+        #[arg(long, value_name = "FILE")]
+        password_file: Option<PathBuf>,
+        #[command(flatten)]
+        folder: IdFolder,
+    },
+    /// Export a digital ID. To OUT.p12 or OUT.pfx: the ID with its key, to use in other
+    /// apps or keep as a backup. To OUT.cer: its certificate only, for others to trust
+    Export {
+        /// The ID: its number or name in `mpe id list`
+        which: String,
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Read the ID's password from the first line of this file instead of asking
+        #[arg(long, value_name = "FILE")]
+        password_file: Option<PathBuf>,
+        /// Protect the exported .p12 with a new password (asked twice) instead of the ID's
+        #[arg(long)]
+        new_password: bool,
+        /// Read the exported .p12's new password from the first line of this file
+        #[arg(long, value_name = "FILE")]
+        new_password_file: Option<PathBuf>,
+        #[command(flatten)]
+        folder: IdFolder,
+    },
+    /// Remove a digital ID. It can't sign again unless you have an exported copy
+    Remove {
+        /// The ID: its number or name in `mpe id list`
+        which: String,
+        /// Remove it without asking first
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        folder: IdFolder,
+    },
+}
+
+#[derive(Args)]
+struct IdFolder {
+    /// Use this folder of digital IDs instead of MPE's own
+    #[arg(long, value_name = "FOLDER")]
+    id_folder: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -894,7 +1125,7 @@ const XFA_ONLY: &str =
                         Adobe software, so MPE can't list or fill them";
 
 fn form_fill(io: &Io, set: &[String], values: &Option<PathBuf>, flatten: bool) -> Result<()> {
-    let mut pdf = open(&io.input, &io.password)?;
+    let (mut pdf, original) = open_io(io)?;
     if pdf.xfa_only() {
         bail!("{XFA_ONLY}");
     }
@@ -936,7 +1167,7 @@ fn form_fill(io: &Io, set: &[String], values: &Option<PathBuf>, flatten: bool) -
     if flatten {
         pdf.flatten_form(None)?;
     }
-    pdf.save(&io.output)?;
+    save_edited(io, &mut pdf, &original, false)?;
     out!(
         "filled {} field(s){}; wrote {}",
         todo.len(),
@@ -1090,10 +1321,86 @@ fn open(p: &Path, pw: &Option<String>) -> Result<Pdf> {
 }
 
 fn run_edit(io: &Io, f: impl FnOnce(&mut Pdf) -> Result<()>) -> Result<()> {
-    let mut pdf = open(&io.input, &io.password)?;
+    let (mut pdf, original) = open_io(io)?;
     f(&mut pdf)?;
-    pdf.save(&io.output)?;
+    save_edited(io, &mut pdf, &original, false)?;
     out!("wrote {}", io.output.display());
+    Ok(())
+}
+
+/// Opens `io.input`, with its bytes for [`save_edited`].
+fn open_io(io: &Io) -> Result<(Pdf, Vec<u8>)> {
+    let bytes =
+        std::fs::read(&io.input).with_context(|| format!("reading {}", io.input.display()))?;
+    let pdf = Pdf::from_bytes(&bytes, io.password.as_deref())?;
+    Ok((pdf, bytes))
+}
+
+/// Writes `pdf`, edited from `original` (the input's bytes), to `io.output`. A digitally
+/// signed input keeps its signatures: the edits are added after what was signed (see
+/// docs/signatures.md). That is refused when the signatures don't allow the edits, unless
+/// `--accept-disallowed`, and when the edits can't be added that way, unless
+/// `--break-signatures` (the whole file is written, and the signatures break). `removes`
+/// marks edits that remove information for good, which the signed version would still
+/// hold: those always need the whole file written.
+fn save_edited(io: &Io, pdf: &mut Pdf, original: &[u8], removes: bool) -> Result<()> {
+    if Pdf::from_bytes(original, io.password.as_deref())?.signature_count() == 0 {
+        return pdf.save(&io.output);
+    }
+    let input = display_line(&io.input.display().to_string(), 300);
+    let appended = if removes {
+        Err(anyhow!(
+            "these changes remove information for good, and the version that was signed would \
+             still hold it"
+        ))
+    } else {
+        mpe_core::append_edits(original, pdf)
+    };
+    match appended {
+        Ok(a) => {
+            if let Some(d) = &a.disallowed {
+                let mut list = String::new();
+                for (who, what) in &d.signers {
+                    let what: Vec<String> = what.iter().map(|w| display_line(w, 160)).collect();
+                    list.push_str(&format!(
+                        "\n  - {}: {}",
+                        display_line(who, 80),
+                        what.join("; ")
+                    ));
+                }
+                if !io.accept_disallowed {
+                    bail!(
+                        "{input} is digitally signed, and its signatures don't allow these \
+                         changes; anyone who checks them would be told:{list}\nNothing was \
+                         written. Add --accept-disallowed to save anyway (the signatures stay \
+                         valid for what was signed, and report the changes)."
+                    );
+                }
+                eprintln!("warning: the signatures will report changes they don't allow:{list}");
+            }
+            mpe_core::write_file(&io.output, &a.bytes)?;
+            if a.objects > 0 {
+                eprintln!(
+                    "note: the changes were added after what was signed, so the signatures stay"
+                );
+            }
+        }
+        Err(e) => {
+            if !io.break_signatures {
+                bail!(
+                    "{input} is digitally signed, and MPE can't add these changes after what was \
+                     signed: {}. Nothing was written. Add --break-signatures to write the whole \
+                     file anyway, which breaks the signatures.",
+                    display_line(&format!("{e:#}"), 300)
+                );
+            }
+            pdf.save(&io.output)?;
+            eprintln!(
+                "warning: the whole file was written, so the signatures in {} are broken",
+                display_line(&io.output.display().to_string(), 300)
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1116,7 +1423,7 @@ fn redact(
     apply: bool,
     json: bool,
 ) -> Result<()> {
-    let mut pdf = open(&io.input, &io.password)?;
+    let (mut pdf, original) = open_io(io)?;
     let mut marks = Vec::new();
     for a in areas {
         let bad = || format!("--area {a:?} should be PAGE:X,Y,W,H");
@@ -1147,7 +1454,7 @@ fn redact(
             pdf.add_redaction_mark(p, &boxes, "")?;
             out!("page {}: marked {} areas", p + 1, boxes.len());
         }
-        pdf.save(&io.output)?;
+        save_edited(io, &mut pdf, &original, false)?;
         out!("nothing was removed yet; apply the marks with --apply");
         out!("wrote {}", io.output.display());
         return Ok(());
@@ -1169,7 +1476,8 @@ fn redact(
         }
         bail!("the check after redacting failed, so the file was not written");
     }
-    pdf.save(&io.output)?;
+    // What was redacted must not stay in an earlier version of the file.
+    save_edited(io, &mut pdf, &original, true)?;
     if json {
         let pages: Vec<serde_json::Value> = rep
             .pages
@@ -1244,6 +1552,1008 @@ fn bookmark_index(n: usize) -> Result<usize> {
 
 fn some(s: &Option<String>) -> String {
     s.clone().unwrap_or_default()
+}
+
+/// How `mpe verify` writes times: 2026-10-16 14:23:05 -04:00.
+const VERIFY_TIME: &str = "%Y-%m-%d %H:%M:%S %:z";
+
+/// `mpe verify` as text. Everything taken from the file is cleaned for display.
+fn print_verify(input: &Path, rep: &SignatureReport) {
+    let clean = |s: &str| mpe_core::display_line(s, 80);
+    let n = rep.signatures.len();
+    match n {
+        0 => out!("{}: no digital signatures", input.display()),
+        1 => out!("{}: 1 digital signature", input.display()),
+        _ => out!("{}: {n} digital signatures", input.display()),
+    }
+    let row = |label: &str, value: String| out!("   {label:<12} {value}");
+    for (i, s) in rep.signatures.iter().enumerate() {
+        out!("");
+        let fields: Vec<String> = s
+            .fields
+            .iter()
+            .map(|f| format!("\"{}\"", clean(f)))
+            .collect();
+        let kind = match s.kind {
+            SigKind::Approval => "Signature",
+            SigKind::Certification(_) => "Certification",
+            SigKind::DocumentTimestamp => "Document timestamp",
+        };
+        let page = s
+            .page
+            .map(|p| format!(" on page {}", p + 1))
+            .unwrap_or_default();
+        out!("{}. {kind} in field {}{page}", i + 1, fields.join(", "));
+        let who = s.signer.as_ref().map(|c| clean(c.display_name()));
+        let who = who.as_deref().unwrap_or("the signer");
+        let stamp = s.kind == SigKind::DocumentTimestamp;
+        let unconfirmed = if s.trust.as_ref().is_some_and(Trust::is_trusted) {
+            ""
+        } else {
+            "; MPE can't confirm who that is"
+        };
+        row(
+            "Status:",
+            match &s.status {
+                SigStatus::Valid if !s.changes_allowed() && stamp => {
+                    "CHANGED: changed after the timestamp in ways that aren't allowed".into()
+                }
+                SigStatus::Valid if !s.changes_allowed() => {
+                    format!(
+                        "CHANGED: changed after {who} signed it in ways the signer didn't allow"
+                    )
+                }
+                SigStatus::Valid if stamp => {
+                    "valid: the document existed like this at the time shown".into()
+                }
+                SigStatus::Valid if !s.changes.is_empty() => {
+                    format!("valid: only allowed changes since {who} signed it{unconfirmed}")
+                }
+                SigStatus::Valid => {
+                    format!("valid: not changed since {who} signed it{unconfirmed}")
+                }
+                SigStatus::Broken(why) => format!("BROKEN: {}", display_line(why, 300)),
+                SigStatus::CantCheck(why) => format!("can't check: {}", display_line(why, 300)),
+            },
+        );
+        if let Some(t) = &s.trust {
+            let mut line = trust_text(t, &clean);
+            if matches!(t, Trust::Unknown(_)) && !stamp {
+                let file = input.display();
+                let n = i + 1;
+                let self_made = s.signer.as_ref().is_some_and(|c| c.self_issued);
+                line.push_str(&if self_made {
+                    format!(
+                        "; to trust this signer, compare the SHA-256 fingerprint below with \
+                         them, then run: mpe trust add \"{file}\" --signature {n}"
+                    )
+                } else {
+                    format!(
+                        "; to trust the authority that issued it, run: mpe trust add \"{file}\" \
+                         --signature {n} --authority (and compare its fingerprint with the \
+                         authority's), or this signer alone: mpe trust add \"{file}\" \
+                         --signature {n}"
+                    )
+                });
+            }
+            row("Trust:", line);
+        }
+        if !s.changes.is_empty() {
+            let signed = s
+                .signed_len
+                .map(|l| format!(" ({l} of {} bytes signed)", rep.file_len))
+                .unwrap_or_default();
+            row("Changes:", format!("after signing{signed}:"));
+            for c in &s.changes {
+                let line = match &c.refused {
+                    None => format!("- allowed: {}", clean(&c.to_string())),
+                    Some(r) => format!("- NOT ALLOWED: {} ({r})", clean(&c.to_string())),
+                };
+                row("", line);
+            }
+        }
+        if let SigKind::Certification(p) = s.kind {
+            row("Certified:", p.to_string());
+        }
+        if let Some(c) = &s.signer {
+            let mut who = clean(c.display_name());
+            if let Some(e) = c
+                .email
+                .as_deref()
+                .filter(|e| Some(*e) != c.common_name.as_deref())
+            {
+                who.push_str(&format!(" <{}>", clean(e)));
+            }
+            if let Some(o) = c
+                .organisation
+                .as_deref()
+                .filter(|o| Some(*o) != c.common_name.as_deref())
+            {
+                who.push_str(&format!(", {}", clean(o)));
+            }
+            let label = if s.kind == SigKind::DocumentTimestamp {
+                "Authority:"
+            } else {
+                "Signed by:"
+            };
+            row(label, who);
+            let issuer = if c.self_issued {
+                "itself (a self-made digital ID)".into()
+            } else {
+                clean(c.issuer_common_name.as_deref().unwrap_or(&c.issuer))
+            };
+            row("Issued by:", issuer);
+        }
+        if let Some(t) = &s.time {
+            let from = match t.source {
+                TimeSource::Timestamp => "from a timestamp authority",
+                TimeSource::SignerClock | TimeSource::Dictionary => "from the signer's computer",
+            };
+            let label = if s.kind == SigKind::DocumentTimestamp {
+                "Time:"
+            } else {
+                "Signed at:"
+            };
+            row(label, format!("{} ({from})", t.time.format(VERIFY_TIME)));
+        }
+        if let Some(ts) = s
+            .timestamp
+            .as_ref()
+            .filter(|_| s.kind != SigKind::DocumentTimestamp)
+        {
+            let trusted = match &ts.trust {
+                Some(t) if t.is_trusted() => " (trusted)".to_string(),
+                Some(Trust::Failed(why)) => format!(" (NOT TRUSTED: {})", clean(why)),
+                _ => " (MPE can't confirm this authority)".to_string(),
+            };
+            row(
+                "Timestamp:",
+                format!(
+                    "{} by {}{trusted}",
+                    ts.time.format(VERIFY_TIME),
+                    clean(ts.authority.display_name())
+                ),
+            );
+        }
+        for (label, v) in [
+            ("Name:", &s.name),
+            ("Reason:", &s.reason),
+            ("Location:", &s.location),
+            ("Contact:", &s.contact),
+        ] {
+            if let Some(v) = v.as_deref().filter(|v| !v.trim().is_empty()) {
+                row(label, clean(v));
+            }
+        }
+        let mut alg: Vec<String> = Vec::new();
+        if let Some(c) = &s.signer {
+            alg.push(c.key.clone());
+        }
+        alg.extend(s.algorithm.map(String::from));
+        alg.extend(s.digest.map(String::from));
+        if !s.sub_filter.is_empty() {
+            alg.push(clean(&s.sub_filter));
+        }
+        if !alg.is_empty() {
+            row("Algorithm:", alg.join(", "));
+        }
+        if let Some(l) = &s.locks {
+            row("Locked:", lock_text(l, &clean));
+        }
+        if let Some(c) = &s.signer {
+            row(
+                "Certificate:",
+                format!(
+                    "serial {}, valid {} to {}",
+                    c.serial,
+                    c.not_before.format("%Y-%m-%d"),
+                    c.not_after.format("%Y-%m-%d")
+                ),
+            );
+            row("SHA-256:", c.sha256.clone());
+        }
+        for w in &s.warnings {
+            row("Warning:", display_line(&w.to_string(), 300));
+        }
+    }
+    for f in &rep.empty_fields {
+        out!("");
+        let page = f
+            .page
+            .map(|p| format!(" on page {}", p + 1))
+            .unwrap_or_default();
+        out!("Empty signature field \"{}\"{page}", clean(&f.name));
+        if let Some(l) = &f.lock {
+            out!("   {:<12} {}", "Locks:", lock_text(l, &clean));
+        }
+    }
+}
+
+/// Whether a signer is trusted, and why, in one line.
+fn trust_text(t: &Trust, clean: &dyn Fn(&str) -> String) -> String {
+    match t {
+        Trust::Signer { label } => format!("trusted: you trust \"{}\" in MPE", clean(label)),
+        Trust::Authority { label, chain } => {
+            let path: Vec<String> = chain.iter().map(|c| clean(c.display_name())).collect();
+            format!(
+                "trusted: issued under \"{}\", a certificate authority you trust in MPE ({})",
+                clean(label),
+                path.join(" < ")
+            )
+        }
+        Trust::Unknown(why) => format!("not confirmed: {}", clean(why)),
+        Trust::Failed(why) => format!("NOT TRUSTED: {}", clean(why)),
+    }
+}
+
+fn trust_json(t: &Trust, cert: &dyn Fn(&CertInfo) -> serde_json::Value) -> serde_json::Value {
+    use serde_json::json;
+    match t {
+        Trust::Signer { label } => json!({"status": "trusted", "as": "signer", "label": label}),
+        Trust::Authority { label, chain } => json!({
+            "status": "trusted",
+            "as": "authority",
+            "label": label,
+            "chain": chain.iter().map(cert).collect::<Vec<_>>(),
+        }),
+        Trust::Unknown(why) => json!({"status": "unknown", "reason": why}),
+        Trust::Failed(why) => json!({"status": "failed", "reason": why}),
+    }
+}
+
+const TRUST_NOTE: &str = "Trust settings affect MPE only.";
+
+fn run_trust(cmd: TrustCmd) -> Result<()> {
+    let clean = |s: &str| mpe_core::display_line(s, 80);
+    match cmd {
+        TrustCmd::List { json, trust_file } => {
+            let path = trust_path(&trust_file)?;
+            let list = TrustList::load(&path)?;
+            if json {
+                let entries: Vec<serde_json::Value> = list
+                    .entries
+                    .iter()
+                    .map(|e| {
+                        serde_json::json!({
+                            "as": match e.role {
+                                TrustRole::Signer => "signer",
+                                TrustRole::Authority => "authority",
+                            },
+                            "label": e.label,
+                            "added": e.added.map(|d| d.to_string()),
+                            "subject": e.cert.subject,
+                            "issuer": e.cert.issuer,
+                            "self_issued": e.cert.self_issued,
+                            "not_before": e.cert.not_before.to_rfc3339(),
+                            "not_after": e.cert.not_after.to_rfc3339(),
+                            "sha256": e.cert.sha256,
+                        })
+                    })
+                    .collect();
+                let v = serde_json::json!({
+                    "file": path.display().to_string(),
+                    "trusted": entries,
+                    "problems": list.problems,
+                });
+                out!("{}", serde_json::to_string_pretty(&v)?);
+                return Ok(());
+            }
+            if list.entries.is_empty() {
+                out!(
+                    "MPE trusts no certificates yet ({}). Add one with `mpe trust add`. {TRUST_NOTE}",
+                    path.display()
+                );
+            } else {
+                out!("Trusted certificates in {}. {TRUST_NOTE}", path.display());
+            }
+            for (i, e) in list.entries.iter().enumerate() {
+                out!("");
+                let added = e.added.map(|d| format!(", added {d}")).unwrap_or_default();
+                out!(
+                    "{}. \"{}\": trusted as {}{added}",
+                    i + 1,
+                    clean(&e.label),
+                    e.role
+                );
+                out!("   {:<12} {}", "Certificate:", clean(&e.cert.subject));
+                let issuer = if e.cert.self_issued {
+                    "itself (a self-made digital ID)".into()
+                } else {
+                    clean(&e.cert.issuer)
+                };
+                out!("   {:<12} {issuer}", "Issued by:");
+                out!(
+                    "   {:<12} {} to {}",
+                    "Valid:",
+                    e.cert.not_before.format("%Y-%m-%d"),
+                    e.cert.not_after.format("%Y-%m-%d")
+                );
+                out!("   {:<12} {}", "SHA-256:", e.cert.sha256);
+            }
+            for p in &list.problems {
+                out!("");
+                out!("Problem: {}", mpe_core::display_line(p, 200));
+            }
+        }
+        TrustCmd::Add {
+            input,
+            authority,
+            signature,
+            pick,
+            label,
+            password,
+            trust_file,
+        } => {
+            let path = trust_path(&trust_file)?;
+            let mut list = TrustList::load(&path)?;
+            let bytes =
+                std::fs::read(&input).with_context(|| format!("reading {}", input.display()))?;
+            let role = if authority {
+                TrustRole::Authority
+            } else {
+                TrustRole::Signer
+            };
+            let is_pdf = bytes.windows(5).take(1024).any(|w| w == b"%PDF-");
+            // One certificate out of several, chosen with --pick.
+            let choose = |mut certs: Vec<CertInfo>, what: &str| -> Result<CertInfo> {
+                match (certs.len(), pick) {
+                    (0, _) => bail!("there is no {what}"),
+                    (1, None | Some(1)) => Ok(certs.remove(0)),
+                    (n, Some(k)) if (1..=n).contains(&k) => Ok(certs.remove(k - 1)),
+                    (n, Some(k)) => bail!("there is no {what} {k}; there are {n}"),
+                    (n, None) => {
+                        let names: Vec<String> = certs
+                            .iter()
+                            .enumerate()
+                            .map(|(i, c)| format!("  {}. {}", i + 1, clean(&c.subject)))
+                            .collect();
+                        bail!(
+                            "there are {n} to choose from; choose one with --pick N:\n{}",
+                            names.join("\n")
+                        )
+                    }
+                }
+            };
+            let cert: CertInfo = if is_pdf {
+                let rep = mpe_core::verify_signatures(&bytes, password.as_deref(), &list)?;
+                let n = match (signature, rep.signatures.len()) {
+                    (_, 0) => bail!("{} has no digital signatures", input.display()),
+                    (Some(n), _) => n,
+                    (None, 1) => 1,
+                    (None, many) => bail!(
+                        "{} has {many} signatures; choose one with --signature N, numbered as \
+                         `mpe verify` lists them",
+                        input.display()
+                    ),
+                };
+                let s = n
+                    .checked_sub(1)
+                    .and_then(|i| rep.signatures.get(i))
+                    .with_context(|| {
+                        format!(
+                            "there is no signature {n}; the file has {}",
+                            rep.signatures.len()
+                        )
+                    })?;
+                match &s.status {
+                    SigStatus::Valid => {}
+                    SigStatus::Broken(why) | SigStatus::CantCheck(why) => bail!(
+                        "signature {n} isn't valid ({}); MPE only trusts the signer of a valid \
+                         signature",
+                        display_line(why, 300)
+                    ),
+                }
+                if authority {
+                    // An authority from the certificates the signature carries, as in
+                    // Acrobat's certificate viewer.
+                    let cas = s
+                        .certificates
+                        .iter()
+                        .filter(|c| mpe_core::is_authority(c))
+                        .cloned()
+                        .collect();
+                    choose(cas, "certificate authority in that signature")?
+                } else {
+                    if pick.is_some() {
+                        bail!("--pick chooses an authority (with --authority) or a certificate in a file");
+                    }
+                    s.signer
+                        .clone()
+                        .context("the signature has no signer certificate")?
+                }
+            } else {
+                if signature.is_some() {
+                    bail!(
+                        "--signature is for PDF files; for a certificate file, choose with --pick"
+                    );
+                }
+                let certs = mpe_core::read_certificates(&bytes)
+                    .with_context(|| format!("reading {}", input.display()))?;
+                choose(certs, "certificate in the file")?
+            };
+            let added = list.add(&cert.der, role, label.as_deref())?;
+            list.save(&path)?;
+            let e = list
+                .entries
+                .iter()
+                .find(|e| e.cert.sha256 == cert.sha256)
+                .context("the certificate wasn't added")?;
+            let was = match added {
+                mpe_core::Added::RoleChanged(old) => format!(" (instead of as {old})"),
+                mpe_core::Added::New => String::new(),
+            };
+            out!("Now trusting \"{}\" as {role}{was}.", clean(&e.label));
+            out!("   {:<12} {}", "Certificate:", clean(&cert.subject));
+            out!("   {:<12} {}", "SHA-256:", cert.sha256);
+            if role == TrustRole::Authority {
+                out!(
+                    "Signers whose certificates it issued, directly or through authorities it \
+                     allowed to, are now trusted."
+                );
+            }
+            out!(
+                "Make sure this fingerprint is right by checking it with the certificate's owner \
+                 in a way you trust (in person, by phone): anyone can make a certificate with any \
+                 name."
+            );
+            if !cert.valid_now() {
+                out!(
+                    "Note: the certificate isn't valid today (valid {} to {}); only signatures \
+                     made while it was valid are trusted.",
+                    cert.not_before.format("%Y-%m-%d"),
+                    cert.not_after.format("%Y-%m-%d")
+                );
+            }
+            out!("{TRUST_NOTE} Saved in {}.", path.display());
+        }
+        TrustCmd::Remove { which, trust_file } => {
+            let path = trust_path(&trust_file)?;
+            let mut list = TrustList::load(&path)?;
+            let index = match which.trim().parse::<usize>() {
+                Ok(n) if (1..=list.entries.len()).contains(&n) => n - 1,
+                Ok(n) => bail!(
+                    "there is no entry {n}; the list has {} (see `mpe trust list`)",
+                    list.entries.len()
+                ),
+                Err(_) => list.find(&which).with_context(|| {
+                    format!("no trusted certificate has the fingerprint {which}")
+                })?,
+            };
+            let e = list.remove(index).context("no such entry")?;
+            list.save(&path)?;
+            out!(
+                "No longer trusting \"{}\" (SHA-256 {}). {TRUST_NOTE}",
+                clean(&e.label),
+                e.cert.sha256
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The trust list to use: `explicit`, else MPE's own in the settings folder.
+fn id_store(folder: &IdFolder) -> Result<IdStore> {
+    folder
+        .id_folder
+        .clone()
+        .or_else(IdStore::default_dir)
+        .map(IdStore::new)
+        .context("MPE can't find its settings folder (HOME or APPDATA isn't set); use --id-folder")
+}
+
+/// A password: the first line of `file`, or asked for on the terminal without showing it.
+fn read_password(file: &Option<PathBuf>, prompt: &str) -> Result<Zeroizing<String>> {
+    if let Some(f) = file {
+        let size = std::fs::metadata(f)
+            .with_context(|| format!("reading {}", f.display()))?
+            .len();
+        if size > 4096 {
+            bail!("{} is too large to be a password file", f.display());
+        }
+        let text = Zeroizing::new(
+            std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?,
+        );
+        let line = text.split('\n').next().unwrap_or_default();
+        return Ok(Zeroizing::new(
+            line.strip_suffix('\r').unwrap_or(line).to_string(),
+        ));
+    }
+    rpassword::prompt_password(prompt)
+        .map(Zeroizing::new)
+        .map_err(|e| anyhow::anyhow!("can't ask for the password ({e}); use --password-file"))
+}
+
+/// A new password: from `file`, or asked for twice.
+fn choose_password(file: &Option<PathBuf>, prompt: &str) -> Result<Zeroizing<String>> {
+    let p = read_password(file, prompt)?;
+    if let Some(why) = mpe_core::password_problem(&p) {
+        bail!("{why}");
+    }
+    if file.is_none() && *read_password(&None, "Type it again: ")? != *p {
+        bail!("the two passwords aren't the same; nothing was done");
+    }
+    Ok(p)
+}
+
+/// The facts about an ID's certificate, indented under its heading.
+fn id_details(id: &DigitalId, clean: &dyn Fn(&str) -> String) {
+    let c = &id.cert;
+    out!("   {:<12} {}", "Certificate:", clean(&c.subject));
+    let issuer = if c.self_issued {
+        "itself (a self-made digital ID)".into()
+    } else {
+        clean(&c.issuer)
+    };
+    out!("   {:<12} {issuer}", "Issued by:");
+    if !id.chain.is_empty() {
+        let n = id.chain.len();
+        out!(
+            "   {:<12} {n} more certificate{} (its authorities)",
+            "With:",
+            if n == 1 { "" } else { "s" }
+        );
+    }
+    out!("   {:<12} {}", "Key:", c.key);
+    let note = if c.valid_now() {
+        ""
+    } else if c.expired() {
+        " (expired: MPE won't sign with it)"
+    } else {
+        " (not valid yet: MPE won't sign with it)"
+    };
+    out!(
+        "   {:<12} {} to {}{note}",
+        "Valid:",
+        c.not_before.format("%Y-%m-%d"),
+        c.not_after.format("%Y-%m-%d")
+    );
+    out!("   {:<12} {}", "SHA-256:", c.sha256);
+}
+
+fn run_id(cmd: IdCmd) -> Result<()> {
+    let clean = |s: &str| mpe_core::display_line(s, 80);
+    match cmd {
+        IdCmd::List { json, folder } => {
+            let store = id_store(&folder)?;
+            let list = store.list();
+            if json {
+                let cert = |c: &CertInfo| {
+                    serde_json::json!({
+                        "subject": c.subject,
+                        "issuer": c.issuer,
+                        "self_issued": c.self_issued,
+                        "key": c.key,
+                        "not_before": c.not_before.to_rfc3339(),
+                        "not_after": c.not_after.to_rfc3339(),
+                        "sha256": c.sha256,
+                    })
+                };
+                let ids: Vec<serde_json::Value> = list
+                    .ids
+                    .iter()
+                    .map(|i| {
+                        let mut v = cert(&i.cert);
+                        v["name"] = i.name.clone().into();
+                        v["label"] = i.cert.display_name().into();
+                        v["default"] = i.default.into();
+                        v["valid_now"] = i.valid_now().into();
+                        v["file"] = i.path.display().to_string().into();
+                        v["chain"] = i.chain.iter().map(cert).collect();
+                        v
+                    })
+                    .collect();
+                let v = serde_json::json!({
+                    "folder": store.dir().display().to_string(),
+                    "ids": ids,
+                    "problems": list.problems,
+                });
+                out!("{}", serde_json::to_string_pretty(&v)?);
+                return Ok(());
+            }
+            if list.ids.is_empty() {
+                out!(
+                    "You have no digital IDs yet ({}). Make one with `mpe id create --name \
+                     \"Your Name\"`, or import one with `mpe id import FILE.p12`.",
+                    store.dir().display()
+                );
+            } else {
+                out!("Your digital IDs, in {}:", store.dir().display());
+            }
+            for (i, id) in list.ids.iter().enumerate() {
+                out!("");
+                let default = if id.default { ", the default" } else { "" };
+                out!(
+                    "{}. \"{}\" ({}){default}",
+                    i + 1,
+                    clean(id.cert.display_name()),
+                    id.name
+                );
+                id_details(id, &clean);
+            }
+            for p in &list.problems {
+                out!("");
+                out!("Problem: {}", mpe_core::display_line(p, 200));
+            }
+        }
+        IdCmd::Create {
+            name,
+            organisation,
+            email,
+            password_file,
+            folder,
+        } => {
+            let store = id_store(&folder)?;
+            let new = NewId {
+                name,
+                organisation,
+                email,
+            };
+            new.check()?;
+            let password = choose_password(
+                &password_file,
+                &format!(
+                    "Password for the new ID (at least {} characters): ",
+                    mpe_core::MIN_PASSWORD
+                ),
+            )?;
+            let id = store.create(&new, &password)?;
+            out!(
+                "Made the digital ID \"{}\" ({}), in {}. It is the default for signing.",
+                clean(id.cert.display_name()),
+                id.name,
+                id.path.display()
+            );
+            id_details(&id, &clean);
+            out!("");
+            out!(
+                "Keep the password safe: MPE can't recover it, and without it the ID can't \
+                 sign. Keep a copy of the ID too (`mpe id export {} -o {}.p12`): if this \
+                 computer is lost, so is the ID.",
+                id.name,
+                id.name
+            );
+            out!(
+                "For others to trust your signatures, send them your certificate (`mpe id \
+                 export {} -o {}.cer`) and tell them its SHA-256 fingerprint another way, such \
+                 as by phone, so they can check it is yours.",
+                id.name,
+                id.name
+            );
+        }
+        IdCmd::Import {
+            input,
+            name,
+            password_file,
+            folder,
+        } => {
+            let store = id_store(&folder)?;
+            let bytes =
+                std::fs::read(&input).with_context(|| format!("reading {}", input.display()))?;
+            let file_name = input
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let password = read_password(&password_file, &format!("Password of {file_name}: "))?;
+            let id = store.import(&bytes, &password, name.as_deref())?;
+            out!(
+                "Imported the digital ID \"{}\" ({}), in {}. It is the default for signing.",
+                clean(id.cert.display_name()),
+                id.name,
+                id.path.display()
+            );
+            id_details(&id, &clean);
+            out!("");
+            out!(
+                "It keeps its password, now with MPE's own encryption. {} still holds the ID: \
+                 keep it safe, or delete it if MPE's copy is enough.",
+                input.display()
+            );
+        }
+        IdCmd::Export {
+            which,
+            output,
+            password_file,
+            new_password,
+            new_password_file,
+            folder,
+        } => {
+            let store = id_store(&folder)?;
+            let id = store.find(&which)?;
+            let label = clean(id.cert.display_name());
+            let ext = output
+                .extension()
+                .map(|e| e.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+            match ext.as_str() {
+                "p12" | "pfx" => {
+                    let password =
+                        read_password(&password_file, &format!("Password of \"{label}\": "))?;
+                    let unlocked = store.unlock(&id, &password)?;
+                    let fresh = new_password || new_password_file.is_some();
+                    let file_password = if fresh {
+                        choose_password(
+                            &new_password_file,
+                            &format!(
+                                "Password for the exported file (at least {} characters): ",
+                                mpe_core::MIN_PASSWORD
+                            ),
+                        )?
+                    } else {
+                        if mpe_core::password_problem(&password).is_some() {
+                            bail!(
+                                "the ID's password is shorter than {} characters; choose a new \
+                                 one for the exported file with --new-password",
+                                mpe_core::MIN_PASSWORD
+                            );
+                        }
+                        password
+                    };
+                    let bytes = unlocked.to_p12(&file_password)?;
+                    mpe_core::write_private(&output, &bytes)?;
+                    out!(
+                        "Exported the digital ID \"{label}\" with its key to {}, protected by {}.",
+                        output.display(),
+                        if fresh {
+                            "the new password"
+                        } else {
+                            "the ID's password"
+                        }
+                    );
+                    out!("Keep it safe: anyone with this file and its password can sign as you.");
+                }
+                "cer" | "crt" | "der" => {
+                    std::fs::write(&output, &id.cert.der)
+                        .with_context(|| format!("writing {}", output.display()))?;
+                    out!(
+                        "Exported the certificate of \"{label}\" to {}. It holds no key, so it \
+                         is safe to share.",
+                        output.display()
+                    );
+                    out!("   {:<12} {}", "SHA-256:", id.cert.sha256);
+                    out!(
+                        "Recipients trust it in MPE with `mpe trust add {}`, or in their PDF \
+                         app's trusted certificates, after checking the fingerprint with you \
+                         another way, such as by phone.",
+                        output.display()
+                    );
+                }
+                _ => bail!(
+                    "name the exported file .p12 or .pfx for the ID with its key (for other \
+                     apps, or a backup), or .cer for its certificate only (for others to trust)"
+                ),
+            }
+        }
+        IdCmd::Remove { which, yes, folder } => {
+            let store = id_store(&folder)?;
+            let id = store.find(&which)?;
+            let label = clean(id.cert.display_name());
+            if !yes {
+                use std::io::{BufRead, IsTerminal, Write};
+                if !std::io::stdin().is_terminal() {
+                    bail!(
+                        "removing a digital ID can't be undone; add --yes to remove \"{label}\" \
+                         ({}) without being asked",
+                        id.name
+                    );
+                }
+                eprint!(
+                    "Remove the digital ID \"{label}\" ({})? It can't sign again unless you have \
+                     an exported copy. Type yes to remove it: ",
+                    id.name
+                );
+                let _ = std::io::stderr().flush();
+                let mut answer = String::new();
+                std::io::stdin().lock().read_line(&mut answer)?;
+                if !answer.trim().eq_ignore_ascii_case("yes") {
+                    out!("Nothing was removed.");
+                    return Ok(());
+                }
+            }
+            store.remove(&id)?;
+            out!("Removed the digital ID \"{label}\" ({}).", id.name);
+        }
+    }
+    Ok(())
+}
+
+fn trust_path(explicit: &Option<PathBuf>) -> Result<PathBuf> {
+    explicit
+        .clone()
+        .or_else(TrustList::default_path)
+        .context("MPE can't find its settings folder (HOME or APPDATA isn't set); use --trust-file")
+}
+
+/// The trust list for checking: an explicit file must load; MPE's own may be missing or
+/// unusable, which leaves every signer unconfirmed, with a warning.
+fn trust_for_checking(explicit: &Option<PathBuf>) -> Result<TrustList> {
+    let list = match (explicit, TrustList::default_path()) {
+        (Some(p), _) if !p.exists() => bail!("there is no trust list at {}", p.display()),
+        (Some(p), _) => TrustList::load(p)?,
+        (None, Some(p)) => TrustList::load(&p).unwrap_or_else(|e| {
+            eprintln!("Warning: {e:#}; no signer is trusted");
+            TrustList::default()
+        }),
+        (None, None) => TrustList::default(),
+    };
+    for p in &list.problems {
+        eprintln!("Warning: trust list: {}", mpe_core::display_line(p, 200));
+    }
+    Ok(list)
+}
+
+fn lock_text(l: &FieldLock, clean: &dyn Fn(&str) -> String) -> String {
+    let names = || {
+        l.fields
+            .iter()
+            .map(|f| format!("\"{}\"", clean(f)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let fields = match l.action {
+        LockAction::All => "every form field".into(),
+        LockAction::Include => format!("the fields {}", names()),
+        LockAction::Exclude => format!("every form field except {}", names()),
+    };
+    match l.permissions {
+        Some(p) => format!("{fields}; afterwards {p}"),
+        None => fields,
+    }
+}
+
+fn permissions_slug(p: Permissions) -> &'static str {
+    match p {
+        Permissions::NoChanges => "no_changes",
+        Permissions::FormFilling => "form_filling",
+        Permissions::FormFillingAndComments => "form_filling_and_comments",
+    }
+}
+
+/// A stable name for each kind of change, for `mpe verify --json`.
+fn change_slug(k: &ChangeKind) -> &'static str {
+    match k {
+        ChangeKind::FieldFilled(_) => "field_filled",
+        ChangeKind::FieldMadeReadOnly(_) => "field_made_read_only",
+        ChangeKind::Signed(_) => "signed",
+        ChangeKind::DocumentTimestamp(_) => "document_timestamp",
+        ChangeKind::SignatureFieldAdded(_) => "signature_field_added",
+        ChangeKind::CommentAdded => "comment_added",
+        ChangeKind::CommentChanged => "comment_changed",
+        ChangeKind::CommentRemoved => "comment_removed",
+        ChangeKind::FormSettings => "form_settings",
+        ChangeKind::CommentAppearances => "comment_appearances",
+        ChangeKind::ValidationData => "validation_data",
+        ChangeKind::UsageRightsRemoved => "usage_rights_removed",
+        ChangeKind::Metadata => "metadata",
+        ChangeKind::PageContent => "page_content",
+        ChangeKind::PagesChanged => "pages_changed",
+        ChangeKind::AnnotationChanged => "annotation_changed",
+        ChangeKind::FieldAdded(_) => "field_added",
+        ChangeKind::FieldRemoved(_) => "field_removed",
+        ChangeKind::FieldChanged(_) => "field_changed",
+        ChangeKind::SignatureChanged(_) => "signature_changed",
+        ChangeKind::Actions => "actions",
+        ChangeKind::DocumentChanged(_) => "document_changed",
+        ChangeKind::Unrecognised(_) => "unrecognised",
+        ChangeKind::Malformed(_) => "malformed",
+    }
+}
+
+/// `mpe verify --json`.
+fn verify_json(rep: &SignatureReport) -> serde_json::Value {
+    use serde_json::json;
+    let cert = |c: &CertInfo| {
+        json!({
+            "subject": c.subject,
+            "common_name": c.common_name,
+            "organisation": c.organisation,
+            "email": c.email,
+            "issuer": c.issuer,
+            "self_issued": c.self_issued,
+            "serial": c.serial,
+            "not_before": c.not_before.to_rfc3339(),
+            "not_after": c.not_after.to_rfc3339(),
+            "sha256": c.sha256,
+            "key": c.key,
+        })
+    };
+    let lock = |l: &FieldLock| {
+        json!({
+            "action": match l.action {
+                LockAction::All => "all",
+                LockAction::Include => "include",
+                LockAction::Exclude => "exclude",
+            },
+            "fields": l.fields,
+            "permissions": l.permissions.map(permissions_slug),
+        })
+    };
+    let rect = |b: &[f32; 4]| -> Vec<f64> {
+        b.iter()
+            .map(|&x| (f64::from(x) * 1000.0).round() / 1000.0)
+            .collect()
+    };
+    let sigs: Vec<serde_json::Value> = rep
+        .signatures
+        .iter()
+        .map(|s| {
+            let (status, problem) = match &s.status {
+                SigStatus::Valid => ("valid", None),
+                SigStatus::Broken(why) => ("broken", Some(why)),
+                SigStatus::CantCheck(why) => ("cant_check", Some(why)),
+            };
+            let (kind, permissions) = match s.kind {
+                SigKind::Approval => ("approval", None),
+                SigKind::Certification(p) => ("certification", Some(permissions_slug(p))),
+                SigKind::DocumentTimestamp => ("document_timestamp", None),
+            };
+            json!({
+                "fields": s.fields,
+                "page": s.page.map(|p| p + 1),
+                "rect": s.bbox.as_ref().map(rect),
+                "kind": kind,
+                "permissions": permissions,
+                "sub_filter": s.sub_filter,
+                "status": status,
+                "problem": problem,
+                "byte_range": s.byte_range,
+                "covers_whole_file": s.covers_whole_file,
+                "signed_length": s.signed_len,
+                "changes_allowed": s.changes_allowed(),
+                "changes": s.changes.iter().map(|c| json!({
+                    "change": c.to_string(),
+                    "kind": change_slug(&c.kind),
+                    "page": c.page.map(|p| p + 1),
+                    "allowed": c.allowed(),
+                    "refused": c.refused.map(|r| match r {
+                        Refusal::Never => "never",
+                        Refusal::Certification(_) => "certification",
+                        Refusal::Locked => "locked",
+                    }),
+                })).collect::<Vec<_>>(),
+                "signer": s.signer.as_ref().map(cert),
+                "trust": s.trust.as_ref().map(|t| trust_json(t, &cert)),
+                "certificates": s.certificates.iter().map(cert).collect::<Vec<_>>(),
+                "name": s.name,
+                "reason": s.reason,
+                "location": s.location,
+                "contact": s.contact,
+                "time": s.time.map(|t| t.time.to_rfc3339()),
+                "time_source": s.time.map(|t| match t.source {
+                    TimeSource::Timestamp => "timestamp",
+                    TimeSource::SignerClock => "signer_clock",
+                    TimeSource::Dictionary => "signature_dictionary",
+                }),
+                "timestamp": s.timestamp.as_ref().map(|t| json!({
+                    "time": t.time.to_rfc3339(),
+                    "authority": cert(&t.authority),
+                    "trust": t.trust.as_ref().map(|t| trust_json(t, &cert)),
+                })),
+                "digest": s.digest,
+                "algorithm": s.algorithm,
+                "locks": s.locks.as_ref().map(lock),
+                "warnings": s.warnings.iter().map(|w| w.to_string()).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let empty: Vec<serde_json::Value> = rep
+        .empty_fields
+        .iter()
+        .map(|f| {
+            json!({
+                "field": f.name,
+                "page": f.page.map(|p| p + 1),
+                "rect": f.bbox.as_ref().map(rect),
+                "lock": f.lock.as_ref().map(lock),
+            })
+        })
+        .collect();
+    json!({
+        "all_valid": rep.all_valid(),
+        "all_ok": rep.all_ok(),
+        "file_size": rep.file_len,
+        "signatures": sigs,
+        "empty_fields": empty,
+    })
 }
 
 fn main() -> Result<()> {
@@ -1520,8 +2830,19 @@ fn main() -> Result<()> {
             keep,
             also,
             list,
+            break_signatures,
         } => {
             let mut pdf = open(&input, &password)?;
+            let signed = pdf.signature_count() > 0;
+            if !list && !break_signatures && signed {
+                bail!(
+                    "{} is digitally signed, and removing hidden information means writing the \
+                     whole file, which breaks the signatures (the signed version would \
+                     otherwise still hold what is removed). Nothing was written. Add \
+                     --break-signatures to go ahead.",
+                    display_line(&input.display().to_string(), 300)
+                );
+            }
             if list {
                 let found = pdf.find_hidden()?;
                 for h in mpe_core::Hidden::ALL {
@@ -1551,6 +2872,12 @@ fn main() -> Result<()> {
             }
             let output = output.context("--output is needed")?;
             pdf.save(&output)?;
+            if signed {
+                eprintln!(
+                    "warning: the whole file was written, so the signatures in {} are broken",
+                    display_line(&output.display().to_string(), 300)
+                );
+            }
             out!("wrote {}", output.display());
         }
         Cmd::Stamp {
@@ -1716,6 +3043,188 @@ fn main() -> Result<()> {
             Ok(())
         })?,
         Cmd::Decrypt { io } => run_edit(&io, |_| Ok(()))?,
+        Cmd::Verify {
+            input,
+            json,
+            password,
+            trust_file,
+            require_trusted,
+            signed_version,
+            output,
+        } => {
+            let bytes =
+                std::fs::read(&input).with_context(|| format!("reading {}", input.display()))?;
+            let trust = trust_for_checking(&trust_file)?;
+            let rep = mpe_core::verify_signatures(&bytes, password.as_deref(), &trust)?;
+            if let (Some(n), Some(output)) = (signed_version, output) {
+                let s = n
+                    .checked_sub(1)
+                    .and_then(|i| rep.signatures.get(i))
+                    .with_context(|| {
+                        format!(
+                            "there is no signature {n}; the file has {}",
+                            rep.signatures.len()
+                        )
+                    })?;
+                if let SigStatus::Broken(why) = &s.status {
+                    bail!(
+                        "signature {n} is broken ({}), so it has no genuine signed version",
+                        display_line(why, 300)
+                    );
+                }
+                let len = s.signed_len.with_context(|| {
+                    format!("MPE can't tell which version signature {n} signed")
+                })?;
+                if output.canonicalize().ok() == input.canonicalize().ok() {
+                    bail!("the signed version must be saved to another file");
+                }
+                std::fs::write(&output, &bytes[..len])
+                    .with_context(|| format!("writing {}", output.display()))?;
+                out!(
+                    "Saved the version signature {n} signed ({len} of {} bytes) to {}",
+                    bytes.len(),
+                    output.display()
+                );
+                if let SigStatus::CantCheck(why) = &s.status {
+                    out!(
+                        "Note: MPE couldn't check signature {n} ({}), so this may not be what was signed.",
+                        display_line(why, 300)
+                    );
+                }
+                return Ok(());
+            }
+            if json {
+                out!("{}", serde_json::to_string_pretty(&verify_json(&rep))?);
+            } else {
+                print_verify(&input, &rep);
+            }
+            if !rep.all_ok() || (require_trusted && !rep.all_trusted()) {
+                std::process::exit(1);
+            }
+        }
+        Cmd::Trust { cmd } => run_trust(cmd)?,
+        Cmd::Id { cmd } => run_id(cmd)?,
+        Cmd::Sign {
+            input,
+            output,
+            id,
+            field,
+            page,
+            rect,
+            reason,
+            location,
+            certify,
+            image,
+            style,
+            password_file,
+            folder,
+        } => {
+            let place = match (field, page, rect) {
+                (Some(name), _, _) => SignPlace::Field(name),
+                (None, Some(page), Some(rect)) => {
+                    let bad = || format!("--rect {rect:?} should be X,Y,W,H");
+                    let v: Vec<f32> = rect
+                        .split(',')
+                        .map(|x| x.trim().parse())
+                        .collect::<Result<_, _>>()
+                        .with_context(bad)?;
+                    if page == 0 || v.len() != 4 {
+                        bail!("{}", bad());
+                    }
+                    SignPlace::NewBox {
+                        page: page - 1,
+                        rect: [v[0], v[1], v[0] + v[2], v[1] + v[3]],
+                    }
+                }
+                _ => bail!("say where to sign: --field NAME, or --page N with --rect X,Y,W,H"),
+            };
+            let style = SignStyle::from_number(style).context("--style is 1, 2, 3 or 4")?;
+            let picture = match &image {
+                Some(path) => Some(
+                    std::fs::read(path).with_context(|| format!("reading {}", path.display()))?,
+                ),
+                None => None,
+            };
+            let bytes =
+                std::fs::read(&input).with_context(|| format!("reading {}", input.display()))?;
+            let store = id_store(&folder)?;
+            let chosen = match &id {
+                Some(which) => store.find(which)?,
+                None => store.default_id().context(
+                    "you have no digital ID yet: make one with `mpe id create` or import one \
+                     with `mpe id import`",
+                )?,
+            };
+            let label = mpe_core::display_line(chosen.cert.display_name(), 80);
+            if chosen.cert.expired() {
+                bail!(
+                    "the digital ID \"{label}\" expired on {}; MPE doesn't sign with expired IDs",
+                    chosen.cert.not_after.format("%Y-%m-%d")
+                );
+            }
+            let password = read_password(&password_file, &format!("Password of \"{label}\": "))?;
+            let unlocked = store.unlock(&chosen, &password)?;
+            drop(password);
+            let name = unlocked.cert.display_name().to_string();
+            let art = match &picture {
+                Some(b) => Some(SignArt::Picture {
+                    bytes: b,
+                    clear_paper: true,
+                }),
+                None if style != SignStyle::Caveat => Some(SignArt::Typed { text: &name, style }),
+                None => None,
+            };
+            let signed = mpe_core::sign_document(
+                &bytes,
+                None,
+                &SignRequest {
+                    id: &unlocked,
+                    place,
+                    reason,
+                    location,
+                    certify: certify.map(|c| match c {
+                        CertifyLevel::NoChanges => Permissions::NoChanges,
+                        CertifyLevel::Forms => Permissions::FormFilling,
+                        CertifyLevel::Comments => Permissions::FormFillingAndComments,
+                    }),
+                    art,
+                    accept_disallowed: false,
+                },
+            )?;
+            mpe_core::write_file(&output, &signed.bytes)?;
+            store.set_default(&chosen)?;
+            let what = if certify.is_some() {
+                "Certified"
+            } else {
+                "Signed"
+            };
+            out!(
+                "{what} as \"{label}\" in the field \"{}\"; wrote {}.",
+                mpe_core::display_line(&signed.field, 80),
+                output.display()
+            );
+            if signed.rewritten {
+                out!(
+                    "The file's structure was damaged, or other PDF apps may show it \
+                     differently, so it was written out in full, as MPE shows it, before \
+                     signing."
+                );
+            }
+            if signed.finished_items > 0 {
+                out!(
+                    "{} fill-and-sign item(s) were drawn into the pages first.",
+                    signed.finished_items
+                );
+            }
+            if chosen.cert.self_issued {
+                out!(
+                    "Others see you as an unknown signer until they trust your certificate: send \
+                     it with `mpe id export {} -o {}.cer`.",
+                    chosen.name,
+                    chosen.name
+                );
+            }
+        }
         Cmd::Search {
             input,
             query,
@@ -1790,7 +3299,7 @@ fn main() -> Result<()> {
             } => form_fill(&io, &set, &values, flatten)?,
             FormCmd::Reset { io } => run_edit(&io, |p| p.reset_form())?,
             FormCmd::Flatten { io, pages } => {
-                let mut p = open(&io.input, &io.password)?;
+                let (mut p, original) = open_io(&io)?;
                 if p.xfa_only() {
                     bail!("{XFA_ONLY}");
                 }
@@ -1802,7 +3311,7 @@ fn main() -> Result<()> {
                     None => None,
                 };
                 let n = p.flatten_form(idx.as_deref())?;
-                p.save(&io.output)?;
+                save_edited(&io, &mut p, &original, false)?;
                 out!(
                     "flattened {n} field widget(s); wrote {}",
                     io.output.display()
@@ -1960,7 +3469,7 @@ fn main() -> Result<()> {
                 kinds,
                 author,
             } => {
-                let mut p = open(&io.input, &io.password)?;
+                let (mut p, original) = open_io(&io)?;
                 let pages = match pages {
                     Some(r) => Some(parse_page_range(&r, p.page_count())?),
                     None => None,
@@ -1977,17 +3486,17 @@ fn main() -> Result<()> {
                         && kinds.as_ref().is_none_or(|k| k.contains(&a.kind))
                         && author.as_ref().is_none_or(|w| *w == a.author)
                 })?;
-                p.save(&io.output)?;
+                save_edited(&io, &mut p, &original, false)?;
                 out!("removed {n} annotation(s); wrote {}", io.output.display());
             }
             AnnotCmd::Flatten { io, pages } => {
-                let mut p = open(&io.input, &io.password)?;
+                let (mut p, original) = open_io(&io)?;
                 let idx = match pages {
                     Some(r) => Some(parse_page_range(&r, p.page_count())?),
                     None => None,
                 };
                 let n = p.flatten_annotations(idx.as_deref())?;
-                p.save(&io.output)?;
+                save_edited(&io, &mut p, &original, false)?;
                 out!("flattened {n} annotation(s); wrote {}", io.output.display());
             }
         },

@@ -695,6 +695,24 @@ impl Pdf {
         }
         Ok(drawn)
     }
+
+    /// Lock every fill-and-sign item in place (annotation flag Locked), for a digital
+    /// signature on a document someone already signed: drawing them in would change page
+    /// content, which earlier signatures don't allow. Returns how many were locked.
+    pub(crate) fn lock_sign_items(&mut self) -> Result<usize> {
+        let items: Vec<ObjectId> = self
+            .page_ids()
+            .into_iter()
+            .flat_map(|p| self.annot_refs(p))
+            .filter(|&id| self.doc.get_dictionary(id).is_ok_and(is_sign_item))
+            .collect();
+        for &id in &items {
+            let d = self.doc.get_dictionary_mut(id)?;
+            let flags = d.get(b"F").and_then(lopdf::Object::as_i64).unwrap_or(0);
+            d.set("F", flags | 128);
+        }
+        Ok(items.len())
+    }
 }
 
 /// The size of fill-and-sign text, in points.
