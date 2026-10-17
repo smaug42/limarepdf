@@ -853,8 +853,8 @@ impl App {
         );
         if s.rewritten {
             text.push_str(
-                "\n\nThe file's structure was damaged, so MPE wrote it out in full before \
-                 signing.",
+                "\n\nThe file's structure was damaged, or other PDF apps may show it \
+                 differently, so MPE wrote it out in full, as shown here, before signing.",
             );
         }
         if s.finished_items > 0 {

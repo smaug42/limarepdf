@@ -929,6 +929,98 @@ fn signatures_on_turned_pages_read_upright() {
     assert!(dict.has(b"Matrix"));
 }
 
+// ------------------------------------------------------------------ hidden content
+
+#[track_caller]
+fn shows_one_million(text: &str, what: impl std::fmt::Debug) {
+    assert!(
+        text.contains("Pay one million") && !text.contains("hundred"),
+        "{what:?}: {text:?}"
+    );
+}
+
+/// lopdf on its own holds object 5 in every [`Hide`] file but the hybrid one; MPE drops
+/// it, as other apps do. In the hybrid file lopdf can't see object 5 at all.
+#[test]
+fn mpe_shows_what_other_apps_show() {
+    let control = Pdf::from_bytes(&hidden_payment(Hide::Not), None).unwrap();
+    assert!(control.page_text(0).contains("Pay one hundred"));
+    for hide in HIDES {
+        let bytes = hidden_payment(hide);
+        let lopdf = lopdf::Document::load_mem(&bytes).unwrap();
+        assert_eq!(
+            lopdf.objects.contains_key(&(5, 0)),
+            hide != Hide::OlderHybrid,
+            "{hide:?}"
+        );
+        let pdf = Pdf::from_bytes(&bytes, None).unwrap();
+        assert!(!pdf.doc.objects.contains_key(&(5, 0)), "{hide:?}");
+        shows_one_million(&pdf.page_text(0), hide);
+    }
+}
+
+/// Signing doesn't build on a file other apps read differently: it writes what MPE shows
+/// out in full first, so the signature covers that.
+#[test]
+fn hidden_content_is_written_out_in_full_before_signing() {
+    for hide in HIDES {
+        let s = sign(&hidden_payment(hide), &req(rsa(), field("Sign here")));
+        assert!(s.rewritten, "{hide:?}");
+        newest_is_good(&s.bytes, rsa());
+        let back = Pdf::from_bytes(&s.bytes, None).unwrap();
+        shows_one_million(&back.page_text(0), hide);
+    }
+    let s = sign(&hidden_payment(Hide::Not), &req(rsa(), field("Sign here")));
+    assert!(!s.rewritten);
+}
+
+/// An ordinary deletion: a later revision frees an object nothing uses. Other apps read
+/// the file as MPE does, so signing builds on it.
+#[test]
+fn an_unused_freed_object_doesnt_stop_signing_on_top() {
+    let base = hidden_payment(Hide::Not);
+    let added = append_raw(&base, &[(9, b"<< /Unused true >>")], &[], &[], "");
+    let freed = append_raw(&added, &[], &[9], &[], "");
+    assert!(lopdf::Document::load_mem(&freed)
+        .unwrap()
+        .objects
+        .contains_key(&(9, 0)));
+    let s = sign(&freed, &req(rsa(), field("Sign here")));
+    assert!(!s.rewritten);
+    assert!(s.bytes.starts_with(&freed));
+    newest_is_good(&s.bytes, rsa());
+}
+
+/// The same files signed by another app, which signed the bytes as they are: MPE can't
+/// vouch for what that signature covers, and won't add to the file.
+#[test]
+fn signed_hidden_content_cant_be_checked_or_added_to() {
+    for hide in HIDES {
+        let signed = sigkit::sign(
+            &hidden_payment(hide),
+            &id("rsa3072"),
+            &Field::default(),
+            &Cms::default(),
+        );
+        let rep = report(&signed);
+        let [s] = &rep.signatures[..] else {
+            panic!("{hide:?}: {} signatures", rep.signatures.len());
+        };
+        assert!(
+            matches!(&s.status, SigStatus::CantCheck(w) if w.contains("differently")),
+            "{hide:?}: {:?}",
+            s.status
+        );
+        refused(
+            sign_document(&signed, None, &req(rsa(), field("Sign here"))),
+            "differently",
+        );
+        let mut p = Pdf::from_bytes(&signed, None).unwrap();
+        note(&mut p);
+        refused(append_edits(&signed, &p), "differently");
+    }
+}
+
 // ------------------------------------------------------------------ cross-checks
 
 /// MPE's signatures as poppler's pdfsig and OpenSSL judge them:
@@ -1023,6 +1115,42 @@ fn cross_check_with_pdfsig_and_openssl() {
             .expect("openssl installed")
             .success();
         assert!(ok, "{name}: openssl cms -verify failed");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The [`Hide`] files as poppler reads them, before and after MPE signs them:
+/// `cargo test -p mpe-core --test signing -- --ignored cross_check`.
+#[test]
+#[ignore]
+fn cross_check_hidden_content_with_poppler() {
+    let dir = std::env::temp_dir().join(format!("mpe-signing-hidden-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let run = |tool: &str, path: &std::path::Path| {
+        let out = std::process::Command::new(tool)
+            .arg(path)
+            .args(if tool == "pdftotext" { &["-"][..] } else { &[] })
+            .output()
+            .expect("poppler installed");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    for hide in HIDES {
+        let path = dir.join(format!("{hide:?}.pdf"));
+        // Apps disagree on the originals: poppler 26 follows the specification for the
+        // cross-reference stream and the hybrid file, but for the others it rebuilds the
+        // cross-reference by scanning and shows "Pay one hundred". So MPE vouches for
+        // none of them as they are; what it signs reads the same everywhere.
+        let original = hidden_payment(hide);
+        let signed = sign(&original, &req(rsa(), field("Sign here"))).bytes;
+        std::fs::write(&path, &signed).unwrap();
+        shows_one_million(&run("pdftotext", &path), hide);
+        let sigs = run("pdfsig", &path);
+        assert_eq!(
+            sigs.matches("Signature Validation: Signature is Valid.")
+                .count(),
+            1,
+            "{hide:?}: {sigs}"
+        );
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }

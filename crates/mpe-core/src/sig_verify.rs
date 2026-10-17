@@ -654,6 +654,13 @@ fn check_into(
     let Some(signed) = versions.get(end) else {
         return cant("MPE can't read the version of the document this signature covers");
     };
+    // What MPE shows of the signed version must be what was signed in every app.
+    if let Some(why) = &signed.differs {
+        return cant(format!(
+            "other PDF apps may read the version this signature covers differently from MPE \
+             ({why})"
+        ));
+    }
     let container = match place {
         Place::Indirect(id) | Place::Direct(id) | Place::NotADictionary(id) => id,
     };

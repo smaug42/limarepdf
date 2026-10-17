@@ -12,6 +12,9 @@ use std::path::Path;
 pub struct Pdf {
     pub doc: Document,
     pub(crate) encryption: Option<crate::Encryption>,
+    /// Why other PDF apps may read the file this was opened from differently from MPE,
+    /// if they may. Signing and checking signatures depend on the two agreeing.
+    pub(crate) differs: Option<String>,
 }
 
 /// Document information dictionary fields.
@@ -43,20 +46,61 @@ impl Pdf {
                 lopdf::LoadOptions::with_password(password.unwrap_or("")),
             )
         };
-        let doc = match load(bytes) {
-            Ok(doc) => doc,
+        let copy;
+        let (doc, read) = match load(bytes) {
+            Ok(doc) => (doc, bytes),
             // Some writers put `/Encrypt null` (meaning not encrypted) in the trailer, and
             // lopdf takes any `/Encrypt` entry as encryption. Read a copy with those
             // entries blanked; they are the same length, so every offset holds.
             Err(e) => match blank_null_encrypt(bytes) {
-                Some(copy) => load(&copy).map_err(|_| anyhow!("cannot open PDF: {e}"))?,
+                Some(c) => {
+                    copy = c;
+                    let doc = load(&copy).map_err(|_| anyhow!("cannot open PDF: {e}"))?;
+                    (doc, &copy[..])
+                }
                 None => bail!("cannot open PDF: {e}"),
             },
         };
-        Ok(Self {
+        let mut pdf = Self {
             doc,
             encryption: None,
-        })
+            differs: None,
+        };
+        pdf.differs = pdf.match_other_readers(read);
+        Ok(pdf)
+    }
+
+    /// Makes lopdf's reading of `bytes` what other PDF apps read: drops the objects they
+    /// don't see (see [`crate::sig_changes::compare_reading`]). Returns why the readings
+    /// may still differ, if they may.
+    fn match_other_readers(&mut self, bytes: &[u8]) -> Option<String> {
+        let reading = match crate::sig_changes::compare_reading(bytes, &self.doc) {
+            Ok(r) => r,
+            Err(why) => return Some(why),
+        };
+        for id in &reading.hidden {
+            self.doc.objects.remove(id);
+        }
+        if !reading.ends_cleanly {
+            return Some(
+                "it doesn't end with its cross-reference pointer (data may follow its \
+                 end-of-file marker)"
+                    .into(),
+            );
+        }
+        let used = crate::sig_changes::references(&self.doc);
+        if let Some(id) = reading.hidden.iter().filter(|id| used.contains(id)).min() {
+            return Some(format!(
+                "it uses object {}, which its cross-reference information deletes or doesn't \
+                 list",
+                id.0
+            ));
+        }
+        let unsure = used
+            .iter()
+            .filter(|id| reading.unsure.contains(&id.0))
+            .min();
+        unsure.map(|id| format!("MPE can't read its object {} the way they do", id.0))
     }
 
     /// A new empty document with no pages.
@@ -72,6 +116,7 @@ impl Pdf {
         Self {
             doc,
             encryption: None,
+            differs: None,
         }
     }
 
@@ -625,19 +670,45 @@ fn rotate_sides(sides: [f32; 4], rotation: i64) -> [f32; 4] {
 }
 
 /// Decode a PDF text string (UTF-16BE with BOM, UTF-8 with BOM, or PDFDocEncoding ~ Latin-1).
-/// `bytes` with each `/Encrypt null` entry turned into spaces, or `None` when there is
-/// none. A null value means the entry is absent, so this doesn't change the document.
+/// `bytes` with the newest trailer's `/Encrypt null` entry turned into spaces, or `None`
+/// when it has none. A null value means the entry is absent, so this doesn't change the
+/// document. Only that trailer is touched (the one lopdf reads `/Encrypt` from), so the
+/// same bytes elsewhere, say in a page's text, stay as they are.
 fn blank_null_encrypt(bytes: &[u8]) -> Option<Vec<u8>> {
+    // The newest trailer is a table's trailer or a cross-reference stream's dictionary:
+    // from where the last `startxref` points (counted from the header, as lopdf does) to
+    // the next `startxref` or `stream`.
+    let header = bytes.windows(5).position(|w| w == b"%PDF-").unwrap_or(0);
+    let s = bytes.windows(9).rposition(|w| w == b"startxref")? + 9;
+    let digits: Vec<u8> = bytes[s..]
+        .iter()
+        .skip_while(|b| b.is_ascii_whitespace())
+        .take_while(|b| b.is_ascii_digit())
+        .take(15)
+        .copied()
+        .collect();
+    let at = header.checked_add(std::str::from_utf8(&digits).ok()?.parse().ok()?)?;
+    let rest = bytes.get(at..)?;
+    let end = [&b"startxref"[..], b"stream"]
+        .iter()
+        .filter_map(|k| rest.windows(k.len()).position(|w| w == *k))
+        .min()?;
+    let trailer = at..at + end;
+
     let mut copy: Option<Vec<u8>> = None;
-    let mut from = 0;
-    while let Some(i) = bytes[from..].windows(8).position(|w| w == b"/Encrypt") {
+    let mut from = trailer.start;
+    while let Some(i) = bytes
+        .get(from..trailer.end)
+        .and_then(|t| t.windows(8).position(|w| w == b"/Encrypt"))
+    {
         let start = from + i;
         let mut end = start + 8;
         while bytes.get(end).is_some_and(|b| b" \t\r\n\x0c\0".contains(b)) {
             end += 1;
         }
         let after = bytes.get(end + 4);
-        if bytes[end..].starts_with(b"null")
+        if end + 4 <= trailer.end
+            && bytes[end..].starts_with(b"null")
             && after.is_none_or(|b| !b.is_ascii_alphanumeric() && !b"#_.-".contains(b))
         {
             end += 4;
@@ -833,5 +904,26 @@ mod tests {
         let i = p.info();
         assert_eq!(i.title.as_deref(), Some("Tést"));
         assert_eq!(i.author.as_deref(), Some("A"));
+    }
+
+    #[test]
+    fn only_the_newest_trailers_null_encrypt_is_blanked() {
+        let mut b = b"%PDF-1.7\n1 0 obj\n(/Encrypt null)\nendobj\n".to_vec();
+        let xref = b.len();
+        b.extend_from_slice(
+            format!(
+                "xref\n0 2\n0000000000 65535 f \n0000000009 00000 n \ntrailer\n<< /Size 2 \
+                 /Encrypt null >>\nstartxref\n{xref}\n%%EOF\n"
+            )
+            .as_bytes(),
+        );
+        let copy = blank_null_encrypt(&b).unwrap();
+        assert_eq!(copy.len(), b.len());
+        let text = String::from_utf8(copy).unwrap();
+        assert!(text.contains("(/Encrypt null)"));
+        assert!(text.contains("<< /Size 2               >>"));
+        // With a stray `startxref` after the end, nothing is blanked.
+        b.extend_from_slice(b"startxref\n");
+        assert!(blank_null_encrypt(&b).is_none());
     }
 }

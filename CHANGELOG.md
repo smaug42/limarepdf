@@ -121,6 +121,8 @@
 
 - Files whose trailer says `/Encrypt null` (not encrypted, written by some signing tools) open instead of asking
   for a password that doesn't exist.
+- Parts of a file that a later revision deletes, and copies in object streams that the file's index doesn't list,
+  are no longer shown, edited or saved: MPE reads them as the PDF standard says.
 - Text in Type 3 fonts whose glyphs aren't measured in thousandths of an em is placed correctly for selection,
   search highlights and copying.
 

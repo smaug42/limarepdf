@@ -912,3 +912,231 @@ pub fn sig_id(bytes: &[u8], name: &str) -> lopdf::ObjectId {
         .and_then(|d| d.get(b"V").ok()?.as_reference().ok())
         .unwrap()
 }
+
+// ------------------------------------------------------------------ hidden objects
+
+/// How [`hidden_payment`] hides object 5 from PDF apps following the specification.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hide {
+    /// Not hidden: every app shows "Pay one hundred".
+    Not,
+    /// A later revision's cross-reference table frees it.
+    TableFree,
+    /// A later revision's cross-reference stream frees it.
+    StreamFree,
+    /// It is only in an object stream, and its entry is free.
+    StrayFree,
+    /// It is only in an object stream, with no entry at all.
+    StrayUnlisted,
+    /// The other way round: only the stream of a hybrid revision that isn't the newest
+    /// lists it, which those apps read and lopdf doesn't.
+    OlderHybrid,
+}
+
+pub const HIDES: [Hide; 5] = [
+    Hide::TableFree,
+    Hide::StreamFree,
+    Hide::StrayFree,
+    Hide::StrayUnlisted,
+    Hide::OlderHybrid,
+];
+
+/// A one-page contract with an empty signature field "Sign here". The page says "Pay one
+/// million"; object 5, its XObject resources, names a form that covers that with "Pay one
+/// hundred". `hide` makes apps following the specification read object 5 as deleted or
+/// missing, so they show "Pay one million" while lopdf on its own shows "Pay one
+/// hundred". With [`Hide::OlderHybrid`] those apps show "Pay one hundred" and lopdf misses
+/// object 5.
+pub fn hidden_payment(hide: Hide) -> Vec<u8> {
+    let mut w = Writer::new();
+    w.obj(
+        1,
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [7 0 R] >> >>",
+    );
+    w.obj(2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    w.obj(
+        3,
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 \
+         6 0 R >> /XObject 5 0 R >> /Contents 4 0 R /Annots [7 0 R] >>",
+    );
+    w.stream(
+        4,
+        "",
+        b"BT /F1 12 Tf 20 150 Td (Pay one million) Tj ET q /Cover Do Q",
+    );
+    let cover = "<< /Cover 8 0 R >>";
+    let stray = matches!(hide, Hide::StrayFree | Hide::StrayUnlisted);
+    if stray {
+        let head = "5 0 ";
+        w.stream(
+            9,
+            &format!("/Type /ObjStm /N 1 /First {}", head.len()),
+            format!("{head}{cover}").as_bytes(),
+        );
+    } else {
+        w.obj(5, cover);
+    }
+    w.obj(6, FONT);
+    w.obj(
+        7,
+        "<< /FT /Sig /T (Sign here) /Type /Annot /Subtype /Widget /Rect [20 20 220 70] /P 3 \
+         0 R /F 4 >>",
+    );
+    w.stream(
+        8,
+        "/Type /XObject /Subtype /Form /BBox [0 0 300 200] /Resources << /Font << /F1 6 0 R \
+         >> >>",
+        b"1 1 1 rg 0 140 300 30 re f 0 0 0 rg BT /F1 12 Tf 20 120 Td (Pay one hundred) Tj ET",
+    );
+    let root = "/Root 1 0 R";
+    match hide {
+        Hide::Not | Hide::TableFree => {
+            let rows = w.rows(&[1, 2, 3, 4, 5, 6, 7, 8]);
+            w.table(&rows, root);
+            if hide == Hide::Not {
+                return w.out;
+            }
+            append_raw(&w.out, &[], &[5], &[], "")
+        }
+        Hide::StreamFree => {
+            let mut rows = w.rows(&[1, 2, 3, 4, 5, 6, 7, 8]);
+            rows.push((0, Row::Free(65535)));
+            rows.push((10, Row::At(w.out.len())));
+            let first = w.xref_stream(10, &rows, &format!("{root} /Size 11"));
+            let rows = [(5, Row::Free(1)), (11, Row::At(w.out.len()))];
+            w.xref_stream(11, &rows, &format!("{root} /Size 12 /Prev {first}"));
+            w.out
+        }
+        Hide::StrayFree | Hide::StrayUnlisted => {
+            let mut rows = w.rows(&[1, 2, 3, 4, 6, 7, 8, 9]);
+            if hide == Hide::StrayFree {
+                rows.push((5, Row::Free(1)));
+            }
+            w.table(&rows, root);
+            w.out
+        }
+        Hide::OlderHybrid => {
+            let stm = w.out.len();
+            let five = [(5, Row::At(w.at[&5]))];
+            w.xref_stream_object(10, &five, "/Size 11");
+            let mut rows = w.rows(&[1, 2, 3, 4, 6, 7, 8]);
+            rows.push((10, Row::At(stm)));
+            w.table(&rows, &format!("{root} /XRefStm {stm}"));
+            append_raw(&w.out, &[(6, FONT.as_bytes())], &[], &[], "")
+        }
+    }
+}
+
+const FONT: &str = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+
+/// A cross-reference entry for [`Writer`].
+#[derive(Clone, Copy)]
+pub enum Row {
+    /// Free, with the generation a reuse would take.
+    Free(u16),
+    At(usize),
+}
+
+/// Writes a PDF by hand, one object at a time.
+struct Writer {
+    out: Vec<u8>,
+    at: std::collections::BTreeMap<u32, usize>,
+}
+
+impl Writer {
+    fn new() -> Self {
+        Self {
+            out: b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n".to_vec(),
+            at: Default::default(),
+        }
+    }
+
+    fn obj(&mut self, num: u32, body: &str) {
+        self.at.insert(num, self.out.len());
+        self.out
+            .extend_from_slice(format!("{num} 0 obj\n{body}\nendobj\n").as_bytes());
+    }
+
+    fn stream(&mut self, num: u32, dict: &str, data: &[u8]) {
+        self.at.insert(num, self.out.len());
+        let head = format!("{num} 0 obj\n<< {dict} /Length {} >>\nstream\n", data.len());
+        self.out.extend_from_slice(head.as_bytes());
+        self.out.extend_from_slice(data);
+        self.out.extend_from_slice(b"\nendstream\nendobj\n");
+    }
+
+    /// Entries for objects already written.
+    fn rows(&self, nums: &[u32]) -> Vec<(u32, Row)> {
+        nums.iter().map(|n| (*n, Row::At(self.at[n]))).collect()
+    }
+
+    fn finish(&mut self, xref: usize) {
+        self.out
+            .extend_from_slice(format!("startxref\n{xref}\n%%EOF\n").as_bytes());
+    }
+
+    /// A cross-reference table (with the head of the free list) and its trailer.
+    fn table(&mut self, rows: &[(u32, Row)], trailer: &str) {
+        let mut rows = rows.to_vec();
+        rows.push((0, Row::Free(65535)));
+        rows.sort_by_key(|r| r.0);
+        let size = rows.last().unwrap().0 + 1;
+        let xref = self.out.len();
+        self.out.extend_from_slice(b"xref\n");
+        let mut i = 0;
+        while i < rows.len() {
+            let mut j = i + 1;
+            while j < rows.len() && rows[j].0 == rows[j - 1].0 + 1 {
+                j += 1;
+            }
+            self.out
+                .extend_from_slice(format!("{} {}\n", rows[i].0, j - i).as_bytes());
+            for (_, r) in &rows[i..j] {
+                let line = match r {
+                    Row::Free(g) => format!("0000000000 {g:05} f \n"),
+                    Row::At(at) => format!("{at:010} 00000 n \n"),
+                };
+                self.out.extend_from_slice(line.as_bytes());
+            }
+            i = j;
+        }
+        self.out
+            .extend_from_slice(format!("trailer\n<< /Size {size} {trailer} >>\n").as_bytes());
+        self.finish(xref);
+    }
+
+    /// A cross-reference stream as a section of its own; returns where it starts.
+    fn xref_stream(&mut self, num: u32, rows: &[(u32, Row)], dict: &str) -> usize {
+        let at = self.out.len();
+        self.xref_stream_object(num, rows, dict);
+        self.finish(at);
+        at
+    }
+
+    /// A cross-reference stream object (`/W [1 4 2]`, uncompressed).
+    fn xref_stream_object(&mut self, num: u32, rows: &[(u32, Row)], dict: &str) {
+        let mut rows = rows.to_vec();
+        rows.sort_by_key(|r| r.0);
+        let mut index = Vec::new();
+        let mut data = Vec::new();
+        for (k, (n, r)) in rows.iter().enumerate() {
+            if k == 0 || *n != rows[k - 1].0 + 1 {
+                index.extend([*n, 0]);
+            }
+            *index.last_mut().unwrap() += 1;
+            let (kind, f1, f2) = match r {
+                Row::Free(g) => (0u8, 0u32, *g),
+                Row::At(at) => (1, u32::try_from(*at).unwrap(), 0),
+            };
+            data.push(kind);
+            data.extend_from_slice(&f1.to_be_bytes());
+            data.extend_from_slice(&f2.to_be_bytes());
+        }
+        let index: Vec<String> = index.iter().map(u32::to_string).collect();
+        self.stream(
+            num,
+            &format!("/Type /XRef /W [1 4 2] /Index [{}] {dict}", index.join(" ")),
+            &data,
+        );
+    }
+}

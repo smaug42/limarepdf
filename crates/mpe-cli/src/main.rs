@@ -3205,7 +3205,8 @@ fn main() -> Result<()> {
             );
             if signed.rewritten {
                 out!(
-                    "The file's structure was damaged, so it was written out in full before \
+                    "The file's structure was damaged, or other PDF apps may show it \
+                     differently, so it was written out in full, as MPE shows it, before \
                      signing."
                 );
             }

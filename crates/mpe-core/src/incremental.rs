@@ -31,7 +31,9 @@ const TRAILER_KEYS: [&[u8]; 3] = [b"Root", b"Info", b"ID"];
 /// as `null` when something still refers to them, so they read as gone. When nothing
 /// differs, nothing is appended: the result is `original` with no offsets.
 pub(crate) fn append_revision(original: &[u8], edited: &Document) -> Result<Appended> {
-    let base = Pdf::from_bytes(original, None)?.doc;
+    let opened = Pdf::from_bytes(original, None)?;
+    let problem = base_problem(original, &opened);
+    let base = opened.doc;
     if base.encryption_state.is_some() || base.trailer.has(b"Encrypt") {
         bail!("MPE can't add to encrypted documents");
     }
@@ -75,7 +77,7 @@ pub(crate) fn append_revision(original: &[u8], edited: &Document) -> Result<Appe
             offsets: HashMap::new(),
         });
     }
-    if let Some(why) = base_problem(original, &base) {
+    if let Some(why) = problem {
         bail!("{why}");
     }
     let written: Vec<ObjectId> = changed.keys().copied().collect();
@@ -114,9 +116,13 @@ pub(crate) fn append_revision(original: &[u8], edited: &Document) -> Result<Appe
         return Err(lost("earlier bytes changed".into()));
     }
     let offsets = sig_changes::check_appended(&bytes, original.len(), &written).map_err(lost)?;
-    let back = Pdf::from_bytes(&bytes, None)
-        .map_err(|e| lost(format!("{e:#}")))?
-        .doc;
+    let back = Pdf::from_bytes(&bytes, None).map_err(|e| lost(format!("{e:#}")))?;
+    if let Some(why) = back.differs {
+        return Err(lost(format!(
+            "other PDF apps may read it differently: {why}"
+        )));
+    }
+    let back = back.doc;
     for (id, obj) in &edited.objects {
         if !is_machinery(obj) && !back.objects.get(id).is_some_and(|b| same_stored(b, obj)) {
             return Err(lost(format!("object {} differs", id.0)));
@@ -133,9 +139,12 @@ pub(crate) fn append_revision(original: &[u8], edited: &Document) -> Result<Appe
 /// Why nothing can be appended to `original` (lopdf's reading of it is `base`), if
 /// something can't. lopdf repairs some damage when it opens a file (a wrong `startxref`
 /// value, a broken cross-reference table), and a revision appended to the repaired reading
-/// would point at the damage, so only files lopdf read as written are built on. A file
-/// without signatures can be written out in full instead.
-pub(crate) fn base_problem(original: &[u8], base: &Document) -> Option<String> {
+/// would point at the damage, so only files lopdf read as written are built on. Nor is a
+/// file other PDF apps may read differently from MPE (see [`Pdf::differs`]): a revision
+/// appended to it, and a signature over that, would cover content the user never saw. A
+/// file without signatures can be written out in full instead.
+pub(crate) fn base_problem(original: &[u8], opened: &Pdf) -> Option<String> {
+    let base = &opened.doc;
     match sig_changes::last_startxref(original) {
         None => Some(
             "the file doesn't end with a complete cross-reference pointer (it may be damaged \
@@ -147,7 +156,10 @@ pub(crate) fn base_problem(original: &[u8], base: &Document) -> Option<String> {
              file)"
                 .into(),
         ),
-        Some(_) => None,
+        Some(_) => opened
+            .differs
+            .as_ref()
+            .map(|why| format!("other PDF apps may read the file differently from MPE ({why})")),
     }
 }
 

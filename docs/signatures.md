@@ -383,6 +383,14 @@ check as it did before. Before that, the new revision is read back and must hold
 this fails, nothing is written. A file whose structure MPE had to repair to open it is written out in full first,
 when it has no signatures yet (the message says so); with signatures, MPE refuses rather than break them.
 
+**What you see is what you sign.** A PDF can mark one of its parts as deleted, or keep a copy of a part where the
+file's index doesn't list it, and PDF apps don't all treat such parts alike: one shows them, another doesn't. MPE
+reads files as the PDF standard says and leaves those parts out. When something in the file still uses such a part,
+or MPE can't read a part the way other apps do, apps may show different content, so MPE doesn't add a signature to
+the file as it is. With no signatures yet, it writes what it shows out in full first (the message says so), and the
+signature covers exactly that in every app; with signatures, it refuses, because writing the file out would break
+them. A file that only deletes parts nothing uses any more, as ordinary editing does, is signed as usual.
+
 ## Saving a signed document
 
 **Save** and **Save as** keep a signed document's signatures. MPE adds your changes after what was signed, as one
@@ -406,8 +414,9 @@ instead (*Break the signatures?*), which breaks every signature in the saved cop
 - you applied redactions or removed hidden information: the signed version would still hold everything removed,
   and anyone with the file could open it, so only writing the whole file really removes it;
 - the document is encrypted, or you set a password for it (MPE can add a password only by writing the whole file);
-- the file is damaged (MPE repaired it to open it), or MPE can't add to its cross-reference layout reliably (some
-  files from older Acrobat versions);
+- the file is damaged (MPE repaired it to open it), other PDF apps may read it differently from MPE (see [What
+  signing does](#what-signing-does)), or MPE can't add to its cross-reference layout reliably (some files from older
+  Acrobat versions);
 - your changes remove a signature, as flattening the form does;
 - the result didn't read back or check correctly, which would be a fault in MPE.
 
@@ -653,6 +662,10 @@ the limitations) is to be confirmed in those tests.
 - An allowed change can still change what the page shows (a form field filled in, a comment placed over text).
   MPE lists it; it can't tell whether that was the intent.
 - Malformed later additions are refused even when another reader can repair them.
+- Files that PDF apps read differently (something uses a part the file deletes or doesn't list, or the file is
+  damaged) are shown as the PDF standard says, which other apps may not do. Their signatures show *can't check*
+  even where another app calls them valid, and MPE signs such a file only by writing it out in full first, which it
+  can't do without breaking signatures already in it (see [What signing does](#what-signing-does)).
 - Revocation (whether a certificate was withdrawn) isn't checked. Acrobat checks it online for certificates from
   authorities; MPE makes no network connections.
 - Algorithms: RSA (PKCS#1 v1.5 and PSS, up to 8192 bits), ECDSA on P-256 and P-384, with SHA-1, SHA-224, SHA-256,
@@ -740,11 +753,25 @@ reasons a check failed) is cleaned before it is shown, in the app and on the com
 characters (terminal escape codes among them) and invisible characters that reorder text are removed, so a name
 can't pose as a different one or rewrite the terminal. `--json` output keeps the text exact, as JSON escapes it.
 
+**What a signature covers** must read the same in every app, or "no changes since" means little. MPE's PDF library
+on its own reads some files differently from the PDF standard: it keeps parts a later revision deletes, and takes
+copies an object stream holds where the file's index doesn't list them. So every file MPE opens is also read with
+MPE's own strict reader of the cross-reference sections, from the newest back to the first, and the two readings
+are compared: parts the standard's reading doesn't have are dropped, so MPE shows what the standard says. When
+something still uses a dropped part, or MPE can't read a part the way the standard says (the library repaired or
+misread it, or couldn't read it at all), apps may show different content; poppler, for one, rebuilds such files by
+scanning them and shows the dropped parts. A signature whose signed version is like that shows *can't check*, with
+the reason, never *no changes since* (`mpe verify` exits with status 1), and a later revision like that is a change
+no signature allows.
+
 **Signing** never hands out a file it hasn't checked: the new revision is read back with MPE's strict reader and
 compared object by object with what was meant, and the signed file is then checked like any other (see
 [signing](#signing)). The space for the signature is sized by a trial signature first, and only the two
 placeholders in the signature's own object are filled in, found where the new revision's cross-reference section
-says that object is. The ID's key is used only for the signature and wiped from memory with the ID.
+says that object is. The ID's key is used only for the signature and wiped from memory with the ID. Signing and
+saving a signed document add to a file only when the comparison above found nothing apps may read differently, and
+the new revision must read back the same way; otherwise a file without signatures is written out in full, as MPE
+shows it, and one with signatures is refused.
 
 **RUSTSEC-2023-0071**, a timing leak in `rsa` with no fixed version yet, concerns using a private key. Checking
 uses only public keys, so it doesn't apply to checking. It applies to signing with an RSA key: an attacker would
@@ -820,6 +847,10 @@ certificates a document carries never become trusted by being there.
   allowed on that earlier signature, so MPE didn't sign.
 - **"the file's cross-reference information is damaged"** on a signed document: MPE won't add to a file it had to
   repair, because the earlier signatures would break. Ask the sender for an undamaged copy.
+- **"other PDF apps may read the file differently from MPE"** or **"… the version this signature covers
+  differently …"**: the file is built so that apps may show different content (see [What signing
+  does](#what-signing-does)). Without signatures, MPE writes it out in full before signing; with signatures, MPE
+  can't vouch for them or add to the file. Ask the sender for a copy saved normally.
 - **"the signed document didn't check correctly"**, **"the saved document didn't check correctly"** or **"the new
   revision didn't read back correctly"**: MPE's check before writing found a problem, and nothing was written.
   Please report it, with the document if you can.

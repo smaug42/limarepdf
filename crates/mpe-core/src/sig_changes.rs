@@ -5,7 +5,9 @@
 //! signature, the revisions after it are read with MPE's own strict reader of
 //! cross-reference sections, because lopdf is lenient in ways that would hide changes (it
 //! ignores free entries, corrects bad offsets and rebuilds broken tables). lopdf is used
-//! only for object contents, after checking that it reads the same objects.
+//! only for object contents, after checking that it reads the same objects. Every file
+//! MPE opens gets the same check over its whole chain of revisions ([`compare_reading`]),
+//! so what MPE shows, edits and signs is what the specification's reading holds.
 //!
 //! Each version a later signature signed is compared with the one before it, so a change
 //! made and undone between two signatures still counts. Every object that differs is
@@ -17,7 +19,7 @@
 use crate::sig_verify::{is_white, FieldLock, Lexer, Permissions, Tok, Versions};
 use crate::Pdf;
 use lopdf::xref::XrefEntry;
-use lopdf::{Dictionary, Object, ObjectId, Stream, StringFormat};
+use lopdf::{Dictionary, Document, Object, ObjectId, Stream, StringFormat};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
@@ -274,9 +276,8 @@ fn refusal(
     lock.locks(field).then_some(Refusal::Locked)
 }
 
-/// The changes after the version ending at `end`, version by version: each later
-/// signature's signed version is compared with the one before it, and the whole file with
-/// the last.
+/// The changes after the version ending at `end` (see [`changes_between`]). A document
+/// other PDF apps may read differently from MPE has a change that is never allowed.
 fn changes_after(
     versions: &mut Versions,
     bytes: &[u8],
@@ -287,6 +288,31 @@ fn changes_after(
     if bytes[end..].iter().all(|&c| is_white(c)) {
         return Vec::new();
     }
+    let mut out = changes_between(versions, bytes, end, sig_ends, cache);
+    // What MPE shows of the document must be what other apps show, whatever changed.
+    if let Some(why) = versions.peek(bytes.len()).and_then(|p| p.differs.as_ref()) {
+        if !out.iter().any(|s| s.need == Need::Never) {
+            out.push(never(
+                ChangeKind::Malformed(format!(
+                    "other PDF apps may read the document differently from MPE ({why})"
+                )),
+                None,
+            ));
+        }
+    }
+    out
+}
+
+/// The changes after the version ending at `end`, version by version: each later
+/// signature's signed version is compared with the one before it, and the whole file with
+/// the last.
+fn changes_between(
+    versions: &mut Versions,
+    bytes: &[u8],
+    end: usize,
+    sig_ends: &[usize],
+    cache: &mut HashMap<(usize, usize), Vec<Seen>>,
+) -> Vec<Seen> {
     let malformed = |why: String| vec![never(ChangeKind::Malformed(why), None)];
     let sections = match read_chain(bytes, end) {
         Ok(s) => s,
@@ -737,14 +763,18 @@ fn decode_name(n: &[u8]) -> Option<Vec<u8>> {
 
 /// Whether object `id` starts at `offset`: `N G obj`.
 fn header_at(bytes: &[u8], offset: usize, id: ObjectId) -> bool {
+    header_id(bytes, offset) == Some(id)
+}
+
+/// The object whose header (`N G obj`) starts at `offset`, perhaps after white space.
+fn header_id(bytes: &[u8], offset: usize) -> Option<ObjectId> {
     let mut lx = Lexer::new(bytes, offset);
     let first = lx.next();
     if !first.is_some_and(|(s, _, _)| bytes[offset..s].iter().all(|&c| is_white(c))) {
-        return false;
+        return None;
     }
-    word_num::<u32>(first) == Some(id.0)
-        && word_num::<u16>(lx.next()) == Some(id.1)
-        && matches!(lx.next(), Some((_, Tok::Word(b"obj"), _)))
+    let id = (word_num(first)?, word_num(lx.next())?);
+    matches!(lx.next(), Some((_, Tok::Word(b"obj"), _))).then_some(id)
 }
 
 /// Whether the newest cross-reference section of `bytes` is a hybrid one (a table whose
@@ -794,6 +824,269 @@ pub(crate) fn check_appended(
         return Err("the new revision doesn't list exactly the objects written".into());
     }
     Ok(found)
+}
+
+// ---------------------------------------------------------------- the whole file
+
+/// The largest decoded object stream read when comparing readings (bytes).
+const MAX_OBJECT_STREAM: usize = 256 << 20;
+
+/// How lopdf's reading of a file differs from that of a reader following the PDF
+/// specification (Acrobat, pdfium, poppler). lopdf ignores free entries, so an object
+/// freed in a later revision stays; it takes every object an object stream holds, even
+/// one the cross-reference information doesn't place there; and it repairs or misreads
+/// some damage. What MPE shows, edits and signs must be what other apps show.
+pub(crate) struct Reading {
+    /// Objects lopdf holds that such a reader doesn't: freed, never listed, listed under
+    /// another generation, or a stray copy in an object stream. Dropping them makes the
+    /// two readings agree.
+    pub(crate) hidden: Vec<ObjectId>,
+    /// Object numbers the two readings may disagree on in a way dropping objects doesn't
+    /// fix: lopdf misread or repaired them, or couldn't read them at all.
+    pub(crate) unsure: HashSet<u32>,
+    /// Whether the file ends with its cross-reference pointer. Readers find a pointer
+    /// followed by other data in different ways.
+    pub(crate) ends_cleanly: bool,
+}
+
+/// Compares lopdf's reading `doc` of `bytes` (the bytes it read) with the
+/// specification's. Fails when the cross-reference information can't be read as written,
+/// so the specification's reading isn't known.
+pub(crate) fn compare_reading(bytes: &[u8], doc: &Document) -> Result<Reading, String> {
+    // lopdf reads from the header on, and its offsets count from there.
+    let start = bytes.windows(5).position(|w| w == b"%PDF-").unwrap_or(0);
+    let bytes = &bytes[start..];
+    let pointer = last_startxref(bytes);
+    let spec = whole_xref(bytes, pointer.unwrap_or(doc.xref_start))?;
+    let table = &doc.reference_table.entries;
+    let mut unsure: HashSet<u32> = HashSet::new();
+
+    // The entries must agree, except that lopdf drops free ones (keeping an older entry,
+    // whose object is hidden below).
+    for num in spec.keys().chain(table.keys()) {
+        let agree = match (spec.get(num), table.get(num)) {
+            (Some(Entry::Free), _) => true,
+            (None, None | Some(XrefEntry::Free | XrefEntry::UnusableFree)) => true,
+            (
+                Some(Entry::InUse { offset, gen }),
+                Some(XrefEntry::Normal {
+                    offset: o,
+                    generation: g,
+                }),
+            ) => *o as usize == *offset && g == gen,
+            (
+                Some(Entry::Compressed { container, index }),
+                Some(XrefEntry::Compressed {
+                    container: c,
+                    index: i,
+                }),
+            ) => c == container && u32::from(*i) == *index,
+            _ => false,
+        };
+        if !agree {
+            unsure.insert(*num);
+        }
+    }
+    // lopdf keeps an object under the number its header gives, whichever entry led to it.
+    for (&num, e) in table {
+        if let XrefEntry::Normal { offset, generation } = *e {
+            let found = header_id(bytes, offset as usize);
+            if found != Some((num, generation)) {
+                unsure.insert(num);
+                if let Some((other, _)) = found {
+                    unsure.insert(other);
+                }
+            }
+        }
+    }
+
+    // Object streams: each holds the objects its index lists, and a reader takes an object
+    // from the stream at the place its entry gives. lopdf takes any object a stream holds
+    // that has no entry of its own, and one whose own object it couldn't read.
+    let mut copies: Vec<(u32, ObjectId)> = Vec::new();
+    for (&(c, g), o) in &doc.objects {
+        let Object::Stream(s) = o else { continue };
+        if !s.dict.has_type(b"ObjStm") {
+            continue;
+        }
+        let members =
+            objstm_members(s).ok_or_else(|| format!("its object stream {c} can't be read"))?;
+        let mut seen = HashSet::new();
+        for (i, &n) in members.iter().enumerate() {
+            if !seen.insert(n) {
+                unsure.insert(n);
+            }
+            match spec.get(&n) {
+                Some(Entry::Compressed { container, index }) if *container == c => {
+                    if usize::try_from(*index).ok() != Some(i) {
+                        unsure.insert(n);
+                    }
+                }
+                Some(Entry::InUse { gen: 0, .. }) if doc.objects.contains_key(&(n, 0)) => {
+                    copies.push((n, (c, g)));
+                }
+                _ => {}
+            }
+        }
+    }
+    // lopdf's object equals the stray copy: either the two are the same, or lopdf couldn't
+    // read the object itself and took the copy. Reading the file again without object
+    // streams tells which.
+    if doc.encryption_state.is_none() {
+        let mut parsed: HashMap<ObjectId, lopdf::ObjectStream> = HashMap::new();
+        let mut took = Vec::new();
+        for (n, c) in copies {
+            let os = match parsed.entry(c) {
+                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    let Some(Object::Stream(s)) = doc.objects.get(&c) else {
+                        continue;
+                    };
+                    e.insert(
+                        lopdf::ObjectStream::new_with_limit(s, Some(MAX_OBJECT_STREAM))
+                            .map_err(|_| format!("its object stream {} can't be read", c.0))?,
+                    )
+                }
+            };
+            let copy = os.objects.get(&(n, 0));
+            if copy.is_some_and(|x| doc.objects.get(&(n, 0)).is_some_and(|o| same_object(x, o))) {
+                took.push(n);
+            }
+        }
+        if !took.is_empty() {
+            let direct = Document::load_from_with_options(
+                std::io::Cursor::new(bytes),
+                lopdf::LoadOptions::with_filter(skip_object_streams),
+            )
+            .map_err(|_| "MPE can't read it again without its object streams".to_string())?;
+            unsure.extend(
+                took.into_iter()
+                    .filter(|n| !direct.objects.contains_key(&(*n, 0))),
+            );
+        }
+    }
+
+    let mut hidden = Vec::new();
+    for &(n, g) in doc.objects.keys() {
+        let seen = match spec.get(&n) {
+            None | Some(Entry::Free) => false,
+            Some(Entry::InUse { gen, .. }) => g == *gen,
+            Some(Entry::Compressed { container, .. }) => {
+                g == 0 && matches!(spec.get(container), Some(Entry::InUse { .. }))
+            }
+        };
+        if !seen {
+            hidden.push((n, g));
+        }
+    }
+    // Objects a reader finds that lopdf doesn't hold.
+    for (&n, &e) in &spec {
+        let id = match e {
+            Entry::Free => continue,
+            Entry::InUse { gen, .. } => (n, gen),
+            Entry::Compressed { container, .. } => {
+                if !matches!(spec.get(&container), Some(Entry::InUse { .. })) {
+                    continue;
+                }
+                (n, 0)
+            }
+        };
+        if !doc.objects.contains_key(&id) {
+            unsure.insert(n);
+        }
+    }
+    // A stream whose own entry gives a generation other than 0 isn't one readers agree on.
+    for (&n, &e) in &spec {
+        if let Entry::Compressed { container, .. } = e {
+            if matches!(spec.get(&container), Some(Entry::InUse { gen, .. }) if *gen != 0) {
+                unsure.insert(n);
+            }
+        }
+    }
+    Ok(Reading {
+        hidden,
+        unsure,
+        ends_cleanly: pointer.is_some(),
+    })
+}
+
+/// The cross-reference entry each object number has for a reader following the
+/// specification: every section from the one at `at` along the `/Prev` chain (a hybrid
+/// section's stream ranking after its table), the newest entry counting, free ones too.
+fn whole_xref(bytes: &[u8], mut at: usize) -> Result<HashMap<u32, Entry>, String> {
+    let mut spec = HashMap::new();
+    let mut seen = HashSet::new();
+    loop {
+        if !seen.insert(at) || seen.len() > MAX_SECTIONS {
+            return Err("its chain of revisions loops or is too long".into());
+        }
+        let read = read_section(bytes, at)?;
+        let mut entries = read.entries;
+        if let Some(stm) = read.xref_stm {
+            let extra = read_section(bytes, stm)?;
+            if extra.kind != SectionKind::Stream {
+                return Err("a hybrid revision's stream isn't a cross-reference stream".into());
+            }
+            entries.extend(extra.entries);
+        }
+        for (num, e) in entries {
+            spec.entry(num).or_insert(e);
+        }
+        match read.prev {
+            Some(p) => at = p,
+            None => return Ok(spec),
+        }
+    }
+}
+
+/// The object numbers an object stream holds, in order, when its index reads cleanly:
+/// `/N` pairs of whole numbers before `/First`. lopdf reads every pair it finds, whatever
+/// `/N` says, and other readers stop at `/N`.
+fn objstm_members(s: &Stream) -> Option<Vec<u32>> {
+    let content = s.get_plain_content_with_limit(MAX_OBJECT_STREAM).ok()?;
+    if content.is_empty() {
+        return Some(Vec::new());
+    }
+    let int = |key: &[u8]| usize::try_from(s.dict.get(key).ok()?.as_i64().ok()?).ok();
+    let (first, n) = (int(b"First")?, int(b"N")?);
+    let words: Vec<&str> = std::str::from_utf8(content.get(..first)?)
+        .ok()?
+        .split_whitespace()
+        .collect();
+    if words.len() != n.checked_mul(2)? {
+        return None;
+    }
+    words
+        .chunks(2)
+        .map(|p| p[1].parse::<u32>().ok().and(p[0].parse().ok()))
+        .collect()
+}
+
+/// A lopdf load filter that leaves object streams out, so lopdf neither keeps nor opens
+/// them. lopdf uses the object returned only for objects taken from object streams (for
+/// the others only `None` counts), and with this filter there are none.
+fn skip_object_streams(id: ObjectId, o: &mut Object) -> Option<(ObjectId, Object)> {
+    let objstm = matches!(o, Object::Stream(s) if s.dict.has_type(b"ObjStm"));
+    (!objstm).then_some((id, Object::Null))
+}
+
+/// Every reference in `doc`, in its trailer and its objects, however deeply nested.
+pub(crate) fn references(doc: &Document) -> HashSet<ObjectId> {
+    let mut out = HashSet::new();
+    let mut stack: Vec<&Object> = doc.trailer.iter().map(|(_, o)| o).collect();
+    stack.extend(doc.objects.values());
+    while let Some(o) = stack.pop() {
+        match o {
+            Object::Reference(id) => {
+                out.insert(*id);
+            }
+            Object::Array(a) => stack.extend(a),
+            Object::Dictionary(d) => stack.extend(d.iter().map(|(_, o)| o)),
+            Object::Stream(s) => stack.extend(s.dict.iter().map(|(_, o)| o)),
+            _ => {}
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------- one step

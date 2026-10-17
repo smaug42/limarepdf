@@ -67,7 +67,8 @@ pub struct SignedDocument {
     /// they are locked in place instead (drawing them in would change page content).
     pub finished_items: usize,
     /// The document had no signatures and its structure couldn't be added to (MPE repaired
-    /// it to open it), so it was written out in full before the signature was added.
+    /// it to open it, or other PDF apps may read it differently from MPE), so it was
+    /// written out in full before the signature was added.
     pub rewritten: bool,
 }
 
@@ -126,7 +127,7 @@ pub(crate) fn sign_at(
     let before = verify_signatures(original, None, &TrustList::default())?;
     check_rules(&before, &opened, req)?;
 
-    let problem = incremental::base_problem(original, &opened.doc);
+    let problem = incremental::base_problem(original, &opened);
     let mut pdf = edited.cloned().unwrap_or(opened);
     let mut base = std::borrow::Cow::Borrowed(original);
     let mut rewritten = false;
