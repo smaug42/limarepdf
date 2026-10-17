@@ -104,6 +104,8 @@
 
 ### Changed
 
+- A new app icon: the PDF icon from the start page, on the window, the taskbar, the About window, the Windows `.exe`
+  and installer, the Mac app and the Linux packages.
 - A new About window (☰ > Help > About): the app icon, version with a Copy button (version and system, for bug
   reports), "Made in Canada" with a maple leaf, links to the website, licence and issue tracker, a Contributors page,
   and the credits for bundled fonts, icons and the text recognition model. The start screen also says "Made in

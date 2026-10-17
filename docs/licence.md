@@ -5,7 +5,8 @@ MPE is dual-licensed under MIT or Apache-2.0, at your option. See [LICENSE-MIT](
 
 ## Included works
 
-- **Icons:** Phosphor Icons (MIT, © Phosphor Icons), embedded as a font by `egui-phosphor`.
+- **Icons:** Phosphor Icons (MIT, © Phosphor Icons), embedded as a font by `egui-phosphor`. The app icon is
+  Phosphor's file-pdf icon, drawn by `crates/mpe-gui/tools/make_icon.py`.
 - **Interface font:** Inter 4.1 by The Inter Project Authors, SIL Open Font License 1.1, included unmodified; see
   `crates/mpe-gui/assets/fonts/`. Release archives include the licence as `FONT-LICENSE-Inter.txt`.
 - **Handwriting fonts** for typed signatures, included unmodified; see `crates/mpe-core/assets/fonts/`: Caveat by
