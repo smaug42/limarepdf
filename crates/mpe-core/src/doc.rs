@@ -188,30 +188,7 @@ impl Pdf {
     /// first and then renamed over `path`, so a failure part way leaves any existing file
     /// as it was. A symbolic link is followed, and an existing file keeps its permissions.
     pub fn save(&mut self, path: impl AsRef<Path>) -> Result<()> {
-        let path = std::fs::canonicalize(path.as_ref()).unwrap_or_else(|_| path.as_ref().into());
-        let name = path.file_name().context("no file name to save to")?;
-        let mut tmp_name = std::ffi::OsString::from(".");
-        tmp_name.push(name);
-        tmp_name.push(format!(".mpe-{}.tmp", std::process::id()));
-        let tmp = path.with_file_name(tmp_name);
-        let written = (|| -> Result<()> {
-            let f = std::fs::File::create(&tmp)
-                .with_context(|| format!("creating {}", tmp.display()))?;
-            let mut w = BufWriter::with_capacity(1 << 20, f);
-            self.write_to(&mut w)?;
-            let f = w.into_inner().map_err(|e| e.into_error())?;
-            f.sync_all()?;
-            if let Ok(old) = std::fs::metadata(&path) {
-                std::fs::set_permissions(&tmp, old.permissions())?;
-            }
-            std::fs::rename(&tmp, &path)
-                .with_context(|| format!("replacing {}", path.display()))?;
-            Ok(())
-        })();
-        if written.is_err() {
-            let _ = std::fs::remove_file(&tmp);
-        }
-        written
+        write_atomically(path.as_ref(), |w| self.write_to(w))
     }
 
     // -------------------------------------------------------------- pages
@@ -670,6 +647,44 @@ pub(crate) fn decode_text(b: &[u8]) -> String {
     } else {
         b.iter().map(|&c| c as char).collect()
     }
+}
+
+/// Writes `bytes` (such as a signed document) to `path` the way [`Pdf::save`] does: whole
+/// or not at all.
+pub fn write_file(path: impl AsRef<Path>, bytes: &[u8]) -> Result<()> {
+    write_atomically(path.as_ref(), |w| Ok(w.write_all(bytes)?))
+}
+
+/// Writes a file through `write` to a temporary file in the same folder, then renames it
+/// over `path`, so a failure part way leaves any existing file as it was. A symbolic link
+/// is followed, and an existing file keeps its permissions.
+fn write_atomically(
+    path: &Path,
+    write: impl FnOnce(&mut BufWriter<std::fs::File>) -> Result<()>,
+) -> Result<()> {
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.into());
+    let name = path.file_name().context("no file name to save to")?;
+    let mut tmp_name = std::ffi::OsString::from(".");
+    tmp_name.push(name);
+    tmp_name.push(format!(".mpe-{}.tmp", std::process::id()));
+    let tmp = path.with_file_name(tmp_name);
+    let written = (|| -> Result<()> {
+        let f =
+            std::fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
+        let mut w = BufWriter::with_capacity(1 << 20, f);
+        write(&mut w)?;
+        let f = w.into_inner().map_err(|e| e.into_error())?;
+        f.sync_all()?;
+        if let Ok(old) = std::fs::metadata(&path) {
+            std::fs::set_permissions(&tmp, old.permissions())?;
+        }
+        std::fs::rename(&tmp, &path).with_context(|| format!("replacing {}", path.display()))?;
+        Ok(())
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
 }
 
 pub(crate) fn encode_text(s: &str) -> Vec<u8> {

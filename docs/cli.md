@@ -203,6 +203,23 @@ on the command line itself. IDs are kept in the `ids` folder of MPE's settings f
 name, such as `jane-doe`), the name in its certificate, or its SHA-256 fingerprint. See
 [Digital IDs](signatures.md#digital-ids).
 
+### Signing
+
+| Command | What it does |
+| --- | --- |
+| `mpe sign in.pdf -o signed.pdf --page 2 --rect 350,600,200,60` | Sign with your default digital ID in a new box on page 2: X,Y,W,H in points from the page's top left as shown |
+| `mpe sign in.pdf -o signed.pdf --field Approver` | Sign the empty signature field `Approver` (as `mpe verify` lists it) |
+| `mpe sign in.pdf -o signed.pdf --field Approver --reason "Approved" --location Ottawa` | Add your reason and location, shown with the signature |
+| `mpe sign in.pdf -o signed.pdf --page 1 --rect 50,700,200,60 --certify forms` | Certify the document as its author: `no-changes`, `forms` (others may fill in and sign) or `comments` (and comment). Only before anyone signs |
+| `mpe sign in.pdf -o signed.pdf --field Approver --id work` | Sign with another ID than the default |
+| `mpe sign in.pdf -o signed.pdf --field Approver --image signature.png` | Show a picture of your handwritten signature beside the text, instead of your name in handwriting (`--style 1` to `4` picks the handwriting) |
+
+`mpe sign` asks for the ID's password (or reads it with `--password-file FILE`) and takes `--id-folder` like
+`mpe id`. The signature is added after the file's existing bytes, so earlier signatures stay valid, and the signed
+copy is checked before it is written; the ID used becomes the default. It refuses expired IDs, encrypted documents,
+and what the document's certification or an earlier signer's lock doesn't allow, saying why. See
+[Signing](signatures.md#signing).
+
 ## Properties and security
 
 | Command | What it does |

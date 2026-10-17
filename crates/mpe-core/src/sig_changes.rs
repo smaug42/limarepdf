@@ -44,6 +44,8 @@ impl Change {
 pub enum ChangeKind {
     /// A form field's value (and its appearance) changed.
     FieldFilled(String),
+    /// A form field was made read-only, as signing a field that locks it does.
+    FieldMadeReadOnly(String),
     /// An empty signature field was signed.
     Signed(String),
     /// A document timestamp was added.
@@ -100,6 +102,7 @@ impl fmt::Display for ChangeKind {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Self::FieldFilled(n) => write!(f, "form field \"{n}\" filled in"),
+            Self::FieldMadeReadOnly(n) => write!(f, "form field \"{n}\" made read-only"),
             Self::Signed(n) => write!(f, "signed in field \"{n}\""),
             Self::DocumentTimestamp(_) => write!(f, "document timestamp added"),
             Self::SignatureFieldAdded(n) => write!(f, "signature field \"{n}\" added"),
@@ -369,7 +372,7 @@ struct Section {
 
 /// The `startxref` value of the revision `prefix` ends with (`startxref N %%EOF`, perhaps
 /// followed by white space).
-fn last_startxref(prefix: &[u8]) -> Option<usize> {
+pub(crate) fn last_startxref(prefix: &[u8]) -> Option<usize> {
     let t = trim_white_end(prefix).strip_suffix(b"%%EOF")?;
     let t = trim_white_end(t);
     let digits = t.iter().rev().take_while(|c| c.is_ascii_digit()).count();
@@ -742,6 +745,45 @@ fn header_at(bytes: &[u8], offset: usize, id: ObjectId) -> bool {
     word_num::<u32>(first) == Some(id.0)
         && word_num::<u16>(lx.next()) == Some(id.1)
         && matches!(lx.next(), Some((_, Tok::Word(b"obj"), _)))
+}
+
+/// Checks a revision MPE appended to the version ending at `base_end`, with this module's
+/// strict reader: the file must end with exactly one new revision building on that
+/// version, whose cross-reference section lists `written` and nothing else (besides the
+/// head of the free list and a cross-reference stream's own entry), each where its object
+/// starts in the new revision. Returns those positions.
+pub(crate) fn check_appended(
+    bytes: &[u8],
+    base_end: usize,
+    written: &[ObjectId],
+) -> Result<HashMap<ObjectId, usize>, String> {
+    let chain = read_chain(bytes, base_end)?;
+    let [section] = &chain[..] else {
+        return Err(format!("{} revisions were appended, not one", chain.len()));
+    };
+    let mut found = HashMap::new();
+    for &(num, e) in &section.entries {
+        match e {
+            Entry::Free if num == 0 => {}
+            // The cross-reference stream itself.
+            Entry::InUse { offset, .. } if offset == section.offset => {}
+            Entry::InUse { offset, gen } => {
+                let id = (num, gen);
+                if !(base_end..section.offset).contains(&offset) || !header_at(bytes, offset, id) {
+                    return Err(format!("object {num} isn't where its entry says"));
+                }
+                if found.insert(id, offset).is_some() {
+                    return Err(format!("object {num} is listed twice"));
+                }
+            }
+            _ => return Err(format!("unexpected entry for object {num}")),
+        }
+    }
+    let want: HashSet<ObjectId> = written.iter().copied().collect();
+    if found.len() != want.len() || !found.keys().all(|id| want.contains(id)) {
+        return Err("the new revision doesn't list exactly the objects written".into());
+    }
+    Ok(found)
 }
 
 // ---------------------------------------------------------------- one step
@@ -1758,6 +1800,27 @@ impl Judge<'_> {
         }
     }
 
+    /// Whether a field's flags only gained read-only: the newer dictionary's own `/Ff` is
+    /// the older flags, its own or inherited, plus read-only.
+    fn only_read_only(&self, a: &Dictionary, b: &Dictionary) -> bool {
+        let Ok(Object::Integer(new)) = b.get(b"Ff") else {
+            return false;
+        };
+        let mut d = a;
+        for _ in 0..64 {
+            match d.get(b"Ff") {
+                Ok(Object::Integer(old)) => return *new == (old | 1) && old & 1 == 0,
+                Ok(_) => return false,
+                Err(_) => {}
+            }
+            match d.get(b"Parent").ok().and_then(|p| self.old.dict(p)) {
+                Some(p) => d = p,
+                None => return *new == 1,
+            }
+        }
+        false
+    }
+
     /// The top of the field tree `id` is in, in the newer version.
     fn field_root(&self, mut id: ObjectId) -> ObjectId {
         for _ in 0..64 {
@@ -1958,6 +2021,13 @@ impl Judge<'_> {
                 for k in keys {
                     if FILL_KEYS.contains(&k.as_slice()) {
                         filled = true;
+                    } else if k == b"Ff" && dicts.is_some_and(|(a, b)| self.only_read_only(a, b)) {
+                        // Signing a field that locks others makes them read-only (Acrobat).
+                        self.push(seen(
+                            ChangeKind::FieldMadeReadOnly(name.clone()),
+                            page,
+                            Need::Fill(Some(name.clone())),
+                        ));
                     } else if k != b"Kids" {
                         self.push(never(ChangeKind::FieldChanged(name.clone()), page));
                     }

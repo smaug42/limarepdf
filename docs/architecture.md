@@ -60,7 +60,18 @@ IDs are in `ids.rs` (the ID folder, making self-signed certificates with `x509-c
 certificate by checking a signature made with its key rather than by labels) over `pkcs12.rs`, MPE's own PKCS#12
 reader and writer on `asn1.rs` (which also writes DER): it derives and wipes the password keys itself (`pbkdf2`,
 `hmac`, the PKCS#12 derivation), so `pkcs5` isn't needed, and reads BER as Windows writes it. Private files (ID
-files, the trust list) go through `mpe_core::write_private`. See [Digital signatures](signatures.md).
+files, the trust list) go through `mpe_core::write_private`.
+
+Signing (`sig_sign.rs`, `sign_document`) adds the signature dictionary with placeholders, its field or widget and
+its look, locks and certification to the document, then hands it to the appended-revision writer,
+`incremental.rs`: every object that differs from the file as opened (by value: a real `150.0` and an integer `150`
+are the same once written) goes into one revision appended with lopdf's `IncrementalDocument`, with a trailer of
+its own (`/Root`, `/Info`, `/ID`, `/Prev`), and is read back twice before it is used: `sig_changes::check_appended`
+reads the new cross-reference section with the strict reader and must find exactly the objects written, and lopdf's
+reading of the result must give every object as it is in memory. Signing then finds the two placeholders in the
+signature object (where that section says it is), patches the byte range, makes the CMS with `cms_write.rs` (DER
+by hand, so the pre-release `cms` crate isn't needed) and fills it in, and checks the result with
+`verify_signatures` before returning it. See [Digital signatures](signatures.md).
 
 In the desktop app, every command is defined once in `crates/mpe-gui/src/actions.rs`; the menu, the top bar, the
 command palette, the right-click menus, the floating toolbar and the keyboard shortcuts are all built from that list.

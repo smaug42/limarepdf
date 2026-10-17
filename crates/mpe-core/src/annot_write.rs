@@ -622,7 +622,7 @@ impl Pdf {
 
     /// Add `annot` to the end of the page's `/Annots`, which may be an array in the page
     /// or one the page refers to.
-    fn push_annot(&mut self, page: ObjectId, annot: ObjectId) -> Result<()> {
+    pub(crate) fn push_annot(&mut self, page: ObjectId, annot: ObjectId) -> Result<()> {
         let pd = self.doc.get_dictionary_mut(page)?;
         match pd.get_mut(b"Annots") {
             Ok(Object::Array(a)) => a.push(annot.into()),

@@ -137,6 +137,21 @@ impl UnlockedId {
     pub fn key_description(&self) -> String {
         self.key.describe()
     }
+
+    /// The digest the key signs with: SHA-384 for P-384, SHA-256 otherwise.
+    pub(crate) fn digest(&self) -> DigestAlg {
+        self.key.digest()
+    }
+
+    pub(crate) fn is_rsa(&self) -> bool {
+        matches!(self.key, Key::Rsa(_))
+    }
+
+    /// A signature over `data` (hashed with [`UnlockedId::digest`]): PKCS#1 v1.5 for RSA,
+    /// DER-encoded ECDSA otherwise.
+    pub(crate) fn sign(&self, data: &[u8]) -> Result<Vec<u8>> {
+        self.key.sign(data)
+    }
 }
 
 /// Why `password` can't protect an ID, if it can't.

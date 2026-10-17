@@ -58,13 +58,24 @@
   name, SHA-1 or 1024-bit links and unknown critical extensions aren't trusted. Embedded and document timestamps'
   authorities are judged the same way. `--require-trusted` makes `mpe verify` fail unless every signer is
   trusted, and `--trust-file` uses another list. Trust settings affect MPE only.
-- Digital IDs, for signing (which comes next): `mpe id create` makes a self-signed ID like Acrobat's (RSA 3072-bit,
+- Digital IDs, for signing: `mpe id create` makes a self-signed ID like Acrobat's (RSA 3072-bit,
   valid five years) protected by a password you choose; `mpe id import` imports a `.p12` or `.pfx` file from
   Acrobat, Windows, macOS or a certificate authority, old and new encryptions alike, refusing ones MPE couldn't sign
   with and saying why; `mpe id export` saves an ID with its key (`.p12`, for other apps or a backup) or its
   certificate (`.cer`, for others to trust you); `mpe id list` and `mpe id remove` manage them. IDs are kept in
   the settings folder, each encrypted with AES-256 under its own password (600,000 PBKDF2 iterations); passwords
   are asked for without being shown, never taken on the command line, and never stored.
+- Signing with a digital ID: `mpe sign` signs in an empty signature field (`--field`) or a new box (`--page`,
+  `--rect`), or certifies the document (`--certify no-changes|forms|comments`), as Acrobat does
+  (`adbe.pkcs7.detached`, SHA-256, SHA-384 for P-384 keys), with your reason and location if given. The signature
+  is always visible: your name in handwriting (or a picture of your signature, `--image`) beside "Digitally signed
+  by NAME" and the date in your time zone. It is added after the file's existing bytes, so earlier signatures stay
+  valid. MPE refuses expired IDs, encrypted documents, and what a certification or an earlier signer's lock doesn't
+  allow; a field that locks others makes them read-only; fill-and-sign items are drawn in first (locked in place on
+  a document someone already signed). Every signed file is checked before it is written: the new revision read back
+  object by object, then the signatures checked as `mpe verify` would.
+- Checking: a form field made read-only when a field that locks it is signed is now an allowed change (form-filling
+  level), as Acrobat makes locked fields read-only when signing.
 - Digital signatures in the app: a signed document is checked when it opens, and a banner above the pages gives
   the result, coloured green, amber, grey or red. The Signatures tab of the side panel (View > Signatures) lists
   each signature with its result, the changes made after it and any warnings, then the empty signature fields.

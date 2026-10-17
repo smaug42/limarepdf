@@ -82,6 +82,9 @@ Small or medium additions that build on what MPE already has:
   5280 says, instead of refusing to trust chains that set them (M)
 - Importing Acrobat's FDF certificate exchange files (`.fdf`) as trusted certificates (S; `.cer` and `.p7c` work)
 - Smart cards, USB tokens, the Windows certificate store and macOS Keychain (L)
+- Exporting digital IDs in the older 3DES form with less password stretching, for software that can't read MPE's
+  AES-256 exports (S; only if testing with Acrobat shows it is needed, as an explicit option with a warning)
+- Exporting certificates as PEM as well as DER `.cer` (S)
 - Signing encrypted documents (M)
 - Checking signatures on Brainpool curves, used by some European ID cards, and P-521 (S each; the `bp256`,
   `bp384` or `p521` crates, new dependencies)

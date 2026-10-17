@@ -20,7 +20,7 @@ use mpe_core::{
     CertInfo, ChangeKind, FieldLock, LockAction, Permissions, Refusal, SigKind, SigStatus,
     SignatureReport, TimeSource, Trust, TrustList, TrustRole,
 };
-use mpe_core::{DigitalId, IdStore, NewId};
+use mpe_core::{DigitalId, IdStore, NewId, SignPlace, SignRequest};
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
@@ -386,6 +386,51 @@ enum Cmd {
         #[arg(short, long, requires = "signed_version")]
         output: Option<PathBuf>,
     },
+    /// Sign a PDF with your digital ID (see `mpe id`), in an empty signature field or in a
+    /// new box. The signature is added after the file's existing bytes, so earlier
+    /// signatures stay valid, and the signed copy is checked before it is written
+    Sign {
+        input: PathBuf,
+        /// Where to save the signed copy
+        #[arg(short, long)]
+        output: PathBuf,
+        /// The digital ID: its number or name in `mpe id list`; default: the default ID
+        #[arg(long)]
+        id: Option<String>,
+        /// Sign this empty signature field (its full name, as `mpe verify` lists it)
+        #[arg(long, conflicts_with_all = ["page", "rect"], required_unless_present = "rect")]
+        field: Option<String>,
+        /// The page for a new signature box
+        #[arg(long, requires = "rect")]
+        page: Option<usize>,
+        /// A new signature box as X,Y,W,H in points from the page's top left as shown
+        #[arg(long, requires = "page")]
+        rect: Option<String>,
+        /// Why you sign, shown with the signature
+        #[arg(long)]
+        reason: Option<String>,
+        /// Where you sign, shown with the signature
+        #[arg(long)]
+        location: Option<String>,
+        /// Certify the document as its author instead (only before anyone signs it), saying
+        /// what others may still do: no-changes, forms (fill in and sign) or comments (also
+        /// comment)
+        #[arg(long, value_enum)]
+        certify: Option<CertifyLevel>,
+        /// Show this PNG, JPEG or TIFF picture of your handwritten signature beside the
+        /// text; default: your name in handwriting
+        #[arg(long)]
+        image: Option<PathBuf>,
+        /// The handwriting your name is shown in: 1 Caveat, 2 Cedarville Cursive, 3 Homemade
+        /// Apple, 4 Zeyada
+        #[arg(long, conflicts_with = "image", default_value_t = 1)]
+        style: u8,
+        /// Read the ID's password from the first line of this file instead of asking
+        #[arg(long, value_name = "FILE")]
+        password_file: Option<PathBuf>,
+        #[command(flatten)]
+        folder: IdFolder,
+    },
     /// Search page text
     Search {
         input: PathBuf,
@@ -490,6 +535,16 @@ enum Cmd {
         #[arg(long)]
         password: Option<String>,
     },
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum CertifyLevel {
+    /// No changes at all
+    NoChanges,
+    /// Filling in forms and signing
+    Forms,
+    /// Filling in forms, signing and comments
+    Comments,
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -2267,6 +2322,7 @@ fn permissions_slug(p: Permissions) -> &'static str {
 fn change_slug(k: &ChangeKind) -> &'static str {
     match k {
         ChangeKind::FieldFilled(_) => "field_filled",
+        ChangeKind::FieldMadeReadOnly(_) => "field_made_read_only",
         ChangeKind::Signed(_) => "signed",
         ChangeKind::DocumentTimestamp(_) => "document_timestamp",
         ChangeKind::SignatureFieldAdded(_) => "signature_field_added",
@@ -2935,6 +2991,126 @@ fn main() -> Result<()> {
         }
         Cmd::Trust { cmd } => run_trust(cmd)?,
         Cmd::Id { cmd } => run_id(cmd)?,
+        Cmd::Sign {
+            input,
+            output,
+            id,
+            field,
+            page,
+            rect,
+            reason,
+            location,
+            certify,
+            image,
+            style,
+            password_file,
+            folder,
+        } => {
+            let place = match (field, page, rect) {
+                (Some(name), _, _) => SignPlace::Field(name),
+                (None, Some(page), Some(rect)) => {
+                    let bad = || format!("--rect {rect:?} should be X,Y,W,H");
+                    let v: Vec<f32> = rect
+                        .split(',')
+                        .map(|x| x.trim().parse())
+                        .collect::<Result<_, _>>()
+                        .with_context(bad)?;
+                    if page == 0 || v.len() != 4 {
+                        bail!("{}", bad());
+                    }
+                    SignPlace::NewBox {
+                        page: page - 1,
+                        rect: [v[0], v[1], v[0] + v[2], v[1] + v[3]],
+                    }
+                }
+                _ => bail!("say where to sign: --field NAME, or --page N with --rect X,Y,W,H"),
+            };
+            let style = SignStyle::from_number(style).context("--style is 1, 2, 3 or 4")?;
+            let picture = match &image {
+                Some(path) => Some(
+                    std::fs::read(path).with_context(|| format!("reading {}", path.display()))?,
+                ),
+                None => None,
+            };
+            let bytes =
+                std::fs::read(&input).with_context(|| format!("reading {}", input.display()))?;
+            let store = id_store(&folder)?;
+            let chosen = match &id {
+                Some(which) => store.find(which)?,
+                None => store.default_id().context(
+                    "you have no digital ID yet: make one with `mpe id create` or import one \
+                     with `mpe id import`",
+                )?,
+            };
+            let label = mpe_core::display_line(chosen.cert.display_name(), 80);
+            if chosen.cert.expired() {
+                bail!(
+                    "the digital ID \"{label}\" expired on {}; MPE doesn't sign with expired IDs",
+                    chosen.cert.not_after.format("%Y-%m-%d")
+                );
+            }
+            let password = read_password(&password_file, &format!("Password of \"{label}\": "))?;
+            let unlocked = store.unlock(&chosen, &password)?;
+            drop(password);
+            let name = unlocked.cert.display_name().to_string();
+            let art = match &picture {
+                Some(b) => Some(SignArt::Picture {
+                    bytes: b,
+                    clear_paper: true,
+                }),
+                None if style != SignStyle::Caveat => Some(SignArt::Typed { text: &name, style }),
+                None => None,
+            };
+            let signed = mpe_core::sign_document(
+                &bytes,
+                None,
+                &SignRequest {
+                    id: &unlocked,
+                    place,
+                    reason,
+                    location,
+                    certify: certify.map(|c| match c {
+                        CertifyLevel::NoChanges => Permissions::NoChanges,
+                        CertifyLevel::Forms => Permissions::FormFilling,
+                        CertifyLevel::Comments => Permissions::FormFillingAndComments,
+                    }),
+                    art,
+                    accept_disallowed: false,
+                },
+            )?;
+            mpe_core::write_file(&output, &signed.bytes)?;
+            store.set_default(&chosen)?;
+            let what = if certify.is_some() {
+                "Certified"
+            } else {
+                "Signed"
+            };
+            out!(
+                "{what} as \"{label}\" in the field \"{}\"; wrote {}.",
+                mpe_core::display_line(&signed.field, 80),
+                output.display()
+            );
+            if signed.rewritten {
+                out!(
+                    "The file's structure was damaged, so it was written out in full before \
+                     signing."
+                );
+            }
+            if signed.finished_items > 0 {
+                out!(
+                    "{} fill-and-sign item(s) were drawn into the pages first.",
+                    signed.finished_items
+                );
+            }
+            if chosen.cert.self_issued {
+                out!(
+                    "Others see you as an unknown signer until they trust your certificate: send \
+                     it with `mpe id export {} -o {}.cer`.",
+                    chosen.name,
+                    chosen.name
+                );
+            }
+        }
         Cmd::Search {
             input,
             query,

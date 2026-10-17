@@ -3,9 +3,9 @@
 Digital signatures are being built in stages. What works now, in the app and from the command line: **checking**
 the signatures in a PDF (`mpe verify`), including what changed after each signature and whether the signer allowed
 it, opening or saving the version a signature signed, and **trusting** signers and certificate authorities (`mpe
-trust`). From the command line: making, importing and exporting your **digital IDs** (`mpe id`). Still to come:
-signing and certifying, digital IDs in the app, and saving signed documents without breaking their signatures.
-This page grows with each stage.
+trust`). From the command line: making, importing and exporting your **digital IDs** (`mpe id`), and **signing and
+certifying** with them (`mpe sign`). Still to come: signing and digital IDs in the app, and saving signed documents
+without breaking their signatures. This page grows with each stage.
 
 ## What a digital signature is and isn't
 
@@ -26,9 +26,10 @@ issued theirs, and a way to be sure it is the right one: its SHA-256 fingerprint
 in person or on a website you trust. The certificate can come from the signed PDF itself, or from a file the
 signer or your organisation sends you (`.cer`, `.crt`, `.pem`, or `.p7c` as Acrobat exports it).
 
-Signing (coming in the next stage) needs a [digital ID](#digital-ids) and its password: one you make in MPE, or one
-you import from Acrobat, your computer or a certificate authority. For others to see your signatures as trusted,
-they need your certificate, which MPE exports, and a way to check its fingerprint with you.
+[Signing](#signing) needs a [digital ID](#digital-ids) and its password: one you make in MPE, or one you import
+from Acrobat, your computer or a certificate authority. The ID must be valid on the day you sign, by your
+computer's clock, and the document must not be encrypted. For others to see your signatures as trusted, they need
+your certificate, which MPE exports, and a way to check its fingerprint with you.
 
 ## Checking a signed PDF
 
@@ -206,8 +207,8 @@ line.
 
 A digital ID is what you sign with: a private key, which stays secret, and a certificate naming you, which goes
 into every signature you make. MPE keeps your IDs, each protected by its own password. You can make, import,
-export, list and remove them from the command line now; signing with them, and the app's Digital IDs window, come
-in the next stages.
+export, list and remove them, and [sign](#signing) with them, from the command line now; the app's Digital IDs
+window and signing in the app come in the next stage.
 
 IDs are kept in the `ids` folder of MPE's settings folder: `~/.config/mpe/ids/` on Linux,
 `~/Library/Application Support/mpe/ids/` on macOS, `%APPDATA%\mpe\ids\` on Windows. Each is one PKCS#12 file
@@ -234,7 +235,7 @@ accept the new certificate before keeping it.
 trust your certificate. Send it to them (`mpe id export jane-doe -o jane.cer`) and tell them its SHA-256
 fingerprint another way, such as by phone, so they can check the file is yours.
 
-The ID made or imported last is the **default**, the one signing will use unless told otherwise.
+The ID made, imported or signed with last is the **default**, the one signing uses unless told otherwise.
 
 ### Importing a digital ID
 
@@ -280,6 +281,60 @@ one with `--new-password`. Anyone with that file and its password can sign as yo
 fingerprint, and warns about files in the folder that other users could read or that MPE can't list. `mpe id
 remove 2` (or a name) deletes an ID after you type `yes`: it can't be undone, and the ID can't sign again unless you
 have an exported copy. Signatures already made with it stay valid.
+
+## Signing
+
+Signing is on the command line for now; the app gets it in the next stage.
+
+```
+mpe sign contract.pdf -o contract-signed.pdf --page 2 --rect 350,600,200,60
+mpe sign form.pdf -o form-signed.pdf --field Approver --reason "Approved" --location Ottawa
+```
+
+The first puts your signature in a new box on page 2: 200 by 60 points, 350 points from the left and 600 from the
+top of the page as shown. The second signs the document's empty signature field named `Approver` (`mpe verify`
+lists empty fields by name). MPE asks for the ID's password; `--password-file` reads it from a file instead, and
+`--id` chooses another ID than the default (its number or name in `mpe id list`). The ID you sign with becomes the
+default. `--reason` and `--location` are your own statements, shown with the signature by every reader.
+
+**What MPE writes**, as Acrobat does by default: an `adbe.pkcs7.detached` signature (CMS) with SHA-256 (SHA-384 for
+a P-384 key), carrying your certificate and, for an ID from a certificate authority, the authority certificates
+that came with it; the signing time from your computer's clock; the signer's certificate named inside the signed
+data (ESS signing-certificate-v2, so a certificate with the same key can't be put in its place); and the signature
+field's look. The look is always visible: on the left your name in handwriting (or, with `--image`, a picture of
+your handwritten signature; `--style` picks the handwriting), on the right "Digitally signed by NAME" and "Date:
+2026.10.16 14:23:05 -04'00'" in your computer's time zone, as Acrobat shows it. On a turned page the look is turned
+with it, so it reads upright.
+
+**Earlier signatures stay valid.** The signature is added after the file's existing bytes, in one new revision,
+and nothing before it changes. A second signer's signature shows on the first one as *signed in field …*, an
+allowed change.
+
+**Certifying** (`--certify`) is the author's signature, which also says what others may still do: `no-changes`,
+`forms` (fill in forms and sign) or `comments` (that, plus comments). A document can be certified only before anyone
+signs it, as in Acrobat. After a certification, MPE signs only in the signature fields the document already has
+(a new visible signature field is a change the certification doesn't allow), and not at all when it allows no
+changes.
+
+**The document's rules are followed.** MPE refuses, and says why, to sign: a field an earlier signer locked; any
+field once an earlier signer locked the whole document; a field that is already signed, read-only, or not a
+signature field. When the field you sign locks other fields (Acrobat's "Mark as read-only" in the field's
+properties), MPE makes those fields read-only and records the lock in the signature, so later changes to them show
+as not allowed.
+
+**Fill-and-sign items** (your signature, initials, marks and text put down with them) are drawn into the page
+before signing, so they become part of what you sign. On a document someone already signed they are locked in
+place instead, because drawing them in would change the page, which the earlier signatures don't allow.
+
+**Forms that ask readers to draw their fields** (a setting some form tools leave on, which makes each reader show
+the values its own way) have their fields drawn by MPE and the setting turned off before the first signature, so
+every reader shows what you signed.
+
+**MPE checks before writing.** The signed file is checked the way `mpe verify` checks any file: the new signature
+must be valid, cover the whole file, name your certificate and have no warnings, and every earlier signature must
+check as it did before. Before that, the new revision is read back and must hold exactly what was meant. If any of
+this fails, nothing is written. A file whose structure MPE had to repair to open it is written out in full first,
+when it has no signatures yet (the message says so); with signatures, MPE refuses rather than break them.
 
 ## What each result means
 
@@ -380,6 +435,7 @@ document can be altered, so MPE compares each version with the next and judges e
 | Change | After an ordinary signature | Certified: form filling and signing | Certified: also comments | Certified: no changes |
 | --- | --- | --- | --- | --- |
 | Form field filled in | allowed | allowed | allowed | not allowed |
+| Form field made read-only (signing a field that locks it) | allowed | allowed | allowed | not allowed |
 | Signed in an empty signature field | allowed | allowed | allowed | not allowed |
 | Signature field added (signed or not) | allowed | only if invisible | only if invisible | not allowed |
 | Comment added, changed or removed | allowed | not allowed | allowed | not allowed |
@@ -456,8 +512,14 @@ authority), and Windows' BER encoding, made from those files. OpenSSL reads the 
 exported ones, takes out the same certificate and a key that signs a PDF MPE then checks as valid and, once
 trusted, trusted. `openssl x509` shows the extensions described under [making a digital ID](#making-a-digital-id).
 
-Not yet tested: signatures made in Adobe Acrobat by MPE's testers, MPE-made signatures in Acrobat (MPE can't sign
-yet), and digital ID files exported from Acrobat or Windows, or MPE's exported files imported there. Where MPE is
+MPE's own signatures were checked with `pdfsig` and OpenSSL (`openssl cms -verify` over the signed bytes): RSA-3072,
+P-256, P-384 and a CA-issued ID with its chain, a second and third signature on a signed file, a certification, and
+a signature in the field a certified document left empty. Both call every one valid, and `pdfsig` finds each
+earlier signature valid too. Signed files with classic cross-reference tables, cross-reference streams and object
+streams, and pages turned 90 degrees, were checked by MPE.
+
+Not yet tested: signatures made in Adobe Acrobat by MPE's testers, MPE-made signatures and certifications in
+Acrobat, and digital ID files exported from Acrobat or Windows, or MPE's exported files imported there. Where MPE is
 stricter than Acrobat (see the limitations) is to be confirmed in those tests.
 
 ## Limitations
@@ -497,7 +559,18 @@ stricter than Acrobat (see the limitations) is to be confirmed in those tests.
 - The app checks the file as opened or last saved, not unsaved changes; after a trust change made with `mpe
   trust`, reopen documents that were already open.
 - A file the PDF reader can't open at all can't be checked.
-- Digital IDs can't sign yet, and the app doesn't show them yet; both come in the next stages.
+- The app doesn't sign or show digital IDs yet; both come in the next stage. Signing is on the command line.
+- Signatures carry no timestamp from a timestamp authority yet (planned), so their signing time is your computer's
+  claim, and once your certificate expires, checkers can't tell the signature was made while it was valid. No
+  long-term validation data is added either.
+- Encrypted (password-protected) documents can't be signed.
+- The text in a signature's look is in Helvetica, which covers Western European languages; a name in other
+  scripts is left out of the text ("Digitally signed"), and a handwriting style that can't show it isn't used.
+  Every reader still shows the full name from the certificate.
+- A document can be certified only before anyone signs it; after a certification, MPE signs only in signature
+  fields the document already has.
+- Edits made in MPE and signed along with the signature come with the app (next stage); on the command line,
+  signing adds only the signature (and draws in fill-and-sign items).
 - Digital IDs on smart cards and USB tokens, and those kept in the Windows certificate store or the macOS Keychain,
   can't be used directly: export them as a `.p12` or `.pfx` file (if the card or store allows it) and import that.
 - MPE signs with RSA keys of 2048 to 4096 bits and P-256 and P-384 keys; IDs with other keys (Ed25519, P-521,
@@ -533,7 +606,14 @@ versions where they are pre-releases:
 "Pre-release" means their programming interface may still change, not that they are untested; they come from the
 same project and review as the stable crates. MPE reads the signature data with its own small reader, which works
 on the bytes as written and never re-encodes what was signed. It reads and writes PKCS#12 ID files with its own
-code on the same reader, checked against OpenSSL (see [compatibility](#compatibility)).
+code on the same reader, checked against OpenSSL (see [compatibility](#compatibility)), and writes the signatures
+it makes with its own small writer, so the pre-release `cms` crate isn't used.
+
+**Signing** never hands out a file it hasn't checked: the new revision is read back with MPE's strict reader and
+compared object by object with what was meant, and the signed file is then checked like any other (see
+[signing](#signing)). The space for the signature is sized by a trial signature first, and only the two
+placeholders in the signature's own object are filled in, found where the new revision's cross-reference section
+says that object is. The ID's key is used only for the signature and wiped from memory with the ID.
 
 **RUSTSEC-2023-0071**, a timing leak in `rsa` with no fixed version yet, concerns using a private key. Checking
 uses only public keys, so it doesn't apply to checking. It applies to signing with an RSA key: an attacker would
@@ -597,3 +677,15 @@ certificates a document carries never become trusted by being there.
   hand. Move it out and import it with `mpe id import`.
 - **An expired ID**: MPE keeps it but won't sign with it. Self-made IDs last five years; make a new one and send
   its certificate to the people who trusted the old one.
+- **"the digital ID isn't valid until …"**: the ID's certificate starts later than your computer's clock says it
+  is now. Check the clock.
+- **"a document can be certified only before anyone signs it"**, **"which allows signing only in the signature
+  fields it already has"**, **"locked the field … when signing"**: the document's certification or an earlier
+  signer's lock doesn't allow what you asked. Sign an existing empty field, or ask the author for a version that
+  allows it.
+- **"signing now would make …'s signature report changes it doesn't allow"**: the change listed would show as not
+  allowed on that earlier signature, so MPE didn't sign.
+- **"the file's cross-reference information is damaged"** on a signed document: MPE won't add to a file it had to
+  repair, because the earlier signatures would break. Ask the sender for an undamaged copy.
+- **"the signed document didn't check correctly"** or **"the new revision didn't read back correctly"**: MPE's
+  check before writing found a problem, and nothing was written. Please report it, with the document if you can.
