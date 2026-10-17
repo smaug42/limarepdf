@@ -11,6 +11,7 @@ use der::asn1::ObjectIdentifier;
 const MAX_DEPTH: usize = 64;
 
 pub(crate) const INTEGER: u8 = 0x02;
+pub(crate) const BIT_STRING: u8 = 0x03;
 pub(crate) const OCTET_STRING: u8 = 0x04;
 pub(crate) const NULL: u8 = 0x05;
 pub(crate) const OID: u8 = 0x06;

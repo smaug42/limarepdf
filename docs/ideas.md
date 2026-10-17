@@ -79,6 +79,9 @@ Small or medium additions that build on what MPE already has:
 - Revocation checking (OCSP, CRL) for certificates from authorities (M; network)
 - Adobe's list of trusted authorities (AATL; only distributed to Adobe products as far as known) or the EU
   trusted lists (large, changing XML with its own signatures) (L)
+- Name constraints in certificate authorities (a limit on the names an authority may issue for): checked as RFC
+  5280 says, instead of refusing to trust chains that set them (M)
+- Importing Acrobat's FDF certificate exchange files (`.fdf`) as trusted certificates (S; `.cer` and `.p7c` work)
 - Smart cards, USB tokens, the Windows certificate store and macOS Keychain (L)
 - Signing encrypted documents (M)
 - Checking signatures on Brainpool curves, used by some European ID cards, and P-521 (S each; the `bp256`,

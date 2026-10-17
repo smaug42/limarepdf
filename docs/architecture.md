@@ -47,7 +47,13 @@ so signed attributes are never re-encoded before checking. The cryptography is R
 appended revisions' cross-reference sections itself (lopdf ignores free entries and repairs broken tables, which
 would hide changes), checks that lopdf reads the same objects, then compares each signed version with the next,
 judging every object that differs by each role it plays (page content, comment, form field, signature, document
-structure) against the signer's permissions. See [Digital signatures](signatures.md).
+structure) against the signer's permissions. Trust is in `trust.rs`: the trust list file (`trust.txt` in the
+settings folder, whose location `mpe_core::settings_dir` gives both the app and the command line), and the chain
+search from a signer's certificate to a trusted authority over the certificates the signature and the document's
+`/DSS` carry, with RFC 5280's checks at the signing time, including certificate policy processing; each link's
+signature is checked over the certificate as written (`cms_check::check_cert_signature`). Trust is applied after
+checking (`SignatureReport::apply_trust`), so a changed list can be applied again without checking again. See
+[Digital signatures](signatures.md).
 
 In the desktop app, every command is defined once in `crates/mpe-gui/src/actions.rs`; the menu, the top bar, the
 command palette, the right-click menus, the floating toolbar and the keyboard shortcuts are all built from that list.

@@ -9,24 +9,9 @@
 
 use crate::signing::SignKit;
 use eframe::egui::ThemePreference;
+pub use mpe_core::settings_dir;
 use mpe_core::{OpenLayout, StampColor};
 use std::path::PathBuf;
-
-/// The settings folder for MPE, from the environment.
-pub fn settings_dir() -> Option<PathBuf> {
-    let env = |k: &str| {
-        let v = std::env::var_os(k)?;
-        (!v.is_empty()).then(|| PathBuf::from(v))
-    };
-    let base = if cfg!(windows) {
-        env("APPDATA")?
-    } else if cfg!(target_os = "macos") {
-        env("HOME")?.join("Library/Application Support")
-    } else {
-        env("XDG_CONFIG_HOME").or_else(|| Some(env("HOME")?.join(".config")))?
-    };
-    Some(base.join("mpe"))
-}
 
 /// How pages are laid out in the view.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]

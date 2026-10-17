@@ -7,12 +7,12 @@ mod sigkit;
 use lopdf::{dictionary, Dictionary, Document, Object, ObjectId, Stream};
 use mpe_core::{
     verify_signatures, Change, ChangeKind, DigitalSignature, Permissions, Refusal, SigStatus,
-    SignatureReport,
+    SignatureReport, TrustList,
 };
 use sigkit::*;
 
 fn report(b: &[u8]) -> SignatureReport {
-    verify_signatures(b, None).unwrap()
+    verify_signatures(b, None, &TrustList::default()).unwrap()
 }
 
 /// The signature in field `name`.
@@ -708,7 +708,7 @@ fn damaged_appended_data_is_never_clean() {
     let b = fill(&approve(&form(&["Name"])), "Name", "Jane");
     let end = sig(&b, "Signature1").signed_len.unwrap();
     let clean = |x: &[u8]| -> Option<bool> {
-        let r = verify_signatures(x, None).ok()?;
+        let r = verify_signatures(x, None, &TrustList::default()).ok()?;
         let s = r.signatures.iter().find(|s| s.fields == ["Signature1"])?;
         Some(s.status == SigStatus::Valid && s.changes.is_empty())
     };

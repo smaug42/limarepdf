@@ -8,12 +8,17 @@ mod sigkit;
 use lopdf::{dictionary, Object};
 use mpe_core::{
     verify_signatures, DigitalSignature, LockAction, Permissions, SigKind, SigStatus, SigWarning,
-    SignatureReport, TimeSource,
+    SignatureReport, TimeSource, TrustList,
 };
 use sigkit::*;
 
+/// Checks with an empty trust list.
+fn verify(b: &[u8]) -> mpe_core::Result<SignatureReport> {
+    verify_signatures(b, None, &TrustList::default())
+}
+
 fn report(b: &[u8]) -> SignatureReport {
-    verify_signatures(b, None).unwrap()
+    verify(b).unwrap()
 }
 
 fn only(b: &[u8]) -> DigitalSignature {
@@ -624,7 +629,7 @@ fn signature_wrapping() {
     let mut x = good[..c].to_vec();
     x.extend_from_slice(b"\n99 0 obj\n(injected)\nendobj\n");
     x.extend_from_slice(&good[c..]);
-    if let Ok(r) = verify_signatures(&x, None) {
+    if let Ok(r) = verify(&x) {
         assert!(r.signatures.iter().all(|s| s.status != SigStatus::Valid));
     }
 }
@@ -875,7 +880,7 @@ fn truncated_files_never_pass() {
         .step_by(61)
         .chain(good.len() - 40..good.len());
     for cut in cuts {
-        if let Ok(r) = verify_signatures(&good[..cut], None) {
+        if let Ok(r) = verify(&good[..cut]) {
             assert!(
                 r.signatures.iter().all(|s| s.status != SigStatus::Valid),
                 "valid after cutting at {cut}"
@@ -906,7 +911,7 @@ fn changed_signature_values_never_pass() {
         let mut x = good.clone();
         let p = b + 1 + i;
         x[p] = if x[p] == b'0' { b'1' } else { b'0' };
-        let r = verify_signatures(&x, None).unwrap();
+        let r = verify(&x).unwrap();
         if must_fail {
             assert!(
                 r.signatures.iter().all(|s| s.status != SigStatus::Valid),
@@ -974,7 +979,7 @@ enum Want {
 
 fn check_sample(path: &std::path::Path, want: &[Want], why: &str) {
     let bytes = std::fs::read(path).unwrap();
-    let r = verify_signatures(&bytes, None).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let r = verify(&bytes).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     let got: Vec<&SigStatus> = r.signatures.iter().map(|s| &s.status).collect();
     assert_eq!(got.len(), want.len(), "{} ({why}): {got:?}", path.display());
     for (g, w) in got.iter().zip(want) {
@@ -1373,11 +1378,7 @@ fn dss_samples() {
         check_changes(&dir.join(file), changes);
     }
     // Not even openable: lopdf can't parse it.
-    assert!(verify_signatures(
-        &std::fs::read(dir.join("malformed-pades.pdf")).unwrap(),
-        None
-    )
-    .is_err());
+    assert!(verify(&std::fs::read(dir.join("malformed-pades.pdf")).unwrap()).is_err());
     let warn = |file: &str| -> Vec<SigWarning> {
         let r = report(&std::fs::read(dir.join(file)).unwrap());
         r.signatures.into_iter().flat_map(|s| s.warnings).collect()

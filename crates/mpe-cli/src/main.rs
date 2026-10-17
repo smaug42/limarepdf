@@ -18,7 +18,7 @@ use mpe_core::{
 use mpe_core::{sign_label, InkColor, SignArt, SignRole, SignStyle};
 use mpe_core::{
     CertInfo, ChangeKind, FieldLock, LockAction, Permissions, Refusal, SigKind, SigStatus,
-    SignatureReport, TimeSource,
+    SignatureReport, TimeSource, Trust, TrustList, TrustRole,
 };
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
@@ -369,6 +369,13 @@ enum Cmd {
         json: bool,
         #[arg(long)]
         password: Option<String>,
+        /// Use this trust list instead of MPE's own (see `mpe trust`)
+        #[arg(long, value_name = "FILE")]
+        trust_file: Option<PathBuf>,
+        /// Also exit with status 1 unless the file has signatures and every signer is
+        /// trusted
+        #[arg(long)]
+        require_trusted: bool,
         /// Save the version signature N (numbered as listed) signed, instead of the
         /// results
         #[arg(long, value_name = "N", requires = "output")]
@@ -403,6 +410,12 @@ enum Cmd {
         pages: String,
         #[arg(long)]
         password: Option<String>,
+    },
+    /// Choose whose digital signatures MPE trusts: signers, and certificate authorities
+    /// that vouch for signers. Affects MPE only
+    Trust {
+        #[command(subcommand)]
+        cmd: TrustCmd,
     },
     /// Work with form fields
     Form {
@@ -688,6 +701,51 @@ fn read_all(paths: &[PathBuf]) -> Result<Vec<Vec<u8>>> {
         .iter()
         .map(|p| std::fs::read(p).with_context(|| format!("reading {}", p.display())))
         .collect()
+}
+
+#[derive(Subcommand)]
+enum TrustCmd {
+    /// List the certificates MPE trusts
+    List {
+        /// Print the list as JSON
+        #[arg(long)]
+        json: bool,
+        /// Use this trust list instead of MPE's own
+        #[arg(long, value_name = "FILE")]
+        trust_file: Option<PathBuf>,
+    },
+    /// Trust a certificate: from a certificate file (.cer, .crt, .pem, .p7c), or the
+    /// signer of a signature in a PDF. Compare its SHA-256 fingerprint with its owner first
+    Add {
+        input: PathBuf,
+        /// Trust it as a certificate authority: every signer it issued a certificate to
+        #[arg(long)]
+        authority: bool,
+        /// From a PDF: the signature whose signer to trust, numbered as `mpe verify`
+        /// lists them (needed when there are several)
+        #[arg(long, value_name = "N")]
+        signature: Option<usize>,
+        /// From a file holding several certificates: which one, numbered from 1
+        #[arg(long, value_name = "N")]
+        pick: Option<usize>,
+        /// A name to show for it; default: the name in the certificate
+        #[arg(long)]
+        label: Option<String>,
+        /// Opens an encrypted PDF
+        #[arg(long)]
+        password: Option<String>,
+        /// Use this trust list instead of MPE's own
+        #[arg(long, value_name = "FILE")]
+        trust_file: Option<PathBuf>,
+    },
+    /// Stop trusting a certificate: its number in `mpe trust list`, or its SHA-256
+    /// fingerprint
+    Remove {
+        which: String,
+        /// Use this trust list instead of MPE's own
+        #[arg(long, value_name = "FILE")]
+        trust_file: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1300,6 +1358,11 @@ fn print_verify(input: &Path, rep: &SignatureReport) {
         let who = s.signer.as_ref().map(|c| clean(c.display_name()));
         let who = who.as_deref().unwrap_or("the signer");
         let stamp = s.kind == SigKind::DocumentTimestamp;
+        let unconfirmed = if s.trust.as_ref().is_some_and(Trust::is_trusted) {
+            ""
+        } else {
+            "; MPE can't confirm who that is"
+        };
         row(
             "Status:",
             match &s.status {
@@ -1307,21 +1370,45 @@ fn print_verify(input: &Path, rep: &SignatureReport) {
                     "CHANGED: changed after the timestamp in ways that aren't allowed".into()
                 }
                 SigStatus::Valid if !s.changes_allowed() => {
-                    format!("CHANGED: changed after {who} signed it in ways the signer didn't allow")
+                    format!(
+                        "CHANGED: changed after {who} signed it in ways the signer didn't allow"
+                    )
                 }
                 SigStatus::Valid if stamp => {
                     "valid: the document existed like this at the time shown".into()
                 }
-                SigStatus::Valid if !s.changes.is_empty() => format!(
-                    "valid: only allowed changes since {who} signed it; MPE can't confirm who that is"
-                ),
-                SigStatus::Valid => format!(
-                    "valid: not changed since {who} signed it; MPE can't confirm who that is"
-                ),
+                SigStatus::Valid if !s.changes.is_empty() => {
+                    format!("valid: only allowed changes since {who} signed it{unconfirmed}")
+                }
+                SigStatus::Valid => {
+                    format!("valid: not changed since {who} signed it{unconfirmed}")
+                }
                 SigStatus::Broken(why) => format!("BROKEN: {why}"),
                 SigStatus::CantCheck(why) => format!("can't check: {why}"),
             },
         );
+        if let Some(t) = &s.trust {
+            let mut line = trust_text(t, &clean);
+            if matches!(t, Trust::Unknown(_)) && !stamp {
+                let file = input.display();
+                let n = i + 1;
+                let self_made = s.signer.as_ref().is_some_and(|c| c.self_issued);
+                line.push_str(&if self_made {
+                    format!(
+                        "; to trust this signer, compare the SHA-256 fingerprint below with \
+                         them, then run: mpe trust add \"{file}\" --signature {n}"
+                    )
+                } else {
+                    format!(
+                        "; to trust the authority that issued it, run: mpe trust add \"{file}\" \
+                         --signature {n} --authority (and compare its fingerprint with the \
+                         authority's), or this signer alone: mpe trust add \"{file}\" \
+                         --signature {n}"
+                    )
+                });
+            }
+            row("Trust:", line);
+        }
         if !s.changes.is_empty() {
             let signed = s
                 .signed_len
@@ -1385,10 +1472,15 @@ fn print_verify(input: &Path, rep: &SignatureReport) {
             .as_ref()
             .filter(|_| s.kind != SigKind::DocumentTimestamp)
         {
+            let trusted = match &ts.trust {
+                Some(t) if t.is_trusted() => " (trusted)".to_string(),
+                Some(Trust::Failed(why)) => format!(" (NOT TRUSTED: {})", clean(why)),
+                _ => " (MPE can't confirm this authority)".to_string(),
+            };
             row(
                 "Timestamp:",
                 format!(
-                    "{} by {}",
+                    "{} by {}{trusted}",
                     ts.time.format(VERIFY_TIME),
                     clean(ts.authority.display_name())
                 ),
@@ -1446,6 +1538,293 @@ fn print_verify(input: &Path, rep: &SignatureReport) {
             out!("   {:<12} {}", "Locks:", lock_text(l, &clean));
         }
     }
+}
+
+/// Whether a signer is trusted, and why, in one line.
+fn trust_text(t: &Trust, clean: &dyn Fn(&str) -> String) -> String {
+    match t {
+        Trust::Signer { label } => format!("trusted: you trust \"{}\" in MPE", clean(label)),
+        Trust::Authority { label, chain } => {
+            let path: Vec<String> = chain.iter().map(|c| clean(c.display_name())).collect();
+            format!(
+                "trusted: issued under \"{}\", a certificate authority you trust in MPE ({})",
+                clean(label),
+                path.join(" < ")
+            )
+        }
+        Trust::Unknown(why) => format!("not confirmed: {}", clean(why)),
+        Trust::Failed(why) => format!("NOT TRUSTED: {}", clean(why)),
+    }
+}
+
+fn trust_json(t: &Trust, cert: &dyn Fn(&CertInfo) -> serde_json::Value) -> serde_json::Value {
+    use serde_json::json;
+    match t {
+        Trust::Signer { label } => json!({"status": "trusted", "as": "signer", "label": label}),
+        Trust::Authority { label, chain } => json!({
+            "status": "trusted",
+            "as": "authority",
+            "label": label,
+            "chain": chain.iter().map(cert).collect::<Vec<_>>(),
+        }),
+        Trust::Unknown(why) => json!({"status": "unknown", "reason": why}),
+        Trust::Failed(why) => json!({"status": "failed", "reason": why}),
+    }
+}
+
+const TRUST_NOTE: &str = "Trust settings affect MPE only.";
+
+fn run_trust(cmd: TrustCmd) -> Result<()> {
+    let clean = |s: &str| mpe_core::display_line(s, 80);
+    match cmd {
+        TrustCmd::List { json, trust_file } => {
+            let path = trust_path(&trust_file)?;
+            let list = TrustList::load(&path)?;
+            if json {
+                let entries: Vec<serde_json::Value> = list
+                    .entries
+                    .iter()
+                    .map(|e| {
+                        serde_json::json!({
+                            "as": match e.role {
+                                TrustRole::Signer => "signer",
+                                TrustRole::Authority => "authority",
+                            },
+                            "label": e.label,
+                            "added": e.added.map(|d| d.to_string()),
+                            "subject": e.cert.subject,
+                            "issuer": e.cert.issuer,
+                            "self_issued": e.cert.self_issued,
+                            "not_before": e.cert.not_before.to_rfc3339(),
+                            "not_after": e.cert.not_after.to_rfc3339(),
+                            "sha256": e.cert.sha256,
+                        })
+                    })
+                    .collect();
+                let v = serde_json::json!({
+                    "file": path.display().to_string(),
+                    "trusted": entries,
+                    "problems": list.problems,
+                });
+                out!("{}", serde_json::to_string_pretty(&v)?);
+                return Ok(());
+            }
+            if list.entries.is_empty() {
+                out!(
+                    "MPE trusts no certificates yet ({}). Add one with `mpe trust add`. {TRUST_NOTE}",
+                    path.display()
+                );
+            } else {
+                out!("Trusted certificates in {}. {TRUST_NOTE}", path.display());
+            }
+            for (i, e) in list.entries.iter().enumerate() {
+                out!("");
+                let added = e.added.map(|d| format!(", added {d}")).unwrap_or_default();
+                out!(
+                    "{}. \"{}\": trusted as {}{added}",
+                    i + 1,
+                    clean(&e.label),
+                    e.role
+                );
+                out!("   {:<12} {}", "Certificate:", clean(&e.cert.subject));
+                let issuer = if e.cert.self_issued {
+                    "itself (a self-made digital ID)".into()
+                } else {
+                    clean(&e.cert.issuer)
+                };
+                out!("   {:<12} {issuer}", "Issued by:");
+                out!(
+                    "   {:<12} {} to {}",
+                    "Valid:",
+                    e.cert.not_before.format("%Y-%m-%d"),
+                    e.cert.not_after.format("%Y-%m-%d")
+                );
+                out!("   {:<12} {}", "SHA-256:", e.cert.sha256);
+            }
+            for p in &list.problems {
+                out!("");
+                out!("Problem: {}", mpe_core::display_line(p, 200));
+            }
+        }
+        TrustCmd::Add {
+            input,
+            authority,
+            signature,
+            pick,
+            label,
+            password,
+            trust_file,
+        } => {
+            let path = trust_path(&trust_file)?;
+            let mut list = TrustList::load(&path)?;
+            let bytes =
+                std::fs::read(&input).with_context(|| format!("reading {}", input.display()))?;
+            let role = if authority {
+                TrustRole::Authority
+            } else {
+                TrustRole::Signer
+            };
+            let is_pdf = bytes.windows(5).take(1024).any(|w| w == b"%PDF-");
+            // One certificate out of several, chosen with --pick.
+            let choose = |mut certs: Vec<CertInfo>, what: &str| -> Result<CertInfo> {
+                match (certs.len(), pick) {
+                    (0, _) => bail!("there is no {what}"),
+                    (1, None | Some(1)) => Ok(certs.remove(0)),
+                    (n, Some(k)) if (1..=n).contains(&k) => Ok(certs.remove(k - 1)),
+                    (n, Some(k)) => bail!("there is no {what} {k}; there are {n}"),
+                    (n, None) => {
+                        let names: Vec<String> = certs
+                            .iter()
+                            .enumerate()
+                            .map(|(i, c)| format!("  {}. {}", i + 1, clean(&c.subject)))
+                            .collect();
+                        bail!(
+                            "there are {n} to choose from; choose one with --pick N:\n{}",
+                            names.join("\n")
+                        )
+                    }
+                }
+            };
+            let cert: CertInfo = if is_pdf {
+                let rep = mpe_core::verify_signatures(&bytes, password.as_deref(), &list)?;
+                let n = match (signature, rep.signatures.len()) {
+                    (_, 0) => bail!("{} has no digital signatures", input.display()),
+                    (Some(n), _) => n,
+                    (None, 1) => 1,
+                    (None, many) => bail!(
+                        "{} has {many} signatures; choose one with --signature N, numbered as \
+                         `mpe verify` lists them",
+                        input.display()
+                    ),
+                };
+                let s = n
+                    .checked_sub(1)
+                    .and_then(|i| rep.signatures.get(i))
+                    .with_context(|| {
+                        format!(
+                            "there is no signature {n}; the file has {}",
+                            rep.signatures.len()
+                        )
+                    })?;
+                match &s.status {
+                    SigStatus::Valid => {}
+                    SigStatus::Broken(why) | SigStatus::CantCheck(why) => bail!(
+                        "signature {n} isn't valid ({why}); MPE only trusts the signer of a valid \
+                         signature"
+                    ),
+                }
+                if authority {
+                    // An authority from the certificates the signature carries, as in
+                    // Acrobat's certificate viewer.
+                    let cas = s
+                        .certificates
+                        .iter()
+                        .filter(|c| mpe_core::is_authority(c))
+                        .cloned()
+                        .collect();
+                    choose(cas, "certificate authority in that signature")?
+                } else {
+                    if pick.is_some() {
+                        bail!("--pick chooses an authority (with --authority) or a certificate in a file");
+                    }
+                    s.signer
+                        .clone()
+                        .context("the signature has no signer certificate")?
+                }
+            } else {
+                if signature.is_some() {
+                    bail!(
+                        "--signature is for PDF files; for a certificate file, choose with --pick"
+                    );
+                }
+                let certs = mpe_core::read_certificates(&bytes)
+                    .with_context(|| format!("reading {}", input.display()))?;
+                choose(certs, "certificate in the file")?
+            };
+            let added = list.add(&cert.der, role, label.as_deref())?;
+            list.save(&path)?;
+            let e = list
+                .entries
+                .iter()
+                .find(|e| e.cert.sha256 == cert.sha256)
+                .context("the certificate wasn't added")?;
+            let was = match added {
+                mpe_core::Added::RoleChanged(old) => format!(" (instead of as {old})"),
+                mpe_core::Added::New => String::new(),
+            };
+            out!("Now trusting \"{}\" as {role}{was}.", clean(&e.label));
+            out!("   {:<12} {}", "Certificate:", clean(&cert.subject));
+            out!("   {:<12} {}", "SHA-256:", cert.sha256);
+            if role == TrustRole::Authority {
+                out!(
+                    "Signers whose certificates it issued, directly or through authorities it \
+                     allowed to, are now trusted."
+                );
+            }
+            out!(
+                "Make sure this fingerprint is right by checking it with the certificate's owner \
+                 in a way you trust (in person, by phone): anyone can make a certificate with any \
+                 name."
+            );
+            if !cert.valid_now() {
+                out!(
+                    "Note: the certificate isn't valid today (valid {} to {}); only signatures \
+                     made while it was valid are trusted.",
+                    cert.not_before.format("%Y-%m-%d"),
+                    cert.not_after.format("%Y-%m-%d")
+                );
+            }
+            out!("{TRUST_NOTE} Saved in {}.", path.display());
+        }
+        TrustCmd::Remove { which, trust_file } => {
+            let path = trust_path(&trust_file)?;
+            let mut list = TrustList::load(&path)?;
+            let index = match which.trim().parse::<usize>() {
+                Ok(n) if (1..=list.entries.len()).contains(&n) => n - 1,
+                Ok(n) => bail!(
+                    "there is no entry {n}; the list has {} (see `mpe trust list`)",
+                    list.entries.len()
+                ),
+                Err(_) => list.find(&which).with_context(|| {
+                    format!("no trusted certificate has the fingerprint {which}")
+                })?,
+            };
+            let e = list.remove(index).context("no such entry")?;
+            list.save(&path)?;
+            out!(
+                "No longer trusting \"{}\" (SHA-256 {}). {TRUST_NOTE}",
+                clean(&e.label),
+                e.cert.sha256
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The trust list to use: `explicit`, else MPE's own in the settings folder.
+fn trust_path(explicit: &Option<PathBuf>) -> Result<PathBuf> {
+    explicit
+        .clone()
+        .or_else(TrustList::default_path)
+        .context("MPE can't find its settings folder (HOME or APPDATA isn't set); use --trust-file")
+}
+
+/// The trust list for checking: an explicit file must load; MPE's own may be missing or
+/// unusable, which leaves every signer unconfirmed, with a warning.
+fn trust_for_checking(explicit: &Option<PathBuf>) -> Result<TrustList> {
+    let list = match (explicit, TrustList::default_path()) {
+        (Some(p), _) if !p.exists() => bail!("there is no trust list at {}", p.display()),
+        (Some(p), _) => TrustList::load(p)?,
+        (None, Some(p)) => TrustList::load(&p).unwrap_or_else(|e| {
+            eprintln!("Warning: {e:#}; no signer is trusted");
+            TrustList::default()
+        }),
+        (None, None) => TrustList::default(),
+    };
+    for p in &list.problems {
+        eprintln!("Warning: trust list: {}", mpe_core::display_line(p, 200));
+    }
+    Ok(list)
 }
 
 fn lock_text(l: &FieldLock, clean: &dyn Fn(&str) -> String) -> String {
@@ -1577,6 +1956,7 @@ fn verify_json(rep: &SignatureReport) -> serde_json::Value {
                     }),
                 })).collect::<Vec<_>>(),
                 "signer": s.signer.as_ref().map(cert),
+                "trust": s.trust.as_ref().map(|t| trust_json(t, &cert)),
                 "certificates": s.certificates.iter().map(cert).collect::<Vec<_>>(),
                 "name": s.name,
                 "reason": s.reason,
@@ -1591,6 +1971,7 @@ fn verify_json(rep: &SignatureReport) -> serde_json::Value {
                 "timestamp": s.timestamp.as_ref().map(|t| json!({
                     "time": t.time.to_rfc3339(),
                     "authority": cert(&t.authority),
+                    "trust": t.trust.as_ref().map(|t| trust_json(t, &cert)),
                 })),
                 "digest": s.digest,
                 "algorithm": s.algorithm,
@@ -2094,12 +2475,15 @@ fn main() -> Result<()> {
             input,
             json,
             password,
+            trust_file,
+            require_trusted,
             signed_version,
             output,
         } => {
             let bytes =
                 std::fs::read(&input).with_context(|| format!("reading {}", input.display()))?;
-            let rep = mpe_core::verify_signatures(&bytes, password.as_deref())?;
+            let trust = trust_for_checking(&trust_file)?;
+            let rep = mpe_core::verify_signatures(&bytes, password.as_deref(), &trust)?;
             if let (Some(n), Some(output)) = (signed_version, output) {
                 let s = n
                     .checked_sub(1)
@@ -2136,10 +2520,11 @@ fn main() -> Result<()> {
             } else {
                 print_verify(&input, &rep);
             }
-            if !rep.all_ok() {
+            if !rep.all_ok() || (require_trusted && !rep.all_trusted()) {
                 std::process::exit(1);
             }
         }
+        Cmd::Trust { cmd } => run_trust(cmd)?,
         Cmd::Search {
             input,
             query,

@@ -24,7 +24,7 @@ rten-imageproc = "0.26"
 # Digital signatures (docs/signatures.md lists these crates and their release status).
 # `rsa` and `pkcs1` are pre-releases, pinned exactly.
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
-der = { version = "0.8.2", features = ["alloc", "oid"] }
+der = { version = "0.8.2", features = ["alloc", "oid", "pem"] }
 spki = "0.8.1"
 x509-cert = { version = "0.3.0", default-features = false, features = ["std"] }
 rsa = "=0.10.0-rc.19"

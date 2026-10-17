@@ -167,10 +167,23 @@ See [Removing hidden information](redaction.md#removing-hidden-information).
 | `mpe verify in.pdf` | Check every digital signature: whether the signed part is unchanged, who signed by their certificate, when, and warnings; what changed after each signature and whether the signer allowed it; also lists signature fields not signed yet |
 | `mpe verify in.pdf --json` | The same as JSON, for scripts |
 | `mpe verify in.pdf --signed-version 1 -o signed.pdf` | Save the version signature 1 (numbered as `mpe verify` lists them) signed: the file as it was when signed, without later changes. Refused for a broken signature |
+| `mpe verify in.pdf --require-trusted` | Also exit with status 1 unless the file has signatures and every signer is trusted |
+| `mpe verify in.pdf --trust-file team.txt` | Judge trust by this trust list instead of your own |
+| `mpe trust list` | The certificates you trust, with their fingerprints (`--json` for scripts) |
+| `mpe trust add contract.pdf --signature 1` | Trust the signer of signature 1. Compare the SHA-256 fingerprint with them first |
+| `mpe trust add contract.pdf --signature 1 --authority --pick 2` | Trust a certificate authority from the certificates signature 1 carries; `--pick` chooses when there are several (they are listed) |
+| `mpe trust add jane.cer` | Trust a signer from a certificate file: `.cer`, `.crt`, `.pem` (DER or PEM) or `.p7c` (as Acrobat exports); `--pick N` for a file with several |
+| `mpe trust add company-ca.cer --authority` | Trust a certificate authority: every signer it issued a certificate to, directly or through authorities it allowed to |
+| `mpe trust remove 2` | Stop trusting entry 2 of `mpe trust list`, or the certificate with this SHA-256 fingerprint |
 
 Exit status 0 means every signature checked as valid (or there are none) and nothing changed after any of them
 that its signer didn't allow; 1 means at least one is broken, can't be checked or has changes that aren't allowed,
-or the file can't be opened. See [Digital signatures](signatures.md) for what each result means.
+or the file can't be opened. A signer nobody vouches for doesn't change the exit status unless `--require-trusted`
+is given. See [Digital signatures](signatures.md) for what each result means.
+
+The trust list is `trust.txt` in MPE's settings folder (`~/.config/mpe/` on Linux), shared with the app; every
+`mpe trust` command takes `--trust-file FILE` to work on another one. Trust settings affect MPE only. See
+[Trusting signers](signatures.md#trusting-signers).
 
 ## Properties and security
 

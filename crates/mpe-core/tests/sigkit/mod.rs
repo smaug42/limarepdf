@@ -473,6 +473,87 @@ pub fn cms(signer: &Id, message: &[&[u8]], o: &Cms) -> Vec<u8> {
     }
 }
 
+// ------------------------------------------------------------------ certificates
+
+/// A certificate extension: its OID, whether it's critical, and its value (DER).
+pub fn ext(o: &str, critical: bool, value: &[u8]) -> Vec<u8> {
+    if critical {
+        seq(&[&oid(o), &[0x01, 0x01, 0xff], &octets(value)])
+    } else {
+        seq(&[&oid(o), &octets(value)])
+    }
+}
+
+/// keyUsage digitalSignature + nonRepudiation, critical.
+pub fn ext_signing_key_usage() -> Vec<u8> {
+    ext("2.5.29.15", true, &[0x03, 0x02, 0x06, 0xc0])
+}
+
+/// The subject key identifier of a certificate, as an authority key identifier extension.
+pub fn ext_authority_key_id(issuer_cert: &[u8]) -> Vec<u8> {
+    let (_, ski) = cert_ids(issuer_cert);
+    ext("2.5.29.35", false, &seq(&[&tlv(0x80, &ski)]))
+}
+
+pub const SHA256_RSA: &str = "1.2.840.113549.1.1.11";
+
+/// How [`make_cert`] builds a certificate by hand.
+pub struct CertSpec<'a> {
+    /// The certificate whose public key the new one carries.
+    pub key_of: &'a [u8],
+    pub cn: &'a str,
+    pub not_before: &'a str,
+    pub not_after: &'a str,
+    pub extensions: Vec<Vec<u8>>,
+    /// The signature algorithm written in the contents; by default the one outside.
+    pub inner_alg: Option<Vec<u8>>,
+}
+
+/// A certificate issued by `issuer` (an RSA key and its certificate), signed with
+/// SHA-256, built by hand so tests can make shapes OpenSSL won't.
+pub fn make_cert(issuer: &Id, s: &CertSpec) -> Vec<u8> {
+    use der::{Decode, Encode};
+    let parse = |d: &[u8]| x509_cert::Certificate::from_der(d).unwrap();
+    let issuer_name = parse(&issuer.cert)
+        .tbs_certificate()
+        .subject()
+        .to_der()
+        .unwrap();
+    let spki = parse(s.key_of)
+        .tbs_certificate()
+        .subject_public_key_info()
+        .to_der()
+        .unwrap();
+    let alg = seq(&[&oid(SHA256_RSA), &null()]);
+    let subject = seq(&[&set(&[&seq(&[
+        &oid("2.5.4.3"),
+        &tlv(0x0c, s.cn.as_bytes()),
+    ])])]);
+    let tbs = seq(&[
+        &ctx(0, &int(2)),
+        &int(0x1234_5678),
+        s.inner_alg.as_ref().unwrap_or(&alg),
+        &issuer_name,
+        &seq(&[&utc_time(s.not_before), &utc_time(s.not_after)]),
+        &subject,
+        &spki,
+        &ctx(
+            3,
+            &seq(&s.extensions.iter().map(Vec::as_slice).collect::<Vec<_>>()),
+        ),
+    ]);
+    let Key::Rsa(k) = &issuer.key else {
+        panic!("make_cert signs with RSA keys");
+    };
+    let value = k
+        .sign(
+            rsa::Pkcs1v15Sign::new::<sha2::Sha256>(),
+            &Hash::Sha256.of(&[&tbs]),
+        )
+        .unwrap();
+    seq(&[&tbs, &alg, &tlv(0x03, &[&[0u8][..], &value].concat())])
+}
+
 /// A timestamp token (RFC 3161) from `tsa` over `data` at `time` (GeneralizedTime).
 pub fn timestamp_token(tsa: &Id, data: &[&[u8]], time: &str, h: Hash) -> Vec<u8> {
     let info = seq(&[

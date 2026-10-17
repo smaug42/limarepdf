@@ -45,6 +45,7 @@ mod stamps;
 mod std14;
 mod text;
 mod tounicode;
+mod trust;
 mod viewprefs;
 
 pub use annots::{Annot, AnnotKind, ShapeLook, TextStyle};
@@ -77,9 +78,31 @@ pub use sign::{
 };
 pub use stamps::{stamp_wording, Stamp, StampColor, StampKind, StampPlace};
 pub use text::SearchHit;
+pub use trust::{is_authority, read_certificates, Added, Trust, TrustEntry, TrustList, TrustRole};
 pub use viewprefs::{OpenLayout, OpenPanel, ViewPrefs};
 
 pub type Result<T> = anyhow::Result<T>;
+
+/// MPE's settings folder, from the environment; `None` when it can't be found:
+///
+/// - Linux and other Unix: `$XDG_CONFIG_HOME/mpe/`, else `~/.config/mpe/`
+/// - macOS: `~/Library/Application Support/mpe/`
+/// - Windows: `%APPDATA%\mpe\`
+pub fn settings_dir() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let env = |k: &str| {
+        let v = std::env::var_os(k)?;
+        (!v.is_empty()).then(|| PathBuf::from(v))
+    };
+    let base = if cfg!(windows) {
+        env("APPDATA")?
+    } else if cfg!(target_os = "macos") {
+        env("HOME")?.join("Library/Application Support")
+    } else {
+        env("XDG_CONFIG_HOME").or_else(|| Some(env("HOME")?.join(".config")))?
+    };
+    Some(base.join("mpe"))
+}
 
 /// The most a page's content, a drawing's content or a text stream may decompress to, so a
 /// small crafted stream can't use up memory. Fonts and scanned images have their own limits.

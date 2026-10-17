@@ -1,9 +1,10 @@
 # Digital signatures
 
-Digital signatures are being built in stages. What works now: **checking** the signatures in a PDF from the
-command line (`mpe verify`), including what changed after each signature and whether the signer allowed it, and
-saving the version a signature signed. Still to come: trusting signers, checking in the app, digital IDs, signing
-and certifying, and saving signed documents without breaking their signatures. This page grows with each stage.
+Digital signatures are being built in stages. What works now, from the command line: **checking** the signatures
+in a PDF (`mpe verify`), including what changed after each signature and whether the signer allowed it, saving the
+version a signature signed, and **trusting** signers and certificate authorities (`mpe trust`). Still to come:
+checking in the app, digital IDs, signing and certifying, and saving signed documents without breaking their
+signatures. This page grows with each stage.
 
 ## What a digital signature is and isn't
 
@@ -18,6 +19,11 @@ page. Anyone can copy a picture; a digital signature breaks if the document is c
 
 Checking needs nothing: no network, no account, no certificates installed. MPE never connects anywhere to check a
 signature.
+
+For MPE to show a signer as **trusted**, you need their certificate, or the certificate of the authority that
+issued theirs, and a way to be sure it is the right one: its SHA-256 fingerprint, compared with the owner by phone,
+in person or on a website you trust. The certificate can come from the signed PDF itself, or from a file the
+signer or your organisation sends you (`.cer`, `.crt`, `.pem`, or `.p7c` as Acrobat exports it).
 
 ## Checking a signed PDF
 
@@ -54,13 +60,99 @@ the signature couldn't be checked.
 The signer's name, reason, location and contact come from the file and are claims by whoever made it; MPE removes
 characters that could disguise them (direction changes, invisible characters) before showing them.
 
+## Trusting signers
+
+A valid signature proves the document is unchanged since a certain key signed it. Whose key that is, is a
+separate question: anyone can make a digital ID with any name on it. MPE answers it from your **trust list**, as
+Acrobat does from its trusted certificates. Each valid signature gets a **Trust** line in `mpe verify`:
+
+- **trusted: you trust "NAME"**: the signer's own certificate is in your list (**trusted as a signer**). This is
+  how you trust someone with a self-made digital ID, such as one made in Acrobat or MPE.
+- **trusted: issued under "AUTHORITY", a certificate authority you trust**: the signer's certificate was issued by
+  an authority in your list (**trusted as a certificate authority**), directly or through intermediate
+  authorities, and every link checks out. The chain is shown, signer first. This is how you trust everyone at an
+  organisation whose certificates come from one authority.
+- **not confirmed: why**: nothing in your list vouches for the signer. Usual for a self-made ID you haven't
+  trusted yet. The reason says what is missing: *a self-made digital ID you haven't trusted*, *issued by "ROOT",
+  which you haven't trusted*, or *MPE doesn't have the certificate of "ISSUER"* (the signature doesn't carry the
+  whole chain; get the authority's certificate from them).
+- **NOT TRUSTED: why**: the certificate is in your list, or leads to an authority there, but fails a check. Take a
+  closer look before relying on the signature; see [the reasons](#not-trusted-reasons).
+
+Trust settings affect MPE only: trusting someone in MPE doesn't change Acrobat or any other program, and the
+signer's own Acrobat knows nothing about your list.
+
+### Adding and removing trust
+
+```
+mpe verify contract.pdf                                   # read the SHA-256 line of signature 1
+mpe trust add contract.pdf --signature 1                  # trust that signer
+mpe trust add contract.pdf --signature 1 --authority      # or an authority from that signature's chain
+mpe trust add jane.cer                                    # or a certificate file someone sent you
+mpe trust add company-ca.cer --authority --label "Our company"
+mpe trust list
+mpe trust remove 2                                        # by its number in the list, or its fingerprint
+```
+
+**Compare the fingerprint first.** `mpe trust add` prints the certificate's SHA-256 fingerprint; check it with the
+owner in a way you trust, such as reading it out over the phone. A certificate taken from a signed PDF is only as
+trustworthy as that comparison: whoever made the PDF chose the certificate.
+
+When a signature carries several authority certificates, `--authority` lists them and `--pick N` chooses one, as
+does a certificate file holding several. Trusting an authority trusts every signer it issued a certificate to,
+directly or through the intermediate authorities it allowed to issue them; trust the most specific authority that
+covers the signers you mean. A certificate you already trust can be added again with the other role to change it.
+A certificate authority must say it is one (basic constraints) and be allowed to sign certificates, or MPE refuses
+to add it as one. `mpe trust add` on a PDF only takes the signer of a valid signature.
+
+The list is `trust.txt` in MPE's settings folder (`$XDG_CONFIG_HOME/mpe/` or `~/.config/mpe/` on Linux,
+`~/Library/Application Support/mpe/` on macOS, `%APPDATA%\mpe\` on Windows), a text file with each certificate in
+PEM form, its label, the date it was added and its fingerprint. The app will use the same list. `--trust-file
+FILE` on `mpe verify` and `mpe trust` uses another list, for example one shared by a team for a script that checks
+incoming documents with `mpe verify --require-trusted --trust-file team.txt`.
+
+To let others trust **your** signatures, they need your certificate: send them a signed document and let them
+compare the fingerprint with you, or (once digital IDs are built) export your certificate as a `.cer` file. In
+Acrobat, a recipient trusts you from the signature's Signature Properties > Show Signer's Certificate, Trust tab,
+Add to Trusted Certificates (from Adobe's documentation; not yet tried with an MPE signature).
+
+### What MPE checks before trusting
+
+A trusted signer's own certificate must be usable for signing at the signing time:
+
+- valid at the signing time (or now, when the signature gives no time);
+- its key allowed to sign (key usage) and meant for documents: when it limits its uses (extended key usage), they
+  must include email protection, code signing, any use, Adobe Authentic Documents, document signing or Microsoft
+  document signing (Acrobat's list plus the two document-signing uses);
+- an RSA key of at least 2048 bits, no repeated extensions, and no critical extension MPE doesn't know.
+
+For a chain to a trusted authority, each certificate on the way must also be signed by the next one's key (checked
+over the certificate exactly as written, with matching signature algorithms), and each issuer must:
+
+- say it is a certificate authority and, if it limits its key's uses, allow signing certificates;
+- be valid at the signing time;
+- allow as many authorities below it as the chain has (path length);
+- not sign with SHA-1 or MD5, and have an RSA key of at least 2048 bits;
+- not set name constraints, which MPE doesn't check yet (it refuses rather than ignore them).
+
+Certificate policies are processed as RFC 5280 says, with any policy acceptable: when an authority requires an
+explicit policy (as qualified-signature authorities in the EU do), some policy must run through every certificate
+down to the signer, following policy mappings and any limit on "any policy". MPE follows issuers through the
+certificates the signature carries and those in the document's validation data (`/DSS`, added by PAdES tools),
+up to ten certificates long. Those certificates only help find the way: trust comes from your list alone. The trust
+list's own certificate for an authority is the end of the chain, whatever the document carries under that name.
+
+A **timestamp authority** is judged the same way, for its timestamp: trusted directly or through an authority, and
+its certificate must be meant for timestamps. A document timestamp's Trust line is about its authority, and an
+embedded timestamp shows *(trusted)*, *(MPE can't confirm this authority)* or *(NOT TRUSTED: …)* on its Timestamp
+line.
+
 ## What each result means
 
-**Valid: not changed since NAME signed it; MPE can't confirm who that is.** The signed bytes are exactly as signed,
-the signature matches the certificate it carries, and the signature is laid out the way the PDF rules require.
-MPE doesn't yet keep a list of signers you trust, so every valid signature is from an unknown signer for now, as
-in Acrobat before you trust someone. Check the SHA-256 fingerprint with the signer in some other way (a phone call,
-their website) if who signed matters.
+**Valid: not changed since NAME signed it.** The signed bytes are exactly as signed, the signature matches the
+certificate it carries, and the signature is laid out the way the PDF rules require. Whether NAME is who signed
+is on the Trust line (above): when nothing in your list vouches for the signer, the status adds *MPE can't confirm
+who that is*, as Acrobat says "signer's identity is unknown" before you trust someone.
 
 **Valid: only allowed changes since NAME signed it.** The signed part is intact, and everything added since is a
 change the signer allowed, such as filling in the form, another signature or a comment. The changes are listed;
@@ -110,10 +202,33 @@ A warning doesn't make a valid signature invalid, but is worth knowing:
 - *this certification isn't the first signature*, *the document's permissions don't point to this certification*:
   the certification doesn't follow the rules, so its limits may not hold.
 
+### NOT TRUSTED reasons
+
+A certificate you trust, or one leading to an authority you trust, failed a check:
+
+- *you trust "NAME", but the certificate … wasn't valid at the signing time*: signed before the certificate's
+  validity began or after it ended (by the signing time shown).
+- *… has the same name as "NAME", which you trust, but is a different certificate*: a self-made ID or authority
+  calling itself by a trusted name. Someone may be impersonating them, or they made a new ID; ask them, and trust
+  the new one only after comparing its fingerprint.
+- *… names "AUTHORITY", which you trust, as its issuer, but the issuer's signature on the certificate doesn't
+  match*: a certificate claiming to come from a trusted authority that didn't issue it. Treat it as forged.
+- *it was issued under "AUTHORITY", which you trust, but …*: the chain reaches a trusted authority but a link fails:
+  an issuer that isn't a certificate authority or may not sign certificates, too many authorities for a path
+  length, an expired intermediate, SHA-1 or a short RSA key, name constraints, an unknown critical extension, or no
+  certificate policy running through the chain when one is required.
+- *the signer's certificate doesn't allow its key to sign* or *is meant for other uses than signing documents*:
+  for example a web server's certificate.
+- *… has a 1024-bit RSA key*, *repeats an extension*, *has a critical extension MPE doesn't know*.
+
+None of these change the signature's own status: the document may still be unchanged since that key signed it.
+They mean MPE can't vouch for who holds the key.
+
 ### Signing times
 
 A signing time comes from a **timestamp authority** when the signature carries a valid timestamp; otherwise from
-**the signer's computer**, which can be set to any time.
+**the signer's computer**, which can be set to any time. Certificates are checked for trust at this time, so
+without a timestamp the check relies on the signer's claim of when they signed.
 
 ### Certification and locked fields
 
@@ -192,12 +307,30 @@ a signature appearance changed, a reason replaced), which MPE refuses. One DSS s
 to cross-reference sections that don't exist is refused as malformed, where DSS repairs the file and accepts it.
 `pdfsig` doesn't judge changes after signing, so there is no cross-check for this part.
 
+Trust was checked on chains made with OpenSSL for the purpose (good chains, and each way a chain can fail), whose
+verdicts are cross-checked with `openssl verify` at the signing time with S/MIME signing checks and RFC 5280 policy
+processing; they agree on 21 chains. MPE is stricter than OpenSSL by design on four others: name constraints, a
+1024-bit RSA authority, a SHA-1 link, and a policy mapping to "any policy" (which RFC 5280 forbids). On the
+third-party samples, trusting the authority from a signature's own chain makes 14 of 16 CA-issued signers trusted,
+including EU qualified-signature chains that require certificate policies; the other two have SHA-1-signed
+certificates, which MPE refuses.
+
 Not yet tested: signatures made in Adobe Acrobat by MPE's testers, and MPE-made signatures in Acrobat (MPE can't
 sign yet). Where MPE is stricter than Acrobat (see the limitations) is to be confirmed in those tests.
 
 ## Limitations
 
-- No trust yet: every valid signature shows an unknown signer.
+- Trust comes from your own list only. MPE doesn't include Adobe's list of trusted authorities (AATL) or the EU's
+  trusted lists, so a signature from a commercial or government authority that Acrobat shows as trusted is
+  *not confirmed* in MPE until you trust its authority.
+- Trust is stricter than Acrobat where safety is in doubt: certificates signed with SHA-1, 1024-bit RSA keys in a
+  chain, and authorities that set name constraints aren't trusted. Old documents from authorities that used SHA-1
+  show *NOT TRUSTED* with that reason, even though the signature itself is valid.
+- Certificates are checked at the signing time, which comes from the signer's computer unless the signature has a
+  timestamp, so a signer with a stolen key could claim a time when the certificate was still valid. Revocation
+  (below) would catch that; MPE doesn't check it.
+- Acrobat's `.fdf` certificate exchange files can't be imported; export the certificate as `.cer` or `.p7c`
+  instead.
 - Changes after signing are judged strictly where Acrobat's exact behaviour isn't documented, so MPE may refuse
   changes Acrobat accepts: a new visible signature field after a certification (or a lock limiting changes), new
   pages from page templates, changes to the document's tags or other structure made while commenting, link
@@ -241,6 +374,14 @@ uses only public keys, so it doesn't apply to checking. It will apply to signing
 have to time many signings on your computer. CI runs `cargo audit` on every change with this one advisory set
 aside; [releasing](releasing.md) has a step to look for final versions and new advisories before each release.
 
+**The trust list** decides whose signatures MPE calls trusted, so anyone who can change `trust.txt` can make MPE
+trust any signature. MPE writes it readable and writable by you only (mode 600 on Linux and macOS), replacing it in
+one step so it is never half-written, and on Linux and macOS it refuses to use a trust list that other users can
+change, saying so (`chmod 600` it to use it again). On Windows the settings folder is in your own profile, which
+other users can't change by default. An entry that can't be read, or whose written fingerprint doesn't match its
+certificate, is never used, and is kept as written when the list is saved; `mpe trust list` shows the problem. The
+certificates a document carries never become trusted by being there.
+
 ## Troubleshooting
 
 - **Changes listed** on a document you expect to be untouched: someone, or some program, saved it with changes
@@ -252,3 +393,13 @@ aside; [releasing](releasing.md) has a step to look for final versions and new a
 - **"the later additions are malformed"**: the file was saved by a program that wrote it incorrectly, or tampered
   with. The signed version is still available.
 - **"Can't check"**: try another reader, or ask the signer which algorithm they used; see the limitations above.
+- **"not confirmed"** for someone you know: compare the SHA-256 fingerprint `mpe verify` shows with them, then
+  trust them (`mpe trust add FILE --signature N`), or trust their organisation's authority.
+- **"MPE doesn't have the certificate of …"**: the signature doesn't carry its whole chain. Ask the signer's
+  organisation for its authority's certificate and add it with `--authority`.
+- **"has the same name as … which you trust, but is a different certificate"**: someone used the name of a
+  person or authority you trust. Ask them whether they have a new digital ID before trusting it.
+- **"… can be changed by other users of this computer, so MPE doesn't use it"**: the trust list's permissions
+  were changed. It is plain text: look through it for entries you didn't add, remove them, then `chmod 600` it.
+- **A trusted signer shows "NOT TRUSTED"** after their certificate expired: only signatures made while it was valid
+  are trusted. Signatures they make with a new ID need that ID trusted too.

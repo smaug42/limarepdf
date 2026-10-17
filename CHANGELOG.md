@@ -46,6 +46,14 @@
   anything MPE doesn't recognise counts as not allowed. Malformed additions and the published "shadow" and
   incremental-saving attacks are caught. `--signed-version N -o FILE` saves the version a signature signed.
   `--json` for scripts. See [Digital signatures](docs/signatures.md).
+- Trusting signers: `mpe trust add` trusts a signer (from a signed PDF or a `.cer`, `.pem` or `.p7c` file) or a
+  certificate authority, `mpe trust list` and `mpe trust remove` manage the list, and `mpe verify` then says
+  whether each signer is trusted and why not. Chains to a trusted authority are built from the certificates the
+  signature and the document carry and checked by RFC 5280's rules at the signing time (each issuer allowed to
+  issue, key usages, path lengths, certificate policies); forged issuers, look-alike certificates with a trusted
+  name, SHA-1 or 1024-bit links and unknown critical extensions aren't trusted. Embedded and document timestamps'
+  authorities are judged the same way. `--require-trusted` makes `mpe verify` fail unless every signer is
+  trusted, and `--trust-file` uses another list. Trust settings affect MPE only.
 
 ### Changed
 

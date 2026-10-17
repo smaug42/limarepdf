@@ -173,7 +173,8 @@ impl Cert {
         self.not_before() <= t && t <= self.not_after()
     }
 
-    fn extension<'a, T: Decode<'a> + der::oid::AssociatedOid>(&'a self) -> Option<T> {
+    /// The extension of type `T`; `None` when absent, unreadable or repeated.
+    pub(crate) fn extension<'a, T: Decode<'a> + der::oid::AssociatedOid>(&'a self) -> Option<T> {
         self.cert
             .tbs_certificate()
             .get_extension::<T>()
@@ -196,7 +197,7 @@ impl Cert {
             .is_some_and(|e| e.0.contains(&oid::KP_TIME_STAMPING))
     }
 
-    fn subject_key_id(&self) -> Option<Vec<u8>> {
+    pub(crate) fn subject_key_id(&self) -> Option<Vec<u8>> {
         use x509_cert::ext::pkix::SubjectKeyIdentifier;
         self.extension::<SubjectKeyIdentifier>()
             .map(|k| k.0.as_bytes().to_vec())
@@ -282,6 +283,12 @@ impl CertInfo {
             .or(self.organisation.as_deref())
             .or(self.email.as_deref())
             .unwrap_or(&self.subject)
+    }
+
+    /// Whether the certificate is valid today, by this computer's clock.
+    pub fn valid_now(&self) -> bool {
+        let now = Utc::now();
+        self.not_before <= now && now <= self.not_after
     }
 }
 
@@ -908,6 +915,8 @@ fn check_cert_ref(v: Tlv, cert: &Cert, v2: bool) -> Check<()> {
 pub(crate) struct Stamp {
     pub time: DateTime<FixedOffset>,
     pub authority: Cert,
+    /// Every certificate the timestamp carries, the authority's among them.
+    pub certs: Vec<Cert>,
 }
 
 /// Checks a timestamp token over `data` (in pieces): the authority's signature over its
@@ -944,6 +953,7 @@ pub(crate) fn check_timestamp(token: &[u8], data: &[&[u8]]) -> Check<Stamp> {
     Ok(Stamp {
         time,
         authority: sd.certs[signed.cert].clone(),
+        certs: sd.certs,
     })
 }
 
@@ -970,6 +980,46 @@ pub(crate) fn check_rsa_sha1(contents: &[u8], cert: &Cert, data: &[&[u8]]) -> Ch
         }
     }
     broken("the signature doesn't match the signed part and the signer's certificate")
+}
+
+/// Checks that `issuer`'s key made `cert`'s signature, over the certificate's contents as
+/// written (never re-encoded). The certificate's two copies of its signature algorithm must
+/// agree, as RFC 5280 requires. Returns the digest the signature relies on.
+pub(crate) fn check_cert_signature(cert: &Cert, issuer: &Cert) -> Check<DigestAlg> {
+    let (tbs, alg, value) = (|| -> Result<(&[u8], AlgId, Vec<u8>)> {
+        let kids = Tlv::read_all(&cert.raw)?
+            .expect(asn1::SEQUENCE, "certificate")?
+            .children()?;
+        let [tbs, alg, sig] = &kids[..] else {
+            bail!("the certificate has {} parts", kids.len());
+        };
+        let inner = tbs
+            .expect(asn1::SEQUENCE, "certificate contents")?
+            .children()?;
+        // An optional [0] version, the serial number, then the signature algorithm.
+        let at = usize::from(inner.first().is_some_and(|t| t.tag == ctx(0))) + 1;
+        let inner_alg = inner
+            .get(at)
+            .ok_or_else(|| anyhow!("no signature algorithm"))?;
+        if inner_alg.raw != alg.raw {
+            bail!("its two signature algorithms differ");
+        }
+        let sig = sig.expect(asn1::BIT_STRING, "signature")?;
+        let [0, value @ ..] = sig.body else {
+            bail!("malformed signature bits");
+        };
+        Ok((tbs.raw, AlgId::parse(*alg)?, value.to_vec()))
+    })()
+    .map_err(|e| Fail::CantCheck(format!("the certificate is malformed ({e})")))?;
+    if matches!(alg.oid, oid::RSA | oid::EC_PUBLIC_KEY) {
+        return cant("the certificate's signature algorithm names no digest");
+    }
+    let key = PublicKey::from_cert(issuer)?;
+    let (scheme, digest) = scheme(&alg, DigestAlg::Sha256)?;
+    verify_value(&key, scheme, digest, &[tbs], &value).map_err(|_| {
+        Fail::Broken("the issuer's signature on the certificate doesn't match".into())
+    })?;
+    Ok(digest)
 }
 
 /// The size in bits of a certificate's RSA key; `None` for other keys.

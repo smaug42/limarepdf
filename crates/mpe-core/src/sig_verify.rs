@@ -9,8 +9,9 @@
 use crate::cms_check::{self, oid, Cert, CertInfo, DigestAlg, Fail, SignedData};
 use crate::forms::FieldKind;
 use crate::sig_changes::{self, Change};
+use crate::trust::{self, Purpose, Trust, TrustList};
 use crate::{Pdf, Result};
-use chrono::{DateTime, FixedOffset, NaiveDate};
+use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 use lopdf::xref::XrefEntry;
 use lopdf::{Dictionary, Object, ObjectId};
 use std::collections::HashMap;
@@ -25,9 +26,69 @@ pub struct SignatureReport {
     pub empty_fields: Vec<EmptySignatureField>,
     /// The size of the checked file in bytes.
     pub file_len: usize,
+    /// Certificates in the document's validation data (`/DSS`), which help build chains
+    /// to a trusted authority but are never trusted for being there.
+    pub validation_certs: Vec<CertInfo>,
 }
 
 impl SignatureReport {
+    /// Decides, for every valid signature and its embedded timestamp, whether the signer
+    /// is someone `list` trusts ([`DigitalSignature::trust`], [`Timestamp::trust`]).
+    /// [`verify_signatures`] does this already; call it again when the list changes.
+    pub fn apply_trust(&mut self, list: &TrustList) {
+        let parse = |certs: &[CertInfo]| -> Vec<Cert> {
+            certs
+                .iter()
+                .filter_map(|c| Cert::parse(&c.der).ok())
+                .collect()
+        };
+        let extra = parse(&self.validation_certs);
+        let judge = |signer: &CertInfo, carried: &[CertInfo], at: DateTime<Utc>, p: Purpose| {
+            let Ok(signer) = Cert::parse(&signer.der) else {
+                return Trust::Unknown("the signer's certificate can't be read".into());
+            };
+            let mut pool = parse(carried);
+            pool.extend(extra.iter().cloned());
+            trust::evaluate(list, &signer, &pool, at, p)
+        };
+        let now = Utc::now();
+        for s in &mut self.signatures {
+            s.trust = None;
+            if s.status != SigStatus::Valid {
+                continue;
+            }
+            if let Some(ts) = &mut s.timestamp {
+                let at = ts.time.with_timezone(&Utc);
+                ts.trust = Some(judge(
+                    &ts.authority,
+                    &ts.certificates,
+                    at,
+                    Purpose::Timestamping,
+                ));
+            }
+            let Some(signer) = &s.signer else {
+                continue;
+            };
+            let purpose = match s.kind {
+                SigKind::DocumentTimestamp => Purpose::Timestamping,
+                _ => Purpose::Signing,
+            };
+            // Certificates are checked at the signing time; with none given, now.
+            let at = s.time.map_or(now, |t| t.time.with_timezone(&Utc));
+            s.trust = Some(judge(signer, &s.certificates, at, purpose));
+        }
+    }
+
+    /// True when the document has signatures and every one checked as valid with a
+    /// signer the trust list vouches for.
+    pub fn all_trusted(&self) -> bool {
+        !self.signatures.is_empty()
+            && self
+                .signatures
+                .iter()
+                .all(|s| s.trust.as_ref().is_some_and(Trust::is_trusted))
+    }
+
     /// The certification signature, if the document is certified, with what it allows.
     pub fn certification(&self) -> Option<(&DigitalSignature, Permissions)> {
         self.signatures.iter().find_map(|s| match s.kind {
@@ -86,6 +147,9 @@ pub struct DigitalSignature {
     pub signer: Option<CertInfo>,
     /// Every certificate the signature carries, the signer's among them.
     pub certificates: Vec<CertInfo>,
+    /// Whether the signer is someone the trust list vouches for; `None` unless the
+    /// signature checked as valid.
+    pub trust: Option<Trust>,
     /// The signer's name, reason, location and contact details as the signature
     /// dictionary gives them: claims by the signer, not checked by anyone.
     pub name: Option<String>,
@@ -164,6 +228,10 @@ pub enum TimeSource {
 pub struct Timestamp {
     pub time: DateTime<FixedOffset>,
     pub authority: CertInfo,
+    /// Every certificate the timestamp carries, the authority's among them.
+    pub certificates: Vec<CertInfo>,
+    /// Whether the trust list vouches for the timestamp authority; `None` until judged.
+    pub trust: Option<Trust>,
 }
 
 /// Fields locked by a signature (or to be locked when an empty field is signed).
@@ -298,10 +366,15 @@ impl fmt::Display for Permissions {
     }
 }
 
-/// Checks every digital signature in `bytes` (a whole PDF file). `password` opens an
-/// encrypted file. Fails only when the file can't be opened at all; each signature's
-/// problems are in its [`DigitalSignature::status`].
-pub fn verify_signatures(bytes: &[u8], password: Option<&str>) -> Result<SignatureReport> {
+/// Checks every digital signature in `bytes` (a whole PDF file), and whether `trust`
+/// vouches for each signer. `password` opens an encrypted file. Fails only when the file
+/// can't be opened at all; each signature's problems are in its
+/// [`DigitalSignature::status`].
+pub fn verify_signatures(
+    bytes: &[u8],
+    password: Option<&str>,
+    trust: &TrustList,
+) -> Result<SignatureReport> {
     let pdf = Pdf::from_bytes(bytes, password)?;
     let mut groups: Vec<(Place, Vec<(crate::Field, ObjectId)>)> = Vec::new();
     let mut empty_fields = Vec::new();
@@ -371,11 +444,43 @@ pub fn verify_signatures(bytes: &[u8], password: Option<&str>) -> Result<Signatu
     for (i, changes) in which.into_iter().zip(found) {
         signatures[i].changes = changes;
     }
-    Ok(SignatureReport {
+    let mut report = SignatureReport {
         signatures,
         empty_fields,
         file_len: bytes.len(),
-    })
+        validation_certs: validation_certs(&pdf),
+    };
+    report.apply_trust(trust);
+    Ok(report)
+}
+
+/// The most certificates read from the document's validation data.
+const MAX_VALIDATION_CERTS: usize = 1000;
+
+/// The certificates in the document's validation data (`/DSS /Certs`); unreadable ones
+/// are left out.
+fn validation_certs(pdf: &Pdf) -> Vec<CertInfo> {
+    let resolve = |o: &Object| pdf.doc.dereference(o).ok().map(|(_, o)| o.clone());
+    let certs = pdf
+        .doc
+        .catalog()
+        .ok()
+        .and_then(|c| resolve(c.get(b"DSS").ok()?))
+        .and_then(|d| resolve(d.as_dict().ok()?.get(b"Certs").ok()?));
+    let Some(Object::Array(certs)) = certs else {
+        return Vec::new();
+    };
+    certs
+        .iter()
+        .take(MAX_VALIDATION_CERTS)
+        .filter_map(|o| {
+            let Object::Stream(s) = resolve(o)? else {
+                return None;
+            };
+            let data = s.get_plain_content_with_limit(1 << 20).ok()?;
+            Cert::parse(&data).ok().map(|c| c.info())
+        })
+        .collect()
 }
 
 /// Where a signature dictionary is.
@@ -446,6 +551,7 @@ fn check_one(
         changes: Vec::new(),
         signer: None,
         certificates: Vec::new(),
+        trust: None,
         name: None,
         reason: None,
         location: None,
@@ -688,6 +794,8 @@ fn check_into(
                 s.timestamp = Some(Timestamp {
                     time: st.time,
                     authority: st.authority.info(),
+                    certificates: st.certs.iter().map(Cert::info).collect(),
+                    trust: None,
                 });
             }
             Err(Fail::Broken(why) | Fail::CantCheck(why)) => {
