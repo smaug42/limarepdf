@@ -120,10 +120,7 @@ pub(crate) fn sign_at(
             e
         }
     })?;
-    if opened.doc.encryption_state.is_some()
-        || opened.doc.trailer.has(b"Encrypt")
-        || edited.is_some_and(|p| p.encryption.is_some())
-    {
+    if opened.encrypted() || edited.is_some_and(Pdf::encrypted) {
         bail!("{ENCRYPTED}");
     }
     let before = verify_signatures(original, None, &TrustList::default())?;
@@ -887,6 +884,7 @@ fn self_check(
     if new.kind != kind {
         return Err(fail(format!("the new signature is a {:?}", new.kind)));
     }
+    let mut disallowed = Vec::new();
     for old in &before.signatures {
         let now = after
             .signatures
@@ -900,22 +898,52 @@ fn self_check(
             )));
         }
         if old.changes_allowed() && !now.changes_allowed() && !req.accept_disallowed {
-            let what: Vec<String> = now
+            let changes = now
                 .changes
                 .iter()
                 .filter(|c| !c.allowed())
                 .map(|c| c.to_string())
                 .collect();
-            bail!(
-                "signing now would make {}'s signature report changes it doesn't allow ({}); \
-                 nothing was written",
-                signer_name(old),
-                what.join("; ")
-            );
+            disallowed.push((signer_name(old), changes));
         }
+    }
+    if !disallowed.is_empty() {
+        return Err(DisallowedChanges {
+            signers: disallowed,
+        }
+        .into());
     }
     Ok(())
 }
+
+/// Signing was refused because the edits going into the signed revision would make
+/// earlier signatures report changes they don't allow. Nothing was written. The caller
+/// can tell the signer, and sign again with [`SignRequest::accept_disallowed`] if they
+/// go ahead. Found with `error.downcast_ref::<DisallowedChanges>()`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisallowedChanges {
+    /// Each earlier signer (quoted name, or "an earlier signer") and the changes their
+    /// signature would report.
+    pub signers: Vec<(String, Vec<String>)>,
+}
+
+impl std::fmt::Display for DisallowedChanges {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let parts: Vec<String> = self
+            .signers
+            .iter()
+            .map(|(who, what)| format!("{who}'s signature would report {}", what.join("; ")))
+            .collect();
+        write!(
+            f,
+            "signing now would make earlier signatures report changes they don't allow ({}); \
+             nothing was written",
+            parts.join(", and ")
+        )
+    }
+}
+
+impl std::error::Error for DisallowedChanges {}
 
 #[cfg(test)]
 mod tests {

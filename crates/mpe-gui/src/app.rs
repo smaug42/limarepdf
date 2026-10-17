@@ -2,6 +2,7 @@ use crate::about;
 use crate::actions::{self, menu_item, tooltip, Act, Action, Ctx, Group, ACTIONS};
 use crate::banners::Kind as BannerKind;
 use crate::dialogs::{self as dlg, Outcome};
+use crate::digital::{self, IdsWindow, SignOut, SignWindow};
 use crate::editor::{Action as EdAction, Tool};
 use crate::inspector::{self, Apply, Section};
 use crate::markup;
@@ -285,6 +286,10 @@ pub struct App {
     trust_ask: Option<TrustAsk>,
     /// The Trusted certificates window, when open.
     trusted: Option<TrustedWindow>,
+    /// The Digital IDs window, when open.
+    ids_window: Option<IdsWindow>,
+    /// The signing window, when open.
+    sign_window: Option<SignWindow>,
 }
 
 impl App {
@@ -316,6 +321,8 @@ impl App {
             sig_details: None,
             trust_ask: None,
             trusted: None,
+            ids_window: None,
+            sign_window: None,
         };
         let (images, pdfs): (Vec<_>, Vec<_>) = files.into_iter().partition(|p| is_image(p));
         for f in pdfs {
@@ -671,6 +678,200 @@ impl App {
                     Dialog::Message("Can't open the signed version".into(), format!("{e:#}"))
             }
         }
+    }
+
+    /// The digital signature tool's place was chosen: opens the signing window for it.
+    fn open_sign_window(&mut self) {
+        let Some(t) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        let Some(place) = t.ed.digital_place.take() else {
+            return;
+        };
+        let certify = t.ed.digital_certify;
+        t.ed.set_tool(Tool::Read);
+        if self.sign_window.is_some() {
+            return;
+        }
+        let where_text = digital::where_text(&t.pdf, &place);
+        let has_saved = !self
+            .settings
+            .sign
+            .list(mpe_core::SignRole::Signature)
+            .is_empty();
+        self.sign_window = Some(SignWindow::new(
+            t.id, t.revision, place, where_text, certify, has_saved,
+        ));
+    }
+
+    /// The Digital IDs window and the signing window, while open.
+    fn digital_windows(&mut self, ctx: &egui::Context) {
+        if let Some(mut w) = self.ids_window.take() {
+            let out = w.ui(ctx, &self.settings.author());
+            if out.changed {
+                if let Some(s) = self.sign_window.as_mut() {
+                    s.reload();
+                }
+            }
+            if !out.close {
+                self.ids_window = Some(w);
+            }
+        }
+        let Some(mut w) = self.sign_window.take() else {
+            return;
+        };
+        match w.ui(ctx) {
+            SignOut::Open => self.sign_window = Some(w),
+            SignOut::Cancel => {}
+            SignOut::ManageIds => {
+                if self.ids_window.is_none() {
+                    self.ids_window = Some(IdsWindow::new());
+                }
+                self.sign_window = Some(w);
+            }
+            SignOut::Go => {
+                self.start_signing(ctx, &mut w);
+                self.sign_window = Some(w);
+            }
+            SignOut::Done(s) => self.signed(ctx, *s, w.tab, w.revision),
+        }
+    }
+
+    /// Gathers what signing needs from the window's tab, asks where to save the signed
+    /// document, and starts signing in the background.
+    fn start_signing(&mut self, ctx: &egui::Context, w: &mut SignWindow) {
+        let Some(t) = self.tabs.iter().find(|t| t.id == w.tab) else {
+            w.error = Some("The document's tab was closed.".into());
+            return;
+        };
+        if t.revision != w.revision {
+            w.error = Some(
+                "The document changed after you chose where to sign. Cancel, and choose the \
+                 place again."
+                    .into(),
+            );
+            return;
+        }
+        let gathered = crate::guard(|| {
+            if t.pdf.encrypted() {
+                anyhow::bail!("MPE can't sign encrypted (password-protected) documents");
+            }
+            // A document opened with signature fields kept its bytes: the signature is
+            // added after them, with the edits made since. Any other document has no
+            // signatures to keep, so it is written out as it is now and signed.
+            let (base, edited): (Arc<[u8]>, _) = match &t.sigs {
+                Some(s) => (s.bytes.clone(), t.dirty.then(|| t.pdf.clone())),
+                None => (Arc::from(t.pdf.clone().to_bytes()?), None),
+            };
+            let art = match self
+                .settings
+                .sign
+                .list(mpe_core::SignRole::Signature)
+                .first()
+            {
+                Some(e) if w.use_saved => {
+                    let bytes = e.saved.bytes().map_err(|e| {
+                        anyhow::anyhow!("MPE can't read your saved signature's picture: {e}")
+                    })?;
+                    Some((e.saved.clone(), bytes))
+                }
+                _ => None,
+            };
+            Ok((base, edited, art))
+        });
+        let (base, edited, art) = match gathered {
+            Ok(g) => g,
+            Err(e) => {
+                w.error = Some(format!("{e:#}"));
+                return;
+            }
+        };
+        let mut d = Self::pdf_dialog().set_file_name(format!("{}-signed.pdf", t.stem("document")));
+        if let Some(dir) = t.path.as_ref().and_then(|p| p.parent()) {
+            d = d.set_directory(dir);
+        }
+        let Some(mut out) = d.save_file() else {
+            return;
+        };
+        if out.extension().is_none() {
+            out.set_extension("pdf");
+        }
+        w.start(
+            ctx,
+            digital::Input {
+                base,
+                edited,
+                art,
+                out,
+            },
+        );
+    }
+
+    /// A document was signed and written: it opens in place of the tab it was signed
+    /// from, unless that tab changed or closed meanwhile.
+    fn signed(&mut self, ctx: &egui::Context, s: digital::Signed, tab: u64, revision: u64) {
+        self.recent.add(&s.path);
+        let replace = self
+            .tabs
+            .iter()
+            .position(|t| t.id == tab && t.revision == revision);
+        let page = replace.map(|i| self.tabs[i].current);
+        let what = if s.certified { "Certified" } else { "Signed" };
+        let mut text = format!(
+            "{what} as \"{}\" in the field \"{}\", and saved to {}.",
+            s.signer,
+            mpe_core::display_line(&s.field, 60),
+            s.path.display()
+        );
+        if s.rewritten {
+            text.push_str(
+                "\n\nThe file's structure was damaged, so MPE wrote it out in full before \
+                 signing.",
+            );
+        }
+        if s.finished_items > 0 {
+            text.push_str(&format!(
+                "\n\n{} were drawn into the pages first.",
+                plural(
+                    s.finished_items,
+                    "1 fill-and-sign item",
+                    "{n} fill-and-sign items"
+                )
+            ));
+        }
+        if s.self_issued {
+            text.push_str(
+                "\n\nOthers see you as an unknown signer until they trust your certificate: \
+                 send it to them from Edit > Digital IDs (Export, certificate only). MPE shows \
+                 the same until you trust it.",
+            );
+        }
+        let bytes: Arc<[u8]> = Arc::from(s.bytes);
+        match crate::guard(|| Pdf::from_bytes(&bytes, None)) {
+            Ok(pdf) => {
+                if self.add_tab(ctx, pdf, Some(s.path), None, false) {
+                    if let Some(i) = replace {
+                        // add_tab put it last: it takes the signed tab's place.
+                        if let Some(new) = self.tabs.pop() {
+                            self.tabs[i] = new;
+                            self.active = i;
+                        }
+                    }
+                    if let Some(p) = page {
+                        self.tabs[self.active].go_to(p);
+                    }
+                    self.check_signatures(ctx, self.active, bytes, None);
+                }
+                if replace.is_none() {
+                    text.push_str(
+                        "\n\nThe document changed while it was being signed, so the signed \
+                         file opened in a new tab; the changes made meanwhile aren't in it.",
+                    );
+                }
+            }
+            Err(e) => text.push_str(&format!("\n\nMPE can't open the signed file: {e:#}")),
+        }
+        self.dialog = Dialog::Message(what.into(), text);
     }
 
     fn poll_loads(&mut self, ctx: &egui::Context) {
@@ -1075,6 +1276,43 @@ impl App {
                     );
                 } else {
                     self.dialog = Dialog::ConfirmFinishSigning(n);
+                }
+            }
+            Act::SignDigital | Act::Certify if has => {
+                let certify = a == Act::Certify;
+                let title = if certify {
+                    "Certify"
+                } else {
+                    "Sign with digital ID"
+                };
+                let t = &mut self.tabs[self.active];
+                if self.sign_window.is_some() {
+                    // One signing at a time; the open window says where it is.
+                } else if t.pdf.encrypted() {
+                    self.dialog = Dialog::Message(
+                        title.into(),
+                        "MPE can't sign encrypted (password-protected) documents. Save a copy \
+                         without the password (Document > Password security) and sign that \
+                         instead."
+                            .into(),
+                    );
+                } else if certify && t.pdf.signature_count() > 0 {
+                    self.dialog = Dialog::Message(
+                        title.into(),
+                        "Only a document no one has signed yet can be certified. Use Sign \
+                         with digital ID instead."
+                            .into(),
+                    );
+                } else {
+                    t.ed.set_tool(Tool::DigitalSign);
+                    t.ed.digital_certify = certify;
+                    self.show_inspector = true;
+                }
+            }
+            Act::DigitalPlaced if has => self.open_sign_window(),
+            Act::DigitalIds => {
+                if self.ids_window.is_none() {
+                    self.ids_window = Some(IdsWindow::new());
                 }
             }
             Act::CloseTab if has => {
@@ -1974,7 +2212,7 @@ impl App {
     /// The state the commands' conditions are checked against.
     fn state(&self, ctx: &egui::Context) -> Ctx {
         let mut c = Ctx {
-            busy: self.busy,
+            busy: self.busy || self.sign_window.as_ref().is_some_and(SignWindow::busy),
             side: self.show_side,
             inspector: self.show_inspector,
             theme: ctx.options(|o| o.theme_preference),
@@ -2757,6 +2995,9 @@ impl eframe::App for App {
                                 if std::mem::take(&mut t.ed.finish_signing) {
                                     t.requested.push(Act::FinishSigning);
                                 }
+                                if std::mem::take(&mut t.ed.sign_digital) {
+                                    t.requested.push(Act::SignDigital);
+                                }
                                 if t.ed.sign_kit != s.sign {
                                     s.sign = t.ed.sign_kit.clone();
                                     s.sign.save();
@@ -2831,6 +3072,22 @@ impl eframe::App for App {
         // changes the editor reports.
         let mut notice = None;
         if let Some(t) = self.tabs.get_mut(self.active) {
+            // The digital signature tool lists the empty signature fields, and opens the
+            // signing window once its place is chosen.
+            if t.ed.tool == Tool::DigitalSign {
+                t.ed.digital_fields = t
+                    .pdf
+                    .empty_signature_fields()
+                    .into_iter()
+                    .filter_map(|f| {
+                        let w = f.widgets.iter().find(|w| !w.hidden)?;
+                        Some((f.name, w.page))
+                    })
+                    .collect();
+                if t.ed.digital_place.is_some() {
+                    t.requested.push(Act::DigitalPlaced);
+                }
+            }
             acts.append(&mut t.requested);
             notice = t.notice.take();
         }
@@ -2844,6 +3101,7 @@ impl eframe::App for App {
         }
         self.dialogs(&ctx);
         self.signature_windows(&ctx);
+        self.digital_windows(&ctx);
 
         let title = match self.tabs.get(self.active) {
             Some(t) => format!("{} - MPE", t.title()),

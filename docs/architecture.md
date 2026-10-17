@@ -71,7 +71,16 @@ reads the new cross-reference section with the strict reader and must find exact
 reading of the result must give every object as it is in memory. Signing then finds the two placeholders in the
 signature object (where that section says it is), patches the byte range, makes the CMS with `cms_write.rs` (DER
 by hand, so the pre-release `cms` crate isn't needed) and fills it in, and checks the result with
-`verify_signatures` before returning it. See [Digital signatures](signatures.md).
+`verify_signatures` before returning it. When the edits would make an earlier signature report a change it
+doesn't allow, it returns a `DisallowedChanges` error naming each signer and change, so the app can ask before
+signing again with `accept_disallowed`. See [Digital signatures](signatures.md).
+
+In the app, `crates/mpe-gui/src/digital.rs` holds the Digital IDs window and the signing window; making, importing
+and exporting IDs, and unlocking and signing, run on a background thread each, with the password moved into that
+thread in a wrapper that overwrites it when dropped. The editor's `Tool::DigitalSign` takes the place (an empty
+field or a dragged box); the app then gathers what to sign: a document opened with signature fields kept its bytes
+(`SigState`) and signs those plus its edits, any other document is written out in full first. The signed file
+replaces the tab and is checked like any opened file.
 
 In the desktop app, every command is defined once in `crates/mpe-gui/src/actions.rs`; the menu, the top bar, the
 command palette, the right-click menus, the floating toolbar and the keyboard shortcuts are all built from that list.

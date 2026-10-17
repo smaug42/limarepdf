@@ -7,10 +7,10 @@ mod sigkit;
 
 use lopdf::{dictionary, Dictionary, Object, ObjectId};
 use mpe_core::{
-    sign_document, verify_signatures, ChangeKind, Cipher, Encryption, FieldValue, IdStore,
-    InkColor, LockAction, Pdf, Permissions, Restrictions, SigKind, SigStatus, SignArt, SignPlace,
-    SignRequest, SignRole, SignStyle, SignatureReport, SignedDocument, Stamp, StampPlace, Trust,
-    TrustList, TrustRole, UnlockedId,
+    sign_document, verify_signatures, ChangeKind, Cipher, DisallowedChanges, Encryption,
+    FieldValue, IdStore, InkColor, LockAction, Pdf, Permissions, Restrictions, SigKind, SigStatus,
+    SignArt, SignPlace, SignRequest, SignRole, SignStyle, SignatureReport, SignedDocument, Stamp,
+    StampPlace, Trust, TrustList, TrustRole, UnlockedId,
 };
 use sigkit::*;
 use std::sync::OnceLock;
@@ -499,7 +499,7 @@ fn fields_locked_by_a_signer_cant_be_signed() {
     // A new signature field counts as a change to the locked form.
     refused(
         sign_document(&s.bytes, None, &req(p256(), new_box(2))),
-        "doesn't allow",
+        "don't allow",
     );
 }
 
@@ -530,10 +530,14 @@ fn disallowed_edits_need_the_signers_consent() {
     let s1 = sign(&base_pdf(), &req(rsa(), new_box(0)));
     let mut p = Pdf::from_bytes(&s1.bytes, None).unwrap();
     p.rotate_pages(&[0], 90).unwrap();
-    refused(
-        sign_document(&s1.bytes, Some(&p), &req(p256(), new_box(1))),
-        "doesn't allow",
-    );
+    let e = sign_document(&s1.bytes, Some(&p), &req(p256(), new_box(1))).unwrap_err();
+    assert!(format!("{e:#}").contains("don't allow"), "{e:#}");
+    // The app tells the signer who will see what, from the error itself.
+    let d = e
+        .downcast_ref::<DisallowedChanges>()
+        .expect("a DisallowedChanges error");
+    assert_eq!(d.signers.len(), 1);
+    assert!(!d.signers[0].1.is_empty());
     let mut r = req(p256(), new_box(1));
     r.accept_disallowed = true;
     let s2 = sign_document(&s1.bytes, Some(&p), &r).unwrap();

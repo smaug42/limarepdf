@@ -6,6 +6,7 @@ mod actions;
 mod app;
 mod banners;
 mod dialogs;
+mod digital;
 mod editor;
 mod fields;
 mod inspector;

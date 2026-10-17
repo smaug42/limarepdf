@@ -53,7 +53,18 @@ impl Saved {
 
     /// The stamp that puts it on a page; `bytes` from [`Saved::bytes`].
     pub fn stamp<'a>(&'a self, bytes: &'a [u8], role: SignRole, color: InkColor) -> Stamp<'a> {
-        let art = match self {
+        Stamp::Signature {
+            art: self.art(bytes),
+            role,
+            color,
+            date: false,
+        }
+    }
+
+    /// What it looks like, for a stamp or a digital signature; `bytes` from
+    /// [`Saved::bytes`].
+    pub fn art<'a>(&'a self, bytes: &'a [u8]) -> SignArt<'a> {
+        match self {
             Saved::Drawn { strokes, width } => SignArt::Drawn {
                 strokes,
                 width: *width,
@@ -66,12 +77,6 @@ impl Saved {
                 bytes,
                 clear_paper: *clear_paper,
             },
-        };
-        Stamp::Signature {
-            art,
-            role,
-            color,
-            date: false,
         }
     }
 
@@ -671,6 +676,8 @@ impl Default for SignPane {
 pub struct PaneOut {
     /// The Finish signing command.
     pub finish: bool,
+    /// The Sign with digital ID command.
+    pub digital: bool,
 }
 
 impl SignPane {
@@ -825,6 +832,15 @@ impl SignPane {
             )
             .weak(),
         );
+        if ui
+            .button("Sign with digital ID…")
+            .on_hover_text(
+                "A signature that proves who signed and shows any change made afterwards",
+            )
+            .clicked()
+        {
+            out.digital = true;
+        }
         ui.add_space(6.0);
         ui.label(match items {
             0 => "Nothing placed yet.".to_string(),

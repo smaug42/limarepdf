@@ -76,6 +76,14 @@
   object by object, then the signatures checked as `mpe verify` would.
 - Checking: a form field made read-only when a field that locks it is signed is now an allowed change (form-filling
   level), as Acrobat makes locked fields read-only when signing.
+- Signing in the app: Document > Sign with digital ID (also in the Sign tool's pane) and Certify. Click an empty
+  signature field or drag a box, then pick the ID, type its password, and optionally a reason, a location and, for
+  a certification, what others may change; your saved fill-and-sign signature can be the look's left part. The
+  signed copy is saved as a new file (`NAME-signed.pdf` suggested) and opens in place of the document. Edits made
+  since opening are signed with it; when they would show on earlier signatures as not allowed, MPE says which and
+  asks before signing. Signing runs in the background; a password is used once and overwritten.
+- Digital IDs window (Edit > Digital IDs): create, import, export (certificate or with its key), make default and
+  remove digital IDs, as `mpe id` does.
 - Digital signatures in the app: a signed document is checked when it opens, and a banner above the pages gives
   the result, coloured green, amber, grey or red. The Signatures tab of the side panel (View > Signatures) lists
   each signature with its result, the changes made after it and any warnings, then the empty signature fields.

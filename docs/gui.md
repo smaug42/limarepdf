@@ -310,9 +310,16 @@ tab. ☰ > Edit > Trusted certificates… lists, removes and adds trusted certif
 The check is of the file as opened or last saved; saving rewrites the file, which breaks its signatures (MPE asks
 first), and MPE checks the saved copy. See [Digital signatures](signatures.md) for what each result means.
 
-Signing with a digital ID isn't in the app yet: sign from the command line for now (`mpe sign`, see
-[Signing](signatures.md#signing)), and make, import and export IDs there too (`mpe id`, see
-[Digital IDs](signatures.md#digital-ids)). The app's signing and Digital IDs window come next.
+### Signing with a digital ID
+
+☰ > Document > Sign with digital ID… (also a button in the Sign tool's pane), or Certify… for the author's
+certification: click an empty signature field or drag a box on the page, then pick your digital ID, type its
+password, and optionally a reason and a location. Sign… asks where to save the signed copy (`NAME-signed.pdf` by
+default), signs in the background, and opens the signed copy in place of the document. Changes made since opening
+are signed with it; when they would show on earlier signatures as not allowed, MPE asks first.
+
+☰ > Edit > Digital IDs… makes, imports, exports and removes your digital IDs, and chooses the default. See
+[Signing](signatures.md#signing) and [Digital IDs](signatures.md#digital-ids).
 
 ## Notices about the document
 

@@ -99,6 +99,14 @@ impl Pdf {
         Ok(())
     }
 
+    /// Whether the document was read from an encrypted (password-protected) file, or is
+    /// set to be saved with a password.
+    pub fn encrypted(&self) -> bool {
+        self.encryption.is_some()
+            || self.doc.encryption_state.is_some()
+            || self.doc.trailer.has(b"Encrypt")
+    }
+
     /// Serialise without pruning, compressing or encrypting. Used for undo snapshots, where
     /// speed matters more than size.
     pub fn snapshot(&mut self) -> Result<Vec<u8>> {

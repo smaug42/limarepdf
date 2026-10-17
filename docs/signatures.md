@@ -3,9 +3,9 @@
 Digital signatures are being built in stages. What works now, in the app and from the command line: **checking**
 the signatures in a PDF (`mpe verify`), including what changed after each signature and whether the signer allowed
 it, opening or saving the version a signature signed, and **trusting** signers and certificate authorities (`mpe
-trust`). From the command line: making, importing and exporting your **digital IDs** (`mpe id`), and **signing and
-certifying** with them (`mpe sign`). Still to come: signing and digital IDs in the app, and saving signed documents
-without breaking their signatures. This page grows with each stage.
+trust`), making, importing and exporting your **digital IDs** (`mpe id`), and **signing and certifying** with them
+(`mpe sign`). Still to come: saving signed documents without breaking their signatures. This page grows with each
+stage.
 
 ## What a digital signature is and isn't
 
@@ -206,9 +206,17 @@ line.
 ## Digital IDs
 
 A digital ID is what you sign with: a private key, which stays secret, and a certificate naming you, which goes
-into every signature you make. MPE keeps your IDs, each protected by its own password. You can make, import,
-export, list and remove them, and [sign](#signing) with them, from the command line now; the app's Digital IDs
-window and signing in the app come in the next stage.
+into every signature you make. MPE keeps your IDs, each protected by its own password. You make, import, export,
+list and remove them in the app's **Digital IDs** window (☰ > Edit > Digital IDs…) or with `mpe id`, and
+[sign](#signing) with them.
+
+**In the app**, the Digital IDs window lists your IDs; pick one to see its certificate, key, validity and SHA-256
+fingerprint. **Create…** asks for the name signatures show, an optional organisation and email address, and a
+password typed twice; **Import…** asks for a `.p12` or `.pfx` file and its password; **Export…** saves the
+certificate only (`.cer`) or the ID with its key (`.p12`, with the ID's password or a new one); **Make default**
+chooses the ID signing starts with; **Remove…** asks a second time (**Remove for good**). Making, importing and
+exporting run in the background and the window shows when they are done. The same rules apply as on the command
+line, described below.
 
 IDs are kept in the `ids` folder of MPE's settings folder: `~/.config/mpe/ids/` on Linux,
 `~/Library/Application Support/mpe/ids/` on macOS, `%APPDATA%\mpe\ids\` on Windows. Each is one PKCS#12 file
@@ -284,7 +292,36 @@ have an exported copy. Signatures already made with it stay valid.
 
 ## Signing
 
-Signing is on the command line for now; the app gets it in the next stage.
+### In the app
+
+1. Choose ☰ > Document > **Sign with digital ID…** (or the button of that name in the Sign tool's pane), or
+   **Certify…** to [certify](#what-signing-does) the document (only before anyone has signed it).
+2. Click an empty signature field on the page, or drag a box where the signature goes (at least 12 points each
+   way). The pane also lists the document's empty signature fields to pick from. Cancel there, or Esc, to stop.
+3. In the window, pick the digital ID (the default is picked; expired IDs can't sign), type its password, and
+   optionally a reason and a location. **Show my saved signature beside the text** uses the first signature in
+   your fill-and-sign list for the left part of the look; without one, your name is written in handwriting. For a
+   certification, choose what others may do afterwards. **Digital IDs…** opens the Digital IDs window, to make or
+   import one.
+4. **Sign…** (or **Certify…**) asks where to save the signed document, suggesting `NAME-signed.pdf` beside the
+   original, then signs in the background. The signed document opens in place of the one you signed, and is checked
+   as any signed document is.
+
+What you sign is the document as it is in MPE, with every change made since you opened it. Those changes go into
+the same new revision as your signature, so earlier signatures judge them (and fill-and-sign items are drawn in or
+locked, as described below). A document that had no signature fields when it was opened is written out in full
+first and then signed; it has no earlier signatures to keep.
+
+**When your changes would show on earlier signatures as not allowed** (a page turned or edited, for example), MPE
+stops before writing anything and says which earlier signatures would report which changes. **Sign anyway** goes
+ahead after you type the password again; Cancel leaves everything as it was. Earlier signatures stay valid for the
+version they signed either way.
+
+The password is used once and then overwritten in memory: after a wrong password, or after the question above, you
+type it again. It is never saved or logged. (egui, the app's interface library, may hold copies of typed text in
+memory until it is redrawn or MPE closes; none is written anywhere.)
+
+### From the command line
 
 ```
 mpe sign contract.pdf -o contract-signed.pdf --page 2 --rect 350,600,200,60
@@ -295,14 +332,20 @@ The first puts your signature in a new box on page 2: 200 by 60 points, 350 poin
 top of the page as shown. The second signs the document's empty signature field named `Approver` (`mpe verify`
 lists empty fields by name). MPE asks for the ID's password; `--password-file` reads it from a file instead, and
 `--id` chooses another ID than the default (its number or name in `mpe id list`). The ID you sign with becomes the
-default. `--reason` and `--location` are your own statements, shown with the signature by every reader.
+default. `--reason` and `--location` are your own statements, shown with the signature by every reader. On the
+command line, signing adds only the signature (and draws in fill-and-sign items).
+
+### What signing does
+
+The rest applies to signing in the app and from the command line alike.
 
 **What MPE writes**, as Acrobat does by default: an `adbe.pkcs7.detached` signature (CMS) with SHA-256 (SHA-384 for
 a P-384 key), carrying your certificate and, for an ID from a certificate authority, the authority certificates
 that came with it; the signing time from your computer's clock; the signer's certificate named inside the signed
 data (ESS signing-certificate-v2, so a certificate with the same key can't be put in its place); and the signature
-field's look. The look is always visible: on the left your name in handwriting (or, with `--image`, a picture of
-your handwritten signature; `--style` picks the handwriting), on the right "Digitally signed by NAME" and "Date:
+field's look. The look is always visible: on the left your name in handwriting (or your own signature: in the
+app your saved fill-and-sign signature, on the command line a picture with `--image`; `--style` picks the
+handwriting), on the right "Digitally signed by NAME" and "Date:
 2026.10.16 14:23:05 -04'00'" in your computer's time zone, as Acrobat shows it. On a turned page the look is turned
 with it, so it reads upright.
 
@@ -310,8 +353,9 @@ with it, so it reads upright.
 and nothing before it changes. A second signer's signature shows on the first one as *signed in field …*, an
 allowed change.
 
-**Certifying** (`--certify`) is the author's signature, which also says what others may still do: `no-changes`,
-`forms` (fill in forms and sign) or `comments` (that, plus comments). A document can be certified only before anyone
+**Certifying** (Certify… in the app, `--certify` on the command line) is the author's signature, which also says
+what others may still do: make no changes (`no-changes`), fill in forms and sign (`forms`), or that plus add
+comments (`comments`). A document can be certified only before anyone
 signs it, as in Acrobat. After a certification, MPE signs only in the signature fields the document already has
 (a new visible signature field is a change the certification doesn't allow), and not at all when it allows no
 changes.
@@ -559,7 +603,11 @@ stricter than Acrobat (see the limitations) is to be confirmed in those tests.
 - The app checks the file as opened or last saved, not unsaved changes; after a trust change made with `mpe
   trust`, reopen documents that were already open.
 - A file the PDF reader can't open at all can't be checked.
-- The app doesn't sign or show digital IDs yet; both come in the next stage. Signing is on the command line.
+- In the app, a signature goes in a field or a box you choose on the page; it can't be moved or resized afterwards
+  (sign again in a new copy instead).
+- Saving in the app after signing rewrites the file, which breaks the signatures in the saved copy (MPE asks
+  first); add further signatures with Sign with digital ID, which keeps them. Saving that keeps signatures is the
+  next stage.
 - Signatures carry no timestamp from a timestamp authority yet (planned), so their signing time is your computer's
   claim, and once your certificate expires, checkers can't tell the signature was made while it was valid. No
   long-term validation data is added either.
@@ -569,8 +617,8 @@ stricter than Acrobat (see the limitations) is to be confirmed in those tests.
   Every reader still shows the full name from the certificate.
 - A document can be certified only before anyone signs it; after a certification, MPE signs only in signature
   fields the document already has.
-- Edits made in MPE and signed along with the signature come with the app (next stage); on the command line,
-  signing adds only the signature (and draws in fill-and-sign items).
+- On the command line, signing adds only the signature (and draws in fill-and-sign items); edits made in the app
+  are signed along with the signature there.
 - Digital IDs on smart cards and USB tokens, and those kept in the Windows certificate store or the macOS Keychain,
   can't be used directly: export them as a `.p12` or `.pfx` file (if the card or store allows it) and import that.
 - MPE signs with RSA keys of 2048 to 4096 bits and P-256 and P-384 keys; IDs with other keys (Ed25519, P-521,
@@ -627,9 +675,11 @@ file's integrity check is HMAC-SHA256 with 1,200,000 iterations of the PKCS#12 d
 guess through as the key does. In MPE's own folder the certificates aren't encrypted (they are public, and it lets
 MPE list IDs without asking for passwords); in exported files they are, as other apps write them. MPE never stores
 a password, writes it to a log, or takes it on the command line; the command line asks for it without showing it,
-or reads it from a file you name. Keys, passwords and everything derived from them are wiped from memory once used,
-in the memory MPE controls; the crates' internal working state, the terminal and the operating system may keep
-copies MPE can't reach. ID files are
+or reads it from a file you name, and the app shows dots as you type. Keys, passwords and everything derived from
+them are wiped from memory once used, in the memory MPE controls; the crates' internal working state, the
+interface library's copies of typed text (egui keeps some, for drawing and undo, until they are replaced or MPE
+closes), the terminal and the operating system may keep copies MPE can't reach. In the app a password goes to the
+background thread that uses it and is overwritten there; it is never kept for a second try. ID files are
 written readable by you only (mode 600, in a folder of mode 700, on Linux and macOS), in one step, and are read back
 with the password before they are kept; `mpe id list` warns about an ID file other users can read. On Windows the
 settings folder is in your own profile. A file being imported can't make MPE work for long: a file asking for more

@@ -78,7 +78,9 @@ pub use sanitise::{Hidden, HiddenReport};
 pub use scan::{ScanMode, ScanOptions, ScanResult};
 pub use security::{Cipher, Encryption, Restrictions};
 pub use sig_changes::{Change, ChangeKind, Refusal};
-pub use sig_sign::{sign_document, SignPlace, SignRequest, SignedDocument, MIN_SIGNATURE_BOX};
+pub use sig_sign::{
+    sign_document, DisallowedChanges, SignPlace, SignRequest, SignedDocument, MIN_SIGNATURE_BOX,
+};
 pub use sig_verify::{
     verify_signatures, DigitalSignature, EmptySignatureField, FieldLock, LockAction, Permissions,
     SigKind, SigStatus, SigWarning, SignatureReport, SigningTime, TimeSource, Timestamp,

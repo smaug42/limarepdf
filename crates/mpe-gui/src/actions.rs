@@ -95,6 +95,15 @@ pub enum Act {
     SignedVersion(usize),
     /// The signers and certificate authorities trusted in MPE.
     TrustedCertificates,
+    /// Create, import, export and remove digital IDs.
+    DigitalIds,
+    /// Sign with a digital ID: choose the place, then the ID.
+    SignDigital,
+    /// Certify the document with a digital ID.
+    Certify,
+    /// The digital signature tool has its place: open the signing window. Not in
+    /// [`ACTIONS`].
+    DigitalPlaced,
     FlattenAnnots,
     ToggleInspector,
     ToggleHidden,
@@ -507,6 +516,15 @@ pub static ACTIONS: &[Action] = &[
         enabled: always,
         hint: "The signers and certificate authorities you trust when MPE checks digital \
                signatures.",
+        ..BASE
+    },
+    Action {
+        act: Act::DigitalIds,
+        group: Group::Edit,
+        label: "Digital IDs…",
+        icon: icon::IDENTIFICATION_CARD,
+        enabled: always,
+        hint: "Create, import, export or remove the digital IDs you sign documents with.",
         ..BASE
     },
     Action {
@@ -1181,6 +1199,26 @@ pub static ACTIONS: &[Action] = &[
         enabled: doc_idle,
         hint: "Draw the signatures, dates, ticks and other items put down with the Sign \
                tool into the pages, so they can no longer be moved or removed.",
+        ..BASE
+    },
+    Action {
+        act: Act::SignDigital,
+        group: Group::Document,
+        label: "Sign with digital ID…",
+        icon: icon::SEAL_CHECK,
+        enabled: doc_idle,
+        hint: "Sign so that others can check who signed and whether anything changed \
+               afterwards. The signed document is saved as a new file.",
+        ..BASE
+    },
+    Action {
+        act: Act::Certify,
+        group: Group::Document,
+        label: "Certify…",
+        icon: icon::CERTIFICATE,
+        enabled: doc_idle,
+        hint: "Sign as the document's author, choosing what others may change afterwards. \
+               Only before anyone has signed it.",
         ..BASE
     },
     Action {
