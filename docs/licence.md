@@ -41,9 +41,10 @@ These are in the source repository only, never in release archives:
   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
   HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
   ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-- **Test keys and certificates** in `crates/mpe-core/tests/data/signatures/keys/`, made with OpenSSL by
-  `crates/mpe-core/tools/make-signature-keys.sh`, are MPE's own, with made-up identities; the keys are public and
-  for tests only.
+- **Test keys and certificates** in `crates/mpe-core/tests/data/signatures/keys/`, and the digital ID files made
+  from them in `crates/mpe-core/tests/data/signatures/ids/`, made with OpenSSL by
+  `crates/mpe-core/tools/make-signature-keys.sh`, are MPE's own, with made-up identities; the keys and passwords are
+  public and for tests only.
 - The EU DSS project's samples (LGPL-2.1) are not included: `crates/mpe-core/tools/fetch-dss-samples.sh`
   downloads them for an optional test.
 

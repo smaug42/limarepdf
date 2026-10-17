@@ -20,8 +20,10 @@ use mpe_core::{
     CertInfo, ChangeKind, FieldLock, LockAction, Permissions, Refusal, SigKind, SigStatus,
     SignatureReport, TimeSource, Trust, TrustList, TrustRole,
 };
+use mpe_core::{DigitalId, IdStore, NewId};
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
+use zeroize::Zeroizing;
 
 #[derive(Parser)]
 #[command(name = "mpe", version, about = "Fast PDF toolkit (pure Rust)")]
@@ -417,6 +419,12 @@ enum Cmd {
         #[command(subcommand)]
         cmd: TrustCmd,
     },
+    /// Your digital IDs, for signing documents: make one, import one (.p12, .pfx), export,
+    /// list or remove them
+    Id {
+        #[command(subcommand)]
+        cmd: IdCmd,
+    },
     /// Work with form fields
     Form {
         #[command(subcommand)]
@@ -746,6 +754,83 @@ enum TrustCmd {
         #[arg(long, value_name = "FILE")]
         trust_file: Option<PathBuf>,
     },
+}
+
+#[derive(Subcommand)]
+enum IdCmd {
+    /// List your digital IDs
+    List {
+        /// Print the list as JSON
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        folder: IdFolder,
+    },
+    /// Make a self-signed digital ID (RSA 3072-bit, valid five years), protected by a
+    /// password you choose. Others trust your signatures once you send them its certificate
+    Create {
+        /// Your name, as your signatures will show it
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        organisation: Option<String>,
+        #[arg(long)]
+        email: Option<String>,
+        /// Read the new password from the first line of this file instead of asking
+        #[arg(long, value_name = "FILE")]
+        password_file: Option<PathBuf>,
+        #[command(flatten)]
+        folder: IdFolder,
+    },
+    /// Import a digital ID from a .p12 or .pfx file (from Acrobat, Windows, macOS or a
+    /// certificate authority). It keeps its password
+    Import {
+        input: PathBuf,
+        /// A name for it in MPE; default: the name in its certificate
+        #[arg(long)]
+        name: Option<String>,
+        /// Read the file's password from the first line of this file instead of asking
+        #[arg(long, value_name = "FILE")]
+        password_file: Option<PathBuf>,
+        #[command(flatten)]
+        folder: IdFolder,
+    },
+    /// Export a digital ID. To OUT.p12 or OUT.pfx: the ID with its key, to use in other
+    /// apps or keep as a backup. To OUT.cer: its certificate only, for others to trust
+    Export {
+        /// The ID: its number or name in `mpe id list`
+        which: String,
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Read the ID's password from the first line of this file instead of asking
+        #[arg(long, value_name = "FILE")]
+        password_file: Option<PathBuf>,
+        /// Protect the exported .p12 with a new password (asked twice) instead of the ID's
+        #[arg(long)]
+        new_password: bool,
+        /// Read the exported .p12's new password from the first line of this file
+        #[arg(long, value_name = "FILE")]
+        new_password_file: Option<PathBuf>,
+        #[command(flatten)]
+        folder: IdFolder,
+    },
+    /// Remove a digital ID. It can't sign again unless you have an exported copy
+    Remove {
+        /// The ID: its number or name in `mpe id list`
+        which: String,
+        /// Remove it without asking first
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        folder: IdFolder,
+    },
+}
+
+#[derive(Args)]
+struct IdFolder {
+    /// Use this folder of digital IDs instead of MPE's own
+    #[arg(long, value_name = "FOLDER")]
+    id_folder: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -1802,6 +1887,330 @@ fn run_trust(cmd: TrustCmd) -> Result<()> {
 }
 
 /// The trust list to use: `explicit`, else MPE's own in the settings folder.
+fn id_store(folder: &IdFolder) -> Result<IdStore> {
+    folder
+        .id_folder
+        .clone()
+        .or_else(IdStore::default_dir)
+        .map(IdStore::new)
+        .context("MPE can't find its settings folder (HOME or APPDATA isn't set); use --id-folder")
+}
+
+/// A password: the first line of `file`, or asked for on the terminal without showing it.
+fn read_password(file: &Option<PathBuf>, prompt: &str) -> Result<Zeroizing<String>> {
+    if let Some(f) = file {
+        let size = std::fs::metadata(f)
+            .with_context(|| format!("reading {}", f.display()))?
+            .len();
+        if size > 4096 {
+            bail!("{} is too large to be a password file", f.display());
+        }
+        let text = Zeroizing::new(
+            std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?,
+        );
+        let line = text.split('\n').next().unwrap_or_default();
+        return Ok(Zeroizing::new(
+            line.strip_suffix('\r').unwrap_or(line).to_string(),
+        ));
+    }
+    rpassword::prompt_password(prompt)
+        .map(Zeroizing::new)
+        .map_err(|e| anyhow::anyhow!("can't ask for the password ({e}); use --password-file"))
+}
+
+/// A new password: from `file`, or asked for twice.
+fn choose_password(file: &Option<PathBuf>, prompt: &str) -> Result<Zeroizing<String>> {
+    let p = read_password(file, prompt)?;
+    if let Some(why) = mpe_core::password_problem(&p) {
+        bail!("{why}");
+    }
+    if file.is_none() && *read_password(&None, "Type it again: ")? != *p {
+        bail!("the two passwords aren't the same; nothing was done");
+    }
+    Ok(p)
+}
+
+/// The facts about an ID's certificate, indented under its heading.
+fn id_details(id: &DigitalId, clean: &dyn Fn(&str) -> String) {
+    let c = &id.cert;
+    out!("   {:<12} {}", "Certificate:", clean(&c.subject));
+    let issuer = if c.self_issued {
+        "itself (a self-made digital ID)".into()
+    } else {
+        clean(&c.issuer)
+    };
+    out!("   {:<12} {issuer}", "Issued by:");
+    if !id.chain.is_empty() {
+        let n = id.chain.len();
+        out!(
+            "   {:<12} {n} more certificate{} (its authorities)",
+            "With:",
+            if n == 1 { "" } else { "s" }
+        );
+    }
+    out!("   {:<12} {}", "Key:", c.key);
+    let note = if c.valid_now() {
+        ""
+    } else if c.expired() {
+        " (expired: MPE won't sign with it)"
+    } else {
+        " (not valid yet: MPE won't sign with it)"
+    };
+    out!(
+        "   {:<12} {} to {}{note}",
+        "Valid:",
+        c.not_before.format("%Y-%m-%d"),
+        c.not_after.format("%Y-%m-%d")
+    );
+    out!("   {:<12} {}", "SHA-256:", c.sha256);
+}
+
+fn run_id(cmd: IdCmd) -> Result<()> {
+    let clean = |s: &str| mpe_core::display_line(s, 80);
+    match cmd {
+        IdCmd::List { json, folder } => {
+            let store = id_store(&folder)?;
+            let list = store.list();
+            if json {
+                let cert = |c: &CertInfo| {
+                    serde_json::json!({
+                        "subject": c.subject,
+                        "issuer": c.issuer,
+                        "self_issued": c.self_issued,
+                        "key": c.key,
+                        "not_before": c.not_before.to_rfc3339(),
+                        "not_after": c.not_after.to_rfc3339(),
+                        "sha256": c.sha256,
+                    })
+                };
+                let ids: Vec<serde_json::Value> = list
+                    .ids
+                    .iter()
+                    .map(|i| {
+                        let mut v = cert(&i.cert);
+                        v["name"] = i.name.clone().into();
+                        v["label"] = i.cert.display_name().into();
+                        v["default"] = i.default.into();
+                        v["valid_now"] = i.valid_now().into();
+                        v["file"] = i.path.display().to_string().into();
+                        v["chain"] = i.chain.iter().map(cert).collect();
+                        v
+                    })
+                    .collect();
+                let v = serde_json::json!({
+                    "folder": store.dir().display().to_string(),
+                    "ids": ids,
+                    "problems": list.problems,
+                });
+                out!("{}", serde_json::to_string_pretty(&v)?);
+                return Ok(());
+            }
+            if list.ids.is_empty() {
+                out!(
+                    "You have no digital IDs yet ({}). Make one with `mpe id create --name \
+                     \"Your Name\"`, or import one with `mpe id import FILE.p12`.",
+                    store.dir().display()
+                );
+            } else {
+                out!("Your digital IDs, in {}:", store.dir().display());
+            }
+            for (i, id) in list.ids.iter().enumerate() {
+                out!("");
+                let default = if id.default { ", the default" } else { "" };
+                out!(
+                    "{}. \"{}\" ({}){default}",
+                    i + 1,
+                    clean(id.cert.display_name()),
+                    id.name
+                );
+                id_details(id, &clean);
+            }
+            for p in &list.problems {
+                out!("");
+                out!("Problem: {}", mpe_core::display_line(p, 200));
+            }
+        }
+        IdCmd::Create {
+            name,
+            organisation,
+            email,
+            password_file,
+            folder,
+        } => {
+            let store = id_store(&folder)?;
+            let new = NewId {
+                name,
+                organisation,
+                email,
+            };
+            new.check()?;
+            let password = choose_password(
+                &password_file,
+                &format!(
+                    "Password for the new ID (at least {} characters): ",
+                    mpe_core::MIN_PASSWORD
+                ),
+            )?;
+            let id = store.create(&new, &password)?;
+            out!(
+                "Made the digital ID \"{}\" ({}), in {}. It is the default for signing.",
+                clean(id.cert.display_name()),
+                id.name,
+                id.path.display()
+            );
+            id_details(&id, &clean);
+            out!("");
+            out!(
+                "Keep the password safe: MPE can't recover it, and without it the ID can't \
+                 sign. Keep a copy of the ID too (`mpe id export {} -o {}.p12`): if this \
+                 computer is lost, so is the ID.",
+                id.name,
+                id.name
+            );
+            out!(
+                "For others to trust your signatures, send them your certificate (`mpe id \
+                 export {} -o {}.cer`) and tell them its SHA-256 fingerprint another way, such \
+                 as by phone, so they can check it is yours.",
+                id.name,
+                id.name
+            );
+        }
+        IdCmd::Import {
+            input,
+            name,
+            password_file,
+            folder,
+        } => {
+            let store = id_store(&folder)?;
+            let bytes =
+                std::fs::read(&input).with_context(|| format!("reading {}", input.display()))?;
+            let file_name = input
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let password = read_password(&password_file, &format!("Password of {file_name}: "))?;
+            let id = store.import(&bytes, &password, name.as_deref())?;
+            out!(
+                "Imported the digital ID \"{}\" ({}), in {}. It is the default for signing.",
+                clean(id.cert.display_name()),
+                id.name,
+                id.path.display()
+            );
+            id_details(&id, &clean);
+            out!("");
+            out!(
+                "It keeps its password, now with MPE's own encryption. {} still holds the ID: \
+                 keep it safe, or delete it if MPE's copy is enough.",
+                input.display()
+            );
+        }
+        IdCmd::Export {
+            which,
+            output,
+            password_file,
+            new_password,
+            new_password_file,
+            folder,
+        } => {
+            let store = id_store(&folder)?;
+            let id = store.find(&which)?;
+            let label = clean(id.cert.display_name());
+            let ext = output
+                .extension()
+                .map(|e| e.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+            match ext.as_str() {
+                "p12" | "pfx" => {
+                    let password =
+                        read_password(&password_file, &format!("Password of \"{label}\": "))?;
+                    let unlocked = store.unlock(&id, &password)?;
+                    let fresh = new_password || new_password_file.is_some();
+                    let file_password = if fresh {
+                        choose_password(
+                            &new_password_file,
+                            &format!(
+                                "Password for the exported file (at least {} characters): ",
+                                mpe_core::MIN_PASSWORD
+                            ),
+                        )?
+                    } else {
+                        if mpe_core::password_problem(&password).is_some() {
+                            bail!(
+                                "the ID's password is shorter than {} characters; choose a new \
+                                 one for the exported file with --new-password",
+                                mpe_core::MIN_PASSWORD
+                            );
+                        }
+                        password
+                    };
+                    let bytes = unlocked.to_p12(&file_password)?;
+                    mpe_core::write_private(&output, &bytes)?;
+                    out!(
+                        "Exported the digital ID \"{label}\" with its key to {}, protected by {}.",
+                        output.display(),
+                        if fresh {
+                            "the new password"
+                        } else {
+                            "the ID's password"
+                        }
+                    );
+                    out!("Keep it safe: anyone with this file and its password can sign as you.");
+                }
+                "cer" | "crt" | "der" => {
+                    std::fs::write(&output, &id.cert.der)
+                        .with_context(|| format!("writing {}", output.display()))?;
+                    out!(
+                        "Exported the certificate of \"{label}\" to {}. It holds no key, so it \
+                         is safe to share.",
+                        output.display()
+                    );
+                    out!("   {:<12} {}", "SHA-256:", id.cert.sha256);
+                    out!(
+                        "Recipients trust it in MPE with `mpe trust add {}`, or in their PDF \
+                         app's trusted certificates, after checking the fingerprint with you \
+                         another way, such as by phone.",
+                        output.display()
+                    );
+                }
+                _ => bail!(
+                    "name the exported file .p12 or .pfx for the ID with its key (for other \
+                     apps, or a backup), or .cer for its certificate only (for others to trust)"
+                ),
+            }
+        }
+        IdCmd::Remove { which, yes, folder } => {
+            let store = id_store(&folder)?;
+            let id = store.find(&which)?;
+            let label = clean(id.cert.display_name());
+            if !yes {
+                use std::io::{BufRead, IsTerminal, Write};
+                if !std::io::stdin().is_terminal() {
+                    bail!(
+                        "removing a digital ID can't be undone; add --yes to remove \"{label}\" \
+                         ({}) without being asked",
+                        id.name
+                    );
+                }
+                eprint!(
+                    "Remove the digital ID \"{label}\" ({})? It can't sign again unless you have \
+                     an exported copy. Type yes to remove it: ",
+                    id.name
+                );
+                let _ = std::io::stderr().flush();
+                let mut answer = String::new();
+                std::io::stdin().lock().read_line(&mut answer)?;
+                if !answer.trim().eq_ignore_ascii_case("yes") {
+                    out!("Nothing was removed.");
+                    return Ok(());
+                }
+            }
+            store.remove(&id)?;
+            out!("Removed the digital ID \"{label}\" ({}).", id.name);
+        }
+    }
+    Ok(())
+}
+
 fn trust_path(explicit: &Option<PathBuf>) -> Result<PathBuf> {
     explicit
         .clone()
@@ -2525,6 +2934,7 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Trust { cmd } => run_trust(cmd)?,
+        Cmd::Id { cmd } => run_id(cmd)?,
         Cmd::Search {
             input,
             query,

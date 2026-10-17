@@ -18,6 +18,7 @@ mod form_ap;
 mod form_flatten;
 mod form_write;
 mod forms;
+mod ids;
 mod imgs;
 mod inline;
 mod labels;
@@ -29,6 +30,7 @@ mod outline;
 mod overlay;
 pub mod page_colours;
 mod pagerange;
+mod pkcs12;
 pub mod print;
 #[cfg(windows)]
 mod print_win;
@@ -57,6 +59,9 @@ pub use doc::{part_file_name, Info, Pdf};
 pub use edit::{PathStyle, Shape, TextEdit};
 pub use fonts::{Family, FontChoice};
 pub use forms::{Field, FieldKind, FieldValue, Widget};
+pub use ids::{
+    password_problem, DigitalId, IdList, IdStore, NewId, UnlockedId, WrongPassword, MIN_PASSWORD,
+};
 pub use imgs::{image_dimensions, ImageImport};
 pub use labels::{LabelRange, LabelStyle};
 pub use links::{Link, LinkTarget};
@@ -103,6 +108,50 @@ pub fn settings_dir() -> Option<std::path::PathBuf> {
         env("XDG_CONFIG_HOME").or_else(|| Some(env("HOME")?.join(".config")))?
     };
     Some(base.join("mpe"))
+}
+
+/// Writes `bytes` to `path` for this user only (mode 600 on Unix), replacing any file
+/// there in one step, so a failure leaves the old file whole. Missing folders are made,
+/// private to this user on Unix.
+pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    use anyhow::Context;
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        let mut b = std::fs::DirBuilder::new();
+        b.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            b.mode(0o700);
+        }
+        b.create(dir)
+            .with_context(|| format!("making the folder {}", dir.display()))?;
+    }
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = std::path::PathBuf::from(tmp);
+    let write = || -> std::io::Result<()> {
+        use std::io::Write;
+        let mut o = std::fs::OpenOptions::new();
+        o.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            o.mode(0o600);
+        }
+        let mut f = o.open(&tmp)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)
+    };
+    write().map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        anyhow::anyhow!("saving {}: {e}", path.display())
+    })
 }
 
 /// The most a page's content, a drawing's content or a text stream may decompress to, so a

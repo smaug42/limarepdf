@@ -35,21 +35,25 @@ pub fn id(name: &str) -> Id {
 pub fn id_with_cert(key: &str, cert: &str) -> Id {
     let dir = data_dir().join("keys");
     let der = std::fs::read(dir.join(format!("{key}.key.der"))).unwrap();
-    let key =
-        if let Ok(k) = <rsa::RsaPrivateKey as rsa::pkcs8::DecodePrivateKey>::from_pkcs8_der(&der) {
-            Key::Rsa(k)
-        } else if let Ok(k) =
-            <p256::ecdsa::SigningKey as p256::pkcs8::DecodePrivateKey>::from_pkcs8_der(&der)
-        {
-            Key::P256(k)
-        } else {
-            Key::P384(
-                <p384::ecdsa::SigningKey as p384::pkcs8::DecodePrivateKey>::from_pkcs8_der(&der)
-                    .unwrap(),
-            )
-        };
+    let key = key_from_pkcs8(&der);
     let cert = std::fs::read(dir.join(format!("{cert}.crt.der"))).unwrap();
     Id { key, cert }
+}
+
+/// A PKCS#8 private key (RSA, P-256 or P-384).
+pub fn key_from_pkcs8(der: &[u8]) -> Key {
+    if let Ok(k) = <rsa::RsaPrivateKey as rsa::pkcs8::DecodePrivateKey>::from_pkcs8_der(der) {
+        Key::Rsa(k)
+    } else if let Ok(k) =
+        <p256::ecdsa::SigningKey as p256::pkcs8::DecodePrivateKey>::from_pkcs8_der(der)
+    {
+        Key::P256(k)
+    } else {
+        Key::P384(
+            <p384::ecdsa::SigningKey as p384::pkcs8::DecodePrivateKey>::from_pkcs8_der(der)
+                .unwrap(),
+        )
+    }
 }
 
 /// The test timestamp authority (its certificate is for the RSA-2048 key).

@@ -55,8 +55,12 @@ signature is checked over the certificate as written (`cms_check::check_cert_sig
 checking (`SignatureReport::apply_trust`), so a changed list can be applied again without checking again. In the
 app, `crates/mpe-gui/src/signatures.rs` runs the check on a background thread when a file with signature fields
 opens (and after a save), keeping the file's bytes for View signed version, and draws the banner, the Signatures
-tab, the Details window and the trust windows; a trust change re-applies the list to every open document. See
-[Digital signatures](signatures.md).
+tab, the Details window and the trust windows; a trust change re-applies the list to every open document. Digital
+IDs are in `ids.rs` (the ID folder, making self-signed certificates with `x509-cert`'s builder, finding an ID's
+certificate by checking a signature made with its key rather than by labels) over `pkcs12.rs`, MPE's own PKCS#12
+reader and writer on `asn1.rs` (which also writes DER): it derives and wipes the password keys itself (`pbkdf2`,
+`hmac`, the PKCS#12 derivation), so `pkcs5` isn't needed, and reads BER as Windows writes it. Private files (ID
+files, the trust list) go through `mpe_core::write_private`. See [Digital signatures](signatures.md).
 
 In the desktop app, every command is defined once in `crates/mpe-gui/src/actions.rs`; the menu, the top bar, the
 command palette, the right-click menus, the floating toolbar and the keyboard shortcuts are all built from that list.

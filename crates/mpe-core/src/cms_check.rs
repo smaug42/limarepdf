@@ -290,6 +290,11 @@ impl CertInfo {
         let now = Utc::now();
         self.not_before <= now && now <= self.not_after
     }
+
+    /// Whether the certificate's validity period has ended, by this computer's clock.
+    pub fn expired(&self) -> bool {
+        Utc::now() > self.not_after
+    }
 }
 
 fn unix_time(t: x509_cert::time::Time) -> DateTime<Utc> {
@@ -1028,4 +1033,18 @@ pub(crate) fn rsa_bits(cert: &Cert) -> Option<usize> {
         Ok(k @ PublicKey::Rsa(_)) => Some(k.bits()),
         _ => None,
     }
+}
+
+/// Whether `sig` is a signature over `data` by `cert`'s key, made the way MPE signs: RSA
+/// PKCS#1 v1.5 or ECDSA (DER), with `digest`. Shows that a digital ID's key belongs to its
+/// certificate.
+pub(crate) fn signed_by(cert: &Cert, digest: DigestAlg, data: &[u8], sig: &[u8]) -> bool {
+    let Ok(key) = PublicKey::from_cert(cert) else {
+        return false;
+    };
+    let scheme = match key {
+        PublicKey::Rsa(_) => Scheme::RsaPkcs1,
+        PublicKey::P256(_) | PublicKey::P384(_) => Scheme::Ecdsa,
+    };
+    verify_value(&key, scheme, digest, &[data], sig).is_ok()
 }

@@ -185,6 +185,24 @@ The trust list is `trust.txt` in MPE's settings folder (`~/.config/mpe/` on Linu
 `mpe trust` command takes `--trust-file FILE` to work on another one. Trust settings affect MPE only. See
 [Trusting signers](signatures.md#trusting-signers).
 
+### Digital IDs
+
+| Command | What it does |
+| --- | --- |
+| `mpe id create --name "Jane Doe"` | Make a self-signed digital ID (RSA 3072-bit, valid five years) and make it the default. Asks for a password twice (at least 8 characters). `--organisation` and `--email` add to the name signatures show |
+| `mpe id import work.p12` | Import a digital ID from a `.p12` or `.pfx` file (from Acrobat, Windows, macOS or a certificate authority), asking for its password, which it keeps. `--name` chooses its name in MPE |
+| `mpe id list` | Your digital IDs: number, name, certificate, key, validity and fingerprint; the default is marked (`--json` for scripts) |
+| `mpe id export jane-doe -o jane.cer` | Save the ID's certificate (no key), for others to trust your signatures |
+| `mpe id export jane-doe -o jane.p12` | Save the ID with its key, for another app or as a backup, protected by the ID's password; `--new-password` to choose another |
+| `mpe id remove 2` | Remove ID 2 of `mpe id list` (or by name), after you type `yes`; `--yes` doesn't ask. It can't be undone |
+
+Commands that need a password ask for it without showing it; for scripts, `--password-file FILE` (and
+`--new-password-file FILE` for `export`) reads it from the first line of a file instead. Passwords are never taken
+on the command line itself. IDs are kept in the `ids` folder of MPE's settings folder; every `mpe id` command takes
+`--id-folder FOLDER` to work on another one. An ID is chosen by its number in `mpe id list`, its name (the file
+name, such as `jane-doe`), the name in its certificate, or its SHA-256 fingerprint. See
+[Digital IDs](signatures.md#digital-ids).
+
 ## Properties and security
 
 | Command | What it does |

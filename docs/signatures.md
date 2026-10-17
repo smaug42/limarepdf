@@ -3,8 +3,9 @@
 Digital signatures are being built in stages. What works now, in the app and from the command line: **checking**
 the signatures in a PDF (`mpe verify`), including what changed after each signature and whether the signer allowed
 it, opening or saving the version a signature signed, and **trusting** signers and certificate authorities (`mpe
-trust`). Still to come: digital IDs, signing and certifying, and saving signed documents without breaking their
-signatures. This page grows with each stage.
+trust`). From the command line: making, importing and exporting your **digital IDs** (`mpe id`). Still to come:
+signing and certifying, digital IDs in the app, and saving signed documents without breaking their signatures.
+This page grows with each stage.
 
 ## What a digital signature is and isn't
 
@@ -24,6 +25,10 @@ For MPE to show a signer as **trusted**, you need their certificate, or the cert
 issued theirs, and a way to be sure it is the right one: its SHA-256 fingerprint, compared with the owner by phone,
 in person or on a website you trust. The certificate can come from the signed PDF itself, or from a file the
 signer or your organisation sends you (`.cer`, `.crt`, `.pem`, or `.p7c` as Acrobat exports it).
+
+Signing (coming in the next stage) needs a [digital ID](#digital-ids) and its password: one you make in MPE, or one
+you import from Acrobat, your computer or a certificate authority. For others to see your signatures as trusted,
+they need your certificate, which MPE exports, and a way to check its fingerprint with you.
 
 ## Checking a signed PDF
 
@@ -162,7 +167,7 @@ FILE` on `mpe verify` and `mpe trust` uses another list, for example one shared 
 incoming documents with `mpe verify --require-trusted --trust-file team.txt`.
 
 To let others trust **your** signatures, they need your certificate: send them a signed document and let them
-compare the fingerprint with you, or (once digital IDs are built) export your certificate as a `.cer` file. In
+compare the fingerprint with you, or export your certificate as a `.cer` file ([Digital IDs](#digital-ids)). In
 Acrobat, a recipient trusts you from the signature's Signature Properties > Show Signer's Certificate, Trust tab,
 Add to Trusted Certificates (from Adobe's documentation; not yet tried with an MPE signature).
 
@@ -196,6 +201,85 @@ A **timestamp authority** is judged the same way, for its timestamp: trusted dir
 its certificate must be meant for timestamps. A document timestamp's Trust line is about its authority, and an
 embedded timestamp shows *(trusted)*, *(MPE can't confirm this authority)* or *(NOT TRUSTED: …)* on its Timestamp
 line.
+
+## Digital IDs
+
+A digital ID is what you sign with: a private key, which stays secret, and a certificate naming you, which goes
+into every signature you make. MPE keeps your IDs, each protected by its own password. You can make, import,
+export, list and remove them from the command line now; signing with them, and the app's Digital IDs window, come
+in the next stages.
+
+IDs are kept in the `ids` folder of MPE's settings folder: `~/.config/mpe/ids/` on Linux,
+`~/Library/Application Support/mpe/ids/` on macOS, `%APPDATA%\mpe\ids\` on Windows. Each is one PKCS#12 file
+(`.p12`), the same kind of file Acrobat, Windows and macOS use. Copy files *into* MPE with `mpe id import`, not by
+putting them in the folder.
+
+### Making a digital ID
+
+```
+mpe id create --name "Jane Doe" --organisation "Example Ltd" --email jane@example.com
+```
+
+MPE asks for a password twice: at least 8 characters, and a long one is better, because anyone who gets a copy of
+the file can try passwords on it at their leisure. The organisation and email address are optional. Making the ID
+takes a few seconds.
+
+The ID is like the self-signed IDs Acrobat makes: an RSA key (3072-bit, where Acrobat's are 2048-bit), a certificate
+signed with SHA-256 and valid for five years from today, its key allowed for digital signatures and
+non-repudiation, and meant for email protection and Adobe's authentic documents, as Acrobat's are. The email
+address is in the name and also as the certificate's alternative name. MPE checks that its own trust checks would
+accept the new certificate before keeping it.
+
+"Self-signed" means nobody vouches for the name in it: your signatures show as *not confirmed* to others until they
+trust your certificate. Send it to them (`mpe id export jane-doe -o jane.cer`) and tell them its SHA-256
+fingerprint another way, such as by phone, so they can check the file is yours.
+
+The ID made or imported last is the **default**, the one signing will use unless told otherwise.
+
+### Importing a digital ID
+
+```
+mpe id import work.p12
+```
+
+MPE asks for the file's password. It reads `.p12` and `.pfx` files from Acrobat, Windows, macOS, OpenSSL and
+certificate authorities, with the encryptions in use, old and new: AES and 3DES (PBES2 with PBKDF2), the older
+3DES and RC2 encryptions, and the integrity checks HMAC-SHA-1 to HMAC-SHA-512 and PBMAC1. The ID keeps its
+password, re-encrypted with MPE's own settings (see [security notes](#security-notes)); the file you imported is
+left as it was, so keep it safe or delete it. `--name` chooses the ID's name in MPE; by default it comes from the
+certificate. An ID from a certificate authority keeps the authority certificates that came with it.
+
+MPE refuses a file it couldn't sign with, and says why:
+
+- a key MPE can't sign with: RSA shorter than 2048 bits (not safe) or longer than 4096 bits (Acrobat can't check
+  it), elliptic curves other than P-256 and P-384, or other kinds of key;
+- a certificate whose key isn't allowed to sign, or that is meant for other uses than signing documents (the same
+  rules as [trusting a signer](#what-mpe-checks-before-trusting));
+- a file without an integrity check, or protected by a public key instead of a password;
+- a file with no key (a certificate on its own: trust it with `mpe trust add` instead), with several keys, or
+  whose certificate doesn't belong to its key;
+- an ID that is already in MPE.
+
+An expired ID is imported, so you can keep and export it, but MPE won't sign with it; `mpe id list` marks it.
+
+### Exporting a digital ID
+
+```
+mpe id export jane-doe -o jane.cer
+mpe id export jane-doe -o jane.p12
+```
+
+To a `.cer` file, MPE writes the certificate only (DER, as Acrobat exports it): no key, safe to share, for others
+to trust your signatures. To a `.p12` or `.pfx` file, it writes the ID with its key, to use in another app or keep
+as a backup somewhere safe; it asks for the ID's password and protects the file with the same one, or with a new
+one with `--new-password`. Anyone with that file and its password can sign as you.
+
+### Listing and removing digital IDs
+
+`mpe id list` shows each ID with a number, its name in MPE, the default, its certificate, key, validity and
+fingerprint, and warns about files in the folder that other users could read or that MPE can't list. `mpe id
+remove 2` (or a name) deletes an ID after you type `yes`: it can't be undone, and the ID can't sign again unless you
+have an exported copy. Signatures already made with it stay valid.
 
 ## What each result means
 
@@ -365,8 +449,16 @@ third-party samples, trusting the authority from a signature's own chain makes 1
 including EU qualified-signature chains that require certificate policies; the other two have SHA-1-signed
 certificates, which MPE refuses.
 
-Not yet tested: signatures made in Adobe Acrobat by MPE's testers, and MPE-made signatures in Acrobat (MPE can't
-sign yet). Where MPE is stricter than Acrobat (see the limitations) is to be confirmed in those tests.
+Digital ID files were checked against OpenSSL both ways: MPE imports files OpenSSL makes in each shape other apps
+write (OpenSSL 3's default, OpenSSL 1's and Windows' 3DES and RC2 forms, AES-128, PBES2 with 3DES, SHA-512 and
+PBMAC1 integrity checks, unencrypted parts, P-256 and P-384 keys, non-ASCII and empty passwords, an ID with its
+authority), and Windows' BER encoding, made from those files. OpenSSL reads the files MPE writes, both its own and
+exported ones, takes out the same certificate and a key that signs a PDF MPE then checks as valid and, once
+trusted, trusted. `openssl x509` shows the extensions described under [making a digital ID](#making-a-digital-id).
+
+Not yet tested: signatures made in Adobe Acrobat by MPE's testers, MPE-made signatures in Acrobat (MPE can't sign
+yet), and digital ID files exported from Acrobat or Windows, or MPE's exported files imported there. Where MPE is
+stricter than Acrobat (see the limitations) is to be confirmed in those tests.
 
 ## Limitations
 
@@ -405,28 +497,63 @@ sign yet). Where MPE is stricter than Acrobat (see the limitations) is to be con
 - The app checks the file as opened or last saved, not unsaved changes; after a trust change made with `mpe
   trust`, reopen documents that were already open.
 - A file the PDF reader can't open at all can't be checked.
+- Digital IDs can't sign yet, and the app doesn't show them yet; both come in the next stages.
+- Digital IDs on smart cards and USB tokens, and those kept in the Windows certificate store or the macOS Keychain,
+  can't be used directly: export them as a `.p12` or `.pfx` file (if the card or store allows it) and import that.
+- MPE signs with RSA keys of 2048 to 4096 bits and P-256 and P-384 keys; IDs with other keys (Ed25519, P-521,
+  Brainpool, DSA) can't be imported.
+- Exported `.p12` files use AES-256 with strong password stretching, which current Windows, macOS and OpenSSL read.
+  Some older software only reads the older 3DES encryption, and some may not accept that much stretching; whether
+  Acrobat imports MPE's exported files is still to be tested.
+- A forgotten password can't be recovered, by MPE or anyone: make a new ID, and give the people who trusted the
+  old one your new certificate.
+- Add ID files with `mpe id import`, not by copying them into the ID folder: MPE can list an ID without its
+  password only when its certificates aren't encrypted, as in the files MPE writes, so most other files show as a
+  problem there; and one that MPE can't sign with is refused when it is opened.
 
 ## Security notes
 
-Checking uses these pure-Rust crates from the RustCrypto project, pinned to exact versions where they are
-pre-releases:
+Checking and digital IDs use these pure-Rust crates, from the RustCrypto project unless noted, pinned to exact
+versions where they are pre-releases:
 
-| Crate | Version | Status |
-| --- | --- | --- |
-| `rsa` | 0.10.0-rc.19 | pre-release |
-| `pkcs1` | 0.8.0-rc.5 | pre-release |
-| `der`, `spki`, `x509-cert` | 0.8.2, 0.8.1, 0.3.0 | stable |
-| `p256`, `p384` | 0.14.0 | stable |
-| `sha1`, `sha2` | 0.11.0 | stable |
+| Crate | Version | Status | Used for |
+| --- | --- | --- | --- |
+| `rsa` | 0.10.0-rc.19 | pre-release | RSA keys and signatures |
+| `pkcs1` | 0.8.0-rc.5 | pre-release | RSA key encoding |
+| `der`, `spki`, `x509-cert` | 0.8.2, 0.8.1, 0.3.0 | stable | certificates; making self-signed ones |
+| `p256`, `p384` | 0.14.0 | stable | ECDSA keys and signatures |
+| `sha1`, `sha2` | 0.11.0 | stable | digests |
+| `hmac`, `pbkdf2` | 0.13.0 | stable | ID file integrity checks and password stretching |
+| `aes`, `cbc` | 0.9, 0.2.1 | stable | ID file encryption |
+| `des`, `rc2` | 0.9.0 | stable | reading older ID files only (3DES, RC2) |
+| `zeroize`, `subtle` | 1.9, 2.6 | stable | wiping secrets, constant-time comparison |
+| `getrandom` | 0.4 | stable | random numbers from the operating system |
+| `rpassword` | 7.5.4 | stable, not RustCrypto | asking for passwords without showing them (command line) |
 
 "Pre-release" means their programming interface may still change, not that they are untested; they come from the
 same project and review as the stable crates. MPE reads the signature data with its own small reader, which works
-on the bytes as written and never re-encodes what was signed.
+on the bytes as written and never re-encodes what was signed. It reads and writes PKCS#12 ID files with its own
+code on the same reader, checked against OpenSSL (see [compatibility](#compatibility)).
 
 **RUSTSEC-2023-0071**, a timing leak in `rsa` with no fixed version yet, concerns using a private key. Checking
-uses only public keys, so it doesn't apply to checking. It will apply to signing with an RSA key: an attacker would
-have to time many signings on your computer. CI runs `cargo audit` on every change with this one advisory set
-aside; [releasing](releasing.md) has a step to look for final versions and new advisories before each release.
+uses only public keys, so it doesn't apply to checking. It applies to signing with an RSA key: an attacker would
+have to time many signings on your computer. MPE blinds its RSA signatures, which makes such timing harder. CI runs
+`cargo audit` on every change with this one advisory set aside; [releasing](releasing.md) has a step to look for
+final versions and new advisories before each release.
+
+**Digital IDs** are as safe as their passwords. In the files MPE writes, the key is encrypted with AES-256, using a
+key stretched from your password by PBKDF2-HMAC-SHA256 with 600,000 iterations (OWASP's current figure); the
+file's integrity check is HMAC-SHA256 with 1,200,000 iterations of the PKCS#12 derivation, which costs as much to
+guess through as the key does. In MPE's own folder the certificates aren't encrypted (they are public, and it lets
+MPE list IDs without asking for passwords); in exported files they are, as other apps write them. MPE never stores
+a password, writes it to a log, or takes it on the command line; the command line asks for it without showing it,
+or reads it from a file you name. Keys, passwords and everything derived from them are wiped from memory once used,
+in the memory MPE controls; the crates' internal working state, the terminal and the operating system may keep
+copies MPE can't reach. ID files are
+written readable by you only (mode 600, in a folder of mode 700, on Linux and macOS), in one step, and are read back
+with the password before they are kept; `mpe id list` warns about an ID file other users can read. On Windows the
+settings folder is in your own profile. A file being imported can't make MPE work for long: a file asking for more
+than 20 million iterations in all, holding more than 256 items, or nested too deeply is refused before the work.
 
 **The trust list** decides whose signatures MPE calls trusted, so anyone who can change `trust.txt` can make MPE
 trust any signature. MPE writes it readable and writable by you only (mode 600 on Linux and macOS), replacing it in
@@ -459,3 +586,14 @@ certificates a document carries never become trusted by being there.
   changed; until fixed, nobody is trusted and the app won't change the list. It is plain text: look through it for entries you didn't add, remove them, then `chmod 600` it.
 - **A trusted signer shows "NOT TRUSTED"** after their certificate expired: only signatures made while it was valid
   are trusted. Signatures they make with a new ID need that ID trusted too.
+- **"the password is wrong, or the file is damaged"** when importing, exporting or opening an ID: PKCS#12 files
+  can't tell the two apart. Check the keyboard layout and Caps Lock; a file made without a password takes an empty
+  one (press Enter). If the password is right, the file was changed or damaged in transfer.
+- **Forgotten password**: there is no way back in, by design. Make a new ID, and send the people who trusted the old
+  one your new certificate. A backup copy (`mpe id export`) only helps if you know its password.
+- **"MPE can't sign with this ID: …"** on import: the reason follows (key too short, certificate not for signing,
+  …). Ask whoever issued it for an ID meant for signing documents.
+- **"… isn't listed: it isn't a digital ID file MPE wrote"** in `mpe id list`: a file was put in the ID folder by
+  hand. Move it out and import it with `mpe id import`.
+- **An expired ID**: MPE keeps it but won't sign with it. Self-made IDs last five years; make a new one and send
+  its certificate to the people who trusted the old one.

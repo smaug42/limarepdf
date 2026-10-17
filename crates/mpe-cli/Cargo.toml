@@ -14,3 +14,6 @@ anyhow.workspace = true
 clap.workspace = true
 rayon.workspace = true
 serde_json.workspace = true
+# Asking for digital ID passwords without showing them; wiping them after use.
+rpassword = "7.5.4"
+zeroize = "1.9"

@@ -3,8 +3,9 @@
 # tests/data/signatures/keys. They are made with OpenSSL, so the tests don't only check
 # MPE against itself. The identities are made up; the keys are public and for tests only.
 #
-# Usage, from crates/mpe-core: sh tools/make-signature-keys.sh [all|trust]
-# `trust` remakes only the certificate chains for tests/signature_trust.rs (t-*.der).
+# Usage, from crates/mpe-core: sh tools/make-signature-keys.sh [all|trust|ids]
+# `trust` remakes only the certificate chains for tests/signature_trust.rs (t-*.der), `ids`
+# only the digital ID files for tests/digital_ids.rs (../ids/*.p12).
 # Needs OpenSSL 3.4 or later (for -not_before and -not_after).
 set -eu
 what=${1:-all}
@@ -85,6 +86,8 @@ subjectKeyIdentifier = hash' $from $to
 cert issued p256 '/CN=Test Signer Issued/O=MPE Tests' "$signer
 authorityKeyIdentifier = keyid" $from $to ca
 fi
+
+if [ "$what" = all ] || [ "$what" = trust ]; then
 
 # Chains for trust (tests/signature_trust.rs): t-root is the authority the tests trust.
 # Signers use the t-leaf key; authorities have keys of their own that aren't kept.
@@ -218,3 +221,69 @@ for n in 1 2 3 4 5 6 7 8 9 10; do
     up=t-deep-$n up_key=t-deep
 done
 cert t-leaf-deep t-leaf '/CN=Trust Test Deep Signer/O=MPE Tests' "$leaf" $from $to $up $up_key
+fi
+
+if [ "$what" = all ] || [ "$what" = ids ]; then
+
+# Digital ID files (PKCS#12) for tests/digital_ids.rs, in tests/data/signatures/ids, made
+# from the keys and certificates above in the forms other apps write them. The password is
+# "mpe-test-password" unless the name says otherwise: non-ascii ones use "pässwörd-тест",
+# empty-password none.
+ids=../ids
+mkdir -p "$ids"
+rm -f "$ids"/*.p12
+pw=pass:mpe-test-password
+# p12 NAME KEY CERT [OPTION...]: KEY.key.der with CERT.crt.der.
+p12() {
+    n=$1 k=$2 c=$3
+    shift 3
+    openssl pkcs8 -inform DER -in "$k.key.der" -nocrypt -out "$tmp/k.pem"
+    openssl x509 -inform DER -in "$c.crt.der" -out "$tmp/c.pem"
+    openssl pkcs12 -export -inkey "$tmp/k.pem" -in "$tmp/c.pem" -name "Test ID $n" \
+        -out "$ids/$n.p12" "$@"
+}
+# OpenSSL 3's default: PBES2 with PBKDF2-HMAC-SHA256 and AES-256-CBC, HMAC-SHA256.
+p12 modern rsa3072 rsa3072 -passout $pw
+# OpenSSL 1's default, still common: RC2-40 certificates, 3DES key, HMAC-SHA1.
+p12 legacy rsa2048 rsa2048 -legacy -passout $pw
+# Windows' "TripleDES-SHA1" export.
+p12 3des rsa2048 rsa2048 -certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg sha1 -passout $pw
+p12 aes128 rsa2048 rsa2048 -certpbe AES-128-CBC -keypbe AES-128-CBC -passout $pw
+p12 pbes2-3des rsa2048 rsa2048 -certpbe DES-EDE3-CBC -keypbe DES-EDE3-CBC -passout $pw
+p12 sha512-mac rsa2048 rsa2048 -macalg sha512 -passout $pw
+# RFC 9579's integrity check (OpenSSL 3.4 and later).
+p12 pbmac1 rsa2048 rsa2048 -pbmac1_pbkdf2 -passout $pw
+p12 pbmac1-sha512 rsa2048 rsa2048 -pbmac1_pbkdf2 -pbmac1_pbkdf2_md sha512 -passout $pw
+p12 plain-certs rsa2048 rsa2048 -certpbe NONE -passout $pw
+p12 plain-key rsa2048 rsa2048 -certpbe NONE -keypbe NONE -passout $pw
+p12 p256 p256 p256 -passout $pw
+p12 p384 p384 p384 -passout $pw
+p12 non-ascii rsa2048 rsa2048 -passout 'pass:pässwörd-тест'
+p12 non-ascii-legacy rsa2048 rsa2048 -legacy -passout 'pass:pässwörd-тест'
+p12 empty-password rsa2048 rsa2048 -legacy -passout pass:
+p12 expired rsa2048 expired -passout $pw
+# With the certificate authority that issued it.
+openssl x509 -inform DER -in ca.crt.der -out "$tmp/ca.pem"
+p12 chain p256 issued -certfile "$tmp/ca.pem" -passout $pw
+# Refused: no integrity check, a key too short or too long, a certificate whose key isn't
+# for signing, a curve MPE doesn't sign with.
+p12 no-mac rsa2048 rsa2048 -nomac -passout $pw
+p12 rsa1024 rsa1024 rsa1024 -passout $pw
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:6144 -out "$tmp/big.pem" 2>/dev/null
+printf '[req]\ndistinguished_name = dn\n[dn]\n[ext]\n%s\n' "$signer" >"$tmp/ext.cnf"
+openssl req -x509 -new -key "$tmp/big.pem" -subj '/CN=Test Signer RSA-6144/O=MPE Tests' \
+    -days 3650 -config "$tmp/ext.cnf" -extensions ext -out "$tmp/big.crt.pem"
+openssl pkcs12 -export -inkey "$tmp/big.pem" -in "$tmp/big.crt.pem" -out "$ids/rsa6144.p12" \
+    -passout $pw
+p12 key-encipherment rsa2048 keyenc -passout $pw
+# The same with readable certificates, as if put in MPE's ID folder by hand.
+p12 key-encipherment-plain rsa2048 keyenc -certpbe NONE -passout $pw
+p12 p521 p521 p521 -passout $pw
+# Refused: a certificate without its key, and a key with another key's certificate.
+openssl x509 -inform DER -in rsa2048.crt.der -out "$tmp/c.pem"
+openssl pkcs12 -export -nokeys -in "$tmp/c.pem" -out "$ids/no-key.p12" -passout $pw
+openssl pkcs8 -inform DER -in rsa2048.key.der -nocrypt -out "$tmp/k.pem"
+openssl x509 -inform DER -in rsa3072.crt.der -out "$tmp/other.pem"
+openssl pkcs12 -export -inkey "$tmp/k.pem" -nocerts -certfile "$tmp/other.pem" \
+    -out "$ids/wrong-cert.p12" -passout $pw
+fi

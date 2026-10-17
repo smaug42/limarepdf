@@ -183,36 +183,7 @@ impl TrustList {
     /// Writes the list to `path`, replacing the file in one step, readable and writable by
     /// this user only on Unix.
     pub fn save(&self, path: &Path) -> Result<()> {
-        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-            std::fs::create_dir_all(dir)
-                .with_context(|| format!("making the folder {}", dir.display()))?;
-        }
-        let mut tmp = path.as_os_str().to_owned();
-        tmp.push(".tmp");
-        let tmp = PathBuf::from(tmp);
-        let write = || -> std::io::Result<()> {
-            use std::io::Write;
-            let mut o = std::fs::OpenOptions::new();
-            o.write(true).create(true).truncate(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                o.mode(0o600);
-            }
-            let mut f = o.open(&tmp)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-            }
-            f.write_all(self.to_text().as_bytes())?;
-            f.sync_all()?;
-            std::fs::rename(&tmp, path)
-        };
-        write().map_err(|e| {
-            let _ = std::fs::remove_file(&tmp);
-            anyhow!("saving {}: {e}", path.display())
-        })
+        crate::write_private(path, self.to_text().as_bytes())
     }
 
     /// Trusts the certificate `der` as `role`, labelled `label` (by default the
@@ -673,6 +644,15 @@ fn leaf_problem(c: &Cert, at: DateTime<Utc>, purpose: Purpose) -> Option<String>
         }
     }
     None
+}
+
+/// Why a digital ID with the certificate `c` can't sign, if it can't: the checks a signer's
+/// certificate gets when its signatures are checked, apart from the dates (an expired ID
+/// can still be kept and exported).
+pub(crate) fn id_problem(c: &Cert) -> Option<String> {
+    // The start of the validity period passes the date check.
+    let at = c.info().not_before;
+    leaf_problem(c, at, Purpose::Signing)
 }
 
 /// A name in the two forms names are compared in: as encoded, and as text ignoring case.

@@ -58,6 +58,13 @@
   name, SHA-1 or 1024-bit links and unknown critical extensions aren't trusted. Embedded and document timestamps'
   authorities are judged the same way. `--require-trusted` makes `mpe verify` fail unless every signer is
   trusted, and `--trust-file` uses another list. Trust settings affect MPE only.
+- Digital IDs, for signing (which comes next): `mpe id create` makes a self-signed ID like Acrobat's (RSA 3072-bit,
+  valid five years) protected by a password you choose; `mpe id import` imports a `.p12` or `.pfx` file from
+  Acrobat, Windows, macOS or a certificate authority, old and new encryptions alike, refusing ones MPE couldn't sign
+  with and saying why; `mpe id export` saves an ID with its key (`.p12`, for other apps or a backup) or its
+  certificate (`.cer`, for others to trust you); `mpe id list` and `mpe id remove` manage them. IDs are kept in
+  the settings folder, each encrypted with AES-256 under its own password (600,000 PBKDF2 iterations); passwords
+  are asked for without being shown, never taken on the command line, and never stored.
 - Digital signatures in the app: a signed document is checked when it opens, and a banner above the pages gives
   the result, coloured green, amber, grey or red. The Signatures tab of the side panel (View > Signatures) lists
   each signature with its result, the changes made after it and any warnings, then the empty signature fields.

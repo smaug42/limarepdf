@@ -118,6 +118,22 @@ impl<'a> Tlv<'a> {
         Ok(())
     }
 
+    /// A non-negative INTEGER that fits in 64 bits.
+    pub fn uint(&self) -> Result<u64> {
+        if self.tag != INTEGER {
+            bail!("expected an integer, found tag {:#04x}", self.tag);
+        }
+        let b = self.body;
+        if b.is_empty() || b[0] & 0x80 != 0 {
+            bail!("expected a non-negative integer");
+        }
+        let b = if b.len() > 1 && b[0] == 0 { &b[1..] } else { b };
+        if b.len() > 8 {
+            bail!("integer too large");
+        }
+        Ok(b.iter().fold(0u64, |a, &x| (a << 8) | u64::from(x)))
+    }
+
     /// A UTCTime or GeneralizedTime.
     pub fn time(&self) -> Result<DateTime<FixedOffset>> {
         let s = std::str::from_utf8(self.body).map_err(|_| anyhow!("time is not text"))?;
@@ -220,6 +236,55 @@ fn read_at(b: &[u8], depth: usize) -> Result<Tlv<'_>> {
     })
 }
 
+// ------------------------------------------------------------------ writing (DER)
+
+/// One element in DER: `tag`, the length of `body`, then `body`.
+pub(crate) fn der(tag: u8, body: &[u8]) -> Vec<u8> {
+    let n = body.len();
+    let mut out = Vec::with_capacity(n + 6);
+    out.push(tag);
+    if n < 0x80 {
+        out.push(n as u8);
+    } else {
+        let bytes = n.to_be_bytes();
+        let skip = bytes.iter().take_while(|&&b| b == 0).count();
+        out.push(0x80 | (bytes.len() - skip) as u8);
+        out.extend_from_slice(&bytes[skip..]);
+    }
+    out.extend_from_slice(body);
+    out
+}
+
+/// A SEQUENCE of elements already encoded.
+pub(crate) fn der_seq(parts: &[&[u8]]) -> Vec<u8> {
+    der(SEQUENCE, &parts.concat())
+}
+
+/// A SET OF elements already encoded, in the order DER requires.
+pub(crate) fn der_set(mut items: Vec<Vec<u8>>) -> Vec<u8> {
+    items.sort();
+    der(SET, &items.concat())
+}
+
+pub(crate) fn der_uint(n: u64) -> Vec<u8> {
+    let bytes = n.to_be_bytes();
+    let skip = bytes.iter().take_while(|&&b| b == 0).count().min(7);
+    let mut body = Vec::with_capacity(9);
+    if bytes[skip] & 0x80 != 0 {
+        body.push(0);
+    }
+    body.extend_from_slice(&bytes[skip..]);
+    der(INTEGER, &body)
+}
+
+pub(crate) fn der_oid(o: &ObjectIdentifier) -> Vec<u8> {
+    der(OID, o.as_bytes())
+}
+
+pub(crate) fn der_octets(b: &[u8]) -> Vec<u8> {
+    der(OCTET_STRING, b)
+}
+
 /// UTCTime (`YYMMDDhhmm[ss]` + zone) or GeneralizedTime (`YYYYMMDDhhmmss[.f]` + zone),
 /// the zone being `Z` or `+hhmm`/`-hhmm`. Times without a zone are refused: their meaning
 /// depends on where they were written.
@@ -317,6 +382,31 @@ mod tests {
             deep.extend([0x30, 0x80]);
         }
         assert!(Tlv::read(&deep).is_err());
+    }
+
+    #[test]
+    fn writes_der() {
+        assert_eq!(der(OCTET_STRING, b"ab"), [0x04, 0x02, b'a', b'b']);
+        let long = der(OCTET_STRING, &[7; 300]);
+        assert_eq!(&long[..4], [0x04, 0x82, 0x01, 0x2c]);
+        assert_eq!(Tlv::read_all(&long).unwrap().body.len(), 300);
+        for (n, enc) in [
+            (0u64, &[0x02, 0x01, 0x00][..]),
+            (3, &[0x02, 0x01, 0x03]),
+            (128, &[0x02, 0x02, 0x00, 0x80]),
+            (600_000, &[0x02, 0x03, 0x09, 0x27, 0xc0]),
+            (
+                u64::MAX,
+                &[0x02, 0x09, 0, 255, 255, 255, 255, 255, 255, 255, 255],
+            ),
+        ] {
+            assert_eq!(der_uint(n), enc, "{n}");
+            assert_eq!(Tlv::read_all(enc).unwrap().uint().unwrap(), n);
+        }
+        assert!(Tlv::read_all(&[0x02, 0x01, 0xff]).unwrap().uint().is_err());
+        // SET OF is sorted.
+        let s = der_set(vec![vec![0x04, 0x01, 2], vec![0x04, 0x01, 1]]);
+        assert_eq!(s, [0x31, 0x06, 0x04, 0x01, 1, 0x04, 0x01, 2]);
     }
 
     #[test]
