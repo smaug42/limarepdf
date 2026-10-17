@@ -462,6 +462,11 @@ remembered between runs, in `settings.txt` in the same folder as the recent-file
 colours and your name for comments. The app uses the Inter font
 and Phosphor icons.
 
+☰ > Help > About shows the version (the Copy button next to it copies the version and system, for a bug report),
+links to the website, the licence and the issue tracker, which open in your browser, and Credits for the bundled
+fonts, icons and text recognition model. Contributors switches the window to the people who made MPE; Back returns.
+MPE is made in Canada, which the About window and the foot of the start screen say beside a maple leaf.
+
 ☰ > View > Page colours changes how pages look on screen, for reading in the dark or with low vision:
 
 | Choice | Pages look like |

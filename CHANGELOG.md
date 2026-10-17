@@ -68,6 +68,10 @@
 
 ### Changed
 
+- A new About window (☰ > Help > About): the app icon, version with a Copy button (version and system, for bug
+  reports), "Made in Canada" with a maple leaf, links to the website, licence and issue tracker, a Contributors page,
+  and the credits for bundled fonts, icons and the text recognition model. The start screen also says "Made in
+  Canada".
 - The form notice ("This document has a form") no longer shows for documents whose only fields are signature
   fields.
 

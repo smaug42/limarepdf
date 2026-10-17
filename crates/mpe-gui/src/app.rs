@@ -1,3 +1,4 @@
+use crate::about;
 use crate::actions::{self, menu_item, tooltip, Act, Action, Ctx, Group, ACTIONS};
 use crate::banners::Kind as BannerKind;
 use crate::dialogs::{self as dlg, Outcome};
@@ -186,7 +187,7 @@ enum Dialog {
     OpenLink(String),
     /// The name for comments, being edited.
     CommentName(String),
-    About,
+    About(about::Page),
 }
 
 /// What selected text is printed or saved from, taken from the tab so a background job
@@ -1091,7 +1092,7 @@ impl App {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             }
-            Act::About => self.dialog = Dialog::About,
+            Act::About => self.dialog = Dialog::About(about::Page::Main),
             Act::Theme(p) => {
                 ctx.set_theme(p);
                 self.settings.theme = p;
@@ -1656,13 +1657,7 @@ impl App {
         let mut done = false;
         match &mut dialog {
             Dialog::None => done = true,
-            Dialog::About => {
-                done = dlg::message(
-                    ctx,
-                    "About MPE",
-                    "MPE - a fast, pure-Rust PDF viewer and editor.\nLicensed under MIT OR Apache-2.0.\nRendering: hayro. Document engine: lopdf. UI: egui.\n\nOCR uses the ocrs text recognition model by Robert Knight\n(huggingface.co/robertknight/ocrs), licensed CC BY-SA 4.0\n(creativecommons.org/licenses/by-sa/4.0), included unmodified.\n\nText font: Inter by The Inter Project Authors (rsms.me/inter),\nlicensed under the SIL Open Font License 1.1, included unmodified.",
-                ) != Outcome::Open;
-            }
+            Dialog::About(page) => done = about::show(ctx, page),
             Dialog::Message(title, text) => done = dlg::message(ctx, title, text) != Outcome::Open,
             Dialog::CommentName(name) => match dlg::comment_name(ctx, name) {
                 Outcome::Apply => {
@@ -2301,7 +2296,7 @@ fn empty_state(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
     } else {
         0.0
     };
-    let size = egui::vec2(440.0, 280.0 + extra).min(room.size() - egui::vec2(32.0, 32.0));
+    let size = egui::vec2(440.0, 310.0 + extra).min(room.size() - egui::vec2(32.0, 32.0));
     let card = egui::Rect::from_center_size(room.center(), size.max(egui::vec2(1.0, 1.0)));
     let id = egui::Id::new("empty-card");
     let r = ui
@@ -2374,6 +2369,8 @@ fn empty_state(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
         keys(Act::Open),
         keys(Act::Palette)
     ));
+    ui.add_space(10.0);
+    about::made_in_canada(&mut ui, "start-canada", true);
     if r.clicked() {
         acts.push(Act::Open);
     }
