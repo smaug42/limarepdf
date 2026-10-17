@@ -38,10 +38,14 @@
   lies outside the crop box. Also `mpe sanitise` (`--list`, `--keep`, `--also`).
 - Checking digital signatures: `mpe verify` tells for each signature whether the signed part is unchanged, who
   signed according to their certificate and who issued it, when (from a timestamp authority or the signer's
-  computer), certification and locked fields, and warnings such as SHA-1, short keys or an expired certificate, and
-  whether the document was changed after signing. RSA and ECDSA (P-256, P-384) signatures, embedded and document
-  timestamps; copied, moved and wrapped signatures are refused. `--json` for scripts. See
-  [Digital signatures](docs/signatures.md).
+  computer), certification and locked fields, and warnings such as SHA-1, short keys or an expired certificate.
+  RSA and ECDSA (P-256, P-384) signatures, embedded and document timestamps; copied, moved and wrapped signatures
+  are refused. It also lists what changed after each signature (form filled in, signed again, comment added, page
+  content changed, and so on) and whether the signer allowed it, by Acrobat's rules: filling, signing and comments
+  are allowed after an ordinary signature, a certification allows less, a locked field may not change, and
+  anything MPE doesn't recognise counts as not allowed. Malformed additions and the published "shadow" and
+  incremental-saving attacks are caught. `--signed-version N -o FILE` saves the version a signature signed.
+  `--json` for scripts. See [Digital signatures](docs/signatures.md).
 
 ### Changed
 

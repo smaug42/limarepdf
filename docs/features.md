@@ -78,7 +78,7 @@ available.
 | Installers and packages | Done | `.deb` and `.rpm` packages with apt and dnf repositories, a macOS `.dmg`, a Windows MSI, and archives; GPG-signed. [Install](install.md); more package managers planned, see below |
 | Redaction | Done | Mark areas, selected text or search results (standard redaction marks), check them, then apply: text, drawings, comments and links under them are removed for good, pictures (scans included) blacked out there, then checked. In the app and with `mpe redact`. [Details](redaction.md) |
 | Removing hidden information | Done | Metadata (including XMP), JavaScript and automatic actions, attachments, hidden layers and their content, thumbnails and private data; if chosen, comments, form values, bookmarks and what lies outside the crop box. Document > Remove hidden information… and `mpe sanitise`. [Details](redaction.md#removing-hidden-information) |
-| Digital signatures | Partial | Checking from the command line (`mpe verify`): unchanged or not, signer's certificate, signing time and timestamps, certification and locked fields, warnings; RSA and ECDSA P-256/P-384; refuses the known wrapping and copying attacks. Not yet: judging changes made after signing, trust, the app, signing. The rest is planned: see below. [Details](signatures.md) |
+| Digital signatures | Partial | Checking from the command line (`mpe verify`): unchanged or not, signer's certificate, signing time and timestamps, certification and locked fields, warnings; RSA and ECDSA P-256/P-384; refuses the known wrapping and copying attacks; lists the changes made after each signature and judges them by Acrobat's rules (stricter when unsure), catching the shadow and incremental-saving attacks; saves the version a signature signed. Not yet: trust, the app, signing. The rest is planned: see below. [Details](signatures.md) |
 | Certificate encryption | No | |
 | PDF/A, optimised saving | No | Saved files are pruned and compressed |
 | Comparing documents | No | |
@@ -135,10 +135,9 @@ boxes, with no angle, so turning them needs a workaround:
 Being built, following Acrobat's rules so signed documents go back and forth between MPE and Acrobat or other
 editors:
 
-- **Checking** signed PDFs: who signed, when, whether the signed part is unchanged (done, from the command line),
-  and which changes were made afterwards, judged by the same rules Acrobat uses (filling, signing and comments
-  allowed after a signature; page changes not; certified documents stricter). View the version that was signed.
-  Checking in the app.
+- **Checking** signed PDFs: who signed, when, whether the signed part is unchanged, which changes were made
+  afterwards, judged by the same rules Acrobat uses, and the version that was signed (done, from the command
+  line). Checking in the app.
 - **Trust** individual signers or certificate authorities, in MPE only; until then a signature shows as unchanged
   but from an unknown signer, as it does in Acrobat.
 - **Digital IDs:** create your own (RSA-3072, five years, as Acrobat does) or import a `.p12`/`.pfx`; export one

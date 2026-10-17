@@ -43,7 +43,11 @@ Digital signatures are checked in `crates/mpe-core/src/sig_verify.rs` (finding t
 tying each signature value to its dictionary in the version it signed, by position) and `cms_check.rs` (the CMS
 signature, certificates, timestamps), over a small BER/DER reader, `asn1.rs`, that walks the data exactly as written
 so signed attributes are never re-encoded before checking. The cryptography is RustCrypto's (`rsa`, `p256`, `p384`,
-`sha1`, `sha2`, `x509-cert`). See [Digital signatures](signatures.md).
+`sha1`, `sha2`, `x509-cert`). What changed after each signature is worked out in `sig_changes.rs`: it reads the
+appended revisions' cross-reference sections itself (lopdf ignores free entries and repairs broken tables, which
+would hide changes), checks that lopdf reads the same objects, then compares each signed version with the next,
+judging every object that differs by each role it plays (page content, comment, form field, signature, document
+structure) against the signer's permissions. See [Digital signatures](signatures.md).
 
 In the desktop app, every command is defined once in `crates/mpe-gui/src/actions.rs`; the menu, the top bar, the
 command palette, the right-click menus, the floating toolbar and the keyboard shortcuts are all built from that list.

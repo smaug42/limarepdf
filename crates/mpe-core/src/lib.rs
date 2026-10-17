@@ -38,6 +38,7 @@ pub mod render;
 mod sanitise;
 mod scan;
 mod security;
+mod sig_changes;
 mod sig_verify;
 mod sign;
 mod stamps;
@@ -66,6 +67,7 @@ pub use redact::{PageRedaction, RedactReport};
 pub use sanitise::{Hidden, HiddenReport};
 pub use scan::{ScanMode, ScanOptions, ScanResult};
 pub use security::{Cipher, Encryption, Restrictions};
+pub use sig_changes::{Change, ChangeKind, Refusal};
 pub use sig_verify::{
     verify_signatures, DigitalSignature, EmptySignatureField, FieldLock, LockAction, Permissions,
     SigKind, SigStatus, SigWarning, SignatureReport, SigningTime, TimeSource, Timestamp,

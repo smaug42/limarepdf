@@ -989,6 +989,43 @@ fn check_sample(path: &std::path::Path, want: &[Want], why: &str) {
     }
 }
 
+/// What changed after a signature, as expected in a sample.
+#[derive(Debug)]
+enum Chg {
+    Nothing,
+    Allowed,
+    /// Refused, with part of the refused kind's name.
+    Refused(&'static str),
+}
+
+/// Checks the changes after each signature: `Nothing` for every signature unless the
+/// file is listed in `table`.
+fn check_changes(path: &std::path::Path, table: &[(&str, &[Chg], &str)]) {
+    let r = report(&std::fs::read(path).unwrap());
+    let name = path.file_name().unwrap().to_str().unwrap();
+    let listed = table.iter().find(|(f, _, _)| *f == name);
+    for (i, s) in r.signatures.iter().enumerate() {
+        let want = listed.map_or(&Chg::Nothing, |(_, w, _)| &w[i]);
+        let refused: Vec<String> = s
+            .changes
+            .iter()
+            .filter(|c| !c.allowed())
+            .map(|c| format!("{:?}", c.kind))
+            .collect();
+        let ok = match want {
+            Chg::Nothing => s.changes.is_empty(),
+            Chg::Allowed => !s.changes.is_empty() && refused.is_empty(),
+            Chg::Refused(k) => refused.iter().any(|r| r.contains(k)),
+        };
+        assert!(
+            ok,
+            "{name} signature {}: want {want:?}, got {:#?}",
+            i + 1,
+            s.changes
+        );
+    }
+}
+
 #[test]
 fn pyhanko_and_node_signpdf_samples() {
     use Want::*;
@@ -1063,8 +1100,22 @@ fn pyhanko_and_node_signpdf_samples() {
             "signed in an appended revision",
         ),
     ];
+    // Changes after signing; every other signature has none.
+    let changes: &[(&str, &[Chg], &str)] = &[
+        (
+            "minimal-two-fields-signed-twice.pdf",
+            &[Chg::Allowed, Chg::Nothing],
+            "Acrobat Reader signs the second field, locking its widget",
+        ),
+        (
+            "pades-lta-dss-indirect-arrs-test.pdf",
+            &[Chg::Allowed, Chg::Allowed],
+            "document timestamp, then validation data",
+        ),
+    ];
     for (file, want, why) in samples {
         check_sample(&dir.join(file), want, why);
+        check_changes(&dir.join(file), changes);
     }
     let r = report(
         &std::fs::read(dir.join("pyhanko/certified-with-indirect-refs-in-dir.pdf")).unwrap(),
@@ -1244,8 +1295,82 @@ fn dss_samples() {
             "signature OID as digest",
         ),
     ];
+    use Chg::{Allowed as A, Nothing as N, Refused as R};
+    let changes: &[(&str, &[Chg], &str)] = &[
+        (
+            "adbe_crl_signed.pdf",
+            &[A, A, N],
+            "timestamps, validation data",
+        ),
+        (
+            "doc-firmado.pdf",
+            &[A, N],
+            "timestamp, validation data, form fonts",
+        ),
+        (
+            "hello_signed_INCSAVE_signed.pdf",
+            &[A, N],
+            "second signature",
+        ),
+        // The added signature is the copied one, reported broken on its own.
+        (
+            "hello_signed_INCSAVE_signed_EDITED.pdf",
+            &[A, N],
+            "second signature",
+        ),
+        // Shadow hide: an entry pointing at another object.
+        ("hide.pdf", &[R("Malformed")], "shadow hide"),
+        // An appended object no reader can parse (-1.#INF).
+        (
+            "modified_after_signature.pdf",
+            &[R("Malformed")],
+            "unreadable object",
+        ),
+        // The last two revisions' /Prev point where no cross-reference is; DSS (PDFBox)
+        // repairs the file and calls all six valid.
+        (
+            "pades-5-signatures-and-1-document-timestamp.pdf",
+            &[
+                R("Malformed"),
+                R("Malformed"),
+                R("Malformed"),
+                R("Malformed"),
+                R("Malformed"),
+                N,
+            ],
+            "broken revision chain",
+        ),
+        (
+            "pades-alter-signature-appearance-modify-stream.pdf",
+            &[R("SignatureChanged"), R("SignatureChanged")],
+            "appearance changed",
+        ),
+        ("pades-enveloping-other-pdf.pdf", &[A, N], "timestamp"),
+        ("pades-signed-annot-added.pdf", &[A], "Acrobat comment"),
+        (
+            "pades-signed-filled-form.pdf",
+            &[A],
+            "form filled, Reader rights kept",
+        ),
+        (
+            "pades-spoofing-replaced-reason.pdf",
+            &[R("SignatureChanged")],
+            "reason replaced",
+        ),
+        ("pdf-byterange-overlap.pdf", &[A, N], "second signature"),
+        (
+            "pdf-signed-added-page.pdf",
+            &[R("PagesChanged")],
+            "page added",
+        ),
+        ("pkcs7_sha1.pdf", &[A, N], "iText adds a signature"),
+        // Shadow replace: a text field missing from the form's field list.
+        ("replace.pdf", &[R("AnnotationChanged")], "shadow replace"),
+        ("wrong-digest-algo.pdf", &[A, A, A, N], "timestamps"),
+    ];
     for (file, want, why) in samples {
         check_sample(&dir.join(file), want, why);
+        check_changes(&dir.join(file), changes);
     }
     // Not even openable: lopdf can't parse it.
     assert!(verify_signatures(

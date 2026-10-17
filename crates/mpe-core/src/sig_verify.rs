@@ -8,6 +8,7 @@
 
 use crate::cms_check::{self, oid, Cert, CertInfo, DigestAlg, Fail, SignedData};
 use crate::forms::FieldKind;
+use crate::sig_changes::{self, Change};
 use crate::{Pdf, Result};
 use chrono::{DateTime, FixedOffset, NaiveDate};
 use lopdf::xref::XrefEntry;
@@ -39,6 +40,20 @@ impl SignatureReport {
     pub fn all_valid(&self) -> bool {
         self.signatures.iter().all(|s| s.status == SigStatus::Valid)
     }
+
+    /// True when every signature checked as valid and nothing changed after any of them
+    /// that its signer didn't allow (also when there are no signatures).
+    pub fn all_ok(&self) -> bool {
+        self.all_valid() && self.signatures.iter().all(|s| s.changes_allowed())
+    }
+}
+
+impl DigitalSignature {
+    /// True when every change after signing is one the signer allowed (also when
+    /// nothing changed).
+    pub fn changes_allowed(&self) -> bool {
+        self.changes.iter().all(Change::allowed)
+    }
 }
 
 /// One signature and what checking it found.
@@ -61,6 +76,12 @@ pub struct DigitalSignature {
     /// True when the signature covers the whole file; false when something was added
     /// after signing (a later revision), or when the range couldn't be read.
     pub covers_whole_file: bool,
+    /// The length of the version this signature signed (the file from its start to the
+    /// end of the byte range), when the range follows the rules: View signed version.
+    pub signed_len: Option<usize>,
+    /// What changed after signing, each with whether the signer allowed it: empty when
+    /// nothing did. Disallowed changes come first.
+    pub changes: Vec<Change>,
     /// The signer's certificate (the timestamp authority's, for a document timestamp).
     pub signer: Option<CertInfo>,
     /// Every certificate the signature carries, the signer's among them.
@@ -96,8 +117,9 @@ pub enum SigKind {
     DocumentTimestamp,
 }
 
-/// What a certified document allows after certification (the DocMDP `/P` value).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What a certified document allows after certification (the DocMDP `/P` value), from
+/// least to most.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Permissions {
     /// No changes.
     NoChanges,
@@ -150,6 +172,27 @@ pub struct FieldLock {
     pub action: LockAction,
     /// The fields named, for [`LockAction::Include`] and [`LockAction::Exclude`].
     pub fields: Vec<String>,
+    /// What the whole document allows after signing (`/P`, PDF 2.0; Acrobat's "Lock
+    /// document after signing" sets no changes).
+    pub permissions: Option<Permissions>,
+}
+
+impl FieldLock {
+    /// Whether the field with this fully qualified name is locked (a field named in the
+    /// lock also covers the fields under it).
+    pub fn locks(&self, field: &str) -> bool {
+        let named = self.fields.iter().any(|f| {
+            field == f
+                || field
+                    .strip_prefix(f.as_str())
+                    .is_some_and(|rest| rest.starts_with('.'))
+        });
+        match self.action {
+            LockAction::All => true,
+            LockAction::Include => named,
+            LockAction::Exclude => !named,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -260,7 +303,7 @@ impl fmt::Display for Permissions {
 /// problems are in its [`DigitalSignature::status`].
 pub fn verify_signatures(bytes: &[u8], password: Option<&str>) -> Result<SignatureReport> {
     let pdf = Pdf::from_bytes(bytes, password)?;
-    let mut groups: Vec<(Place, Vec<crate::Field>)> = Vec::new();
+    let mut groups: Vec<(Place, Vec<(crate::Field, ObjectId)>)> = Vec::new();
     let mut empty_fields = Vec::new();
     for (field, node) in pdf.form_nodes() {
         if field.kind != FieldKind::Signature {
@@ -285,8 +328,8 @@ pub fn verify_signatures(bytes: &[u8], password: Option<&str>) -> Result<Signatu
             Some(_) => Place::NotADictionary(node.id),
         };
         match groups.iter_mut().find(|(p, _)| *p == place) {
-            Some((_, fields)) => fields.push(field),
-            None => groups.push((place, vec![field])),
+            Some((_, fields)) => fields.push((field, node.id)),
+            None => groups.push((place, vec![(field, node.id)])),
         }
     }
     let mut versions = Versions {
@@ -304,6 +347,30 @@ pub fn verify_signatures(bytes: &[u8], password: Option<&str>) -> Result<Signatu
         None => (true, 0),
     });
     certification_rules(&pdf, &mut signatures);
+
+    // What changed after each signature. Any certification limits every signature's
+    // later changes; when more than one claims to certify, the strictest counts.
+    let certified = signatures
+        .iter()
+        .filter_map(|s| match s.kind {
+            SigKind::Certification(p) => Some(p),
+            _ => None,
+        })
+        .min();
+    let which: Vec<usize> = (0..signatures.len())
+        .filter(|&i| signatures[i].signed_len.is_some())
+        .collect();
+    let inputs: Vec<sig_changes::Signed> = which
+        .iter()
+        .map(|&i| sig_changes::Signed {
+            end: signatures[i].signed_len.unwrap_or_default(),
+            locks: signatures[i].locks.as_ref(),
+        })
+        .collect();
+    let found = sig_changes::analyse(&mut versions, &inputs, certified);
+    for (i, changes) in which.into_iter().zip(found) {
+        signatures[i].changes = changes;
+    }
     Ok(SignatureReport {
         signatures,
         empty_fields,
@@ -322,10 +389,10 @@ enum Place {
     NotADictionary(ObjectId),
 }
 
-/// The signed versions of the document (the file up to the end of each signature's
-/// range), opened once each.
-struct Versions<'a> {
-    bytes: &'a [u8],
+/// Versions of the document (the file up to the end of a signature's range, or of a
+/// revision), opened once each.
+pub(crate) struct Versions<'a> {
+    pub(crate) bytes: &'a [u8],
     password: Option<&'a str>,
     /// The whole file, already open.
     whole: &'a Pdf,
@@ -333,15 +400,27 @@ struct Versions<'a> {
 }
 
 impl Versions<'_> {
-    fn get(&mut self, end: usize) -> Option<&Pdf> {
+    /// Opens the version ending at `end`, if not open yet.
+    pub(crate) fn load(&mut self, end: usize) {
         let (bytes, password) = (self.bytes, self.password);
-        if end == bytes.len() {
+        if end < bytes.len() {
+            self.cache
+                .entry(end)
+                .or_insert_with(|| Pdf::from_bytes(&bytes[..end], password).ok());
+        }
+    }
+
+    /// The version ending at `end`, if it is open and readable.
+    pub(crate) fn peek(&self, end: usize) -> Option<&Pdf> {
+        if end == self.bytes.len() {
             return Some(self.whole);
         }
-        self.cache
-            .entry(end)
-            .or_insert_with(|| Pdf::from_bytes(&bytes[..end], password).ok())
-            .as_ref()
+        self.cache.get(&end)?.as_ref()
+    }
+
+    fn get(&mut self, end: usize) -> Option<&Pdf> {
+        self.load(end);
+        self.peek(end)
     }
 }
 
@@ -349,8 +428,10 @@ fn check_one(
     pdf: &Pdf,
     versions: &mut Versions,
     place: Place,
-    fields: Vec<crate::Field>,
+    fields: Vec<(crate::Field, ObjectId)>,
 ) -> DigitalSignature {
+    let nodes: Vec<ObjectId> = fields.iter().map(|(_, id)| *id).collect();
+    let fields: Vec<crate::Field> = fields.into_iter().map(|(f, _)| f).collect();
     let first_widget = fields.iter().find_map(|f| f.widgets.first());
     let mut s = DigitalSignature {
         fields: fields.iter().map(|f| f.name.clone()).collect(),
@@ -361,6 +442,8 @@ fn check_one(
         status: SigStatus::Valid,
         byte_range: None,
         covers_whole_file: false,
+        signed_len: None,
+        changes: Vec::new(),
         signer: None,
         certificates: Vec::new(),
         name: None,
@@ -377,7 +460,7 @@ fn check_one(
     if fields.len() > 1 {
         s.warnings.push(SigWarning::SharedByFields);
     }
-    if let Err(f) = check_into(pdf, versions, place, &mut s) {
+    if let Err(f) = check_into(pdf, versions, place, &nodes, &mut s) {
         s.status = match f {
             Fail::Broken(why) => SigStatus::Broken(why),
             Fail::CantCheck(why) => SigStatus::CantCheck(why),
@@ -419,6 +502,7 @@ fn check_into(
     pdf: &Pdf,
     versions: &mut Versions,
     place: Place,
+    nodes: &[ObjectId],
     s: &mut DigitalSignature,
 ) -> cms_check::Check<()> {
     let bytes = versions.bytes;
@@ -473,6 +557,7 @@ fn check_into(
     if dict != now {
         s.warnings.push(SigWarning::DetailsChangedAfterSigning);
     }
+    s.signed_len = Some(end);
 
     // Everything shown comes from the signed dictionary.
     let text = |key: &[u8]| dict.get(key).ok().and_then(|o| signed.text_value(o));
@@ -484,7 +569,13 @@ fn check_into(
     let dict_time = text(b"M").and_then(|m| parse_pdf_date(&m));
     let (kind, locks) = references(signed, dict);
     s.kind = kind;
-    s.locks = locks;
+    // A signature should repeat its field's lock; if it doesn't, the field's counts.
+    s.locks = locks.or_else(|| {
+        nodes.iter().find_map(|&n| {
+            let l = signed.doc.get_dictionary(n).ok()?.get(b"Lock").ok()?;
+            field_lock(signed, l)
+        })
+    });
     if name(signed, dict, b"Type").as_deref() == Some("DocTimeStamp")
         || s.sub_filter == "ETSI.RFC3161"
     {
@@ -672,7 +763,7 @@ fn byte_range(pdf: &Pdf, d: &Dictionary, len: usize) -> cms_check::Check<[usize;
     Ok([0, b, c, d])
 }
 
-fn is_white(ch: u8) -> bool {
+pub(crate) fn is_white(ch: u8) -> bool {
     matches!(ch, b' ' | b'\t' | b'\n' | b'\r' | b'\x0c' | b'\0')
 }
 
@@ -782,7 +873,7 @@ fn value_in_dictionary(
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Tok<'a> {
+pub(crate) enum Tok<'a> {
     DictOpen,
     DictClose,
     ArrayOpen,
@@ -794,14 +885,25 @@ enum Tok<'a> {
 }
 
 /// Just enough of a PDF tokenizer to walk one object's dictionary.
-struct Lexer<'a> {
+#[derive(Clone)]
+pub(crate) struct Lexer<'a> {
     bytes: &'a [u8],
     pos: usize,
 }
 
 impl<'a> Lexer<'a> {
+    pub(crate) fn new(bytes: &'a [u8], pos: usize) -> Self {
+        Self { bytes, pos }
+    }
+
+    /// Where the next token starts looking.
+    pub(crate) fn pos(&self) -> usize {
+        self.pos
+    }
+
     /// The next token with its start and end, or `None` at the end or on malformed input.
-    fn next(&mut self) -> Option<(usize, Tok<'a>, usize)> {
+    #[allow(clippy::should_implement_trait)]
+    pub(crate) fn next(&mut self) -> Option<(usize, Tok<'a>, usize)> {
         let b = self.bytes;
         loop {
             while self.pos < b.len() && is_white(b[self.pos]) {
@@ -957,7 +1059,21 @@ fn lock_from(pdf: &Pdf, d: &Dictionary) -> Option<FieldLock> {
         .and_then(|(_, o)| o.as_array().ok())
         .map(|a| a.iter().filter_map(|f| pdf.text_value(f)).collect())
         .unwrap_or_default();
-    Some(FieldLock { action, fields })
+    let permissions = d
+        .get(b"P")
+        .ok()
+        .and_then(|o| pdf.int_value(o))
+        .and_then(|p| match p {
+            1 => Some(Permissions::NoChanges),
+            2 => Some(Permissions::FormFilling),
+            3 => Some(Permissions::FormFillingAndComments),
+            _ => None,
+        });
+    Some(FieldLock {
+        action,
+        fields,
+        permissions,
+    })
 }
 
 /// Certification rules across signatures: it must be the first signature, and the

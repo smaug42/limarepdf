@@ -17,7 +17,8 @@ use mpe_core::{
 };
 use mpe_core::{sign_label, InkColor, SignArt, SignRole, SignStyle};
 use mpe_core::{
-    CertInfo, FieldLock, LockAction, Permissions, SigKind, SigStatus, SignatureReport, TimeSource,
+    CertInfo, ChangeKind, FieldLock, LockAction, Permissions, Refusal, SigKind, SigStatus,
+    SignatureReport, TimeSource,
 };
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
@@ -368,6 +369,13 @@ enum Cmd {
         json: bool,
         #[arg(long)]
         password: Option<String>,
+        /// Save the version signature N (numbered as listed) signed, instead of the
+        /// results
+        #[arg(long, value_name = "N", requires = "output")]
+        signed_version: Option<usize>,
+        /// Where to save the signed version
+        #[arg(short, long, requires = "signed_version")]
+        output: Option<PathBuf>,
     },
     /// Search page text
     Search {
@@ -1290,30 +1298,42 @@ fn print_verify(input: &Path, rep: &SignatureReport) {
             .unwrap_or_default();
         out!("{}. {kind} in field {}{page}", i + 1, fields.join(", "));
         let who = s.signer.as_ref().map(|c| clean(c.display_name()));
+        let who = who.as_deref().unwrap_or("the signer");
+        let stamp = s.kind == SigKind::DocumentTimestamp;
         row(
             "Status:",
             match &s.status {
-                SigStatus::Valid if s.kind == SigKind::DocumentTimestamp => {
+                SigStatus::Valid if !s.changes_allowed() && stamp => {
+                    "CHANGED: changed after the timestamp in ways that aren't allowed".into()
+                }
+                SigStatus::Valid if !s.changes_allowed() => {
+                    format!("CHANGED: changed after {who} signed it in ways the signer didn't allow")
+                }
+                SigStatus::Valid if stamp => {
                     "valid: the document existed like this at the time shown".into()
                 }
+                SigStatus::Valid if !s.changes.is_empty() => format!(
+                    "valid: only allowed changes since {who} signed it; MPE can't confirm who that is"
+                ),
                 SigStatus::Valid => format!(
-                    "valid: not changed since {} signed it; MPE can't confirm who that is",
-                    who.as_deref().unwrap_or("the signer")
+                    "valid: not changed since {who} signed it; MPE can't confirm who that is"
                 ),
                 SigStatus::Broken(why) => format!("BROKEN: {why}"),
                 SigStatus::CantCheck(why) => format!("can't check: {why}"),
             },
         );
-        if !s.covers_whole_file && s.status == SigStatus::Valid {
-            if let Some([_, _, c, d]) = s.byte_range {
-                row(
-                    "Changes:",
-                    format!(
-                        "the file was changed after this signature ({} of {} bytes signed)",
-                        c + d,
-                        rep.file_len
-                    ),
-                );
+        if !s.changes.is_empty() {
+            let signed = s
+                .signed_len
+                .map(|l| format!(" ({l} of {} bytes signed)", rep.file_len))
+                .unwrap_or_default();
+            row("Changes:", format!("after signing{signed}:"));
+            for c in &s.changes {
+                let line = match &c.refused {
+                    None => format!("- allowed: {}", clean(&c.to_string())),
+                    Some(r) => format!("- NOT ALLOWED: {} ({r})", clean(&c.to_string())),
+                };
+                row("", line);
             }
         }
         if let SigKind::Certification(p) = s.kind {
@@ -1436,10 +1456,51 @@ fn lock_text(l: &FieldLock, clean: &dyn Fn(&str) -> String) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     };
-    match l.action {
+    let fields = match l.action {
         LockAction::All => "every form field".into(),
         LockAction::Include => format!("the fields {}", names()),
         LockAction::Exclude => format!("every form field except {}", names()),
+    };
+    match l.permissions {
+        Some(p) => format!("{fields}; afterwards {p}"),
+        None => fields,
+    }
+}
+
+fn permissions_slug(p: Permissions) -> &'static str {
+    match p {
+        Permissions::NoChanges => "no_changes",
+        Permissions::FormFilling => "form_filling",
+        Permissions::FormFillingAndComments => "form_filling_and_comments",
+    }
+}
+
+/// A stable name for each kind of change, for `mpe verify --json`.
+fn change_slug(k: &ChangeKind) -> &'static str {
+    match k {
+        ChangeKind::FieldFilled(_) => "field_filled",
+        ChangeKind::Signed(_) => "signed",
+        ChangeKind::DocumentTimestamp(_) => "document_timestamp",
+        ChangeKind::SignatureFieldAdded(_) => "signature_field_added",
+        ChangeKind::CommentAdded => "comment_added",
+        ChangeKind::CommentChanged => "comment_changed",
+        ChangeKind::CommentRemoved => "comment_removed",
+        ChangeKind::FormSettings => "form_settings",
+        ChangeKind::CommentAppearances => "comment_appearances",
+        ChangeKind::ValidationData => "validation_data",
+        ChangeKind::UsageRightsRemoved => "usage_rights_removed",
+        ChangeKind::Metadata => "metadata",
+        ChangeKind::PageContent => "page_content",
+        ChangeKind::PagesChanged => "pages_changed",
+        ChangeKind::AnnotationChanged => "annotation_changed",
+        ChangeKind::FieldAdded(_) => "field_added",
+        ChangeKind::FieldRemoved(_) => "field_removed",
+        ChangeKind::FieldChanged(_) => "field_changed",
+        ChangeKind::SignatureChanged(_) => "signature_changed",
+        ChangeKind::Actions => "actions",
+        ChangeKind::DocumentChanged(_) => "document_changed",
+        ChangeKind::Unrecognised(_) => "unrecognised",
+        ChangeKind::Malformed(_) => "malformed",
     }
 }
 
@@ -1469,6 +1530,7 @@ fn verify_json(rep: &SignatureReport) -> serde_json::Value {
                 LockAction::Exclude => "exclude",
             },
             "fields": l.fields,
+            "permissions": l.permissions.map(permissions_slug),
         })
     };
     let rect = |b: &[f32; 4]| -> Vec<f64> {
@@ -1487,14 +1549,7 @@ fn verify_json(rep: &SignatureReport) -> serde_json::Value {
             };
             let (kind, permissions) = match s.kind {
                 SigKind::Approval => ("approval", None),
-                SigKind::Certification(p) => (
-                    "certification",
-                    Some(match p {
-                        Permissions::NoChanges => "no_changes",
-                        Permissions::FormFilling => "form_filling",
-                        Permissions::FormFillingAndComments => "form_filling_and_comments",
-                    }),
-                ),
+                SigKind::Certification(p) => ("certification", Some(permissions_slug(p))),
                 SigKind::DocumentTimestamp => ("document_timestamp", None),
             };
             json!({
@@ -1508,6 +1563,19 @@ fn verify_json(rep: &SignatureReport) -> serde_json::Value {
                 "problem": problem,
                 "byte_range": s.byte_range,
                 "covers_whole_file": s.covers_whole_file,
+                "signed_length": s.signed_len,
+                "changes_allowed": s.changes_allowed(),
+                "changes": s.changes.iter().map(|c| json!({
+                    "change": c.to_string(),
+                    "kind": change_slug(&c.kind),
+                    "page": c.page.map(|p| p + 1),
+                    "allowed": c.allowed(),
+                    "refused": c.refused.map(|r| match r {
+                        Refusal::Never => "never",
+                        Refusal::Certification(_) => "certification",
+                        Refusal::Locked => "locked",
+                    }),
+                })).collect::<Vec<_>>(),
                 "signer": s.signer.as_ref().map(cert),
                 "certificates": s.certificates.iter().map(cert).collect::<Vec<_>>(),
                 "name": s.name,
@@ -1545,6 +1613,7 @@ fn verify_json(rep: &SignatureReport) -> serde_json::Value {
         .collect();
     json!({
         "all_valid": rep.all_valid(),
+        "all_ok": rep.all_ok(),
         "file_size": rep.file_len,
         "signatures": sigs,
         "empty_fields": empty,
@@ -2025,16 +2094,49 @@ fn main() -> Result<()> {
             input,
             json,
             password,
+            signed_version,
+            output,
         } => {
             let bytes =
                 std::fs::read(&input).with_context(|| format!("reading {}", input.display()))?;
             let rep = mpe_core::verify_signatures(&bytes, password.as_deref())?;
+            if let (Some(n), Some(output)) = (signed_version, output) {
+                let s = n
+                    .checked_sub(1)
+                    .and_then(|i| rep.signatures.get(i))
+                    .with_context(|| {
+                        format!(
+                            "there is no signature {n}; the file has {}",
+                            rep.signatures.len()
+                        )
+                    })?;
+                if let SigStatus::Broken(why) = &s.status {
+                    bail!("signature {n} is broken ({why}), so it has no genuine signed version");
+                }
+                let len = s.signed_len.with_context(|| {
+                    format!("MPE can't tell which version signature {n} signed")
+                })?;
+                if output.canonicalize().ok() == input.canonicalize().ok() {
+                    bail!("the signed version must be saved to another file");
+                }
+                std::fs::write(&output, &bytes[..len])
+                    .with_context(|| format!("writing {}", output.display()))?;
+                out!(
+                    "Saved the version signature {n} signed ({len} of {} bytes) to {}",
+                    bytes.len(),
+                    output.display()
+                );
+                if let SigStatus::CantCheck(why) = &s.status {
+                    out!("Note: MPE couldn't check signature {n} ({why}), so this may not be what was signed.");
+                }
+                return Ok(());
+            }
             if json {
                 out!("{}", serde_json::to_string_pretty(&verify_json(&rep))?);
             } else {
                 print_verify(&input, &rep);
             }
-            if !rep.all_valid() {
+            if !rep.all_ok() {
                 std::process::exit(1);
             }
         }

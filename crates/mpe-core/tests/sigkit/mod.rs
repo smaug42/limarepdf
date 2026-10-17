@@ -530,6 +530,10 @@ pub struct Field {
     pub reason: Option<&'static str>,
     /// `/Cert` (for `adbe.x509.rsa_sha1`).
     pub cert: Option<Vec<u8>>,
+    /// A zero-sized widget, as for invisible signatures and document timestamps.
+    pub invisible: bool,
+    /// Sign the existing empty signature field of this name instead of adding one.
+    pub existing: bool,
 }
 
 impl Default for Field {
@@ -546,6 +550,8 @@ impl Default for Field {
             m: Some("D:20260601120000+02'00'"),
             reason: Some("Testing"),
             cert: None,
+            invisible: false,
+            existing: false,
         }
     }
 }
@@ -590,11 +596,35 @@ pub fn sign_with(input: &[u8], f: &Field, make: impl FnOnce(&[&[u8]]) -> Vec<u8>
     if let Some(c) = &f.cert {
         sig.set("Cert", Object::String(c.clone(), StringFormat::Hexadecimal));
     }
+    let existing = f.existing.then(|| {
+        prev.objects
+            .iter()
+            .filter_map(|(id, o)| Some((*id, o.as_dict().ok()?.clone())))
+            .find(|(_, d)| {
+                d.get(b"T")
+                    .and_then(Object::as_str)
+                    .is_ok_and(|t| t == f.name.as_bytes())
+            })
+            .expect("no such field")
+    });
     let new = &mut inc.new_document;
     let sig_obj: Object = if f.direct {
         Object::Dictionary(sig)
     } else {
         new.add_object(sig).into()
+    };
+    if let Some((id, mut d)) = existing {
+        // Sign the empty field already in the document.
+        d.set("V", sig_obj);
+        new.set_object(id, Object::Dictionary(d));
+        let mut out = Vec::new();
+        inc.save_to(&mut out).unwrap();
+        return fill(out, f.room, make);
+    }
+    let rect: Vec<Object> = if f.invisible {
+        vec![0.into(), 0.into(), 0.into(), 0.into()]
+    } else {
+        vec![20.into(), 20.into(), 120.into(), 60.into()]
     };
     let field = |name: &str, v: Object| {
         dictionary! {
@@ -602,7 +632,7 @@ pub fn sign_with(input: &[u8], f: &Field, make: impl FnOnce(&[&[u8]]) -> Vec<u8>
             "T" => Object::string_literal(name),
             "V" => v,
             "F" => 132,
-            "Rect" => vec![20.into(), 20.into(), 120.into(), 60.into()],
+            "Rect" => rect.clone(),
             "P" => page_id,
         }
     };
@@ -720,6 +750,66 @@ pub fn append_update(bytes: &[u8], change: impl FnOnce(&mut IncrementalDocument)
     change(&mut inc);
     let mut out = Vec::new();
     inc.save_to(&mut out).unwrap();
+    out
+}
+
+/// Appends a revision written by hand, for shapes lopdf won't write: `objects` (number
+/// and body, generation 0), then a cross-reference table listing them and `frees`, with
+/// `moved` overriding where an entry points (number, offset), and `trailer` added to the
+/// trailer. `/Prev` points to the last revision.
+pub fn append_raw(
+    bytes: &[u8],
+    objects: &[(u32, &[u8])],
+    frees: &[u32],
+    moved: &[(u32, usize)],
+    trailer: &str,
+) -> Vec<u8> {
+    let doc = Document::load_mem(bytes).unwrap();
+    let root = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+    let tail = String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(40)..]).into_owned();
+    let prev: usize = tail
+        .split("startxref")
+        .last()
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut out = bytes.to_vec();
+    if !out.ends_with(b"\n") {
+        out.push(b'\n');
+    }
+    let mut entries: std::collections::BTreeMap<u32, Option<usize>> = Default::default();
+    for (num, body) in objects {
+        entries.insert(*num, Some(out.len()));
+        out.extend_from_slice(format!("{num} 0 obj\n").as_bytes());
+        out.extend_from_slice(body);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    for f in frees {
+        entries.insert(*f, None);
+    }
+    for (num, at) in moved {
+        entries.insert(*num, Some(*at));
+    }
+    let size = entries.keys().copied().max().unwrap_or(0).max(doc.max_id) + 1;
+    let xref = out.len();
+    out.extend_from_slice(b"xref\n");
+    for (num, e) in &entries {
+        let line = match e {
+            Some(at) => format!("{num} 1\n{at:010} 00000 n \n"),
+            None => format!("{num} 1\n0000000000 00001 f \n"),
+        };
+        out.extend_from_slice(line.as_bytes());
+    }
+    out.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {size} /Root {} {} R /Prev {prev} {trailer} >>\nstartxref\n{xref}\n%%EOF\n",
+            root.0, root.1
+        )
+        .as_bytes(),
+    );
     out
 }
 

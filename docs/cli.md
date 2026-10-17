@@ -164,11 +164,13 @@ See [Removing hidden information](redaction.md#removing-hidden-information).
 
 | Command | What it does |
 | --- | --- |
-| `mpe verify in.pdf` | Check every digital signature: whether the signed part is unchanged, who signed by their certificate, when, and warnings; also lists signature fields not signed yet |
+| `mpe verify in.pdf` | Check every digital signature: whether the signed part is unchanged, who signed by their certificate, when, and warnings; what changed after each signature and whether the signer allowed it; also lists signature fields not signed yet |
 | `mpe verify in.pdf --json` | The same as JSON, for scripts |
+| `mpe verify in.pdf --signed-version 1 -o signed.pdf` | Save the version signature 1 (numbered as `mpe verify` lists them) signed: the file as it was when signed, without later changes. Refused for a broken signature |
 
-Exit status 0 means every signature checked as valid (or there are none); 1 means at least one is broken or can't
-be checked, or the file can't be opened. See [Digital signatures](signatures.md) for what each result means.
+Exit status 0 means every signature checked as valid (or there are none) and nothing changed after any of them
+that its signer didn't allow; 1 means at least one is broken, can't be checked or has changes that aren't allowed,
+or the file can't be opened. See [Digital signatures](signatures.md) for what each result means.
 
 ## Properties and security
 
