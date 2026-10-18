@@ -722,3 +722,112 @@ fn renders_encrypted_files_with_password() {
         s.expect(150.0, 100.0, [255, 0, 0], &format!("{cipher:?}"));
     }
 }
+
+#[test]
+fn wrong_password_is_explained() {
+    let mut p = make("", Dictionary::new());
+    p.set_encryption(Some(Encryption {
+        user_password: "user".into(),
+        owner_password: "owner".into(),
+        cipher: Cipher::Aes128,
+        restrictions: Restrictions::default(),
+    }));
+    let Err(e) = render::load(p.to_bytes().unwrap(), Some("wrong")) else {
+        panic!("loaded with the wrong password");
+    };
+    assert_eq!(e.to_string(), "cannot render PDF: it needs a password");
+    let Err(e) = render::load(b"not a PDF".to_vec(), None) else {
+        panic!("loaded a file that isn't a PDF");
+    };
+    assert_eq!(
+        e.to_string(),
+        "cannot render PDF: the file's structure can't be read"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// What the renderer reports it couldn't draw (the app's banner).
+
+use render::Missing;
+use std::collections::BTreeSet;
+
+fn missing_of(p: &mut Pdf) -> BTreeSet<Missing> {
+    let hp = render::load(p.snapshot().unwrap(), None).unwrap();
+    let r = render::Renderer::new(&hp);
+    r.render(0, 1.0).unwrap();
+    let found = r.take_missing();
+    assert!(r.take_missing().is_empty(), "taking them clears them");
+    found
+}
+
+#[test]
+fn ordinary_pages_report_nothing_missing() {
+    // A font that isn't embedded and isn't standard gets a standard stand-in, which is
+    // close enough: not reported.
+    let mut p = make(
+        "0 0 1 rg 50 50 100 50 re f BT /F1 24 Tf 60 120 Td (Hello) Tj ET",
+        dictionary! { "Font" => dictionary! { "F1" => dictionary! {
+            "Type" => "Font", "Subtype" => "TrueType", "BaseFont" => "Arial",
+        } } },
+    );
+    assert!(missing_of(&mut p).is_empty());
+}
+
+#[test]
+fn undecodable_pictures_are_reported() {
+    let mut p = make("q 100 0 0 50 100 75 cm /Im Do Q", Dictionary::new());
+    let im = p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => 4,
+            "Height" => 4,
+            "ColorSpace" => "DeviceRGB",
+            "BitsPerComponent" => 8,
+            "Filter" => "DCTDecode",
+        },
+        b"this is not a JPEG".to_vec(),
+    ));
+    set_resources(
+        &mut p,
+        dictionary! { "XObject" => dictionary! { "Im" => im } },
+    );
+    assert_eq!(missing_of(&mut p), [Missing::Picture].into());
+}
+
+#[test]
+fn cjk_fonts_that_are_not_embedded_are_reported() {
+    let mut p = make("BT /F1 24 Tf 60 120 Td <0001> Tj ET", Dictionary::new());
+    let cid = p.doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "CIDFontType0",
+        "BaseFont" => "KozMinPro-Regular",
+        "CIDSystemInfo" => dictionary! {
+            "Registry" => Object::string_literal("Adobe"),
+            "Ordering" => Object::string_literal("Japan1"),
+            "Supplement" => 4,
+        },
+        "FontDescriptor" => dictionary! {
+            "Type" => "FontDescriptor",
+            "FontName" => "KozMinPro-Regular",
+            "Flags" => 4,
+            "FontBBox" => vec![0.into(), 0.into(), 1000.into(), 1000.into()],
+            "ItalicAngle" => 0,
+            "Ascent" => 880,
+            "Descent" => -120,
+            "CapHeight" => 700,
+            "StemV" => 80,
+        },
+    });
+    set_resources(
+        &mut p,
+        dictionary! { "Font" => dictionary! { "F1" => dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type0",
+            "BaseFont" => "KozMinPro-Regular",
+            "Encoding" => "UniJIS-UCS2-H",
+            "DescendantFonts" => vec![Object::Reference(cid)],
+        } } },
+    );
+    assert_eq!(missing_of(&mut p), [Missing::Font].into());
+}

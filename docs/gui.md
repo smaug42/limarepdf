@@ -338,6 +338,7 @@ something to do and × to dismiss it. At most two show at a time.
 | Signatures and other items put down with the Sign tool can still be moved (kept up to date while you work) | Finish signing… |
 | Its pages are scans without text, so they cannot be searched or copied (checked on the first 20 pages) | Recognise text |
 | It is a form made for Adobe Reader (an XFA form), which only Adobe software can show or fill in; LimarePDF shows the placeholder page the file contains, often "Please wait..." | |
+| Parts of it couldn't be drawn: a picture that can't be decoded, or a font the renderer can't use (such as a Chinese, Japanese or Korean font that isn't in the file). Found as pages are drawn, so it can appear later; it comes back if something new turns up after you dismiss it | |
 | It has a form: click a field to fill it in, or press Tab (not for a form of signature fields alone) | Highlight fields |
 | It is large (more than 500 pages or 100 MB) | |
 

@@ -96,7 +96,8 @@ available.
   by one later; use Undo before saving.
 - Saving rewrites the whole file, except for digitally signed documents, whose changes are added after what was
   signed so the signatures stay valid ([details](signatures.md#saving-a-signed-document)).
-- Files the renderer cannot read show "Rendering…" on their pages; editing may still work.
+- Pages the renderer cannot draw say so, with the reason, and a notice says when a picture or font couldn't be
+  drawn ([details](rendering.md#when-something-cant-be-drawn)); editing may still work.
 - A malformed file that makes LimarePDF fail while opening, editing or saving gets an error message, and a failed edit
   leaves the document as it was. A failure while showing the document (pages, thumbnails, search, bookmarks,
   comments, the inspector) turns that tab into an error page with Save a copy and Close; other tabs carry on. A

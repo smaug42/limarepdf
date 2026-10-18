@@ -6,13 +6,16 @@
 use crate::page_colours::{self, PageColours};
 use crate::{Pdf, Result};
 use anyhow::{anyhow, Context};
-use hayro::hayro_interpret::{InterpreterCache, InterpreterSettings};
-use hayro::hayro_syntax::Pdf as HPdf;
+use hayro::hayro_interpret::font::FontQuery;
+use hayro::hayro_interpret::{InterpreterCache, InterpreterSettings, InterpreterWarning};
+use hayro::hayro_syntax::{DecryptionError, LoadPdfError, Pdf as HPdf};
 use hayro::vello_cpu::color::palette::css::WHITE;
 use hayro::{render, PixmapSettings, RenderCache, RenderSettings};
 use image::codecs::jpeg::{JpegEncoder, PixelDensity};
 use rayon::prelude::*;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 /// An opaque RGBA8 bitmap (row-major, 4 bytes per pixel).
 #[derive(Clone)]
@@ -22,6 +25,27 @@ pub struct Bitmap {
     pub rgba: Vec<u8>,
 }
 
+/// Something on a page the renderer couldn't draw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Missing {
+    /// A font the renderer can't use, or one that isn't embedded and has no stand-in with
+    /// its characters: a Chinese, Japanese or Korean (CID) font, drawn with a Latin
+    /// standard font instead.
+    Font,
+    /// A picture that couldn't be decoded.
+    Picture,
+}
+
+impl Missing {
+    /// The thing, for a message: "a font".
+    pub fn noun(self) -> &'static str {
+        match self {
+            Missing::Font => "a font",
+            Missing::Picture => "a picture",
+        }
+    }
+}
+
 pub struct Renderer<'a> {
     pdf: &'a HPdf,
     cache: RenderCache<'a>,
@@ -29,16 +53,52 @@ pub struct Renderer<'a> {
     /// interpreter half private.
     boxes: InterpreterCache<'a>,
     settings: InterpreterSettings,
+    /// What hayro reported it couldn't draw, since [`Renderer::take_missing`] was last
+    /// called.
+    missing: Arc<Mutex<BTreeSet<Missing>>>,
 }
 
 impl<'a> Renderer<'a> {
     pub fn new(pdf: &'a HPdf) -> Self {
+        let missing = Arc::new(Mutex::new(BTreeSet::new()));
+        let mut settings = InterpreterSettings::default();
+        let note = missing.clone();
+        settings.warning_sink = Arc::new(move |w| {
+            let m = match w {
+                InterpreterWarning::ImageDecodeFailure => Missing::Picture,
+                InterpreterWarning::UnsupportedFont => Missing::Font,
+                // Also sent for a check box that is off and has only an appearance for
+                // on, which is normal and draws nothing.
+                _ => return,
+            };
+            note.lock().unwrap_or_else(|e| e.into_inner()).insert(m);
+        });
+        // hayro asks for a fallback only for CID fonts that aren't embedded, and the
+        // default answer is a Latin standard font without their characters.
+        let resolve = settings.font_resolver.clone();
+        let note = missing.clone();
+        settings.font_resolver = Arc::new(move |q| {
+            if matches!(q, FontQuery::Fallback(_)) {
+                note.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(Missing::Font);
+            }
+            resolve(q)
+        });
         Self {
             pdf,
             cache: RenderCache::new(),
             boxes: InterpreterCache::new(),
-            settings: InterpreterSettings::default(),
+            settings,
+            missing,
         }
+    }
+
+    /// What couldn't be drawn in the renders since the last call. hayro caches fonts and
+    /// pictures across pages, so each is reported once per renderer, on the first page
+    /// that uses it.
+    pub fn take_missing(&self) -> BTreeSet<Missing> {
+        std::mem::take(&mut *self.missing.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     pub fn page_count(&self) -> usize {
@@ -118,8 +178,17 @@ impl<'a> Renderer<'a> {
 
 /// Parse PDF bytes for rendering.
 pub fn load(bytes: Vec<u8>, password: Option<&str>) -> Result<HPdf> {
-    HPdf::new_with_password(bytes, password.unwrap_or(""))
-        .map_err(|e| anyhow!("cannot render PDF: {e:?}"))
+    HPdf::new_with_password(bytes, password.unwrap_or("")).map_err(|e| {
+        let why = match e {
+            LoadPdfError::Invalid => "the file's structure can't be read",
+            LoadPdfError::Decryption(DecryptionError::PasswordProtected) => "it needs a password",
+            LoadPdfError::Decryption(DecryptionError::UnsupportedAlgorithm) => {
+                "it is encrypted in a way that isn't supported"
+            }
+            LoadPdfError::Decryption(_) => "its encryption is damaged",
+        };
+        anyhow!("cannot render PDF: {why}")
+    })
 }
 
 /// Render the given pages in parallel (one renderer per rayon task).

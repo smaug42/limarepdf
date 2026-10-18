@@ -3,7 +3,8 @@
 //! so scrolling stays responsive.
 
 use limarepdf_core::page_colours::PageColours;
-use limarepdf_core::render::{self, Bitmap, Renderer};
+use limarepdf_core::render::{self, Bitmap, Missing, Renderer};
+use std::collections::BTreeSet;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -23,6 +24,9 @@ pub struct Response {
     /// The colours it was drawn in; a response drawn before a change is dropped.
     pub colours: Colours,
     pub bitmap: Result<Bitmap, String>,
+    /// What couldn't be drawn. Each thing is reported once per thread, so it may have
+    /// been on an earlier page.
+    pub missing: BTreeSet<Missing>,
 }
 
 struct Queue {
@@ -90,10 +94,12 @@ impl Worker {
                         (None, Err(e)) => Err(e.clone()),
                         _ => Err("renderer unavailable".into()),
                     };
+                    let missing = renderer.as_ref().map(|r| r.take_missing());
                     let r = Response {
                         key,
                         colours,
                         bitmap,
+                        missing: missing.unwrap_or_default(),
                     };
                     if tx.send(r).is_err() {
                         return;

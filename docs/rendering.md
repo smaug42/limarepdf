@@ -41,7 +41,21 @@ and notes the box of each raster image, clipped to the clip in force. The colour
   For those LimarePDF draws, cloudy borders, callout lines, leader lines, rich text and the note icon's shape (one icon
   for every kind of note) are not reproduced.
 
-Other PDF features have not been tested by LimarePDF. Files hayro cannot parse show "Rendering…" on those pages; editing may
-still work if the document library (lopdf) can read them.
+Other PDF features have not been tested by LimarePDF.
+
+## When something can't be drawn
+
+- A page that can't be drawn shows "This page couldn't be drawn" and the reason, such as a file hayro can't parse.
+  It isn't tried again until the document changes. Editing may still work if the document library (lopdf) can read
+  the file.
+- When hayro reports a picture it can't decode, or a font it can't use, the app shows a notice that parts of the
+  document couldn't be drawn. Chinese, Japanese and Korean fonts that aren't embedded count as fonts it can't use:
+  hayro draws them with a Latin standard font, which lacks their characters. Other fonts that aren't embedded are
+  drawn with the closest of the standard fonts (Helvetica for Arial) and aren't reported.
+- hayro reports each font once, on the first page that uses it, so the notice is about the document, not one page.
+- An annotation whose appearance hayro can't select isn't reported: that is also what happens, correctly, for a check
+  box that is off and has a drawing only for on.
+- The app draws a page as one bitmap, at most 8192 pixels a side (the graphics card's limit). Above that, pages are
+  shown at the largest size that fits and look softer at high zoom.
 
 For timings and how the app keeps drawing responsive, see [Performance](performance.md).

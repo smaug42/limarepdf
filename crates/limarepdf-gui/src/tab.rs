@@ -11,6 +11,7 @@ use crate::theme;
 use crate::worker::{Colours, Key, Worker};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptions, Vec2};
 use egui_phosphor::regular as icon;
+use limarepdf_core::render::Missing;
 use limarepdf_core::{
     Annot, BookmarkPlace, Encryption, LinkTarget, OutlineItem, Pdf, SearchHit, Shape, ShapeLook,
     StampPlace,
@@ -73,6 +74,11 @@ pub struct Tab {
     pages: HashMap<usize, (u32, TextureHandle)>,
     thumbs: HashMap<usize, TextureHandle>,
     pending: HashSet<Key>,
+    /// Pages that couldn't be drawn, and why; not asked for again until the document
+    /// changes.
+    failed: HashMap<usize, String>,
+    /// What the renderer couldn't draw so far, for the banner.
+    missing: BTreeSet<Missing>,
     pub zoom: f32,
     /// The zoom follows the width of the view (on until the user zooms).
     pub fit: bool,
@@ -197,6 +203,8 @@ impl Tab {
             pages: HashMap::new(),
             thumbs: HashMap::new(),
             pending: HashSet::new(),
+            failed: HashMap::new(),
+            missing: BTreeSet::new(),
             zoom: 1.0,
             fit: true,
             view: (0, 0.0),
@@ -441,6 +449,7 @@ impl Tab {
             Ok(bytes) => {
                 self.worker = Worker::spawn(ctx.clone(), bytes, self.colours);
                 self.pending.clear();
+                self.failed.clear();
                 for &p in pages {
                     self.stale.insert(p);
                     self.thumbs.remove(&p);
@@ -906,6 +915,7 @@ impl Tab {
                 self.pages.clear();
                 self.thumbs.clear();
                 self.pending.clear();
+                self.failed.clear();
                 self.stale.clear();
                 self.ed.invalidate();
                 self.ed.selection.clear_object();
@@ -1297,10 +1307,21 @@ impl Tab {
     fn collect(&mut self, ctx: &egui::Context) {
         while let Ok(r) = self.worker.rx.try_recv() {
             self.pending.remove(&r.key);
+            self.note_missing(&r.missing);
             if r.colours != self.colours {
                 continue;
             }
-            let Ok(b) = r.bitmap else { continue };
+            let b = match r.bitmap {
+                Ok(b) => b,
+                Err(e) => {
+                    if r.key.1 != 0 {
+                        self.pages.remove(&r.key.0);
+                        self.stale.remove(&r.key.0);
+                    }
+                    self.failed.insert(r.key.0, e);
+                    continue;
+                }
+            };
             let img = egui::ColorImage::from_rgba_premultiplied([b.width, b.height], &b.rgba);
             let tex = ctx.load_texture(
                 format!("p{}-{}-{}", self.id, r.key.0, r.key.1),
@@ -1314,6 +1335,31 @@ impl Tab {
                 self.pages.insert(r.key.0, (r.key.1, tex));
             }
         }
+    }
+
+    /// Add what the renderer couldn't draw to the banner, showing it again (even if it
+    /// was dismissed) when something new turns up.
+    fn note_missing(&mut self, what: &BTreeSet<Missing>) {
+        if what.is_subset(&self.missing) {
+            return;
+        }
+        self.missing.extend(what);
+        self.banners.retain(|b| b.kind != banners::Kind::Missing);
+        let at = self
+            .banners
+            .partition_point(|b| b.kind < banners::Kind::Missing);
+        self.banners.insert(at, banners::missing(&self.missing));
+    }
+
+    /// The render key and scale for page `i` drawn at `scale` (bitmap pixels per point),
+    /// kept within the largest texture the GPU takes.
+    fn page_key(&self, ctx: &egui::Context, i: usize, scale: f32) -> (Key, f32) {
+        let (w, h) = self.sizes.get(i).copied().unwrap_or((1.0, 1.0));
+        let side = ctx.input(|s| s.max_texture_side) as f32;
+        // Quantised in twentieths, rounded down at the limit so it stays under it.
+        let cap = ((side / w.max(h).max(1.0)) * 20.0).floor();
+        let q = (scale * 20.0).round().min(cap).max(1.0) as u32;
+        ((i, q), q as f32 / 20.0)
     }
 
     /// Zoom chosen by the user: turns fitting to the width off.
@@ -1651,8 +1697,7 @@ impl Tab {
                 );
                 painter.add(theme::page_shadow(dark).as_shape(r, 0));
                 painter.rect_filled(r, 0.0, paper);
-                let scale = self.zoom * BASE * ppp;
-                let key = (i, ((scale * 20.0).round() as u32).max(1));
+                let (key, key_scale) = self.page_key(&ctx, i, self.zoom * BASE * ppp);
                 match self.pages.get(&i) {
                     Some((_, tex)) => {
                         painter.image(
@@ -1661,6 +1706,9 @@ impl Tab {
                             Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
                             Color32::WHITE,
                         );
+                    }
+                    None if self.failed.contains_key(&i) => {
+                        failed_page(&painter, r, &self.failed[&i]);
                     }
                     None => {
                         painter.text(
@@ -1687,8 +1735,11 @@ impl Tab {
                         self.floating_toolbar(ui, base, r, self.zoom * BASE, b);
                     }
                 }
-                if self.pages.get(&i).map(|(k, _)| *k) != Some(key.1) || self.stale.contains(&i) {
-                    wanted.push((key, key.1 as f32 / 20.0));
+                if !self.failed.contains_key(&i)
+                    && (self.pages.get(&i).map(|(k, _)| *k) != Some(key.1)
+                        || self.stale.contains(&i))
+                {
+                    wanted.push((key, key_scale));
                 }
             }
             if self.ed.selecting_words(ui.ctx()) {
@@ -1738,14 +1789,14 @@ impl Tab {
                 visible.0.saturating_sub(1),
                 (visible.1 + 1).min(n.saturating_sub(1)),
             ] {
-                let scale = self.zoom * BASE * ppp;
-                let key = (i, ((scale * 20.0).round() as u32).max(1));
+                let (key, scale) = self.page_key(&ctx, i, self.zoom * BASE * ppp);
                 if i < n
+                    && !self.failed.contains_key(&i)
                     && (self.pages.get(&i).map(|(k, _)| *k) != Some(key.1)
                         || self.stale.contains(&i))
                     && self.pending.insert(key)
                 {
-                    self.worker.request(key, key.1 as f32 / 20.0);
+                    self.worker.request(key, scale);
                 }
             }
             // Evict textures far from the viewport.
@@ -1814,6 +1865,15 @@ impl Tab {
                                 img,
                                 Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
                                 Color32::WHITE,
+                            );
+                        }
+                        None if self.failed.contains_key(&i) => {
+                            ui.painter().text(
+                                img.center(),
+                                egui::Align2::CENTER_CENTER,
+                                icon::IMAGE_BROKEN,
+                                egui::FontId::new(24.0, theme::icons()),
+                                Color32::GRAY,
                             );
                         }
                         None => {
@@ -1945,6 +2005,37 @@ fn rows_of(n: usize, layout: Layout, cover: bool) -> Vec<Vec<(usize, Place)>> {
         rows.push(row);
     }
     rows
+}
+
+/// What a page that couldn't be drawn shows instead: an icon, a line saying so, and the
+/// reason, centred in the page's rectangle `r`.
+fn failed_page(painter: &egui::Painter, r: Rect, why: &str) {
+    let grey = Color32::GRAY;
+    let wrap = (r.width() - 32.0).max(80.0);
+    let lines = [
+        (
+            icon::IMAGE_BROKEN.to_string(),
+            egui::FontId::new(32.0, theme::icons()),
+        ),
+        (
+            "This page couldn't be drawn".to_string(),
+            egui::FontId::proportional(15.0),
+        ),
+        (why.to_string(), egui::FontId::proportional(12.0)),
+    ];
+    let galleys: Vec<_> = lines
+        .into_iter()
+        .map(|(t, f)| painter.layout(t, f, grey, wrap))
+        .collect();
+    let gap = 6.0;
+    let total: f32 = galleys.iter().map(|g| g.size().y + gap).sum::<f32>() - gap;
+    let mut y = r.center().y - total / 2.0;
+    for g in galleys {
+        let x = r.center().x - g.size().x / 2.0;
+        let h = g.size().y;
+        painter.galley(Pos2::new(x, y), g, grey);
+        y += h + gap;
+    }
 }
 
 fn sizes_of(pdf: &Pdf) -> Vec<(f32, f32)> {

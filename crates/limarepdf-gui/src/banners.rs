@@ -4,7 +4,9 @@
 use crate::actions::Act;
 use crate::theme::Tone;
 use egui_phosphor::regular as icon;
+use limarepdf_core::render::Missing;
 use limarepdf_core::{FieldKind, ObjectKind, Pdf};
+use std::collections::BTreeSet;
 
 /// Pages looked at for scans; enough to tell, and quick when opening a large file.
 const SCAN_PAGES: usize = 20;
@@ -25,6 +27,8 @@ pub enum Kind {
     Signing,
     /// An XFA-only form: only Adobe software builds its pages.
     Xfa,
+    /// Parts of pages couldn't be drawn.
+    Missing,
     /// Pages are images without text.
     Scanned,
     /// The document has form fields.
@@ -63,6 +67,7 @@ impl Banner {
             Kind::Redactions => icon::EYE_SLASH,
             Kind::Signing => icon::SIGNATURE,
             Kind::Xfa => icon::WARNING,
+            Kind::Missing => icon::IMAGE_BROKEN,
             Kind::Scanned => icon::SCAN,
             Kind::Forms => icon::TEXTBOX,
             Kind::Large => icon::STACK,
@@ -78,7 +83,7 @@ impl Banner {
             Kind::Signing => Some(("Finish signing…", Act::FinishSigning)),
             Kind::Scanned => Some(("Recognise text", Act::Ocr)),
             Kind::Forms => Some(("Highlight fields", Act::ToggleFields)),
-            Kind::Xfa | Kind::Large => None,
+            Kind::Xfa | Kind::Missing | Kind::Large => None,
         }
     }
 }
@@ -125,6 +130,19 @@ pub fn signatures(tone: Tone, text: String) -> Banner {
         text,
         tone,
     }
+}
+
+/// The banner for parts of pages the renderer couldn't draw, found as pages are drawn.
+pub fn missing(what: &BTreeSet<Missing>) -> Banner {
+    let what: Vec<&str> = what.iter().map(|m| m.noun()).collect();
+    Banner::plain(
+        Kind::Missing,
+        format!(
+            "Parts of this document couldn't be drawn ({}), so some pages may look \
+             incomplete.",
+            what.join(", ")
+        ),
+    )
 }
 
 /// The banners for a document just opened, most important first. `bytes` is the file's
@@ -305,5 +323,13 @@ mod tests {
         let big = detect(&blank(2), Some(LARGE_BYTES + 1));
         assert_eq!(big[0].kind, Kind::Large);
         assert!(big[0].text.contains("100 MB"), "{}", big[0].text);
+    }
+
+    #[test]
+    fn missing_parts_are_listed() {
+        let b = missing(&[Missing::Picture, Missing::Font].into());
+        assert_eq!(b.kind, Kind::Missing);
+        assert!(b.text.contains("(a font, a picture)"), "{}", b.text);
+        assert_eq!(b.action(), None);
     }
 }

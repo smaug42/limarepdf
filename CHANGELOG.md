@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- A notice above the pages when parts of the document couldn't be drawn: a picture that can't be decoded, or a font
+  the renderer can't use, such as a Chinese, Japanese or Korean font that isn't embedded.
+
+### Fixed
+
+- A page that can't be drawn shows "This page couldn't be drawn" and the reason, instead of "Rendering…" forever
+  while the app tried again on every frame.
+- Zooming in far on a large page could close the app: a page is now drawn at most at the graphics card's largest
+  texture size (8192 pixels a side) and shown stretched beyond that.
+
 ## [0.7.1] - 2026-10-17
 
 ### Changed
