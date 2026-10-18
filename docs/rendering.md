@@ -31,7 +31,8 @@ everyday documents. The first run (2026-10-17, hayro 0.8.0, poppler 26.08) drew 
 - 220 pages differ by more than that, 23 of them by more than 10%. Many of the worst are poppler's mistakes, such as
   a grey background, garbled scans or striped photos where LimarePDF's page looks right. Differences that are
   LimarePDF's include very thin lines drawn light grey where poppler draws them solid, and fonts that aren't
-  embedded (on 39 pages LimarePDF reported a font it couldn't draw);
+  embedded (on 39 pages LimarePDF reported a font it couldn't draw; with installed fonts and stand-ins, none on a
+  machine with the Noto CJK and Liberation fonts);
 - 7 damaged files that poppler repairs can't be opened by LimarePDF (their page list is broken), 2 files fail in
   both, and a few pages poppler can't draw are drawn by LimarePDF.
 
@@ -63,15 +64,57 @@ and notes the box of each raster image, clipped to the clip in force. The colour
 
 Other PDF features have not been tested by LimarePDF.
 
+## Fonts that aren't embedded
+
+Most PDFs carry their fonts. Some only name them and leave the reader to find them, which other viewers do among the
+fonts installed on the computer.
+
+- **The 14 standard fonts** (Helvetica, Times, Courier, Symbol, ZapfDingbats and their styles) always use the copies
+  bundled with hayro, so they look the same on every computer.
+- **CID fonts**, which Chinese, Japanese and Korean text uses (and some programs use for Latin text too), are
+  looked up among the installed fonts (`crates/limarepdf-core/src/installed_fonts.rs`):
+  1. by the font's name (`MSMincho` finds MS Mincho), ignoring spaces, hyphens and case;
+  2. by its family, the face closest to the weight and style asked for (`MSGothic,Bold` finds MS Gothic's bold);
+  3. among free fonts with the same character widths as common Windows fonts: Liberation Sans or Arimo for Arial,
+     Liberation Serif or Tinos for Times New Roman, Liberation Mono or Cousine for Courier New, Carlito for
+     Calibri, Caladea for Cambria.
+
+  Those show the document as it was made. Failing them, a stand-in is used:
+
+  4. for Japanese, simplified Chinese, traditional Chinese and Korean text, among the usual fonts for that language
+     (Noto CJK, Source Han, and the Windows and macOS ones), serif (Mincho, Song, Ming, Batang) or sans as the
+     font is, and then any installed font with characters of that language. A font is only used for one of those
+     languages if it has that language's characters;
+  5. for other text, a common font of the same kind, sans, serif or monospaced (Liberation, DejaVu, Noto, Arial,
+     Times New Roman and so on), and then any installed font with Latin letters.
+
+  When a stand-in is used, the app's notice names the font and suggests installing it: "The font Tahoma isn't
+  installed, so a similar font is shown in its place and some text may not look right. Install Tahoma to see the
+  document as it was made." Some text needs the real font: when the file gives no map from its codes to characters,
+  only the named font knows which glyph each code is, and a stand-in shows the wrong characters, as poppler does too.
+  When no installed font has a language's characters, that text can't be shown, and the notice says so and names a
+  free font to install: "This document has Japanese text, but no Japanese font is installed, so that text can't be
+  shown. Install a Japanese font, such as Noto Sans CJK JP, to read it."
+- **Other fonts that aren't embedded** (Calibri, Verdana, Wingdings as plain fonts) are drawn with the closest
+  standard font, stretched to the widths the file gives, so lines keep their length but the letters look different.
+  Symbol fonts such as Wingdings come out as letters. hayro 0.8 picks these itself without asking LimarePDF, so
+  installed fonts can't be used for them yet.
+
+The installed fonts are listed the first time a document needs one, once per run of the app. With about 700 font
+families installed, that took about a second when the font files weren't in the system's file cache, and a few tens
+of milliseconds when they were. What a page looks like, on screen, in print and in exports, then depends
+on which fonts are installed, as in other viewers.
+
 ## When something can't be drawn
 
 - A page that can't be drawn shows "This page couldn't be drawn" and the reason, such as a file hayro can't parse.
   It isn't tried again until the document changes. Editing may still work if the document library (lopdf) can read
   the file.
-- When hayro reports a picture it can't decode, or a font it can't use, the app shows a notice that parts of the
-  document couldn't be drawn. Chinese, Japanese and Korean fonts that aren't embedded count as fonts it can't use:
-  hayro draws them with a Latin standard font, which lacks their characters. Other fonts that aren't embedded are
-  drawn with the closest of the standard fonts (Helvetica for Arial) and aren't reported.
+- When hayro reports a picture it can't decode, the app shows a notice that parts of the document couldn't be drawn.
+- A second notice covers fonts that aren't embedded or installed: which are shown with a stand-in, or which
+  language has no font at all, and what to install (see [Fonts that aren't embedded](#fonts-that-arent-embedded)).
+  Plain fonts that aren't embedded are drawn with the closest of the standard fonts (Helvetica for Arial) and
+  aren't reported, as hayro doesn't say which they are.
 - hayro reports each font once, on the first page that uses it, so the notice is about the document, not one page.
 - An annotation whose appearance hayro can't select isn't reported: that is also what happens, correctly, for a check
   box that is off and has a drawing only for on.

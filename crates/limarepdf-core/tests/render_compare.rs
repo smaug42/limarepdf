@@ -313,9 +313,14 @@ fn compare(s: &Sample, root: &Path, out: &Path, dpi: u32) -> Vec<Row> {
                         a.width, a.height, b.width, b.height
                     ));
                 }
-                if !missing.is_empty() {
-                    let m: Vec<&str> = missing.iter().map(|m| m.noun()).collect();
-                    notes.push(format!("LimarePDF couldn't draw {}", m.join(", ")));
+                // Fonts drawn with a stand-in aren't listed for that alone.
+                let lost: Vec<String> = missing
+                    .iter()
+                    .filter(|m| m.lost())
+                    .map(|m| m.describe())
+                    .collect();
+                if !lost.is_empty() {
+                    notes.push(format!("LimarePDF couldn't draw {}", lost.join(", ")));
                 }
                 let mut r = row(n, Some(share), notes.join("; "));
                 if r.flagged() {

@@ -23,6 +23,7 @@ mod ids;
 mod imgs;
 mod incremental;
 mod inline;
+mod installed_fonts;
 mod labels;
 mod links;
 mod matrix;

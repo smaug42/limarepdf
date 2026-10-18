@@ -17,6 +17,8 @@ fax = "0.2"
 png = "0.18"
 # Glyph outlines for typed signatures; hayro already uses it to draw fonts.
 skrifa = "0.46"
+# Installed fonts, for fonts a PDF names but doesn't embed (installed_fonts.rs).
+fontdb = "0.24"
 ocrs = { version = "0.13", default-features = false, features = ["rten"] }
 rten = { version = "0.26", default-features = false, features = ["rten_format"] }
 rten-imageproc = "0.26"

@@ -3,6 +3,8 @@
 //! `hayro`'s render cache is not `Send`, so a [`Renderer`] lives on one thread.
 //! For parallel work, create one renderer per worker (see [`render_pages_parallel`]).
 
+use crate::installed_fonts::display_name;
+pub use crate::installed_fonts::{InstalledFonts, Language};
 use crate::page_colours::{self, PageColours};
 use crate::{Pdf, Result};
 use anyhow::{anyhow, Context};
@@ -63,23 +65,42 @@ impl Region {
     }
 }
 
-/// Something on a page the renderer couldn't draw.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Something on a page the renderer couldn't draw as the file asks, by font name where
+/// the file gives one.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Missing {
-    /// A font the renderer can't use, or one that isn't embedded and has no stand-in with
-    /// its characters: a Chinese, Japanese or Korean (CID) font, drawn with a Latin
-    /// standard font instead.
-    Font,
+    /// A font the renderer can't use, or one that isn't embedded with no installed font
+    /// at all to draw it, drawn with a standard font that may lack its characters.
+    Font(Option<String>),
+    /// Text in a language no installed font has: a CID font that isn't embedded, drawn
+    /// with a Latin standard font that lacks its characters.
+    Language(Language, Option<String>),
+    /// A font that isn't embedded or installed, drawn with an installed font like it
+    /// (the second name), so the text reads but looks different.
+    StandIn(Option<String>, String),
     /// A picture that couldn't be decoded.
     Picture,
 }
 
 impl Missing {
-    /// The thing, for a message: "a font".
-    pub fn noun(self) -> &'static str {
+    /// Whether something is lost (left out or drawn wrongly), rather than drawn with a
+    /// font like the one asked for.
+    pub fn lost(&self) -> bool {
+        !matches!(self, Missing::StandIn(..))
+    }
+
+    /// The thing, for a list: "a font", "Japanese text", "Tahoma (drawn with Liberation
+    /// Sans)".
+    pub fn describe(&self) -> String {
         match self {
-            Missing::Font => "a font",
-            Missing::Picture => "a picture",
+            Missing::Font(Some(f)) => format!("the font {f}"),
+            Missing::Font(None) => "a font".into(),
+            Missing::Language(l, _) => format!("{} text", l.name()),
+            Missing::StandIn(f, with) => format!(
+                "{} (drawn with {with})",
+                f.as_deref().unwrap_or("a font with no name")
+            ),
+            Missing::Picture => "a picture".into(),
         }
     }
 }
@@ -97,31 +118,60 @@ pub struct Renderer<'a> {
 }
 
 impl<'a> Renderer<'a> {
+    /// A renderer that draws fonts that aren't embedded with installed fonts, where
+    /// hayro asks for them (see [`InstalledFonts`]).
     pub fn new(pdf: &'a HPdf) -> Self {
+        Self::build(pdf, None)
+    }
+
+    /// A renderer that looks only in `fonts` for fonts that aren't embedded.
+    pub fn with_fonts(pdf: &'a HPdf, fonts: Arc<InstalledFonts>) -> Self {
+        Self::build(pdf, Some(fonts))
+    }
+
+    fn build(pdf: &'a HPdf, fonts: Option<Arc<InstalledFonts>>) -> Self {
         let missing = Arc::new(Mutex::new(BTreeSet::new()));
         let mut settings = InterpreterSettings::default();
         let note = missing.clone();
         settings.warning_sink = Arc::new(move |w| {
             let m = match w {
                 InterpreterWarning::ImageDecodeFailure => Missing::Picture,
-                InterpreterWarning::UnsupportedFont => Missing::Font,
+                InterpreterWarning::UnsupportedFont => Missing::Font(None),
                 // Also sent for a check box that is off and has only an appearance for
                 // on, which is normal and draws nothing.
                 _ => return,
             };
             note.lock().unwrap_or_else(|e| e.into_inner()).insert(m);
         });
-        // hayro asks for a fallback only for CID fonts that aren't embedded, and the
-        // default answer is a Latin standard font without their characters.
+        // hayro asks for a fallback only for CID fonts that aren't embedded. Without an
+        // installed font, the default answer is a standard font, which lacks Chinese,
+        // Japanese and Korean characters and draws Latin CID text with wrong characters.
         let resolve = settings.font_resolver.clone();
         let note = missing.clone();
         settings.font_resolver = Arc::new(move |q| {
-            if matches!(q, FontQuery::Fallback(_)) {
-                note.lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(Missing::Font);
+            let FontQuery::Fallback(f) = q else {
+                return resolve(q);
+            };
+            let found = match &fonts {
+                Some(fonts) => fonts.find(f),
+                None => InstalledFonts::system().find(f),
+            };
+            let name = display_name(f);
+            let m = match (&found, Language::of(f)) {
+                (Some(found), _) => found
+                    .stand_in
+                    .clone()
+                    .map(|with| Missing::StandIn(name, with)),
+                (None, Some(l)) => Some(Missing::Language(l, name)),
+                (None, None) => Some(Missing::Font(name)),
+            };
+            if let Some(m) = m {
+                note.lock().unwrap_or_else(|e| e.into_inner()).insert(m);
             }
-            resolve(q)
+            match found {
+                Some(found) => Some((found.data, found.index)),
+                None => resolve(q),
+            }
         });
         Self {
             pdf,

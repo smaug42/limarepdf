@@ -47,7 +47,7 @@ available.
 | About window | Done | Version (copyable for bug reports), links, contributors, credits; "Made in Canada". [Details](gui.md#look-and-feel) |
 | Light and dark themes | Done | Follows the system, or chosen with the top bar's theme button; remembered between runs |
 | Page colour modes | Done | View > Page colours: Normal, Automatic (dark pages with the dark theme), Dark, High contrast, Sepia. Pictures keep their colours unless "Recolour pictures too" is on. On screen only: the file, printing and exports keep their colours. See [Rendering](rendering.md#page-colour-modes) |
-| Rendering | Partial | Some transparency groups are drawn wrongly. Fonts that aren't embedded use the standard fonts. Annotations without a drawing of their own are drawn by LimarePDF, except media and 3D ones, without rich text or line captions. [Details](rendering.md) |
+| Rendering | Partial | Some transparency groups are drawn wrongly. Fonts that aren't embedded use installed fonts or similar stand-ins where hayro asks (CID fonts, which Chinese, Japanese and Korean text uses), with a notice saying what to install, and the standard fonts otherwise. Annotations without a drawing of their own are drawn by LimarePDF, except media and 3D ones, without rich text or line captions. [Details](rendering.md) |
 | Search | Done | Phrases across line breaks, and words hyphenated at a line end, are found and highlighted. [Details](search-and-text.md) |
 | Select and copy text | Done | With the default read tool; across pages, scrolling while you drag; in the order on the page, not the file's drawing order; includes recognised text |
 | Print or save selected text | Done | As the pages look, full width, cut down to the selected lines, or as plain text in Helvetica (Western European characters only); also saves a .txt file |
@@ -96,8 +96,9 @@ available.
   by one later; use Undo before saving.
 - Saving rewrites the whole file, except for digitally signed documents, whose changes are added after what was
   signed so the signatures stay valid ([details](signatures.md#saving-a-signed-document)).
-- Pages the renderer cannot draw say so, with the reason, and a notice says when a picture or font couldn't be
-  drawn ([details](rendering.md#when-something-cant-be-drawn)); editing may still work.
+- Pages the renderer cannot draw say so, with the reason, and a notice says when a picture couldn't be drawn
+  ([details](rendering.md#when-something-cant-be-drawn)); editing may still work. Another notice names fonts that
+  aren't in the file or installed and says what to install.
 - A malformed file that makes LimarePDF fail while opening, editing or saving gets an error message, and a failed edit
   leaves the document as it was. A failure while showing the document (pages, thumbnails, search, bookmarks,
   comments, the inspector) turns that tab into an error page with Save a copy and Close; other tabs carry on. A
@@ -116,13 +117,13 @@ pool of features other PDF tools have is in [ideas.md](ideas.md).
 
 In progress. Failed pages and missing parts are now reported, high zoom is drawn in tiles up to 6400%, an
 opt-in check compares LimarePDF with poppler over about 1,100 public test PDFs ([results](rendering.md#compared-with-poppler)),
-and annotations without a drawing of their own are drawn for every common type. Still to come, before Rendering can
-be called done:
+annotations without a drawing of their own are drawn for every common type, and Chinese, Japanese and Korean fonts
+that aren't embedded use installed fonts ([details](rendering.md#fonts-that-arent-embedded)). Still to come, before
+Rendering can be called done:
 
-- **Installed fonts for fonts that aren't embedded**, looked up by name, then by family and style, then by script
-  for Chinese, Japanese and Korean text. The standard fonts keep their bundled versions.
 - **hayro's own gaps** (knockout and non-isolated transparency groups, thin-line snapping, some shadings, CMaps that
-  use other CMaps), reported to hayro with test files.
+  use other CMaps, and installed fonts for other fonts that aren't embedded, which hayro doesn't ask for yet),
+  reported to hayro with test files.
 
 ### XFA forms
 

@@ -1388,12 +1388,13 @@ impl Tab {
         if what.is_subset(&self.missing) {
             return;
         }
-        self.missing.extend(what);
-        self.banners.retain(|b| b.kind != banners::Kind::Missing);
-        let at = self
-            .banners
-            .partition_point(|b| b.kind < banners::Kind::Missing);
-        self.banners.insert(at, banners::missing(&self.missing));
+        self.missing.extend(what.iter().cloned());
+        self.banners
+            .retain(|b| !matches!(b.kind, banners::Kind::Missing | banners::Kind::Fonts));
+        for b in banners::missing(&self.missing) {
+            let at = self.banners.partition_point(|x| x.kind < b.kind);
+            self.banners.insert(at, b);
+        }
     }
 
     /// How page `i` is drawn at `scale` (bitmap pixels per point): the whole page's render

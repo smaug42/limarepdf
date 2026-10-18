@@ -11,7 +11,8 @@ LimarePDF is written entirely in Rust, with no C or C++ dependencies.
 It uses:
 
 - [`lopdf`](https://crates.io/crates/lopdf) for the document structure and encryption;
-- [`hayro`](https://crates.io/crates/hayro) to draw pages, on the CPU (see [Rendering](rendering.md));
+- [`hayro`](https://crates.io/crates/hayro) to draw pages, on the CPU (see [Rendering](rendering.md)), and
+  [`fontdb`](https://crates.io/crates/fontdb) to find installed fonts for fonts a file doesn't embed;
 - [`egui`](https://crates.io/crates/egui) for the interface, and [`rfd`](https://crates.io/crates/rfd) for file
   dialogs;
 - [`image`](https://crates.io/crates/image) for images;

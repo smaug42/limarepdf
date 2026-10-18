@@ -4,14 +4,21 @@
 
 ### Added
 
-- A notice above the pages when parts of the document couldn't be drawn: a picture that can't be decoded, or a font
-  the renderer can't use, such as a Chinese, Japanese or Korean font that isn't embedded.
+- A notice above the pages when parts of the document couldn't be drawn, such as a picture that can't be decoded.
 - Zoom up to 6400%, as Acrobat (was 800%). At high zoom only the part of the page in view is drawn, in tiles, so
   pages stay sharp and quick to draw, and memory use stays about the same at any zoom.
 - More annotations that files store without a drawing are drawn, on screen and when printing: stamps (the stamp's
   name in a coloured frame), carets, file attachment icons, the seven standard note icons (in the app too), cloudy
   borders, text box callout lines and line leader lines. LimarePDF's own notes now show the Comment icon, a speech
   bubble, as their icon name says.
+- Chinese, Japanese and Korean text in fonts the file doesn't embed is drawn with installed fonts, looked up by name,
+  family, style and language (Noto CJK, Source Han, MS Mincho and the like), instead of being left out. Such fonts
+  named Arial, Times New Roman, Courier New, Calibri or Cambria use Liberation, Carlito or Caladea when the original
+  isn't installed, and other Latin ones a similar installed sans, serif or monospaced font instead of showing wrong
+  characters.
+- A notice names fonts that aren't in the file or installed and says what to install: the font itself when a
+  similar one is shown in its place, or a font for the language (such as Noto Sans CJK JP) when no installed font
+  has its characters.
 
 ### Fixed
 
