@@ -133,7 +133,7 @@ Small or medium additions that build on what LimarePDF already has:
 - Macros (L)
 - An MCP server so AI agents can run LimarePDF's operations (M)
 - Shell completions (S); renaming files by their content (M)
-- Autosave and crash recovery, sessions, custom shortcuts (M each)
+- Sessions (reopen the last documents), custom shortcuts (M each)
 
 ## Left out on purpose
 

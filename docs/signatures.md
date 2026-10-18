@@ -640,7 +640,8 @@ as made with a self-signed certificate, with the signer's details in their place
 Not yet tested: signatures made in Adobe Acrobat by LimarePDF's testers, LimarePDF-made certifications in Acrobat, LimarePDF's
 signatures in Acrobat beyond that first look, documents signed in Acrobat and saved with changes in LimarePDF (and the other way round), and digital ID files
 exported from Acrobat or Windows, or LimarePDF's exported files imported there. Where LimarePDF is stricter than Acrobat (see
-the limitations) is to be confirmed in those tests.
+the limitations) is to be confirmed in those tests. The checks still to run are listed in
+[Testing](testing.md#round-trips-with-adobe-acrobat).
 
 ## Limitations
 
