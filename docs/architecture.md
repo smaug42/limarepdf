@@ -68,7 +68,9 @@ IDs are in `ids.rs` (the ID folder, making self-signed certificates with `x509-c
 certificate by checking a signature made with its key rather than by labels) over `pkcs12.rs`, LimarePDF's own PKCS#12
 reader and writer on `asn1.rs` (which also writes DER): it derives and wipes the password keys itself (`pbkdf2`,
 `hmac`, the PKCS#12 derivation), so `pkcs5` isn't needed, and reads BER as Windows writes it. Private files (ID
-files, the trust list) go through `limarepdf_core::write_private`.
+files, the trust list) go through `limarepdf_core::write_private`. It and every document save (`Pdf::save`,
+`write_file`) replace files through `atomic.rs`: a temporary file beside the target, always created new under a fresh
+name (never one already there), private to the user on Unix while written, then renamed over the target.
 
 Signing (`sig_sign.rs`, `sign_document`) adds the signature dictionary with placeholders, its field or widget and
 its look, locks and certification to the document, then hands it to the appended-revision writer,
