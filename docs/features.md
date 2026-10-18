@@ -102,7 +102,8 @@ available.
   ([details](rendering.md#when-something-cant-be-drawn)); editing may still work. Another notice names fonts that
   aren't in the file or installed and says what to install.
 - A damaged file is repaired to open it, with a notice; the original is only replaced if you choose to when saving
-  ([details](rendering.md#damaged-files)).
+  ([details](rendering.md#damaged-files)). Stream data is skipped by its stated length, so an attached PDF or text
+  crafted to look like objects isn't taken for the file's own content.
 - A malformed file that makes LimarePDF fail while opening, editing or saving gets an error message, and a failed edit
   leaves the document as it was. A failure while showing the document (pages, thumbnails, search, bookmarks,
   comments, the inspector) turns that tab into an error page with Save a copy and Close; other tabs carry on. So does
