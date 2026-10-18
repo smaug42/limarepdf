@@ -49,6 +49,19 @@ struct Step {
     scrubbed: bool,
 }
 
+/// See [`Tab::state`].
+#[derive(PartialEq)]
+pub struct State {
+    revision: u64,
+    undo: usize,
+    redo: usize,
+    dirty: bool,
+    scrubbed: bool,
+    encryption: Option<Encryption>,
+    path: Option<PathBuf>,
+    pages: usize,
+}
+
 /// Inspector edits that applying again replaces, while nothing else has changed since.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Stamp {
@@ -355,6 +368,28 @@ impl Tab {
         }
     }
 
+    /// What a command can change in the tab, taken before it runs: if the command fails part
+    /// way, comparing tells whether it changed anything.
+    pub fn state(&self) -> State {
+        State {
+            revision: self.revision,
+            undo: self.undo.len(),
+            redo: self.redo.len(),
+            dirty: self.dirty,
+            scrubbed: self.scrubbed,
+            encryption: self.encryption.clone(),
+            path: self.path.clone(),
+            pages: self.page_count(),
+        }
+    }
+
+    /// After a command failed part way: nothing selected, dragged or half made, the Read
+    /// tool, and no commands left queued.
+    pub fn reset_interaction(&mut self) {
+        self.ed.reset();
+        self.requested.clear();
+    }
+
     /// Run an edit with undo support. On failure the document is left unchanged, and
     /// false is returned.
     pub fn edit(
@@ -362,7 +397,18 @@ impl Tab {
         ctx: &egui::Context,
         f: impl FnOnce(&mut Pdf) -> limarepdf_core::Result<()>,
     ) -> bool {
-        self.edit_inner(ctx, None, f)
+        self.edit_inner(ctx, None, false, f)
+    }
+
+    /// Like [`Tab::edit`], for a change that removes content for good (redaction, removing hidden
+    /// information): [`Tab::scrubbed`] is set in the same step, so the flag and the removal can't be split,
+    /// and undo puts both back.
+    pub fn edit_removing(
+        &mut self,
+        ctx: &egui::Context,
+        f: impl FnOnce(&mut Pdf) -> limarepdf_core::Result<()>,
+    ) -> bool {
+        self.edit_inner(ctx, None, true, f)
     }
 
     /// Like [`Tab::edit`], but if the last change was the same kind of stamp, it is replaced rather than
@@ -414,13 +460,15 @@ impl Tab {
         pages: &[usize],
         f: impl FnOnce(&mut Pdf) -> limarepdf_core::Result<()>,
     ) -> bool {
-        self.edit_inner(ctx, Some(pages), f)
+        self.edit_inner(ctx, Some(pages), false, f)
     }
 
+    /// `scrub`: the change removes content for good; see [`Tab::edit_removing`].
     fn edit_inner(
         &mut self,
         ctx: &egui::Context,
         soft: Option<&[usize]>,
+        scrub: bool,
         f: impl FnOnce(&mut Pdf) -> limarepdf_core::Result<()>,
     ) -> bool {
         let before = match crate::guard(|| self.pdf.snapshot()) {
@@ -438,12 +486,30 @@ impl Tab {
             self.error = Some(format!("{e:#}"));
             return false;
         }
+        // Redraw before recording the change: if redrawing panics, the change is put back too, so the
+        // document never holds a change the pages don't show.
+        let redrawn = crate::guard(|| {
+            match soft {
+                Some(pages) => self.soft_refresh(ctx, pages),
+                None => self.refresh(ctx),
+            }
+            Ok(())
+        });
+        if let Err(e) = redrawn {
+            let back = Pdf::from_bytes(&before, None).map(|p| self.pdf = p);
+            let again = crate::guard(|| {
+                self.refresh(ctx);
+                Ok(())
+            });
+            if let Err(e) = back.and(again) {
+                self.broken = Some(e.to_string());
+            }
+            self.error = Some(format!("{e:#}"));
+            return false;
+        }
         self.push_undo(Some(before));
         self.revision += 1;
-        match soft {
-            Some(pages) => self.soft_refresh(ctx, pages),
-            None => self.refresh(ctx),
-        }
+        self.scrubbed |= scrub;
         true
     }
 
@@ -2371,6 +2437,26 @@ mod tests {
             thread_order(&list),
             [(0, 0), (2, 1), (3, 2), (1, 0), (4, 0), (5, 0), (6, 0)]
         );
+    }
+
+    #[test]
+    fn removing_content_marks_the_tab_in_the_same_step() {
+        let ctx = egui::Context::default();
+        let mut pdf = Pdf::new();
+        pdf.insert_blank(0, 612.0, 792.0).unwrap();
+        let mut t = Tab::new(&ctx, 1, pdf, None, Colours::default()).unwrap();
+        // A removal that fails leaves both as they were.
+        assert!(!t.edit_removing(&ctx, |_| anyhow::bail!("refused")));
+        assert!(!t.scrubbed && t.revision == 0 && !t.dirty);
+        assert!(t.edit_removing(&ctx, |p| p.insert_blank(1, 612.0, 792.0)));
+        assert!(t.scrubbed && t.page_count() == 2);
+        t.undo(&ctx);
+        assert!(!t.scrubbed && t.page_count() == 1);
+        t.redo(&ctx);
+        assert!(t.scrubbed && t.page_count() == 2);
+        // An ordinary edit afterwards keeps the flag.
+        assert!(t.edit(&ctx, |p| p.insert_blank(2, 612.0, 792.0)));
+        assert!(t.scrubbed);
     }
 
     #[test]

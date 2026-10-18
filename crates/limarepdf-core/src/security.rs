@@ -16,7 +16,7 @@ pub enum Cipher {
 }
 
 /// Which actions remain allowed for users who open the file with the user password.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Restrictions {
     pub print: bool,
     pub print_high_quality: bool,
@@ -58,7 +58,7 @@ impl Restrictions {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Encryption {
     pub user_password: String,
     pub owner_password: String,

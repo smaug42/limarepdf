@@ -103,8 +103,10 @@ available.
   ([details](rendering.md#damaged-files)).
 - A malformed file that makes LimarePDF fail while opening, editing or saving gets an error message, and a failed edit
   leaves the document as it was. A failure while showing the document (pages, thumbnails, search, bookmarks,
-  comments, the inspector) turns that tab into an error page with Save a copy and Close; other tabs carry on. A
-  failure in a menu command outside those can still close the app.
+  comments, the inspector) turns that tab into an error page with Save a copy and Close; other tabs carry on. So does
+  a menu command, shortcut or panel button that fails: an error message when it changed nothing, else that tab's
+  error page. Redactions and removed hidden information are recorded with the change itself, so a later save of a
+  signed document always writes the file out in full.
 - Text from a file that the app shows as a label or message (link addresses, bookmark names, comment authors and
   text, file names in tab and window titles and print job titles) has direction-changing (bidi), invisible and
   control characters removed and is shortened when very long, so a link can't pretend to go somewhere else. Form
@@ -117,8 +119,6 @@ pool of features other PDF tools have is in [ideas.md](ideas.md).
 
 ### Reliability
 
-- **Menu commands that fail don't close the app:** an error message instead, as opening, editing, saving and showing
-  pages already do, so unsaved work in other tabs is never lost that way.
 - **Crash recovery:** when LimarePDF stops without closing normally, the next start offers the documents that had
   unsaved changes, from private copies kept while you work. Your own files are never written by it: a recovered
   document opens as a new unsaved document.

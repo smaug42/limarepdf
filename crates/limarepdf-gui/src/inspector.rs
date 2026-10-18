@@ -72,6 +72,27 @@ pub enum Apply {
     ViewPrefs,
 }
 
+impl Apply {
+    /// The button's name for messages, as its section is titled.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Apply::Act(a) => crate::actions::name(*a),
+            Apply::Props => "Properties",
+            Apply::Security => "Password security",
+            Apply::Crop => "Crop",
+            Apply::HeaderFooter { .. } => "Headers, footers, Bates",
+            Apply::Watermark { .. } => "Watermark",
+            Apply::Ocr => "Recognise text (OCR)",
+            Apply::Scans => "Optimise scanned pages",
+            Apply::Export => "Export pages as images",
+            Apply::Split => "Split into files",
+            Apply::Blank(_) => "Insert blank page",
+            Apply::Label(_) | Apply::RemoveLabels => "Page labels",
+            Apply::ViewPrefs => "Opening view",
+        }
+    }
+}
+
 pub struct Wm {
     /// A picture instead of text.
     pub picture: bool,
