@@ -39,7 +39,8 @@ Save As to a new file keeps the signed original.
 - **Middle:** the pages, scrolling continuously. By default they fit the width between the side panels, and keep
   fitting as you resize the window or open and close the panels. Zooming in or out, actual size, Ctrl+scroll or a
   pinch turns fitting off, and your zoom then stays as it is; the Fit width button (highlighted while fitting is on)
-  or Ctrl+0 turns it back on. The page layout button left of the zoom buttons (its icon shows the current layout),
+  or Ctrl+0 turns it back on. Zoom goes from 10% to 6400%. At high zoom the part of the page in view is drawn in
+  tiles as you scroll, over a softer view of the whole page until they arrive. The page layout button left of the zoom buttons (its icon shows the current layout),
   or ☰ > View > Page layout, chooses how the document's pages are laid out: **Continuous pages** (one column, the default), **Facing pages** (two side by side, still scrolling;
   fitting fits both) or **Single page** (one at a time; a wheel step past the page's top or bottom turns the page).
   In facing pages, **Show cover page alone** (on by default) puts the first page on its own on the right, as in a

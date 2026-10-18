@@ -6,13 +6,15 @@
 
 - A notice above the pages when parts of the document couldn't be drawn: a picture that can't be decoded, or a font
   the renderer can't use, such as a Chinese, Japanese or Korean font that isn't embedded.
+- Zoom up to 6400%, as Acrobat (was 800%). At high zoom only the part of the page in view is drawn, in tiles, so
+  pages stay sharp and quick to draw, and memory use stays about the same at any zoom.
 
 ### Fixed
 
 - A page that can't be drawn shows "This page couldn't be drawn" and the reason, instead of "Rendering…" forever
   while the app tried again on every frame.
-- Zooming in far on a large page could close the app: a page is now drawn at most at the graphics card's largest
-  texture size (8192 pixels a side) and shown stretched beyond that.
+- Zooming in far on a large page could close the app, because the page was drawn as one picture bigger than the
+  graphics card takes. Pages shown more than 4096 pixels a side are now drawn in tiles.
 
 ## [0.7.1] - 2026-10-17
 

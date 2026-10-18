@@ -40,7 +40,7 @@ available.
 | Tabs, thumbnails, opening by drag and drop | Done | |
 | Recent files | Done | Start screen and ☰ > File > Open recent; 10 files, kept on your computer only |
 | Notices about the document | Done | Password-protected, scanned pages, form fields, large files. [Details](gui.md#notices-about-the-document) |
-| Zoom, fit width, continuous scrolling, page navigation | Done | Pages fit the window's width by default and follow resizing; zooming turns that off. Single-page and facing-page layouts (top-bar button or View > Page layout; cover page alone or paired), per document, following the document's own preference when it has one |
+| Zoom, fit width, continuous scrolling, page navigation | Done | Pages fit the window's width by default and follow resizing; zooming turns that off. Zoom from 10% to 6400%, drawn in tiles at high zoom so pages stay sharp. Single-page and facing-page layouts (top-bar button or View > Page layout; cover page alone or paired), per document, following the document's own preference when it has one |
 | Open at a page from the command line | Done | `limarepdf file.pdf --page N` |
 | Command palette, right-click menus, floating toolbar | Done | Toolbar customisation: No |
 | App icon | Done | Window, taskbar and Windows `.exe`. Wayland needs the desktop entry installed. [Details](install.md#menu-entry-and-icon-on-linux) |
@@ -111,6 +111,21 @@ available.
 
 Ideas for what comes next. None of these are available yet, and the list is not a commitment or an order. A wider
 pool of features other PDF tools have is in [ideas.md](ideas.md).
+
+### Rendering
+
+In progress. Failed pages and missing parts are now reported, and high zoom is drawn in tiles up to 6400%. Still to
+come, before Rendering can be called done:
+
+- **A comparison with poppler:** a script and an opt-in test that draw a fetched set of public test PDFs with both
+  and list the pages that differ beyond anti-aliasing, so the remaining gaps are measured.
+- **The remaining annotation drawings** for annotations without their own: stamps (the stamp's name in a coloured
+  box), Caret and FileAttachment icons, the seven standard note icons, cloudy borders, text box callout lines and
+  line leader lines. On screen and in printing only, as now.
+- **Installed fonts for fonts that aren't embedded**, looked up by name, then by family and style, then by script
+  for Chinese, Japanese and Korean text. The standard fonts keep their bundled versions.
+- **hayro's own gaps** (knockout and non-isolated transparency groups, thin-line snapping, some shadings, CMaps that
+  use other CMaps), reported to hayro with test files.
 
 ### XFA forms
 

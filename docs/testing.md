@@ -17,6 +17,7 @@ Run them with `cargo test --workspace`.
 | `crates/limarepdf-core/tests/integration.rs` | Overlays, encryption round trips with all four ciphers, search, crop margins on turned pages |
 | `crates/limarepdf-core/tests/edit.rs` | Content editing: objects and text edits. Reading text: words, search boxes placed by glyph widths, ToUnicode maps, word gaps, text inside form XObjects, phrases across lines |
 | `crates/limarepdf-core/tests/render_coverage.rs` | Rendering, pixel by pixel; see [Rendering](rendering.md) |
+| `crates/limarepdf-core/tests/render_region.rs` | Drawing part of a page, as the app's tiles at high zoom do: tiles match the whole page pixel by pixel, are cut at the page's edges, land in place at the highest scale, and keep pictures in dark pages |
 | `crates/limarepdf-core/tests/import.rs` | Importing images as pages |
 | `crates/limarepdf-core/tests/scan.rs` | Optimising scanned pages |
 | `crates/limarepdf-core/tests/ocr.rs` | OCR text layers, their placement, search and correction |
@@ -72,6 +73,8 @@ and the placing tool's pane; none of these was clicked through;
 filling in forms has been used by hand on one form; the Bookmarks tab (including adding, renaming and deleting
 bookmarks) and links were checked through their core tests, `limarepdf-cli bookmarks` and real PDFs, and the XFA notice by
 screenshot, but none of these was clicked through. Filled forms were also opened in poppler and
-Ghostscript, including encrypted ones; not yet in Adobe Reader.
+Ghostscript, including encrypted ones; not yet in Adobe Reader. Drawing pages in tiles at high zoom was checked by
+screenshot at 3200% and 6400% and used by hand on Linux, zooming and scrolling up to 6400%; not yet on a HiDPI
+screen.
 
 Each feature page says what was not tested, under "How this was tested".

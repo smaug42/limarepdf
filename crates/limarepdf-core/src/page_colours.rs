@@ -112,19 +112,18 @@ pub fn recolour(bitmap: &mut Bitmap, mode: PageColours, keep: &[PixelBox]) {
     }
 }
 
-/// Where raster pictures are drawn on `page` rendered at `scale`, in pixels of a bitmap
-/// `width` × `height`, each clipped to the clip in force when it was drawn.
+/// Where raster pictures are drawn on `page` rendered with `transform` (page space to
+/// bitmap pixels), in pixels of a bitmap `width` × `height`, each clipped to the clip in
+/// force when it was drawn.
 pub fn picture_boxes<'a>(
     page: &'a Page<'a>,
     cache: &InterpreterCache<'a>,
     settings: &InterpreterSettings,
-    scale: f32,
+    transform: Affine,
     width: usize,
     height: usize,
 ) -> Vec<PixelBox> {
     let full = Rect::new(0.0, 0.0, width as f64, height as f64);
-    let transform = Affine::scale(scale as f64)
-        * hayro::hayro_interpret::util::TransformExt::to_kurbo(&page.initial_transform(true));
     let mut ctx = Context::new(transform, full, cache, page.xref(), settings.clone());
     let mut dev = Boxes {
         clips: vec![full],

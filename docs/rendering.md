@@ -55,7 +55,19 @@ Other PDF features have not been tested by LimarePDF.
 - hayro reports each font once, on the first page that uses it, so the notice is about the document, not one page.
 - An annotation whose appearance hayro can't select isn't reported: that is also what happens, correctly, for a check
   box that is off and has a drawing only for on.
-- The app draws a page as one bitmap, at most 8192 pixels a side (the graphics card's limit). Above that, pages are
-  shown at the largest size that fits and look softer at high zoom.
+
+## High zoom
+
+- The app draws a page as one bitmap up to 4096 pixels on its longer side (less when the graphics card's largest
+  texture is smaller). A page shown bigger than that is drawn at that size, and the part in view is drawn over it at
+  full size in tiles of 512 × 512 pixels, with a ring of one tile around the view so scrolling finds them ready.
+- After a zoom change, tiles at the new zoom replace those of the old one as they arrive; until then the old tiles,
+  or the whole-page bitmap, show stretched, so the page is never blank.
+- Each tile is drawn by hayro on its own, with the view moved to that part of the page. A test checks that tiles
+  match the same pixels of the whole page drawn at once. Inside raster pictures, a few pixels can differ slightly
+  between a tile and the whole page, as the picture is sampled from a different starting point.
+- Memory and texture size stay bounded at any zoom, up to the highest, 6400%. Tiles are drawn at up to 256 pixels
+  per point (6400% on a screen with three pixels per point); beyond that they are shown stretched.
+- Printing and exports don't use tiles. They draw whole pages, at most 1152 dpi.
 
 For timings and how the app keeps drawing responsive, see [Performance](performance.md).
