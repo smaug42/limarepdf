@@ -86,7 +86,7 @@ available.
 | Certificate encryption | No | |
 | PDF/A, optimised saving | No | Saved files are pruned and compressed |
 | Comparing documents | No | |
-| Sessions, autosave, backups, preferences, custom shortcuts, translations | No | You are asked before closing unsaved work |
+| Sessions, autosave, backups, preferences, custom shortcuts, translations | No | You are asked before closing unsaved work. Crash recovery is planned (see below) |
 | XFA forms, XPS documents | No | |
 
 ## Known limits
@@ -114,6 +114,16 @@ available.
 
 Ideas for what comes next. None of these are available yet, and the list is not a commitment or an order. A wider
 pool of features other PDF tools have is in [ideas.md](ideas.md).
+
+### Reliability
+
+- **Menu commands that fail don't close the app:** an error message instead, as opening, editing, saving and showing
+  pages already do, so unsaved work in other tabs is never lost that way.
+- **Crash recovery:** when LimarePDF stops without closing normally, the next start offers the documents that had
+  unsaved changes, from private copies kept while you work. Your own files are never written by it: a recovered
+  document opens as a new unsaved document.
+- **Acceptance checks** of everyday workflows by hand, in other readers and on Windows and macOS, as listed in
+  [Testing](testing.md#acceptance-checks).
 
 ### Rendering
 

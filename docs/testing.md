@@ -94,3 +94,66 @@ screenshot at 3200% and 6400% and used by hand on Linux, zooming and scrolling u
 screen.
 
 Each feature page says what was not tested, under "How this was tested".
+
+## Acceptance checks
+
+The automated tests cover the library and the command line. These checks cover what they can't: the desktop app used
+end to end, files opened in other readers, and other platforms. They are run by hand on public or made-up files,
+before a release and after a change to the area a row names. A row's last run is noted under it; no row has been run as
+a whole yet.
+
+| Workflow | Already covered | Check by hand |
+| --- | --- | --- |
+| Open, move around, search, select, copy | Text reading, search and selection rules (`edit.rs`, the app's unit tests) | Open a text PDF, a scan with recognised text and a Chinese, Japanese or Korean file by drag and drop, Open recent and the command line; go to a page; search a phrase that crosses a line; select across a page break and paste into a text editor |
+| Edit, undo and redo, save, reopen | Content editing (`edit.rs`), saving (`save.rs`) | Edit a line of text, move a picture, delete a shape; undo everything, redo everything; save, reopen, and compare the page in another reader |
+| Comments and markup | `annots.rs` | Add one of each kind and a reply, save, reopen in LimarePDF, Firefox and Acrobat Reader: places, colours, text and replies match |
+| Forms | `form_fill.rs` (renders), poppler and Ghostscript | Fill every kind of field, save, reopen; open in Acrobat Reader: values and looks match; flatten and check again |
+| Pages: merge, split, reorder, rotate, crop, export | `integration.rs`, `export.rs`, the command line | Merge two files, split one, drag pages into a new order, turn and crop one; save and reopen; export pages as images and text |
+| Printing | `print.rs`, with a stand-in for `lp` | Print a file with mixed page sizes and a turned page: size, orientation and placement on paper; comments and form values printed |
+| Digital signatures | `signatures.rs`, `signing.rs`, `signature_changes.rs`, pdfsig and OpenSSL | Check a signed sample; sign, certify, add a comment and save; reopen and check; then the Acrobat round trips below |
+| Redaction, removing hidden information | `redact.rs`, `sanitise.rs`, the after-check | Redact a phrase and part of a picture, save, then search the output with `pdftotext` and another reader's search; remove hidden information and check `pdfinfo -meta` |
+| Damaged files | `repair.rs`, the corpus | Open a damaged file: the notice shows; Save asks; Save as writes a new file; the original's checksum is unchanged |
+| Errors | `guard()` unit test, a tab's error page | Open a cut-short file and a file with a broken page: a message, the app stays open, other tabs keep their unsaved changes |
+
+## Round trips with Adobe Acrobat
+
+From the digital signatures design. Each row is done in the order given, on Windows. "Reader" rows need only the free
+Acrobat Reader; "Acrobat" rows need Acrobat Pro or Standard. Results go into
+[Compatibility](signatures.md#compatibility); a failure is fixed or written down as a limit.
+
+| Check | Needs | Result |
+| --- | --- | --- |
+| A LimarePDF-signed file in Acrobat: valid, signer unknown | Reader | Done: shown as a self-signed signature, details in place |
+| The same after trusting LimarePDF's exported certificate (`.cer`) | Acrobat | Not run (Reader asks for an upgrade) |
+| A comment added in Acrobat to a LimarePDF-signed file; checked in LimarePDF and Acrobat: valid, changes allowed | Reader | Not run |
+| An empty field signed in Acrobat on a file LimarePDF signed first; both signatures checked in LimarePDF | Reader | Not run |
+| A LimarePDF-certified file in Acrobat: certification level shown; a comment and form filling allowed or refused as the level says | Reader | Not run |
+| Locked fields from a LimarePDF signature: Acrobat refuses to change them | Reader | Not run |
+| A LimarePDF-signed file changed in a page's content by a tamper tool, in Acrobat: changed after signing | Reader | Not run |
+| An Acrobat-signed and an Acrobat-certified file in LimarePDF: the same verdicts as Acrobat, apart from trust | Acrobat | Not run |
+| LimarePDF fills a field, adds a comment, adds a second signature to an Acrobat-signed file; Acrobat still finds the first signature valid with allowed changes | Acrobat | Not run |
+| LimarePDF changes a page of an Acrobat-signed file after asking; Acrobat reports a change that isn't allowed | Acrobat | Not run |
+| A LimarePDF ID exported as `.p12` imported into Acrobat and used to sign; an Acrobat ID imported into LimarePDF and used to sign | Acrobat | Not run |
+
+## Platform smoke checks
+
+A short pass on each platform after installing a release build. Continuous integration builds and tests every
+platform but never runs the app, so nothing here counts as checked from CI. "Not recorded" means it has likely
+happened in everyday use but no result was written down.
+
+| Check | Linux | Windows | macOS |
+| --- | --- | --- | --- |
+| Install from the package or installer, start from the menu | apt and dnf repositories checked (0.5) | MSI installed and started by hand (0.5) | Not run |
+| Open a PDF from the file manager (double-click, Open with) | Not recorded | Not run | Not run (Finder's Open with) |
+| Open a PDF passed on the command line, with `--page` | Not recorded | Not run | Not run |
+| Edit, save, reopen | Used by hand | Not run | Not run |
+| File dialogs (open, save as, choose a folder) | Used by hand | Not run | Not run |
+| Print to a real printer | Not run (no printer) | Printed by hand (0.3) | Not run |
+| Keyboard shortcuts (Ctrl, or Cmd on macOS) | Used by hand | Not run | Not run |
+| HiDPI screen (scale 2) | Not run | Not run | Not run |
+| Name and icon in the taskbar, dock and Open with | Not recorded | Icon checked by hand (0.5) | Not run |
+| A damaged file and a file that fails to draw: message, no crash | Not recorded | Not run | Not run |
+
+On Linux, HiDPI can be tried without such a screen: run the app under a virtual X server with
+`WINIT_X11_SCALE_FACTOR=2` and take screenshots, as for other screenshots. A real HiDPI screen is still needed for
+sharpness.
