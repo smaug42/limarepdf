@@ -1,5 +1,37 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- A notice above the pages when parts of the document couldn't be drawn, such as a picture that can't be decoded.
+- Zoom up to 6400%, as Acrobat (was 800%). At high zoom only the part of the page in view is drawn, in tiles, so
+  pages stay sharp and quick to draw, and memory use stays about the same at any zoom.
+- More annotations that files store without a drawing are drawn, on screen and when printing: stamps (the stamp's
+  name in a coloured frame), carets, file attachment icons, the seven standard note icons (in the app too), cloudy
+  borders, text box callout lines and line leader lines. LimarePDF's own notes now show the Comment icon, a speech
+  bubble, as their icon name says.
+- Chinese, Japanese and Korean text in fonts the file doesn't embed is drawn with installed fonts, looked up by name,
+  family, style and language (Noto CJK, Source Han, MS Mincho and the like), instead of being left out. Such fonts
+  named Arial, Times New Roman, Courier New, Calibri or Cambria use Liberation, Carlito or Caladea when the original
+  isn't installed, and other Latin ones a similar installed sans, serif or monospaced font instead of showing wrong
+  characters.
+- A notice names fonts that aren't in the file or installed and says what to install: the font itself when a
+  similar one is shown in its place, or a font for the language (such as Noto Sans CJK JP) when no installed font
+  has its characters.
+- Damaged files open: when a file's cross-reference information (where each object is) is broken or missing, its
+  objects are found by reading through the file, as other PDF apps do. A notice says the file was repaired and some
+  content may be missing, with a Save as… button; the document counts as changed, and Save asks before replacing
+  the damaged original. A repaired file's
+  signatures never show as valid and unchanged. `limarepdf-cli` repairs them too, with a note on stderr.
+
+### Fixed
+
+- A page that can't be drawn shows "This page couldn't be drawn" and the reason, instead of "Rendering…" forever
+  while the app tried again on every frame.
+- Zooming in far on a large page could close the app, because the page was drawn as one picture bigger than the
+  graphics card takes. Pages shown more than 4096 pixels a side are now drawn in tiles.
+
 ## [0.7.1] - 2026-10-17
 
 ### Changed

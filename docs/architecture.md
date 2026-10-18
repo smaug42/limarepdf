@@ -11,7 +11,8 @@ LimarePDF is written entirely in Rust, with no C or C++ dependencies.
 It uses:
 
 - [`lopdf`](https://crates.io/crates/lopdf) for the document structure and encryption;
-- [`hayro`](https://crates.io/crates/hayro) to draw pages, on the CPU (see [Rendering](rendering.md));
+- [`hayro`](https://crates.io/crates/hayro) to draw pages, on the CPU (see [Rendering](rendering.md)), and
+  [`fontdb`](https://crates.io/crates/fontdb) to find installed fonts for fonts a file doesn't embed;
 - [`egui`](https://crates.io/crates/egui) for the interface, and [`rfd`](https://crates.io/crates/rfd) for file
   dialogs;
 - [`image`](https://crates.io/crates/image) for images;
@@ -21,6 +22,13 @@ It uses:
 Forms are read in `crates/limarepdf-core/src/forms.rs`. When a value changes, LimarePDF draws the field's appearance itself
 (`form_ap.rs`, written into the file by `form_write.rs`) rather than asking other readers to, so filled fields look
 the same everywhere; the desktop app's side is `crates/limarepdf-gui/src/fields.rs`.
+
+Damaged files are repaired in `crates/limarepdf-core/src/repair.rs` when lopdf reads a file with no pages: it scans
+the bytes for `N G obj` headers (skipping stream data; a later copy of a number wins), takes the trailer entries from
+the newest trailer or cross-reference stream dictionary that names a catalog, appends a rebuilt cross-reference
+table, and has lopdf read the file again. Object stream members lopdf's reader skips are then read one by one, and
+when the trailers name no usable catalog, the last catalog object with a page tree is used. See
+[Rendering](rendering.md#damaged-files).
 
 Page content is read by LimarePDF's own parser (`crates/limarepdf-core/src/objects.rs`), which splits it into the objects that
 editing works on and reads the text that search, copying and export use, with its own reader for fonts' ToUnicode

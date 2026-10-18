@@ -3,12 +3,16 @@
 //! so scrolling stays responsive.
 
 use limarepdf_core::page_colours::PageColours;
-use limarepdf_core::render::{self, Bitmap, Renderer};
+use limarepdf_core::render::{self, Bitmap, Missing, Region, Renderer};
+use std::collections::BTreeSet;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 
-/// (page index, quantised scale)
-pub type Key = (usize, u32);
+/// (page index, quantised scale, tile column and row; `None` for the whole page)
+pub type Key = (usize, u32, Option<(u32, u32)>);
+
+/// The side of a tile, in bitmap pixels.
+pub const TILE: u32 = 512;
 
 /// How pages are coloured on screen.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
@@ -23,6 +27,9 @@ pub struct Response {
     /// The colours it was drawn in; a response drawn before a change is dropped.
     pub colours: Colours,
     pub bitmap: Result<Bitmap, String>,
+    /// What couldn't be drawn. Each thing is reported once per thread, so it may have
+    /// been on an earlier page.
+    pub missing: BTreeSet<Missing>,
 }
 
 struct Queue {
@@ -81,8 +88,18 @@ impl Worker {
                     let bitmap = match (&renderer, &*parsed) {
                         (Some(r), _) => {
                             // A malformed page must not take the whole viewer down.
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                r.render_in(key.0, scale, colours.mode, !colours.pictures_too)
+                            let (mode, keep) = (colours.mode, !colours.pictures_too);
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match key.2 {
+                                None => r.render_in(key.0, scale, mode, keep),
+                                Some((c, row)) => {
+                                    let region = Region {
+                                        x: c * TILE,
+                                        y: row * TILE,
+                                        width: TILE,
+                                        height: TILE,
+                                    };
+                                    r.render_region_in(key.0, scale, region, mode, keep)
+                                }
                             }))
                             .map_err(|_| "renderer panicked on this page".to_string())
                             .and_then(|r| r.map_err(|e| e.to_string()))
@@ -90,10 +107,12 @@ impl Worker {
                         (None, Err(e)) => Err(e.clone()),
                         _ => Err("renderer unavailable".into()),
                     };
+                    let missing = renderer.as_ref().map(|r| r.take_missing());
                     let r = Response {
                         key,
                         colours,
                         bitmap,
+                        missing: missing.unwrap_or_default(),
                     };
                     if tx.send(r).is_err() {
                         return;

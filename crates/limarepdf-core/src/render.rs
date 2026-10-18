@@ -3,16 +3,25 @@
 //! `hayro`'s render cache is not `Send`, so a [`Renderer`] lives on one thread.
 //! For parallel work, create one renderer per worker (see [`render_pages_parallel`]).
 
+use crate::installed_fonts::display_name;
+pub use crate::installed_fonts::{InstalledFonts, Language};
 use crate::page_colours::{self, PageColours};
 use crate::{Pdf, Result};
 use anyhow::{anyhow, Context};
-use hayro::hayro_interpret::{InterpreterCache, InterpreterSettings};
-use hayro::hayro_syntax::Pdf as HPdf;
+use hayro::hayro_interpret::font::FontQuery;
+use hayro::hayro_interpret::util::TransformExt;
+use hayro::hayro_interpret::{InterpreterCache, InterpreterSettings, InterpreterWarning};
+use hayro::hayro_syntax::page::Page;
+use hayro::hayro_syntax::{DecryptionError, LoadPdfError, Pdf as HPdf};
+use hayro::kurbo::Affine;
 use hayro::vello_cpu::color::palette::css::WHITE;
-use hayro::{render, PixmapSettings, RenderCache, RenderSettings};
+use hayro::vello_cpu::{Pixmap, RasterizerSettings, RenderContext, Resources, TargetInit};
+use hayro::{render, render_into, PixmapSettings, RenderCache, RenderSettings};
 use image::codecs::jpeg::{JpegEncoder, PixelDensity};
 use rayon::prelude::*;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 /// An opaque RGBA8 bitmap (row-major, 4 bytes per pixel).
 #[derive(Clone)]
@@ -22,6 +31,80 @@ pub struct Bitmap {
     pub rgba: Vec<u8>,
 }
 
+/// Largest scale for drawing part of a page with [`Renderer::render_region`]: 6400% zoom
+/// at 96 dpi on a screen with three pixels per point.
+pub const MAX_REGION_SCALE: f32 = 256.0;
+
+/// A rectangle of the bitmap a whole page would be at some scale: left, top, width and
+/// height in pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Region {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Region {
+    /// The part of the region inside a page bitmap `width` × `height`, at most
+    /// `u16::MAX` a side (the rasteriser's limit); `None` when nothing is left.
+    fn within(self, width: u32, height: u32) -> Option<Region> {
+        let w = self
+            .width
+            .min(width.saturating_sub(self.x))
+            .min(u16::MAX as u32);
+        let h = self
+            .height
+            .min(height.saturating_sub(self.y))
+            .min(u16::MAX as u32);
+        (w > 0 && h > 0).then_some(Region {
+            width: w,
+            height: h,
+            ..self
+        })
+    }
+}
+
+/// Something on a page the renderer couldn't draw as the file asks, by font name where
+/// the file gives one.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Missing {
+    /// A font the renderer can't use, or one that isn't embedded with no installed font
+    /// at all to draw it, drawn with a standard font that may lack its characters.
+    Font(Option<String>),
+    /// Text in a language no installed font has: a CID font that isn't embedded, drawn
+    /// with a Latin standard font that lacks its characters.
+    Language(Language, Option<String>),
+    /// A font that isn't embedded or installed, drawn with an installed font like it
+    /// (the second name), so the text reads but looks different.
+    StandIn(Option<String>, String),
+    /// A picture that couldn't be decoded.
+    Picture,
+}
+
+impl Missing {
+    /// Whether something is lost (left out or drawn wrongly), rather than drawn with a
+    /// font like the one asked for.
+    pub fn lost(&self) -> bool {
+        !matches!(self, Missing::StandIn(..))
+    }
+
+    /// The thing, for a list: "a font", "Japanese text", "Tahoma (drawn with Liberation
+    /// Sans)".
+    pub fn describe(&self) -> String {
+        match self {
+            Missing::Font(Some(f)) => format!("the font {f}"),
+            Missing::Font(None) => "a font".into(),
+            Missing::Language(l, _) => format!("{} text", l.name()),
+            Missing::StandIn(f, with) => format!(
+                "{} (drawn with {with})",
+                f.as_deref().unwrap_or("a font with no name")
+            ),
+            Missing::Picture => "a picture".into(),
+        }
+    }
+}
+
 pub struct Renderer<'a> {
     pdf: &'a HPdf,
     cache: RenderCache<'a>,
@@ -29,39 +112,102 @@ pub struct Renderer<'a> {
     /// interpreter half private.
     boxes: InterpreterCache<'a>,
     settings: InterpreterSettings,
+    /// What hayro reported it couldn't draw, since [`Renderer::take_missing`] was last
+    /// called.
+    missing: Arc<Mutex<BTreeSet<Missing>>>,
 }
 
 impl<'a> Renderer<'a> {
+    /// A renderer that draws fonts that aren't embedded with installed fonts, where
+    /// hayro asks for them (see [`InstalledFonts`]).
     pub fn new(pdf: &'a HPdf) -> Self {
+        Self::build(pdf, None)
+    }
+
+    /// A renderer that looks only in `fonts` for fonts that aren't embedded.
+    pub fn with_fonts(pdf: &'a HPdf, fonts: Arc<InstalledFonts>) -> Self {
+        Self::build(pdf, Some(fonts))
+    }
+
+    fn build(pdf: &'a HPdf, fonts: Option<Arc<InstalledFonts>>) -> Self {
+        let missing = Arc::new(Mutex::new(BTreeSet::new()));
+        let mut settings = InterpreterSettings::default();
+        let note = missing.clone();
+        settings.warning_sink = Arc::new(move |w| {
+            let m = match w {
+                InterpreterWarning::ImageDecodeFailure => Missing::Picture,
+                InterpreterWarning::UnsupportedFont => Missing::Font(None),
+                // Also sent for a check box that is off and has only an appearance for
+                // on, which is normal and draws nothing.
+                _ => return,
+            };
+            note.lock().unwrap_or_else(|e| e.into_inner()).insert(m);
+        });
+        // hayro asks for a fallback only for CID fonts that aren't embedded. Without an
+        // installed font, the default answer is a standard font, which lacks Chinese,
+        // Japanese and Korean characters and draws Latin CID text with wrong characters.
+        let resolve = settings.font_resolver.clone();
+        let note = missing.clone();
+        settings.font_resolver = Arc::new(move |q| {
+            let FontQuery::Fallback(f) = q else {
+                return resolve(q);
+            };
+            let found = match &fonts {
+                Some(fonts) => fonts.find(f),
+                None => InstalledFonts::system().find(f),
+            };
+            let name = display_name(f);
+            let m = match (&found, Language::of(f)) {
+                (Some(found), _) => found
+                    .stand_in
+                    .clone()
+                    .map(|with| Missing::StandIn(name, with)),
+                (None, Some(l)) => Some(Missing::Language(l, name)),
+                (None, None) => Some(Missing::Font(name)),
+            };
+            if let Some(m) = m {
+                note.lock().unwrap_or_else(|e| e.into_inner()).insert(m);
+            }
+            match found {
+                Some(found) => Some((found.data, found.index)),
+                None => resolve(q),
+            }
+        });
         Self {
             pdf,
             cache: RenderCache::new(),
             boxes: InterpreterCache::new(),
-            settings: InterpreterSettings::default(),
+            settings,
+            missing,
         }
+    }
+
+    /// What couldn't be drawn in the renders since the last call. hayro caches fonts and
+    /// pictures across pages, so each is reported once per renderer, on the first page
+    /// that uses it.
+    pub fn take_missing(&self) -> BTreeSet<Missing> {
+        std::mem::take(&mut *self.missing.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     pub fn page_count(&self) -> usize {
         self.pdf.pages().len()
     }
 
+    fn page(&self, index: usize) -> Result<&'a Page<'a>> {
+        let pdf: &'a HPdf = self.pdf;
+        pdf.pages()
+            .get(index)
+            .ok_or_else(|| anyhow!("no page {}", index + 1))
+    }
+
     /// Displayed page size in points.
     pub fn page_size(&self, index: usize) -> Result<(f32, f32)> {
-        let p = self
-            .pdf
-            .pages()
-            .get(index)
-            .ok_or_else(|| anyhow!("no page {}", index + 1))?;
-        Ok(p.render_dimensions())
+        Ok(self.page(index)?.render_dimensions())
     }
 
     /// Render a page at `scale` (1.0 = 72 dpi, 2.0 = 144 dpi).
     pub fn render(&self, index: usize, scale: f32) -> Result<Bitmap> {
-        let page = self
-            .pdf
-            .pages()
-            .get(index)
-            .ok_or_else(|| anyhow!("no page {}", index + 1))?;
+        let page = self.page(index)?;
         let scale = scale.clamp(0.05, 16.0);
         let pm = render(
             page,
@@ -91,22 +237,89 @@ impl<'a> Renderer<'a> {
         keep_pictures: bool,
     ) -> Result<Bitmap> {
         let mut b = self.render(index, scale)?;
+        let transform = page_transform(self.page(index)?, scale.clamp(0.05, 16.0), 0, 0);
+        self.recolour(index, &mut b, transform, mode, keep_pictures);
+        Ok(b)
+    }
+
+    /// Render the part `region` of a page drawn at `scale` (at most
+    /// [`MAX_REGION_SCALE`]), for showing a page in tiles at high zoom. The region is cut
+    /// to the page; one wholly outside it is an error.
+    pub fn render_region(&self, index: usize, scale: f32, region: Region) -> Result<Bitmap> {
+        let page = self.page(index)?;
+        let scale = scale.clamp(0.05, MAX_REGION_SCALE);
+        // The whole page's bitmap size, as `render` works it out.
+        let (w, h) = page.render_dimensions();
+        let r = region
+            .within((w * scale) as u32, (h * scale) as u32)
+            .ok_or_else(|| anyhow!("the region is outside page {}", index + 1))?;
+        let mut ctx = RenderContext::new(r.width as u16, r.height as u16);
+        render_into(
+            page,
+            &self.cache,
+            &self.settings,
+            &RenderSettings::default(),
+            &mut ctx,
+            page_transform(page, scale, r.x, r.y),
+        );
+        ctx.flush();
+        let mut pm = Pixmap::new(ctx.width(), ctx.height());
+        ctx.render_with(
+            &mut pm,
+            &mut Resources::default(),
+            RasterizerSettings {
+                target_init: TargetInit::Clear(WHITE),
+                ..Default::default()
+            },
+        );
+        Ok(Bitmap {
+            width: pm.width() as usize,
+            height: pm.height() as usize,
+            rgba: pm.data_as_u8_slice().to_vec(),
+        })
+    }
+
+    /// [`Renderer::render_region`] for display in a colour mode, as
+    /// [`Renderer::render_in`].
+    pub fn render_region_in(
+        &self,
+        index: usize,
+        scale: f32,
+        region: Region,
+        mode: PageColours,
+        keep_pictures: bool,
+    ) -> Result<Bitmap> {
+        let mut b = self.render_region(index, scale, region)?;
+        let scale = scale.clamp(0.05, MAX_REGION_SCALE);
+        let transform = page_transform(self.page(index)?, scale, region.x, region.y);
+        self.recolour(index, &mut b, transform, mode, keep_pictures);
+        Ok(b)
+    }
+
+    /// Recolour `b`, page `index` drawn with `transform`, in `mode`.
+    fn recolour(
+        &self,
+        index: usize,
+        b: &mut Bitmap,
+        transform: Affine,
+        mode: PageColours,
+        keep_pictures: bool,
+    ) {
         if mode == PageColours::Normal {
-            return Ok(b);
+            return;
         }
         let keep = match (keep_pictures, self.pdf.pages().get(index)) {
             (true, Some(page)) => page_colours::picture_boxes(
                 page,
                 &self.boxes,
                 &self.settings,
-                scale.clamp(0.05, 16.0),
+                transform,
                 b.width,
                 b.height,
             ),
             _ => Vec::new(),
         };
-        page_colours::recolour(&mut b, mode, &keep);
-        Ok(b)
+        page_colours::recolour(b, mode, &keep);
     }
 
     /// Render so the bitmap is `width_px` wide.
@@ -116,10 +329,27 @@ impl<'a> Renderer<'a> {
     }
 }
 
+/// From `page`'s space to the pixels of a bitmap of it drawn at `scale`, whose top left is
+/// at pixel (`x`, `y`) of the whole page's bitmap.
+fn page_transform(page: &Page, scale: f32, x: u32, y: u32) -> Affine {
+    Affine::translate((-(x as f64), -(y as f64)))
+        * Affine::scale(scale as f64)
+        * page.initial_transform(true).to_kurbo()
+}
+
 /// Parse PDF bytes for rendering.
 pub fn load(bytes: Vec<u8>, password: Option<&str>) -> Result<HPdf> {
-    HPdf::new_with_password(bytes, password.unwrap_or(""))
-        .map_err(|e| anyhow!("cannot render PDF: {e:?}"))
+    HPdf::new_with_password(bytes, password.unwrap_or("")).map_err(|e| {
+        let why = match e {
+            LoadPdfError::Invalid => "the file's structure can't be read",
+            LoadPdfError::Decryption(DecryptionError::PasswordProtected) => "it needs a password",
+            LoadPdfError::Decryption(DecryptionError::UnsupportedAlgorithm) => {
+                "it is encrypted in a way that isn't supported"
+            }
+            LoadPdfError::Decryption(_) => "its encryption is damaged",
+        };
+        anyhow!("cannot render PDF: {why}")
+    })
 }
 
 /// Render the given pages in parallel (one renderer per rayon task).

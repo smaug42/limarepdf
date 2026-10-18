@@ -26,5 +26,8 @@ OCR speed is in [Scanning and OCR](scanning-and-ocr.md#accuracy-and-speed).
 
 - Pages are drawn lazily on a pool of worker threads, newest request first, with one page of prefetch either side.
 - Pages outside the view are dropped from memory, and thumbnails are drawn at their own small size.
+- At high zoom only the part of the page in view is drawn, in 512-pixel tiles
+  ([details](rendering.md#high-zoom)). A tile takes about 1 ms on text pages and about 20 ms on a dense form, at
+  any zoom, while a whole Letter page at 1152 dpi takes about 0.4 s and 500 MB.
 - Edits re-save the document without compressing it, and undo keeps plain snapshots.
 - OCR, optimising, exporting images and printing run in the background.

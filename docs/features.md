@@ -40,14 +40,14 @@ available.
 | Tabs, thumbnails, opening by drag and drop | Done | |
 | Recent files | Done | Start screen and ☰ > File > Open recent; 10 files, kept on your computer only |
 | Notices about the document | Done | Password-protected, scanned pages, form fields, large files. [Details](gui.md#notices-about-the-document) |
-| Zoom, fit width, continuous scrolling, page navigation | Done | Pages fit the window's width by default and follow resizing; zooming turns that off. Single-page and facing-page layouts (top-bar button or View > Page layout; cover page alone or paired), per document, following the document's own preference when it has one |
+| Zoom, fit width, continuous scrolling, page navigation | Done | Pages fit the window's width by default and follow resizing; zooming turns that off. Zoom from 10% to 6400%, drawn in tiles at high zoom so pages stay sharp. Single-page and facing-page layouts (top-bar button or View > Page layout; cover page alone or paired), per document, following the document's own preference when it has one |
 | Open at a page from the command line | Done | `limarepdf file.pdf --page N` |
 | Command palette, right-click menus, floating toolbar | Done | Toolbar customisation: No |
 | App icon | Done | Window, taskbar and Windows `.exe`. Wayland needs the desktop entry installed. [Details](install.md#menu-entry-and-icon-on-linux) |
 | About window | Done | Version (copyable for bug reports), links, contributors, credits; "Made in Canada". [Details](gui.md#look-and-feel) |
 | Light and dark themes | Done | Follows the system, or chosen with the top bar's theme button; remembered between runs |
 | Page colour modes | Done | View > Page colours: Normal, Automatic (dark pages with the dark theme), Dark, High contrast, Sepia. Pictures keep their colours unless "Recolour pictures too" is on. On screen only: the file, printing and exports keep their colours. See [Rendering](rendering.md#page-colour-modes) |
-| Rendering | Partial | Some transparency groups are drawn wrongly. Annotations without a drawing of their own are drawn by LimarePDF for the common types only. [Details](rendering.md) |
+| Rendering | Done | Pages that can't be drawn, and pictures and fonts that can't, are reported; high zoom is drawn in tiles up to 6400%; fonts that aren't embedded use installed fonts or similar stand-ins where hayro asks (CID fonts, which Chinese, Japanese and Korean text uses), with a notice saying what to install; annotations without a drawing of their own are drawn by LimarePDF; damaged files are repaired when opened, with a notice. Known limits, mostly hayro's: some transparency groups are drawn wrongly, hairlines can come out light grey, plain fonts that aren't embedded use the standard fonts, media and 3D annotations aren't drawn, and no rich text or line captions. Compared with poppler over about 1,100 public test PDFs. [Details](rendering.md) |
 | Search | Done | Phrases across line breaks, and words hyphenated at a line end, are found and highlighted. [Details](search-and-text.md) |
 | Select and copy text | Done | With the default read tool; across pages, scrolling while you drag; in the order on the page, not the file's drawing order; includes recognised text |
 | Print or save selected text | Done | As the pages look, full width, cut down to the selected lines, or as plain text in Helvetica (Western European characters only); also saves a .txt file |
@@ -96,7 +96,11 @@ available.
   by one later; use Undo before saving.
 - Saving rewrites the whole file, except for digitally signed documents, whose changes are added after what was
   signed so the signatures stay valid ([details](signatures.md#saving-a-signed-document)).
-- Files the renderer cannot read show "Rendering…" on their pages; editing may still work.
+- Pages the renderer cannot draw say so, with the reason, and a notice says when a picture couldn't be drawn
+  ([details](rendering.md#when-something-cant-be-drawn)); editing may still work. Another notice names fonts that
+  aren't in the file or installed and says what to install.
+- A damaged file is repaired to open it, with a notice; the original is only replaced if you choose to when saving
+  ([details](rendering.md#damaged-files)).
 - A malformed file that makes LimarePDF fail while opening, editing or saving gets an error message, and a failed edit
   leaves the document as it was. A failure while showing the document (pages, thumbnails, search, bookmarks,
   comments, the inspector) turns that tab into an error page with Save a copy and Close; other tabs carry on. A
@@ -110,6 +114,23 @@ available.
 
 Ideas for what comes next. None of these are available yet, and the list is not a commitment or an order. A wider
 pool of features other PDF tools have is in [ideas.md](ideas.md).
+
+### Rendering
+
+Done for now (see the Rendering row above). Left for a later round:
+
+- **hayro's own gaps** (knockout and non-isolated transparency groups, thin-line snapping, some shadings, CMaps that
+  use other CMaps, and installed fonts for plain fonts that aren't embedded, which hayro doesn't ask for yet),
+  listed in [Known to be wrong](rendering.md#known-to-be-wrong). Not reported to hayro yet; whether to is still to
+  be decided.
+- **Notices for what hayro draws wrongly:** plain fonts that aren't embedded (such as Calibri or Wingdings, drawn
+  with a standard font), and knockout or non-isolated transparency groups. Offered, not yet decided.
+- **A check on a HiDPI screen** (scale factor 2): tile sizes, the 4096-pixel cap and sharpness have only been tried
+  at scale 1.
+- **Damaged files LimarePDF still can't open:** show them read-only as hayro reads them, when the repair finds no
+  pages. No file in the test set needs it yet.
+- **Annotation drawings:** line captions, a caret's paragraph symbol, rich text in text boxes, and Acrobat's artwork
+  for standard stamps.
 
 ### XFA forms
 

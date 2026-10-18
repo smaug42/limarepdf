@@ -16,7 +16,10 @@ Run them with `cargo test --workspace`.
 | --- | --- |
 | `crates/limarepdf-core/tests/integration.rs` | Overlays, encryption round trips with all four ciphers, search, crop margins on turned pages |
 | `crates/limarepdf-core/tests/edit.rs` | Content editing: objects and text edits. Reading text: words, search boxes placed by glyph widths, ToUnicode maps, word gaps, text inside form XObjects, phrases across lines |
+| `crates/limarepdf-core/tests/repair.rs` | Damaged files built by hand open with their page drawn and are marked repaired: wrong offsets, no table or trailer, a cross-reference stream that doesn't decode, a missing `endobj`, a later copy of an object winning, a trailer naming the wrong catalog, object stream members starting with comments, and an encrypted file (a wrong password is still reported as one); intact files and documents with no pages aren't repaired; a repaired document saves as a clean file. Unit tests in `repair.rs` (dictionary ends, object headers, stream data skipped, trailer values written back) |
 | `crates/limarepdf-core/tests/render_coverage.rs` | Rendering, pixel by pixel; see [Rendering](rendering.md) |
+| `crates/limarepdf-core/tests/render_compare.rs` | Opt-in: LimarePDF's rendering compared with poppler's `pdftoppm` over about 1,100 public test PDFs; see below |
+| `crates/limarepdf-core/tests/render_region.rs` | Drawing part of a page, as the app's tiles at high zoom do: tiles match the whole page pixel by pixel, are cut at the page's edges, land in place at the highest scale, and keep pictures in dark pages |
 | `crates/limarepdf-core/tests/import.rs` | Importing images as pages |
 | `crates/limarepdf-core/tests/scan.rs` | Optimising scanned pages |
 | `crates/limarepdf-core/tests/ocr.rs` | OCR text layers, their placement, search and correction |
@@ -40,6 +43,20 @@ Run them with `cargo test --workspace`.
 The rendering tests assert what the PDF standard says should appear. The cases hayro gets wrong are marked
 `#[ignore]` with the reason; after a hayro upgrade, run
 `cargo test -p limarepdf-core --test render_coverage -- --ignored` to see whether any have been fixed.
+
+The comparison with poppler needs `pdftoppm` (poppler-utils) and curl. From `crates/limarepdf-core`, run
+`sh tools/render-compare.sh`. It downloads the files listed in `tools/render-samples.txt` (the pdf.js and PDFBox test
+files hayro is tested on, about 400 MB, checked against their SHA-256 and never committed) into `tests/data/render`,
+then draws up to three pages of each at 96 dpi with LimarePDF and with poppler. The run takes about two minutes. A
+pixel counts as different only when its colour is outside the range of the pixels around it in the other picture, so
+anti-aliasing doesn't count. The report, `target/tmp/render-compare/index.html`, lists the pages with more than 0.5%
+of their pixels different, a different size, something LimarePDF couldn't draw, or a failure on either side, worst
+first, with the two pictures and the differences side by side. `summary.txt` beside it has every page's share, to
+compare runs before and after a change. `sh tools/render-compare.sh issue12` limits the run to file names containing
+`issue12`, and `RENDER_COMPARE_DPI` changes the resolution.
+
+poppler isn't always right: many of the worst-listed pages are poppler's mistakes (a grey page, a garbled scan). Each
+listed page needs a person to judge which side is right.
 
 ## The desktop app
 
@@ -72,6 +89,8 @@ and the placing tool's pane; none of these was clicked through;
 filling in forms has been used by hand on one form; the Bookmarks tab (including adding, renaming and deleting
 bookmarks) and links were checked through their core tests, `limarepdf-cli bookmarks` and real PDFs, and the XFA notice by
 screenshot, but none of these was clicked through. Filled forms were also opened in poppler and
-Ghostscript, including encrypted ones; not yet in Adobe Reader.
+Ghostscript, including encrypted ones; not yet in Adobe Reader. Drawing pages in tiles at high zoom was checked by
+screenshot at 3200% and 6400% and used by hand on Linux, zooming and scrolling up to 6400%; not yet on a HiDPI
+screen.
 
 Each feature page says what was not tested, under "How this was tested".

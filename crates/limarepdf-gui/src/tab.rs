@@ -8,9 +8,10 @@ use crate::settings::Layout;
 use crate::signatures::{self, Check, PanelAct, SigState};
 use crate::signing::SignPick;
 use crate::theme;
-use crate::worker::{Colours, Key, Worker};
+use crate::worker::{Colours, Key, Worker, TILE};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptions, Vec2};
 use egui_phosphor::regular as icon;
+use limarepdf_core::render::{Missing, MAX_REGION_SCALE};
 use limarepdf_core::{
     Annot, BookmarkPlace, Encryption, LinkTarget, OutlineItem, Pdf, SearchHit, Shape, ShapeLook,
     StampPlace,
@@ -25,6 +26,11 @@ const THUMB_W: f32 = 120.0;
 const MAX_UNDO: usize = 20;
 /// egui points at zoom 1.0 per PDF point (96 dpi logical).
 const BASE: f32 = 96.0 / 72.0;
+/// Highest zoom: 6400%, as Acrobat.
+const MAX_ZOOM: f32 = 64.0;
+/// The longest side of a whole-page bitmap, in pixels. A page shown bigger than this is
+/// drawn whole at this size, with tiles at full size over the part in view.
+const WHOLE_MAX: f32 = 4096.0;
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum Side {
@@ -66,13 +72,30 @@ pub struct Tab {
     /// or last saved. Saving then writes the file out in full, so that nothing removed is
     /// left in an earlier version of it. Follows undo and redo.
     pub scrubbed: bool,
+    /// The file was damaged and repaired to open it, so a signed one is saved by writing
+    /// it out in full: edits can't be added after damaged bytes.
+    pub repaired: bool,
     worker: Worker,
     /// The colours pages are drawn in on screen.
     colours: Colours,
     pub sizes: Vec<(f32, f32)>,
     pages: HashMap<usize, (u32, TextureHandle)>,
+    /// At high zoom, the parts of the pages in view drawn at full size, over `pages`. The
+    /// flag is cleared when a tile goes out of date; it is still shown until the new one
+    /// arrives.
+    tiles: HashMap<Key, (bool, TextureHandle)>,
+    /// Per page, the tile scale whose tiles last covered the view. They stay under the
+    /// tiles of a new zoom until those cover it.
+    covered: HashMap<usize, u32>,
     thumbs: HashMap<usize, TextureHandle>,
     pending: HashSet<Key>,
+    /// Pages that couldn't be drawn, and why; not asked for again until the document
+    /// changes.
+    failed: HashMap<usize, String>,
+    /// Tiles that couldn't be drawn; not asked for again until the document changes.
+    bad_tiles: HashSet<Key>,
+    /// What the renderer couldn't draw so far, for the banner.
+    missing: BTreeSet<Missing>,
     pub zoom: f32,
     /// The zoom follows the width of the view (on until the user zooms).
     pub fit: bool,
@@ -168,6 +191,7 @@ impl Tab {
         let size = path.as_ref().and_then(|p| std::fs::metadata(p).ok());
         let banners = banners::detect(&pdf, size.map(|m| m.len()));
         let signed = pdf.signature_count() > 0;
+        let repaired = pdf.repaired();
         // Form fields without drawings would show nothing; this isn't a change to save. A
         // signed document's fields stay as they were signed (saving adds only the edits
         // made to it); its snapshots draw them instead.
@@ -191,12 +215,18 @@ impl Tab {
             encryption: None,
             signed,
             scrubbed: false,
+            repaired,
             worker: Worker::spawn(ctx.clone(), bytes, colours),
             colours,
             sizes,
             pages: HashMap::new(),
+            tiles: HashMap::new(),
+            covered: HashMap::new(),
             thumbs: HashMap::new(),
             pending: HashSet::new(),
+            failed: HashMap::new(),
+            bad_tiles: HashSet::new(),
+            missing: BTreeSet::new(),
             zoom: 1.0,
             fit: true,
             view: (0, 0.0),
@@ -433,6 +463,9 @@ impl Tab {
         self.worker.set_colours(colours);
         self.pending.clear();
         self.stale.extend(self.pages.keys().copied());
+        for t in self.tiles.values_mut() {
+            t.0 = false;
+        }
         self.thumbs.clear();
     }
 
@@ -441,9 +474,16 @@ impl Tab {
             Ok(bytes) => {
                 self.worker = Worker::spawn(ctx.clone(), bytes, self.colours);
                 self.pending.clear();
+                self.failed.clear();
+                self.bad_tiles.clear();
                 for &p in pages {
                     self.stale.insert(p);
                     self.thumbs.remove(&p);
+                }
+                for (k, t) in self.tiles.iter_mut() {
+                    if pages.contains(&k.0) {
+                        t.0 = false;
+                    }
                 }
                 self.hits.clear();
                 self.matches.clear();
@@ -904,8 +944,12 @@ impl Tab {
                 self.sizes = sizes_of(&self.pdf);
                 self.labels = self.pdf.page_labels();
                 self.pages.clear();
+                self.tiles.clear();
+                self.covered.clear();
                 self.thumbs.clear();
                 self.pending.clear();
+                self.failed.clear();
+                self.bad_tiles.clear();
                 self.stale.clear();
                 self.ed.invalidate();
                 self.ed.selection.clear_object();
@@ -1297,10 +1341,37 @@ impl Tab {
     fn collect(&mut self, ctx: &egui::Context) {
         while let Ok(r) = self.worker.rx.try_recv() {
             self.pending.remove(&r.key);
+            self.note_missing(&r.missing);
             if r.colours != self.colours {
                 continue;
             }
-            let Ok(b) = r.bitmap else { continue };
+            if r.key.2.is_some() {
+                match r.bitmap {
+                    Ok(b) => {
+                        let img =
+                            egui::ColorImage::from_rgba_premultiplied([b.width, b.height], &b.rgba);
+                        let (p, q, t) = (r.key.0, r.key.1, r.key.2.unwrap_or_default());
+                        let name = format!("t{}-{p}-{q}-{}-{}", self.id, t.0, t.1);
+                        let tex = ctx.load_texture(name, img, TextureOptions::LINEAR);
+                        self.tiles.insert(r.key, (true, tex));
+                    }
+                    Err(_) => {
+                        self.bad_tiles.insert(r.key);
+                    }
+                }
+                continue;
+            }
+            let b = match r.bitmap {
+                Ok(b) => b,
+                Err(e) => {
+                    if r.key.1 != 0 {
+                        self.pages.remove(&r.key.0);
+                        self.stale.remove(&r.key.0);
+                    }
+                    self.failed.insert(r.key.0, e);
+                    continue;
+                }
+            };
             let img = egui::ColorImage::from_rgba_premultiplied([b.width, b.height], &b.rgba);
             let tex = ctx.load_texture(
                 format!("p{}-{}-{}", self.id, r.key.0, r.key.1),
@@ -1316,6 +1387,124 @@ impl Tab {
         }
     }
 
+    /// Add what the renderer couldn't draw to the banner, showing it again (even if it
+    /// was dismissed) when something new turns up.
+    fn note_missing(&mut self, what: &BTreeSet<Missing>) {
+        if what.is_subset(&self.missing) {
+            return;
+        }
+        self.missing.extend(what.iter().cloned());
+        self.banners
+            .retain(|b| !matches!(b.kind, banners::Kind::Missing | banners::Kind::Fonts));
+        for b in banners::missing(&self.missing) {
+            let at = self.banners.partition_point(|x| x.kind < b.kind);
+            self.banners.insert(at, b);
+        }
+    }
+
+    /// How page `i` is drawn at `scale` (bitmap pixels per point): the whole page's render
+    /// key and scale, kept within [`WHOLE_MAX`] and the largest texture the GPU takes, and,
+    /// when that limit cuts the scale, the quantised scale of the tiles drawn over it.
+    fn page_key(&self, ctx: &egui::Context, i: usize, scale: f32) -> (Key, f32, Option<u32>) {
+        let (w, h) = self.sizes.get(i).copied().unwrap_or((1.0, 1.0));
+        let side = (ctx.input(|s| s.max_texture_side) as f32).min(WHOLE_MAX);
+        // Quantised in twentieths, rounded down at the limit so it stays under it.
+        let cap = ((side / w.max(h).max(1.0)) * 20.0).floor().max(1.0);
+        let want = (scale.min(MAX_REGION_SCALE) * 20.0).round().max(1.0);
+        let q = want.min(cap) as u32;
+        let tiles = (want > cap).then_some(want as u32);
+        ((i, q, None), q as f32 / 20.0, tiles)
+    }
+
+    /// Draw the tiles of page `i`, shown at `r` with tiles at quantised scale `q`, that
+    /// fall in the view of `painter`. Adds the tiles to ask for to `want`, most wanted
+    /// last, and the tiles to keep to `keep`: those in view and a ring of one around them.
+    fn draw_tiles(
+        &mut self,
+        painter: &egui::Painter,
+        i: usize,
+        r: Rect,
+        q: u32,
+        want: &mut Vec<Key>,
+        keep: &mut HashSet<Key>,
+    ) {
+        let (w, h) = self.sizes.get(i).copied().unwrap_or((1.0, 1.0));
+        let vis = painter.clip_rect().intersect(r);
+        if !vis.is_positive() {
+            return;
+        }
+        // Screen points per tile pixel at quantised scale `q`.
+        let per = |q: u32| r.width() / (w * q as f32 / 20.0).max(1.0);
+        let k = per(q);
+        let s = q as f32 / 20.0;
+        let cols = ((w * s) as u32).div_ceil(TILE).max(1);
+        let rows = ((h * s) as u32).div_ceil(TILE).max(1);
+        let span = |a: f32, b: f32, n: u32| {
+            let t = TILE as f32 * k;
+            let lo = ((a / t).floor().max(0.0) as u32).min(n - 1);
+            let hi = (((b / t).ceil() as u32).max(1) - 1).min(n - 1);
+            (lo, hi)
+        };
+        let (c0, c1) = span(vis.min.x - r.min.x, vis.max.x - r.min.x, cols);
+        let (r0, r1) = span(vis.min.y - r.min.y, vis.max.y - r.min.y, rows);
+        // A tile's rectangle on screen, from its own size (the last ones are cut to the page).
+        let place = |key: &Key, tex: &TextureHandle| {
+            let (c, row) = key.2.unwrap_or_default();
+            let k = per(key.1);
+            let min = r.min + Vec2::new((c * TILE) as f32, (row * TILE) as f32) * k;
+            let [tw, th] = tex.size();
+            Rect::from_min_size(min, Vec2::new(tw as f32, th as f32) * k)
+        };
+        let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+        // Tiles of an earlier zoom, until the ones at this zoom cover the view.
+        if let Some(&old) = self.covered.get(&i).filter(|&&o| o != q) {
+            for (key, (_, tex)) in &self.tiles {
+                if key.0 == i && key.1 == old {
+                    let at = place(key, tex);
+                    if at.intersects(vis) {
+                        painter.image(tex.id(), at, uv, Color32::WHITE);
+                        keep.insert(*key);
+                    }
+                }
+            }
+        }
+        // The ring is asked for before the tiles in view, so those are drawn first (the
+        // worker takes the newest jobs first).
+        let ring = |a: u32, b: u32, n: u32| a.saturating_sub(1)..=(b + 1).min(n - 1);
+        let mut inner = Vec::new();
+        for row in ring(r0, r1, rows) {
+            for c in ring(c0, c1, cols) {
+                let key = (i, q, Some((c, row)));
+                keep.insert(key);
+                let seen = (c0..=c1).contains(&c) && (r0..=r1).contains(&row);
+                let fresh = self.tiles.get(&key).map(|t| t.0);
+                if fresh != Some(true) && !self.bad_tiles.contains(&key) {
+                    if seen {
+                        inner.push(key);
+                    } else {
+                        want.push(key);
+                    }
+                }
+            }
+        }
+        let mut all_in = true;
+        for row in r0..=r1 {
+            for c in c0..=c1 {
+                let key = (i, q, Some((c, row)));
+                match self.tiles.get(&key) {
+                    Some((_, tex)) => {
+                        painter.image(tex.id(), place(&key, tex), uv, Color32::WHITE);
+                    }
+                    None => all_in &= self.bad_tiles.contains(&key),
+                }
+            }
+        }
+        want.extend(inner);
+        if all_in {
+            self.covered.insert(i, q);
+        }
+    }
+
     /// Zoom chosen by the user: turns fitting to the width off.
     pub fn set_zoom(&mut self, z: f32) {
         self.fit = false;
@@ -1324,7 +1513,7 @@ impl Tab {
 
     /// Change the zoom, keeping the same place in the document at the top of the view.
     fn zoom_to(&mut self, z: f32) {
-        let z = z.clamp(0.1, 8.0);
+        let z = z.clamp(0.1, MAX_ZOOM);
         if (z - self.zoom).abs() < 1e-4 {
             return;
         }
@@ -1627,6 +1816,8 @@ impl Tab {
         }
         let current = self.current_match();
         let mut wanted: Vec<(Key, f32)> = Vec::new();
+        let (mut want_tiles, mut keep_tiles) = (Vec::new(), HashSet::new());
+        let mut tiled = false;
         let mut visible = (usize::MAX, 0usize);
         let mut probe = shown;
         let out = area.show_viewport(ui, |ui, vp| {
@@ -1651,8 +1842,8 @@ impl Tab {
                 );
                 painter.add(theme::page_shadow(dark).as_shape(r, 0));
                 painter.rect_filled(r, 0.0, paper);
-                let scale = self.zoom * BASE * ppp;
-                let key = (i, ((scale * 20.0).round() as u32).max(1));
+                let (key, key_scale, tiles) = self.page_key(&ctx, i, self.zoom * BASE * ppp);
+                let failed = self.failed.contains_key(&i);
                 match self.pages.get(&i) {
                     Some((_, tex)) => {
                         painter.image(
@@ -1661,6 +1852,9 @@ impl Tab {
                             Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
                             Color32::WHITE,
                         );
+                    }
+                    None if failed => {
+                        failed_page(&painter, r, &self.failed[&i]);
                     }
                     None => {
                         painter.text(
@@ -1671,6 +1865,10 @@ impl Tab {
                             Color32::GRAY,
                         );
                     }
+                }
+                if let Some(q) = tiles.filter(|_| !failed) {
+                    tiled = true;
+                    self.draw_tiles(&painter, i, r, q, &mut want_tiles, &mut keep_tiles);
                 }
                 let matches = self.matches.get(&i).map_or(&[][..], |v| v.as_slice());
                 let cur = current.filter(|c| c.0 == i).map(|c| c.1);
@@ -1687,8 +1885,11 @@ impl Tab {
                         self.floating_toolbar(ui, base, r, self.zoom * BASE, b);
                     }
                 }
-                if self.pages.get(&i).map(|(k, _)| *k) != Some(key.1) || self.stale.contains(&i) {
-                    wanted.push((key, key.1 as f32 / 20.0));
+                if !self.failed.contains_key(&i)
+                    && (self.pages.get(&i).map(|(k, _)| *k) != Some(key.1)
+                        || self.stale.contains(&i))
+                {
+                    wanted.push((key, key_scale));
                 }
             }
             if self.ed.selecting_words(ui.ctx()) {
@@ -1738,20 +1939,33 @@ impl Tab {
                 visible.0.saturating_sub(1),
                 (visible.1 + 1).min(n.saturating_sub(1)),
             ] {
-                let scale = self.zoom * BASE * ppp;
-                let key = (i, ((scale * 20.0).round() as u32).max(1));
+                let (key, scale, _) = self.page_key(&ctx, i, self.zoom * BASE * ppp);
                 if i < n
+                    && !self.failed.contains_key(&i)
                     && (self.pages.get(&i).map(|(k, _)| *k) != Some(key.1)
                         || self.stale.contains(&i))
                     && self.pending.insert(key)
                 {
+                    self.worker.request(key, scale);
+                }
+            }
+            for key in want_tiles {
+                if self.pending.insert(key) {
                     self.worker.request(key, key.1 as f32 / 20.0);
                 }
             }
-            // Evict textures far from the viewport.
-            let (lo, hi) = (visible.0.saturating_sub(6), visible.1 + 6);
+            // Evict textures far from the viewport; fewer whole pages when tiles are
+            // shown, as each is then the largest kind.
+            let reach = if tiled { 2 } else { 6 };
+            let (lo, hi) = (visible.0.saturating_sub(reach), visible.1 + reach);
             self.pages.retain(|&p, _| p >= lo && p <= hi);
-            let keep = |k: &Key| k.1 == 0 || (k.0 + 3 >= lo && k.0 <= hi + 3);
+            self.tiles.retain(|k, _| keep_tiles.contains(k));
+            self.covered
+                .retain(|&p, _| p >= visible.0 && p <= visible.1);
+            let keep = |k: &Key| match k.2 {
+                Some(_) => keep_tiles.contains(k),
+                None => k.1 == 0 || (k.0 + 3 >= lo && k.0 <= hi + 3),
+            };
             self.worker.retain(keep);
             self.pending.retain(keep);
         }
@@ -1816,8 +2030,17 @@ impl Tab {
                                 Color32::WHITE,
                             );
                         }
+                        None if self.failed.contains_key(&i) => {
+                            ui.painter().text(
+                                img.center(),
+                                egui::Align2::CENTER_CENTER,
+                                icon::IMAGE_BROKEN,
+                                egui::FontId::new(24.0, theme::icons()),
+                                Color32::GRAY,
+                            );
+                        }
                         None => {
-                            let key = (i, 0u32);
+                            let key = (i, 0u32, None);
                             if self.pending.insert(key) {
                                 self.worker.request(key, THUMB_W * ppp / w.max(1.0));
                             }
@@ -1945,6 +2168,37 @@ fn rows_of(n: usize, layout: Layout, cover: bool) -> Vec<Vec<(usize, Place)>> {
         rows.push(row);
     }
     rows
+}
+
+/// What a page that couldn't be drawn shows instead: an icon, a line saying so, and the
+/// reason, centred in the page's rectangle `r`.
+fn failed_page(painter: &egui::Painter, r: Rect, why: &str) {
+    let grey = Color32::GRAY;
+    let wrap = (r.width() - 32.0).max(80.0);
+    let lines = [
+        (
+            icon::IMAGE_BROKEN.to_string(),
+            egui::FontId::new(32.0, theme::icons()),
+        ),
+        (
+            "This page couldn't be drawn".to_string(),
+            egui::FontId::proportional(15.0),
+        ),
+        (why.to_string(), egui::FontId::proportional(12.0)),
+    ];
+    let galleys: Vec<_> = lines
+        .into_iter()
+        .map(|(t, f)| painter.layout(t, f, grey, wrap))
+        .collect();
+    let gap = 6.0;
+    let total: f32 = galleys.iter().map(|g| g.size().y + gap).sum::<f32>() - gap;
+    let mut y = r.center().y - total / 2.0;
+    for g in galleys {
+        let x = r.center().x - g.size().x / 2.0;
+        let h = g.size().y;
+        painter.galley(Pos2::new(x, y), g, grey);
+        y += h + gap;
+    }
 }
 
 fn sizes_of(pdf: &Pdf) -> Vec<(f32, f32)> {

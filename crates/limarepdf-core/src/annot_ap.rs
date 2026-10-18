@@ -1,15 +1,19 @@
 //! Drawing appearance streams for annotations that have none, from their entries: text
-//! markup, notes, text boxes, shapes, lines and freehand ink. Shapes are drawn in default
-//! user space, so their appearance's box is the annotation's `/Rect`; text boxes are laid
-//! out from their own corner like form fields.
+//! markup, notes, text boxes, shapes, lines, freehand ink, stamps, carets and file
+//! attachment icons. Shapes are drawn in default user space, so their appearance's box is
+//! the annotation's `/Rect`; text boxes are laid out from their own corner like form
+//! fields.
 
 use crate::form_ap::{self, encode, fill_color, nums, op, stroke_color, Body, Border, Look};
 use crate::form_write::{parse_da, standard_metrics};
+use crate::matrix as mx;
+use crate::overlay::escape;
+use crate::stamps::{bold_width, rounded, StampColor, StampKind, CAP};
 use crate::Pdf;
 use lopdf::content::Operation;
 use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream};
 
-/// The subtypes LimarePDF can draw.
+/// The subtypes LimarePDF draws, and draws again when they are edited.
 pub(crate) const DRAWN: [&[u8]; 13] = [
     b"Redact",
     b"Highlight",
@@ -26,6 +30,15 @@ pub(crate) const DRAWN: [&[u8]; 13] = [
     b"Ink",
 ];
 
+/// Subtypes LimarePDF draws only while the file has no drawing for them: their own
+/// drawings are artwork that editing leaves alone.
+const ICONS: [&[u8]; 3] = [b"Stamp", b"Caret", b"FileAttachment"];
+
+/// Whether LimarePDF can draw an annotation of subtype `s` that has no drawing.
+pub(crate) fn drawable(s: &[u8]) -> bool {
+    DRAWN.contains(&s) || ICONS.contains(&s)
+}
+
 /// Resource names in the appearances LimarePDF draws.
 const FONT: &str = "Helv";
 const GS: &str = "LimareGs";
@@ -34,9 +47,16 @@ const KAPPA: f32 = 0.5523;
 /// A note's icon: its size in points and its colour when the note has none.
 pub(crate) const NOTE_SIZE: f32 = 20.0;
 const NOTE_COLOR: [f32; 3] = [1.0, 0.85, 0.2];
+/// The colours of a caret and a file attachment's icon when they have none.
+const CARET_COLOR: [f32; 3] = [0.1, 0.3, 0.75];
+const ATTACH_COLOR: [f32; 3] = [0.3, 0.4, 0.65];
+/// The grey of the outlines and symbols on icons.
+const ICON_INK: f32 = 0.25;
 /// A redaction mark's outline: its colour when the mark has none, and its width.
 pub(crate) const REDACT_COLOR: [f32; 3] = [0.85, 0.0, 0.0];
 const REDACT_LINE: f32 = 1.5;
+/// A cloudy border's bump radius at intensity 1, in points.
+const CLOUD: f32 = 4.75;
 /// Text size for a text box whose `/DA` gives none.
 const TEXT_SIZE: f32 = 12.0;
 /// Most points read from one geometry entry, against hostile files.
@@ -48,8 +68,8 @@ struct Drawing {
     bbox: [f32; 4],
     /// Opacity below 1, or the Multiply blend mode for highlights.
     gs: Option<Dictionary>,
-    /// Uses Helvetica as [`FONT`].
-    font: bool,
+    /// The standard font it uses as [`FONT`], if any.
+    font: Option<&'static str>,
     /// Turns the drawing to fit `/Rect`, for text boxes on turned pages.
     matrix: Option<[f32; 6]>,
 }
@@ -58,20 +78,25 @@ impl Pdf {
     /// Give each of `ids` an appearance (`/AP /N`) drawn from its entries. Annotations
     /// LimarePDF can't draw are left alone. Returns how many were drawn.
     pub(crate) fn draw_annotations(&mut self, ids: &[ObjectId]) -> usize {
-        let mut font = None;
+        let mut fonts: Vec<(&str, ObjectId)> = Vec::new();
         let mut n = 0;
         for &id in ids {
             let Some(d) = self.annotation_drawing(id) else {
                 continue;
             };
             let mut res = Dictionary::new();
-            if d.font {
-                let f = *font.get_or_insert_with(|| {
-                    self.doc.add_object(dictionary! {
-                        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
-                        "Encoding" => "WinAnsiEncoding",
-                    })
-                });
+            if let Some(name) = d.font {
+                let f = match fonts.iter().find(|(n, _)| *n == name) {
+                    Some(&(_, f)) => f,
+                    None => {
+                        let f = self.doc.add_object(dictionary! {
+                            "Type" => "Font", "Subtype" => "Type1", "BaseFont" => name,
+                            "Encoding" => "WinAnsiEncoding",
+                        });
+                        fonts.push((name, f));
+                        f
+                    }
+                };
                 res.set("Font", dictionary! { FONT => f });
             }
             if let Some(gs) = d.gs {
@@ -100,6 +125,14 @@ impl Pdf {
         let d = self.doc.get_dictionary(id).ok()?;
         let rect = self.rect(d.get(b"Rect").ok()?)?;
         let sub = d.get(b"Subtype").ok()?.as_name().ok()?;
+        let has_ap = d
+            .get(b"AP")
+            .ok()
+            .and_then(|o| self.dict_of(o))
+            .is_some_and(|ap| ap.has(b"N"));
+        if ICONS.contains(&sub) && has_ap {
+            return None;
+        }
         let c = self.colour(d, b"C");
         let ic = self.colour(d, b"IC");
         let alpha = d
@@ -129,13 +162,27 @@ impl Pdf {
             }
             b"Square" | b"Circle" => {
                 let r = self.inner(d, rect);
-                let h = bw / 2.0;
+                let cloud = self.cloud_radius(d);
+                // Without `/RD` to leave room for them, a cloud's bumps go inside the
+                // rectangle.
+                let h = bw / 2.0
+                    + match cloud {
+                        Some(c) if r == rect => c,
+                        _ => 0.0,
+                    };
                 let r = [r[0] + h, r[1] + h, r[2] - h, r[3] - h];
                 if r[2] > r[0] && r[3] > r[1] {
-                    if sub == b"Square" {
-                        ops.push(op("re", nums(&[r[0], r[1], r[2] - r[0], r[3] - r[1]])));
-                    } else {
-                        ellipse(&mut ops, r);
+                    match cloud {
+                        Some(c) if sub == b"Square" => cloud_path(
+                            &mut ops,
+                            &[(r[0], r[1]), (r[2], r[1]), (r[2], r[3]), (r[0], r[3])],
+                            c,
+                        ),
+                        Some(c) => cloud_path(&mut ops, &ellipse_points(r, c), c),
+                        None if sub == b"Square" => {
+                            ops.push(op("re", nums(&[r[0], r[1], r[2] - r[0], r[3] - r[1]])));
+                        }
+                        None => ellipse(&mut ops, r),
                     }
                     line.paint(&mut ops, true);
                 }
@@ -143,11 +190,37 @@ impl Pdf {
             b"Line" => {
                 let p = self.points(d.get(b"L").ok()).filter(|p| p.len() >= 2)?;
                 let ends = self.line_ends(d);
-                ops.push(op("m", nums(&[p[0].0, p[0].1])));
-                ops.push(op("l", nums(&[p[1].0, p[1].1])));
+                let get = |k: &[u8]| d.get(k).ok().and_then(|o| self.num(o)).unwrap_or(0.0);
+                let ll = get(b"LL");
+                let (mut lle, mut llo) = (get(b"LLE").max(0.0), get(b"LLO").max(0.0));
+                if ll < 0.0 {
+                    (lle, llo) = (-lle, -llo);
+                }
+                // Leader lines run from the ends at right angles, to the left going from
+                // the first point to the second for a positive `/LL`, as Acrobat draws
+                // them; the line itself joins them `/LL` out.
+                let len = dist(p[0], p[1]);
+                let leaders = ll != 0.0 && len > 1e-3;
+                let n = if leaders {
+                    ((p[0].1 - p[1].1) / len, (p[1].0 - p[0].0) / len)
+                } else {
+                    (0.0, 0.0)
+                };
+                let out = |q: (f32, f32), t: f32| (q.0 + n.0 * t, q.1 + n.1 * t);
+                let q = [out(p[0], llo + ll), out(p[1], llo + ll)];
+                ops.push(op("m", nums(&[q[0].0, q[0].1])));
+                ops.push(op("l", nums(&[q[1].0, q[1].1])));
                 line.paint(&mut ops, false);
+                if leaders {
+                    for e in [p[0], p[1]] {
+                        let (a, b) = (out(e, llo), out(e, llo + ll + lle));
+                        ops.push(op("m", nums(&[a.0, a.1])));
+                        ops.push(op("l", nums(&[b.0, b.1])));
+                    }
+                    line.paint(&mut ops, false);
+                }
                 for (i, end) in ends.iter().enumerate() {
-                    let (at, from) = if i == 0 { (p[0], p[1]) } else { (p[1], p[0]) };
+                    let (at, from) = if i == 0 { (q[0], q[1]) } else { (q[1], q[0]) };
                     line_end(&mut ops, end, at, from, &line);
                 }
             }
@@ -155,10 +228,15 @@ impl Pdf {
                 let p = self
                     .points(d.get(b"Vertices").ok())
                     .filter(|p| !p.is_empty())?;
-                polyline(&mut ops, &p);
                 let closed = sub == b"Polygon";
-                if closed {
-                    ops.push(op("h", vec![]));
+                match self.cloud_radius(d) {
+                    Some(c) if closed && p.len() >= 3 => cloud_path(&mut ops, &p, c),
+                    _ => {
+                        polyline(&mut ops, &p);
+                        if closed {
+                            ops.push(op("h", vec![]));
+                        }
+                    }
                 }
                 line.paint(&mut ops, closed);
             }
@@ -200,21 +278,46 @@ impl Pdf {
                 }
                 ops.push(op("S", vec![]));
             }
-            b"Text" => note(&mut ops, rect, line.c.as_deref()),
+            b"Text" => note(&mut ops, rect, line.c.as_deref(), name(d)),
             b"FreeText" => return Some(self.free_text(d, rect, alpha)),
+            b"Stamp" => return Some(stamp(rect, name(d), alpha)),
+            b"Caret" => {
+                let r = self.inner(d, rect);
+                caret(&mut ops, r, line.c.as_deref().unwrap_or(&CARET_COLOR));
+            }
+            b"FileAttachment" => {
+                attachment(&mut ops, rect, line.c.as_deref(), name(d));
+            }
             _ => return None,
         }
         Some(Drawing {
             content: with_gs(encode(ops), alpha, blend),
             bbox: rect,
             gs: gs_dict(alpha, blend),
-            font: false,
+            font: None,
             matrix: None,
         })
     }
 
+    /// The bump radius of a cloudy border (`/BE` with style `/C`), when it has one.
+    fn cloud_radius(&self, d: &Dictionary) -> Option<f32> {
+        let be = d.get(b"BE").ok().and_then(|o| self.dict_of(o))?;
+        if be.get(b"S").and_then(|o| o.as_name()).ok() != Some(b"C") {
+            return None;
+        }
+        let i = be
+            .get(b"I")
+            .ok()
+            .and_then(|o| self.num(o))
+            .unwrap_or(0.0)
+            .clamp(0.0, 2.0);
+        (i > 0.05).then_some(CLOUD * i)
+    }
+
     /// A text box: its `/Contents` in Helvetica, with the size and colour from `/DA` (or
-    /// the `/DS` style string), on the `/C` background with a border.
+    /// the `/DS` style string), on the `/C` background with a border, which may be cloudy.
+    /// A callout (`/CL`) is a line from what the box points at to the box, whose place in
+    /// `/Rect` `/RD` then gives.
     fn free_text(&self, d: &Dictionary, rect: [f32; 4], alpha: f32) -> Drawing {
         // `/Rotate` (as Acrobat writes it) turns the text with its page, so it reads
         // upright as the page is shown.
@@ -231,6 +334,13 @@ impl Pdf {
             270 => (h, w, Some([0.0, -1.0, 1.0, 0.0, 0.0, 0.0])),
             _ => (w, h, None),
         };
+        // The drawing's own space, in which the text reads upright, and the box in it.
+        let m = matrix.unwrap_or(mx::ID);
+        let b = mx::transform_rect(m, [0.0, 0.0, w, h]);
+        let to_page = mx::mul(m, mx::translate(rect[0] - b[0], rect[1] - b[1]));
+        let to_own = mx::inv(to_page).unwrap_or(mx::ID);
+        let inner = self.inner(d, rect);
+        let tb = mx::transform_rect(to_own, inner);
         let da = d
             .get(b"DA")
             .ok()
@@ -259,11 +369,51 @@ impl Pdf {
             })
             .unwrap_or_else(|| vec![0.0]);
         let (bw, dash) = self.border(d);
+        let bg = self.colour(d, b"C");
+        let mut ops = Vec::new();
+        if let Some(p) = self.points(d.get(b"CL").ok()).filter(|p| p.len() >= 2) {
+            let p: Vec<(f32, f32)> = p
+                .iter()
+                .take(3)
+                .map(|&(x, y)| mx::apply(to_own, x, y))
+                .collect();
+            let pen = Pen {
+                c: Some(text_rgb.clone()),
+                ic: self.colour(d, b"IC"),
+                w: if bw > 0.0 { bw } else { 1.0 },
+                dash: None,
+            };
+            polyline(&mut ops, &p);
+            pen.paint(&mut ops, false);
+            if let Some(end) = self.line_ends(d).first() {
+                line_end(&mut ops, end, p[0], p[1], &pen);
+            }
+        }
+        let cloud = self.cloud_radius(d);
+        let mut tb = tb;
+        if let Some(c) = cloud {
+            let h = bw / 2.0 + if inner == rect { c } else { 0.0 };
+            let r = [tb[0] + h, tb[1] + h, tb[2] - h, tb[3] - h];
+            if r[2] > r[0] && r[3] > r[1] {
+                // The text keeps inside the bumps.
+                tb = r;
+                let corners = [(r[0], r[1]), (r[2], r[1]), (r[2], r[3]), (r[0], r[3])];
+                cloud_path(&mut ops, &corners, c);
+                let pen = Pen {
+                    c: Some(text_rgb.clone()),
+                    ic: bg.clone(),
+                    w: bw,
+                    dash: dash.clone(),
+                };
+                pen.paint(&mut ops, true);
+            }
+        }
         let look = Look {
-            w,
-            h,
-            bg: self.colour(d, b"C"),
-            border: (bw > 0.0).then(|| Border {
+            w: tb[2] - tb[0],
+            h: tb[3] - tb[1],
+            // A cloudy border and its background are drawn above instead.
+            bg: if cloud.is_some() { None } else { bg },
+            border: (bw > 0.0 && cloud.is_none()).then(|| Border {
                 color: text_rgb,
                 width: bw,
                 style: if dash.is_some() { b'D' } else { b'S' },
@@ -283,12 +433,16 @@ impl Pdf {
             .unwrap_or_default()
             .replace("\r\n", "\n")
             .replace('\r', "\n");
-        let content = form_ap::draw(&look, &Body::Lines(&text), &standard_metrics("Helvetica"));
+        let body = form_ap::draw(&look, &Body::Lines(&text), &standard_metrics("Helvetica"));
+        let mut content = encode(ops);
+        content.extend(format!("\nq 1 0 0 1 {} {} cm\n", tb[0], tb[1]).into_bytes());
+        content.extend(body);
+        content.extend(b"\nQ\n");
         Drawing {
             content: with_gs(content, alpha, false),
             bbox: [0.0, 0.0, w, h],
             gs: gs_dict(alpha, false),
-            font: true,
+            font: Some("Helvetica"),
             matrix,
         }
     }
@@ -334,12 +488,16 @@ impl Pdf {
         }
     }
 
-    /// The two `/LE` line-ending names.
+    /// The `/LE` line-ending names: two for a line, one (a name, not an array) for a text
+    /// box's callout.
     pub(crate) fn line_ends(&self, d: &Dictionary) -> Vec<Vec<u8>> {
-        d.get(b"LE")
-            .ok()
-            .and_then(|o| self.doc.dereference(o).ok())
-            .and_then(|(_, o)| o.as_array().ok())
+        let Some((_, o)) = d.get(b"LE").ok().and_then(|o| self.doc.dereference(o).ok()) else {
+            return Vec::new();
+        };
+        if let Ok(n) = o.as_name() {
+            return vec![n.to_vec()];
+        }
+        o.as_array()
             .map(|a| {
                 a.iter()
                     .take(2)
@@ -588,36 +746,399 @@ fn line_end(ops: &mut Vec<Operation>, end: &[u8], at: (f32, f32), from: (f32, f3
     pen.paint(ops, filled);
 }
 
-/// A note's icon at the top left of its rectangle: a sheet with a folded corner and
-/// three lines of "text".
-fn note(ops: &mut Vec<Operation>, r: [f32; 4], c: Option<&[f32]>) {
+/// An annotation's `/Name`, or nothing.
+fn name(d: &Dictionary) -> &[u8] {
+    d.get(b"Name").and_then(|o| o.as_name()).unwrap_or(&[])
+}
+
+/// An icon's square, `s` points wide with its bottom left at (`x`, `y`), on which
+/// symbols are drawn in coordinates from 0 to 1.
+#[derive(Clone, Copy)]
+struct Sq {
+    x: f32,
+    y: f32,
+    s: f32,
+}
+
+impl Sq {
+    fn at(self, (u, v): (f32, f32)) -> (f32, f32) {
+        (self.x + u * self.s, self.y + v * self.s)
+    }
+
+    fn poly(self, ops: &mut Vec<Operation>, p: &[(f32, f32)]) {
+        polyline(ops, &p.iter().map(|&p| self.at(p)).collect::<Vec<_>>());
+    }
+
+    fn to(self, ops: &mut Vec<Operation>, p: (f32, f32)) {
+        let p = self.at(p);
+        ops.push(op("l", nums(&[p.0, p.1])));
+    }
+
+    fn curve(self, ops: &mut Vec<Operation>, a: (f32, f32), b: (f32, f32), to: (f32, f32)) {
+        let (a, b, to) = (self.at(a), self.at(b), self.at(to));
+        ops.push(op("c", nums(&[a.0, a.1, b.0, b.1, to.0, to.1])));
+    }
+
+    fn circle(self, ops: &mut Vec<Operation>, c: (f32, f32), r: f32) {
+        let (lo, hi) = (self.at((c.0 - r, c.1 - r)), self.at((c.0 + r, c.1 + r)));
+        ellipse(ops, [lo.0, lo.1, hi.0, hi.1]);
+    }
+
+    fn line(self, ops: &mut Vec<Operation>, a: (f32, f32), b: (f32, f32)) {
+        self.poly(ops, &[a, b]);
+    }
+}
+
+/// A note's icon at the top left of its rectangle, for its `/Name`: one of the seven
+/// standard icons (Comment, Key, Note, Help, NewParagraph, Paragraph and Insert; any
+/// other name shows Note), shaped in the note's colour with a dark outline, as other
+/// readers draw them.
+fn note(ops: &mut Vec<Operation>, r: [f32; 4], c: Option<&[f32]>, name: &[u8]) {
     let s = NOTE_SIZE.min(r[2] - r[0]).min(r[3] - r[1]);
     if s <= 2.0 {
         return;
     }
-    let (x0, y1) = (r[0] + 0.5, r[3] - 0.5);
-    let (x1, y0) = (x0 + s - 1.0, y1 - s + 1.0);
-    let f = s * 0.3;
+    let q = Sq {
+        x: r[0],
+        y: r[3] - s,
+        s,
+    };
+    let outline = (s / 20.0).max(0.5);
+    let marks = (s / 12.0).max(0.5);
     ops.extend(fill_color(c.unwrap_or(&NOTE_COLOR)));
-    ops.push(op("G", nums(&[0.3])));
-    ops.push(op("w", nums(&[(s / 25.0).max(0.5)])));
+    ops.push(op("G", nums(&[ICON_INK])));
+    ops.push(op("w", nums(&[outline])));
+    ops.push(op("J", vec![1.into()]));
     ops.push(op("j", vec![1.into()]));
+    // A closed shape, filled in the note's colour and outlined.
+    let shape = |ops: &mut Vec<Operation>, p: &[(f32, f32)]| {
+        q.poly(ops, p);
+        ops.push(op("h", vec![]));
+        ops.push(op("B", vec![]));
+    };
+    let width = |ops: &mut Vec<Operation>, w: f32| ops.push(op("w", nums(&[w])));
+    match name {
+        b"Comment" => {
+            shape(
+                ops,
+                &[
+                    (0.06, 0.92),
+                    (0.94, 0.92),
+                    (0.94, 0.3),
+                    (0.46, 0.3),
+                    (0.2, 0.06),
+                    (0.25, 0.3),
+                    (0.06, 0.3),
+                ],
+            );
+            width(ops, marks);
+            q.line(ops, (0.22, 0.72), (0.78, 0.72));
+            q.line(ops, (0.22, 0.5), (0.64, 0.5));
+            ops.push(op("S", vec![]));
+        }
+        b"Key" => {
+            shape(
+                ops,
+                &[
+                    (0.44, 0.58),
+                    (0.94, 0.58),
+                    (0.94, 0.3),
+                    (0.84, 0.3),
+                    (0.84, 0.44),
+                    (0.74, 0.44),
+                    (0.74, 0.34),
+                    (0.64, 0.34),
+                    (0.64, 0.44),
+                    (0.44, 0.44),
+                ],
+            );
+            q.circle(ops, (0.27, 0.51), 0.22);
+            ops.push(op("B", vec![]));
+            q.circle(ops, (0.21, 0.51), 0.06);
+            ops.push(op("S", vec![]));
+        }
+        b"Help" => {
+            q.circle(ops, (0.5, 0.5), 0.45);
+            ops.push(op("B", vec![]));
+            width(ops, (s / 9.0).max(0.5));
+            q.poly(ops, &[(0.36, 0.64)]);
+            q.curve(ops, (0.36, 0.82), (0.64, 0.82), (0.64, 0.64));
+            q.curve(ops, (0.64, 0.5), (0.5, 0.52), (0.5, 0.38));
+            ops.push(op("S", vec![]));
+            ops.push(op("g", nums(&[ICON_INK])));
+            q.circle(ops, (0.5, 0.22), 0.06);
+            ops.push(op("f", vec![]));
+        }
+        b"NewParagraph" => {
+            shape(ops, &[(0.5, 0.96), (0.2, 0.6), (0.8, 0.6)]);
+            width(ops, marks);
+            q.poly(
+                ops,
+                &[(0.14, 0.06), (0.14, 0.44), (0.42, 0.06), (0.42, 0.44)],
+            );
+            q.poly(ops, &[(0.58, 0.06), (0.58, 0.44), (0.7, 0.44)]);
+            q.curve(ops, (0.86, 0.44), (0.86, 0.24), (0.7, 0.24));
+            q.to(ops, (0.58, 0.24));
+            ops.push(op("S", vec![]));
+        }
+        b"Paragraph" => {
+            q.poly(ops, &[(0.5, 0.94)]);
+            q.curve(ops, (0.1, 0.94), (0.1, 0.48), (0.5, 0.48));
+            ops.push(op("h", vec![]));
+            ops.push(op("B", vec![]));
+            shape(
+                ops,
+                &[
+                    (0.5, 0.94),
+                    (0.88, 0.94),
+                    (0.88, 0.84),
+                    (0.8, 0.84),
+                    (0.8, 0.06),
+                    (0.7, 0.06),
+                    (0.7, 0.84),
+                    (0.62, 0.84),
+                    (0.62, 0.06),
+                    (0.5, 0.06),
+                ],
+            );
+        }
+        b"Insert" => shape(ops, &[(0.06, 0.1), (0.5, 0.94), (0.94, 0.1), (0.5, 0.36)]),
+        _ => {
+            // A sheet with its top right corner folded over.
+            shape(
+                ops,
+                &[
+                    (0.1, 0.04),
+                    (0.9, 0.04),
+                    (0.9, 0.72),
+                    (0.66, 0.96),
+                    (0.1, 0.96),
+                ],
+            );
+            q.poly(ops, &[(0.66, 0.96), (0.66, 0.72), (0.9, 0.72)]);
+            ops.push(op("S", vec![]));
+            width(ops, marks);
+            q.line(ops, (0.24, 0.6), (0.76, 0.6));
+            q.line(ops, (0.24, 0.42), (0.76, 0.42));
+            q.line(ops, (0.24, 0.24), (0.56, 0.24));
+            ops.push(op("S", vec![]));
+        }
+    }
+}
+
+/// A file attachment's icon, as large as fits in the middle of its rectangle, for its
+/// `/Name`: PushPin (also for unknown names), Paperclip, Graph or Tag. GraphPushPin and
+/// PaperclipTag, older names, show Graph and Paperclip.
+fn attachment(ops: &mut Vec<Operation>, r: [f32; 4], c: Option<&[f32]>, name: &[u8]) {
+    let s = (r[2] - r[0]).min(r[3] - r[1]);
+    if s <= 2.0 {
+        return;
+    }
+    let q = Sq {
+        x: (r[0] + r[2] - s) / 2.0,
+        y: (r[1] + r[3] - s) / 2.0,
+        s,
+    };
+    let c = c.unwrap_or(&ATTACH_COLOR);
+    ops.extend(fill_color(c));
+    ops.push(op("G", nums(&[ICON_INK])));
+    ops.push(op("w", nums(&[(s / 16.0).max(0.5)])));
+    ops.push(op("J", vec![1.into()]));
+    ops.push(op("j", vec![1.into()]));
+    match name {
+        b"Graph" | b"GraphPushPin" => {
+            q.poly(ops, &[(0.14, 0.86), (0.14, 0.14), (0.86, 0.14)]);
+            ops.push(op("S", vec![]));
+            for (u, top) in [(0.24, 0.5), (0.45, 0.76), (0.66, 0.38)] {
+                q.poly(
+                    ops,
+                    &[(u, 0.14), (u + 0.14, 0.14), (u + 0.14, top), (u, top)],
+                );
+                ops.push(op("h", vec![]));
+            }
+            ops.push(op("B", vec![]));
+        }
+        b"Paperclip" | b"PaperclipTag" => {
+            ops.extend(stroke_color(c));
+            ops.push(op("w", nums(&[(s / 10.0).max(0.5)])));
+            q.poly(ops, &[(0.56, 0.62), (0.56, 0.3)]);
+            q.curve(ops, (0.56, 0.2), (0.4, 0.2), (0.4, 0.3));
+            q.to(ops, (0.4, 0.75));
+            q.curve(ops, (0.4, 0.9), (0.66, 0.9), (0.66, 0.75));
+            q.to(ops, (0.66, 0.25));
+            q.curve(ops, (0.66, 0.06), (0.32, 0.06), (0.32, 0.25));
+            q.to(ops, (0.32, 0.62));
+            ops.push(op("S", vec![]));
+        }
+        b"Tag" => {
+            q.poly(
+                ops,
+                &[(0.1, 0.5), (0.38, 0.8), (0.9, 0.8), (0.9, 0.2), (0.38, 0.2)],
+            );
+            ops.push(op("h", vec![]));
+            ops.push(op("B", vec![]));
+            q.circle(ops, (0.36, 0.5), 0.07);
+            ops.push(op("S", vec![]));
+        }
+        _ => {
+            q.line(ops, (0.44, 0.44), (0.14, 0.14));
+            ops.push(op("S", vec![]));
+            q.circle(ops, (0.6, 0.6), 0.25);
+            ops.push(op("B", vec![]));
+        }
+    }
+}
+
+/// A caret marking where text goes in: a filled ^ across `r`.
+fn caret(ops: &mut Vec<Operation>, r: [f32; 4], c: &[f32]) {
+    let (w, h) = (r[2] - r[0], r[3] - r[1]);
+    if w < 0.5 || h < 0.5 {
+        return;
+    }
+    let cx = (r[0] + r[2]) / 2.0;
+    ops.extend(fill_color(c));
     polyline(
         ops,
-        &[(x0, y0), (x1, y0), (x1, y1 - f), (x1 - f, y1), (x0, y1)],
+        &[(r[0], r[1]), (cx, r[3]), (r[2], r[1]), (cx, r[1] + h * 0.4)],
     );
     ops.push(op("h", vec![]));
-    ops.push(op("B", vec![]));
-    polyline(ops, &[(x1 - f, y1), (x1 - f, y1 - f), (x1, y1 - f)]);
-    ops.push(op("S", vec![]));
-    let pad = s * 0.18;
-    for i in 1..=3 {
-        let y = y1 - f - (i as f32) * (s - f - pad) / 4.0;
-        let right = if i == 3 { x0 + s * 0.55 } else { x1 - pad };
-        ops.push(op("m", nums(&[x0 + pad, y])));
-        ops.push(op("l", nums(&[right, y])));
+    ops.push(op("f", vec![]));
+}
+
+/// A stamp with no drawing: its `/Name` in bold capitals in a rounded frame, coloured
+/// for its meaning as LimarePDF's own stamps are. `NotApproved` reads NOT APPROVED; a
+/// stamp with no name is a Draft, as the standard says.
+fn stamp(rect: [f32; 4], name: &[u8], alpha: f32) -> Drawing {
+    let (w, h) = (rect[2] - rect[0], rect[3] - rect[1]);
+    let (word, color) = stamp_look(name);
+    let [r, g, b] = color.rgb();
+    let side = w.min(h);
+    let frame = (side * 0.06).clamp(0.5, 2.5);
+    let mut s = format!("{r} {g} {b} RG {r} {g} {b} rg\n");
+    if side > 2.0 * frame {
+        let half = frame / 2.0;
+        s += &format!(
+            "{frame} w {} S\n",
+            rounded([half, half, w - half, h - half], (side * 0.15).min(6.0))
+        );
     }
-    ops.push(op("S", vec![]));
+    let pad = frame + side * 0.12;
+    let size = ((w - 2.0 * pad) / bold_width(&word, 1.0)).min((h - 2.0 * pad) / CAP);
+    if size >= 1.0 {
+        let x = (w - bold_width(&word, size)) / 2.0;
+        let y = (h - CAP * size) / 2.0;
+        s += &format!(
+            "BT /{FONT} {size} Tf {x} {y} Td ({}) Tj ET\n",
+            escape(&word)
+        );
+    }
+    Drawing {
+        content: with_gs(s.into_bytes(), alpha, false),
+        bbox: [0.0, 0.0, w, h],
+        gs: gs_dict(alpha, false),
+        font: Some("Helvetica-Bold"),
+        matrix: None,
+    }
+}
+
+/// A stamp's wording and colour from its `/Name`.
+fn stamp_look(name: &[u8]) -> (String, StampColor) {
+    let name = String::from_utf8_lossy(name);
+    // Acrobat's own stamp sets prefix their names: SBApproved, SHSignHere.
+    let name = ["SB", "SH"]
+        .iter()
+        .find_map(|p| name.strip_prefix(p))
+        .filter(|n| n.starts_with(|c: char| c.is_ascii_uppercase()))
+        .unwrap_or(&name);
+    let mut word = String::new();
+    let mut prev = ' ';
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            if c.is_ascii_uppercase() && prev.is_ascii_lowercase() {
+                word.push(' ');
+            }
+            word.push(c.to_ascii_uppercase());
+        } else if !word.is_empty() && !word.ends_with(' ') {
+            word.push(' ');
+        }
+        prev = c;
+    }
+    let word = match word.trim() {
+        "" => "DRAFT".to_string(),
+        w => w.to_string(),
+    };
+    let key: String = word
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let color = StampKind::from_name(&word).map_or_else(
+        || match key.as_str() {
+            "expired" | "notforpublicrelease" | "topsecret" | "rejected" => StampColor::Red,
+            "forpublicrelease" | "sold" | "completed" | "accepted" => StampColor::Green,
+            _ => StampColor::Blue,
+        },
+        StampKind::color,
+    );
+    (word, color)
+}
+
+/// A cloudy border around the closed shape through `p`: bumps of about radius `r` along
+/// each side, bulging outwards.
+fn cloud_path(ops: &mut Vec<Operation>, p: &[(f32, f32)], r: f32) {
+    let n = p.len();
+    let area: f32 = (0..n)
+        .map(|i| {
+            let (a, b) = (p[i], p[(i + 1) % n]);
+            a.0 * b.1 - b.0 * a.1
+        })
+        .sum();
+    // Outwards is to the right of each side going anticlockwise.
+    let out = if area >= 0.0 { 1.0 } else { -1.0 };
+    let mut left = MAX_POINTS;
+    ops.push(op("m", nums(&[p[0].0, p[0].1])));
+    for i in 0..n {
+        let (a, b) = (p[i], p[(i + 1) % n]);
+        let len = dist(a, b);
+        if len < 1e-3 {
+            continue;
+        }
+        let k = ((len / (2.0 * r)).round().max(1.0) as usize).min(left.max(1));
+        left = left.saturating_sub(k);
+        let nrm = (out * (b.1 - a.1) / len, -out * (b.0 - a.0) / len);
+        // Control points 4/3 of the radius out draw close to a half circle.
+        let h = len / k as f32 / 2.0 * 4.0 / 3.0;
+        for j in 0..k {
+            let s = lerp(a, b, j as f32 / k as f32);
+            let e = lerp(a, b, (j + 1) as f32 / k as f32);
+            ops.push(op(
+                "c",
+                nums(&[
+                    s.0 + nrm.0 * h,
+                    s.1 + nrm.1 * h,
+                    e.0 + nrm.0 * h,
+                    e.1 + nrm.1 * h,
+                    e.0,
+                    e.1,
+                ]),
+            ));
+        }
+    }
+    ops.push(op("h", vec![]));
+}
+
+/// Points round the ellipse filling `r`, anticlockwise, two bump radii `c` apart.
+fn ellipse_points(r: [f32; 4], c: f32) -> Vec<(f32, f32)> {
+    let (cx, cy) = ((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0);
+    let (rx, ry) = ((r[2] - r[0]) / 2.0, (r[3] - r[1]) / 2.0);
+    let around = std::f32::consts::PI * (rx + ry);
+    let n = ((around / (2.0 * c)).round() as usize).clamp(8, MAX_POINTS);
+    (0..n)
+        .map(|i| {
+            let a = std::f32::consts::TAU * i as f32 / n as f32;
+            (cx + rx * a.cos(), cy + ry * a.sin())
+        })
+        .collect()
 }
 
 /// The graphics state for opacity below 1 and the Multiply blend mode.
@@ -689,6 +1210,37 @@ mod tests {
         assert_eq!(size, Some(14.5));
         assert_eq!(color, Some([1.0, 0.0, 0.0]));
         assert_eq!(parse_style("text-align:left"), (None, None));
+    }
+
+    #[test]
+    fn stamp_names_read_as_words_in_their_colour() {
+        let look = |n: &str| stamp_look(n.as_bytes());
+        assert_eq!(
+            look("NotForPublicRelease"),
+            ("NOT FOR PUBLIC RELEASE".into(), StampColor::Red)
+        );
+        assert_eq!(look("SBApproved"), ("APPROVED".into(), StampColor::Green));
+        assert_eq!(look("AsIs"), ("AS IS".into(), StampColor::Blue));
+        assert_eq!(look("my_stamp"), ("MY STAMP".into(), StampColor::Blue));
+        assert_eq!(look(""), ("DRAFT".into(), StampColor::Blue));
+    }
+
+    #[test]
+    fn cloud_bumps_bulge_outwards_either_way_round() {
+        for square in [
+            [(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)],
+            [(0.0, 0.0), (0.0, 20.0), (20.0, 20.0), (20.0, 0.0)],
+        ] {
+            let mut ops = Vec::new();
+            cloud_path(&mut ops, &square, 5.0);
+            // Every control point lies outside the square.
+            for o in ops.iter().filter(|o| o.operator == "c") {
+                let v: Vec<f32> = o.operands.iter().map(|x| x.as_float().unwrap()).collect();
+                for (x, y) in [(v[0], v[1]), (v[2], v[3])] {
+                    assert!(!(0.01..19.99).contains(&x) || !(0.01..19.99).contains(&y));
+                }
+            }
+        }
     }
 
     #[test]

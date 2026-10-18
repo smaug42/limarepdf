@@ -15,7 +15,13 @@ pub struct Pdf {
     /// Why other PDF apps may read the file this was opened from differently from LimarePDF,
     /// if they may. Signing and checking signatures depend on the two agreeing.
     pub(crate) differs: Option<String>,
+    /// Whether the file's cross-reference information was damaged and LimarePDF rebuilt it
+    /// to open the file.
+    pub(crate) repaired: bool,
 }
+
+/// Why a repaired document may read differently in other PDF apps.
+const REPAIRED: &str = "its cross-reference information is damaged, and LimarePDF rebuilt it";
 
 /// Document information dictionary fields.
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
@@ -39,7 +45,63 @@ impl Pdf {
         Self::from_bytes(&bytes, password)
     }
 
+    /// Reads a document. A file whose cross-reference information is damaged, so that it
+    /// reads with no pages, is repaired: its objects are found by scanning the bytes (see
+    /// [`Pdf::repaired`]).
     pub fn from_bytes(bytes: &[u8], password: Option<&str>) -> Result<Self> {
+        let opened = Self::read(bytes, password);
+        let pages = match &opened {
+            Ok(p) => p.page_count(),
+            Err(lopdf::Error::InvalidPassword) => return opened.map_err(cannot_open),
+            Err(_) => 0,
+        };
+        if pages > 0 {
+            // lopdf rebuilds a table it can't read at all by scanning, and then has no
+            // table offset (a real one can't be 0: the header is there).
+            return opened.map_err(cannot_open).map(|mut p| {
+                if p.doc.xref_start == 0 {
+                    p.repaired = true;
+                    p.differs = Some(REPAIRED.into());
+                }
+                p
+            });
+        }
+        let rebuilt = match crate::repair::rebuild(bytes).map(|b| Self::read(&b, password)) {
+            // Only the repaired file reads far enough to ask for the password.
+            Some(Err(e @ lopdf::Error::InvalidPassword)) => return Err(cannot_open(e)),
+            Some(r) => r.ok(),
+            None => None,
+        };
+        let repaired = rebuilt.and_then(|mut p| {
+            crate::repair::unpack_object_streams(&mut p.doc);
+            // The trailers may name no catalog, or the wrong object.
+            if p.page_count() == 0 {
+                let root = crate::repair::find_catalog(&p.doc)?;
+                p.doc.trailer.set("Root", root);
+            }
+            (p.page_count() > 0).then_some(p)
+        });
+        match repaired {
+            Some(mut p) => {
+                p.repaired = true;
+                p.differs = Some(REPAIRED.into());
+                Ok(p)
+            }
+            None => opened.map_err(cannot_open),
+        }
+    }
+
+    /// Whether the file's cross-reference information (where each object is) was damaged,
+    /// and LimarePDF rebuilt it to open the file. Some content may be missing. Such a
+    /// document counts as changed: saving writes a whole repaired copy, never a revision
+    /// added to the damaged file, and its signatures never check as valid and unchanged
+    /// (see [`Pdf::differs`]).
+    pub fn repaired(&self) -> bool {
+        self.repaired
+    }
+
+    /// Reads a document as its cross-reference information says.
+    fn read(bytes: &[u8], password: Option<&str>) -> std::result::Result<Self, lopdf::Error> {
         let load = |b: &[u8]| {
             Document::load_from_with_options(
                 Cursor::new(b),
@@ -55,16 +117,17 @@ impl Pdf {
             Err(e) => match blank_null_encrypt(bytes) {
                 Some(c) => {
                     copy = c;
-                    let doc = load(&copy).map_err(|_| anyhow!("cannot open PDF: {e}"))?;
+                    let doc = load(&copy).map_err(|_| e)?;
                     (doc, &copy[..])
                 }
-                None => bail!("cannot open PDF: {e}"),
+                None => return Err(e),
             },
         };
         let mut pdf = Self {
             doc,
             encryption: None,
             differs: None,
+            repaired: false,
         };
         pdf.differs = pdf.match_other_readers(read);
         Ok(pdf)
@@ -117,6 +180,7 @@ impl Pdf {
             doc,
             encryption: None,
             differs: None,
+            repaired: false,
         }
     }
 
@@ -660,6 +724,10 @@ impl Default for Pdf {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn cannot_open(e: lopdf::Error) -> anyhow::Error {
+    anyhow!("cannot open PDF: {e}")
 }
 
 /// Sides `[top, right, bottom, left]` of an unrotated page, as they appear once the page

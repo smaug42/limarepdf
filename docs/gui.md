@@ -39,7 +39,8 @@ Save As to a new file keeps the signed original.
 - **Middle:** the pages, scrolling continuously. By default they fit the width between the side panels, and keep
   fitting as you resize the window or open and close the panels. Zooming in or out, actual size, Ctrl+scroll or a
   pinch turns fitting off, and your zoom then stays as it is; the Fit width button (highlighted while fitting is on)
-  or Ctrl+0 turns it back on. The page layout button left of the zoom buttons (its icon shows the current layout),
+  or Ctrl+0 turns it back on. Zoom goes from 10% to 6400%. At high zoom the part of the page in view is drawn in
+  tiles as you scroll, over a softer view of the whole page until they arrive. The page layout button left of the zoom buttons (its icon shows the current layout),
   or ☰ > View > Page layout, chooses how the document's pages are laid out: **Continuous pages** (one column, the default), **Facing pages** (two side by side, still scrolling;
   fitting fits both) or **Single page** (one at a time; a wheel step past the page's top or bottom turns the page).
   In facing pages, **Show cover page alone** (on by default) puts the first page on its own on the right, as in a
@@ -83,9 +84,11 @@ line of the comment; hover over it for the type, date and the whole comment.
   and so do file attachments. Undo brings them back.
 
 Some files store annotations without a drawing, leaving each reader to draw them. LimarePDF draws highlights,
-underlines, strike-outs, squiggly underlines, notes, text boxes, rectangles, ellipses, lines, polygons and
-freehand drawings itself, on screen and when printing. The file isn't changed by this; flattening saves LimarePDF's
-drawing into it. Text boxes are drawn in Helvetica, ignoring any rich-text styling.
+underlines, strike-outs, squiggly underlines, notes, text boxes, rectangles, ellipses, lines, polygons, freehand
+drawings, stamps, carets and file attachment icons itself, on screen and when printing, including cloudy borders,
+text box callout lines and line leader lines. The file isn't changed by this; flattening saves LimarePDF's drawing
+into it (file attachments stay as they are). Text boxes are drawn in Helvetica, ignoring any rich-text styling; a
+stamp shows its name in a coloured frame. [Rendering](rendering.md#known-to-be-wrong) lists what isn't reproduced.
 
 ### Marking text
 
@@ -115,8 +118,9 @@ background (none at first) and border, before you start.
 
 - **Note:** click on the page. A comment box opens beside the note; type, then click Done (or press Ctrl+Enter).
   Cancel or Esc drops it, and so does Done with nothing typed. Hovering over a note shows its comment. Notes
-  show at the same size on screen whatever the zoom, with LimarePDF's own icon in the note's colour (also for notes other
-  programs made with a different icon); printed, they keep their own drawing, 20 points across for LimarePDF's.
+  show at the same size on screen whatever the zoom, in the note's colour and shaped like its icon: one of the
+  seven standard ones (Comment, which LimarePDF's notes use, Key, Note, Help, New paragraph, Paragraph and Insert),
+  or Note for any other; printed, they keep their own drawing, or LimarePDF's, 20 points across.
 - **Text box:** drag a box, or click for a default size, then type straight onto the page. Enter starts a new
   line. Click outside the box or press Ctrl+Enter to finish; Esc drops it. Text boxes use Helvetica, so characters
   outside Latin-1 come out as `?`. When you finish, the box grows downward to fit its text, keeping its width; it
@@ -333,11 +337,14 @@ something to do and × to dismiss it. At most two show at a time.
 | Notice | Button |
 | --- | --- |
 | Its digital signatures are being checked, and then how they checked, coloured green, amber, grey or red (always first; see [Digital signatures](#digital-signatures)) | Signatures |
+| The file is damaged, and LimarePDF repaired it to open it: some content may be missing. The original stays as it is: the document counts as changed (closing it warns of unsaved changes), and Save asks whether to replace the original or save the repaired copy as a new file. A signed file's signatures can't vouch for what is shown (they show *can't check*, or a change that isn't allowed), and the repaired copy can't keep them ([details](rendering.md#damaged-files)) | Save as… |
 | The document was password-protected: saving removes the protection unless you set it again | Password security |
 | Areas are marked for redaction but the marks haven't been applied (kept up to date while you work) | Apply redactions… |
 | Signatures and other items put down with the Sign tool can still be moved (kept up to date while you work) | Finish signing… |
 | Its pages are scans without text, so they cannot be searched or copied (checked on the first 20 pages) | Recognise text |
 | It is a form made for Adobe Reader (an XFA form), which only Adobe software can show or fill in; LimarePDF shows the placeholder page the file contains, often "Please wait..." | |
+| Parts of it couldn't be drawn: a picture that can't be decoded. Found as pages are drawn, so it can appear later; it comes back if something new turns up after you dismiss it | |
+| Fonts it names aren't in the file or installed: which ones are shown with a similar font, or which language's text can't be shown at all, and what to install to see it as it was made (such as Noto Sans CJK JP for Japanese). Found as pages are drawn, like the one above ([details](rendering.md#fonts-that-arent-embedded)) | |
 | It has a form: click a field to fill it in, or press Tab (not for a form of signature fields alone) | Highlight fields |
 | It is large (more than 500 pages or 100 MB) | |
 

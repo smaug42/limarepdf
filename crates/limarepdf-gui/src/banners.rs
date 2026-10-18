@@ -4,7 +4,9 @@
 use crate::actions::Act;
 use crate::theme::Tone;
 use egui_phosphor::regular as icon;
+use limarepdf_core::render::Missing;
 use limarepdf_core::{FieldKind, ObjectKind, Pdf};
+use std::collections::BTreeSet;
 
 /// Pages looked at for scans; enough to tell, and quick when opening a large file.
 const SCAN_PAGES: usize = 20;
@@ -17,6 +19,8 @@ const LARGE_BYTES: u64 = 100_000_000;
 pub enum Kind {
     /// The document's digital signatures: being checked, or how they checked.
     Signatures,
+    /// The file was damaged, and LimarePDF repaired it to open it.
+    Repaired,
     /// The file was encrypted: saving drops the protection unless it is set again.
     Protected,
     /// Areas are marked for redaction but nothing under them is removed yet.
@@ -25,6 +29,10 @@ pub enum Kind {
     Signing,
     /// An XFA-only form: only Adobe software builds its pages.
     Xfa,
+    /// Parts of pages couldn't be drawn.
+    Missing,
+    /// Fonts the document names aren't installed: which, and what to install.
+    Fonts,
     /// Pages are images without text.
     Scanned,
     /// The document has form fields.
@@ -59,10 +67,13 @@ impl Banner {
                 Tone::Bad => icon::SEAL_WARNING,
                 Tone::Neutral => icon::SEAL,
             },
+            Kind::Repaired => icon::WRENCH,
             Kind::Protected => icon::LOCK_KEY,
             Kind::Redactions => icon::EYE_SLASH,
             Kind::Signing => icon::SIGNATURE,
             Kind::Xfa => icon::WARNING,
+            Kind::Missing => icon::IMAGE_BROKEN,
+            Kind::Fonts => icon::TEXT_AA,
             Kind::Scanned => icon::SCAN,
             Kind::Forms => icon::TEXTBOX,
             Kind::Large => icon::STACK,
@@ -78,7 +89,8 @@ impl Banner {
             Kind::Signing => Some(("Finish signing…", Act::FinishSigning)),
             Kind::Scanned => Some(("Recognise text", Act::Ocr)),
             Kind::Forms => Some(("Highlight fields", Act::ToggleFields)),
-            Kind::Xfa | Kind::Large => None,
+            Kind::Repaired => Some(("Save as…", Act::SaveAs)),
+            Kind::Xfa | Kind::Missing | Kind::Fonts | Kind::Large => None,
         }
     }
 }
@@ -127,10 +139,144 @@ pub fn signatures(tone: Tone, text: String) -> Banner {
     }
 }
 
+/// The banners for what the renderer couldn't draw as the file asks, found as pages are
+/// drawn: one about fonts that aren't installed, saying what to install, and one about
+/// other parts that couldn't be drawn.
+pub fn missing(what: &BTreeSet<Missing>) -> Vec<Banner> {
+    let mut stand_ins = BTreeSet::new();
+    let mut unnamed_stand_ins = false;
+    let mut languages = BTreeSet::new();
+    let mut unusable = BTreeSet::new();
+    let mut parts = Vec::new();
+    for m in what {
+        match m {
+            Missing::StandIn(Some(f), _) => {
+                stand_ins.insert(f.as_str());
+            }
+            Missing::StandIn(None, _) => unnamed_stand_ins = true,
+            Missing::Language(l, _) => {
+                languages.insert(*l);
+            }
+            Missing::Font(Some(f)) => {
+                unusable.insert(f.as_str());
+            }
+            Missing::Font(None) | Missing::Picture => parts.push(m.describe()),
+        }
+    }
+
+    let mut fonts = Vec::new();
+    if !languages.is_empty() {
+        let names: Vec<&str> = languages.iter().map(|l| l.name()).collect();
+        let suggest: Vec<&str> = languages.iter().map(|l| l.suggestion()).collect();
+        fonts.push(if languages.len() == 1 {
+            format!(
+                "This document has {0} text, but no {0} font is installed, so that text can't \
+                 be shown. Install a {0} font, such as {1}, to read it.",
+                names[0], suggest[0]
+            )
+        } else {
+            format!(
+                "This document has {} text, but no font for them is installed, so that text \
+                 can't be shown. Install fonts for them, such as {}, to read it.",
+                list(&names),
+                list(&suggest)
+            )
+        });
+    }
+    if !unusable.is_empty() {
+        let names: Vec<&str> = unusable.into_iter().collect();
+        fonts.push(format!(
+            "{} {} installed and no font could stand in, so {} text may show wrong \
+             characters. Install {} to read it.",
+            fonts_named(&names),
+            if names.len() == 1 { "isn't" } else { "aren't" },
+            if names.len() == 1 { "its" } else { "their" },
+            if names.len() == 1 { "it" } else { "them" },
+        ));
+    }
+    if !stand_ins.is_empty() {
+        let names: Vec<&str> = stand_ins.into_iter().collect();
+        fonts.push(if names.len() == 1 {
+            format!(
+                "The font {0} isn't installed, so a similar font is shown in its place and \
+                 some text may not look right. Install {0} to see the document as it was made.",
+                names[0]
+            )
+        } else {
+            format!(
+                "{} aren't installed, so similar fonts are shown in their place and some text \
+                 may not look right. Install them to see the document as it was made.",
+                fonts_named(&names)
+            )
+        });
+    } else if unnamed_stand_ins {
+        fonts.push(
+            "Some fonts this document uses aren't installed, so similar fonts are shown in \
+             their place and some text may not look right."
+                .into(),
+        );
+    }
+
+    let mut v = Vec::new();
+    if !parts.is_empty() {
+        v.push(Banner::plain(
+            Kind::Missing,
+            format!(
+                "Parts of this document couldn't be drawn ({}), so some pages may look \
+                 incomplete.",
+                parts.join(", ")
+            ),
+        ));
+    }
+    if !fonts.is_empty() {
+        v.push(Banner::plain(Kind::Fonts, fonts.join(" ")));
+    }
+    v
+}
+
+/// "The font A" or "The fonts A, B and C".
+fn fonts_named(names: &[&str]) -> String {
+    if names.len() == 1 {
+        format!("The font {}", names[0])
+    } else {
+        format!("The fonts {}", list(names))
+    }
+}
+
+/// "A", "A and B", "A, B and C"; after four, "A, B, C, D and 3 more".
+fn list(items: &[&str]) -> String {
+    const SHOWN: usize = 4;
+    match items {
+        [] => String::new(),
+        [one] => one.to_string(),
+        _ if items.len() > SHOWN => {
+            let more = items.len() - SHOWN;
+            format!("{} and {more} more", items[..SHOWN].join(", "))
+        }
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
 /// The banners for a document just opened, most important first. `bytes` is the file's
 /// size, when it came from a file.
 pub fn detect(pdf: &Pdf, bytes: Option<u64>) -> Vec<Banner> {
     let mut v = Vec::new();
+    if pdf.repaired() {
+        let signed = if pdf.signature_count() > 0 {
+            " Its signatures can't vouch for what is shown, and saving the repaired copy breaks \
+             them."
+        } else {
+            ""
+        };
+        v.push(Banner::plain(
+            Kind::Repaired,
+            format!(
+                "This file is damaged, and LimarePDF repaired it to open it; some content may \
+                 be missing. The original stays as it is unless you choose to replace it when \
+                 saving.{signed}"
+            ),
+        ));
+    }
     if pdf.doc.was_encrypted() {
         v.push(Banner::plain(
             Kind::Protected,
@@ -207,6 +353,7 @@ fn has_form_fields(pdf: &Pdf) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use limarepdf_core::render::Language;
     use limarepdf_core::{Cipher, Encryption, ImageImport, Restrictions};
     use lopdf::{dictionary, Object};
 
@@ -234,6 +381,19 @@ mod tests {
     #[test]
     fn plain_documents_get_no_banner() {
         assert!(kinds(&blank(3), Some(1000)).is_empty());
+    }
+
+    #[test]
+    fn repaired_files_say_so() {
+        // A line after the header moves every object away from where the table says.
+        let mut bytes = blank(1).to_bytes().unwrap();
+        let line = bytes.iter().position(|&c| c == b'\n').unwrap() + 1;
+        bytes.splice(line..line, format!("%{}\n", " ".repeat(200)).into_bytes());
+        let p = Pdf::from_bytes(&bytes, None).unwrap();
+        assert_eq!(kinds(&p, None), [Kind::Repaired]);
+        let b = &detect(&p, None)[0];
+        assert!(b.text.contains("repaired"));
+        assert_eq!(b.action().map(|a| a.1), Some(Act::SaveAs));
     }
 
     #[test]
@@ -305,5 +465,64 @@ mod tests {
         let big = detect(&blank(2), Some(LARGE_BYTES + 1));
         assert_eq!(big[0].kind, Kind::Large);
         assert!(big[0].text.contains("100 MB"), "{}", big[0].text);
+    }
+
+    #[test]
+    fn missing_parts_are_listed() {
+        let b = missing(&[Missing::Picture, Missing::Font(None)].into());
+        assert_eq!(b.len(), 1);
+        assert_eq!(b[0].kind, Kind::Missing);
+        assert!(b[0].text.contains("(a font, a picture)"), "{}", b[0].text);
+        assert_eq!(b[0].action(), None);
+        assert!(missing(&BTreeSet::new()).is_empty());
+    }
+
+    #[test]
+    fn fonts_say_what_to_install() {
+        let stand_in = |f: &str| Missing::StandIn(Some(f.into()), "Liberation Sans".into());
+        let b = missing(&[stand_in("Tahoma"), Missing::Picture].into());
+        assert_eq!(b.len(), 2);
+        assert_eq!(b[1].kind, Kind::Fonts);
+        assert_eq!(
+            b[1].text,
+            "The font Tahoma isn't installed, so a similar font is shown in its place and \
+             some text may not look right. Install Tahoma to see the document as it was made."
+        );
+
+        let b = missing(&[stand_in("Tahoma"), stand_in("Verdana"), stand_in("Calibri")].into());
+        let start = "The fonts Calibri, Tahoma and Verdana aren't installed";
+        assert!(b[0].text.starts_with(start), "{}", b[0].text);
+
+        let japanese = Missing::Language(Language::Japanese, Some("MS-Mincho".into()));
+        let b = missing(&[japanese].into());
+        assert_eq!(
+            b[0].text,
+            "This document has Japanese text, but no Japanese font is installed, so that text \
+             can't be shown. Install a Japanese font, such as Noto Sans CJK JP, to read it."
+        );
+        let b = missing(
+            &[
+                Missing::Language(Language::Japanese, None),
+                Missing::Language(Language::Korean, None),
+            ]
+            .into(),
+        );
+        assert!(
+            b[0].text.contains("Japanese and Korean text")
+                && b[0].text.contains("Noto Sans CJK JP and Noto Sans CJK KR"),
+            "{}",
+            b[0].text
+        );
+
+        let b = missing(&[Missing::Font(Some("Tahoma".into()))].into());
+        assert_eq!(b[0].kind, Kind::Fonts);
+        assert!(b[0].text.contains("Install it"), "{}", b[0].text);
+    }
+
+    #[test]
+    fn long_lists_are_cut() {
+        let six = ["A", "B", "C", "D", "E", "F"];
+        assert_eq!(list(&six), "A, B, C, D and 2 more");
+        assert_eq!(list(&["A", "B"]), "A and B");
     }
 }

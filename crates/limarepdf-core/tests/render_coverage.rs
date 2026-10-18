@@ -722,3 +722,199 @@ fn renders_encrypted_files_with_password() {
         s.expect(150.0, 100.0, [255, 0, 0], &format!("{cipher:?}"));
     }
 }
+
+#[test]
+fn wrong_password_is_explained() {
+    let mut p = make("", Dictionary::new());
+    p.set_encryption(Some(Encryption {
+        user_password: "user".into(),
+        owner_password: "owner".into(),
+        cipher: Cipher::Aes128,
+        restrictions: Restrictions::default(),
+    }));
+    let Err(e) = render::load(p.to_bytes().unwrap(), Some("wrong")) else {
+        panic!("loaded with the wrong password");
+    };
+    assert_eq!(e.to_string(), "cannot render PDF: it needs a password");
+    let Err(e) = render::load(b"not a PDF".to_vec(), None) else {
+        panic!("loaded a file that isn't a PDF");
+    };
+    assert_eq!(
+        e.to_string(),
+        "cannot render PDF: the file's structure can't be read"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// What the renderer reports it couldn't draw (the app's banner).
+
+use render::{InstalledFonts, Language, Missing};
+use std::collections::BTreeSet;
+use std::path::Path;
+use std::sync::Arc;
+
+fn missing_of(p: &mut Pdf) -> BTreeSet<Missing> {
+    drawn_with(p, Arc::new(InstalledFonts::none())).1
+}
+
+/// The page drawn when only `fonts` are installed, and what was missing.
+fn drawn_with(p: &mut Pdf, fonts: Arc<InstalledFonts>) -> (render::Bitmap, BTreeSet<Missing>) {
+    let hp = render::load(p.snapshot().unwrap(), None).unwrap();
+    let r = render::Renderer::with_fonts(&hp, fonts);
+    let b = r.render(0, 1.0).unwrap();
+    let found = r.take_missing();
+    assert!(r.take_missing().is_empty(), "taking them clears them");
+    (b, found)
+}
+
+#[test]
+fn ordinary_pages_report_nothing_missing() {
+    // A font that isn't embedded and isn't standard gets a standard stand-in, which is
+    // close enough: not reported.
+    let mut p = make(
+        "0 0 1 rg 50 50 100 50 re f BT /F1 24 Tf 60 120 Td (Hello) Tj ET",
+        dictionary! { "Font" => dictionary! { "F1" => dictionary! {
+            "Type" => "Font", "Subtype" => "TrueType", "BaseFont" => "Arial",
+        } } },
+    );
+    assert!(missing_of(&mut p).is_empty());
+}
+
+#[test]
+fn undecodable_pictures_are_reported() {
+    let mut p = make("q 100 0 0 50 100 75 cm /Im Do Q", Dictionary::new());
+    let im = p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => 4,
+            "Height" => 4,
+            "ColorSpace" => "DeviceRGB",
+            "BitsPerComponent" => 8,
+            "Filter" => "DCTDecode",
+        },
+        b"this is not a JPEG".to_vec(),
+    ));
+    set_resources(
+        &mut p,
+        dictionary! { "XObject" => dictionary! { "Im" => im } },
+    );
+    assert_eq!(missing_of(&mut p), [Missing::Picture].into());
+}
+
+#[test]
+fn cjk_fonts_that_are_not_embedded_are_reported() {
+    let mut p = make("BT /F1 24 Tf 60 120 Td <0001> Tj ET", Dictionary::new());
+    let cid = p.doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "CIDFontType0",
+        "BaseFont" => "KozMinPro-Regular",
+        "CIDSystemInfo" => dictionary! {
+            "Registry" => Object::string_literal("Adobe"),
+            "Ordering" => Object::string_literal("Japan1"),
+            "Supplement" => 4,
+        },
+        "FontDescriptor" => dictionary! {
+            "Type" => "FontDescriptor",
+            "FontName" => "KozMinPro-Regular",
+            "Flags" => 4,
+            "FontBBox" => vec![0.into(), 0.into(), 1000.into(), 1000.into()],
+            "ItalicAngle" => 0,
+            "Ascent" => 880,
+            "Descent" => -120,
+            "CapHeight" => 700,
+            "StemV" => 80,
+        },
+    });
+    set_resources(
+        &mut p,
+        dictionary! { "Font" => dictionary! { "F1" => dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type0",
+            "BaseFont" => "KozMinPro-Regular",
+            "Encoding" => "UniJIS-UCS2-H",
+            "DescendantFonts" => vec![Object::Reference(cid)],
+        } } },
+    );
+    // With no installed font for Japanese: drawn with a Latin standard font, which lacks
+    // its characters, and reported by language, to say what to install.
+    let japanese = Missing::Language(Language::Japanese, Some("KozMinPro-Regular".into()));
+    assert_eq!(missing_of(&mut p), [japanese.clone()].into());
+    let (_, missing) = drawn_with(&mut p, Arc::new(bundled()));
+    // A Latin font isn't used for Japanese.
+    assert_eq!(missing, [japanese].into());
+}
+
+/// Zeyada, one of the handwriting fonts bundled for typed signatures, as the only
+/// installed font.
+fn bundled() -> InstalledFonts {
+    let zeyada = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts/Zeyada.ttf");
+    InstalledFonts::from_files(&[&zeyada])
+}
+
+/// A page showing a "W" in a Latin CID font named `name` that isn't embedded, with a
+/// ToUnicode map from code 1 to "W", as some programs write plain text.
+fn latin_cid_font(name: &str) -> Pdf {
+    let mut p = make("BT /F1 96 Tf 40 50 Td <0001> Tj ET", Dictionary::new());
+    let cid = p.doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "CIDFontType2",
+        "BaseFont" => name,
+        "CIDSystemInfo" => dictionary! {
+            "Registry" => Object::string_literal("Adobe"),
+            "Ordering" => Object::string_literal("Identity"),
+            "Supplement" => 0,
+        },
+        "DW" => 1000,
+    });
+    let cmap = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap \
+        /CMapName /Test def 1 begincodespacerange <0000> <FFFF> endcodespacerange \
+        1 beginbfchar <0001> <0057> endbfchar endcmap \
+        CMapName currentdict /CMap defineresource pop end end";
+    let to_unicode = p
+        .doc
+        .add_object(Stream::new(Dictionary::new(), cmap.as_bytes().to_vec()));
+    set_resources(
+        &mut p,
+        dictionary! { "Font" => dictionary! { "F1" => dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type0",
+            "BaseFont" => name,
+            "Encoding" => "Identity-H",
+            "DescendantFonts" => vec![Object::Reference(cid)],
+            "ToUnicode" => to_unicode,
+        } } },
+    );
+    p
+}
+
+#[test]
+fn cid_fonts_that_are_not_embedded_use_installed_fonts() {
+    let mut p = latin_cid_font("Zeyada");
+    let (with, missing) = drawn_with(&mut p, Arc::new(bundled()));
+    assert!(missing.is_empty(), "{missing:?}");
+    let (without, missing) = drawn_with(&mut p, Arc::new(InstalledFonts::none()));
+    assert_eq!(missing, [Missing::Font(Some("Zeyada".into()))].into());
+    let ink = |b: &render::Bitmap| b.rgba.chunks(4).filter(|px| px[0] < 128).count();
+    assert!(ink(&with) > 50, "the installed font draws the W");
+    assert_ne!(
+        with.rgba, without.rgba,
+        "and it isn't the standard stand-in"
+    );
+}
+
+#[test]
+fn fonts_that_are_not_installed_get_a_stand_in_and_are_named() {
+    // Tahoma isn't installed: an installed font stands in, drawing the W rather than a
+    // wrong character, and the notice names both.
+    let mut p = latin_cid_font("Tahoma,Bold");
+    let (stand_in, missing) = drawn_with(&mut p, Arc::new(bundled()));
+    assert_eq!(
+        missing,
+        [Missing::StandIn(Some("Tahoma".into()), "Zeyada".into())].into()
+    );
+    assert!(!missing.iter().any(Missing::lost));
+    let mut q = latin_cid_font("Zeyada");
+    let (zeyada, _) = drawn_with(&mut q, Arc::new(bundled()));
+    assert_eq!(stand_in.rgba, zeyada.rgba, "drawn with the stand-in");
+}
