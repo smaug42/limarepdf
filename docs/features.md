@@ -47,7 +47,7 @@ available.
 | About window | Done | Version (copyable for bug reports), links, contributors, credits; "Made in Canada". [Details](gui.md#look-and-feel) |
 | Light and dark themes | Done | Follows the system, or chosen with the top bar's theme button; remembered between runs |
 | Page colour modes | Done | View > Page colours: Normal, Automatic (dark pages with the dark theme), Dark, High contrast, Sepia. Pictures keep their colours unless "Recolour pictures too" is on. On screen only: the file, printing and exports keep their colours. See [Rendering](rendering.md#page-colour-modes) |
-| Rendering | Partial | Some transparency groups are drawn wrongly. Fonts that aren't embedded use installed fonts or similar stand-ins where hayro asks (CID fonts, which Chinese, Japanese and Korean text uses), with a notice saying what to install, and the standard fonts otherwise. Annotations without a drawing of their own are drawn by LimarePDF, except media and 3D ones, without rich text or line captions. Damaged files are repaired when opened, with a notice. [Details](rendering.md) |
+| Rendering | Done | Pages that can't be drawn, and pictures and fonts that can't, are reported; high zoom is drawn in tiles up to 6400%; fonts that aren't embedded use installed fonts or similar stand-ins where hayro asks (CID fonts, which Chinese, Japanese and Korean text uses), with a notice saying what to install; annotations without a drawing of their own are drawn by LimarePDF; damaged files are repaired when opened, with a notice. Known limits, mostly hayro's: some transparency groups are drawn wrongly, hairlines can come out light grey, plain fonts that aren't embedded use the standard fonts, media and 3D annotations aren't drawn, and no rich text or line captions. Compared with poppler over about 1,100 public test PDFs. [Details](rendering.md) |
 | Search | Done | Phrases across line breaks, and words hyphenated at a line end, are found and highlighted. [Details](search-and-text.md) |
 | Select and copy text | Done | With the default read tool; across pages, scrolling while you drag; in the order on the page, not the file's drawing order; includes recognised text |
 | Print or save selected text | Done | As the pages look, full width, cut down to the selected lines, or as plain text in Helvetica (Western European characters only); also saves a .txt file |
@@ -99,6 +99,8 @@ available.
 - Pages the renderer cannot draw say so, with the reason, and a notice says when a picture couldn't be drawn
   ([details](rendering.md#when-something-cant-be-drawn)); editing may still work. Another notice names fonts that
   aren't in the file or installed and says what to install.
+- A damaged file is repaired to open it, with a notice; the original is only replaced if you choose to when saving
+  ([details](rendering.md#damaged-files)).
 - A malformed file that makes LimarePDF fail while opening, editing or saving gets an error message, and a failed edit
   leaves the document as it was. A failure while showing the document (pages, thumbnails, search, bookmarks,
   comments, the inspector) turns that tab into an error page with Save a copy and Close; other tabs carry on. A
@@ -115,16 +117,20 @@ pool of features other PDF tools have is in [ideas.md](ideas.md).
 
 ### Rendering
 
-In progress. Failed pages and missing parts are now reported, high zoom is drawn in tiles up to 6400%, an
-opt-in check compares LimarePDF with poppler over about 1,100 public test PDFs ([results](rendering.md#compared-with-poppler)),
-annotations without a drawing of their own are drawn for every common type, and Chinese, Japanese and Korean fonts
-that aren't embedded use installed fonts ([details](rendering.md#fonts-that-arent-embedded)), and damaged files
-are repaired when opened ([details](rendering.md#damaged-files)). Still to come, before
-Rendering can be called done:
+Done for now (see the Rendering row above). Left for a later round:
 
 - **hayro's own gaps** (knockout and non-isolated transparency groups, thin-line snapping, some shadings, CMaps that
-  use other CMaps, and installed fonts for other fonts that aren't embedded, which hayro doesn't ask for yet),
-  listed in [Known to be wrong](rendering.md#known-to-be-wrong); not yet reported to hayro.
+  use other CMaps, and installed fonts for plain fonts that aren't embedded, which hayro doesn't ask for yet),
+  listed in [Known to be wrong](rendering.md#known-to-be-wrong). Not reported to hayro yet; whether to is still to
+  be decided.
+- **Notices for what hayro draws wrongly:** plain fonts that aren't embedded (such as Calibri or Wingdings, drawn
+  with a standard font), and knockout or non-isolated transparency groups. Offered, not yet decided.
+- **A check on a HiDPI screen** (scale factor 2): tile sizes, the 4096-pixel cap and sharpness have only been tried
+  at scale 1.
+- **Damaged files LimarePDF still can't open:** show them read-only as hayro reads them, when the repair finds no
+  pages. No file in the test set needs it yet.
+- **Annotation drawings:** line captions, a caret's paragraph symbol, rich text in text boxes, and Acrobat's artwork
+  for standard stamps.
 
 ### XFA forms
 

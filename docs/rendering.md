@@ -40,6 +40,11 @@ everyday documents. The first run (2026-10-17, hayro 0.8.0, poppler 26.08) drew 
 
 None of the files crashed LimarePDF or took longer than a minute to draw.
 
+The latest run (2026-10-18, with installed fonts and damaged-file repair) drew 1,312 pages from the same files and
+listed 228. More pages are listed than in the first run because files that couldn't be opened before are now drawn
+and compared, and stand-in fonts differ from poppler's choices. Not every listed page has been looked at by eye; the
+differences found to be LimarePDF's are the gaps under [Known to be wrong](#known-to-be-wrong).
+
 ## Damaged files
 
 A PDF file ends with a cross-reference table that says where each object starts. When that table is broken (offsets
@@ -173,5 +178,6 @@ on which fonts are installed, as in other viewers.
 - Memory and texture size stay bounded at any zoom, up to the highest, 6400%. Tiles are drawn at up to 256 pixels
   per point (6400% on a screen with three pixels per point); beyond that they are shown stretched.
 - Printing and exports don't use tiles. They draw whole pages, at most 1152 dpi.
+- Tiles have only been tried on screens at scale 1, not on a HiDPI screen.
 
 For timings and how the app keeps drawing responsive, see [Performance](performance.md).
