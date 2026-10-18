@@ -1,6 +1,6 @@
 # Ideas pool
 
-Features other PDF tools have that MPE doesn't, collected from a comparison with PDF-XChange Editor, Stirling-PDF,
+Features other PDF tools have that LimarePDF doesn't, collected from a comparison with PDF-XChange Editor, Stirling-PDF,
 pdfcpu, Acrobat and Foxit (October 2026). This is a pool to pick from as the app grows, not a plan or a promise.
 Items already planned are in [features.md](features.md#planned-and-proposed) and aren't repeated here.
 
@@ -11,11 +11,11 @@ as possible later work but aren't picked ahead of them, so the app doesn't fill 
 
 ## Good first picks
 
-Small or medium additions that build on what MPE already has:
+Small or medium additions that build on what LimarePDF already has:
 
 - **Extract images** (S–M): save a document's embedded images as files.
 - **N-up and booklet layouts** (M): several pages on one sheet, or pages ordered for folding.
-- **Shell completions** for `mpe` (S): needs the `clap_complete` crate.
+- **Shell completions** for `limarepdf-cli` (S): needs the `clap_complete` crate.
 
 ## Pages and layout
 
@@ -32,7 +32,7 @@ Small or medium additions that build on what MPE already has:
 - XMP metadata editing, keywords and custom properties (M)
 - Attachments (add, list, extract) and portfolios (M)
 - Create and edit links, turn URLs in text into links, links from bookmarks (M)
-- A full report on a file: its fonts, images and structure, beyond today's `mpe info` (S–M)
+- A full report on a file: its fonts, images and structure, beyond today's `limarepdf-cli info` (S–M)
 
 ## Optimise and repair
 
@@ -82,7 +82,7 @@ Small or medium additions that build on what MPE already has:
   5280 says, instead of refusing to trust chains that set them (M)
 - Importing Acrobat's FDF certificate exchange files (`.fdf`) as trusted certificates (S; `.cer` and `.p7c` work)
 - Smart cards, USB tokens, the Windows certificate store and macOS Keychain (L)
-- Exporting digital IDs in the older 3DES form with less password stretching, for software that can't read MPE's
+- Exporting digital IDs in the older 3DES form with less password stretching, for software that can't read LimarePDF's
   AES-256 exports (S; only if testing with Acrobat shows it is needed, as an explicit option with a warning)
 - Exporting certificates as PEM as well as DER `.cer` (S)
 - Signing encrypted documents (M)
@@ -93,7 +93,7 @@ Small or medium additions that build on what MPE already has:
   pressure (M; egui doesn't report pressure yet), `--signature-image` with the paper made transparent from the
   command line (S)
 
-## Redaction, beyond what MPE does
+## Redaction, beyond what LimarePDF does
 
 - Find and redact by pattern (regular expressions, saved sets) (M)
 - Blur or pixelate instead of a black box (M)
@@ -131,13 +131,13 @@ Small or medium additions that build on what MPE already has:
 
 - Watch a folder and process what arrives (M)
 - Macros (L)
-- An MCP server so AI agents can run MPE's operations (M)
+- An MCP server so AI agents can run LimarePDF's operations (M)
 - Shell completions (S); renaming files by their content (M)
 - Autosave and crash recovery, sessions, custom shortcuts (M each)
 
 ## Left out on purpose
 
-These conflict with MPE working offline and keeping a small attack surface:
+These conflict with LimarePDF working offline and keeping a small attack surface:
 
 - Cloud storage connectors and DocuSign
 - Running JavaScript in documents

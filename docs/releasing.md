@@ -17,7 +17,7 @@ How a release is made, for maintainers.
 3. On `main`, after pulling the merge, make a signed tag and push it:
 
    ```
-   git tag -s vX.Y.Z -m "mpe X.Y.Z"
+   git tag -s vX.Y.Z -m "LimarePDF X.Y.Z"
    git push origin vX.Y.Z
    ```
 
@@ -38,27 +38,27 @@ release already there and fails.
 ## What CI builds
 
 `.github/workflows/ci.yml` runs on pull requests, pushes to `main`, and `v*` tags. Each platform job packages
-`mpe-<version>-<platform>.tar.gz` (`.zip` on Windows), holding the binaries, the README, `CHANGELOG.md`, `docs/` and
+`limarepdf-<version>-<platform>.tar.gz` (`.zip` on Windows), holding the binaries, the README, `CHANGELOG.md`, `docs/` and
 the licences. The archives are made on the runner because Actions artifacts lose Unix file permissions; on the
 Actions page each artifact therefore downloads as a zip with the archive inside.
 
-The Linux job also makes `mpe_<version>-1_amd64.deb` and `mpe-<version>-1.x86_64.rpm` with `cargo-deb` and
+The Linux job also makes `limarepdf_<version>-1_amd64.deb` and `limarepdf-<version>-1.x86_64.rpm` with `cargo-deb` and
 `cargo-generate-rpm`, from the `[package.metadata.deb]` and `[package.metadata.generate-rpm]` sections of
-`crates/mpe-gui/Cargo.toml`. Their dependency lists name the libraries mpe-gui loads at run time; check them when
-eframe or rfd changes (`strings target/release/mpe-gui | grep '\.so'` lists them). A quick install test:
-`podman run --rm -v $PWD:/p:Z debian:stable bash -c 'apt-get update && apt-get install -y /p/mpe_*.deb && mpe --version'`
+`crates/limarepdf-gui/Cargo.toml`. Their dependency lists name the libraries limarepdf loads at run time; check them when
+eframe or rfd changes (`strings target/release/limarepdf | grep '\.so'` lists them). A quick install test:
+`podman run --rm -v $PWD:/p:Z debian:stable bash -c 'apt-get update && apt-get install -y /p/limarepdf_*.deb && limarepdf-cli --version'`
 (and the same with `fedora` and `dnf install -y /p/*.rpm`).
 
 The `macos-dmg` job builds both Mac targets on one runner and runs `packaging/macos/make-dmg.sh`: it joins each
-binary with `lipo`, makes `MPE.app` from `packaging/macos/Info.plist` (which registers MPE for PDFs) and an icon made
-with `iconutil`, signs it ad hoc, and wraps it in `MPE-<version>.dmg` with `hdiutil`.
+binary with `lipo`, makes `LimarePDF.app` from `packaging/macos/Info.plist` (which registers LimarePDF for PDFs) and an icon made
+with `iconutil`, signs it ad hoc, and wraps it in `LimarePDF-<version>.dmg` with `hdiutil`.
 
-The Windows job also builds `mpe-<version>-x86_64.msi` from `packaging/windows/mpe.wxs` with WiX 5 (a .NET tool,
+The Windows job also builds `limarepdf-<version>-x86_64.msi` from `packaging/windows/limarepdf.wxs` with WiX 5 (a .NET tool,
 pinned because later versions add an EULA step) and its UI extension, `WixToolset.UI.wixext` (the same version), for
 the installer screens. Its `UpgradeCode` must never change.
 
 The `release` job writes `SHA256SUMS`, signs it and every file with the signing subkey (below), checks each signature
-against `docs/mpe-signing-key.asc`, and records build provenance with `actions/attest-build-provenance`, which
+against `docs/limarepdf-signing-key.asc`, and records build provenance with `actions/attest-build-provenance`, which
 users check with `gh attestation verify`.
 
 ### Dry run
@@ -73,7 +73,7 @@ branch, not a tag.
 `.github/workflows/packages.yml` runs when a release is published. It downloads the `.deb` and `.rpm` files of the
 last three published releases, builds a flat apt repository and a dnf repository with
 `packaging/build-repos.sh`, signs them (`InRelease`, `Release.gpg`, `repomd.xml.asc`), checks the signatures against
-`docs/mpe-signing-key.asc`, and deploys them to GitHub Pages at https://smaug42.github.io/mpe/ with the page in
+`docs/limarepdf-signing-key.asc`, and deploys them to GitHub Pages at https://smaug42.github.io/limarepdf/ with the page in
 `packaging/pages/`.
 
 Set up once: Settings > Pages > Source: GitHub Actions; then, under Settings > Environments > github-pages, add a
@@ -83,11 +83,11 @@ Started by hand (Actions > packages > Run workflow), it builds the site without 
 ticked; pull requests that change `packaging/` or the workflow build it the same way, as a check. (Starting it by hand
 needs the workflow on `main`.) If no published release has packages yet, it takes them from the latest successful `release-dry-run` of
 `ci.yml` on the chosen branch. To try the script locally, run it in an `ubuntu:24.04` container with `apt-utils`,
-`createrepo-c` and `gnupg`, a throwaway key, and `MPE_SITE_URL=file:///site`.
+`createrepo-c` and `gnupg`, a throwaway key, and `LIMAREPDF_SITE_URL=file:///site`.
 
 ## Signing key
 
-Releases are signed with a GPG key used only for MPE: an ed25519 primary key that only certifies, kept offline,
+Releases are signed with a GPG key used only for LimarePDF: an ed25519 primary key that only certifies, kept offline,
 and a signing subkey, the only part CI holds. The subkey expires after a year and the primary after three, so both
 need renewing in time.
 
@@ -96,8 +96,8 @@ hex line that `gpg --list-keys` prints under the `pub ... [C]` line (the primary
 `sub ... [S]` line (the signing subkey, `SUB`). Paste them without spaces.
 
 ```
-gpg --quick-gen-key "MPE release signing <email>" ed25519 cert 3y
-gpg --list-keys --with-subkey-fingerprints "MPE release signing"   # note the primary fingerprint, FPR
+gpg --quick-gen-key "LimarePDF release signing <email>" ed25519 cert 3y
+gpg --list-keys --with-subkey-fingerprints "LimarePDF release signing"   # note the primary fingerprint, FPR
 gpg --quick-add-key FPR ed25519 sign 1y
 gpg --list-keys --with-subkey-fingerprints FPR                     # note the signing subkey's fingerprint, SUB
 ```
@@ -105,7 +105,7 @@ gpg --list-keys --with-subkey-fingerprints FPR                     # note the si
 Publishing the public key and giving CI the subkey (`gh` is the GitHub CLI; the `!` exports that subkey alone):
 
 ```
-gpg --armor --export FPR > docs/mpe-signing-key.asc
+gpg --armor --export FPR > docs/limarepdf-signing-key.asc
 gpg --armor --export-secret-subkeys SUB! | gh secret set GPG_SIGNING_KEY
 gh secret set GPG_PASSPHRASE          # type the key's passphrase
 ```
@@ -119,7 +119,7 @@ Then upload the public key at keys.openpgp.org (it emails a confirmation link), 
 certificate (`~/.gnupg/openpgp-revocs.d/FPR.rev`) off the computer, for example on a USB stick kept elsewhere.
 
 Renewing: `gpg --quick-set-expire FPR 3y` for the primary, `gpg --quick-set-expire FPR 1y SUB` for the subkey, then
-export `docs/mpe-signing-key.asc` again and re-upload it to keys.openpgp.org. The secret in CI does not change.
+export `docs/limarepdf-signing-key.asc` again and re-upload it to keys.openpgp.org. The secret in CI does not change.
 
 If the subkey leaks, revoke it (`gpg --edit-key FPR`, `key 1`, `revkey`), add a new one, and replace both the
 published key and the secret.

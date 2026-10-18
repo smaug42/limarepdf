@@ -56,31 +56,31 @@ jobs:
       - name: Build
         run: cargo build --workspace --release
       # One archive per platform, made here because artifacts lose Unix file permissions:
-      # a folder mpe-<version>-<platform> holding the binaries, the docs and the licences.
+      # a folder limarepdf-<version>-<platform> holding the binaries, the docs and the licences.
       - name: Package
         shell: bash
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          name="mpe-$version-${{ matrix.name }}"
+          name="limarepdf-$version-${{ matrix.name }}"
           dir="dist/$name"
           mkdir -p "$dir"
           ext=""; [ "${{ runner.os }}" = "Windows" ] && ext=".exe"
-          cp target/release/mpe$ext target/release/mpe-gui$ext "$dir/"
+          cp target/release/limarepdf-cli$ext target/release/limarepdf$ext "$dir/"
           cp README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE "$dir/"
           # The README links to docs/, so the docs travel with each version.
           cp -r docs "$dir/docs"
           # Attribution and licence for the OCR model built into the binaries.
-          cp crates/mpe-core/models/README.md "$dir/OCR-MODEL.md"
-          # Licence for the Inter font built into mpe-gui.
-          cp crates/mpe-gui/assets/fonts/OFL.txt "$dir/FONT-LICENSE-Inter.txt"
-          # Licences for the handwriting fonts built into mpe-core (typed signatures).
+          cp crates/limarepdf-core/models/README.md "$dir/OCR-MODEL.md"
+          # Licence for the Inter font built into limarepdf.
+          cp crates/limarepdf-gui/assets/fonts/OFL.txt "$dir/FONT-LICENSE-Inter.txt"
+          # Licences for the handwriting fonts built into limarepdf-core (typed signatures).
           for f in OFL-Caveat OFL-CedarvilleCursive LICENSE-HomemadeApple OFL-Zeyada; do
-            cp "crates/mpe-core/assets/fonts/$f.txt" "$dir/FONT-LICENSE-${f#*-}.txt"
+            cp "crates/limarepdf-core/assets/fonts/$f.txt" "$dir/FONT-LICENSE-${f#*-}.txt"
           done
           # Linux desktop entry and icon; docs/install.md says where they go.
           if [ "${{ runner.os }}" = "Linux" ]; then
-            cp crates/mpe-gui/assets/mpe.desktop "$dir/"
-            cp docs/images/icon.png "$dir/mpe.png"
+            cp crates/limarepdf-gui/assets/io.github.smaug42.limarepdf.desktop "$dir/"
+            cp docs/images/icon.png "$dir/io.github.smaug42.limarepdf.png"
           fi
           cd dist
           if [ "${{ runner.os }}" = "Windows" ]; then
@@ -88,15 +88,15 @@ jobs:
           else
             tar -czf "$name.tar.gz" "$name"
           fi
-      # .deb and .rpm from the binaries just built; the settings are in crates/mpe-gui/Cargo.toml.
+      # .deb and .rpm from the binaries just built; the settings are in crates/limarepdf-gui/Cargo.toml.
       # The rpm is signed later, in the release job, which holds the key.
       - name: Linux packages
         if: runner.os == 'Linux'
         run: |
           cargo install cargo-deb cargo-generate-rpm --locked
-          cargo deb -p mpe-gui --no-build --no-strip --output dist/
-          cargo generate-rpm -p crates/mpe-gui --output dist/
-      # The MSI from packaging/windows/mpe.wxs. WiX is pinned to 5 (open source, no EULA step).
+          cargo deb -p limarepdf-gui --no-build --no-strip --output dist/
+          cargo generate-rpm -p crates/limarepdf-gui --output dist/
+      # The MSI from packaging/windows/limarepdf.wxs. WiX is pinned to 5 (open source, no EULA step).
       - name: Windows installer
         if: runner.os == 'Windows'
         shell: bash
@@ -105,12 +105,12 @@ jobs:
           export PATH="$PATH:$HOME/.dotnet/tools"
           wix extension add --global WixToolset.UI.wixext/5.0.2
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          wix build packaging/windows/mpe.wxs -arch x64 -ext WixToolset.UI.wixext \
-            -loc packaging/windows/mpe.wxl -culture en-US -d Version=$version \
-            -o "dist/mpe-$version-x86_64.msi"
+          wix build packaging/windows/limarepdf.wxs -arch x64 -ext WixToolset.UI.wixext \
+            -loc packaging/windows/limarepdf.wxl -culture en-US -d Version=$version \
+            -o "dist/limarepdf-$version-x86_64.msi"
       - uses: actions/upload-artifact@v4
         with:
-          name: mpe-${{ matrix.name }}
+          name: limarepdf-${{ matrix.name }}
           path: |
             dist/*.tar.gz
             dist/*.zip
@@ -118,7 +118,7 @@ jobs:
             dist/*.rpm
             dist/*.msi
 
-  # A universal MPE.app (Apple Silicon and Intel) in a .dmg; packaging/macos/make-dmg.sh.
+  # A universal LimarePDF.app (Apple Silicon and Intel) in a .dmg; packaging/macos/make-dmg.sh.
   # The tests ran in the build job on both Macs.
   macos-dmg:
     runs-on: macos-latest
@@ -134,7 +134,7 @@ jobs:
         run: bash packaging/macos/make-dmg.sh dist
       - uses: actions/upload-artifact@v4
         with:
-          name: mpe-macos-dmg
+          name: limarepdf-macos-dmg
           path: dist/*.dmg
 
   # On a version tag (v0.3.0): a draft GitHub Release with the archives, their checksums,
@@ -169,7 +169,7 @@ jobs:
             echo "The GPG_SIGNING_KEY secret is not set"; exit 1
           fi
           echo "$GPG_SIGNING_KEY" | gpg --batch --import
-          gpg --dearmor < docs/mpe-signing-key.asc > "$RUNNER_TEMP/mpe.gpg"
+          gpg --dearmor < docs/limarepdf-signing-key.asc > "$RUNNER_TEMP/limarepdf.gpg"
           # The rpm carries its own signature, checked by rpm and dnf against the published key.
           sudo apt-get install -y rpm > /dev/null
           (umask 077; printf '%s' "$GPG_PASSPHRASE" > "$RUNNER_TEMP/pass")
@@ -179,7 +179,7 @@ jobs:
             --define "_gpg_sign_cmd_extra_args --batch --pinentry-mode loopback --passphrase-file $RUNNER_TEMP/pass" \
             assets/*.rpm
           rm "$RUNNER_TEMP/pass"
-          rpmkeys --dbpath "$RUNNER_TEMP/rpmdb" --import docs/mpe-signing-key.asc
+          rpmkeys --dbpath "$RUNNER_TEMP/rpmdb" --import docs/limarepdf-signing-key.asc
           rpmkeys --dbpath "$RUNNER_TEMP/rpmdb" --checksig assets/*.rpm | tee "$RUNNER_TEMP/rpmcheck"
           grep -q "signatures OK" "$RUNNER_TEMP/rpmcheck"
           cd assets
@@ -187,7 +187,7 @@ jobs:
           for f in *; do
             gpg --batch --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
               --armor --detach-sign "$f"
-            gpgv --keyring "$RUNNER_TEMP/mpe.gpg" "$f.asc" "$f"
+            gpgv --keyring "$RUNNER_TEMP/limarepdf.gpg" "$f.asc" "$f"
           done
       - uses: actions/attest-build-provenance@v4
         with:
@@ -220,5 +220,5 @@ jobs:
             printf '\n**All changes:** https://github.com/%s/compare/%s...%s\n' \
               "$GITHUB_REPOSITORY" "$prev" "$tag" >> notes.md
           fi
-          gh release create "$tag" --draft --verify-tag --title "MPE $version" \
+          gh release create "$tag" --draft --verify-tag --title "LimarePDF $version" \
             --notes-file notes.md assets/*

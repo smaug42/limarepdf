@@ -1,5 +1,5 @@
 name: packages
-# The apt and dnf repositories on GitHub Pages (https://smaug42.github.io/mpe/), rebuilt
+# The apt and dnf repositories on GitHub Pages (https://smaug42.github.io/limarepdf/), rebuilt
 # from the .deb and .rpm files of the last three published releases each time a release
 # is published. Started by hand, it builds the site without deploying it (unless "deploy"
 # is ticked); before the first release with packages it takes them from the latest
@@ -57,9 +57,9 @@ jobs:
           echo "$GPG_SIGNING_KEY" | gpg --batch --import
           bash packaging/build-repos.sh in site
           # Check the signatures against the published key, as apt and dnf will.
-          gpg --dearmor < docs/mpe-signing-key.asc > "$RUNNER_TEMP/mpe.gpg"
-          gpgv --keyring "$RUNNER_TEMP/mpe.gpg" site/apt/InRelease
-          gpgv --keyring "$RUNNER_TEMP/mpe.gpg" site/rpm/repodata/repomd.xml.asc site/rpm/repodata/repomd.xml
+          gpg --dearmor < docs/limarepdf-signing-key.asc > "$RUNNER_TEMP/limarepdf.gpg"
+          gpgv --keyring "$RUNNER_TEMP/limarepdf.gpg" site/apt/InRelease
+          gpgv --keyring "$RUNNER_TEMP/limarepdf.gpg" site/rpm/repodata/repomd.xml.asc site/rpm/repodata/repomd.xml
       - uses: actions/upload-pages-artifact@v5
         with:
           path: site

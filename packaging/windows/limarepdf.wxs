@@ -1,0 +1,96 @@
+<!--
+  The Windows installer, built in CI with WiX 5 from the repository root:
+    wix build packaging/windows/limarepdf.wxs -arch x64 -d Version=<version> -o limarepdf-<version>-x86_64.msi
+  (with -ext WixToolset.UI.wixext -loc packaging/windows/limarepdf.wxl -culture en-US; the .wxl holds the
+  Welcome screen's licence summary). Installs for all users, by default in Program Files\LimarePDF,
+  with a Start menu shortcut, LimarePDF under "Open with" for PDFs (and in Settings > Default apps),
+  and limarepdf-cli.exe on the PATH. The UpgradeCode must never change: it is how a newer LimarePDF replaces
+  an older one.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="LimarePDF" Manufacturer="Clayton Cornell" Version="$(var.Version)"
+           UpgradeCode="59D37102-94EF-4ADF-BBC4-BC3B5D763CEB" Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of LimarePDF is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Installer screens: welcome, install folder, ready, progress, finish. The licence page is
+         skipped (MIT or Apache-2.0 asks nothing of the user): the two Publish lines below take
+         precedence over the dialog set's own (higher Order). -->
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <UI>
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstallDirDlg"
+               Condition="NOT Installed" Order="2" />
+      <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2" />
+    </UI>
+
+    <Icon Id="limarepdf.ico" SourceFile="crates\limarepdf-gui\assets\icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="limarepdf.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/smaug42/limarepdf" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="LimarePDF" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <Feature Id="Main">
+      <Component Directory="INSTALLFOLDER">
+        <File Id="limarepdf.exe" Source="target\release\limarepdf.exe" KeyPath="yes">
+          <Shortcut Id="StartMenu" Name="LimarePDF" Description="View and edit PDF files"
+                    Directory="ProgramMenuFolder" WorkingDirectory="INSTALLFOLDER" />
+        </File>
+
+        <!-- A ProgID for "Open with"; it does not take over .pdf (Windows leaves that to the user). -->
+        <RegistryValue Root="HKLM" Key="Software\Classes\LimarePDF.Document" Type="string" Value="PDF document" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\LimarePDF.Document\DefaultIcon" Type="string"
+                       Value="[#limarepdf.exe],0" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\LimarePDF.Document\shell\open\command" Type="string"
+                       Value="&quot;[#limarepdf.exe]&quot; &quot;%1&quot;" />
+        <!-- Windows reads only the value's name here; its data is ignored. -->
+        <RegistryValue Root="HKLM" Key="Software\Classes\.pdf\OpenWithProgids" Name="LimarePDF.Document"
+                       Type="string" Value="LimarePDF.Document" />
+        <!-- The name "Open with" shows; without it Windows reads the exe's FileDescription (also
+             LimarePDF, set in crates\limarepdf-gui\build.rs). -->
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\limarepdf.exe" Name="FriendlyAppName"
+                       Type="string" Value="LimarePDF" />
+
+        <!-- Lets the user pick LimarePDF as the PDF app in Settings > Default apps. -->
+        <RegistryValue Root="HKLM" Key="Software\LimarePDF\Capabilities" Name="ApplicationName" Type="string" Value="LimarePDF" />
+        <RegistryValue Root="HKLM" Key="Software\LimarePDF\Capabilities" Name="ApplicationDescription" Type="string"
+                       Value="PDF viewer and editor" />
+        <RegistryValue Root="HKLM" Key="Software\LimarePDF\Capabilities\FileAssociations" Name=".pdf" Type="string"
+                       Value="LimarePDF.Document" />
+        <RegistryValue Root="HKLM" Key="Software\RegisteredApplications" Name="LimarePDF" Type="string"
+                       Value="Software\LimarePDF\Capabilities" />
+      </Component>
+
+      <Component Directory="INSTALLFOLDER">
+        <File Source="target\release\limarepdf-cli.exe" KeyPath="yes" />
+        <Environment Id="Path" Name="PATH" Value="[INSTALLFOLDER]" Part="last" Action="set" System="yes"
+                     Permanent="no" />
+      </Component>
+
+      <Component Directory="INSTALLFOLDER"><File Source="README.md" /></Component>
+      <Component Directory="INSTALLFOLDER"><File Source="CHANGELOG.md" /></Component>
+      <Component Directory="INSTALLFOLDER"><File Source="LICENSE-MIT" /></Component>
+      <Component Directory="INSTALLFOLDER"><File Source="LICENSE-APACHE" /></Component>
+      <Component Directory="INSTALLFOLDER">
+        <File Source="crates\limarepdf-core\models\README.md" Name="OCR-MODEL.md" />
+      </Component>
+      <Component Directory="INSTALLFOLDER">
+        <File Source="crates\limarepdf-gui\assets\fonts\OFL.txt" Name="FONT-LICENSE-Inter.txt" />
+      </Component>
+      <Component Directory="INSTALLFOLDER">
+        <File Source="crates\limarepdf-core\assets\fonts\OFL-Caveat.txt" Name="FONT-LICENSE-Caveat.txt" />
+      </Component>
+      <Component Directory="INSTALLFOLDER">
+        <File Source="crates\limarepdf-core\assets\fonts\OFL-CedarvilleCursive.txt" Name="FONT-LICENSE-CedarvilleCursive.txt" />
+      </Component>
+      <Component Directory="INSTALLFOLDER">
+        <File Source="crates\limarepdf-core\assets\fonts\LICENSE-HomemadeApple.txt" Name="FONT-LICENSE-HomemadeApple.txt" />
+      </Component>
+      <Component Directory="INSTALLFOLDER">
+        <File Source="crates\limarepdf-core\assets\fonts\OFL-Zeyada.txt" Name="FONT-LICENSE-Zeyada.txt" />
+      </Component>
+    </Feature>
+  </Package>
+</Wix>

@@ -1,0 +1,103 @@
+[package]
+name = "limarepdf-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PDF viewer and editor"
+homepage = "https://github.com/smaug42/limarepdf"
+repository = "https://github.com/smaug42/limarepdf"
+
+[[bin]]
+name = "limarepdf"
+path = "src/main.rs"
+
+[dependencies]
+limarepdf-core = { path = "../limarepdf-core" }
+anyhow.workspace = true
+eframe.workspace = true
+rayon.workspace = true
+rfd.workspace = true
+egui-phosphor.workspace = true
+
+[build-dependencies]
+# Embeds the icon in limarepdf.exe on Windows; does nothing on other platforms.
+winresource = { version = "0.1.34", default-features = false }
+
+[dev-dependencies]
+# Tests build documents with form fields; already used by limarepdf-core.
+lopdf.workspace = true
+
+# Linux packages, built in CI with cargo-deb and cargo-generate-rpm after the release build.
+# Both hold limarepdf and the limarepdf-cli command, the desktop entry, the icon and the docs. The
+# libraries listed are the ones limarepdf loads at run time (windowing, OpenGL, file dialogs
+# over D-Bus), which the tools can't see; printing uses lp and file dialogs use the portal.
+[package.metadata.deb]
+name = "limarepdf"
+maintainer = "Clayton Cornell <clayton@smaug42.com>"
+copyright = "Clayton Cornell"
+extended-description = """\
+LimarePDF organises, edits, annotates, fills in, stamps, secures, scans and prints PDFs, from a \
+desktop app (limarepdf) or the command line (limarepdf-cli). Written entirely in Rust."""
+section = "graphics"
+depends = "$auto, libdbus-1-3, libegl1, libwayland-client0, libwayland-egl1, libx11-6, libx11-xcb1, libxcursor1, libxi6, libxkbcommon0, libxkbcommon-x11-0"
+recommends = "xdg-desktop-portal, cups-client"
+assets = [
+    ["target/release/limarepdf", "usr/bin/", "755"],
+    ["target/release/limarepdf-cli", "usr/bin/", "755"],
+    ["assets/io.github.smaug42.limarepdf.desktop", "usr/share/applications/", "644"],
+    ["../../docs/images/icon.png", "usr/share/icons/hicolor/256x256/apps/io.github.smaug42.limarepdf.png", "644"],
+    ["../../README.md", "usr/share/doc/limarepdf/", "644"],
+    ["../../CHANGELOG.md", "usr/share/doc/limarepdf/", "644"],
+    ["../../LICENSE-MIT", "usr/share/doc/limarepdf/", "644"],
+    ["../../LICENSE-APACHE", "usr/share/doc/limarepdf/", "644"],
+    ["../limarepdf-core/models/README.md", "usr/share/doc/limarepdf/OCR-MODEL.md", "644"],
+    ["assets/fonts/OFL.txt", "usr/share/doc/limarepdf/FONT-LICENSE-Inter.txt", "644"],
+    ["../limarepdf-core/assets/fonts/OFL-Caveat.txt", "usr/share/doc/limarepdf/FONT-LICENSE-Caveat.txt", "644"],
+    ["../limarepdf-core/assets/fonts/OFL-CedarvilleCursive.txt", "usr/share/doc/limarepdf/FONT-LICENSE-CedarvilleCursive.txt", "644"],
+    ["../limarepdf-core/assets/fonts/LICENSE-HomemadeApple.txt", "usr/share/doc/limarepdf/FONT-LICENSE-HomemadeApple.txt", "644"],
+    ["../limarepdf-core/assets/fonts/OFL-Zeyada.txt", "usr/share/doc/limarepdf/FONT-LICENSE-Zeyada.txt", "644"],
+]
+
+[package.metadata.generate-rpm]
+name = "limarepdf"
+summary = "PDF viewer and editor"
+url = "https://github.com/smaug42/limarepdf"
+# The built-in scan adds "[WEAK]" glibc entries nothing provides, so dnf refuses the
+# package; the requirements below are complete instead.
+auto-req = "no"
+assets = [
+    { source = "target/release/limarepdf", dest = "/usr/bin/limarepdf", mode = "755" },
+    { source = "target/release/limarepdf-cli", dest = "/usr/bin/limarepdf-cli", mode = "755" },
+    { source = "assets/io.github.smaug42.limarepdf.desktop", dest = "/usr/share/applications/io.github.smaug42.limarepdf.desktop", mode = "644" },
+    { source = "../../docs/images/icon.png", dest = "/usr/share/icons/hicolor/256x256/apps/io.github.smaug42.limarepdf.png", mode = "644" },
+    { source = "../../README.md", dest = "/usr/share/doc/limarepdf/README.md", mode = "644", doc = true },
+    { source = "../../CHANGELOG.md", dest = "/usr/share/doc/limarepdf/CHANGELOG.md", mode = "644", doc = true },
+    { source = "../../LICENSE-MIT", dest = "/usr/share/licenses/limarepdf/LICENSE-MIT", mode = "644" },
+    { source = "../../LICENSE-APACHE", dest = "/usr/share/licenses/limarepdf/LICENSE-APACHE", mode = "644" },
+    { source = "../limarepdf-core/models/README.md", dest = "/usr/share/doc/limarepdf/OCR-MODEL.md", mode = "644", doc = true },
+    { source = "assets/fonts/OFL.txt", dest = "/usr/share/licenses/limarepdf/FONT-LICENSE-Inter.txt", mode = "644" },
+    { source = "../limarepdf-core/assets/fonts/OFL-Caveat.txt", dest = "/usr/share/licenses/limarepdf/FONT-LICENSE-Caveat.txt", mode = "644" },
+    { source = "../limarepdf-core/assets/fonts/OFL-CedarvilleCursive.txt", dest = "/usr/share/licenses/limarepdf/FONT-LICENSE-CedarvilleCursive.txt", mode = "644" },
+    { source = "../limarepdf-core/assets/fonts/LICENSE-HomemadeApple.txt", dest = "/usr/share/licenses/limarepdf/FONT-LICENSE-HomemadeApple.txt", mode = "644" },
+    { source = "../limarepdf-core/assets/fonts/OFL-Zeyada.txt", dest = "/usr/share/licenses/limarepdf/FONT-LICENSE-Zeyada.txt", mode = "644" },
+]
+
+# Library sonames rather than package names, so the same rpm works on Fedora and openSUSE.
+[package.metadata.generate-rpm.requires]
+"libc.so.6()(64bit)" = "*"
+"libm.so.6()(64bit)" = "*"
+"libgcc_s.so.1()(64bit)" = "*"
+"libdbus-1.so.3()(64bit)" = "*"
+"libEGL.so.1()(64bit)" = "*"
+"libwayland-client.so.0()(64bit)" = "*"
+"libwayland-egl.so.1()(64bit)" = "*"
+"libX11.so.6()(64bit)" = "*"
+"libX11-xcb.so.1()(64bit)" = "*"
+"libXcursor.so.1()(64bit)" = "*"
+"libXi.so.6()(64bit)" = "*"
+"libxkbcommon.so.0()(64bit)" = "*"
+"libxkbcommon-x11.so.0()(64bit)" = "*"
+
+[package.metadata.generate-rpm.recommends]
+xdg-desktop-portal = "*"
+cups-client = "*"

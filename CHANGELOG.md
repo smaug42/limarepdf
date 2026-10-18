@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- MPE is now LimarePDF. The desktop app is `limarepdf`, the command-line tool `limarepdf-cli`, and the packages
+  `limarepdf`; the app shows as LimarePDF in "Open with", menus, the Start menu and on macOS. Settings, digital IDs
+  and trust lists are kept in a `limarepdf` folder (`~/.config/limarepdf/` on Linux). The repository and package
+  site are now github.com/smaug42/limarepdf and smaug42.github.io/limarepdf.
+
 ## [0.7.0] - 2026-10-17
 
 ### Added

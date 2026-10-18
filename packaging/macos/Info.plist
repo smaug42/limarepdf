@@ -1,18 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- MPE.app's Info.plist; CI replaces VERSION with the version from Cargo.toml. -->
+<!-- LimarePDF.app's Info.plist; CI replaces VERSION with the version from Cargo.toml. -->
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>MPE</string>
+    <string>LimarePDF</string>
     <key>CFBundleDisplayName</key>
-    <string>MPE</string>
+    <string>LimarePDF</string>
     <key>CFBundleIdentifier</key>
-    <string>io.github.smaug42.mpe</string>
+    <string>io.github.smaug42.limarepdf</string>
     <key>CFBundleExecutable</key>
-    <string>mpe-gui</string>
+    <string>limarepdf</string>
     <key>CFBundleIconFile</key>
-    <string>mpe</string>
+    <string>limarepdf</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -29,7 +29,7 @@
     <true/>
     <key>NSHumanReadableCopyright</key>
     <string>MIT OR Apache-2.0</string>
-    <!-- Lists MPE under "Open With" for PDFs, without taking over as the default. -->
+    <!-- Lists LimarePDF under "Open With" for PDFs, without taking over as the default. -->
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>

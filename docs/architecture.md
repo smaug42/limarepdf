@@ -1,12 +1,12 @@
 # How it is built
 
-MPE is written entirely in Rust, with no C or C++ dependencies.
+LimarePDF is written entirely in Rust, with no C or C++ dependencies.
 
 | Part | What it is |
 | --- | --- |
-| `mpe-core` | The library: document operations, rendering, editing, OCR, printing |
-| `mpe` | The command-line tool |
-| `mpe-gui` | The desktop app |
+| `limarepdf-core` | The library: document operations, rendering, editing, OCR, printing |
+| `limarepdf-cli` | The command-line tool |
+| `limarepdf-gui` | The desktop app |
 
 It uses:
 
@@ -18,28 +18,28 @@ It uses:
 - [`ocrs`](https://github.com/robertknight/ocrs) for text recognition (see [Scanning and OCR](scanning-and-ocr.md));
 - [`serde_json`](https://crates.io/crates/serde_json) in the command line, for form values as JSON.
 
-Forms are read in `crates/mpe-core/src/forms.rs`. When a value changes, MPE draws the field's appearance itself
+Forms are read in `crates/limarepdf-core/src/forms.rs`. When a value changes, LimarePDF draws the field's appearance itself
 (`form_ap.rs`, written into the file by `form_write.rs`) rather than asking other readers to, so filled fields look
-the same everywhere; the desktop app's side is `crates/mpe-gui/src/fields.rs`.
+the same everywhere; the desktop app's side is `crates/limarepdf-gui/src/fields.rs`.
 
-Page content is read by MPE's own parser (`crates/mpe-core/src/objects.rs`), which splits it into the objects that
+Page content is read by LimarePDF's own parser (`crates/limarepdf-core/src/objects.rs`), which splits it into the objects that
 editing works on and reads the text that search, copying and export use, with its own reader for fonts' ToUnicode
 maps and Adobe's widths for the standard fonts (see [Search and text](search-and-text.md#text-extraction)).
 
-Redaction (`crates/mpe-core/src/redact.rs`) has its own pass over the page content rather than editing the
+Redaction (`crates/limarepdf-core/src/redact.rs`) has its own pass over the page content rather than editing the
 parser's objects: it rewrites each text-showing operator character by character, keeping the rest in place with
 spacing numbers, cuts drawings into sub-paths, and redacts inside form XObjects as copies. Pictures are decoded,
 blacked out and saved again in `redact_img.rs`. Afterwards the pages are parsed again to check that nothing readable
 is left under the marks. Hidden information (metadata, scripts, attachments, hidden layers) is removed by
 `sanitise.rs`. See [Redaction](redaction.md).
 
-Fill-and-sign signatures (`crates/mpe-core/src/sign.rs`) are stamp annotations whose artwork MPE draws once:
+Fill-and-sign signatures (`crates/limarepdf-core/src/sign.rs`) are stamp annotations whose artwork LimarePDF draws once:
 pen strokes smoothed into curves, typed names as the glyph outlines of a bundled handwriting font (read with the
 `skrifa` crate, so no font goes into the PDF), or a picture with its paper made transparent. Finish signing
 flattens just those annotations. The app's saved signatures and the Create signature window are in
-`crates/mpe-gui/src/signing.rs`.
+`crates/limarepdf-gui/src/signing.rs`.
 
-Digital signatures are checked in `crates/mpe-core/src/sig_verify.rs` (finding them, the byte-range rules, and
+Digital signatures are checked in `crates/limarepdf-core/src/sig_verify.rs` (finding them, the byte-range rules, and
 tying each signature value to its dictionary in the version it signed, by position) and `cms_check.rs` (the CMS
 signature, certificates, timestamps), over a small BER/DER reader, `asn1.rs`, that walks the data exactly as written
 so signed attributes are never re-encoded before checking. The cryptography is RustCrypto's (`rsa`, `p256`, `p384`,
@@ -48,19 +48,19 @@ appended revisions' cross-reference sections itself (lopdf ignores free entries 
 would hide changes), checks that lopdf reads the same objects, then compares each signed version with the next,
 judging every object that differs by each role it plays (page content, comment, form field, signature, document
 structure) against the signer's permissions. Trust is in `trust.rs`: the trust list file (`trust.txt` in the
-settings folder, whose location `mpe_core::settings_dir` gives both the app and the command line), and the chain
+settings folder, whose location `limarepdf_core::settings_dir` gives both the app and the command line), and the chain
 search from a signer's certificate to a trusted authority over the certificates the signature and the document's
 `/DSS` carry, with RFC 5280's checks at the signing time, including certificate policy processing; each link's
 signature is checked over the certificate as written (`cms_check::check_cert_signature`). Trust is applied after
 checking (`SignatureReport::apply_trust`), so a changed list can be applied again without checking again. In the
-app, `crates/mpe-gui/src/signatures.rs` runs the check on a background thread when a file with signature fields
+app, `crates/limarepdf-gui/src/signatures.rs` runs the check on a background thread when a file with signature fields
 opens (and after a save), keeping the file's bytes for View signed version, and draws the banner, the Signatures
 tab, the Details window and the trust windows; a trust change re-applies the list to every open document. Digital
 IDs are in `ids.rs` (the ID folder, making self-signed certificates with `x509-cert`'s builder, finding an ID's
-certificate by checking a signature made with its key rather than by labels) over `pkcs12.rs`, MPE's own PKCS#12
+certificate by checking a signature made with its key rather than by labels) over `pkcs12.rs`, LimarePDF's own PKCS#12
 reader and writer on `asn1.rs` (which also writes DER): it derives and wipes the password keys itself (`pbkdf2`,
 `hmac`, the PKCS#12 derivation), so `pkcs5` isn't needed, and reads BER as Windows writes it. Private files (ID
-files, the trust list) go through `mpe_core::write_private`.
+files, the trust list) go through `limarepdf_core::write_private`.
 
 Signing (`sig_sign.rs`, `sign_document`) adds the signature dictionary with placeholders, its field or widget and
 its look, locks and certification to the document, then hands it to the appended-revision writer,
@@ -86,12 +86,12 @@ last save, tracked through undo and redo, since the signed version would keep wh
 document's fields are not drawn into it when it opens (`Tab::new`); the snapshots for display and printing draw
 them on a copy instead (`snapshot_hiding`), so a save adds only real edits.
 
-In the app, `crates/mpe-gui/src/digital.rs` holds the Digital IDs window and the signing window; making, importing
+In the app, `crates/limarepdf-gui/src/digital.rs` holds the Digital IDs window and the signing window; making, importing
 and exporting IDs, and unlocking and signing, run on a background thread each, with the password moved into that
 thread in a wrapper that overwrites it when dropped. The editor's `Tool::DigitalSign` takes the place (an empty
 field or a dragged box); the app then gathers what to sign: a document opened with signature fields kept its bytes
 (`SigState`) and signs those plus its edits, any other document is written out in full first. The signed file
 replaces the tab and is checked like any opened file.
 
-In the desktop app, every command is defined once in `crates/mpe-gui/src/actions.rs`; the menu, the top bar, the
+In the desktop app, every command is defined once in `crates/limarepdf-gui/src/actions.rs`; the menu, the top bar, the
 command palette, the right-click menus, the floating toolbar and the keyboard shortcuts are all built from that list.

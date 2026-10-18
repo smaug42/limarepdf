@@ -1,24 +1,24 @@
 # Using the desktop app
 
-![The MPE window with a three-page report open](images/mpe-gui.png)
+![The LimarePDF window with a three-page report open](images/limarepdf.png)
 
 ## Opening files
 
 Open PDFs with the Open button, Ctrl+O, or by dropping them on the window. Image files (PNG, JPEG, TIFF) open as a new
-document with one page per image. From a terminal, `mpe-gui file.pdf --page 3` opens a file at page 3.
+document with one page per image. From a terminal, `limarepdf file.pdf --page 3` opens a file at page 3.
 
 Recently opened PDFs are listed on the start screen and under ☰ > File > Open recent, which also clears the list.
 Files that no longer exist are left out. The list holds 10 files and is kept on your computer only, in
-`~/.config/mpe/recent.txt` on Linux, `~/Library/Application Support/mpe/recent.txt` on macOS, and
-`%APPDATA%\mpe\recent.txt` on Windows.
+`~/.config/limarepdf/recent.txt` on Linux, `~/Library/Application Support/limarepdf/recent.txt` on macOS, and
+`%APPDATA%\limarepdf\recent.txt` on Windows.
 
 The start screen also has Make a PDF from images…, which turns photos or scanned pages into a new document.
 
 Each document gets a tab. The tab shows its name, with `*` while it has unsaved changes.
 
 Saving writes a temporary file beside the document and then replaces the document with it, so a save that fails
-part way leaves the original as it was. MPE saves by rewriting the whole file, except for a digitally signed
-document: its changes are added after what was signed, so the signatures stay valid. MPE asks first when the
+part way leaves the original as it was. LimarePDF saves by rewriting the whole file, except for a digitally signed
+document: its changes are added after what was signed, so the signatures stay valid. LimarePDF asks first when the
 signatures don't allow the changes, and before writing a signed document in full when it must (after redacting, for
 example), which breaks the signatures; see [Saving a signed document](signatures.md#saving-a-signed-document).
 Save As to a new file keeps the signed original.
@@ -60,7 +60,7 @@ links don't get in the way of editing.
 
 - A link to another page goes there.
 - A link to a web or email address asks first, showing the full address, and then opens it in your browser or
-  email program. MPE itself never connects to the network. Links to anything else, such as a file or a program,
+  email program. LimarePDF itself never connects to the network. Links to anything else, such as a file or a program,
   are shown but not opened.
 - Links that go to another PDF file are not followed. Links can't be added or edited yet.
 
@@ -82,9 +82,9 @@ line of the comment; hover over it for the type, date and the whole comment.
   can no longer be changed or removed in any reader. Their comment text is dropped. Links and form fields stay,
   and so do file attachments. Undo brings them back.
 
-Some files store annotations without a drawing, leaving each reader to draw them. MPE draws highlights,
+Some files store annotations without a drawing, leaving each reader to draw them. LimarePDF draws highlights,
 underlines, strike-outs, squiggly underlines, notes, text boxes, rectangles, ellipses, lines, polygons and
-freehand drawings itself, on screen and when printing. The file isn't changed by this; flattening saves MPE's
+freehand drawings itself, on screen and when printing. The file isn't changed by this; flattening saves LimarePDF's
 drawing into it. Text boxes are drawn in Helvetica, ignoring any rich-text styling.
 
 ### Marking text
@@ -115,8 +115,8 @@ background (none at first) and border, before you start.
 
 - **Note:** click on the page. A comment box opens beside the note; type, then click Done (or press Ctrl+Enter).
   Cancel or Esc drops it, and so does Done with nothing typed. Hovering over a note shows its comment. Notes
-  show at the same size on screen whatever the zoom, with MPE's own icon in the note's colour (also for notes other
-  programs made with a different icon); printed, they keep their own drawing, 20 points across for MPE's.
+  show at the same size on screen whatever the zoom, with LimarePDF's own icon in the note's colour (also for notes other
+  programs made with a different icon); printed, they keep their own drawing, 20 points across for LimarePDF's.
 - **Text box:** drag a box, or click for a default size, then type straight onto the page. Enter starts a new
   line. Click outside the box or press Ctrl+Enter to finish; Esc drops it. Text boxes use Helvetica, so characters
   outside Latin-1 come out as `?`. When you finish, the box grows downward to fit its text, keeping its width; it
@@ -236,11 +236,11 @@ in red. The inspector's Form section shows the field you are in (its name, descr
 with Clear field, Highlight fields and Reset form, which puts every field back to its default. Flatten form… (also
 in the command palette) makes the fields part of the pages as they look now, so nobody can change the values,
 here or in other readers; it asks first, and Undo brings the fields back until you close the document. Read-only fields
-and buttons (they run scripts, which MPE doesn't) can't be filled in; hovering says why. Clicking an empty signature
+and buttons (they run scripts, which LimarePDF doesn't) can't be filled in; hovering says why. Clicking an empty signature
 field puts your signature in it (see [Filling and signing](#filling-and-signing)); clicking a digitally signed one
 shows its signature's details (see [Digital signatures](#digital-signatures)).
 
-MPE draws the filled fields itself, so the values show the same in other readers. Text must be Latin-1 (Western
+LimarePDF draws the filled fields itself, so the values show the same in other readers. Text must be Latin-1 (Western
 European) for now; anything else is refused with a message rather than saved wrongly. Fields that have a value but
 no drawing of their own are drawn when the file opens. See [Command line](cli.md#forms) for filling forms in
 scripts.
@@ -264,8 +264,8 @@ ways to make one:
 
 Initials are made the same way, with New… beside Initials; typing starts with your name's initials. Each new one
 goes first in its list in the pane, up to five signatures and five sets of initials; right-click one to take it off
-the list. "Save for next time" (on by default) keeps it there when MPE starts again. Unticked, it is still in the
-list to use until MPE closes, marked "until MPE closes", and is then gone. Saved signatures are stored unencrypted in MPE's settings folder (`signatures.txt`, and pictures copied into its
+the list. "Save for next time" (on by default) keeps it there when LimarePDF starts again. Unticked, it is still in the
+list to use until LimarePDF closes, marked "until LimarePDF closes", and is then gone. Saved signatures are stored unencrypted in LimarePDF's settings folder (`signatures.txt`, and pictures copied into its
 `signatures` folder), on this computer only; taking a picture off the list deletes its copy.
 
 **Putting things down:** pick an item in the pane, then click on the page to put it down at its usual size, centred
@@ -296,9 +296,9 @@ Comments tab as "Signature", "Initials", "Tick" and so on.
 
 ## Digital signatures
 
-When a document with digital signatures opens, MPE checks them in the background and shows the result in a
+When a document with digital signatures opens, LimarePDF checks them in the background and shows the result in a
 banner above the pages, coloured by the worst signature: green (valid, and you trust every signer), amber (nothing
-broken or changed against the signers' wishes, but MPE can't confirm who signed, or there are warnings), grey (MPE
+broken or changed against the signers' wishes, but LimarePDF can't confirm who signed, or there are warnings), grey (LimarePDF
 can't check a signature) or red (broken, changed in ways a signer didn't allow, or a trusted signer's certificate
 fails a check). Its Signatures button, or ☰ > View > Signatures, opens the Signatures tab of the side panel, which
 lists each signature with its result, the changes made after it, and Details… and Signed version buttons, then the
@@ -308,10 +308,10 @@ field on the page to see its details.
 Details shows who signed, who issued their certificate, when, the changes after signing, warnings and the
 certificates; Trust this signer… and Trust an authority… add to your trust list (after showing the SHA-256
 fingerprint to compare with the owner), and View signed version opens the document as it was when signed, in a new
-tab. ☰ > Edit > Trusted certificates… lists, removes and adds trusted certificates. Trust settings affect MPE only.
+tab. ☰ > Edit > Trusted certificates… lists, removes and adds trusted certificates. Trust settings affect LimarePDF only.
 
 The check is of the file as opened or last saved; saving adds your changes after what was signed (see
-[Saving a signed document](signatures.md#saving-a-signed-document)), and MPE checks the saved copy, listing your
+[Saving a signed document](signatures.md#saving-a-signed-document)), and LimarePDF checks the saved copy, listing your
 changes under each signature. See [Digital signatures](signatures.md) for what each result means.
 
 ### Signing with a digital ID
@@ -320,7 +320,7 @@ changes under each signature. See [Digital signatures](signatures.md) for what e
 certification: click an empty signature field or drag a box on the page, then pick your digital ID, type its
 password, and optionally a reason and a location. Sign… asks where to save the signed copy (`NAME-signed.pdf` by
 default), signs in the background, and opens the signed copy in place of the document. Changes made since opening
-are signed with it; when they would show on earlier signatures as not allowed, MPE asks first.
+are signed with it; when they would show on earlier signatures as not allowed, LimarePDF asks first.
 
 ☰ > Edit > Digital IDs… makes, imports, exports and removes your digital IDs, and chooses the default. See
 [Signing](signatures.md#signing) and [Digital IDs](signatures.md#digital-ids).
@@ -337,7 +337,7 @@ something to do and × to dismiss it. At most two show at a time.
 | Areas are marked for redaction but the marks haven't been applied (kept up to date while you work) | Apply redactions… |
 | Signatures and other items put down with the Sign tool can still be moved (kept up to date while you work) | Finish signing… |
 | Its pages are scans without text, so they cannot be searched or copied (checked on the first 20 pages) | Recognise text |
-| It is a form made for Adobe Reader (an XFA form), which only Adobe software can show or fill in; MPE shows the placeholder page the file contains, often "Please wait..." | |
+| It is a form made for Adobe Reader (an XFA form), which only Adobe software can show or fill in; LimarePDF shows the placeholder page the file contains, often "Please wait..." | |
 | It has a form: click a field to fill it in, or press Tab (not for a form of signature fields alone) | Highlight fields |
 | It is large (more than 500 pages or 100 MB) | |
 
@@ -360,7 +360,7 @@ A watermark is text or a picture (PNG, JPEG or TIFF), centred on each page. Afte
 and footers, the section's button becomes Update: change a setting and press it to redo what you just added rather
 than stamping a second copy. Add another keeps it and adds a new one. Any other change returns the button to Apply.
 
-If a damaged file makes MPE fail while showing a document, that tab shows an error page with Save a copy and Close
+If a damaged file makes LimarePDF fail while showing a document, that tab shows an error page with Save a copy and Close
 this tab; other tabs carry on.
 
 Page labels are the page numbers viewers show, such as i, ii, 1, 2 or A-1; they don't change what is printed on the
@@ -479,8 +479,8 @@ and Phosphor icons.
 
 ☰ > Help > About shows the version (the Copy button next to it copies the version and system, for a bug report),
 links to the website, the licence and the issue tracker, which open in your browser, and Credits for the bundled
-fonts, icons and text recognition model. Contributors switches the window to the people who made MPE; Back returns.
-MPE is made in Canada, which the About window and the foot of the start screen say beside a maple leaf.
+fonts, icons and text recognition model. Contributors switches the window to the people who made LimarePDF; Back returns.
+LimarePDF is made in Canada, which the About window and the foot of the start screen say beside a maple leaf.
 
 ☰ > View > Page colours changes how pages look on screen, for reading in the dark or with low vision:
 

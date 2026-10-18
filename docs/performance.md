@@ -14,7 +14,7 @@ text-and-graphics test file of 538 KB:
 
 These are single runs on small, simple pages, not a benchmark suite, and no comparison with other software was made.
 
-Search was measured when it used the document library's text extraction. It now reads pages with MPE's own text
+Search was measured when it used the document library's text extraction. It now reads pages with LimarePDF's own text
 reader, which gets far more files right and takes about twice as long on the same files: searching the 477-page
 Ghostscript manual takes 0.17 s instead of 0.09 s on a 6-core machine, including starting the program.
 Pages with large images, heavy transparency or many fonts are slower, and hayro's own documentation says its renderer
