@@ -95,7 +95,9 @@ available.
 - Headers, footers and watermarks are added to the page content. They are not annotations and cannot be removed one
   by one later; use Undo before saving.
 - Saving rewrites the whole file, except for digitally signed documents, whose changes are added after what was
-  signed so the signatures stay valid ([details](signatures.md#saving-a-signed-document)).
+  signed so the signatures stay valid ([details](signatures.md#saving-a-signed-document)). It writes a temporary file
+  beside the document, readable only by you (on Linux and macOS) when it replaces a file, then puts it in the
+  document's place, so a failed save leaves the original as it was, permissions included.
 - Pages the renderer cannot draw say so, with the reason, and a notice says when a picture couldn't be drawn
   ([details](rendering.md#when-something-cant-be-drawn)); editing may still work. Another notice names fonts that
   aren't in the file or installed and says what to install.

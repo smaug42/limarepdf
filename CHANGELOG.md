@@ -27,6 +27,11 @@
 
 ### Fixed
 
+- Security: while a document was saved over an existing file, its temporary copy could be read by other users of the
+  computer, even when the document was private to you. It is now readable only by you until it replaces the
+  document, which keeps its permissions. The temporary file is always made new under a fresh name, so a file
+  already at that name (left by a crash, or put there by someone else) is never written to, followed or removed.
+  The same goes for exported digital IDs and the trusted certificates list.
 - A menu command, shortcut or panel button that failed on a malformed file could close the app, losing unsaved work
   in every tab. Now it shows an error message, or, when it had already changed the document, that tab's error page
   with Save a copy and Close; other tabs are not affected.

@@ -7,6 +7,7 @@ mod annot_ap;
 mod annot_write;
 mod annots;
 mod asn1;
+mod atomic;
 mod blank;
 mod cms_check;
 mod cms_write;
@@ -136,32 +137,11 @@ pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
         b.create(dir)
             .with_context(|| format!("making the folder {}", dir.display()))?;
     }
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = std::path::PathBuf::from(tmp);
-    let write = || -> std::io::Result<()> {
+    atomic::replace(path, atomic::Access::Private, |w| {
         use std::io::Write;
-        let mut o = std::fs::OpenOptions::new();
-        o.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            o.mode(0o600);
-        }
-        let mut f = o.open(&tmp)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        }
-        f.write_all(bytes)?;
-        f.sync_all()?;
-        std::fs::rename(&tmp, path)
-    };
-    write().map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        anyhow::anyhow!("saving {}: {e}", path.display())
+        Ok(w.write_all(bytes)?)
     })
+    .map_err(|e| anyhow::anyhow!("saving {}: {e:#}", path.display()))
 }
 
 /// The most a page's content, a drawing's content or a text stream may decompress to, so a
