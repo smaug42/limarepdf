@@ -52,9 +52,10 @@ objects by reading through the file, as Acrobat, poppler and pdf.js do:
   encryption settings; when none names a catalog that leads to pages, the last catalog object found is used;
 - objects packed into object streams are read too, one by one when the stream's own index can't be followed.
 
-The app then shows a notice: the file was repaired, some content may be missing, and saving writes the repaired
-copy. A repaired document counts as changed, so closing it asks whether to save, as Acrobat does. `limarepdf-cli`
-prints a note on stderr. Of about 1,100 test files collected from bug reports, 59 needed repair.
+The app then shows a notice that the file was repaired and some content may be missing, with a Save as… button.
+The original file is never replaced without asking: a repaired document counts as changed, so closing it warns of
+unsaved changes, and Save asks whether to replace the original or save the repaired copy as a new file.
+`limarepdf-cli` prints a note on stderr, and writes only where `-o` says. Of about 1,100 test files collected from bug reports, 59 needed repair.
 
 Limits:
 

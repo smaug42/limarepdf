@@ -337,7 +337,7 @@ something to do and × to dismiss it. At most two show at a time.
 | Notice | Button |
 | --- | --- |
 | Its digital signatures are being checked, and then how they checked, coloured green, amber, grey or red (always first; see [Digital signatures](#digital-signatures)) | Signatures |
-| The file is damaged, and LimarePDF repaired it to open it: some content may be missing, and saving writes the repaired copy. The document counts as changed, so closing it asks whether to save. A signed file's signatures can't vouch for what is shown (they show *can't check*, or a change that isn't allowed), and saving it asks first, since the repaired copy can't keep them ([details](rendering.md#damaged-files)) | |
+| The file is damaged, and LimarePDF repaired it to open it: some content may be missing. The original stays as it is: the document counts as changed (closing it warns of unsaved changes), and Save asks whether to replace the original or save the repaired copy as a new file. A signed file's signatures can't vouch for what is shown (they show *can't check*, or a change that isn't allowed), and the repaired copy can't keep them ([details](rendering.md#damaged-files)) | Save as… |
 | The document was password-protected: saving removes the protection unless you set it again | Password security |
 | Areas are marked for redaction but the marks haven't been applied (kept up to date while you work) | Apply redactions… |
 | Signatures and other items put down with the Sign tool can still be moved (kept up to date while you work) | Finish signing… |

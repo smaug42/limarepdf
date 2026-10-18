@@ -89,7 +89,8 @@ impl Banner {
             Kind::Signing => Some(("Finish signing…", Act::FinishSigning)),
             Kind::Scanned => Some(("Recognise text", Act::Ocr)),
             Kind::Forms => Some(("Highlight fields", Act::ToggleFields)),
-            Kind::Repaired | Kind::Xfa | Kind::Missing | Kind::Fonts | Kind::Large => None,
+            Kind::Repaired => Some(("Save as…", Act::SaveAs)),
+            Kind::Xfa | Kind::Missing | Kind::Fonts | Kind::Large => None,
         }
     }
 }
@@ -270,8 +271,9 @@ pub fn detect(pdf: &Pdf, bytes: Option<u64>) -> Vec<Banner> {
         v.push(Banner::plain(
             Kind::Repaired,
             format!(
-                "This file is damaged, and LimarePDF repaired it to open it. Some content may \
-                 be missing. Saving writes the repaired copy.{signed}"
+                "This file is damaged, and LimarePDF repaired it to open it; some content may \
+                 be missing. The original stays as it is unless you choose to replace it when \
+                 saving.{signed}"
             ),
         ));
     }
@@ -389,7 +391,9 @@ mod tests {
         bytes.splice(line..line, format!("%{}\n", " ".repeat(200)).into_bytes());
         let p = Pdf::from_bytes(&bytes, None).unwrap();
         assert_eq!(kinds(&p, None), [Kind::Repaired]);
-        assert!(detect(&p, None)[0].text.contains("repaired"));
+        let b = &detect(&p, None)[0];
+        assert!(b.text.contains("repaired"));
+        assert_eq!(b.action().map(|a| a.1), Some(Act::SaveAs));
     }
 
     #[test]

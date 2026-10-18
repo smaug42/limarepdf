@@ -21,7 +21,8 @@
   has its characters.
 - Damaged files open: when a file's cross-reference information (where each object is) is broken or missing, its
   objects are found by reading through the file, as other PDF apps do. A notice says the file was repaired and some
-  content may be missing; the document counts as changed, and saving writes the repaired copy. A repaired file's
+  content may be missing, with a Save as… button; the document counts as changed, and Save asks before replacing
+  the damaged original. A repaired file's
   signatures never show as valid and unchanged. `limarepdf-cli` repairs them too, with a note on stderr.
 
 ### Fixed

@@ -285,3 +285,40 @@ pub fn confirm(ctx: &Context, title: &str, text: &str, yes: &str) -> Outcome {
         buttons(ui, yes)
     })
 }
+
+/// What was picked in [`choose`].
+#[derive(PartialEq, Eq, Debug)]
+pub enum Choice {
+    Open,
+    Cancel,
+    First,
+    Second,
+}
+
+/// A question with two answers, `first` the safer one; closing the window cancels.
+pub fn choose(ctx: &Context, title: &str, text: &str, first: &str, second: &str) -> Choice {
+    let mut out = Choice::Open;
+    let mut open = true;
+    egui::Window::new(title)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.label(text);
+            ui.add_space(8.0);
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button(first).clicked() {
+                    out = Choice::First;
+                }
+                if ui.button(second).clicked() {
+                    out = Choice::Second;
+                }
+            });
+        });
+    if !open {
+        return Choice::Cancel;
+    }
+    out
+}

@@ -1,7 +1,7 @@
 use crate::about;
 use crate::actions::{self, menu_item, tooltip, Act, Action, Ctx, Group, ACTIONS};
 use crate::banners::Kind as BannerKind;
-use crate::dialogs::{self as dlg, Outcome};
+use crate::dialogs::{self as dlg, Choice, Outcome};
 use crate::digital::{self, IdsWindow, SignOut, SignWindow};
 use crate::editor::{Action as EdAction, Tool};
 use crate::inspector::{self, Apply, Section};
@@ -180,6 +180,8 @@ enum Dialog {
     /// Save (`true`: as a new file) by writing the whole file, which breaks the
     /// document's signatures? With why the edits can't be added after what was signed.
     ConfirmSaveSigned(bool, String),
+    /// Save over a file that was repaired to open it: replace it, or save as a new file.
+    ConfirmSaveRepaired,
     /// Save edits the document's signatures don't allow?
     ConfirmSaveDisallowed(Box<SaveDisallowed>),
     /// Remove everything under this many marked areas?
@@ -1141,9 +1143,23 @@ impl App {
         }
     }
 
+    /// Saves. Saving over a file that was repaired to open it asks first, offering Save as
+    /// instead: the original is only replaced when the user says so.
+    fn save(&mut self, ctx: &egui::Context, as_new: bool) {
+        let over_repaired = self
+            .tabs
+            .get(self.active)
+            .is_some_and(|t| t.repaired && t.path.is_some());
+        if !as_new && over_repaired {
+            self.dialog = Dialog::ConfirmSaveRepaired;
+        } else {
+            self.save_unmarked(ctx, as_new);
+        }
+    }
+
     /// Saves, first asking when the document has redaction marks not yet applied; a
     /// signed document then goes through [`Self::save_signed`].
-    fn save(&mut self, ctx: &egui::Context, as_new: bool) {
+    fn save_unmarked(&mut self, ctx: &egui::Context, as_new: bool) {
         let marks = self
             .tabs
             .get(self.active)
@@ -1255,6 +1271,9 @@ impl App {
                 self.recent.add(&path);
                 tab.dirty = false;
                 tab.scrubbed = false;
+                // The saved file is the repaired copy, with nothing left to repair.
+                tab.repaired = false;
+                tab.banners.retain(|b| b.kind != BannerKind::Repaired);
                 // The saved copy's signatures are already broken: no need to ask again.
                 tab.signed = false;
                 // The Signatures tab describes the file, so check the saved one.
@@ -2232,6 +2251,26 @@ impl App {
                     Outcome::Open => {}
                 }
             }
+            Dialog::ConfirmSaveRepaired => match dlg::choose(
+                ctx,
+                "Replace the damaged original?",
+                "LimarePDF repaired this file to open it, and some of its content may be missing \
+                 from the repair. Saving over it replaces the original for good. Save as a new \
+                 file to keep the original as it is.",
+                "Save as…",
+                "Replace original",
+            ) {
+                Choice::First => {
+                    self.save_unmarked(ctx, true);
+                    done = true;
+                }
+                Choice::Second => {
+                    self.save_unmarked(ctx, false);
+                    done = true;
+                }
+                Choice::Cancel => done = true,
+                Choice::Open => {}
+            },
             Dialog::ConfirmSaveSigned(as_new, why) => {
                 let as_new = *as_new;
                 match dlg::confirm(
