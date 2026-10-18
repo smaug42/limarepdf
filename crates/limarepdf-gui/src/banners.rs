@@ -325,7 +325,8 @@ pub fn detect(pdf: &Pdf, bytes: Option<u64>) -> Vec<Banner> {
 }
 
 /// How many of the first pages are scans: no text (visible or recognised) and an image
-/// covering at least half the page.
+/// covering at least half the page. A page whose picture can't be read isn't one: text
+/// recognition couldn't read it either, and the missing-picture notice covers it.
 fn scanned_pages(pdf: &Pdf) -> usize {
     (0..pdf.page_count().min(SCAN_PAGES))
         .filter(|&i| {
@@ -337,7 +338,7 @@ fn scanned_pages(pdf: &Pdf) -> usize {
             let image = objs
                 .iter()
                 .any(|o| o.kind == ObjectKind::Image && area(o.bbox) >= 0.5 * w * h);
-            !text && image
+            !text && image && !pdf.page_has_unreadable_picture(i)
         })
         .count()
 }
@@ -403,6 +404,25 @@ mod tests {
         let b = &detect(&p, None)[0];
         assert!(b.text.starts_with("Its pages are"), "{}", b.text);
         assert_eq!(b.action().map(|a| a.1), Some(Act::Ocr));
+    }
+
+    #[test]
+    fn pages_with_unreadable_pictures_are_not_scans() {
+        let mut p = Pdf::from_images(&[PNG.to_vec()], &ImageImport::default()).unwrap();
+        let mut doc = lopdf::Document::load_mem(&p.to_bytes().unwrap()).unwrap();
+        for o in doc.objects.values_mut() {
+            if let Object::Stream(s) = o {
+                if s.dict.get(b"Subtype").and_then(Object::as_name).ok() == Some(b"Image") {
+                    s.dict.set("Filter", "FlateDecode");
+                    s.set_content((0..400u32).map(|i| (i * 37 + 11) as u8).collect());
+                }
+            }
+        }
+        let mut bytes = Vec::new();
+        doc.save_to(&mut bytes).unwrap();
+        let p = Pdf::from_bytes(&bytes, None).unwrap();
+        assert!(p.page_has_unreadable_picture(0));
+        assert!(!kinds(&p, None).contains(&Kind::Scanned));
     }
 
     #[test]

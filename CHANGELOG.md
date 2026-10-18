@@ -32,6 +32,7 @@
   with Save a copy and Close; other tabs are not affected.
 - A failure right after applying redactions or removing hidden information could leave the tab not knowing content
   was removed, so saving a signed document would have kept it in the earlier signed version. The two are now one step.
+- A page whose only picture can't be read no longer brings up the notice that the document has scanned pages.
 - A page that can't be drawn shows "This page couldn't be drawn" and the reason, instead of "Rendering…" forever
   while the app tried again on every frame.
 - Zooming in far on a large page could close the app, because the page was drawn as one picture bigger than the
