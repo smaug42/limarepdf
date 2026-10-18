@@ -1,29 +1,29 @@
 # Rendering
 
-MPE draws pages with [hayro](https://crates.io/crates/hayro) 0.8, a pure-Rust PDF renderer that runs on the CPU.
+LimarePDF draws pages with [hayro](https://crates.io/crates/hayro) 0.8, a pure-Rust PDF renderer that runs on the CPU.
 
 ## What has been checked
 
-`crates/mpe-core/tests/render_coverage.rs` checks rendering pixel by pixel on small made-up pages. Drawn correctly:
+`crates/limarepdf-core/tests/render_coverage.rs` checks rendering pixel by pixel on small made-up pages. Drawn correctly:
 
 - all 16 blend modes;
 - isolated transparency groups, and a blend mode applied to a whole group;
 - colour-key image masks (`/Mask [..]`);
 - annotations that have an appearance stream (`/AP`): Text, Highlight, Link, Stamp, FreeText and Widget were tested,
   including the Widget `/AS` state and the Hidden flag;
-- annotations with the NoView flag are hidden, in the desktop app and `mpe render` (MPE marks them Hidden before
+- annotations with the NoView flag are hidden, in the desktop app and `limarepdf-cli render` (LimarePDF marks them Hidden before
   drawing, since hayro ignores NoView);
-- annotations without an appearance stream: hayro draws nothing for them, so MPE draws its own for Highlight,
+- annotations without an appearance stream: hayro draws nothing for them, so LimarePDF draws its own for Highlight,
   Underline, StrikeOut, Squiggly, Text (notes), FreeText, Square, Circle, Line, Polygon, PolyLine and Ink, in the
-  copy it renders and prints, not in the file (`crates/mpe-core/tests/annots.rs`);
+  copy it renders and prints, not in the file (`crates/limarepdf-core/tests/annots.rs`);
 - password-protected files with all four ciphers.
 
 ## Page colour modes
 
 The app's Dark, High contrast and Sepia page colours (View > Page colours) are worked out on the drawn page, pixel
-by pixel, in `crates/mpe-core/src/page_colours.rs`. Dark swaps light and dark but keeps each colour's hue. High
+by pixel, in `crates/limarepdf-core/src/page_colours.rs`. Dark swaps light and dark but keeps each colour's hue. High
 contrast turns anything inked, in any colour, white on black. Sepia maps white to warm paper and black to dark
-brown. Printing, exports, `mpe render` and the file itself always use the page's own colours.
+brown. Printing, exports, `limarepdf-cli render` and the file itself always use the page's own colours.
 
 To leave pictures alone, the page goes through hayro's interpreter a second time with a device that draws nothing
 and notes the box of each raster image, clipped to the clip in force. The colour pass skips those boxes, so:
@@ -38,10 +38,10 @@ and notes the box of each raster image, clipped to the clip in force. The colour
 - Knockout groups are drawn as non-knockout.
 - Non-isolated groups are drawn as isolated.
 - Other annotation types without an appearance stream (Stamp, Caret, FileAttachment and the rest) are not drawn.
-  For those MPE draws, cloudy borders, callout lines, leader lines, rich text and the note icon's shape (one icon
+  For those LimarePDF draws, cloudy borders, callout lines, leader lines, rich text and the note icon's shape (one icon
   for every kind of note) are not reproduced.
 
-Other PDF features have not been tested by MPE. Files hayro cannot parse show "Rendering…" on those pages; editing may
+Other PDF features have not been tested by LimarePDF. Files hayro cannot parse show "Rendering…" on those pages; editing may
 still work if the document library (lopdf) can read them.
 
 For timings and how the app keeps drawing responsive, see [Performance](performance.md).

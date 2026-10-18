@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/mpe-core", "crates/mpe-cli", "crates/mpe-gui"]
+members = ["crates/limarepdf-core", "crates/limarepdf-cli", "crates/limarepdf-gui"]
 
 [workspace.package]
 version = "0.7.0"
@@ -54,9 +54,9 @@ opt-level = 3
 [profile.dev.package.sha2]
 opt-level = 3
 # Digital IDs: password stretching runs millions of hash rounds, and the generic hashing
-# and encryption code is compiled into mpe-core itself, so mpe-core is optimised too
+# and encryption code is compiled into limarepdf-core itself, so limarepdf-core is optimised too
 # (level 2 is the lowest that inlines it; reading an ID otherwise takes seconds).
-[profile.dev.package.mpe-core]
+[profile.dev.package.limarepdf-core]
 opt-level = 2
 [profile.dev.package.sha1]
 opt-level = 3

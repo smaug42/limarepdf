@@ -1,6 +1,6 @@
 # Password security
 
-MPE opens password-protected PDFs (with the open, or user, password) and can protect documents with:
+LimarePDF opens password-protected PDFs (with the open, or user, password) and can protect documents with:
 
 - an open password, a permissions password, or both;
 - RC4 40-bit, RC4 128-bit, AES 128-bit or AES 256-bit encryption;
@@ -10,7 +10,7 @@ MPE opens password-protected PDFs (with the open, or user, password) and can pro
 Permission flags are advisory: they rely on the viewer honouring them.
 
 Where: the inspector's Password security section, with nothing selected. The settings apply when you save. Applying
-them can be undone with Ctrl+Z, like any other change. On the command line: `mpe encrypt` and `mpe decrypt`.
+them can be undone with Ctrl+Z, like any other change. On the command line: `limarepdf-cli encrypt` and `limarepdf-cli decrypt`.
 
 ## Things to know
 
@@ -20,5 +20,5 @@ them can be undone with Ctrl+Z, like any other change. On the command line: `mpe
 
 ## How this was tested
 
-Every cipher is round-trip tested: encrypted, then opened by MPE's document library and its renderer. Files from the
+Every cipher is round-trip tested: encrypted, then opened by LimarePDF's document library and its renderer. Files from the
 current version have also been checked in poppler (pdftoppm) and Ghostscript.

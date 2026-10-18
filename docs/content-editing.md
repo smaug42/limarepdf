@@ -1,6 +1,6 @@
 # Content editing
 
-MPE can move, resize, delete and restyle what is already on a page, edit text, and add text, shapes and images. This
+LimarePDF can move, resize, delete and restyle what is already on a page, edit text, and add text, shapes and images. This
 page explains how that works and where it stops. For how to use it, see [Using the desktop app](gui.md#editing-page-content).
 
 ## How it works

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=LimarePDF
+GenericName=PDF Viewer and Editor
+Comment=View and edit PDF files
+Exec=limarepdf %F
+Icon=io.github.smaug42.limarepdf
+Terminal=false
+Categories=Office;Viewer;
+MimeType=application/pdf;
+StartupWMClass=io.github.smaug42.limarepdf

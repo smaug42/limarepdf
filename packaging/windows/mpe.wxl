@@ -1,7 +1,0 @@
-<!--
-  Installer text that replaces WiX's defaults; passed to `wix build` with -loc.
-  The Welcome text has room for about six lines (the dialog box is fixed in size), and links aren't clickable.
--->
-<WixLocalization Culture="en-US" xmlns="http://wixtoolset.org/schemas/v4/wxl">
-  <String Id="WelcomeDlgDescription" Value="MPE is free, open-source software. You can use it at home or at work at no cost, and share it with others. It comes with no warranty. Licence: MIT or Apache 2.0; details at github.com/smaug42/mpe. Click Next to continue." />
-</WixLocalization>

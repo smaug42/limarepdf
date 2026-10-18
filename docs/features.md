@@ -4,10 +4,10 @@
 text can be highlighted and marked; notes, text boxes, shapes, lines, freehand drawings and replies added. Content
 can be redacted for good, and documents filled in and signed with a picture of your signature. Digital signatures
 can be checked, made with your own or an imported digital ID, certified, and kept valid when a signed document is
-saved, in the app and from the command line; Adobe Acrobat Reader shows MPE's signatures, and fuller round trips
+saved, in the app and from the command line; Adobe Acrobat Reader shows LimarePDF's signatures, and fuller round trips
 with Acrobat are still to be tested.
 
-## What MPE does
+## What LimarePDF does
 
 - **View:** tabs, thumbnails, continuous scrolling, zoom, search with highlights on the page, bookmarks, links and
   comments.
@@ -41,13 +41,13 @@ available.
 | Recent files | Done | Start screen and ☰ > File > Open recent; 10 files, kept on your computer only |
 | Notices about the document | Done | Password-protected, scanned pages, form fields, large files. [Details](gui.md#notices-about-the-document) |
 | Zoom, fit width, continuous scrolling, page navigation | Done | Pages fit the window's width by default and follow resizing; zooming turns that off. Single-page and facing-page layouts (top-bar button or View > Page layout; cover page alone or paired), per document, following the document's own preference when it has one |
-| Open at a page from the command line | Done | `mpe-gui file.pdf --page N` |
+| Open at a page from the command line | Done | `limarepdf file.pdf --page N` |
 | Command palette, right-click menus, floating toolbar | Done | Toolbar customisation: No |
 | App icon | Done | Window, taskbar and Windows `.exe`. Wayland needs the desktop entry installed. [Details](install.md#menu-entry-and-icon-on-linux) |
 | About window | Done | Version (copyable for bug reports), links, contributors, credits; "Made in Canada". [Details](gui.md#look-and-feel) |
 | Light and dark themes | Done | Follows the system, or chosen with the top bar's theme button; remembered between runs |
 | Page colour modes | Done | View > Page colours: Normal, Automatic (dark pages with the dark theme), Dark, High contrast, Sepia. Pictures keep their colours unless "Recolour pictures too" is on. On screen only: the file, printing and exports keep their colours. See [Rendering](rendering.md#page-colour-modes) |
-| Rendering | Partial | Some transparency groups are drawn wrongly. Annotations without a drawing of their own are drawn by MPE for the common types only. [Details](rendering.md) |
+| Rendering | Partial | Some transparency groups are drawn wrongly. Annotations without a drawing of their own are drawn by LimarePDF for the common types only. [Details](rendering.md) |
 | Search | Done | Phrases across line breaks, and words hyphenated at a line end, are found and highlighted. [Details](search-and-text.md) |
 | Select and copy text | Done | With the default read tool; across pages, scrolling while you drag; in the order on the page, not the file's drawing order; includes recognised text |
 | Print or save selected text | Done | As the pages look, full width, cut down to the selected lines, or as plain text in Helvetica (Western European characters only); also saves a .txt file |
@@ -67,22 +67,22 @@ available.
 | Printing | Partial | No paper size or scaling options. Tried on Windows; not yet with a real printer on Linux or macOS. [Details](export-and-printing.md#printing) |
 | Driving scanners | No | Not planned: scan with your system's tool and import the images |
 | Export to Word, Excel, CSV | No | |
-| Annotations and comments | Partial | Shown (MPE draws the common types when the file has no drawing), listed in the Comments tab with replies, deleted, flattened; `mpe annot list\|remove\|flatten`. Highlight, underline, strike out and squiggly-underline selected text; add sticky notes and text boxes (Helvetica, Latin-1 only), rectangles, ellipses, lines with an optional arrowhead, freehand pen drawings and stamps; reply to any annotation; select any annotation to change its colour, opacity and comment (and a shape's width, fill and arrowhead), and move or resize it with the arrow; drag a line's ends to turn it, and turn freehand drawings with their rotate handle. Not yet: turning rectangles, ellipses and text boxes (see below), polygons, measuring, attachments, XFDF. [Details](gui.md#shapes-lines-and-drawings) |
-| Stamps | Done | Approved, Not approved, Draft, Final, Confidential, For comment and Void, or your own wording in green, red or blue (Western European characters only), optionally with the author's name and the date, or a PNG or JPEG picture; click to place or drag to size, then move and resize; `mpe stamp`. Not yet: stamps made from selected content, or wording in other scripts. [Details](gui.md#stamps) |
-| Fill and sign | Done | A signature or initials drawn, typed in one of four handwriting styles or from a picture (paper made transparent), up to five of each saved for next time; the date in three styles, your name, text and tick, cross and dot marks, in black or blue ink; placed anywhere or in an empty signature field, movable until Finish signing draws them into the pages. Typed signatures from the command line: `mpe stamp --signature`. Not a digital signature; typed signatures and text are Latin-1 only; the date is in UTC. [Details](gui.md#filling-and-signing) |
+| Annotations and comments | Partial | Shown (LimarePDF draws the common types when the file has no drawing), listed in the Comments tab with replies, deleted, flattened; `limarepdf-cli annot list\|remove\|flatten`. Highlight, underline, strike out and squiggly-underline selected text; add sticky notes and text boxes (Helvetica, Latin-1 only), rectangles, ellipses, lines with an optional arrowhead, freehand pen drawings and stamps; reply to any annotation; select any annotation to change its colour, opacity and comment (and a shape's width, fill and arrowhead), and move or resize it with the arrow; drag a line's ends to turn it, and turn freehand drawings with their rotate handle. Not yet: turning rectangles, ellipses and text boxes (see below), polygons, measuring, attachments, XFDF. [Details](gui.md#shapes-lines-and-drawings) |
+| Stamps | Done | Approved, Not approved, Draft, Final, Confidential, For comment and Void, or your own wording in green, red or blue (Western European characters only), optionally with the author's name and the date, or a PNG or JPEG picture; click to place or drag to size, then move and resize; `limarepdf-cli stamp`. Not yet: stamps made from selected content, or wording in other scripts. [Details](gui.md#stamps) |
+| Fill and sign | Done | A signature or initials drawn, typed in one of four handwriting styles or from a picture (paper made transparent), up to five of each saved for next time; the date in three styles, your name, text and tick, cross and dot marks, in black or blue ink; placed anywhere or in an empty signature field, movable until Finish signing draws them into the pages. Typed signatures from the command line: `limarepdf-cli stamp --signature`. Not a digital signature; typed signatures and text are Latin-1 only; the date is in UTC. [Details](gui.md#filling-and-signing) |
 | Measuring | No | |
-| Forms | Partial | Fill in text fields, checkboxes, radio buttons and lists in the app (Tab between fields, highlight, reset, flatten) and from the command line (`mpe form`, values as JSON, flatten all or some pages). Latin-1 text only; JavaScript doesn't run; creating fields: No; signature fields take a fill-and-sign signature, or a digital signature (Document > Sign with digital ID, or `mpe sign --field`). [Details](gui.md#filling-in-forms) |
-| XFA-only forms (made for Adobe Reader) | No | Recognised and explained in a notice and by `mpe form`; showing or filling them is not planned (see below). Hybrid forms are filled through their ordinary fields |
+| Forms | Partial | Fill in text fields, checkboxes, radio buttons and lists in the app (Tab between fields, highlight, reset, flatten) and from the command line (`limarepdf-cli form`, values as JSON, flatten all or some pages). Latin-1 text only; JavaScript doesn't run; creating fields: No; signature fields take a fill-and-sign signature, or a digital signature (Document > Sign with digital ID, or `limarepdf-cli sign --field`). [Details](gui.md#filling-in-forms) |
+| XFA-only forms (made for Adobe Reader) | No | Recognised and explained in a notice and by `limarepdf-cli form`; showing or filling them is not planned (see below). Hybrid forms are filled through their ordinary fields |
 | Form data import/export (FDF, XFDF), barcodes, JavaScript | No | |
-| Viewer preferences | Done | The layout, side panel (Pages or Bookmarks) and page a document opens with: followed when opening, set in the inspector's Opening view or with `mpe view-prefs`. Full screen and hiding the toolbar or menu: No. [Details](cli.md#viewer-preferences) |
-| Page labels | Done | Numbering such as i, ii, 1, 2 or A-1: shown in the status bar, thumbnails and bookmark tips; set from the selected pages in the inspector or with `mpe labels`; kept with their pages when pages move. Going to a page by its label: No. [Details](cli.md#page-labels) |
-| Bookmarks | Partial | Shown in the Bookmarks tab (also from the command palette) and followed; added, renamed and deleted in that tab or with `mpe bookmarks`. Moving or reordering them, styles and colours: No. [Details](gui.md#the-window), [CLI](cli.md#bookmarks) |
+| Viewer preferences | Done | The layout, side panel (Pages or Bookmarks) and page a document opens with: followed when opening, set in the inspector's Opening view or with `limarepdf-cli view-prefs`. Full screen and hiding the toolbar or menu: No. [Details](cli.md#viewer-preferences) |
+| Page labels | Done | Numbering such as i, ii, 1, 2 or A-1: shown in the status bar, thumbnails and bookmark tips; set from the selected pages in the inspector or with `limarepdf-cli labels`; kept with their pages when pages move. Going to a page by its label: No. [Details](cli.md#page-labels) |
+| Bookmarks | Partial | Shown in the Bookmarks tab (also from the command palette) and followed; added, renamed and deleted in that tab or with `limarepdf-cli bookmarks`. Moving or reordering them, styles and colours: No. [Details](gui.md#the-window), [CLI](cli.md#bookmarks) |
 | Links | Partial | Followed: to pages, and to web and email addresses after asking. Links to other PDF files, and adding or editing links: No. [Details](gui.md#links) |
 | Layers, attachments | No | |
 | Installers and packages | Done | `.deb` and `.rpm` packages with apt and dnf repositories, a macOS `.dmg`, a Windows MSI, and archives; GPG-signed. [Install](install.md); more package managers planned, see below |
-| Redaction | Done | Mark areas, selected text or search results (standard redaction marks), check them, then apply: text, drawings, comments and links under them are removed for good, pictures (scans included) blacked out there, then checked. In the app and with `mpe redact`. [Details](redaction.md) |
-| Removing hidden information | Done | Metadata (including XMP), JavaScript and automatic actions, attachments, hidden layers and their content, thumbnails and private data; if chosen, comments, form values, bookmarks and what lies outside the crop box. Document > Remove hidden information… and `mpe sanitise`. [Details](redaction.md#removing-hidden-information) |
-| Digital signatures | Done | Checking in the app (a coloured banner, the Signatures tab, Details, View signed version, trusting signers and authorities, Trusted certificates) and from the command line (`mpe verify`): unchanged or not, signer's certificate, signing time and timestamps, certification and locked fields, warnings; RSA and ECDSA P-256/P-384; refuses the known wrapping and copying attacks; lists the changes made after each signature and judges them by Acrobat's rules (stricter when unsure), catching the shadow and incremental-saving attacks, and won't vouch for or sign as it is a file PDF apps read differently; saves the version a signature signed; trusting signers and certificate authorities (`mpe trust`), with chains checked by RFC 5280's rules at the signing time, in MPE only. Digital IDs in the app (Edit > Digital IDs) and from the command line (`mpe id`): make a self-signed one (RSA 3072-bit, five years, like Acrobat's), import `.p12`/`.pfx` files from Acrobat, Windows, macOS or a certificate authority (old and new encryptions), export an ID or its certificate. Signing and certifying in the app (Document > Sign with digital ID, Certify; edits made since opening are signed with it, asking first when earlier signatures wouldn't allow them) and from the command line (`mpe sign`): in an empty signature field or a new box, as Acrobat signs (`adbe.pkcs7.detached`, SHA-256), with a visible look (your name in handwriting or a picture, "Digitally signed by" and the date), added after the file's bytes so earlier signatures stay valid; follows certifications and field locks; every signed file checked before it is written. Saving a signed document (Save in the app, every editing command) adds the changes after what was signed, so the signatures stay valid; asks first (the command line refuses without a flag) when they don't allow the changes, and before writing the whole file when it must (redactions, removed hidden information, passwords, damaged files). Not yet: timestamps when signing, encrypted documents; only partly tested with Adobe Acrobat (see below). [Details](signatures.md) |
+| Redaction | Done | Mark areas, selected text or search results (standard redaction marks), check them, then apply: text, drawings, comments and links under them are removed for good, pictures (scans included) blacked out there, then checked. In the app and with `limarepdf-cli redact`. [Details](redaction.md) |
+| Removing hidden information | Done | Metadata (including XMP), JavaScript and automatic actions, attachments, hidden layers and their content, thumbnails and private data; if chosen, comments, form values, bookmarks and what lies outside the crop box. Document > Remove hidden information… and `limarepdf-cli sanitise`. [Details](redaction.md#removing-hidden-information) |
+| Digital signatures | Done | Checking in the app (a coloured banner, the Signatures tab, Details, View signed version, trusting signers and authorities, Trusted certificates) and from the command line (`limarepdf-cli verify`): unchanged or not, signer's certificate, signing time and timestamps, certification and locked fields, warnings; RSA and ECDSA P-256/P-384; refuses the known wrapping and copying attacks; lists the changes made after each signature and judges them by Acrobat's rules (stricter when unsure), catching the shadow and incremental-saving attacks, and won't vouch for or sign as it is a file PDF apps read differently; saves the version a signature signed; trusting signers and certificate authorities (`limarepdf-cli trust`), with chains checked by RFC 5280's rules at the signing time, in LimarePDF only. Digital IDs in the app (Edit > Digital IDs) and from the command line (`limarepdf-cli id`): make a self-signed one (RSA 3072-bit, five years, like Acrobat's), import `.p12`/`.pfx` files from Acrobat, Windows, macOS or a certificate authority (old and new encryptions), export an ID or its certificate. Signing and certifying in the app (Document > Sign with digital ID, Certify; edits made since opening are signed with it, asking first when earlier signatures wouldn't allow them) and from the command line (`limarepdf-cli sign`): in an empty signature field or a new box, as Acrobat signs (`adbe.pkcs7.detached`, SHA-256), with a visible look (your name in handwriting or a picture, "Digitally signed by" and the date), added after the file's bytes so earlier signatures stay valid; follows certifications and field locks; every signed file checked before it is written. Saving a signed document (Save in the app, every editing command) adds the changes after what was signed, so the signatures stay valid; asks first (the command line refuses without a flag) when they don't allow the changes, and before writing the whole file when it must (redactions, removed hidden information, passwords, damaged files). Not yet: timestamps when signing, encrypted documents; only partly tested with Adobe Acrobat (see below). [Details](signatures.md) |
 | Certificate encryption | No | |
 | PDF/A, optimised saving | No | Saved files are pruned and compressed |
 | Comparing documents | No | |
@@ -97,7 +97,7 @@ available.
 - Saving rewrites the whole file, except for digitally signed documents, whose changes are added after what was
   signed so the signatures stay valid ([details](signatures.md#saving-a-signed-document)).
 - Files the renderer cannot read show "Rendering…" on their pages; editing may still work.
-- A malformed file that makes MPE fail while opening, editing or saving gets an error message, and a failed edit
+- A malformed file that makes LimarePDF fail while opening, editing or saving gets an error message, and a failed edit
   leaves the document as it was. A failure while showing the document (pages, thumbnails, search, bookmarks,
   comments, the inspector) turns that tab into an error page with Save a copy and Close; other tabs carry on. A
   failure in a menu command outside those can still close the app.
@@ -114,11 +114,11 @@ pool of features other PDF tools have is in [ideas.md](ideas.md).
 ### XFA forms
 
 Many government forms are XFA-only: the PDF holds a "Please wait..." page, and the real form is XML that only Adobe
-software lays out. MPE recognises them and says so. Beyond that:
+software lays out. LimarePDF recognises them and says so. Beyond that:
 
 - **Possible later: their data from the command line.** Export an XFA form's values as JSON and fill them from
   JSON, to view, sign or print in Adobe Reader. Useful for batches; it needs an XML parser crate.
-- **Not planned: showing and filling them in MPE.** It would need an XFA layout engine (the specification runs to
+- **Not planned: showing and filling them in LimarePDF.** It would need an XFA layout engine (the specification runs to
   over 1,500 pages) and a script engine for their JavaScript and FormCalc, months of work for a format Adobe has
   deprecated and PDF 2.0 removed.
 
@@ -127,7 +127,7 @@ software lays out. MPE recognises them and says so. Beyond that:
 Deferred until the core features are complete. PDF stores rectangle, ellipse and text box annotations as upright
 boxes, with no angle, so turning them needs a workaround:
 
-- **Text boxes in quarter turns:** the `/Rotate` entry Acrobat writes (MPE already uses it on turned pages). Other
+- **Text boxes in quarter turns:** the `/Rotate` entry Acrobat writes (LimarePDF already uses it on turned pages). Other
   readers understand it.
 - **Rectangles and ellipses at any angle:** saved as polygons, which every reader shows but lists as polygons
   (an ellipse becomes many short sides). A turned drawing inside an upright box is the other way, but readers that
@@ -138,8 +138,8 @@ boxes, with no angle, so turning them needs a workaround:
 Checking, trust, digital IDs, signing, certifying and saving signed documents are done (see the table and
 [Digital signatures](signatures.md)). Still to come:
 
-- **Round trips with Adobe Acrobat**, on a tester's computer: Acrobat-signed and certified files checked in MPE,
-  MPE's signatures and exported digital IDs used in Acrobat, and signed files saved with changes going each way.
+- **Round trips with Adobe Acrobat**, on a tester's computer: Acrobat-signed and certified files checked in LimarePDF,
+  LimarePDF's signatures and exported digital IDs used in Acrobat, and signed files saved with changes going each way.
   The compatibility list in [Digital signatures](signatures.md#compatibility) names only what has been tested.
 - **Timestamps** from a timestamp server when signing, then long-term validation (revocation answers added to the
   document).
@@ -149,18 +149,18 @@ keystores, signing encrypted files (see [ideas](ideas.md)).
 
 ### Packaging
 
-Since 0.5: every release file and `SHA256SUMS` are GPG-signed with MPE's own key, and each file has a build
+Since 0.5: every release file and `SHA256SUMS` are GPG-signed with LimarePDF's own key, and each file has a build
 attestation (`gh attestation verify`); a dry run of the release job checks this without releasing. Each release has
 Linux `.deb` and `.rpm` packages (the rpm signed), signed apt and dnf repositories on the project's GitHub Pages
-(rebuilt when a release is published), a universal macOS `MPE.app` in a `.dmg`, and a Windows MSI installer. The
+(rebuilt when a release is published), a universal macOS `LimarePDF.app` in a `.dmg`, and a Windows MSI installer. The
 archives stay.
 
-- **Untested:** whether a PDF opened from Finder's Open With loads in MPE, rather than just starting it.
-- **Next:** an AUR package, a Homebrew cask in MPE's own tap, and winget and Scoop manifests. Maybe Flatpak.
-- **Code signing** (macOS notarization, Windows Authenticode) needs certificates MPE doesn't have yet, so those builds
+- **Untested:** whether a PDF opened from Finder's Open With loads in LimarePDF, rather than just starting it.
+- **Next:** an AUR package, a Homebrew cask in LimarePDF's own tap, and winget and Scoop manifests. Maybe Flatpak.
+- **Code signing** (macOS notarization, Windows Authenticode) needs certificates LimarePDF doesn't have yet, so those builds
   stay unsigned; the GPG signatures and attestations cover them meanwhile.
 
-### Features that would set MPE apart
+### Features that would set LimarePDF apart
 
 - **Offline AI.** Summaries, questions and answers, and meaning-based search, run by a model on your own computer, so
   documents never leave it.
@@ -172,7 +172,7 @@ archives stay.
   with no text at all, so a scanned figure or a pasted screenshot in a normal document is skipped); and matching the
   original fonts when scanned text is edited.
 - **Editing paragraphs.** Edit text as paragraphs that reflow, not line by line, as a command you choose ("Edit as
-  paragraph") rather than the default: MPE outlines the lines it takes to be the paragraph, you adjust or confirm,
+  paragraph") rather than the default: LimarePDF outlines the lines it takes to be the paragraph, you adjust or confirm,
   and the reflow is one undo step. Line-by-line editing stays as it is.
 - **Incremental saving.** Save only what changed, which is faster for large files. Signed documents are already
   saved this way (above); this item is about using it for every document.

@@ -5,9 +5,9 @@ a redacted area are taken out of the file, and the area is painted black. Copyin
 or reading the file's bytes can't bring them back.
 
 In the app, mark areas, selected text or search results, check the marks, then apply them (see
-[Redaction in the app](gui.md#redaction)). From the command line, use `mpe redact` (see
+[Redaction in the app](gui.md#redaction)). From the command line, use `limarepdf-cli redact` (see
 [the command line](cli.md#redaction)), which can also just mark, or apply marks already in a file. Marks are
-standard PDF redaction marks, so marks made in other apps can be applied in MPE and the other way round.
+standard PDF redaction marks, so marks made in other apps can be applied in LimarePDF and the other way round.
 
 ## What is removed
 
@@ -19,7 +19,7 @@ For each area:
   then saved again (JPEG pictures as JPEG at about their own quality, black-and-white scans as CCITT, others without
   loss). Pixels only partly under the area are blacked out too. A picture's transparency (soft mask) is cut the same
   way. A picture shared with other pages or drawn elsewhere on the page is copied first, so only the covered copy
-  changes. Pictures MPE can't read (JPEG 2000, JBIG2, CMYK JPEG, some unusual formats) are removed whole, and the
+  changes. Pictures LimarePDF can't read (JPEG 2000, JBIG2, CMYK JPEG, some unusual formats) are removed whole, and the
   report counts them.
 - **Drawings**: the parts of a drawing mostly under the area are removed. Lines and fills that only cross the
   area's edge (a table border, a coloured background) are kept but cut out of the area. Colour gradients are cut
@@ -35,9 +35,9 @@ Pictures and drawings that no page uses any more are left out of the saved file.
 
 ## The check afterwards
 
-When it is done, MPE reads the redacted pages again and checks that no text is left under the areas, and decodes
+When it is done, LimarePDF reads the redacted pages again and checks that no text is left under the areas, and decodes
 each picture there to check that its pixels under the areas are blacked out. If anything is left, the app changes
-nothing and says what it found, and `mpe redact` lists it and doesn't write the file.
+nothing and says what it found, and `limarepdf-cli redact` lists it and doesn't write the file.
 
 It then looks for the removed text elsewhere in the document: on any page, in bookmarks, comments, form fields and the
 document's title, author, subject and keywords. Anything it finds is listed as a warning, since redaction only
@@ -45,7 +45,7 @@ changes the areas you give it.
 
 ## Removing hidden information
 
-A file can carry information that isn't on any page. Document > Remove hidden information… (or `mpe sanitise`)
+A file can carry information that isn't on any page. Document > Remove hidden information… (or `limarepdf-cli sanitise`)
 removes it. The app lists what this document has of each kind; what is ticked is removed:
 
 - **Document information and XMP metadata:** title, author, subject, keywords, the program that made it, and the
@@ -88,14 +88,14 @@ of the file aren't kept in it.
 
 ## How this was tested
 
-- Redaction: `crates/mpe-core/tests/redact.rs` (made-up files: text with kerning and spacing, turned pages, hidden
+- Redaction: `crates/limarepdf-core/tests/redact.rs` (made-up files: text with kerning and spacing, turned pages, hidden
   text, alternative text, drawings, pictures with soft masks, JPEG, inline images, shared pictures and forms,
-  unreadable pictures, annotations, redaction marks), and `mpe redact` on the PDFs in `/usr/share/doc` (common words
+  unreadable pictures, annotations, redaction marks), and `limarepdf-cli redact` on the PDFs in `/usr/share/doc` (common words
   removed throughout, renders checked, nothing found by search afterwards) and on a scanned page in three forms
   (plain, CCITT and JPEG) with a recognised text layer.
 - The app's part (the Redact tool, marking selected text and search results, the notice, Apply and its report, the
   save warning) was used by hand on Linux.
-- Removing hidden information: `crates/mpe-core/tests/sanitise.rs` (made-up files for each kind) and `mpe sanitise`
+- Removing hidden information: `crates/limarepdf-core/tests/sanitise.rs` (made-up files for each kind) and `limarepdf-cli sanitise`
   on the PDFs in `/usr/share/doc`, which have metadata and bookmarks but no scripts, attachments or layers. Its dialog
   was not clicked through.
-- Marks made by MPE were not yet opened in Acrobat or other apps, nor marks made by them applied in MPE.
+- Marks made by LimarePDF were not yet opened in Acrobat or other apps, nor marks made by them applied in LimarePDF.

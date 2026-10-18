@@ -3,7 +3,7 @@
 ## Search
 
 Search lists every match with a snippet. Matches are highlighted on the page, and the view scrolls to the current one.
-On the command line, `mpe search --boxes` also prints where each match is on its page.
+On the command line, `limarepdf-cli search --boxes` also prints where each match is on its page.
 
 Limits:
 
@@ -13,7 +13,7 @@ Limits:
 - Scanned pages have no text until you [recognise it](scanning-and-ocr.md#recognising-text-ocr).
 
 Highlights are placed using each character's width in the font. When a file uses one of the standard PDF fonts
-without including its widths, MPE uses Adobe's published widths for them. Placement was checked on a real scan and
+without including its widths, LimarePDF uses Adobe's published widths for them. Placement was checked on a real scan and
 on documents made by LaTeX, Sphinx, Ghostscript and LibreOffice; in all of them the highlights sit on the matching
 words.
 
@@ -24,7 +24,7 @@ breaks between lines. Word boxes are placed the same way as search highlights, w
 
 ## Text extraction
 
-MPE reads the text from the page content itself, the same way for export text, `mpe text`, search, highlights and
+LimarePDF reads the text from the page content itself, the same way for export text, `limarepdf-cli text`, search, highlights and
 copying, so they always agree.
 
 - **Characters:** taken from the font's ToUnicode map, which says what text each character code stands for, and
