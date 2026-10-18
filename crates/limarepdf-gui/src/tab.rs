@@ -72,6 +72,9 @@ pub struct Tab {
     /// or last saved. Saving then writes the file out in full, so that nothing removed is
     /// left in an earlier version of it. Follows undo and redo.
     pub scrubbed: bool,
+    /// The file was damaged and repaired to open it, so a signed one is saved by writing
+    /// it out in full: edits can't be added after damaged bytes.
+    pub repaired: bool,
     worker: Worker,
     /// The colours pages are drawn in on screen.
     colours: Colours,
@@ -188,6 +191,7 @@ impl Tab {
         let size = path.as_ref().and_then(|p| std::fs::metadata(p).ok());
         let banners = banners::detect(&pdf, size.map(|m| m.len()));
         let signed = pdf.signature_count() > 0;
+        let repaired = pdf.repaired();
         // Form fields without drawings would show nothing; this isn't a change to save. A
         // signed document's fields stay as they were signed (saving adds only the edits
         // made to it); its snapshots draw them instead.
@@ -211,6 +215,7 @@ impl Tab {
             encryption: None,
             signed,
             scrubbed: false,
+            repaired,
             worker: Worker::spawn(ctx.clone(), bytes, colours),
             colours,
             sizes,

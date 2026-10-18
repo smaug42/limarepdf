@@ -23,6 +23,13 @@ Forms are read in `crates/limarepdf-core/src/forms.rs`. When a value changes, Li
 (`form_ap.rs`, written into the file by `form_write.rs`) rather than asking other readers to, so filled fields look
 the same everywhere; the desktop app's side is `crates/limarepdf-gui/src/fields.rs`.
 
+Damaged files are repaired in `crates/limarepdf-core/src/repair.rs` when lopdf reads a file with no pages: it scans
+the bytes for `N G obj` headers (skipping stream data; a later copy of a number wins), takes the trailer entries from
+the newest trailer or cross-reference stream dictionary that names a catalog, appends a rebuilt cross-reference
+table, and has lopdf read the file again. Object stream members lopdf's reader skips are then read one by one, and
+when the trailers name no usable catalog, the last catalog object with a page tree is used. See
+[Rendering](rendering.md#damaged-files).
+
 Page content is read by LimarePDF's own parser (`crates/limarepdf-core/src/objects.rs`), which splits it into the objects that
 editing works on and reads the text that search, copying and export use, with its own reader for fonts' ToUnicode
 maps and Adobe's widths for the standard fonts (see [Search and text](search-and-text.md#text-extraction)).

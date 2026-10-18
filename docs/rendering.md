@@ -33,10 +33,39 @@ everyday documents. The first run (2026-10-17, hayro 0.8.0, poppler 26.08) drew 
   LimarePDF's include very thin lines drawn light grey where poppler draws them solid, and fonts that aren't
   embedded (on 39 pages LimarePDF reported a font it couldn't draw; with installed fonts and stand-ins, none on a
   machine with the Noto CJK and Liberation fonts);
-- 7 damaged files that poppler repairs can't be opened by LimarePDF (their page list is broken), 2 files fail in
-  both, and a few pages poppler can't draw are drawn by LimarePDF.
+- 7 damaged files that poppler repairs couldn't be opened by LimarePDF, and 2 failed in both. Since LimarePDF
+  [repairs damaged files](#damaged-files) (2026-10-18), all 7 open and match poppler to within 2% of their pixels,
+  one that poppler can't draw opens too, and one fails in both. A few pages poppler can't draw are drawn by
+  LimarePDF.
 
 None of the files crashed LimarePDF or took longer than a minute to draw.
+
+## Damaged files
+
+A PDF file ends with a cross-reference table that says where each object starts. When that table is broken (offsets
+that point at the wrong bytes, a cross-reference stream that can't be decoded) or missing, LimarePDF finds the
+objects by reading through the file, as Acrobat, poppler and pdf.js do:
+
+- every `N G obj` header at the start of a line counts, except inside stream data, and a later copy of an object
+  replaces an earlier one, as a later revision would;
+- the newest trailer that names a catalog gives the catalog, the document information and, for encrypted files, the
+  encryption settings; when none names a catalog that leads to pages, the last catalog object found is used;
+- objects packed into object streams are read too, one by one when the stream's own index can't be followed.
+
+The app then shows a notice: the file was repaired, some content may be missing, and saving writes the repaired
+copy. A repaired document counts as changed, so closing it asks whether to save, as Acrobat does. `limarepdf-cli`
+prints a note on stderr. Of about 1,100 test files collected from bug reports, 59 needed repair.
+
+Limits:
+
+- What the repair finds may not be what the file's author meant: an object whose header is damaged is lost, and
+  where the file holds several versions of an object, the last one is used even if the damaged table pointed
+  elsewhere.
+- A repaired file's digital signatures never show as valid and unchanged, since other PDF apps may read it
+  differently: a signature whose signed part is damaged shows *can't check*, and one whose signed part is intact
+  reports a change that isn't allowed. Saving can't keep them: the app asks first, and `limarepdf-cli` needs
+  `--break-signatures`.
+- A file with no recognisable objects at all still can't be opened.
 
 ## Page colour modes
 
@@ -65,7 +94,6 @@ These come from hayro 0.8, the library that draws the pages:
 - Non-isolated groups are drawn as isolated, which changes colours where a blend mode such as Multiply is used
   inside the group.
 - Shading patterns that carry their own graphics state, and CMaps built on other CMaps, aren't supported.
-- Damaged files whose page list is broken can't be opened, even where poppler repairs them.
 
 Other gaps:
 

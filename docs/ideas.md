@@ -38,7 +38,7 @@ Small or medium additions that build on what LimarePDF already has:
 
 - General compression: downsample and recompress images, remove duplicates (M; today only scans are optimised)
 - Linearise for fast web view (M)
-- Repair damaged files, and a structure checker (M–L)
+- A structure checker that lists what is wrong with a file (M–L; damaged files are already repaired when opened)
 - Rasterise pages; convert colours to grey or CMYK, invert or replace colours (M)
 - Extract or remove embedded images (S–M)
 

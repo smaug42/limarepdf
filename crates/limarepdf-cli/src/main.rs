@@ -1321,7 +1321,19 @@ fn form_list(input: &Path, json: bool, password: &Option<String>) -> Result<()> 
 }
 
 fn open(p: &Path, pw: &Option<String>) -> Result<Pdf> {
-    Pdf::open(p, pw.as_deref())
+    Pdf::open(p, pw.as_deref()).map(|pdf| note_repaired(p, pdf))
+}
+
+/// Says on stderr when `pdf`, read from `p`, was damaged and repaired to read it.
+fn note_repaired(p: &Path, pdf: Pdf) -> Pdf {
+    if pdf.repaired() {
+        eprintln!(
+            "note: {} is damaged; LimarePDF repaired it to read it, and some content may be \
+             missing",
+            display_line(&p.display().to_string(), 300)
+        );
+    }
+    pdf
 }
 
 fn run_edit(io: &Io, f: impl FnOnce(&mut Pdf) -> Result<()>) -> Result<()> {
@@ -1337,7 +1349,7 @@ fn open_io(io: &Io) -> Result<(Pdf, Vec<u8>)> {
     let bytes =
         std::fs::read(&io.input).with_context(|| format!("reading {}", io.input.display()))?;
     let pdf = Pdf::from_bytes(&bytes, io.password.as_deref())?;
-    Ok((pdf, bytes))
+    Ok((note_repaired(&io.input, pdf), bytes))
 }
 
 /// Writes `pdf`, edited from `original` (the input's bytes), to `io.output`. A digitally
@@ -2608,7 +2620,7 @@ fn main() -> Result<()> {
         Cmd::Merge { inputs, output } => {
             let docs = inputs
                 .par_iter()
-                .map(|p| Pdf::open(p, None))
+                .map(|p| open(p, &None))
                 .collect::<Result<Vec<_>>>()?;
             let mut m = Pdf::merge(docs)?;
             m.save(&output)?;

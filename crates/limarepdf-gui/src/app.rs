@@ -203,6 +203,9 @@ enum Dialog {
 const SCRUBBED: &str = "you applied redactions or removed hidden information, and the version \
                         that was signed would still hold everything removed";
 
+/// Why a signed document that was repaired to open it is saved by writing the whole file.
+const REPAIRED: &str = "the file is damaged, and LimarePDF repaired it to open it";
+
 /// A signed document with its edits added after what was signed, ready to write once the
 /// user agrees that the signatures will report changes they don't allow.
 struct SaveDisallowed {
@@ -419,7 +422,8 @@ impl App {
         match tab {
             Ok(mut t) => {
                 self.next_id += 1;
-                t.dirty = dirty;
+                // A repaired file counts as changed until the repaired copy is saved.
+                t.dirty = dirty || t.pdf.repaired();
                 // The document's own viewer preferences, else the app's defaults. A page
                 // asked for on the command line wins over the document's opening page.
                 let prefs = t.pdf.view_prefs();
@@ -1164,6 +1168,8 @@ impl App {
         }
         let appended = if tab.scrubbed {
             Err(SCRUBBED.to_string())
+        } else if tab.repaired {
+            Err(REPAIRED.to_string())
         } else if let Some(s) = &tab.sigs {
             tab.pdf.set_encryption(tab.encryption.clone());
             crate::guard(|| limarepdf_core::append_edits(&s.bytes, &tab.pdf))

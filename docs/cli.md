@@ -4,7 +4,8 @@
 options with `limarepdf-cli <command> --help`.
 
 Commands that change a document take the input file first and write the result to `-o out.pdf`; the input is
-never changed. Add `--password` to open a protected input.
+never changed. Add `--password` to open a protected input. A damaged input is repaired to read it, as in the app,
+and a note on stderr says so; some of its content may be missing ([details](rendering.md#damaged-files)).
 
 A digitally signed input keeps its signatures: the changes are added after what was signed. When its signatures
 don't allow the changes, the command writes nothing unless `--accept-disallowed` is given (the signatures then

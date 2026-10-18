@@ -41,6 +41,7 @@ mod reading;
 mod redact;
 mod redact_img;
 pub mod render;
+mod repair;
 mod sanitise;
 mod scan;
 mod security;

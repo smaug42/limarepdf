@@ -19,6 +19,10 @@
 - A notice names fonts that aren't in the file or installed and says what to install: the font itself when a
   similar one is shown in its place, or a font for the language (such as Noto Sans CJK JP) when no installed font
   has its characters.
+- Damaged files open: when a file's cross-reference information (where each object is) is broken or missing, its
+  objects are found by reading through the file, as other PDF apps do. A notice says the file was repaired and some
+  content may be missing; the document counts as changed, and saving writes the repaired copy. A repaired file's
+  signatures never show as valid and unchanged. `limarepdf-cli` repairs them too, with a note on stderr.
 
 ### Fixed
 

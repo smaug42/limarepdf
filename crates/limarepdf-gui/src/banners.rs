@@ -19,6 +19,8 @@ const LARGE_BYTES: u64 = 100_000_000;
 pub enum Kind {
     /// The document's digital signatures: being checked, or how they checked.
     Signatures,
+    /// The file was damaged, and LimarePDF repaired it to open it.
+    Repaired,
     /// The file was encrypted: saving drops the protection unless it is set again.
     Protected,
     /// Areas are marked for redaction but nothing under them is removed yet.
@@ -65,6 +67,7 @@ impl Banner {
                 Tone::Bad => icon::SEAL_WARNING,
                 Tone::Neutral => icon::SEAL,
             },
+            Kind::Repaired => icon::WRENCH,
             Kind::Protected => icon::LOCK_KEY,
             Kind::Redactions => icon::EYE_SLASH,
             Kind::Signing => icon::SIGNATURE,
@@ -86,7 +89,7 @@ impl Banner {
             Kind::Signing => Some(("Finish signing…", Act::FinishSigning)),
             Kind::Scanned => Some(("Recognise text", Act::Ocr)),
             Kind::Forms => Some(("Highlight fields", Act::ToggleFields)),
-            Kind::Xfa | Kind::Missing | Kind::Fonts | Kind::Large => None,
+            Kind::Repaired | Kind::Xfa | Kind::Missing | Kind::Fonts | Kind::Large => None,
         }
     }
 }
@@ -257,6 +260,21 @@ fn list(items: &[&str]) -> String {
 /// size, when it came from a file.
 pub fn detect(pdf: &Pdf, bytes: Option<u64>) -> Vec<Banner> {
     let mut v = Vec::new();
+    if pdf.repaired() {
+        let signed = if pdf.signature_count() > 0 {
+            " Its signatures can't vouch for what is shown, and saving the repaired copy breaks \
+             them."
+        } else {
+            ""
+        };
+        v.push(Banner::plain(
+            Kind::Repaired,
+            format!(
+                "This file is damaged, and LimarePDF repaired it to open it. Some content may \
+                 be missing. Saving writes the repaired copy.{signed}"
+            ),
+        ));
+    }
     if pdf.doc.was_encrypted() {
         v.push(Banner::plain(
             Kind::Protected,
@@ -361,6 +379,17 @@ mod tests {
     #[test]
     fn plain_documents_get_no_banner() {
         assert!(kinds(&blank(3), Some(1000)).is_empty());
+    }
+
+    #[test]
+    fn repaired_files_say_so() {
+        // A line after the header moves every object away from where the table says.
+        let mut bytes = blank(1).to_bytes().unwrap();
+        let line = bytes.iter().position(|&c| c == b'\n').unwrap() + 1;
+        bytes.splice(line..line, format!("%{}\n", " ".repeat(200)).into_bytes());
+        let p = Pdf::from_bytes(&bytes, None).unwrap();
+        assert_eq!(kinds(&p, None), [Kind::Repaired]);
+        assert!(detect(&p, None)[0].text.contains("repaired"));
     }
 
     #[test]
