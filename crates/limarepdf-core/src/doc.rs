@@ -55,16 +55,13 @@ impl Pdf {
             Err(lopdf::Error::InvalidPassword) => return opened.map_err(cannot_open),
             Err(_) => 0,
         };
-        if pages > 0 {
-            // lopdf rebuilds a table it can't read at all by scanning, and then has no
-            // table offset (a real one can't be 0: the header is there).
-            return opened.map_err(cannot_open).map(|mut p| {
-                if p.doc.xref_start == 0 {
-                    p.repaired = true;
-                    p.differs = Some(REPAIRED.into());
-                }
-                p
-            });
+        // lopdf rebuilds a table it can't read at all by scanning, and then has no table
+        // offset (a real one can't be 0: the header is there). Its scan ends a stream at the
+        // first `endstream` and ignores `/Length`, so LimarePDF's own repair is used
+        // instead, and lopdf's only when that fails.
+        let rebuilt_by_lopdf = matches!(&opened, Ok(p) if p.doc.xref_start == 0);
+        if pages > 0 && !rebuilt_by_lopdf {
+            return opened.map_err(cannot_open);
         }
         let rebuilt = match crate::repair::rebuild(bytes).map(|b| Self::read(&b, password)) {
             // Only the repaired file reads far enough to ask for the password.
@@ -81,14 +78,15 @@ impl Pdf {
             }
             (p.page_count() > 0).then_some(p)
         });
-        match repaired {
-            Some(mut p) => {
-                p.repaired = true;
-                p.differs = Some(REPAIRED.into());
-                Ok(p)
-            }
-            None => opened.map_err(cannot_open),
-        }
+        let mut p = match repaired {
+            Some(p) => p,
+            // lopdf's own rebuild.
+            None if pages > 0 => opened.map_err(cannot_open)?,
+            None => return opened.map_err(cannot_open),
+        };
+        p.repaired = true;
+        p.differs = Some(REPAIRED.into());
+        Ok(p)
     }
 
     /// Whether the file's cross-reference information (where each object is) was damaged,

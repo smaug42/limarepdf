@@ -7,6 +7,7 @@ use lopdf::{Dictionary, Document, Object};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::Cursor;
+use std::ops::Range;
 
 /// The highest object number the PDF format allows; a scanned header above it is noise.
 const MAX_OBJECT: u32 = 8_388_607;
@@ -28,11 +29,12 @@ pub(crate) fn rebuild(bytes: &[u8]) -> Option<Vec<u8>> {
     // lopdf reads from the header on, and its offsets count from there.
     let start = bytes.windows(5).position(|w| w == b"%PDF-")?;
     let body = &bytes[start..];
-    let objects = scan_objects(body);
-    if objects.is_empty() {
+    let scan = scan_objects(body);
+    if scan.objects.is_empty() {
         return None;
     }
-    let trailer = newest_trailer(body, &objects).unwrap_or_default();
+    let trailer = newest_trailer(body, &scan).unwrap_or_default();
+    let objects = scan.objects;
 
     let mut out = bytes.to_vec();
     if !out.ends_with(b"\n") {
@@ -140,11 +142,28 @@ pub(crate) fn unpack_object_streams(doc: &mut Document) {
     }
 }
 
-/// Every `N G obj` header that starts a line, by object number: where it starts and its
-/// generation. A later copy of a number wins, as in an appended revision. Stream data is
-/// skipped, so headers inside an uncompressed stream don't count.
-fn scan_objects(b: &[u8]) -> BTreeMap<u32, (usize, u16)> {
-    let mut out = BTreeMap::new();
+/// What a scan of a file's bytes finds.
+#[derive(Default)]
+struct Scan {
+    /// Every `N G obj` header that starts a line, by object number: where it starts and its
+    /// generation. A later copy of a number wins, as in an appended revision.
+    objects: BTreeMap<u32, (usize, u16)>,
+    /// Where each stream's data is, from its `stream` keyword to the end of `endstream`.
+    streams: Vec<Range<usize>>,
+}
+
+impl Scan {
+    fn in_stream(&self, at: usize) -> bool {
+        let i = self.streams.partition_point(|s| s.end <= at);
+        self.streams.get(i).is_some_and(|s| s.contains(&at))
+    }
+}
+
+/// Scans `b` for objects. Stream data is skipped, so headers inside an uncompressed stream
+/// (an attached PDF, say) don't count.
+fn scan_objects(b: &[u8]) -> Scan {
+    let mut out = Scan::default();
+    let mut header = None;
     let mut line_start = true;
     let mut i = 0;
     while i < b.len() {
@@ -152,16 +171,18 @@ fn scan_objects(b: &[u8]) -> BTreeMap<u32, (usize, u16)> {
             && !b[..i].ends_with(b"end")
             && matches!(b.get(i + 6), Some(b'\r' | b'\n'))
         {
-            if let Some(end) = find(&b[i + 6..], b"endstream") {
-                i += 6 + end + 9;
+            if let Some(end) = stream_end(b, header, i) {
+                out.streams.push(i..end);
+                i = end;
                 line_start = false;
                 continue;
             }
         }
         if line_start && b[i].is_ascii_digit() {
             if let Some((num, generation)) = object_header(&b[i..]) {
+                header = Some(i);
                 if (1..=MAX_OBJECT).contains(&num) {
-                    out.insert(num, (i, generation));
+                    out.objects.insert(num, (i, generation));
                 }
             }
         }
@@ -173,6 +194,40 @@ fn scan_objects(b: &[u8]) -> BTreeMap<u32, (usize, u16)> {
         i += 1;
     }
     out
+}
+
+/// Where the stream whose `stream` keyword is at `at` ends, just after its `endstream`,
+/// given where its object's header is. Its `/Length` is used when it is a direct number and
+/// `endstream` follows the data there, as other PDF apps do; else the stream ends at the
+/// first `endstream`. `None` when there is no `endstream`, or the keyword is inside the
+/// object's dictionary (in a string), so no stream starts there.
+fn stream_end(b: &[u8], header: Option<usize>, at: usize) -> Option<usize> {
+    let dict = header.and_then(|h| {
+        let obj = h + find(&b[h..at], b"obj")? + 3;
+        let open = obj + b[obj..at].iter().position(|c| !is_white(*c))?;
+        Some((open, open + dictionary_len(&b[open..])?))
+    });
+    if let Some((open, close)) = dict {
+        if close > at {
+            return None;
+        }
+        let eol = if b[at + 6..].starts_with(b"\r\n") {
+            2
+        } else {
+            1
+        };
+        let data = at + 6 + eol;
+        let end = read_dictionary(&b[open..close])
+            .and_then(|d| d.get(b"Length").ok()?.as_i64().ok())
+            .and_then(|n| data.checked_add(usize::try_from(n).ok()?))
+            .filter(|&e| e <= b.len())
+            .map(|e| e + b[e..].iter().take_while(|c| is_white(**c)).count())
+            .filter(|&e| b[e..].starts_with(b"endstream"));
+        if let Some(end) = end {
+            return Some(end + 9);
+        }
+    }
+    Some(at + 6 + find(&b[at + 6..], b"endstream")? + 9)
 }
 
 /// The object number and generation of an `N G obj` header at the start of `b`.
@@ -197,14 +252,16 @@ fn object_header(b: &[u8]) -> Option<(u32, u16)> {
 }
 
 /// The newest trailer whose `/Root` is an indirect reference: a table's `trailer`
-/// dictionary or a cross-reference stream's.
-fn newest_trailer(b: &[u8], objects: &BTreeMap<u32, (usize, u16)>) -> Option<Dictionary> {
+/// dictionary or a cross-reference stream's, leaving out any inside stream data.
+fn newest_trailer(b: &[u8], scan: &Scan) -> Option<Dictionary> {
     let mut places: Vec<usize> = Vec::new();
     let mut at = 0;
     while let Some(i) = find(&b[at..], b"trailer") {
         let after = at + i + 7;
         if let Some(d) = b[after..].iter().position(|c| !is_white(*c)) {
-            places.push(after + d);
+            if !scan.in_stream(at + i) {
+                places.push(after + d);
+            }
         }
         at = after;
     }
@@ -213,7 +270,10 @@ fn newest_trailer(b: &[u8], objects: &BTreeMap<u32, (usize, u16)>) -> Option<Dic
     let mut at = 0;
     while let Some(i) = find(&b[at..], b"/XRef") {
         let pos = at + i;
-        if let Some(&(start, _)) = objects.values().filter(|(o, _)| *o < pos).max() {
+        let start = (!scan.in_stream(pos))
+            .then(|| scan.objects.values().filter(|(o, _)| *o < pos).max())
+            .flatten();
+        if let Some(&(start, _)) = start {
             if let Some(d) = find(&b[start..pos], b"<<") {
                 streams.push(start + d);
             }
@@ -408,8 +468,38 @@ mod tests {
     #[test]
     fn objects_inside_stream_data_are_skipped() {
         let b = b"%PDF-1.7\n1 0 obj\n<< /Length 9 >>\nstream\n2 0 obj\nendstream\nendobj\n3 0 obj\n1\nendobj\n";
-        let found = scan_objects(b);
-        assert_eq!(found.keys().copied().collect::<Vec<_>>(), vec![1, 3]);
+        assert_eq!(numbers(&scan_objects(b)), vec![1, 3]);
+    }
+
+    fn numbers(scan: &Scan) -> Vec<u32> {
+        scan.objects.keys().copied().collect()
+    }
+
+    #[test]
+    fn streams_end_by_their_length() {
+        let b = b"1 0 obj\n<< /Length 18 >>\nstream\nendstream\n2 0 obj\nendstream\nendobj\n";
+        let scan = scan_objects(b);
+        assert_eq!(numbers(&scan), vec![1]);
+        assert_eq!(scan.streams, vec![25..b.len() - 8]);
+        // A length that doesn't reach an `endstream` isn't used, nor an indirect one.
+        for length in ["14", "16", "9 0 R", "-3"] {
+            let b = format!("1 0 obj\n<< /Length {length} >>\nstream\nab\nendstream\n2 0 obj\n");
+            assert_eq!(numbers(&scan_objects(b.as_bytes())), vec![1, 2]);
+        }
+    }
+
+    #[test]
+    fn trailers_inside_streams_are_not_used() {
+        let b = b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n\
+                  2 0 obj\n<< /Length 25 >>\nstream\ntrailer\n<< /Root 9 0 R >>\nendstream\n\
+                  trailer\n<< /Root 1 0 R >>\n3 0 obj\n<< /Length 25 >>\nstream\n\
+                  trailer\n<< /Root 9 0 R >>\nendstream\nendobj\n";
+        let scan = scan_objects(b);
+        let trailer = newest_trailer(b, &scan).unwrap();
+        assert_eq!(
+            trailer.get(b"Root").unwrap().as_reference().unwrap(),
+            (1, 0)
+        );
     }
 
     #[test]

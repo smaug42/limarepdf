@@ -23,7 +23,9 @@
   objects are found by reading through the file, as other PDF apps do. A notice says the file was repaired and some
   content may be missing, with a Save as… button; the document counts as changed, and Save asks before replacing
   the damaged original. A repaired file's
-  signatures never show as valid and unchanged. `limarepdf-cli` repairs them too, with a note on stderr.
+  signatures never show as valid and unchanged. `limarepdf-cli` repairs them too, with a note on stderr. Stream data
+  is skipped by its stated length, so a PDF attached to the damaged file, or text crafted to look like objects, is
+  never taken for the file's own content.
 
 ### Fixed
 
@@ -37,6 +39,9 @@
   with Save a copy and Close; other tabs are not affected.
 - A failure right after applying redactions or removing hidden information could leave the tab not knowing content
   was removed, so saving a signed document would have kept it in the earlier signed version. The two are now one step.
+- A damaged file holding an uncompressed PDF attachment, or crafted to, could open showing the attachment's pages
+  or other content than other PDF apps show, when lopdf rebuilt its table. LimarePDF's own repair, which reads
+  stream data by its length, is now used instead.
 - A page whose only picture can't be read no longer brings up the notice that the document has scanned pages.
 - A page that can't be drawn shows "This page couldn't be drawn" and the reason, instead of "Rendering…" forever
   while the app tried again on every frame.

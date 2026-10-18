@@ -197,6 +197,144 @@ fn damaged_encrypted_files_need_their_password() {
     assert_eq!(pdf.info().title.as_deref(), Some("Damaged"));
 }
 
+/// A trailer naming the catalog and information dictionary, with no table.
+const TRAILER: &[u8] = b"trailer\n<< /Root 1 0 R /Info 5 0 R >>\n%%EOF\n";
+
+/// A content stream holding `data` after the box, with a correct `/Length`.
+fn content_with(data: &str) -> String {
+    let data = format!("{CONTENT}\n{data}");
+    format!("<< /Length {} >>\nstream\n{data}\nendstream", data.len())
+}
+
+#[test]
+fn endstream_inside_stream_data() {
+    // A comment in the content says `endstream`, followed by a wider copy of the page: a
+    // scan that ends the stream there takes the copy.
+    let mut o = objects();
+    o[3].1 = content_with(&format!("% endstream\n3 0 obj\n{}\nendobj", page(999)));
+    let (b, _) = body(&o);
+    opens_repaired(&b, None);
+}
+
+#[test]
+fn uncompressed_embedded_pdf() {
+    // An attached PDF stored as it is, with its own objects, streams and table: none of
+    // them belong to the outer file, though their numbers are the same.
+    let (mut inner, at) = body(&[
+        (4, "<< /Length 3 >>\nstream\n0 g\nendstream".into()),
+        (1, "<< /Type /Catalog /Pages 2 0 R >>".into()),
+        (2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        (3, page(999)),
+    ]);
+    table(&mut inner, &at, "/Root 1 0 R");
+    let inner = String::from_utf8_lossy(&inner).into_owned();
+    let mut o = objects();
+    o.push((
+        6,
+        format!(
+            "<< /Type /EmbeddedFile /Subtype /application#2Fpdf /Length {} >>\nstream\n{inner}\nendstream",
+            inner.len()
+        ),
+    ));
+    let (mut b, _) = body(&o);
+    b.extend_from_slice(TRAILER);
+    let pdf = opens_repaired(&b, None);
+    assert_eq!(pdf.info().title.as_deref(), Some("Damaged"));
+}
+
+#[test]
+fn stream_keyword_inside_a_string() {
+    // The information dictionary's title has `stream` and a line break in it, before the
+    // catalog, page tree and page: they must still be found.
+    let mut o = objects();
+    let info = o.remove(4);
+    o.insert(0, (info.0, "<< /Title (Damaged stream\n) >>".into()));
+    let (mut b, _) = body(&o);
+    b.extend_from_slice(TRAILER);
+    let pdf = opens_repaired(&b, None);
+    assert_eq!(pdf.info().title.as_deref(), Some("Damaged stream\n"));
+}
+
+#[test]
+fn truncated_stream() {
+    // The file ends inside a stream that comes after the page's objects, with no
+    // `endstream`.
+    let (mut b, _) = body(&objects());
+    b.extend_from_slice(b"6 0 obj\n<< /Length 4000 >>\nstream\nsome data, then the file ends");
+    opens_repaired(&b, None);
+}
+
+#[test]
+fn wrong_stream_length() {
+    // A `/Length` that is too short is found out (no `endstream` there) and the stream
+    // still ends at its `endstream`; the information dictionary after it is found.
+    let mut o = objects();
+    o[3].1 = format!(
+        "<< /Length 3 >>\nstream\n{CONTENT}\n3 0 obj\n{}\nendstream",
+        page(999)
+    );
+    let (mut b, _) = body(&o);
+    b.extend_from_slice(TRAILER);
+    let pdf = opens_repaired(&b, None);
+    assert_eq!(pdf.info().title.as_deref(), Some("Damaged"));
+}
+
+#[test]
+fn freed_objects_stay_unused() {
+    // A first revision gives the page a text note; a second removes the note from the page
+    // and frees its object. The note isn't on the repaired page, and isn't saved.
+    let mut o = objects();
+    o[2].1 = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R \
+              /Annots [6 0 R] >>"
+        .into();
+    o.push((
+        6,
+        "<< /Type /Annot /Subtype /Text /Rect [0 0 10 10] /Contents (removed) >>".into(),
+    ));
+    let (mut b, at) = body(&o);
+    table(&mut b, &shifted(&at, 2), "/Root 1 0 R /Info 5 0 R");
+    let page = b.len();
+    b.extend_from_slice(format!("3 0 obj\n{}\nendobj\n", self::page(200)).as_bytes());
+    let xref = b.len();
+    b.extend_from_slice(
+        format!(
+            "xref\n0 1\n0000000006 65535 f\r\n3 1\n{page:010} 00000 n\r\n6 1\n0000000000 00001 f\r\n\
+             trailer\n<< /Size 7 /Root 1 0 R /Info 5 0 R /Prev 9 >>\nstartxref\n{xref}\n%%EOF\n"
+        )
+        .as_bytes(),
+    );
+    let mut pdf = opens_repaired(&b, None);
+    assert!(pdf.annotations().is_empty());
+    let saved = pdf.to_bytes().unwrap();
+    assert!(find(&saved, b"(removed)").is_none());
+}
+
+#[test]
+fn reused_number_with_a_higher_generation() {
+    // The note's number is freed and used again, generation 1, for a different note that
+    // the page names; the old one is gone.
+    let mut o = objects();
+    o[2].1 = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R \
+              /Annots [6 1 R] >>"
+        .into();
+    o.push((
+        6,
+        "<< /Type /Annot /Subtype /Text /Rect [0 0 10 10] /Contents (old) >>".into(),
+    ));
+    let (mut b, _) = body(&o);
+    b.extend_from_slice(
+        b"6 1 obj\n<< /Type /Annot /Subtype /Text /Rect [0 0 10 10] /Contents (new) >>\nendobj\n",
+    );
+    let pdf = opens_repaired(&b, None);
+    let notes = pdf.annotations();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].contents, "new");
+}
+
+fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len()).position(|w| w == needle)
+}
+
 #[test]
 fn repaired_files_save_whole_and_clean() {
     let (mut b, at) = body(&objects());
