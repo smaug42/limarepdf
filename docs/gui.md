@@ -17,7 +17,8 @@ The start screen also has Make a PDF from images…, which turns photos or scann
 Each document gets a tab. The tab shows its name, with `*` while it has unsaved changes.
 
 Saving writes a temporary file beside the document and then replaces the document with it, so a save that fails
-part way leaves the original as it was. LimarePDF saves by rewriting the whole file, except for a digitally signed
+part way leaves the original as it was. On Linux and macOS, the temporary file is readable only by you while it is
+written, and the saved document keeps the original's permissions. LimarePDF saves by rewriting the whole file, except for a digitally signed
 document: its changes are added after what was signed, so the signatures stay valid. LimarePDF asks first when the
 signatures don't allow the changes, and before writing a signed document in full when it must (after redacting, for
 example), which breaks the signatures; see [Saving a signed document](signatures.md#saving-a-signed-document).
