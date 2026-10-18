@@ -793,6 +793,26 @@ impl Editor {
         }
     }
 
+    /// After a command failed part way: the Read tool, with nothing selected, dragged, being
+    /// typed or waiting to be put down, and no changes queued.
+    pub fn reset(&mut self) {
+        self.tool = Tool::Read;
+        self.selection = Selection::None;
+        self.drag = None;
+        self.draw = None;
+        self.pen_stroke = None;
+        self.text_drag = false;
+        self.new_text = None;
+        self.writing = None;
+        self.pending_image = None;
+        self.insp = None;
+        self.annot_insp = None;
+        self.digital_place = None;
+        self.digital_error = None;
+        self.actions.clear();
+        self.apply_redactions = false;
+    }
+
     pub fn set_tool_keep_sel(&mut self, t: Tool) {
         let sel = self.selection.clone();
         self.set_tool(t);

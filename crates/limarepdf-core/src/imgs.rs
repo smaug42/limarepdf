@@ -149,6 +149,24 @@ pub(crate) fn jpeg_quality(bytes: &[u8]) -> Option<u8> {
     Some(q.round().clamp(1.0, 100.0) as u8)
 }
 
+/// Whether an image XObject's data looks readable, judged from its start without decoding
+/// it: a JPEG must have a header giving its size, and compressed data a valid zlib header.
+/// Other kinds are taken as readable.
+pub(crate) fn image_data_readable(s: &Stream) -> bool {
+    let b = &s.content;
+    match s.filters().unwrap_or_default().first().copied() {
+        Some(b"DCTDecode" | b"DCT") => {
+            b.starts_with(&[0xFF, 0xD8]) && jpeg_info(b).is_some_and(|i| i.w > 0 && i.h > 0)
+        }
+        Some(b"FlateDecode" | b"Fl") => match b[..] {
+            [cmf, flg, ..] => cmf & 0x0F == 8 && (u16::from(cmf) * 256 + u16::from(flg)) % 31 == 0,
+            _ => false,
+        },
+        Some(_) => true,
+        None => !b.is_empty(),
+    }
+}
+
 /// Read the JPEG markers up to the first scan.
 fn jpeg_info(b: &[u8]) -> Option<JpegInfo> {
     let u16_at = |i: usize| Some(u16::from_be_bytes([*b.get(i)?, *b.get(i + 1)?]));

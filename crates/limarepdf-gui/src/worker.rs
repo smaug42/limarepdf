@@ -6,7 +6,7 @@ use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::render::{self, Bitmap, Missing, Region, Renderer};
 use std::collections::BTreeSet;
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 /// (page index, quantised scale, tile column and row; `None` for the whole page)
 pub type Key = (usize, u32, Option<(u32, u32)>);
@@ -36,6 +36,12 @@ struct Queue {
     items: Vec<(Key, f32)>,
     colours: Colours,
     closed: bool,
+}
+
+/// Lock the queue. Nothing panics while holding it, but if something ever did, the queue
+/// is still usable, and stopping the worker (in `Drop`) must never panic in turn.
+fn queue(lock: &Mutex<Queue>) -> MutexGuard<'_, Queue> {
+    lock.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 pub struct Worker {
@@ -73,7 +79,7 @@ impl Worker {
                 loop {
                     let (job, colours) = {
                         let (lock, cv) = &*shared;
-                        let mut q = lock.lock().unwrap();
+                        let mut q = queue(lock);
                         loop {
                             if q.closed {
                                 return;
@@ -81,7 +87,7 @@ impl Worker {
                             if let Some(j) = q.items.pop() {
                                 break (j, q.colours);
                             }
-                            q = cv.wait(q).unwrap();
+                            q = cv.wait(q).unwrap_or_else(PoisonError::into_inner);
                         }
                     };
                     let (key, scale) = job;
@@ -126,27 +132,47 @@ impl Worker {
 
     pub fn request(&self, key: Key, scale: f32) {
         let (lock, cv) = &*self.shared;
-        lock.lock().unwrap().items.push((key, scale));
+        queue(lock).items.push((key, scale));
         cv.notify_one();
     }
 
     /// Draw pages from now on in `colours`, dropping the queued jobs.
     pub fn set_colours(&self, colours: Colours) {
-        let mut q = self.shared.0.lock().unwrap();
+        let mut q = queue(&self.shared.0);
         q.colours = colours;
         q.items.clear();
     }
 
     /// Drop queued jobs that are no longer wanted.
     pub fn retain(&self, keep: impl Fn(&Key) -> bool) {
-        self.shared.0.lock().unwrap().items.retain(|(k, _)| keep(k));
+        queue(&self.shared.0).items.retain(|(k, _)| keep(k));
     }
 }
 
 impl Drop for Worker {
     fn drop(&mut self) {
         let (lock, cv) = &*self.shared;
-        lock.lock().unwrap().closed = true;
+        queue(lock).closed = true;
         cv.notify_all();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stops_with_a_poisoned_queue() {
+        let bytes = limarepdf_core::Pdf::new().app_snapshot().unwrap();
+        let w = Worker::spawn(eframe::egui::Context::default(), bytes, Colours::default());
+        let shared = w.shared.clone();
+        let _ = std::thread::spawn(move || {
+            let _q = shared.0.lock().unwrap();
+            panic!("poison the queue");
+        })
+        .join();
+        assert!(w.shared.0.is_poisoned());
+        w.request((0, 100, None), 1.0);
+        drop(w);
     }
 }

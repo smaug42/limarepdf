@@ -795,6 +795,33 @@ impl Pdf {
         self.parse_page(page_index).is_ok_and(|p| p.shows_text())
     }
 
+    /// Whether a page's own resources hold a picture whose data is plainly unreadable
+    /// (judged from the start of its data, not by decoding it). Pictures inside form
+    /// XObjects aren't looked at.
+    pub fn page_has_unreadable_picture(&self, page_index: usize) -> bool {
+        let Ok(page) = self.page_id_at(page_index) else {
+            return false;
+        };
+        let dict = |o: &Object| self.doc.dereference(o).ok()?.1.as_dict().ok().cloned();
+        let Some(xobjects) = self
+            .inherited(page, b"Resources")
+            .and_then(|r| dict(&r))
+            .and_then(|r| dict(r.get(b"XObject").ok()?))
+        else {
+            return false;
+        };
+        xobjects.iter().any(|(_, o)| {
+            self.doc
+                .dereference(o)
+                .ok()
+                .and_then(|(_, o)| o.as_stream().ok())
+                .is_some_and(|s| {
+                    s.dict.get(b"Subtype").and_then(Object::as_name).ok() == Some(b"Image")
+                        && !crate::imgs::image_data_readable(s)
+                })
+        })
+    }
+
     /// The words of a page (0-based), visible and invisible (OCR), in reading order worked
     /// out from their positions (see [`crate::reading`]), not the order the page draws
     /// them in. `line` numbers the visual lines. Boxes are in displayed-page points (y

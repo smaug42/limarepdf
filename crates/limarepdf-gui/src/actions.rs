@@ -1255,6 +1255,14 @@ pub fn get(act: Act) -> &'static Action {
         .unwrap_or_else(|| panic!("{act:?} is not in ACTIONS"))
 }
 
+/// The command's name for messages, without a trailing "…".
+pub fn name(act: Act) -> &'static str {
+    ACTIONS
+        .iter()
+        .find(|a| a.act == act)
+        .map_or("The command", |a| a.label.trim_end_matches('…'))
+}
+
 /// Shortcuts in the order to test them: those with Shift or Alt first, since egui
 /// ignores extra Shift and Alt when matching (Ctrl+Shift+S would also match Ctrl+S).
 pub fn shortcuts() -> Vec<(&'static Action, KeyboardShortcut)> {

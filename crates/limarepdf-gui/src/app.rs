@@ -325,8 +325,21 @@ impl App {
         theme::install(&cc.egui_ctx);
         let settings = Settings::load();
         cc.egui_ctx.set_theme(settings.theme);
+        let mut app = Self::with(settings, Recent::load());
+        let (images, pdfs): (Vec<_>, Vec<_>) = files.into_iter().partition(|p| is_image(p));
+        for f in pdfs {
+            app.spawn_open(&cc.egui_ctx, f, None, page);
+        }
+        if !images.is_empty() {
+            app.new_from_images(&cc.egui_ctx, &images);
+        }
+        app
+    }
+
+    /// An app with no tabs.
+    fn with(settings: Settings, recent: Recent) -> Self {
         let (tx, rx) = channel();
-        let mut app = Self {
+        Self {
             tabs: Vec::new(),
             active: 0,
             next_id: 1,
@@ -344,22 +357,14 @@ impl App {
             inspector_pref: true,
             narrow: false,
             toast: None,
-            recent: Recent::load(),
+            recent,
             settings,
             sig_details: None,
             trust_ask: None,
             trusted: None,
             ids_window: None,
             sign_window: None,
-        };
-        let (images, pdfs): (Vec<_>, Vec<_>) = files.into_iter().partition(|p| is_image(p));
-        for f in pdfs {
-            app.spawn_open(&cc.egui_ctx, f, None, page);
         }
-        if !images.is_empty() {
-            app.new_from_images(&cc.egui_ctx, &images);
-        }
-        app
     }
 
     fn spawn_open(
@@ -1299,6 +1304,48 @@ impl App {
         }
     }
 
+    /// Run a command (`name` is for messages) so that a panic in it can't close the app with
+    /// every tab's unsaved work. Afterwards the app's state is made valid again, and the active
+    /// tab is checked against how it was before: unchanged, the failure is only reported;
+    /// changed, the tab can't be trusted and shows its error page (Save a copy, Close). Other
+    /// tabs are never touched.
+    fn run_command(
+        &mut self,
+        ctx: &egui::Context,
+        name: &str,
+        f: impl FnOnce(&mut Self, &egui::Context),
+    ) {
+        let before = self.tabs.get(self.active).map(|t| (t.id, t.state()));
+        let Err(e) = crate::guard(|| {
+            f(self, ctx);
+            Ok(())
+        }) else {
+            return;
+        };
+        self.active = self.active.min(self.tabs.len().saturating_sub(1));
+        // A dialog the command opened may hold half-built data.
+        self.dialog = Dialog::None;
+        let tab = before.and_then(|(id, state)| {
+            let t = self.tabs.iter_mut().find(|t| t.id == id)?;
+            t.reset_interaction();
+            Some((t.state() != state, t))
+        });
+        match tab {
+            Some((true, t)) => {
+                t.broken = Some(format!(
+                    "{name} failed part way, so this tab may not show the document as it is \
+                     now. {e}"
+                ));
+            }
+            _ => {
+                self.dialog = Dialog::Message(
+                    format!("{name} failed"),
+                    format!("{e} Nothing was changed."),
+                );
+            }
+        }
+    }
+
     fn act(&mut self, ctx: &egui::Context, a: Act) {
         let has = !self.tabs.is_empty();
         match a {
@@ -2008,8 +2055,10 @@ impl App {
 
     fn close_tab(&mut self, i: usize) {
         if i < self.tabs.len() {
-            self.tabs.remove(i);
+            let tab = self.tabs.remove(i);
             self.active = self.active.min(self.tabs.len().saturating_sub(1));
+            // Dropped last (stopping its render worker), with the app's state already valid.
+            drop(tab);
         }
     }
 
@@ -2154,7 +2203,7 @@ impl App {
                 Outcome::Apply => {
                     let t = &mut self.tabs[self.active];
                     let mut report = None;
-                    let ok = t.edit(ctx, |p| {
+                    let ok = t.edit_removing(ctx, |p| {
                         let r = p.apply_redactions()?;
                         if !r.left.is_empty() {
                             anyhow::bail!(
@@ -2166,7 +2215,6 @@ impl App {
                         Ok(())
                     });
                     if let Some(r) = report.filter(|_| ok) {
-                        t.scrubbed = true;
                         self.dialog = Dialog::Message("Redactions applied".into(), report_text(&r));
                     }
                     done = true;
@@ -2209,12 +2257,11 @@ impl App {
                         .collect();
                     let t = &mut self.tabs[self.active];
                     let mut report = None;
-                    let ok = t.edit(ctx, |p| {
+                    let ok = t.edit_removing(ctx, |p| {
                         report = Some(p.remove_hidden(&what)?);
                         Ok(())
                     });
                     if let Some(r) = report.filter(|_| ok) {
-                        t.scrubbed = true;
                         let mut text = String::from("Removed:\n");
                         for (h, n) in &r.removed {
                             text.push_str(&format!("• {} ({n})\n", h.label()));
@@ -2550,7 +2597,7 @@ impl App {
             }
         });
         for a in acts {
-            self.act(ctx, a);
+            self.run_command(ctx, actions::name(a), |app, ctx| app.act(ctx, a));
         }
     }
 }
@@ -3220,7 +3267,8 @@ impl eframe::App for App {
             }
         }
         if let Some(apply) = panel_apply {
-            self.apply_panel(&ctx, apply);
+            let name = apply.name();
+            self.run_command(&ctx, name, |app, ctx| app.apply_panel(ctx, apply));
         }
 
         let canvas = egui::Frame::central_panel(ui.style())
@@ -3278,7 +3326,7 @@ impl eframe::App for App {
         self.toast_ui(&ctx, &mut acts);
         self.palette_ui(&ctx, &c, &mut acts);
         for a in acts {
-            self.act(&ctx, a);
+            self.run_command(&ctx, actions::name(a), |app, ctx| app.act(ctx, a));
         }
         self.dialogs(&ctx);
         self.signature_windows(&ctx);
@@ -3345,4 +3393,99 @@ fn report_text(r: &limarepdf_core::RedactReport) -> String {
          everything back.",
     );
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An app with `n` tabs of one blank page, each with an unsaved change (a second page),
+    /// and the last one active. Nothing is read from or written to the user's settings.
+    fn app_with(ctx: &egui::Context, n: usize) -> App {
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        for _ in 0..n {
+            let mut pdf = Pdf::new();
+            pdf.insert_blank(0, 612.0, 792.0).unwrap();
+            assert!(app.add_tab(ctx, pdf, None, None, false));
+            let t = app.tabs.last_mut().unwrap();
+            assert!(t.edit(ctx, |p| p.insert_blank(1, 612.0, 792.0)));
+        }
+        app.active = n - 1;
+        app
+    }
+
+    fn message(app: &App) -> (&str, &str) {
+        match &app.dialog {
+            Dialog::Message(title, text) => (title, text),
+            _ => panic!("no message shown"),
+        }
+    }
+
+    #[test]
+    fn a_command_failing_before_any_change_is_only_reported() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, 2);
+        app.tabs[1].ed.set_tool(Tool::Note);
+        let before: Vec<_> = app.tabs.iter().map(Tab::state).collect();
+        app.run_command(&ctx, "Rotate", |_, _| panic!("bad page tree"));
+        assert!(app.tabs.iter().zip(&before).all(|(t, s)| t.state() == *s));
+        assert!(app.tabs.iter().all(|t| t.broken.is_none() && t.dirty));
+        assert!(app.tabs[1].ed.tool == Tool::Read);
+        let (title, text) = message(&app);
+        assert_eq!(title, "Rotate failed");
+        assert!(text.contains("bad page tree") && text.ends_with("Nothing was changed."));
+    }
+
+    #[test]
+    fn a_command_failing_after_a_change_marks_only_its_tab_broken() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, 2);
+        let other = app.tabs[0].state();
+        app.run_command(&ctx, "Crop", |app, ctx| {
+            let t = &mut app.tabs[app.active];
+            assert!(t.edit(ctx, |p| p.insert_blank(0, 100.0, 100.0)));
+            app.dialog = Dialog::ConfirmFlattenAnnots;
+            panic!("half done");
+        });
+        let why = app.tabs[1].broken.as_deref().expect("tab marked broken");
+        assert!(why.starts_with("Crop failed part way") && why.contains("half done"));
+        // The half-built dialog is gone, and the error page says what happened instead.
+        assert!(matches!(app.dialog, Dialog::None));
+        assert!(app.tabs[0].broken.is_none() && app.tabs[0].state() == other);
+        // Save a copy: the document as it is now can still be written and read back.
+        let path =
+            std::env::temp_dir().join(format!("limarepdf-app-{}-copy.pdf", std::process::id()));
+        app.tabs[1].pdf.save(&path).unwrap();
+        let back = Pdf::from_bytes(&std::fs::read(&path).unwrap(), None).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(back.page_count(), 3);
+    }
+
+    #[test]
+    fn a_command_failing_after_removing_a_tab_leaves_a_valid_app() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, 3);
+        let first = app.tabs[0].state();
+        app.run_command(&ctx, "Close tab", |app, _| {
+            app.tabs.remove(app.active);
+            panic!("while closing");
+        });
+        assert_eq!((app.tabs.len(), app.active), (2, 1));
+        assert!(app.tabs.iter().all(|t| t.broken.is_none() && t.dirty));
+        assert!(app.tabs[0].state() == first);
+        assert_eq!(message(&app).0, "Close tab failed");
+        // The next command on the active tab works.
+        app.run_command(&ctx, "Note", |app, ctx| app.act(ctx, Act::Tool(Tool::Note)));
+        assert!(app.tabs[1].ed.tool == Tool::Note);
+    }
+
+    #[test]
+    fn closing_the_last_tab_keeps_the_active_index_valid() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, 2);
+        app.close_tab(1);
+        assert_eq!((app.tabs.len(), app.active), (1, 0));
+        app.close_tab(0);
+        assert_eq!((app.tabs.len(), app.active), (0, 0));
+    }
 }
