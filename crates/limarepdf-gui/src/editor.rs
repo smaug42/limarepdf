@@ -1786,20 +1786,44 @@ impl Editor {
                 .unwrap_or([1.0, 0.85, 0.2])
                 .map(|v| (v * 255.0) as u8);
             let fill = Color32::from_rgb(cr, cg, cb).gamma_multiply(a.opacity.max(0.3));
-            painter.rect_filled(sr, 3.0, fill);
-            painter.rect_stroke(
-                sr,
-                3.0,
-                Stroke::new(1.0, Color32::from_gray(60)),
-                StrokeKind::Inside,
-            );
-            painter.text(
-                sr.center(),
-                egui::Align2::CENTER_CENTER,
-                icon::NOTE,
-                egui::FontId::new(NOTE_PX * 0.7, theme::icons()),
-                Color32::from_gray(30),
-            );
+            let ink = Color32::from_gray(40);
+            // The seven standard note icons, shaped as Acrobat shows them: the symbol
+            // itself in the note's colour, outlined. Other names show Note.
+            let glyph = match a.name.as_str() {
+                "Comment" => icon::CHAT_TEXT,
+                "Key" => icon::KEY,
+                "Help" => icon::QUESTION,
+                "Paragraph" => icon::PARAGRAPH,
+                "Insert" => icon::CARET_UP,
+                "NewParagraph" => {
+                    // No Phosphor symbol: a triangle over the letters NP.
+                    let at = |x: f32, y: f32| sr.min + Vec2::new(x, y) * NOTE_PX;
+                    let tri = vec![at(0.5, 0.08), at(0.82, 0.48), at(0.18, 0.48)];
+                    painter.add(egui::Shape::convex_polygon(
+                        tri,
+                        fill,
+                        Stroke::new(1.0, ink),
+                    ));
+                    painter.text(
+                        at(0.5, 0.74),
+                        egui::Align2::CENTER_CENTER,
+                        "NP",
+                        egui::FontId::new(NOTE_PX * 0.42, theme::semibold()),
+                        ink,
+                    );
+                    continue;
+                }
+                _ => icon::NOTE,
+            };
+            for (family, color) in [(theme::icons_fill(), fill), (theme::icons(), ink)] {
+                painter.text(
+                    sr.center(),
+                    egui::Align2::CENTER_CENTER,
+                    glyph,
+                    egui::FontId::new(NOTE_PX, family),
+                    color,
+                );
+            }
         }
         // The selected annotation: each marked line, or its box (unless the arrow has
         // framed it above).

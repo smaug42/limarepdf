@@ -14,8 +14,10 @@ LimarePDF draws pages with [hayro](https://crates.io/crates/hayro) 0.8, a pure-R
 - annotations with the NoView flag are hidden, in the desktop app and `limarepdf-cli render` (LimarePDF marks them Hidden before
   drawing, since hayro ignores NoView);
 - annotations without an appearance stream: hayro draws nothing for them, so LimarePDF draws its own for Highlight,
-  Underline, StrikeOut, Squiggly, Text (notes), FreeText, Square, Circle, Line, Polygon, PolyLine and Ink, in the
-  copy it renders and prints, not in the file (`crates/limarepdf-core/tests/annots.rs`);
+  Underline, StrikeOut, Squiggly, Text (notes, with the seven standard icons), FreeText (with callout lines),
+  Square, Circle, Line (with leader lines), Polygon, PolyLine, Ink, Stamp (the stamp's name in a coloured frame),
+  Caret and FileAttachment (the four standard icons), with cloudy borders on Square, Circle, Polygon and FreeText,
+  in the copy it renders and prints, not in the file (`crates/limarepdf-core/tests/annots.rs`);
 - password-protected files with all four ciphers.
 
 ### Compared with poppler
@@ -54,9 +56,10 @@ and notes the box of each raster image, clipped to the clip in force. The colour
 
 - Knockout groups are drawn as non-knockout.
 - Non-isolated groups are drawn as isolated.
-- Other annotation types without an appearance stream (Stamp, Caret, FileAttachment and the rest) are not drawn.
-  For those LimarePDF draws, cloudy borders, callout lines, leader lines, rich text and the note icon's shape (one icon
-  for every kind of note) are not reproduced.
+- Other annotation types without an appearance stream (Sound, Movie, Screen, 3D and the like) are not drawn. For
+  those LimarePDF draws: text boxes use Helvetica and ignore rich-text styling; line captions (`/Cap`) and a caret's
+  paragraph symbol (`/Sy /P`) are left out; a cloudy border's bumps follow Acrobat's sizes only roughly; and a stamp
+  with no drawing shows its name, not Acrobat's artwork for it.
 
 Other PDF features have not been tested by LimarePDF.
 

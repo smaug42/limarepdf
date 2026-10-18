@@ -2,7 +2,7 @@
 //! flattening them into the page content. Links, form widgets and popups have their own
 //! code and are not listed here.
 
-use crate::annot_ap::DRAWN;
+use crate::annot_ap::{drawable, DRAWN};
 use crate::doc::decode_text;
 use crate::form_flatten::Flat;
 use crate::form_write::parse_da;
@@ -330,7 +330,16 @@ impl Pdf {
         let ids = self.page_ids();
         let pages = self.page_list(pages)?;
         let on: Vec<ObjectId> = pages.iter().map(|&i| ids[i]).collect();
-        let missing = self.missing_appearances(&on);
+        // File attachments stay annotations, so they keep having no drawing.
+        let missing: Vec<ObjectId> = self
+            .missing_appearances(&on)
+            .into_iter()
+            .filter(|&id| {
+                self.doc.get_dictionary(id).is_ok_and(|d| {
+                    d.get(b"Subtype").and_then(|o| o.as_name()).ok() != Some(b"FileAttachment")
+                })
+            })
+            .collect();
         self.draw_annotations(&missing);
         let mut drawn = 0;
         for page in on {
@@ -352,7 +361,7 @@ impl Pdf {
                 let drawn = d
                     .get(b"Subtype")
                     .and_then(|o| o.as_name())
-                    .is_ok_and(|s| DRAWN.contains(&s));
+                    .is_ok_and(drawable);
                 let has_ap = d
                     .get(b"AP")
                     .ok()

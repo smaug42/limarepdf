@@ -88,6 +88,11 @@ pub fn icons() -> FontFamily {
     FontFamily::Name("icons".into())
 }
 
+/// Like [`icons`], with Phosphor's filled glyphs: the same code points, drawn solid.
+pub fn icons_fill() -> FontFamily {
+    FontFamily::Name("icons-fill".into())
+}
+
 /// An icon glyph in the icon family.
 pub fn icon(glyph: &str) -> RichText {
     RichText::new(glyph).family(icons())
@@ -122,7 +127,13 @@ fn fonts() -> FontDefinitions {
     let mut icons_list = f.families[&FontFamily::Proportional].clone();
     icons_list.retain(|n| n != "phosphor");
     icons_list.insert(0, "phosphor".into());
-    f.families.insert(icons(), icons_list);
+    f.families.insert(icons(), icons_list.clone());
+    f.font_data.insert(
+        "phosphor-fill".into(),
+        egui_phosphor::Variant::Fill.font_data().into(),
+    );
+    icons_list[0] = "phosphor-fill".into();
+    f.families.insert(icons_fill(), icons_list);
     f
 }
 

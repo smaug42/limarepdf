@@ -28,7 +28,7 @@ const PAD: f32 = 8.0;
 const FRAME: f32 = 2.5;
 const CORNER: f32 = 6.0;
 /// Helvetica's capital height, as a share of the text size.
-const CAP: f32 = 0.72;
+pub(crate) const CAP: f32 = 0.72;
 /// The longer side of a picture stamp at its own size, in points.
 const PICTURE: f32 = 160.0;
 /// Control-point distance for a quarter circle drawn as a Bézier curve.
@@ -221,7 +221,7 @@ fn name_and_date_line(author: &str) -> String {
     }
 }
 
-fn bold_width(s: &str, size: f32) -> f32 {
+pub(crate) fn bold_width(s: &str, size: f32) -> f32 {
     s.chars()
         .map(|c| std14::width("Helvetica-Bold", c).unwrap_or(611.0))
         .sum::<f32>()
@@ -321,7 +321,7 @@ impl Stamp<'_> {
 }
 
 /// A rectangle with rounded corners, as a path.
-fn rounded(r: [f32; 4], c: f32) -> String {
+pub(crate) fn rounded(r: [f32; 4], c: f32) -> String {
     let [x0, y0, x1, y1] = r;
     let k = c * (1.0 - KAPPA);
     format!(

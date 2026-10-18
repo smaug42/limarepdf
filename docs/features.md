@@ -47,7 +47,7 @@ available.
 | About window | Done | Version (copyable for bug reports), links, contributors, credits; "Made in Canada". [Details](gui.md#look-and-feel) |
 | Light and dark themes | Done | Follows the system, or chosen with the top bar's theme button; remembered between runs |
 | Page colour modes | Done | View > Page colours: Normal, Automatic (dark pages with the dark theme), Dark, High contrast, Sepia. Pictures keep their colours unless "Recolour pictures too" is on. On screen only: the file, printing and exports keep their colours. See [Rendering](rendering.md#page-colour-modes) |
-| Rendering | Partial | Some transparency groups are drawn wrongly. Annotations without a drawing of their own are drawn by LimarePDF for the common types only. [Details](rendering.md) |
+| Rendering | Partial | Some transparency groups are drawn wrongly. Fonts that aren't embedded use the standard fonts. Annotations without a drawing of their own are drawn by LimarePDF, except media and 3D ones, without rich text or line captions. [Details](rendering.md) |
 | Search | Done | Phrases across line breaks, and words hyphenated at a line end, are found and highlighted. [Details](search-and-text.md) |
 | Select and copy text | Done | With the default read tool; across pages, scrolling while you drag; in the order on the page, not the file's drawing order; includes recognised text |
 | Print or save selected text | Done | As the pages look, full width, cut down to the selected lines, or as plain text in Helvetica (Western European characters only); also saves a .txt file |
@@ -114,13 +114,11 @@ pool of features other PDF tools have is in [ideas.md](ideas.md).
 
 ### Rendering
 
-In progress. Failed pages and missing parts are now reported, high zoom is drawn in tiles up to 6400%, and an
-opt-in check compares LimarePDF with poppler over about 1,100 public test PDFs ([results](rendering.md#compared-with-poppler)).
-Still to come, before Rendering can be called done:
+In progress. Failed pages and missing parts are now reported, high zoom is drawn in tiles up to 6400%, an
+opt-in check compares LimarePDF with poppler over about 1,100 public test PDFs ([results](rendering.md#compared-with-poppler)),
+and annotations without a drawing of their own are drawn for every common type. Still to come, before Rendering can
+be called done:
 
-- **The remaining annotation drawings** for annotations without their own: stamps (the stamp's name in a coloured
-  box), Caret and FileAttachment icons, the seven standard note icons, cloudy borders, text box callout lines and
-  line leader lines. On screen and in printing only, as now.
 - **Installed fonts for fonts that aren't embedded**, looked up by name, then by family and style, then by script
   for Chinese, Japanese and Korean text. The standard fonts keep their bundled versions.
 - **hayro's own gaps** (knockout and non-isolated transparency groups, thin-line snapping, some shadings, CMaps that

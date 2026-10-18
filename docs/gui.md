@@ -84,9 +84,11 @@ line of the comment; hover over it for the type, date and the whole comment.
   and so do file attachments. Undo brings them back.
 
 Some files store annotations without a drawing, leaving each reader to draw them. LimarePDF draws highlights,
-underlines, strike-outs, squiggly underlines, notes, text boxes, rectangles, ellipses, lines, polygons and
-freehand drawings itself, on screen and when printing. The file isn't changed by this; flattening saves LimarePDF's
-drawing into it. Text boxes are drawn in Helvetica, ignoring any rich-text styling.
+underlines, strike-outs, squiggly underlines, notes, text boxes, rectangles, ellipses, lines, polygons, freehand
+drawings, stamps, carets and file attachment icons itself, on screen and when printing, including cloudy borders,
+text box callout lines and line leader lines. The file isn't changed by this; flattening saves LimarePDF's drawing
+into it (file attachments stay as they are). Text boxes are drawn in Helvetica, ignoring any rich-text styling; a
+stamp shows its name in a coloured frame. [Rendering](rendering.md#known-to-be-wrong) lists what isn't reproduced.
 
 ### Marking text
 
@@ -116,8 +118,9 @@ background (none at first) and border, before you start.
 
 - **Note:** click on the page. A comment box opens beside the note; type, then click Done (or press Ctrl+Enter).
   Cancel or Esc drops it, and so does Done with nothing typed. Hovering over a note shows its comment. Notes
-  show at the same size on screen whatever the zoom, with LimarePDF's own icon in the note's colour (also for notes other
-  programs made with a different icon); printed, they keep their own drawing, 20 points across for LimarePDF's.
+  show at the same size on screen whatever the zoom, in the note's colour and shaped like its icon: one of the
+  seven standard ones (Comment, which LimarePDF's notes use, Key, Note, Help, New paragraph, Paragraph and Insert),
+  or Note for any other; printed, they keep their own drawing, or LimarePDF's, 20 points across.
 - **Text box:** drag a box, or click for a default size, then type straight onto the page. Enter starts a new
   line. Click outside the box or press Ctrl+Enter to finish; Esc drops it. Text boxes use Helvetica, so characters
   outside Latin-1 come out as `?`. When you finish, the box grows downward to fit its text, keeping its width; it

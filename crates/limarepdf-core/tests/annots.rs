@@ -46,8 +46,7 @@ fn add(p: &mut Pdf, page: usize, subtype: &str, rect: [f32; 4], extra: Dictionar
 /// Pixels that are not white inside `r` (left, top, right, bottom in displayed points;
 /// 1 px per point), and how many of them are dark.
 fn ink(p: &mut Pdf, r: [usize; 4]) -> (usize, usize) {
-    let hp = render::load(p.render_snapshot().unwrap(), None).unwrap();
-    let bmp = Renderer::new(&hp).render(0, 1.0).unwrap();
+    let bmp = shot(p);
     let (mut any, mut dark) = (0, 0);
     for y in r[1]..r[3].min(bmp.height) {
         for x in r[0]..r[2].min(bmp.width) {
@@ -62,6 +61,209 @@ fn ink(p: &mut Pdf, r: [usize; 4]) -> (usize, usize) {
         }
     }
     (any, dark)
+}
+
+/// The first page as printed and exported, 1 px per point.
+fn shot(p: &mut Pdf) -> render::Bitmap {
+    let hp = render::load(p.render_snapshot().unwrap(), None).unwrap();
+    Renderer::new(&hp).render(0, 1.0).unwrap()
+}
+
+/// The pixel at (`x`, `y`), in displayed points.
+fn px(b: &render::Bitmap, x: usize, y: usize) -> [u8; 3] {
+    let i = (y * b.width + x) * 4;
+    [b.rgba[i], b.rgba[i + 1], b.rgba[i + 2]]
+}
+
+/// Pixels inside `r` (as for [`ink`]) where `want` holds.
+fn count(b: &render::Bitmap, r: [usize; 4], want: impl Fn([u8; 3]) -> bool) -> usize {
+    (r[1]..r[3])
+        .flat_map(|y| (r[0]..r[2]).map(move |x| (x, y)))
+        .filter(|&(x, y)| want(px(b, x, y)))
+        .count()
+}
+
+fn reddish(c: [u8; 3]) -> bool {
+    c[0] > 120 && c[1] < 90 && c[2] < 90
+}
+
+#[test]
+fn stamps_carets_and_attachments_without_a_drawing_are_drawn() {
+    let name = |n: &str| Object::Name(n.as_bytes().to_vec());
+    let kinds: Vec<(&str, Dictionary)> = vec![
+        ("Stamp", dictionary! { "Name" => name("NotApproved") }),
+        ("Stamp", dictionary! {}),
+        ("Caret", dictionary! {}),
+        ("FileAttachment", dictionary! {}),
+        (
+            "FileAttachment",
+            dictionary! { "Name" => name("Paperclip") },
+        ),
+        ("FileAttachment", dictionary! { "Name" => name("Graph") }),
+        ("FileAttachment", dictionary! { "Name" => name("Tag") }),
+    ];
+    for (sub, extra) in kinds {
+        let mut p = page();
+        add(&mut p, 0, sub, [100.0, 60.0, 200.0, 140.0], extra);
+        let (shown, _) = ink(&mut p, [100, 60, 200, 140]);
+        assert!(shown > 100, "{sub} not drawn: {shown}");
+        let (outside, _) = ink(&mut p, [0, 0, 300, 55]);
+        assert_eq!(outside, 0, "{sub} drawn outside its rectangle");
+    }
+    // NotApproved is red, and its wording fills most of the width.
+    let mut p = page();
+    add(
+        &mut p,
+        0,
+        "Stamp",
+        [20.0, 80.0, 280.0, 120.0],
+        dictionary! { "Name" => name("NotApproved") },
+    );
+    let b = shot(&mut p);
+    assert!(count(&b, [20, 80, 280, 120], reddish) > 500);
+    assert!(
+        count(&b, [40, 90, 60, 110], reddish) > 0,
+        "wording too narrow"
+    );
+}
+
+#[test]
+fn the_seven_note_icons_all_differ() {
+    let names = [
+        "Comment",
+        "Key",
+        "Note",
+        "Help",
+        "NewParagraph",
+        "Paragraph",
+        "Insert",
+    ];
+    let mut seen: Vec<Vec<[u8; 3]>> = Vec::new();
+    for n in names {
+        let mut p = page();
+        add(
+            &mut p,
+            0,
+            "Text",
+            [10.0, 170.0, 30.0, 190.0],
+            dictionary! { "Name" => Object::Name(n.as_bytes().to_vec()) },
+        );
+        let b = shot(&mut p);
+        let icon: Vec<[u8; 3]> = (10..30)
+            .flat_map(|y| (10..30).map(move |x| (x, y)))
+            .map(|(x, y)| px(&b, x, y))
+            .collect();
+        assert!(!seen.contains(&icon), "{n} looks like another icon");
+        seen.push(icon);
+    }
+}
+
+#[test]
+fn leader_lines_move_a_line_out_from_its_ends() {
+    let mut p = page();
+    // From left to right at user y 100, with leaders 20 pt long: the line is drawn
+    // at user y 120 (displayed 80), and the leaders go down to the ends and 5 pt past.
+    add(
+        &mut p,
+        0,
+        "Line",
+        [80.0, 80.0, 220.0, 140.0],
+        dictionary! {
+            "C" => nums(&[0.0, 0.0, 0.0]),
+            "L" => nums(&[100.0, 100.0, 200.0, 100.0]),
+            "LL" => 20,
+            "LLE" => 5,
+        },
+    );
+    let (moved, _) = ink(&mut p, [120, 78, 180, 82]);
+    assert!(moved > 50, "line not at its leaders' tips: {moved}");
+    let (at_ends, _) = ink(&mut p, [120, 98, 180, 102]);
+    assert_eq!(at_ends, 0, "line still between its ends");
+    let (leader, _) = ink(&mut p, [98, 80, 102, 100]);
+    assert!(leader > 10, "no leader line: {leader}");
+    let (past, _) = ink(&mut p, [98, 70, 102, 78]);
+    assert!(past > 0, "no leader extension");
+}
+
+#[test]
+fn a_cloudy_border_has_bumps() {
+    let shape = |be: Option<Dictionary>| {
+        let mut p = page();
+        let mut d = dictionary! { "C" => nums(&[1.0, 0.0, 0.0]) };
+        if let Some(be) = be {
+            d.set("BE", be);
+        }
+        add(&mut p, 0, "Square", [100.0, 60.0, 200.0, 140.0], d);
+        shot(&mut p)
+    };
+    let plain = shape(None);
+    let cloudy = shape(Some(dictionary! { "S" => "C", "I" => 1 }));
+    // A plain square is a straight edge; the cloud's bumps leave the middle of each side
+    // and stay inside the rectangle.
+    let edge = |b: &render::Bitmap| count(b, [100, 60, 200, 61], reddish);
+    assert!(edge(&plain) > 80);
+    assert!(edge(&cloudy) < 60, "{}", edge(&cloudy));
+    assert!(count(&cloudy, [100, 60, 200, 140], reddish) > 200);
+    assert_eq!(count(&cloudy, [0, 0, 300, 59], reddish), 0);
+    // Intensity 0 is no cloud.
+    let flat = shape(Some(dictionary! { "S" => "C", "I" => 0 }));
+    assert_eq!(edge(&flat), edge(&plain));
+}
+
+#[test]
+fn a_text_box_callout_points_from_the_box() {
+    let mut p = page();
+    // The box is the right part of the rectangle's bottom; the callout runs from its
+    // left edge up to the top left, ending in an arrow.
+    add(
+        &mut p,
+        0,
+        "FreeText",
+        [20.0, 40.0, 280.0, 160.0],
+        dictionary! {
+            "Contents" => text("MMMM"),
+            "DA" => text("/Helv 20 Tf 1 0 0 rg"),
+            "IT" => "FreeTextCallout",
+            "RD" => nums(&[120.0, 0.0, 0.0, 60.0]),
+            "CL" => nums(&[40.0, 150.0, 90.0, 120.0, 140.0, 70.0]),
+            "LE" => "OpenArrow",
+        },
+    );
+    let b = shot(&mut p);
+    // Displayed y = 200 - user y. The text sits in the box, not at the rectangle's top.
+    assert!(
+        count(&b, [140, 100, 280, 160], reddish) > 100,
+        "no text in the box"
+    );
+    assert_eq!(
+        count(&b, [140, 40, 280, 95], reddish),
+        0,
+        "box not moved by /RD"
+    );
+    assert!(
+        count(&b, [35, 45, 50, 60], reddish) > 0,
+        "no callout at its point"
+    );
+    assert!(
+        count(&b, [85, 75, 95, 85], reddish) > 0,
+        "callout misses its knee"
+    );
+}
+
+#[test]
+fn flattening_leaves_file_attachments_without_a_drawing() {
+    let mut p = page();
+    let id = add(
+        &mut p,
+        0,
+        "FileAttachment",
+        [10.0, 10.0, 30.0, 30.0],
+        dictionary! {},
+    );
+    p.flatten_annotations(None).unwrap();
+    let d = p.doc.get_dictionary(id).unwrap();
+    assert!(!d.has(b"AP"));
+    assert_eq!(p.annotations().len(), 1);
 }
 
 #[test]
