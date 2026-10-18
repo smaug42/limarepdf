@@ -123,7 +123,7 @@ Rendering can be called done:
 
 - **hayro's own gaps** (knockout and non-isolated transparency groups, thin-line snapping, some shadings, CMaps that
   use other CMaps, and installed fonts for other fonts that aren't embedded, which hayro doesn't ask for yet),
-  reported to hayro with test files.
+  listed in [Known to be wrong](rendering.md#known-to-be-wrong); not yet reported to hayro.
 
 ### XFA forms
 

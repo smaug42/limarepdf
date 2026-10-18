@@ -55,8 +55,20 @@ and notes the box of each raster image, clipped to the clip in force. The colour
 
 ## Known to be wrong
 
+These come from hayro 0.8, the library that draws the pages:
+
+- Very thin lines aren't snapped to the pixel grid, so a hairline that falls between two rows of pixels is drawn as
+  two light-grey rows instead of one solid row (poppler and Acrobat snap them).
+- Plain fonts that aren't embedded (not CID fonts) are drawn with one of the standard fonts, never an installed
+  font; symbol fonts such as Wingdings come out as letters (see [Fonts that aren't embedded](#fonts-that-arent-embedded)).
 - Knockout groups are drawn as non-knockout.
-- Non-isolated groups are drawn as isolated.
+- Non-isolated groups are drawn as isolated, which changes colours where a blend mode such as Multiply is used
+  inside the group.
+- Shading patterns that carry their own graphics state, and CMaps built on other CMaps, aren't supported.
+- Damaged files whose page list is broken can't be opened, even where poppler repairs them.
+
+Other gaps:
+
 - Other annotation types without an appearance stream (Sound, Movie, Screen, 3D and the like) are not drawn. For
   those LimarePDF draws: text boxes use Helvetica and ignore rich-text styling; line captions (`/Cap`) and a caret's
   paragraph symbol (`/Sy /P`) are left out; a cloudy border's bumps follow Acrobat's sizes only roughly; and a stamp
