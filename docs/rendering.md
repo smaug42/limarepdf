@@ -18,6 +18,23 @@ LimarePDF draws pages with [hayro](https://crates.io/crates/hayro) 0.8, a pure-R
   copy it renders and prints, not in the file (`crates/limarepdf-core/tests/annots.rs`);
 - password-protected files with all four ciphers.
 
+### Compared with poppler
+
+An opt-in check draws about 1,100 public test PDFs (the pdf.js and PDFBox test files hayro is tested on) with
+LimarePDF and with poppler, and lists the pages that differ beyond anti-aliasing, with pictures side by side
+([how to run it](testing.md)). These test files were collected from bug reports, so they are much harder than
+everyday documents. The first run (2026-10-17, hayro 0.8.0, poppler 26.08) drew 1,311 pages from 1,089 files:
+
+- 1,079 pages match apart from anti-aliasing (0.5% of pixels or fewer different);
+- 220 pages differ by more than that, 23 of them by more than 10%. Many of the worst are poppler's mistakes, such as
+  a grey background, garbled scans or striped photos where LimarePDF's page looks right. Differences that are
+  LimarePDF's include very thin lines drawn light grey where poppler draws them solid, and fonts that aren't
+  embedded (on 39 pages LimarePDF reported a font it couldn't draw);
+- 7 damaged files that poppler repairs can't be opened by LimarePDF (their page list is broken), 2 files fail in
+  both, and a few pages poppler can't draw are drawn by LimarePDF.
+
+None of the files crashed LimarePDF or took longer than a minute to draw.
+
 ## Page colour modes
 
 The app's Dark, High contrast and Sepia page colours (View > Page colours) are worked out on the drawn page, pixel

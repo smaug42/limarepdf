@@ -114,11 +114,10 @@ pool of features other PDF tools have is in [ideas.md](ideas.md).
 
 ### Rendering
 
-In progress. Failed pages and missing parts are now reported, and high zoom is drawn in tiles up to 6400%. Still to
-come, before Rendering can be called done:
+In progress. Failed pages and missing parts are now reported, high zoom is drawn in tiles up to 6400%, and an
+opt-in check compares LimarePDF with poppler over about 1,100 public test PDFs ([results](rendering.md#compared-with-poppler)).
+Still to come, before Rendering can be called done:
 
-- **A comparison with poppler:** a script and an opt-in test that draw a fetched set of public test PDFs with both
-  and list the pages that differ beyond anti-aliasing, so the remaining gaps are measured.
 - **The remaining annotation drawings** for annotations without their own: stamps (the stamp's name in a coloured
   box), Caret and FileAttachment icons, the seven standard note icons, cloudy borders, text box callout lines and
   line leader lines. On screen and in printing only, as now.
