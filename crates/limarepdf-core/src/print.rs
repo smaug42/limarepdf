@@ -1,7 +1,8 @@
 //! Printing.
 //!
-//! Linux and macOS print through CUPS (`lp` and `lpstat`). The selected pages go to
-//! CUPS as a PDF, which CUPS renders with its own engine. With
+//! Linux and macOS print through CUPS (`lp`, `lpstat` and `lpoptions`). The selected pages
+//! go to CUPS as a PDF on the printer's default paper, which CUPS renders with its own
+//! engine. With
 //! [`PrintOptions::as_image`], LimarePDF renders the pages itself and sends a PDF of page
 //! images instead, so the output matches the screen.
 //!
@@ -137,13 +138,40 @@ fn cups_printers() -> Result<Vec<Printer>> {
     Ok(v)
 }
 
-/// Arguments for `lp`; the document is read from standard input.
-pub fn lp_args(o: &PrintOptions) -> Vec<String> {
+/// The printer's default paper size, as `lpoptions -l` marks it (`Letter`, `A4`), or
+/// `None` when it can't be found. Some printer setups print every page blurred when a
+/// job doesn't name its paper, even though the printer has a default (other apps name it).
+#[cfg(not(windows))]
+pub fn default_paper(printer: Option<&str>) -> Option<String> {
+    let out = match printer {
+        Some(p) => cups("lpoptions", &["-p", p, "-l"]),
+        None => cups("lpoptions", &["-l"]),
+    };
+    paper_in_lpoptions(&out.ok()?)
+}
+
+/// The marked choice of the `PageSize` line in `lpoptions -l` output, such as
+/// "PageSize/Media Size: A5 *Letter A4". A custom size is left to the printer.
+pub fn paper_in_lpoptions(text: &str) -> Option<String> {
+    let line = text.lines().find(|l| l.starts_with("PageSize/"))?;
+    let (_, choices) = line.split_once(':')?;
+    let paper = choices
+        .split_whitespace()
+        .find_map(|c| c.strip_prefix('*'))?;
+    (!paper.starts_with("Custom")).then(|| paper.to_string())
+}
+
+/// Arguments for `lp`, with `paper` (from [`default_paper`]) named when known; the
+/// document is read from standard input.
+pub fn lp_args(o: &PrintOptions, paper: Option<&str>) -> Vec<String> {
     let mut a = Vec::new();
     if let Some(p) = &o.printer {
         a.extend(["-d".into(), p.clone()]);
     }
     a.extend(["-n".into(), o.copies.max(1).to_string()]);
+    if let Some(paper) = paper {
+        a.extend(["-o".into(), format!("media={paper}")]);
+    }
     if o.copies > 1 {
         a.extend(["-o".into(), "collate=true".into()]);
     }
@@ -207,6 +235,15 @@ impl Pdf {
         }
         let mut out = self.extract(pages)?;
         out.encryption = None;
+        // Form fields go in as drawings: some CUPS setups drop fields without drawing them,
+        // so filled values would print empty.
+        out.flatten_form_for_print()?;
+        // Each page's content leaves the graphics state as it found it, so annotations that
+        // CUPS draws into the page after it aren't turned by a transformation the page set
+        // and never undid (some CUPS versions add them without restoring the state).
+        for page in out.page_ids() {
+            out.wrap_contents(page, None, None)?;
+        }
         out.to_bytes()
     }
 
@@ -221,7 +258,8 @@ impl Pdf {
         #[cfg(not(windows))]
         {
             let data = self.print_data(pages, opts.as_image)?;
-            send("lp", &lp_args(opts), &data)
+            let paper = default_paper(opts.printer.as_deref());
+            send("lp", &lp_args(opts, paper.as_deref()), &data)
         }
     }
 }

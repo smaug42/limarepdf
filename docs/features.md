@@ -37,7 +37,7 @@ available.
 
 | Area | Status | Notes |
 | --- | --- | --- |
-| Tabs, thumbnails, opening by drag and drop | Done | |
+| Tabs, thumbnails, opening by drag and drop | Done | Dropping files doesn't work in Linux Wayland sessions yet ([workaround](gui.md#opening-files)) |
 | Recent files | Done | Start screen and ☰ > File > Open recent; 10 files, kept on your computer only |
 | Notices about the document | Done | Password-protected, scanned pages, form fields, large files. [Details](gui.md#notices-about-the-document) |
 | Zoom, fit width, continuous scrolling, page navigation | Done | Pages fit the window's width by default and follow resizing; zooming turns that off. Zoom from 10% to 6400%, drawn in tiles at high zoom so pages stay sharp. Single-page and facing-page layouts (top-bar button or View > Page layout; cover page alone or paired), per document, following the document's own preference when it has one |
@@ -64,7 +64,7 @@ available.
 | Optimising scanned pages | Partial | Pages that are one image. [Details](scanning-and-ocr.md#optimising-scanned-pages) |
 | OCR | Partial | Latin script; built-in recognition model. [Details](scanning-and-ocr.md#recognising-text-ocr) |
 | Export pages as images, export text | Done | [Details](export-and-printing.md) |
-| Printing | Partial | No paper size or scaling options. Tried on Windows; not yet with a real printer on Linux or macOS. [Details](export-and-printing.md#printing) |
+| Printing | Partial | No paper size or scaling options. Tried on paper on Linux (HP LaserJet, CUPS): pages, mixed sizes, a turned page, comments and form values print correctly. On Windows only the print dialog has been tried, and nothing has been printed on macOS. [Details](export-and-printing.md#printing) |
 | Driving scanners | No | Not planned: scan with your system's tool and import the images |
 | Export to Word, Excel, CSV | No | |
 | Annotations and comments | Partial | Shown (LimarePDF draws the common types when the file has no drawing), listed in the Comments tab with replies, deleted, flattened; `limarepdf-cli annot list\|remove\|flatten`. Highlight, underline, strike out and squiggly-underline selected text; add sticky notes and text boxes (Helvetica, Latin-1 only), rectangles, ellipses, lines with an optional arrowhead, freehand pen drawings and stamps; reply to any annotation; select any annotation to change its colour, opacity and comment (and a shape's width, fill and arrowhead), and move or resize it with the arrow; drag a line's ends to turn it, and turn freehand drawings with their rotate handle. Not yet: turning rectangles, ellipses and text boxes (see below), polygons, measuring, attachments, XFDF. [Details](gui.md#shapes-lines-and-drawings) |
@@ -126,7 +126,13 @@ pool of features other PDF tools have is in [ideas.md](ideas.md).
   unsaved changes, from private copies kept while you work. Your own files are never written by it: a recovered
   document opens as a new unsaved document.
 - **Acceptance checks** of everyday workflows by hand, in other readers and on Windows and macOS, as listed in
-  [Testing](testing.md#acceptance-checks).
+  [Testing](testing.md#acceptance-checks). They have been run on Linux.
+- **A memory limit for undo:** each undo step keeps a whole copy of the document, so 20 edits on a large scan
+  can take gigabytes ([measured](performance.md#memory-in-the-desktop-app)). The oldest steps would go first.
+- **Some protected files with an empty password** (RC4, with a non-standard password entry) ask for a password
+  that other readers don't need.
+- **Very complex pages:** one test page with 73,000 drawn paths takes about 10 GB of memory to draw at 150 dpi
+  ([Performance](performance.md)).
 
 ### Rendering
 

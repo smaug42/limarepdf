@@ -47,6 +47,20 @@
   while the app tried again on every frame.
 - Zooming in far on a large page could close the app, because the page was drawn as one picture bigger than the
   graphics card takes. Pages shown more than 4096 pixels a side are now drawn in tiles.
+- Printing on Linux and macOS could come out blurred and unreadable: some printer setups (seen with an HP LaserJet
+  through CUPS) need the job to name the paper size, as other apps' jobs do. Each job now names the printer's
+  default paper.
+- Comments could print upside down in the bottom half of pages whose content turns the page and doesn't turn it
+  back, as some PDF makers write them: CUPS adds the comments after the page's content. Each page sent to the
+  printer now puts the drawing state back at its end.
+- Filled-in form fields could print empty: some CUPS setups remove a form's fields without drawing them. The copy
+  sent to the printer now has the fields drawn into its pages (those meant for printing; the document itself is
+  unchanged).
+
+### Testing
+
+- Correction: earlier notes (0.4.0) said printing on Windows had been tried and works. Only the print dialog was
+  tried; nothing has yet been printed on paper from Windows.
 
 ## [0.7.1] - 2026-10-17
 

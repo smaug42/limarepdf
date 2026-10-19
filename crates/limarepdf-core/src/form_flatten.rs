@@ -9,6 +9,8 @@ use std::collections::HashSet;
 
 /// Annotation flag (`/F`) for an annotation that is not shown.
 const HIDDEN: i64 = 1 << 1;
+/// Annotation flag (`/F`) for an annotation that is printed.
+const PRINT: i64 = 1 << 2;
 const MAX_DEPTH: usize = 32;
 
 /// What flattening a page does with one of its annotations.
@@ -30,6 +32,20 @@ fn flat_widget(_: &Pdf, d: &Dictionary) -> Flat {
     }
 }
 
+/// Printing draws the widgets meant for print, drops the others (buttons such as Print
+/// Form usually), and keeps everything else.
+fn print_widget(pdf: &Pdf, d: &Dictionary) -> Flat {
+    if d.get(b"Subtype").and_then(|o| o.as_name()).ok() != Some(b"Widget") {
+        return Flat::Keep;
+    }
+    let flags = d.get(b"F").ok().and_then(|o| pdf.int_value(o)).unwrap_or(0);
+    if flags & PRINT != 0 {
+        Flat::Draw
+    } else {
+        Flat::Drop
+    }
+}
+
 impl Pdf {
     /// Draw the form's widgets into the pages' content as they look now and remove them,
     /// so the values can no longer be changed. `pages` (zero-based) limits this to some
@@ -37,6 +53,21 @@ impl Pdf {
     /// no widgets are removed, and the form itself once none are left. Hidden widgets are
     /// removed without being drawn. Returns how many widgets were drawn.
     pub fn flatten_form(&mut self, pages: Option<&[usize]>) -> Result<usize> {
+        self.flatten_widgets(pages, flat_widget)
+    }
+
+    /// Flatten the whole form for printing: widgets with the Print flag are drawn, the
+    /// others removed. Some CUPS setups remove a form's fields without drawing them, so
+    /// the copy sent to the printer has none left.
+    pub(crate) fn flatten_form_for_print(&mut self) -> Result<usize> {
+        self.flatten_widgets(None, print_widget)
+    }
+
+    fn flatten_widgets(
+        &mut self,
+        pages: Option<&[usize]>,
+        which: fn(&Pdf, &Dictionary) -> Flat,
+    ) -> Result<usize> {
         let ids = self.page_ids();
         let whole = pages.is_none();
         let pages = self.page_list(pages)?;
@@ -47,13 +78,7 @@ impl Pdf {
         let mut removed = HashSet::new();
         let mut drawn = 0;
         for i in pages {
-            drawn += self.flatten_page(
-                ids[i],
-                flat_widget,
-                dr.as_ref(),
-                "LimareField",
-                &mut removed,
-            )?;
+            drawn += self.flatten_page(ids[i], which, dr.as_ref(), "LimareField", &mut removed)?;
         }
         if whole {
             self.remove_form()?;

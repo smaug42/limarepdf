@@ -4,8 +4,8 @@
 
 | Platform | Status |
 | --- | --- |
-| Linux x86_64 | Built and tested; the command line run on real PDFs; the desktop app used by hand and checked by screenshot under a virtual X server, including the narrow-window layout |
-| Windows x86_64 | Built and tested by continuous integration (`.github/workflows/ci.yml`, GitHub Actions), which also packages all four platforms. Printing, the only platform-specific code, has been tried by hand and works |
+| Linux x86_64 | Built and tested; the command line run on real PDFs; the desktop app used by hand and checked by screenshot under a virtual X server, including the narrow-window layout; the acceptance checks below run, including printing on paper |
+| Windows x86_64 | Built and tested by continuous integration (`.github/workflows/ci.yml`, GitHub Actions), which also packages all four platforms. Printing, the only platform-specific code, has been tried by hand up to the print dialog; nothing has been printed on paper |
 | macOS (Intel and Apple Silicon) | Built and tested by continuous integration. Not run by hand |
 
 ## Automated tests
@@ -108,21 +108,41 @@ Each feature page says what was not tested, under "How this was tested".
 
 The automated tests cover the library and the command line. These checks cover what they can't: the desktop app used
 end to end, files opened in other readers, and other platforms. They are run by hand on public or made-up files,
-before a release and after a change to the area a row names. A row's last run is noted under it; no row has been run as
-a whole yet.
+before a release and after a change to the area a row names. The Status column holds each row's last result: Pass,
+Fail, Blocked or Not run, with the date and platform. "Earlier run" means the row passed when its feature was built,
+before this table had a Status column, and wasn't run again on the date given.
 
-| Workflow | Already covered | Check by hand |
-| --- | --- | --- |
-| Open, move around, search, select, copy | Text reading, search and selection rules (`edit.rs`, the app's unit tests) | Open a text PDF, a scan with recognised text and a Chinese, Japanese or Korean file by drag and drop, Open recent and the command line; go to a page; search a phrase that crosses a line; select across a page break and paste into a text editor |
-| Edit, undo and redo, save, reopen | Content editing (`edit.rs`), saving (`save.rs`) | Edit a line of text, move a picture, delete a shape; undo everything, redo everything; save, reopen, and compare the page in another reader |
-| Comments and markup | `annots.rs` | Add one of each kind and a reply, save, reopen in LimarePDF, Firefox and Acrobat Reader: places, colours, text and replies match |
-| Forms | `form_fill.rs` (renders), poppler and Ghostscript | Fill every kind of field, save, reopen; open in Acrobat Reader: values and looks match; flatten and check again |
-| Pages: merge, split, reorder, rotate, crop, export | `integration.rs`, `export.rs`, the command line | Merge two files, split one, drag pages into a new order, turn and crop one; save and reopen; export pages as images and text |
-| Printing | `print.rs`, with a stand-in for `lp` | Print a file with mixed page sizes and a turned page: size, orientation and placement on paper; comments and form values printed |
-| Digital signatures | `signatures.rs`, `signing.rs`, `signature_changes.rs`, pdfsig and OpenSSL | Check a signed sample; sign, certify, add a comment and save; reopen and check; then the Acrobat round trips below |
-| Redaction, removing hidden information | `redact.rs`, `sanitise.rs`, the after-check | Redact a phrase and part of a picture, save, then search the output with `pdftotext` and another reader's search; remove hidden information and check `pdfinfo -meta` |
-| Damaged files | `repair.rs`, the corpus | Open a damaged file: the notice shows; Save asks; Save as writes a new file; the original's checksum is unchanged |
-| Errors | `guard()` and `run_command` unit tests, a tab's error page | Open a cut-short file and a file with a broken page: a message, the app stays open, other tabs keep their unsaved changes |
+| Workflow | Already covered | Check by hand | Status |
+| --- | --- | --- | --- |
+| Open, move around, search, select, copy | Text reading, search and selection rules (`edit.rs`, the app's unit tests) | Open a text PDF, a scan with recognised text and a Chinese, Japanese or Korean file by drag and drop, Open recent and the command line; go to a page; search a phrase that crosses a line; select across a page break and paste into a text editor | Pass with a known limit, 2026-10-18, Linux (KDE, Wayland): dropping a file on the app does nothing on Wayland (the windowing library has no file drops there; documented in gui.md with a workaround). The rest passed. Noted, not a failure: a phrase that runs across a page break isn't found by search. |
+| Edit, undo and redo, save, reopen | Content editing (`edit.rs`), saving (`save.rs`) | Edit a line of text, move a picture, delete a shape; undo everything, redo everything; save, reopen, and compare the page in another reader | Pass, 2026-10-18, Linux |
+| Comments and markup | `annots.rs` | Add one of each kind and a reply, save, reopen in LimarePDF, Firefox and Acrobat Reader: places, colours, text and replies match | Pass (earlier run), Linux |
+| Forms | `form_fill.rs` (renders), poppler and Ghostscript | Fill every kind of field, save, reopen; open in Acrobat Reader: values and looks match; flatten and check again | Pass (earlier run), Linux |
+| Pages: merge, split, reorder, rotate, crop, export | `integration.rs`, `export.rs`, the command line | Merge two files, split one, drag pages into a new order, turn and crop one; save and reopen; export pages as images and text | Pass, 2026-10-18, Linux |
+| Printing | `print.rs`, with a stand-in for `lp` | Print a file with mixed page sizes and a turned page: size, orientation and placement on paper; comments and form values printed | Pass, 2026-10-18, Linux, HP LaserJet P1606dn through CUPS, after three fixes: pages printed blurred until jobs named the paper size; comments printed upside down on a page whose content leaves the drawing state flipped (glm manual, page 1); filled form fields printed empty because CUPS's `pdftopdf` drops fields. Now A4 pages fit whole on Letter paper, a turned (landscape) page prints upright filling the portrait sheet, and comments and form values print where they belong. |
+| Digital signatures | `signatures.rs`, `signing.rs`, `signature_changes.rs`, pdfsig and OpenSSL | Check a signed sample; sign, certify, add a comment and save; reopen and check; then the Acrobat round trips below | Pass (earlier run), Linux |
+| Redaction, removing hidden information | `redact.rs`, `sanitise.rs`, the after-check | Redact a phrase and part of a picture, save, then search the output with `pdftotext` and another reader's search; remove hidden information and check `pdfinfo -meta` | Pass (earlier run), Linux |
+| Damaged files | `repair.rs`, the corpus | Open a damaged file: the notice shows; Save asks; Save as writes a new file; the original's checksum is unchanged | Pass (earlier run), Linux |
+| Errors | `guard()` and `run_command` unit tests, a tab's error page | Open a cut-short file and a file with a broken page: a message, the app stays open, other tabs keep their unsaved changes | Pass, 2026-10-18, Linux |
+
+Printing can be checked partly without paper: CUPS's own processing of what LimarePDF sends can be run with
+`cupsfilter`, using the printer's description file, which CUPS serves locally. To capture what LimarePDF sends,
+put a stand-in `lp` first on the `PATH` that saves its input, and print with `limarepdf-cli print` (or start the
+app from that shell):
+
+```
+mkdir -p /tmp/fakelp
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" > /tmp/fakelp/args.txt\ncat > /tmp/fakelp/job.pdf\necho "request id is fake-1"\n' > /tmp/fakelp/lp
+chmod +x /tmp/fakelp/lp
+PATH=/tmp/fakelp:$PATH limarepdf-cli print --pages 1 file.pdf
+curl -o printer.ppd http://localhost:631/printers/<queue>.ppd
+cupsfilter -p printer.ppd -i application/pdf -m application/vnd.cups-pdf /tmp/fakelp/job.pdf > after.pdf
+```
+
+`args.txt` holds the job's options, one per line (`-o media=` among them).
+
+`after.pdf` is the page as CUPS passes it on to the printer's driver; open it, or search it with `pdftotext`.
+This is how the dropped form fields were found.
 
 ## Round trips with Adobe Acrobat
 

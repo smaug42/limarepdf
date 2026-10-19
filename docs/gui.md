@@ -7,6 +7,15 @@
 Open PDFs with the Open button, Ctrl+O, or by dropping them on the window. Image files (PNG, JPEG, TIFF) open as a new
 document with one page per image. From a terminal, `limarepdf file.pdf --page 3` opens a file at page 3.
 
+On Linux in a Wayland session (the default on current KDE and GNOME), dropping files on the window does nothing:
+the windowing library LimarePDF uses doesn't take file drops from Wayland yet, and the pointer shows a "no" sign.
+Opening by any other way works, and so does dragging pages within the app. If you want drops, start LimarePDF
+through XWayland, Wayland's X11 compatibility layer, with `env -u WAYLAND_DISPLAY limarepdf`. The cost: with
+fractional display scaling (such as 125% or 150%) the window may look blurry, unless your desktop lets X11 apps
+scale themselves (in KDE, System Settings > Display & Monitor > Legacy Applications (X11)). To make it the
+default, copy LimarePDF's menu entry (`io.github.smaug42.limarepdf.desktop`, usually in `/usr/share/applications`) to
+`~/.local/share/applications` and change its `Exec=` line to start with `env -u WAYLAND_DISPLAY`.
+
 Recently opened PDFs are listed on the start screen and under ☰ > File > Open recent, which also clears the list.
 Files that no longer exist are left out. The list holds 10 files and is kept on your computer only, in
 `~/.config/limarepdf/recent.txt` on Linux, `~/Library/Application Support/limarepdf/recent.txt` on macOS, and

@@ -25,7 +25,10 @@ default), copies and two-sided printing, and runs in the background. On the comm
 
 **Linux and macOS** print through CUPS. The chosen pages go to `lp` as an unencrypted PDF, which CUPS draws with its
 own engine, so a printout can differ from LimarePDF's screen. "Print as image" (`--as-image`) sends pages drawn by LimarePDF at
-300 dpi instead.
+300 dpi instead. Each job names the printer's default paper size (read with `lpoptions`), as other apps' jobs do:
+some printer setups print every page blurred when a job leaves it out. Form fields are drawn into the pages sent
+(those meant for printing), since some CUPS setups drop fields without drawing them; the open document keeps its
+form.
 
 **Windows** prints through the print spooler. LimarePDF draws each page at the printer's resolution, at most 600 dpi. A page
 prints at actual size, shrunk to the printable area when it is larger, centred, and turned when a landscape page meets
@@ -41,5 +44,12 @@ Not yet available: paper size, scaling, colour and printer-specific options. The
 - Printing: `crates/limarepdf-core/tests/print.rs`, with a stand-in for `lp` (its arguments, the document it receives, and
   errors), and against a real CUPS with no printers (error messages). The Windows page placement and rotation are
   unit-tested.
-- Printing has been tried on Windows, where it works. On Linux and macOS it has not yet been tried with a real
-  printer.
+- On paper on Linux, with an HP LaserJet P1606dn through CUPS (October 2026): pages, mixed A4 and Letter pages, a
+  turned page, comments and filled form fields print correctly. Getting there took three fixes, each for a way
+  CUPS handles PDFs on that setup that other PDFs sent with `lp` suffer from too: the job must name the paper
+  size, or every page prints blurred; comments are added after the page's content without resetting the drawing
+  state, so they came out upside down on pages that leave it turned; and form fields are removed without being
+  drawn. The last two were reproduced without a printer through CUPS's own `cupsfilter`
+  ([Testing](testing.md#acceptance-checks)).
+- On Windows only the print dialog has been tried; nothing has been printed on paper. Nothing has been printed on
+  macOS.
