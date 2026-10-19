@@ -129,7 +129,8 @@ pool of features other PDF tools have is in [ideas.md](ideas.md).
 
 - **Crash recovery:** when LimarePDF stops without closing normally, the next start offers the documents that had
   unsaved changes, from private copies kept while you work. Your own files are never written by it: a recovered
-  document opens as a new unsaved document.
+  document opens as a new unsaved document. In progress: the part that keeps the copies is built and tested, but the
+  app doesn't use it yet.
 - **Acceptance checks** of everyday workflows by hand, in other readers and on Windows and macOS, as listed in
   [Testing](testing.md#acceptance-checks). They have been run on Linux.
 - **A memory limit for undo:** each undo step keeps a whole copy of the document, so 20 edits on a large scan
