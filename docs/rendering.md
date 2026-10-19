@@ -184,7 +184,9 @@ on which fonts are installed, as in other viewers.
   between a tile and the whole page, as the picture is sampled from a different starting point.
 - Memory and texture size stay bounded at any zoom, up to the highest, 6400%. Tiles are drawn at up to 256 pixels
   per point (6400% on a screen with three pixels per point); beyond that they are shown stretched.
-- Printing and exports don't use tiles. They draw whole pages, at most 1152 dpi.
+- Printing and exports don't use tiles. They draw whole pages, at most 1152 dpi and at most 268 million pixels
+  ([details](export-and-printing.md#pages-as-images)). A page stated so large that even the whole-page bitmap the
+  app draws at the lowest scale would pass that shows an error instead of being drawn.
 - Tiles have only been tried on screens at scale 1, not on a HiDPI screen.
 
 For timings and how the app keeps drawing responsive, see [Performance](performance.md).
