@@ -25,8 +25,9 @@ the same everywhere; the desktop app's side is `crates/limarepdf-gui/src/fields.
 
 Damaged files are repaired in `crates/limarepdf-core/src/repair.rs` when lopdf reads a file with no pages, or had
 to rebuild its table itself (its own scan ignores `/Length`, so its result is kept only when the repair fails): it
-scans the bytes for `N G obj` headers (skipping stream data by a direct `/Length` followed by `endstream`, else to
-the first `endstream`; a later copy of a number wins), takes the trailer entries from the newest trailer or
+scans the bytes for `N G obj` headers (skipping stream data by a `/Length` followed by `endstream`, else to the
+first `endstream`; an indirect length is looked up among every `N G obj <integer> endobj` in the file, a first pass,
+taking the latest that fits; a later copy of a number wins), takes the trailer entries from the newest trailer or
 cross-reference stream dictionary outside stream data that names a catalog, appends a rebuilt cross-reference
 table, and has lopdf read the file again. Object stream members lopdf's reader skips are then read one by one, and
 when the trailers name no usable catalog, the last catalog object with a page tree is used. See

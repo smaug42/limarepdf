@@ -75,6 +75,45 @@ fn move_only(show: Show) -> Vec<Operation> {
     }
 }
 
+/// Whether `ops` change the graphics or text state outside any q/Q, so that content added
+/// after them would inherit it. Pages printed by browsers flip and scale the whole page with
+/// a `cm` at this level, for instance.
+fn leaks_state(ops: &[Operation]) -> bool {
+    let mut depth = 0usize;
+    ops.iter().any(|o| match o.operator.as_str() {
+        "q" => {
+            depth += 1;
+            false
+        }
+        "Q" => {
+            depth = depth.saturating_sub(1);
+            false
+        }
+        _ if depth > 0 => false,
+        // Text positioning (reset by BT), showing, paths without clipping, marked content,
+        // and drawing that leaves the state alone.
+        "BT" | "ET" | "Td" | "Tm" | "T*" | "Tj" | "TJ" | "'" | "m" | "l" | "c" | "v" | "y"
+        | "h" | "re" | "S" | "s" | "f" | "F" | "f*" | "B" | "B*" | "b" | "b*" | "n" | "BMC"
+        | "BDC" | "EMC" | "MP" | "DP" | "Do" | "sh" | "BI" | "ID" | "EI" | "BX" | "EX" => false,
+        _ => true,
+    })
+}
+
+/// `ops` made ready for content to be appended in the page's default state: the q/Q they
+/// leave open closed, and the whole wrapped in q/Q when they change the state outside one.
+/// Content that needs no wrapping is left as it is, so repeated edits don't nest deeper.
+fn closed(mut ops: Vec<Operation>, depth_left: usize) -> Vec<Operation> {
+    let wrap = leaks_state(&ops);
+    for _ in 0..depth_left {
+        ops.push(op("Q", vec![]));
+    }
+    if wrap {
+        ops.insert(0, op("q", vec![]));
+        ops.push(op("Q", vec![]));
+    }
+    ops
+}
+
 /// The same text shown with a plain Tj/TJ (no line move), for use after an explicit Tm.
 fn plain_show(o: &Operation, show: Show) -> Operation {
     match show {
@@ -318,9 +357,7 @@ impl Pdf {
                     None => out.push(o.clone()),
                 }
             }
-            for _ in 0..parsed.depth_left {
-                out.push(op("Q", vec![]));
-            }
+            let mut out = closed(out, parsed.depth_left);
             if !e.text.trim().is_empty() {
                 let (first, last) = (&t.pieces[0], &t.pieces[t.pieces.len() - 1]);
                 let (s, f) = (first.corners[0], last.corners[1]);
@@ -338,7 +375,10 @@ impl Pdf {
                     op("Tz", vec![r(tz)]),
                     op(
                         "Tm",
-                        [dx, dy, -dy, dx, s.0, s.1].iter().map(|&x| r(x)).collect(),
+                        [dx, dy, -dy, dx, t.origin.0, t.origin.1]
+                            .iter()
+                            .map(|&x| r(x))
+                            .collect(),
                     ),
                     op("Tj", vec![lit(winansi_bytes(&e.text))]),
                     op("ET", vec![]),
@@ -370,9 +410,7 @@ impl Pdf {
                 None => out.push(o.clone()),
             }
         }
-        for _ in 0..parsed.depth_left {
-            out.push(op("Q", vec![]));
-        }
+        let mut out = closed(out, parsed.depth_left);
         let font = e.font.unwrap_or_else(|| FontChoice::from_name(&t.base));
         let size = e.size.unwrap_or(t.size).max(1.0);
         let color = e.color.or(t.fill).unwrap_or([0.0; 3]);
@@ -495,10 +533,7 @@ impl Pdf {
     ) -> Result<()> {
         let (page, parsed) = self.load_edit(page_index)?;
         let (vd, _, _) = self.vis_down(page);
-        let mut out = parsed.ops.clone();
-        for _ in 0..parsed.depth_left {
-            out.push(op("Q", vec![]));
-        }
+        let mut out = closed(parsed.ops.clone(), parsed.depth_left);
         out.extend([op("q", vec![]), cm(vd)]);
         out.extend(body(self, page)?);
         out.push(op("Q", vec![]));
