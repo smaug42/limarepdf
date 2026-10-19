@@ -175,8 +175,37 @@ fn empty_password_files_with_a_short_user_hash_open() {
             "{name}: not seen as protected"
         );
         assert!(!p.repaired(), "{name}: not damaged");
+        assert!(!p.password_needed(), "{name}");
         assert!(Pdf::from_bytes(&bytes, Some("owner")).is_ok(), "{name}");
     }
+}
+
+#[test]
+fn files_tell_whether_they_needed_a_password() {
+    let protect = |user: &str| {
+        let mut p = doc_with_text();
+        p.set_encryption(Some(Encryption {
+            user_password: user.into(),
+            owner_password: "owner".into(),
+            cipher: Cipher::Aes128,
+            restrictions: Restrictions::default(),
+        }));
+        p.to_bytes().unwrap()
+    };
+    let locked = protect("user");
+    for password in ["user", "owner"] {
+        let p = Pdf::from_bytes(&locked, Some(password)).unwrap();
+        assert!(p.password_needed(), "{password}");
+    }
+    // Only a permissions password: it opens without one, even when one is given.
+    let open = protect("");
+    for password in [None, Some(""), Some("owner"), Some("anything")] {
+        let p = Pdf::from_bytes(&open, password).unwrap();
+        assert!(p.doc.was_encrypted(), "{password:?}");
+        assert!(!p.password_needed(), "{password:?}");
+    }
+    let plain = Pdf::from_bytes(&doc_with_text().to_bytes().unwrap(), None).unwrap();
+    assert!(!plain.password_needed());
 }
 
 #[test]

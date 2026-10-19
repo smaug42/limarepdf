@@ -36,6 +36,9 @@
   that object inside the attachment isn't used.
 - Some RC4-protected files with no open password asked for one that other readers don't need: files whose password
   entry (`/U`) holds only the 16 bytes readers compare, instead of 32. They now open without asking.
+- A document that opens without a password but has a permissions password showed the notice "This document was
+  password-protected", as if a password had been needed. Its notice now says it opens without a password and that
+  saving removes the permissions password unless you set it again.
 
 ## [0.7.2] - 2026-10-18
 

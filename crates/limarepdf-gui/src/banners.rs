@@ -334,8 +334,14 @@ pub fn detect(pdf: &Pdf, bytes: Option<u64>) -> Vec<Banner> {
     if pdf.doc.was_encrypted() {
         v.push(Banner::plain(
             Kind::Protected,
-            "This document was password-protected. Saving removes the protection unless you \
-             set it again.",
+            if pdf.password_needed() {
+                "This document was password-protected. Saving removes the protection unless \
+                 you set it again."
+            } else {
+                "This document opens without a password, but it has a permissions password, \
+                 which can limit printing, copying or changing it. Saving removes that password \
+                 unless you set it again."
+            },
         ));
     }
     let xfa = pdf.xfa_only();
@@ -491,6 +497,23 @@ mod tests {
         let bytes = p.to_bytes().unwrap();
         let opened = Pdf::from_bytes(&bytes, Some("user")).unwrap();
         assert_eq!(kinds(&opened, None), [Kind::Protected]);
+        assert!(detect(&opened, None)[0]
+            .text
+            .starts_with("This document was password-protected"));
+        // With only a permissions password, it doesn't read as if one had been typed.
+        p.set_encryption(Some(Encryption {
+            user_password: "".into(),
+            owner_password: "owner".into(),
+            cipher: Cipher::Aes128,
+            restrictions: Restrictions::default(),
+        }));
+        let open = Pdf::from_bytes(&p.to_bytes().unwrap(), None).unwrap();
+        assert_eq!(kinds(&open, None), [Kind::Protected]);
+        let text = &detect(&open, None)[0].text;
+        assert!(
+            text.starts_with("This document opens without a password"),
+            "{text}"
+        );
         // A copy saved without protection is no longer flagged.
         let plain = Pdf::from_bytes(&blank(1).to_bytes().unwrap(), None).unwrap();
         assert!(kinds(&plain, None).is_empty());

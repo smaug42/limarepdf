@@ -18,6 +18,8 @@ pub struct Pdf {
     /// Whether the file's cross-reference information was damaged and LimarePDF rebuilt it
     /// to open the file.
     pub(crate) repaired: bool,
+    /// Whether the file was encrypted and needed a password to open.
+    pub(crate) password_needed: bool,
 }
 
 /// Why a repaired document may read differently in other PDF apps.
@@ -98,6 +100,13 @@ impl Pdf {
         self.repaired
     }
 
+    /// Whether the file needed a password to open. An encrypted file with an empty open
+    /// password (only a permissions password, limiting printing, copying or changes) opens
+    /// without one, in every reader.
+    pub fn password_needed(&self) -> bool {
+        self.password_needed
+    }
+
     /// Reads a document as its cross-reference information says.
     fn read(bytes: &[u8], password: Option<&str>) -> std::result::Result<Self, lopdf::Error> {
         let load = |b: &[u8]| {
@@ -121,11 +130,20 @@ impl Pdf {
                 None => return Err(e),
             },
         };
+        // lopdf tries the empty password first, so a file opened without a password, or
+        // with an empty one, didn't need one. Given another, it may still not have: without
+        // a password lopdf decrypts the file only when the empty one opens it, and otherwise
+        // keeps `/Encrypt` in the trailer.
+        let password_needed = doc.was_encrypted()
+            && password.is_some_and(|p| !p.is_empty())
+            && Document::load_from_with_options(Cursor::new(read), lopdf::LoadOptions::default())
+                .map_or(true, |d| d.trailer.has(b"Encrypt"));
         let mut pdf = Self {
             doc,
             encryption: None,
             differs: None,
             repaired: false,
+            password_needed,
         };
         pdf.differs = pdf.match_other_readers(read);
         Ok(pdf)
@@ -179,6 +197,7 @@ impl Pdf {
             encryption: None,
             differs: None,
             repaired: false,
+            password_needed: false,
         }
     }
 
