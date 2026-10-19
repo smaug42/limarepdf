@@ -842,7 +842,11 @@ pub struct Crashed {
     /// When its copies are removed (section 5).
     pub keep_until: SystemTime,
     /// Files withdrawals left; the next start removes them if they are still there.
-    leftovers: Vec<PathBuf>,
+    leftovers: BTreeSet<PathBuf>,
+    /// Copies whose withdrawal removed their files but couldn't confirm it (the folder sync
+    /// failed): no longer in `docs`, but a power cut could bring them back, so the next
+    /// withdrawal of the tab tries again, and the folder stays until it succeeds.
+    unconfirmed: BTreeSet<TabId>,
     _lock: Option<Held>,
 }
 
@@ -979,7 +983,8 @@ pub fn find_crashed(fs: &Arc<dyn Fs>, root: &Path, now: SystemTime) -> Vec<Crash
             dir,
             docs,
             keep_until,
-            leftovers: Vec::new(),
+            leftovers: BTreeSet::new(),
+            unconfirmed: BTreeSet::new(),
             _lock: held,
         });
     }
@@ -1029,7 +1034,7 @@ impl Crashed {
                 let _ = remove_checked(fs, &self.dir.join(n));
             }
         }
-        if self.docs.is_empty() {
+        if self.docs.is_empty() && self.unconfirmed.is_empty() {
             self._lock = None;
             let _ = fs.remove_dir_all(&self.dir);
         }
@@ -1038,12 +1043,14 @@ impl Crashed {
 
     /// Withdraws copy `tab` before a redaction, a removal of hidden information or a
     /// password takes effect in the tab restored from it, with the outcomes of
-    /// [`Store::withdraw`] (section 6). The session goes once nothing is left in it.
+    /// [`Store::withdraw`] (section 6). One not confirmed is tried again in full at the next
+    /// call. The session goes once nothing is left in it.
     pub fn withdraw(&mut self, tab: TabId) -> Withdrawal {
         let fs = &*self.fs;
-        let Some(i) = self.docs.iter().position(|d| d.tab == tab) else {
+        let offered = self.docs.iter().position(|d| d.tab == tab);
+        if offered.is_none() && !self.unconfirmed.contains(&tab) {
             return Withdrawal::Confirmed;
-        };
+        }
         let kept = withdraw_description(fs, &self.dir.join(tab.description()));
         let mut left = Vec::new();
         if let Ok(list) = fs.list(&self.dir) {
@@ -1055,23 +1062,29 @@ impl Crashed {
             }
         }
         let synced = fs.sync_dir(&self.dir);
+        self.leftovers.extend(left.iter().cloned());
         if let Some(k) = kept {
             return Withdrawal::NotConfirmed(k);
         }
-        // No longer offered, even if the sync failed: its description is gone here.
-        self.docs.remove(i);
+        // No longer offered, even if the sync failed: its description is gone here. But
+        // until a sync confirms that, a power cut could bring it back.
+        if let Some(i) = offered {
+            self.docs.remove(i);
+        }
         if let Err(e) = synced {
+            self.unconfirmed.insert(tab);
             return Withdrawal::NotConfirmed(NotConfirmed::SyncFailed {
                 folder: self.dir.clone(),
                 why: e.to_string(),
             });
         }
-        if self.docs.is_empty() {
+        self.unconfirmed.remove(&tab);
+        if self.docs.is_empty() && self.unconfirmed.is_empty() {
             self._lock = None;
             let _ = fs.remove_dir_all(&self.dir);
             left.retain(|p| fs.exists(p));
+            self.leftovers.retain(|p| fs.exists(p));
         }
-        self.leftovers.extend(left.iter().cloned());
         if left.is_empty() {
             Withdrawal::Confirmed
         } else {

@@ -9,8 +9,9 @@
   document, discard it, or decide later (copies are kept for 30 days). Your own files are never written by it.
   Password-protected documents get no copies, nor documents you add a protected document's pages to. Applying
   redactions, removing hidden information or setting a password deletes the document's earlier copies first,
-  including the one a restored document came from, and later copies hold none of what was removed; if an earlier
-  copy can't be deleted, the command doesn't run. A restored copy of a signed document doesn't have its signatures
+  including the one a restored document came from, and so does redoing a redaction or removal after undoing it;
+  later copies hold none of what was removed. If an earlier copy can't be deleted, or the disk can't confirm the
+  deletion, the command (or the redo) doesn't run, however often it is tried, until it can. A restored copy of a signed document doesn't have its signatures
   checked, since they cover the original file. Turn it off with File > Keep recovery copies of unsaved changes.
 
 ### Fixed

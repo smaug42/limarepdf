@@ -401,9 +401,11 @@ so LimarePDF asks first.
 **Redactions, hidden information and passwords.** Once you apply redactions, remove hidden information or set a
 password, no recovery copy made before can be offered after a crash: LimarePDF deletes the document's copy first,
 and for a restored document the copy it came from, and makes a new one afterwards (none for a password), which
-holds none of what was removed. If it can't delete a copy, the command doesn't run, and a message says where the
-copy is, with Show file: delete it, or turn off recovery copies (which doesn't remove the copy a restored document
-came from), then try again. If the copy
+holds none of what was removed. Undoing a redaction or removal brings the content back, and the next copy holds it;
+Redo then deletes that copy first too. If it can't delete a copy, the command (or Redo) doesn't run, and a message
+says where the copy is, with Show file: delete it, or turn off recovery copies (which doesn't remove the copy a
+restored document came from), then try again. If the copy was deleted but the disk can't confirm it (a power cut
+could bring it back), the command doesn't run either, at every try, until the disk confirms it. If the copy
 could be made unusable but its file couldn't be deleted, the command runs, and a notice says where the file is until
 LimarePDF manages to delete it, or you do. The limits of this promise:
 

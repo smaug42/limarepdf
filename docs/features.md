@@ -86,7 +86,7 @@ available.
 | Certificate encryption | No | |
 | PDF/A, optimised saving | No | Saved files are pruned and compressed |
 | Comparing documents | No | |
-| Crash recovery | Done | Private copies of documents with unsaved changes, about a minute behind; when LimarePDF stops without closing normally, the next start offers them, and a restored one opens as a new unsaved document. Your own files are never written by it. None for password-protected documents, or documents a protected one's pages are appended to; a redaction, removal of hidden information or added password deletes the earlier copies first, including the one a restored document came from. Can be turned off. [Details](gui.md#recovery-copies) |
+| Crash recovery | Done | Private copies of documents with unsaved changes, about a minute behind; when LimarePDF stops without closing normally, the next start offers them, and a restored one opens as a new unsaved document. Your own files are never written by it. None for password-protected documents, or documents a protected one's pages are appended to; a redaction, removal of hidden information or added password, or a redo of a redaction or removal, deletes the earlier copies first, including the one a restored document came from. Can be turned off. [Details](gui.md#recovery-copies) |
 | Sessions, autosave, backups, preferences, custom shortcuts, translations | No | You are asked before closing unsaved work; unsaved changes are kept in [recovery copies](gui.md#recovery-copies) |
 | XFA forms, XPS documents | No | |
 

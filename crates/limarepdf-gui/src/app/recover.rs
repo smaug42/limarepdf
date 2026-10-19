@@ -75,7 +75,12 @@ fn doc_info(t: &Tab) -> DocInfo {
 /// Files a withdrawal invalidated but couldn't delete: the tab's notice names them until
 /// they are gone.
 fn left(t: &mut Tab, files: Vec<PathBuf>) {
-    t.copy.leftovers.extend(files);
+    for f in files {
+        // A withdrawal tried again names the files it still couldn't delete.
+        if !t.copy.leftovers.contains(&f) {
+            t.copy.leftovers.push(f);
+        }
+    }
     if let Some(f) = t.copy.leftovers.first() {
         t.show_banner(banners::leftover_copy(f));
     }
@@ -339,7 +344,8 @@ impl App {
     }
 
     /// Withdraws tab `i`'s recovery copies before a redaction, a removal of hidden
-    /// information or a password takes effect; `done` says what, for the message. `Err`
+    /// information (or a redo of either) or a password takes effect; `done` says what, for
+    /// the message. `Err`
     /// is the dialog to show instead of running the command: an earlier copy could still
     /// be offered (section 6). A copy invalidated but left on disk gets the tab's notice,
     /// and the command goes ahead.
@@ -920,9 +926,19 @@ mod tests {
         p
     }
 
-    /// What the tab's copy on `m` says of "Walrus …", anywhere in it: every object's
-    /// strings and (decompressed) streams.
+    /// What the tab's copy on `m` says of "Walrus …"; see [`walruses_in`].
     fn walruses(m: &Model, app: &App) -> Vec<String> {
+        let dir = queue(app).store().dir().to_path_buf();
+        let pdf = files(m, app)
+            .into_iter()
+            .find(|n| n.ends_with(".pdf"))
+            .expect("a copy");
+        walruses_in(&m.read(&dir.join(pdf)).unwrap())
+    }
+
+    /// What a PDF says of "Walrus …", anywhere in it: every object's strings and
+    /// (decompressed) streams.
+    fn walruses_in(bytes: &[u8]) -> Vec<String> {
         use lopdf::Object;
         fn find(o: &Object, out: &mut Vec<String>) {
             let mut look = |b: &[u8]| {
@@ -946,17 +962,187 @@ mod tests {
                 _ => {}
             }
         }
-        let dir = queue(app).store().dir().to_path_buf();
-        let pdf = files(m, app)
-            .into_iter()
-            .find(|n| n.ends_with(".pdf"))
-            .expect("a copy");
-        let doc = lopdf::Document::load_mem(&m.read(&dir.join(pdf)).unwrap()).unwrap();
+        let doc = lopdf::Document::load_mem(bytes).unwrap();
         let mut out = Vec::new();
         doc.objects.values().for_each(|o| find(o, &mut out));
         out.sort();
         out.dedup();
         out
+    }
+
+    /// Whether a start after a crash now, or after a power cut now in any of the ways it
+    /// could leave the disk, could offer a copy saying `walrus`.
+    fn could_offer(m: &Model, walrus: &str) -> bool {
+        std::iter::once(m.crash()).chain(m.power_cuts()).any(|cut| {
+            let fs: Arc<dyn Fs> = Arc::new(cut);
+            recovery::find_crashed(&fs, &root(), clock()())
+                .iter()
+                .any(|c| {
+                    (0..c.docs.len()).any(|i| {
+                        c.read(i)
+                            .is_ok_and(|b| walruses_in(&b).iter().any(|w| w == walrus))
+                    })
+                })
+        })
+    }
+
+    /// An app keeping its copies on a disk that fails as told, with one tab of
+    /// [`secrets`]: opened, or `restored` from a crashed session's copy (its tab 7).
+    fn secrets_app(ctx: &egui::Context, restored: bool) -> (Model, Arc<Faulty>, App) {
+        let m = if restored {
+            crashed_with(&secrets().to_bytes().unwrap(), DocInfo::default())
+        } else {
+            Model::new()
+        };
+        let f = Faulty::new(Arc::new(m.clone()));
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        app.start_recovery_in(ctx, f.clone(), &root(), clock());
+        if restored {
+            app.restore_copy(ctx, 0, TabId(7));
+            app.close_restore(ctx);
+        } else {
+            assert!(app.add_tab(ctx, secrets(), None, None, false));
+        }
+        (m, f, app)
+    }
+
+    /// Redoing a redaction or a removal of hidden information removes the content again,
+    /// so the copy written after undoing it is withdrawn first: in an ordinary tab and a
+    /// restored one, and for a second removal (the tab already marked as having had content
+    /// removed) as for a first. No crash or power cut afterwards can offer the content, and
+    /// a new copy without it is written at once.
+    #[test]
+    fn redoing_a_removal_withdraws_the_copy_made_after_undoing_it() {
+        let kinds = [
+            ("text", "Walrus text"),
+            ("metadata", "Walrus XMP"),
+            ("attachments", "Walrus attachment"),
+        ];
+        for (kind, gone) in kinds {
+            for restored in [false, true] {
+                for again in [false, true] {
+                    let case = format!("{kind}, restored: {restored}, again: {again}");
+                    let ctx = egui::Context::default();
+                    let (m, _, mut app) = secrets_app(&ctx, restored);
+                    if again {
+                        // A removal of nothing secret first.
+                        app.remove_hidden(&ctx, &[Hidden::Scripts]);
+                        assert!(app.tabs[0].scrubbed, "{case}");
+                    }
+                    mark(&mut app, &ctx);
+                    match kind {
+                        "text" => app.apply_redactions(&ctx),
+                        "metadata" => app.remove_hidden(&ctx, &[Hidden::Metadata]),
+                        _ => app.remove_hidden(&ctx, &[Hidden::Attachments]),
+                    }
+                    assert!(app.tabs[0].scrubbed, "{case}");
+                    app.dialog = Dialog::None;
+                    let t0 = Instant::now();
+                    tick(&mut app, &ctx, t0);
+                    assert!(!walruses(&m, &app).contains(&gone.into()), "{case}");
+
+                    // Undone: the content is back, and so is it in the next copy.
+                    app.act(&ctx, Act::Undo);
+                    copy_all(&mut app, &ctx, t0 + INTERVAL);
+                    assert!(walruses(&m, &app).contains(&gone.into()), "{case}");
+                    assert!(could_offer(&m, gone), "{case}");
+
+                    // Redone: that copy goes first.
+                    app.act(&ctx, Act::Redo);
+                    assert!(matches!(app.dialog, Dialog::None), "{case}");
+                    assert!(app.tabs[0].scrubbed, "{case}");
+                    assert!(files(&m, &app).is_empty(), "{case}: not withdrawn");
+                    assert!(!could_offer(&m, gone), "{case}");
+                    tick(&mut app, &ctx, t0 + INTERVAL * 2 + Duration::from_secs(1));
+                    let t = &app.tabs[0];
+                    assert_eq!(
+                        t.copy.copied,
+                        Some(t.revision),
+                        "{case}: not written at once"
+                    );
+                    assert!(!walruses(&m, &app).contains(&gone.into()), "{case}");
+                    assert!(!could_offer(&m, gone), "{case}");
+                }
+            }
+        }
+    }
+
+    /// A redo of a removal whose withdrawal can't be confirmed doesn't happen, at every
+    /// try while the folder sync keeps failing: the document, its flags and both undo lists
+    /// stay as they were. Once a sync succeeds, the redo goes ahead.
+    #[test]
+    fn a_redo_that_cant_withdraw_the_copy_changes_nothing() {
+        for restored in [false, true] {
+            let ctx = egui::Context::default();
+            let (m, f, mut app) = secrets_app(&ctx, restored);
+            mark(&mut app, &ctx);
+            app.apply_redactions(&ctx);
+            let t0 = Instant::now();
+            tick(&mut app, &ctx, t0);
+            app.act(&ctx, Act::Undo);
+            copy_all(&mut app, &ctx, t0 + INTERVAL);
+            f.fail(Kind::Sync, "session-");
+            let state = app.tabs[0].state();
+            let objects = app.tabs[0].pdf.doc.objects.clone();
+            for _ in 0..3 {
+                app.act(&ctx, Act::Redo);
+                let t = &app.tabs[0];
+                assert!(t.state() == state, "restored: {restored}: the tab changed");
+                assert!(t.pdf.doc.objects == objects, "the content changed");
+                assert!(t.redo_removes() && !t.scrubbed);
+                assert_eq!(t.pdf.redaction_marks().len(), 1);
+                match &app.dialog {
+                    Dialog::RecoveryFile { text, .. } => {
+                        assert!(text.contains("hasn't redone the change"), "{text}")
+                    }
+                    _ => panic!("no message"),
+                }
+                app.dialog = Dialog::None;
+            }
+            f.clear();
+            app.act(&ctx, Act::Redo);
+            let t = &app.tabs[0];
+            assert!(t.scrubbed && t.pdf.redaction_marks().is_empty());
+            assert!(!could_offer(&m, "Walrus text"));
+        }
+    }
+
+    /// A restored tab's copy whose withdrawal couldn't be confirmed (the crashed session's
+    /// folder sync failed) stops the command at every try, though the restore list no
+    /// longer has it, until a sync succeeds; then no crash or power cut can bring it back.
+    #[test]
+    fn a_restored_copy_not_confirmed_withdrawn_stops_the_command_at_every_try() {
+        let ctx = egui::Context::default();
+        let (m, f, mut app) = secrets_app(&ctx, true);
+        let session = app.rescue.found[0].crashed.dir.clone();
+        mark(&mut app, &ctx);
+        f.fail(Kind::Sync, &session.file_name().unwrap().to_string_lossy());
+        let state = app.tabs[0].state();
+        let objects = app.tabs[0].pdf.doc.objects.clone();
+        for n in 0..3 {
+            app.apply_redactions(&ctx);
+            let t = &app.tabs[0];
+            assert!(t.state() == state, "try {n}: the tab changed");
+            assert!(t.pdf.doc.objects == objects, "try {n}: the content changed");
+            match &app.dialog {
+                Dialog::RecoveryFile { text, file, .. } => {
+                    assert_eq!(*file, session);
+                    assert!(text.contains("hasn't applied the redactions"), "{text}");
+                }
+                _ => panic!("try {n}: no message"),
+            }
+            app.dialog = Dialog::None;
+            assert!(app.rescue.found[0].crashed.docs.is_empty());
+            assert!(
+                could_offer(&m, "Walrus text"),
+                "a power cut could bring it back"
+            );
+        }
+        f.clear();
+        app.apply_redactions(&ctx);
+        assert!(app.tabs[0].scrubbed);
+        assert!(!m.exists(&session));
+        assert!(!could_offer(&m, "Walrus text"));
     }
 
     #[test]
