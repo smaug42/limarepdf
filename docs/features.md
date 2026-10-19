@@ -86,7 +86,8 @@ available.
 | Certificate encryption | No | |
 | PDF/A, optimised saving | No | Saved files are pruned and compressed |
 | Comparing documents | No | |
-| Sessions, autosave, backups, preferences, custom shortcuts, translations | No | You are asked before closing unsaved work. Crash recovery is planned (see below) |
+| Crash recovery | Done | Private copies of documents with unsaved changes, about a minute behind; when LimarePDF stops without closing normally, the next start offers them, and a restored one opens as a new unsaved document. Your own files are never written by it. None for password-protected documents; a redaction, removal of hidden information or added password deletes the earlier copy first. Can be turned off. [Details](gui.md#recovery-copies) |
+| Sessions, autosave, backups, preferences, custom shortcuts, translations | No | You are asked before closing unsaved work; unsaved changes are kept in [recovery copies](gui.md#recovery-copies) |
 | XFA forms, XPS documents | No | |
 
 ## Known limits
@@ -127,10 +128,9 @@ pool of features other PDF tools have is in [ideas.md](ideas.md).
 
 ### Reliability
 
-- **Crash recovery:** when LimarePDF stops without closing normally, the next start offers the documents that had
-  unsaved changes, from private copies kept while you work. Your own files are never written by it: a recovered
-  document opens as a new unsaved document. In progress: the part that keeps the copies is built and tested, but the
-  app doesn't use it yet.
+- **More from recovery copies:** copies of password-protected documents, kept encrypted; a recovered copy of a
+  signed document saved by adding to the original, when the original is unchanged, so its signatures stay; reopening
+  the last session's documents.
 - **Acceptance checks** of everyday workflows by hand, in other readers and on Windows and macOS, as listed in
   [Testing](testing.md#acceptance-checks). They have been run on Linux.
 - **A memory limit for undo:** each undo step keeps a whole copy of the document, so 20 edits on a large scan

@@ -26,6 +26,11 @@ pub enum Act {
     ExportText,
     Print,
     CloseTab,
+    /// Keep recovery copies of documents with unsaved changes, or stop.
+    ToggleRecovery,
+    /// Show, in the file manager, the recovery file the active tab's notice names. Offered
+    /// by the notice, so not in [`ACTIONS`].
+    ShowRecoveryFile,
     Quit,
     Undo,
     Redo,
@@ -209,6 +214,8 @@ pub struct Ctx {
     pub theme: ThemePreference,
     pub page_look: PageLook,
     pub pictures_too: bool,
+    /// Recovery copies are kept.
+    pub recovery: bool,
     /// An annotation is selected, and whether it may be changed.
     pub annot: bool,
     pub annot_locked: bool,
@@ -379,6 +386,20 @@ pub static ACTIONS: &[Action] = &[
         label: "Close tab",
         icon: icon::X,
         keys: &[k(C, Key::W)],
+        sep: true,
+        ..BASE
+    },
+    Action {
+        act: Act::ToggleRecovery,
+        group: Group::File,
+        label: "Keep recovery copies of unsaved changes",
+        icon: icon::LIFEBUOY,
+        enabled: always,
+        checked: Some(|c| c.recovery),
+        hint: "Keeps a private copy of each document with unsaved changes, about a minute \
+               behind, so that LimarePDF can offer it back if it stops without closing \
+               normally. Your own files are never changed. Not for password-protected \
+               documents.",
         sep: true,
         ..BASE
     },

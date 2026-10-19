@@ -347,6 +347,9 @@ something to do and × to dismiss it. At most two show at a time.
 | Notice | Button |
 | --- | --- |
 | Its digital signatures are being checked, and then how they checked, coloured green, amber, grey or red (always first; see [Digital signatures](#digital-signatures)) | Signatures |
+| It was restored from a recovery copy, as it was at the time shown, and isn't saved; a signed document's signatures aren't checked ([Recovery copies](#recovery-copies)) | Save as… |
+| An earlier recovery copy, made before content was removed, couldn't be deleted, and where it is | Show file |
+| Recovery copies of it can't be kept right now, and why | Save |
 | The file is damaged, and LimarePDF repaired it to open it: some content may be missing. The original stays as it is: the document counts as changed (closing it warns of unsaved changes), and Save asks whether to replace the original or save the repaired copy as a new file. A signed file's signatures can't vouch for what is shown (they show *can't check*, or a change that isn't allowed), and the repaired copy can't keep them ([details](rendering.md#damaged-files)) | Save as… |
 | The document was password-protected: saving removes the protection unless you set it again | Password security |
 | Areas are marked for redaction but the marks haven't been applied (kept up to date while you work) | Apply redactions… |
@@ -360,6 +363,51 @@ something to do and × to dismiss it. At most two show at a time.
 
 The first two go away by themselves once dealt with: after password security is applied, or after text has been
 recognised.
+
+## Recovery copies
+
+While you work, LimarePDF keeps a private copy of each document with unsaved changes, so that if it stops without
+closing normally (a crash, the system ending it, a power cut), the next start can offer the documents back. These
+copies are not autosave: **your own files are never written by them.**
+
+- A copy is made about a minute after you change a document, then at most once a minute while you go on changing it.
+  It holds the document as it was then, so changes made in the last minute or so before a crash can be lost.
+- Saving or closing a document deletes its copy, and quitting normally deletes them all.
+- Password-protected documents get no copies: not one opened with a password, not one you set a password on (its
+  copy is deleted first), and not pages taken from one.
+- The copies are kept in a folder only you can read: `~/.local/state/limarepdf/recovery` on Linux (or
+  `$XDG_STATE_HOME/limarepdf/recovery`), `~/Library/Application Support/limarepdf/recovery` on macOS, and
+  `%LOCALAPPDATA%\limarepdf\recovery` on Windows.
+- To stop them, turn off ☰ > File > **Keep recovery copies of unsaved changes** (also in the command palette).
+  Copies already made are deleted at once, and the choice is remembered.
+- If a copy can't be written, for example when the disk would be left with less than 1 GB free, a notice on the
+  document says so, with a Save button. If recovery can't start at all, a message says so when the app starts.
+
+**After a crash.** The next start lists the documents that had copies: name, where the document came from, when the
+copy was made, how many pages, and until when the copy is kept. **Restore** opens one as a new, unsaved document
+called "*name* (recovered)", with a notice saying when the copy was made; Save suggests "*name* (recovered).pdf"
+beside the original. **Discard** deletes the copy. **Not now** keeps them all and asks again at the next start.
+Copies are deleted 30 days after the crash if you do neither. A copy that turns out to be damaged is listed as such,
+with Show file and Discard. A restored document's copy stays until you save or close it, so a second crash doesn't
+lose it. Files given on the command line open once the list is closed.
+
+A restored copy of a digitally signed document is LimarePDF's working copy, not the signed file, so its signatures
+cover bytes that aren't in it. They aren't checked: the Signatures tab lists each one as "Not checked: recovered
+copy". Open the original to check them. Saving or signing the copy writes the whole file, which makes them invalid,
+so LimarePDF asks first.
+
+**Redactions, hidden information and passwords.** Once you apply redactions, remove hidden information or set a
+password, no recovery copy made before can be offered after a crash: LimarePDF deletes the document's copy first,
+and makes a new one afterwards (none for a password). If it can't delete the copy, the command doesn't run, and a
+message says where the copy is, with Show file: delete it, or turn off recovery copies, then try again. If the copy
+could be made unusable but its file couldn't be deleted, the command runs, and a notice says where the file is until
+LimarePDF manages to delete it, or you do. The limits of this promise:
+
+- A deleted file's bytes stay on the disk until they are overwritten, and on SSDs nothing reliably wipes them.
+- On Windows a deletion counts as done once the file's name is gone, which NTFS normally keeps across a power cut but
+  doesn't guarantee for the last moments before one.
+- It covers recovery copies only. They never change your original file, so it holds whatever it held until you save
+  over it.
 
 ## Selecting and the inspector
 

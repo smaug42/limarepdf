@@ -433,6 +433,54 @@ pub fn panel(ui: &mut Ui, state: Option<&SigState>, dirty: bool) -> Option<Panel
     out
 }
 
+/// What the Signatures tab lists for a document restored from a recovery copy: each signed
+/// field, never a verdict, since the signatures cover the original file, not the copy.
+pub fn recovered_rows(pdf: &limarepdf_core::Pdf) -> Vec<String> {
+    let empty: Vec<String> = pdf
+        .empty_signature_fields()
+        .into_iter()
+        .map(|f| f.name)
+        .collect();
+    pdf.form_fields()
+        .into_iter()
+        .filter(|f| f.kind == limarepdf_core::FieldKind::Signature && !empty.contains(&f.name))
+        .map(|f| format!("{}: Not checked: recovered copy", clean(&f.name)))
+        .collect()
+}
+
+/// The Signatures tab of a restored copy, listing `rows` ([`recovered_rows`]).
+pub fn recovered_panel(ui: &mut Ui, rows: &[String]) -> Option<PanelAct> {
+    let mut out = None;
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            if rows.is_empty() {
+                ui.weak("This document has no digital signatures.");
+            } else {
+                ui.add(
+                    egui::Label::new(
+                        "This is a recovered copy. Its digital signatures cover the original \
+                         file, not this copy, so they aren't checked here. Open the original to \
+                         check them.",
+                    )
+                    .wrap(),
+                );
+                ui.add_space(6.0);
+                for r in rows {
+                    ui.horizontal(|ui| {
+                        ui.label(theme::icon(icon::SEAL_QUESTION));
+                        ui.add(egui::Label::new(r).wrap());
+                    });
+                }
+            }
+            ui.add_space(8.0);
+            if ui.button("Trusted certificates…").clicked() {
+                out = Some(PanelAct::Trusted);
+            }
+        });
+    out
+}
+
 fn report_ui(ui: &mut Ui, c: &Checked, dirty: bool) -> Option<PanelAct> {
     let mut out = None;
     let r = &c.report;

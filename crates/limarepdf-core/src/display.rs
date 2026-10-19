@@ -1,6 +1,7 @@
 //! Cleaning text from a file before it is shown, so a link, title or comment can't hide
 //! what it is: bidi controls (which can make `moc.evil` read as `live.com`), invisible
-//! characters and control characters are removed, and long text is shortened.
+//! characters and control characters are removed, and long text is shortened. Also the
+//! app's own times, in local time.
 
 /// Characters that change how text around them is ordered or that show nothing: bidi
 /// embeddings, overrides, isolates and marks, plus zero-width spaces and the byte order
@@ -55,6 +56,21 @@ fn shorten(s: String, max: usize) -> String {
         Some((i, _)) if s[i..].chars().nth(1).is_some() => format!("{}…", s[..i].trim_end()),
         _ => s,
     }
+}
+
+/// `t` in this computer's time zone, as 2026-10-19 14:23 (the app's own times, such as when
+/// a recovery copy was made).
+pub fn local_time(t: std::time::SystemTime) -> String {
+    chrono::DateTime::<chrono::Local>::from(t)
+        .format("%Y-%m-%d %H:%M")
+        .to_string()
+}
+
+/// The date of `t` in this computer's time zone, as 2026-10-19.
+pub fn local_date(t: std::time::SystemTime) -> String {
+    chrono::DateTime::<chrono::Local>::from(t)
+        .format("%Y-%m-%d")
+        .to_string()
 }
 
 #[cfg(test)]

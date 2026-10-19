@@ -101,11 +101,6 @@ impl Model {
         lock(&self.0)
     }
 
-    /// How many operations aren't durable yet.
-    pub fn pending(&self) -> usize {
-        self.st().pending.len()
-    }
-
     /// The disk as a power cut now could leave it, in every way: each subset of the
     /// operations not yet durable, applied in order to what is. No locks are held on it.
     pub fn power_cuts(&self) -> Vec<Model> {

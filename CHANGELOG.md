@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- Crash recovery: while you work, LimarePDF keeps a private copy of each document with unsaved changes, about a
+  minute behind. If it stops without closing normally, the next start lists them: restore one as a new, unsaved
+  document, discard it, or decide later (copies are kept for 30 days). Your own files are never written by it.
+  Password-protected documents get no copies, and applying redactions, removing hidden information or setting a
+  password deletes the document's earlier copy first; if that copy can't be deleted, the command doesn't run. A
+  restored copy of a signed document doesn't have its signatures checked, since they cover the original file. Turn
+  it off with File > Keep recovery copies of unsaved changes.
+
 ### Fixed
 
 - A small crafted file could make LimarePDF ask for gigabytes of memory and close, losing unsaved work in every tab:

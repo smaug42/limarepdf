@@ -3,9 +3,10 @@
 //! normally. The user's own files are never written here. The design, with the reasons, is
 //! `limarepdf-recovery-design.md` (outside the repository); section numbers below are its.
 //!
-//! This is the store (stage R1): sessions, publishing a tab's copy, removing and withdrawing
-//! it, finding crashed sessions and the one thread that does the writing. The app's use of
-//! it (when copies are due, the restore dialog, the notices, the setting) is stage R2.
+//! This is the store: sessions, publishing a tab's copy, removing and withdrawing it,
+//! finding crashed sessions and the one thread that does the writing; [`schedule`] says
+//! when a tab's copy is due. The app's use of them (the restore window, the notices, the
+//! setting) is in `app/recover.rs`.
 //!
 //! On disk, under [`recovery_root`]:
 //!
@@ -18,22 +19,19 @@
 //! [`Withdrawal::Leftover`], no copy published before it can be offered, after a crash or
 //! otherwise.
 
-// The app uses the store from stage R2 on; until then only the tests do.
-#![allow(dead_code)]
-
 mod files;
 #[cfg(test)]
-mod model;
+pub mod model;
+pub mod schedule;
 #[cfg(test)]
 mod tests;
 
-#[allow(unused_imports)] // The app starts its store on the real disk from stage R2 on.
 pub use files::{Fs, Held, RealFs};
 
 use std::collections::{BTreeSet, HashMap};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -445,6 +443,7 @@ pub enum NotConfirmed {
 
 impl Withdrawal {
     /// Whether a command that removes content may go ahead.
+    #[cfg(test)]
     pub fn may_proceed(&self) -> bool {
         !matches!(self, Self::NotConfirmed(_))
     }
@@ -535,6 +534,7 @@ impl Store {
     }
 
     /// This session's folder.
+    #[cfg(test)]
     pub fn dir(&self) -> &Path {
         &self.dir
     }
@@ -787,6 +787,11 @@ impl Store {
 
     pub fn turn_on(&self) {
         self.on.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether a file (such as one a withdrawal left) is still there.
+    pub fn exists(&self, path: &Path) -> bool {
+        self.fs.exists(path)
     }
 
     /// Tries again to delete the files withdrawals left; returns the ones still there.
@@ -1063,6 +1068,8 @@ pub struct Queue {
     tx: Option<mpsc::Sender<Job>>,
     reports: mpsc::Receiver<Report>,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// Jobs asked for and not yet done.
+    pending: Arc<AtomicUsize>,
 }
 
 impl Queue {
@@ -1071,10 +1078,13 @@ impl Queue {
         let (tx, rx) = mpsc::channel::<Job>();
         let (report, reports) = mpsc::channel();
         let s = store.clone();
+        let pending = Arc::new(AtomicUsize::new(0));
+        let left = pending.clone();
         let thread = std::thread::Builder::new()
             .name("recovery".into())
             .spawn(move || {
                 for job in rx {
+                    let done = || left.fetch_sub(1, Ordering::SeqCst);
                     let (tab, outcome) = match job {
                         Job::Write(t, info, make) => {
                             // A failed or panicking snapshot skips this write (section 4).
@@ -1094,10 +1104,13 @@ impl Queue {
                         },
                         Job::Retry => {
                             s.retry_leftovers();
+                            done();
                             continue;
                         }
                     };
-                    if report.send(Report { tab, outcome }).is_err() {
+                    let sent = report.send(Report { tab, outcome });
+                    done();
+                    if sent.is_err() {
                         break;
                     }
                     wake();
@@ -1109,6 +1122,7 @@ impl Queue {
             tx: Some(tx),
             reports,
             thread: Some(thread),
+            pending,
         }
     }
 
@@ -1116,9 +1130,18 @@ impl Queue {
         &self.store
     }
 
+    /// Whether every job asked for is done (its report waiting in [`Queue::reports`]).
+    #[cfg(test)]
+    pub fn idle(&self) -> bool {
+        self.pending.load(Ordering::SeqCst) == 0
+    }
+
     fn send(&self, job: Job) {
         if let Some(tx) = &self.tx {
-            let _ = tx.send(job);
+            self.pending.fetch_add(1, Ordering::SeqCst);
+            if tx.send(job).is_err() {
+                self.pending.fetch_sub(1, Ordering::SeqCst);
+            }
         }
     }
 

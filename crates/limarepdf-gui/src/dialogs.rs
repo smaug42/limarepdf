@@ -286,6 +286,81 @@ pub fn confirm(ctx: &Context, title: &str, text: &str, yes: &str) -> Outcome {
     })
 }
 
+// ------------------------------------------------------------------ recovery
+
+/// A document offered in the restore window (the recovery design's section 7).
+pub struct Offer {
+    /// Its title, or `None` for a copy that can't be restored.
+    pub title: Option<String>,
+    /// Where from, when, how many pages, and until when it is kept; or why it can't be
+    /// restored.
+    pub detail: String,
+}
+
+/// What was pressed in the restore window: a button for the offer at an index, or Not now.
+#[derive(PartialEq, Eq, Debug)]
+pub enum RestoreOut {
+    Open,
+    Restore(usize),
+    Discard(usize),
+    ShowFile(usize),
+    NotNow,
+}
+
+/// At start, the documents LimarePDF kept recovery copies of when it last stopped without
+/// closing normally, each with Restore and Discard (Show file and Discard for a copy that
+/// can't be restored); Not now keeps them all for the next start.
+pub fn restore(ctx: &Context, offers: &[Offer]) -> RestoreOut {
+    let mut out = RestoreOut::Open;
+    egui::Window::new("Recover unsaved changes")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.set_max_width(520.0);
+            ui.label(
+                "LimarePDF stopped without closing normally. It kept copies of these documents \
+                 with their unsaved changes, as they were at the time shown. A restored \
+                 document opens as a new, unsaved document; the original file isn't changed.",
+            );
+            ui.add_space(6.0);
+            egui::ScrollArea::vertical()
+                .max_height(360.0)
+                .show(ui, |ui| {
+                    for (i, o) in offers.iter().enumerate() {
+                        ui.separator();
+                        match &o.title {
+                            Some(t) => ui.strong(t),
+                            None => ui.strong("A copy that can't be restored"),
+                        };
+                        ui.add(egui::Label::new(&o.detail).wrap());
+                        ui.horizontal(|ui| {
+                            if o.title.is_some() {
+                                if ui.button("Restore").clicked() {
+                                    out = RestoreOut::Restore(i);
+                                }
+                            } else if ui.button("Show file").clicked() {
+                                out = RestoreOut::ShowFile(i);
+                            }
+                            if ui.button("Discard").clicked() {
+                                out = RestoreOut::Discard(i);
+                            }
+                        });
+                    }
+                });
+            ui.add_space(8.0);
+            ui.separator();
+            let later = ui.button("Not now").on_hover_text(
+                "Keep the copies, and ask again the next time LimarePDF starts (until the date \
+                 shown).",
+            );
+            if later.clicked() {
+                out = RestoreOut::NotNow;
+            }
+        });
+    out
+}
+
 /// What was picked in [`choose`].
 #[derive(PartialEq, Eq, Debug)]
 pub enum Choice {

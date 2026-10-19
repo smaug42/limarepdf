@@ -40,7 +40,8 @@ pub trait Fs: Send + Sync {
 /// The real file system.
 pub struct RealFs;
 
-/// What to do with a folder found at the recovery location (Unix).
+/// What to do with a folder found at the recovery location (Unix; tested everywhere).
+#[cfg(any(unix, test))]
 #[derive(Debug, PartialEq)]
 pub(super) enum Verdict {
     Fine,
@@ -51,6 +52,7 @@ pub(super) enum Verdict {
 }
 
 /// Judges a folder by its owner and mode, for `me`.
+#[cfg(any(unix, test))]
 pub(super) fn judge_folder(owner: u32, mode: u32, me: u32) -> Verdict {
     if owner != me {
         Verdict::NotOurs

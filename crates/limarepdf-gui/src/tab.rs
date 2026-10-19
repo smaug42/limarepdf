@@ -3,6 +3,8 @@ use crate::banners::{self, Banner};
 use crate::editor::{annot_tip, Action, Editor, StampPick, Tool};
 use crate::inspector::{Forms, Sec};
 use crate::markup::{self, Mark};
+use crate::recovery::schedule::Schedule;
+use crate::recovery::TabId;
 use crate::selection::Selection;
 use crate::settings::Layout;
 use crate::signatures::{self, Check, PanelAct, SigState};
@@ -191,6 +193,21 @@ pub struct Tab {
     pub sigs: Option<SigState>,
     /// What to call a document that has no file, such as a signed version.
     pub label: Option<String>,
+    /// When the tab's recovery copy is due, and what became of it.
+    pub copy: Schedule,
+    /// The tab was restored from a recovery copy, and hasn't been saved since.
+    pub recovered: Option<Recovered>,
+}
+
+/// Where a restored tab came from (the design's section 7).
+#[derive(Clone, Debug)]
+pub struct Recovered {
+    /// The crashed session's folder and the tab the copy was of, so the copy can be
+    /// deleted once this tab is saved or closed.
+    pub session: PathBuf,
+    pub tab: TabId,
+    /// The file the document was opened from, which Save as suggests a folder from.
+    pub original: Option<PathBuf>,
 }
 
 impl Tab {
@@ -277,6 +294,8 @@ impl Tab {
             cover: true,
             sigs: None,
             label: None,
+            copy: Schedule::default(),
+            recovered: None,
         })
     }
 
@@ -290,14 +309,18 @@ impl Tab {
             .unwrap_or_else(|| fallback.into())
     }
 
-    pub fn title(&self) -> String {
-        let name = self
-            .path
+    /// The file's name, or what the document is called when it has no file.
+    pub fn name(&self) -> String {
+        self.path
             .as_ref()
             .and_then(|p| p.file_name())
             .map(|n| limarepdf_core::display_line(&n.to_string_lossy(), 120))
             .or_else(|| self.label.clone())
-            .unwrap_or_else(|| "Untitled".into());
+            .unwrap_or_else(|| "Untitled".into())
+    }
+
+    pub fn title(&self) -> String {
+        let name = self.name();
         if self.dirty {
             format!("{name} *")
         } else {
@@ -1304,9 +1327,16 @@ impl Tab {
         }
     }
 
-    /// The Signatures side tab.
+    /// The Signatures side tab. A restored copy's signatures aren't checked: they cover
+    /// the original file, not the copy.
     pub fn show_signatures(&mut self, ui: &mut egui::Ui) {
-        match signatures::panel(ui, self.sigs.as_ref(), self.dirty) {
+        let act = match (&self.recovered, &self.sigs) {
+            (Some(_), None) => {
+                signatures::recovered_panel(ui, &signatures::recovered_rows(&self.pdf))
+            }
+            _ => signatures::panel(ui, self.sigs.as_ref(), self.dirty),
+        };
+        match act {
             Some(PanelAct::GoTo(page, top)) => self.go_to_at(page, top),
             Some(PanelAct::Details(i)) => self.requested.push(Act::SignatureDetails(i)),
             Some(PanelAct::SignedVersion(i)) => self.requested.push(Act::SignedVersion(i)),
@@ -1342,6 +1372,18 @@ impl Tab {
         {
             self.banners.insert(0, b);
         }
+    }
+
+    /// Shows `b` in its place among the banners, which are kept in order of importance,
+    /// replacing any of its kind.
+    pub fn show_banner(&mut self, b: Banner) {
+        self.drop_banner(b.kind);
+        let at = self.banners.partition_point(|x| x.kind < b.kind);
+        self.banners.insert(at, b);
+    }
+
+    pub fn drop_banner(&mut self, kind: banners::Kind) {
+        self.banners.retain(|b| b.kind != kind);
     }
 
     /// The report of the last finished signature check, if any.
