@@ -11,6 +11,7 @@ mod atomic;
 mod blank;
 mod cms_check;
 mod cms_write;
+pub mod disk;
 mod display;
 mod doc;
 mod edit;

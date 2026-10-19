@@ -74,6 +74,17 @@ files, the trust list) go through `limarepdf_core::write_private`. It and every 
 `write_file`) replace files through `atomic.rs`: a temporary file beside the target, always created new under a fresh
 name (never one already there), private to the user on Unix while written, then renamed over the target.
 
+Crash recovery copies (not yet used by the app) are kept by `crates/limarepdf-gui/src/recovery.rs`, in a private
+per-user state folder with one subfolder per running app, which holds a locked `lock` file while the app runs. A tab's
+copy is a PDF and a description naming it (length, SHA-256, title, original path), published in an order that leaves
+a whole pair after an app crash or a power cut: the new PDF is renamed into place and the folder synced, then the
+description, synced again, and only then is the previous PDF removed. Withdrawing a tab's copies, before a redaction,
+a removal of hidden information or an added password takes effect, shares a per-tab lock with publishing and reports
+whether an earlier copy could still be offered, so the command can stop instead. Temporary files come from
+`limarepdf_core::disk`, with `atomic.rs`'s rules; free space is read with `rustix` (Unix) and `windows-sys`
+(Windows). The file operations go through a small interface, so the tests can make any of them fail or run them on a
+model file system that simulates power cuts (`recovery/model.rs`).
+
 Signing (`sig_sign.rs`, `sign_document`) adds the signature dictionary with placeholders, its field or widget and
 its look, locks and certification to the document, then hands it to the appended-revision writer,
 `incremental.rs`: every object that differs from the file as opened (by value: a real `150.0` and an integer `150`
