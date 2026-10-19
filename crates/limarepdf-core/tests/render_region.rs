@@ -138,3 +138,34 @@ fn dark_tiles_keep_pictures_where_the_page_does() {
     let green = px(&t, 60, 20);
     assert!(green[1] > 150 && green[0] < 50, "{green:?}");
 }
+
+#[test]
+fn a_huge_page_is_an_error_not_a_huge_bitmap() {
+    // A page 10 million points a side: even at the smallest scale, the bitmap would be
+    // 65,535 pixels a side (17 GB).
+    let mut p = Pdf::new();
+    p.insert_blank(0, 300.0, 200.0).unwrap();
+    let page = p.page_ids()[0];
+    p.doc
+        .get_dictionary_mut(page)
+        .unwrap()
+        .set("MediaBox", vec![0.into(), 0.into(), 1e7.into(), 1e7.into()]);
+    let hp = render::load(p.snapshot().unwrap(), None).unwrap();
+    let r = render::Renderer::new(&hp);
+    for scale in [0.0, 1.0, 16.0] {
+        let e = r.render(0, scale).err().expect("too large");
+        assert!(e.to_string().contains("too large"), "{e}");
+    }
+    let whole = region(0, 0, u32::MAX, u32::MAX);
+    assert!(r.render_region(0, 1.0, whole).is_err());
+    // A tile of it still draws, as the app shows it at high zoom.
+    let t = r.render_region(0, 1.0, region(0, 0, 512, 512)).unwrap();
+    assert_eq!((t.width, t.height), (512, 512));
+    // Exporting it fails cleanly too.
+    let dir = std::env::temp_dir().join(format!("limarepdf-huge-{}", std::process::id()));
+    let e = p
+        .export_images(&[0], 72.0, render::ImageFormat::Png, &dir, "page")
+        .expect_err("too large");
+    assert!(e.to_string().contains("too large"), "{e}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

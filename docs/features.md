@@ -110,6 +110,11 @@ available.
   a menu command, shortcut or panel button that fails: an error message when it changed nothing, else that tab's
   error page. Redactions and removed hidden information are recorded with the change itself, so a later save of a
   signed document always writes the file out in full.
+- Sizes a file states are capped before memory is set aside for them, so a small crafted file can't make LimarePDF
+  ask for gigabytes and close: a page image has at most 268 million pixels (A3 at 1152 dpi;
+  [export](export-and-printing.md#pages-as-images)), Optimise scans skips pictures of more than 268 million pixels
+  with the reason, redaction removes a fax picture of more than that whole, as it does any picture it can't read,
+  and a font's character widths are read for 65,536 characters at most. Pages of any real size show at every zoom.
 - Text from a file that the app shows as a label or message (link addresses, bookmark names, comment authors and
   text, file names in tab and window titles and print job titles) has direction-changing (bidi), invisible and
   control characters removed and is shortened when very long, so a link can't pretend to go somewhere else. Form

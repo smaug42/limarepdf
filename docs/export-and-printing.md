@@ -4,7 +4,8 @@
 
 Pages are saved as PNG or JPEG files at 36 to 1152 dpi, one file per page, named after the document and the page
 number (`report-001.png`, …). The resolution is stored in each file, so the images import back at the page's size.
-LimarePDF draws the pages with its own renderer.
+LimarePDF draws the pages with its own renderer. A page image can have at most 268 million pixels (A3 at 1152 dpi;
+a 4 × 3 foot poster at about 390 dpi); a larger one is an error that names the page, and a lower resolution works.
 
 Where: the inspector's Export pages as images section, also reached from the top bar's Export menu. It runs in the
 background and asks before replacing files. On the command line: `limarepdf-cli render --format png|jpeg`.
@@ -30,7 +31,8 @@ some printer setups print every page blurred when a job leaves it out. Form fiel
 (those meant for printing), since some CUPS setups drop fields without drawing them; the open document keeps its
 form.
 
-**Windows** prints through the print spooler. LimarePDF draws each page at the printer's resolution, at most 600 dpi. A page
+**Windows** prints through the print spooler. LimarePDF draws each page at the printer's resolution, at most 600 dpi
+and at most 268 million pixels (A0 is drawn at about 415 dpi, which the printer scales up). A page
 prints at actual size, shrunk to the printable area when it is larger, centred, and turned when a landscape page meets
 portrait paper or the reverse.
 

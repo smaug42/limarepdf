@@ -291,6 +291,30 @@ fn removes_a_picture_it_cannot_read_whole() {
 }
 
 #[test]
+fn removes_a_fax_picture_too_large_to_decode() {
+    // 65,535 pixels a side, 4 GB once decoded, from 8 KB: each 1 bit is a white row
+    // ("vertical 0" below a white row).
+    let mut p = make(&["q 100 0 0 100 50 50 cm /Im1 Do Q"]);
+    let img = p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Image", "Width" => 65_535, "Height" => 65_535,
+            "ColorSpace" => "DeviceGray", "BitsPerComponent" => 1,
+            "Filter" => "CCITTFaxDecode",
+            "DecodeParms" => dictionary! { "K" => -1, "Columns" => 65_535 },
+        },
+        vec![0xFF; 8192],
+    ));
+    let page = p.page_ids()[0];
+    let d = p.doc.get_dictionary_mut(page).unwrap();
+    let mut res = d.get(b"Resources").unwrap().as_dict().unwrap().clone();
+    res.set("XObject", dictionary! { "Im1" => img });
+    d.set("Resources", res);
+    let rep = p.redact(&[(0, [60.0, 60.0, 70.0, 70.0])]).unwrap();
+    assert_eq!((rep.pages[0].images, rep.pages[0].images_cut), (1, 0));
+    assert_eq!(images_in_file(&mut p), 0);
+}
+
+#[test]
 fn drops_a_picture_from_shared_resources_when_no_page_draws_it() {
     let mut p = make(&[
         "q 50 0 0 50 100 50 cm /Im1 Do Q",

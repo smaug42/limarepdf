@@ -115,6 +115,10 @@ fn unligature(c: char) -> String {
 
 /// Largest ToUnicode CMap read, once decompressed.
 const MAX_CMAP: usize = 16 << 20;
+/// Largest CID (ISO 32000-1, Annex C: CIDs are at most 65,535).
+const MAX_CID: u32 = 0xFFFF;
+/// Most widths a `/W` array may set, counting repeats: four times every CID.
+const MAX_W_STEPS: usize = 4 << 16;
 
 pub(crate) struct FontCtx<'a> {
     pub type0: bool,
@@ -252,19 +256,26 @@ impl<'a> FontCtx<'a> {
         ctx
     }
 
+    /// Read a CID font's `/W` array into `wmap`. CIDs past [`MAX_CID`] are left out, so
+    /// the map stays within 65,536 entries, and the work within [`MAX_W_STEPS`].
     fn parse_w(&mut self, doc: &Document, w: &[Object]) {
+        let mut left = MAX_W_STEPS;
         let mut i = 0;
-        while i < w.len() {
+        while i < w.len() && left > 0 {
             let Some(c1) = f(doc, &w[i]) else { break };
+            // Saturates: negative and NaN are 0, huge is past MAX_CID.
+            let c1 = c1 as u32;
             match w
                 .get(i + 1)
                 .and_then(|o| doc.dereference(o).ok())
                 .map(|(_, o)| o)
             {
                 Some(Object::Array(a)) => {
-                    for (k, o) in a.iter().enumerate() {
+                    let room = (MAX_CID + 1).saturating_sub(c1) as usize;
+                    for (k, o) in a.iter().take(room.min(left)).enumerate() {
+                        left -= 1;
                         if let Some(v) = f(doc, o) {
-                            self.wmap.insert(c1 as u32 + k as u32, v);
+                            self.wmap.insert(c1 + k as u32, v);
                         }
                     }
                     i += 2;
@@ -276,7 +287,8 @@ impl<'a> FontCtx<'a> {
                     ) else {
                         break;
                     };
-                    for c in (c1 as u32)..=(c2 as u32).min(c1 as u32 + 70_000) {
+                    for c in (c1..=(c2 as u32).min(MAX_CID)).take(left) {
+                        left -= 1;
                         self.wmap.insert(c, v);
                     }
                     i += 3;
@@ -368,5 +380,60 @@ impl<'a> FontCtx<'a> {
             && self.encoding_ok
             && !self.base.is_empty()
             && !self.base.contains('+')
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lopdf::dictionary;
+
+    /// A Type 0 font whose descendant has `/W` `w` and `/DW` 500.
+    fn widths(w: Vec<Object>) -> (Document, Dictionary) {
+        let mut doc = Document::with_version("1.7");
+        let desc = doc.add_object(dictionary! {
+            "Type" => "Font", "Subtype" => "CIDFontType2", "DW" => 500, "W" => w,
+        });
+        let font = dictionary! {
+            "Type" => "Font", "Subtype" => "Type0", "BaseFont" => "F",
+            "Encoding" => "Identity-H", "DescendantFonts" => vec![desc.into()],
+        };
+        (doc, font)
+    }
+
+    #[test]
+    fn cid_widths_are_read() {
+        let (doc, font) = widths(vec![
+            10.into(),
+            vec![600.into(), 700.into()].into(),
+            20.into(),
+            22.into(),
+            300.into(),
+        ]);
+        let ctx = FontCtx::new(&doc, &font);
+        let got: Vec<f32> = [9, 10, 11, 12, 20, 22, 23].map(|c| ctx.width(c)).to_vec();
+        assert_eq!(got, [500.0, 600.0, 700.0, 500.0, 300.0, 300.0, 500.0]);
+    }
+
+    #[test]
+    fn cid_widths_past_the_largest_cid_are_left_out() {
+        // A start past u32 (saturates, no overflow), ranges over every CID many times
+        // and a list running past the last CID.
+        let mut w = vec![
+            1e12.into(),
+            vec![600.into(), 700.into()].into(),
+            65_535.into(),
+            vec![800.into(), 900.into()].into(),
+        ];
+        for _ in 0..1000 {
+            w.extend([0.into(), 4_000_000_000i64.into(), 400.into()]);
+        }
+        let (doc, font) = widths(w);
+        let ctx = FontCtx::new(&doc, &font);
+        // Set by the list, then by the first ranges, before the work limit stops them.
+        assert_eq!(ctx.width(65_535), 400.0);
+        assert_eq!(ctx.width(u32::MAX), 500.0);
+        assert!(ctx.wmap.len() <= MAX_CID as usize + 1, "{}", ctx.wmap.len());
+        assert!(ctx.wmap.keys().all(|&c| c <= MAX_CID));
     }
 }

@@ -35,6 +35,22 @@ pub struct Bitmap {
 /// at 96 dpi on a screen with three pixels per point.
 pub const MAX_REGION_SCALE: f32 = 256.0;
 
+/// Most pixels a page's bitmap may have: 1 GiB of RGBA, enough for A3 at [`MAX_DPI`].
+/// The file sets the page size, and the rasteriser allocates the whole bitmap at once
+/// (up to 65,535 pixels a side, 17 GB), so a failed allocation would close the app.
+pub const MAX_PIXELS: u64 = 1 << 28;
+
+/// An error when a bitmap `width` × `height` of page `index` would pass [`MAX_PIXELS`].
+fn check_pixels(index: usize, width: u32, height: u32) -> Result<()> {
+    if width as u64 * height as u64 > MAX_PIXELS {
+        anyhow::bail!(
+            "page {} is too large to draw at this size ({width} × {height} pixels)",
+            index + 1
+        );
+    }
+    Ok(())
+}
+
 /// A rectangle of the bitmap a whole page would be at some scale: left, top, width and
 /// height in pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -205,10 +221,14 @@ impl<'a> Renderer<'a> {
         Ok(self.page(index)?.render_dimensions())
     }
 
-    /// Render a page at `scale` (1.0 = 72 dpi, 2.0 = 144 dpi).
+    /// Render a page at `scale` (1.0 = 72 dpi, 2.0 = 144 dpi). A bitmap of more than
+    /// [`MAX_PIXELS`] is an error.
     pub fn render(&self, index: usize, scale: f32) -> Result<Bitmap> {
         let page = self.page(index)?;
         let scale = scale.clamp(0.05, 16.0);
+        // The bitmap's size as `hayro::render` works it out.
+        let (w, h) = page.render_dimensions();
+        check_pixels(index, (w * scale) as u16 as u32, (h * scale) as u16 as u32)?;
         let pm = render(
             page,
             &self.cache,
@@ -253,6 +273,7 @@ impl<'a> Renderer<'a> {
         let r = region
             .within((w * scale) as u32, (h * scale) as u32)
             .ok_or_else(|| anyhow!("the region is outside page {}", index + 1))?;
+        check_pixels(index, r.width, r.height)?;
         let mut ctx = RenderContext::new(r.width as u16, r.height as u16);
         render_into(
             page,

@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- A small crafted file could make LimarePDF ask for gigabytes of memory and close, losing unsaved work in every tab:
+  a page with a huge stated size (up to 17 GB to draw), a fax or 1-bit picture of billions of pixels when optimising
+  scans or redacting (up to 4 GB), or a font's character widths (billions of entries; a width list with a huge first
+  character code also made reading the page's text fail). These sizes are now capped: a page image at 268 million pixels, which
+  gives an error naming the page (A3 still exports at 1152 dpi; of about 7,200 test pages, the largest poster
+  exports at up to 208 dpi), pictures at 268 million pixels, and widths at the 65,536 characters a font can have.
+  Printing on Windows draws pages larger than the limit at a lower resolution instead.
+
 ## [0.7.2] - 2026-10-18
 
 ### Added
