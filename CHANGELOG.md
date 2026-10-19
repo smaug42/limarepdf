@@ -34,6 +34,8 @@
 - Repairing a damaged file could show a PDF attached to it, stored uncompressed, instead of the file's own pages,
   when the attachment's length was written in an object of its own. Such lengths are now looked up, and a copy of
   that object inside the attachment isn't used.
+- Some RC4-protected files with no open password asked for one that other readers don't need: files whose password
+  entry (`/U`) holds only the 16 bytes readers compare, instead of 32. They now open without asking.
 
 ## [0.7.2] - 2026-10-18
 

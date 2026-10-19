@@ -58,7 +58,7 @@ available.
 | Watermarks | Done | Text or a PNG, JPEG or TIFF picture; centred, with size, opacity, rotation, above or behind |
 | Document properties | Done | Title, author, subject, keywords, creator, producer |
 | Password security | Done | All four ciphers and permission flags. [Things to know](security.md) |
-| Opening protected files | Done | With the open (user) password |
+| Opening protected files | Done | With the open (user) password; files with an empty one open without asking, including RC4 files with a shortened password entry that other readers accept |
 | Content editing | Partial | Works on lines, not paragraphs; some fonts are replaced when edited. [Details](content-editing.md) |
 | Importing images as pages | Done | PNG, JPEG, TIFF. [Details](scanning-and-ocr.md#importing-images) |
 | Optimising scanned pages | Partial | Pages that are one image. [Details](scanning-and-ocr.md#optimising-scanned-pages) |
@@ -133,10 +133,11 @@ pool of features other PDF tools have is in [ideas.md](ideas.md).
   the last session's documents.
 - **Acceptance checks** of everyday workflows by hand, in other readers and on Windows and macOS, as listed in
   [Testing](testing.md#acceptance-checks). They have been run on Linux.
-- **Some protected files with an empty password** (RC4, with a non-standard password entry) ask for a password
-  that other readers don't need.
 - **Very complex pages:** one test page with 73,000 drawn paths takes about 10 GB of memory to draw at 150 dpi
   ([Performance](performance.md)).
+- **Text from some Chinese, Japanese and Korean files:** fonts with no ToUnicode map that use a standard Unicode
+  character map (such as `UniJIS-UCS2-H`) give the wrong characters when searching, copying or exporting text
+  ([Search and text](search-and-text.md#text-extraction)).
 
 ### Rendering
 

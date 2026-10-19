@@ -43,5 +43,7 @@ Limits:
   give the wrong characters.
 - CID fonts whose codes are not two bytes long (some older Chinese, Japanese and Korean encodings) can come out
   wrong.
+- CID fonts with no ToUnicode map that rely on a standard Unicode character map (such as `UniJIS-UCS2-H`, common
+  in Japanese files with fonts that aren't embedded) come out as the wrong characters.
 - Text inside form XObjects (reusable blocks of page content, which some PDF makers put all their text in) is read,
   searched and selected, but cannot be edited line by line: the form moves, resizes and deletes as one object.
