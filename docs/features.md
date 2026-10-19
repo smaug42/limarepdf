@@ -53,7 +53,7 @@ available.
 | Print or save selected text | Done | As the pages look, full width, cut down to the selected lines, or as plain text in Helvetica (Western European characters only); also saves a .txt file |
 | Page operations: insert, delete, rotate, extract, reorder, crop, remove blank pages | Done | Crop by margins; no dragging a crop box on the page. Blank means one even colour, give or take specks or a lone page number |
 | Merge and split | Done | Split by page count or at bookmarks, files named after them. Bookmarks, forms and named destinations of appended files are not carried over, and split parts have no bookmarks. Split by file size: No |
-| Undo and redo | Done | 20 levels, including password settings |
+| Undo and redo | Done | 20 levels, including password settings; fewer on very large documents (up to 1 GB per document) |
 | Headers, footers, page numbers, dates, Bates numbers | Done | Helvetica and Latin-1 characters only |
 | Watermarks | Done | Text or a PNG, JPEG or TIFF picture; centred, with size, opacity, rotation, above or behind |
 | Document properties | Done | Title, author, subject, keywords, creator, producer |
@@ -133,8 +133,6 @@ pool of features other PDF tools have is in [ideas.md](ideas.md).
   the last session's documents.
 - **Acceptance checks** of everyday workflows by hand, in other readers and on Windows and macOS, as listed in
   [Testing](testing.md#acceptance-checks). They have been run on Linux.
-- **A memory limit for undo:** each undo step keeps a whole copy of the document, so 20 edits on a large scan
-  can take gigabytes ([measured](performance.md#memory-in-the-desktop-app)). The oldest steps would go first.
 - **Some protected files with an empty password** (RC4, with a non-standard password entry) ask for a password
   that other readers don't need.
 - **Very complex pages:** one test page with 73,000 drawn paths takes about 10 GB of memory to draw at 150 dpi

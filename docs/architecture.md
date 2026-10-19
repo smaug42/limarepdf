@@ -92,7 +92,10 @@ serialises it, without the objects nothing uses (`Pdf::pruned_snapshot`, so noth
 information detached is in it), and publishes it in order with saves' and closes' removals. Redaction, Remove
 hidden information and an added password withdraw the tab's copies before their edit runs, and for a restored tab
 the crashed session's copy it came from too (`Crashed::withdraw`), and stop when either reports that an earlier copy
-could still be offered. Append PDFs does the same when a file it adds is encrypted, and marks the tab protected. At start the app finds the sessions of runs that ended without cleaning up and offers
+could still be offered. So does Redo when the step it redoes removed content (each undo step records that, as
+`Step::removal`, since `scrubbed` may already be set), as a copy written after the undo holds the content. A
+crashed copy whose withdrawal couldn't be confirmed (the folder sync failed) is kept in `Crashed::unconfirmed` and
+tried again in full at every withdrawal until a sync succeeds; its folder stays meanwhile. Append PDFs does the same when a file it adds is encrypted, and marks the tab protected. At start the app finds the sessions of runs that ended without cleaning up and offers
 their copies; a normal exit (`on_exit`, which a crash never reaches) ends the session and deletes its folder.
 
 Signing (`sig_sign.rs`, `sign_document`) adds the signature dictionary with placeholders, its field or widget and

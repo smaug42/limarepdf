@@ -26,6 +26,9 @@ const GAP: f32 = 16.0;
 const FIT_MARGIN: f32 = 12.0;
 const THUMB_W: f32 = 120.0;
 const MAX_UNDO: usize = 20;
+/// The most memory one tab's undo steps may hold. Beyond it the oldest steps are dropped,
+/// though the latest is always kept, so undo is shorter on very large documents.
+const UNDO_BUDGET: usize = 1 << 30;
 /// egui points at zoom 1.0 per PDF point (96 dpi logical).
 const BASE: f32 = 96.0 / 72.0;
 /// Highest zoom: 6400%, as Acrobat.
@@ -53,6 +56,26 @@ struct Step {
     /// good (see [`Tab::edit_removing`]): undoing it puts the content back, redoing it
     /// removes it again.
     removal: bool,
+}
+
+impl Step {
+    /// The memory the step's copy of the document takes: its length, as the spare capacity
+    /// left by growing the buffer is never written, so the system gives it no memory.
+    fn size(&self) -> usize {
+        self.pdf.as_ref().map_or(0, Vec::len)
+    }
+}
+
+/// Drop the oldest steps until at most [`MAX_UNDO`] remain and they hold at most `budget`
+/// bytes, always keeping the latest.
+fn trim(steps: &mut Vec<Step>, budget: usize) {
+    let mut drop = steps.len().saturating_sub(MAX_UNDO);
+    let mut total: usize = steps[drop..].iter().map(Step::size).sum();
+    while total > budget && drop + 1 < steps.len() {
+        total -= steps[drop].size();
+        drop += 1;
+    }
+    steps.drain(..drop);
 }
 
 /// See [`Tab::state`].
@@ -976,10 +999,9 @@ impl Tab {
             scrubbed: self.scrubbed,
             removal,
         });
-        if self.undo.len() > MAX_UNDO {
-            self.undo.remove(0);
-        }
+        // Redo is emptied here, so the undo steps are all the budget covers.
         self.redo.clear();
+        trim(&mut self.undo, UNDO_BUDGET);
         self.dirty = true;
     }
 
@@ -2495,6 +2517,40 @@ mod tests {
             thread_order(&list),
             [(0, 0), (2, 1), (3, 2), (1, 0), (4, 0), (5, 0), (6, 0)]
         );
+    }
+
+    #[test]
+    fn undo_steps_are_kept_within_the_budget() {
+        let step = |n: usize, removal: bool| Step {
+            pdf: (n > 0).then(|| vec![n as u8; n]),
+            encryption: None,
+            scrubbed: false,
+            removal,
+        };
+        let sizes = |s: &[Step]| s.iter().map(Step::size).collect::<Vec<_>>();
+        // The oldest go first; password-only steps take nothing.
+        let mut s = vec![
+            step(40, true),
+            step(30, false),
+            step(0, false),
+            step(20, false),
+        ];
+        trim(&mut s, 60);
+        assert_eq!(sizes(&s), [30, 0, 20]);
+        trim(&mut s, 50);
+        assert_eq!(sizes(&s), [30, 0, 20]);
+        trim(&mut s, 49);
+        assert_eq!(sizes(&s), [0, 20]);
+        // The latest stays even when it alone is over the budget, and keeps its flag.
+        let mut s = vec![step(10, false), step(100, true)];
+        trim(&mut s, 50);
+        assert_eq!(sizes(&s), [100]);
+        assert!(s[0].removal);
+        // Within the budget, the count limit still applies.
+        let mut s: Vec<_> = (1..=MAX_UNDO + 3).map(|n| step(n, false)).collect();
+        trim(&mut s, usize::MAX);
+        assert_eq!(s.len(), MAX_UNDO);
+        assert_eq!(s[0].size(), 4);
     }
 
     #[test]

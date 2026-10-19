@@ -489,8 +489,10 @@ The other tools add content:
   the page content with "Draw on page (permanent)". Its menu also has the stamp tool (see [Stamps](#stamps)) and
   the tool that marks areas for redaction (see [Redaction](#redaction)).
 
-Everything that changes the document can be undone with Ctrl+Z. See [Content editing](content-editing.md) for how
-editing works and its limits.
+Everything that changes the document can be undone with Ctrl+Z, up to 20 steps back. Each step keeps a whole copy
+of the document, and a document's steps are limited to 1 GB together, so undo goes back fewer steps on very large
+documents (about 7 on a 139 MB scan); the latest change can always be undone. See
+[Content editing](content-editing.md) for how editing works and its limits.
 
 ## Copying text
 

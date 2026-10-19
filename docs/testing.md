@@ -180,7 +180,7 @@ happened in everyday use but no result was written down.
 | Open a PDF passed on the command line, with `--page` | Not recorded | Not run | Not run |
 | Edit, save, reopen | Used by hand | Not run | Not run |
 | File dialogs (open, save as, choose a folder) | Used by hand | Not run | Not run |
-| Print to a real printer | Not run (no printer) | Printed by hand (0.3) | Not run |
+| Print to a real printer | Printed on paper (HP LaserJet P1606dn through CUPS, 2026-10-18; the "Printing" acceptance check) | Print dialog only; nothing printed on paper | Not run |
 | Keyboard shortcuts (Ctrl, or Cmd on macOS) | Used by hand | Not run | Not run |
 | HiDPI screen (scale 2) | Not run | Not run | Not run |
 | Name and icon in the taskbar, dock and Open with | Not recorded | Icon checked by hand (0.5) | Not run |

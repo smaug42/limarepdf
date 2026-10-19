@@ -23,6 +23,10 @@
   gives an error naming the page (A3 still exports at 1152 dpi; of about 7,200 test pages, the largest poster
   exports at up to 208 dpi), pictures at 268 million pixels, and widths at the 65,536 characters a font can have.
   Printing on Windows draws pages larger than the limit at a lower resolution instead.
+- Undo on a large document could take gigabytes of memory: each step keeps a whole copy of the document, so 20 edits
+  on a 139 MB scan took about 2.6 GB. Each document's undo steps are now limited to 1 GB together; beyond it the
+  oldest steps are dropped, so undo is shorter on very large documents (about 7 steps on that scan). The latest
+  change can always be undone.
 - Editing a line of text, or adding text, a shape or a picture, on a page printed to PDF from a web browser drew the
   new content upside down, mirrored and shrunk (a 28 pt line became about 7 pt). Such pages flip and scale the whole
   page without restoring it afterwards, and the new content inherited that.
