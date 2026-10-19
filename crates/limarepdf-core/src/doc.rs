@@ -222,6 +222,14 @@ impl Pdf {
         Ok(out)
     }
 
+    /// Like [`Pdf::snapshot`], with unused objects removed first, as a save removes them:
+    /// for copies written to disk. Redacting and removing hidden information leave what
+    /// they took out in objects nothing uses any more, which only pruning drops.
+    pub fn pruned_snapshot(&mut self) -> Result<Vec<u8>> {
+        self.doc.prune_objects();
+        self.snapshot()
+    }
+
     /// Like [`Pdf::snapshot`], for on-screen rendering. hayro honours the Hidden annotation
     /// flag but not NoView, so annotations flagged NoView are marked Hidden in the copy that
     /// is serialised. The document itself is not changed.

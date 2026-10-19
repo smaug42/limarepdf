@@ -220,7 +220,9 @@ fn endstream_inside_stream_data() {
 fn uncompressed_embedded_pdf() {
     // An attached PDF stored as it is, with its own objects, streams and table: none of
     // them belong to the outer file, though their numbers are the same. Its length is
-    // given directly, or in an object of its own, before or after it.
+    // given directly, or in an object of its own, before or after it. Last, the attached
+    // file holds an object with the length's number too, whose value would end the stream
+    // at its own stream's `endstream`: it is part of the data, so it isn't used.
     let (mut inner, at) = body(&[
         (4, "<< /Length 3 >>\nstream\n0 g\nendstream".into()),
         (1, "<< /Type /Catalog /Pages 2 0 R >>".into()),
@@ -229,16 +231,22 @@ fn uncompressed_embedded_pdf() {
     ]);
     table(&mut inner, &at, "/Root 1 0 R");
     let inner = String::from_utf8_lossy(&inner).into_owned();
-    let attached = |length: &str| {
+    let early = inner.find("endstream").unwrap();
+    let spoofed = format!("{inner}7 0 obj\n{early}\nendobj\n");
+    let attached = |length: &str, inner: &str| {
         format!(
             "<< /Type /EmbeddedFile /Subtype /application#2Fpdf /Length {length} >>\nstream\n{inner}\nendstream"
         )
     };
     let length = (7, inner.len().to_string());
     for o in [
-        vec![(6, attached(&length.1))],
-        vec![(6, attached("7 0 R")), length.clone()],
-        vec![length.clone(), (6, attached("7 0 R"))],
+        vec![(6, attached(&length.1, &inner))],
+        vec![(6, attached("7 0 R", &inner)), length.clone()],
+        vec![length.clone(), (6, attached("7 0 R", &inner))],
+        vec![
+            (7, spoofed.len().to_string()),
+            (6, attached("7 0 R", &spoofed)),
+        ],
     ] {
         let mut all = objects();
         all.extend(o);

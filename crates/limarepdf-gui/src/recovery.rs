@@ -311,6 +311,23 @@ fn withdrawn_text() -> String {
     format!("{HEADER}\nwithdrawn\n")
 }
 
+/// Removes the description `desc`, or failing that replaces it with one that names no copy.
+/// `Some` when it can do neither, so its copy could still be offered.
+fn withdraw_description(fs: &dyn Fs, desc: &Path) -> Option<NotConfirmed> {
+    let e = remove_checked(fs, desc).err()?;
+    let replaced = fs
+        .write_temp(desc, withdrawn_text().as_bytes())
+        .and_then(|tmp| {
+            fs.rename(&tmp, desc).inspect_err(|_| {
+                let _ = fs.remove_file(&tmp);
+            })
+        });
+    replaced.is_err().then(|| NotConfirmed::Kept {
+        file: desc.to_path_buf(),
+        why: e.to_string(),
+    })
+}
+
 /// Removes `path`; gone already counts as done. A name still there afterwards (a Windows
 /// delete left pending while another program has the file open) counts as a failure.
 fn remove_checked(fs: &dyn Fs, path: &Path) -> io::Result<()> {
@@ -723,24 +740,7 @@ impl Store {
         let rec = self.rec(tab);
         let mut r = lock(&rec);
         r.withdrawals += 1;
-        let desc = self.dir.join(tab.description());
-        let mut kept = None;
-        if let Err(e) = remove_checked(fs, &desc) {
-            // Next best: a description that names no copy.
-            let replaced = fs
-                .write_temp(&desc, withdrawn_text().as_bytes())
-                .and_then(|tmp| {
-                    fs.rename(&tmp, &desc).inspect_err(|_| {
-                        let _ = fs.remove_file(&tmp);
-                    })
-                });
-            if replaced.is_err() {
-                kept = Some(NotConfirmed::Kept {
-                    file: desc.clone(),
-                    why: e.to_string(),
-                });
-            }
-        }
+        let kept = withdraw_description(fs, &self.dir.join(tab.description()));
         self.at(Point::WithdrewDescription);
         let mut left = Vec::new();
         for p in self.files_of(tab, &r) {
@@ -841,6 +841,8 @@ pub struct Crashed {
     pub docs: Vec<Found>,
     /// When its copies are removed (section 5).
     pub keep_until: SystemTime,
+    /// Files withdrawals left; the next start removes them if they are still there.
+    leftovers: Vec<PathBuf>,
     _lock: Option<Held>,
 }
 
@@ -977,6 +979,7 @@ pub fn find_crashed(fs: &Arc<dyn Fs>, root: &Path, now: SystemTime) -> Vec<Crash
             dir,
             docs,
             keep_until,
+            leftovers: Vec::new(),
             _lock: held,
         });
     }
@@ -1031,6 +1034,55 @@ impl Crashed {
             let _ = fs.remove_dir_all(&self.dir);
         }
         result
+    }
+
+    /// Withdraws copy `tab` before a redaction, a removal of hidden information or a
+    /// password takes effect in the tab restored from it, with the outcomes of
+    /// [`Store::withdraw`] (section 6). The session goes once nothing is left in it.
+    pub fn withdraw(&mut self, tab: TabId) -> Withdrawal {
+        let fs = &*self.fs;
+        let Some(i) = self.docs.iter().position(|d| d.tab == tab) else {
+            return Withdrawal::Confirmed;
+        };
+        let kept = withdraw_description(fs, &self.dir.join(tab.description()));
+        let mut left = Vec::new();
+        if let Ok(list) = fs.list(&self.dir) {
+            for p in list.iter().filter(|n| tab.owns_pdf(n)) {
+                let p = self.dir.join(p);
+                if remove_checked(fs, &p).is_err() {
+                    left.push(p);
+                }
+            }
+        }
+        let synced = fs.sync_dir(&self.dir);
+        if let Some(k) = kept {
+            return Withdrawal::NotConfirmed(k);
+        }
+        // No longer offered, even if the sync failed: its description is gone here.
+        self.docs.remove(i);
+        if let Err(e) = synced {
+            return Withdrawal::NotConfirmed(NotConfirmed::SyncFailed {
+                folder: self.dir.clone(),
+                why: e.to_string(),
+            });
+        }
+        if self.docs.is_empty() {
+            self._lock = None;
+            let _ = fs.remove_dir_all(&self.dir);
+            left.retain(|p| fs.exists(p));
+        }
+        self.leftovers.extend(left.iter().cloned());
+        if left.is_empty() {
+            Withdrawal::Confirmed
+        } else {
+            Withdrawal::Leftover(left)
+        }
+    }
+
+    /// Tries again to delete the files withdrawals left.
+    pub fn retry_leftovers(&mut self) {
+        let fs = &*self.fs;
+        self.leftovers.retain(|p| remove_checked(fs, p).is_err());
     }
 }
 

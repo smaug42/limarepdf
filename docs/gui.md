@@ -374,7 +374,8 @@ copies are not autosave: **your own files are never written by them.**
   It holds the document as it was then, so changes made in the last minute or so before a crash can be lost.
 - Saving or closing a document deletes its copy, and quitting normally deletes them all.
 - Password-protected documents get no copies: not one opened with a password, not one you set a password on (its
-  copy is deleted first), and not pages taken from one.
+  copy is deleted first), not pages taken from one, and not a document you add a protected document's pages to
+  with Append PDFs (its copy is deleted first too; this includes protected files that open without a password).
 - The copies are kept in a folder only you can read: `~/.local/state/limarepdf/recovery` on Linux (or
   `$XDG_STATE_HOME/limarepdf/recovery`), `~/Library/Application Support/limarepdf/recovery` on macOS, and
   `%LOCALAPPDATA%\limarepdf\recovery` on Windows.
@@ -389,7 +390,8 @@ called "*name* (recovered)", with a notice saying when the copy was made; Save s
 beside the original. **Discard** deletes the copy. **Not now** keeps them all and asks again at the next start.
 Copies are deleted 30 days after the crash if you do neither. A copy that turns out to be damaged is listed as such,
 with Show file and Discard. A restored document's copy stays until you save or close it, so a second crash doesn't
-lose it. Files given on the command line open once the list is closed.
+lose it, or until you remove content from it or set a password (below). Files given on the command line open once
+the list is closed.
 
 A restored copy of a digitally signed document is LimarePDF's working copy, not the signed file, so its signatures
 cover bytes that aren't in it. They aren't checked: the Signatures tab lists each one as "Not checked: recovered
@@ -398,8 +400,10 @@ so LimarePDF asks first.
 
 **Redactions, hidden information and passwords.** Once you apply redactions, remove hidden information or set a
 password, no recovery copy made before can be offered after a crash: LimarePDF deletes the document's copy first,
-and makes a new one afterwards (none for a password). If it can't delete the copy, the command doesn't run, and a
-message says where the copy is, with Show file: delete it, or turn off recovery copies, then try again. If the copy
+and for a restored document the copy it came from, and makes a new one afterwards (none for a password), which
+holds none of what was removed. If it can't delete a copy, the command doesn't run, and a message says where the
+copy is, with Show file: delete it, or turn off recovery copies (which doesn't remove the copy a restored document
+came from), then try again. If the copy
 could be made unusable but its file couldn't be deleted, the command runs, and a notice says where the file is until
 LimarePDF manages to delete it, or you do. The limits of this promise:
 

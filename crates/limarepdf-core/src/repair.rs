@@ -159,11 +159,11 @@ impl Scan {
     }
 }
 
-/// The values of every `N G obj <integer> endobj` whose header starts a line, by number and
-/// generation, in file order: the candidates for an indirect `/Length`. Copies inside stream
-/// data are included, since where the streams end isn't known yet.
-fn integer_objects(b: &[u8]) -> HashMap<(u32, u16), Vec<u64>> {
-    let mut out: HashMap<(u32, u16), Vec<u64>> = HashMap::new();
+/// Where every `N G obj <integer> endobj` whose header starts a line is, and its value, by
+/// number and generation, in file order: the candidates for an indirect `/Length`. Copies
+/// inside stream data are included, since where the streams end isn't known yet.
+fn integer_objects(b: &[u8]) -> HashMap<(u32, u16), Vec<(usize, u64)>> {
+    let mut out: HashMap<(u32, u16), Vec<(usize, u64)>> = HashMap::new();
     let mut i = 0;
     while i < b.len() {
         let line = i + b[i..]
@@ -179,7 +179,7 @@ fn integer_objects(b: &[u8]) -> HashMap<(u32, u16), Vec<u64>> {
             if space > 0 && after[space..].starts_with(b"endobj") {
                 let value = std::str::from_utf8(&rest[..digits]).ok();
                 if let Some(v) = value.and_then(|v| v.parse().ok()) {
-                    out.entry(id).or_default().push(v);
+                    out.entry(id).or_default().push((line, v));
                 }
             }
         }
@@ -232,14 +232,16 @@ fn scan_objects(b: &[u8]) -> Scan {
 /// Where the stream whose `stream` keyword is at `at` ends, just after its `endstream`,
 /// given where its object's header is. Its `/Length` is used when `endstream` follows the
 /// data there, as other PDF apps do: a direct number, or for an indirect one the latest of
-/// `lengths`' values for that object that fits. Else the stream ends at the first
-/// `endstream`. `None` when there is no `endstream`, or the keyword is inside the object's
-/// dictionary (in a string), so no stream starts there.
+/// `lengths`' copies of that object that fits and isn't part of the data, as it would be if
+/// it were inside the data its value or another fitting copy's gives (an attached file can
+/// hold a copy, to end the stream early). Else the stream ends at the first `endstream`.
+/// `None` when there is no `endstream`, or the keyword is inside the object's dictionary
+/// (in a string), so no stream starts there.
 fn stream_end(
     b: &[u8],
     header: Option<usize>,
     at: usize,
-    lengths: &HashMap<(u32, u16), Vec<u64>>,
+    lengths: &HashMap<(u32, u16), Vec<(usize, u64)>>,
 ) -> Option<usize> {
     let dict = header.and_then(|h| {
         let obj = h + find(&b[h..at], b"obj")? + 3;
@@ -265,7 +267,20 @@ fn stream_end(
         };
         let end = read_dictionary(&b[open..close]).and_then(|d| match d.get(b"Length").ok()? {
             Object::Integer(n) => ends_at(u64::try_from(*n).ok()?),
-            Object::Reference(id) => lengths.get(id)?.iter().rev().find_map(|&n| ends_at(n)),
+            Object::Reference(id) => {
+                let fits: Vec<(usize, usize)> = lengths
+                    .get(id)?
+                    .iter()
+                    .filter_map(|&(pos, n)| Some((pos, ends_at(n)?)))
+                    .filter(|&(pos, end)| !(data..end).contains(&pos))
+                    .collect();
+                // Every copy's data starts at `data`: inside another's is inside the longest.
+                let longest = fits.iter().map(|&(_, end)| end).max()?;
+                fits.iter()
+                    .rev()
+                    .find(|&&(pos, _)| !(data..longest).contains(&pos))
+                    .map(|&(_, end)| end)
+            }
             _ => None,
         });
         if let Some(end) = end {
@@ -541,11 +556,47 @@ mod tests {
         let b = b"1 0 obj\n<< /Length 9 0 R >>\nstream\nendstream\n2 0 obj\nendstream\nendobj\n\
                   9 0 obj\n18\nendobj\n9 0 obj 3 endobj\n";
         assert_eq!(numbers(&scan_objects(b)), vec![1, 9]);
-        assert_eq!(integer_objects(b).get(&(9, 0)), Some(&vec![18, 3]));
+        let at = |s: &[u8]| b.windows(s.len()).position(|w| w == s).unwrap();
+        assert_eq!(
+            integer_objects(b).get(&(9, 0)),
+            Some(&vec![(at(b"9 0 obj\n18"), 18), (at(b"9 0 obj 3"), 3)])
+        );
         // A different generation isn't the same object.
         let b = b"1 0 obj\n<< /Length 9 1 R >>\nstream\nendstream\n2 0 obj\nendstream\nendobj\n\
                   9 0 obj\n18\nendobj\n";
         assert_eq!(numbers(&scan_objects(b)), vec![1, 2, 9]);
+    }
+
+    #[test]
+    fn a_length_inside_the_stream_data_is_not_used() {
+        // The data holds an `endstream` and then a later copy of the length object, which
+        // would end the stream there and make the rest of the data objects.
+        let data = "x\nendstream\n9 0 obj\n2\nendobj\n2 0 obj\n<< >>\nendobj";
+        for before in [true, false] {
+            let length = format!("9 0 obj\n{}\nendobj\n", data.len());
+            let stream =
+                format!("1 0 obj\n<< /Length 9 0 R >>\nstream\n{data}\nendstream\nendobj\n");
+            let b = if before {
+                length + &stream
+            } else {
+                stream + &length
+            };
+            let scan = scan_objects(b.as_bytes());
+            assert_eq!(numbers(&scan), vec![1, 9], "length before: {before}");
+            let at = b.find("stream\nx").unwrap();
+            assert_eq!(scan.streams, vec![at..b.rfind("endstream").unwrap() + 9]);
+        }
+        // Nor one whose value would end the stream past itself: it would be data then too.
+        let data = "x\n9 0 obj\n0000\nendobj";
+        let b = format!(
+            "1 0 obj\n<< /Length 9 0 R >>\nstream\n{data}\nendstream\nendobj\n9 0 obj\n{}\n\
+             endobj\n2 0 obj\n<< /Length 3 >>\nstream\nabc\nendstream\nendobj\n",
+            data.len()
+        );
+        let start = b.find("x\n").unwrap();
+        let far = b.rfind("endstream").unwrap() - start;
+        let b = b.replace("0000", &format!("{far:04}"));
+        assert_eq!(numbers(&scan_objects(b.as_bytes())), vec![1, 2, 9]);
     }
 
     #[test]
