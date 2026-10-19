@@ -49,6 +49,10 @@ struct Step {
     pdf: Option<Vec<u8>>,
     encryption: Option<Encryption>,
     scrubbed: bool,
+    /// The change between this step and the state it was taken from removed content for
+    /// good (see [`Tab::edit_removing`]): undoing it puts the content back, redoing it
+    /// removes it again.
+    removal: bool,
 }
 
 /// See [`Tab::state`].
@@ -530,7 +534,7 @@ impl Tab {
             self.error = Some(format!("{e:#}"));
             return false;
         }
-        self.push_undo(Some(before));
+        self.push_undo(Some(before), scrub);
         self.revision += 1;
         self.scrubbed |= scrub;
         true
@@ -962,13 +966,15 @@ impl Tab {
     }
 
     /// Record the state before a change: the document's bytes (`None` if it did not
-    /// change), the current password settings and whether anything was removed for good.
-    fn push_undo(&mut self, pdf: Option<Vec<u8>>) {
+    /// change), the current password settings and whether anything was removed for good;
+    /// `removal` when the change removes content for good.
+    fn push_undo(&mut self, pdf: Option<Vec<u8>>, removal: bool) {
         let encryption = self.encryption.clone();
         self.undo.push(Step {
             pdf,
             encryption,
             scrubbed: self.scrubbed,
+            removal,
         });
         if self.undo.len() > MAX_UNDO {
             self.undo.remove(0);
@@ -980,8 +986,15 @@ impl Tab {
     /// Change the password settings, with undo. They take effect when the document is
     /// saved.
     pub fn set_encryption(&mut self, encryption: Option<Encryption>) {
-        self.push_undo(None);
+        self.push_undo(None, false);
         self.encryption = encryption;
+    }
+
+    /// Whether redoing now would remove content for good again (a redaction or a removal
+    /// of hidden information), so that the tab's recovery copies must be withdrawn first,
+    /// as before the command itself: a copy written after the undo holds the content.
+    pub fn redo_removes(&self) -> bool {
+        self.redo.last().is_some_and(|s| s.removal)
     }
 
     pub fn undo(&mut self, ctx: &egui::Context) {
@@ -992,6 +1005,8 @@ impl Tab {
         }
     }
 
+    /// Redo the last undone change. The app withdraws the recovery copies first when
+    /// [`Tab::redo_removes`].
     pub fn redo(&mut self, ctx: &egui::Context) {
         if let Some(step) = self.redo.pop() {
             if let Some(back) = self.restore(ctx, step) {
@@ -1022,6 +1037,7 @@ impl Tab {
             pdf,
             encryption,
             scrubbed,
+            removal: step.removal,
         })
     }
 
@@ -2492,13 +2508,32 @@ mod tests {
         assert!(!t.scrubbed && t.revision == 0 && !t.dirty);
         assert!(t.edit_removing(&ctx, |p| p.insert_blank(1, 612.0, 792.0)));
         assert!(t.scrubbed && t.page_count() == 2);
+        assert!(!t.redo_removes());
         t.undo(&ctx);
         assert!(!t.scrubbed && t.page_count() == 1);
+        assert!(t.redo_removes());
         t.redo(&ctx);
         assert!(t.scrubbed && t.page_count() == 2);
-        // An ordinary edit afterwards keeps the flag.
+        // An ordinary edit afterwards keeps the flag, and redoing it removes nothing.
         assert!(t.edit(&ctx, |p| p.insert_blank(2, 612.0, 792.0)));
         assert!(t.scrubbed);
+        t.undo(&ctx);
+        assert!(t.scrubbed && !t.redo_removes());
+        // A second removal, with the flag already set: redoing it is a removal too, as
+        // often as it is undone and redone.
+        assert!(t.edit_removing(&ctx, |p| p.insert_blank(2, 612.0, 792.0)));
+        for _ in 0..2 {
+            t.undo(&ctx);
+            assert!(t.scrubbed && t.redo_removes());
+            t.redo(&ctx);
+            assert!(t.scrubbed && !t.redo_removes() && t.page_count() == 3);
+        }
+        // Undoing both: the second redo is the first removal again.
+        t.undo(&ctx);
+        t.undo(&ctx);
+        assert!(!t.scrubbed && t.redo_removes());
+        t.redo(&ctx);
+        assert!(t.scrubbed && t.redo_removes());
     }
 
     #[test]

@@ -54,8 +54,8 @@ objects by reading through the file, as Acrobat, poppler and pdf.js do:
 - every `N G obj` header at the start of a line counts, except inside stream data, and a later copy of an object
   replaces an earlier one, as a later revision would;
 - a stream's data ends where its `/Length` says when `endstream` follows there, whether the length is in the
-  stream's dictionary or in an object of its own, so a PDF attached uncompressed, or `endstream` in a comment, is
-  never taken for the file's own objects; when the length is wrong, or its object can't be found, the data ends at
+  stream's dictionary or in an object of its own (not a copy of that object inside the data), so a PDF attached
+  uncompressed, or `endstream` in a comment, is never taken for the file's own objects; when the length is wrong, or its object can't be found, the data ends at
   the first `endstream`, as pdf.js, poppler and MuPDF do;
 - the newest trailer outside stream data that names a catalog gives the catalog, the document information and, for
   encrypted files, the encryption settings; when none names a catalog that leads to pages, the last catalog object

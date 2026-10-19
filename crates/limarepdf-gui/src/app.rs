@@ -1678,7 +1678,7 @@ impl App {
                 }
             }
             Act::Undo => self.tabs[self.active].undo(ctx),
-            Act::Redo => self.tabs[self.active].redo(ctx),
+            Act::Redo => self.redo(ctx),
             Act::Copy => {
                 if let Some(text) = self.tabs[self.active].ed.selected_text() {
                     ctx.copy_text(text);
@@ -1914,6 +1914,19 @@ impl App {
         if let Some(r) = report.filter(|_| ok) {
             self.dialog = Dialog::Message("Redactions applied".into(), report_text(&r));
         }
+    }
+
+    /// Redoes the active tab's last undone change. Redoing a redaction or a removal of
+    /// hidden information removes the content again, so its recovery copies are withdrawn
+    /// first, as before the command itself: a copy written after the undo holds the content.
+    fn redo(&mut self, ctx: &egui::Context) {
+        if self.tabs[self.active].redo_removes() {
+            if let Err(stop) = self.withdraw_copies(self.active, "redone the change") {
+                self.dialog = stop;
+                return;
+            }
+        }
+        self.tabs[self.active].redo(ctx);
     }
 
     /// Adds the pages of `files` to the end of the active tab. Pages from a

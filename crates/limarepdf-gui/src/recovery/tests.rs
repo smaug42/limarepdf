@@ -622,6 +622,74 @@ fn withdrawing_a_crashed_copy() {
     assert!(m.exists(&c.dir.join("t1.txt")));
 }
 
+/// A crashed session's copy whose withdrawal couldn't be confirmed (the folder sync failed)
+/// is no longer listed to restore, but stays unconfirmed at every try until a sync succeeds,
+/// and its session folder stays meanwhile; files it couldn't delete are tracked throughout
+/// and retried. Whenever a withdrawal lets the command go ahead, no crash or power cut can
+/// bring the copy back.
+#[test]
+fn a_crashed_withdrawal_stays_unconfirmed_until_a_sync_succeeds() {
+    let m = Model::new();
+    let s = start(Arc::new(m.clone()), &root());
+    written(&s, T1, 1, &pdf(1));
+    written(&s, T2, 1, &pdf(2));
+    let disk = m.crash();
+    let f = Faulty::new(Arc::new(disk.clone()));
+    let fs: Arc<dyn Fs> = f.clone();
+    let mut c = find_crashed(&fs, &root(), now()).pop().unwrap();
+    let dir = c.dir.clone();
+    let t1_pdf = dir.join("t1-1-0.pdf");
+    let offers = |tab: TabId| {
+        std::iter::once(disk.crash())
+            .chain(disk.power_cuts())
+            .any(|cut| {
+                offered(Arc::new(cut), &root())
+                    .iter()
+                    .any(|(t, _)| *t == tab)
+            })
+    };
+
+    // The sync fails, and the PDF can't be deleted either: not confirmed, at every try.
+    f.fail(Kind::Sync, "session-");
+    f.fail(Kind::Remove, "t1-");
+    for _ in 0..3 {
+        let w = c.withdraw(T1);
+        assert!(
+            matches!(&w, Withdrawal::NotConfirmed(NotConfirmed::SyncFailed { folder, .. }) if *folder == dir),
+            "{w:?}"
+        );
+        assert!(!w.may_proceed());
+        assert_eq!(c.docs.len(), 1, "no longer listed to restore");
+        assert!(offers(T1), "a power cut could bring it back");
+        assert!(c.leftovers.iter().eq([&t1_pdf]), "{:?}", c.leftovers);
+    }
+
+    // The sync works again, the PDF still can't be deleted: invalidated, not offered.
+    f.clear();
+    f.fail(Kind::Remove, "t1-");
+    assert_eq!(c.withdraw(T1), Withdrawal::Leftover(vec![t1_pdf.clone()]));
+    assert!(!offers(T1));
+    assert_eq!(c.withdraw(T1), Withdrawal::Confirmed);
+    c.retry_leftovers();
+    assert!(disk.exists(&t1_pdf));
+    f.clear();
+    c.retry_leftovers();
+    assert!(!disk.exists(&t1_pdf));
+    assert!(c.leftovers.is_empty());
+    assert!(!offers(T1));
+    assert!(offers(T2));
+
+    // The last copy, not confirmed: the folder stays until it is, then goes.
+    f.fail(Kind::Sync, "session-");
+    assert!(!c.withdraw(T2).may_proceed());
+    assert!(c.docs.is_empty() && disk.exists(&dir));
+    assert!(!c.withdraw(T2).may_proceed());
+    f.clear();
+    assert_eq!(c.withdraw(T2), Withdrawal::Confirmed);
+    assert!(!disk.exists(&dir));
+    assert!(!offers(T1) && !offers(T2));
+}
+
 /// The environment variable that makes [`child_session`] act.
 const CHILD: &str = "LIMAREPDF_RECOVERY_TEST_CHILD";
 
