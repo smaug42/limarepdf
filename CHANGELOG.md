@@ -53,6 +53,9 @@
 - Comments could print upside down in the bottom half of pages whose content turns the page and doesn't turn it
   back, as some PDF makers write them: CUPS adds the comments after the page's content. Each page sent to the
   printer now puts the drawing state back at its end.
+- Filled-in form fields could print empty: some CUPS setups remove a form's fields without drawing them. The copy
+  sent to the printer now has the fields drawn into its pages (those meant for printing; the document itself is
+  unchanged).
 
 ### Testing
 

@@ -2,7 +2,7 @@
 //! replaced by a script that records its arguments and input.
 
 use limarepdf_core::print::{lp_args, paper_in_lpoptions, send, PrintOptions, Sides};
-use limarepdf_core::{render, Cipher, Encryption, ObjectKind, Pdf, Restrictions};
+use limarepdf_core::{render, Cipher, Encryption, FieldValue, ObjectKind, Pdf, Restrictions};
 use lopdf::{dictionary, Dictionary, Object, Stream};
 #[cfg(unix)]
 use std::path::PathBuf;
@@ -98,6 +98,53 @@ fn page_content_cannot_turn_what_cups_adds() {
     // into the bottom half.
     let c = pixel(sent.to_bytes().unwrap(), 150, 30);
     assert!(c[2] > 200 && c[0] < 60, "{c:?}");
+}
+
+#[test]
+fn form_values_are_sent_drawn_in() {
+    // Two filled text fields: one printed (flag 4), one only shown on screen.
+    let mut p = Pdf::new();
+    p.insert_blank(0, 300.0, 200.0).unwrap();
+    let field = |name: &str, y: i64, flags: i64| {
+        let rect: Vec<Object> = [20, y, 280, y + 30].map(Object::from).to_vec();
+        dictionary! {
+            "Type" => "Annot", "Subtype" => "Widget", "FT" => "Tx", "F" => flags,
+            "T" => Object::string_literal(name), "Rect" => rect,
+        }
+    };
+    let ids = [
+        p.doc.add_object(field("Name", 140, 4)),
+        p.doc.add_object(field("Note", 40, 0)),
+    ];
+    let refs: Vec<Object> = ids.iter().map(|&i| i.into()).collect();
+    let page = p.page_ids()[0];
+    p.doc
+        .get_dictionary_mut(page)
+        .unwrap()
+        .set("Annots", refs.clone());
+    let helv = p.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+        "Encoding" => "WinAnsiEncoding",
+    });
+    let form = p.doc.add_object(dictionary! {
+        "Fields" => refs,
+        "DA" => Object::string_literal("/Helv 12 Tf 0 g"),
+        "DR" => dictionary! { "Font" => dictionary! { "Helv" => helv } },
+    });
+    p.doc.catalog_mut().unwrap().set("AcroForm", form);
+    p.set_field("Name", FieldValue::Text("Alice Example".into()))
+        .unwrap();
+    p.set_field("Note", FieldValue::Text("Screen only".into()))
+        .unwrap();
+
+    let sent = Pdf::from_bytes(&p.print_data(&[0], false).unwrap(), None).unwrap();
+    // No fields left for CUPS to drop; the printed one is part of the page.
+    assert!(sent.form_fields().is_empty());
+    let text = sent.page_text(0);
+    assert!(text.contains("Alice Example"), "{text:?}");
+    assert!(!text.contains("Screen only"), "{text:?}");
+    // The document being printed keeps its form.
+    assert_eq!(p.form_fields().len(), 2);
 }
 
 #[test]

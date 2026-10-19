@@ -235,6 +235,9 @@ impl Pdf {
         }
         let mut out = self.extract(pages)?;
         out.encryption = None;
+        // Form fields go in as drawings: some CUPS setups drop fields without drawing them,
+        // so filled values would print empty.
+        out.flatten_form_for_print()?;
         // Each page's content leaves the graphics state as it found it, so annotations that
         // CUPS draws into the page after it aren't turned by a transformation the page set
         // and never undid (some CUPS versions add them without restoring the state).
