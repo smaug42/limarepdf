@@ -73,6 +73,24 @@ pub(crate) fn replace(
     written
 }
 
+/// Creates a new, empty temporary file beside `path` for this user only, under a fresh name,
+/// for a caller that writes, syncs and renames it itself.
+pub(crate) fn create_private(path: &Path) -> Result<(PathBuf, File)> {
+    let name = path.file_name().context("no file name to write")?;
+    let (tmp, file) = create(path, name, true)?;
+    #[cfg(unix)]
+    {
+        // The umask may have taken away this user's own read access.
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = file.set_permissions(std::fs::Permissions::from_mode(0o600)) {
+            drop(file);
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e.into());
+        }
+    }
+    Ok((tmp, file))
+}
+
 /// Creates a new temporary file beside `path`, private to this user on Unix when `private`.
 fn create(path: &Path, name: &OsStr, private: bool) -> Result<(PathBuf, File)> {
     #[cfg(not(unix))]
@@ -427,6 +445,37 @@ mod tests {
         let before = snapshot(&dir);
         choose(&names.iter().map(String::as_str).collect::<Vec<_>>());
         assert!(crate::write_private(&file, b"newest").is_err());
+        assert_eq!(snapshot(&dir), before);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Recovery copies' temporary files (`disk::create_private_temp`): a stale file and a
+    /// symbolic link at a name are skipped, not opened, followed or removed, and the file is
+    /// private from the start.
+    #[test]
+    fn private_temporary_files() {
+        let dir = folder("private-temp");
+        let copy = dir.join("t1-2-3.pdf");
+        let stale = tmp_name(&dir, "t1-2-3.pdf", "stale");
+        std::fs::write(&stale, "stale").unwrap();
+        let mut names = vec!["stale"];
+        #[cfg(unix)]
+        {
+            let target = dir.join("target");
+            std::fs::write(&target, "keep").unwrap();
+            std::os::unix::fs::symlink(&target, tmp_name(&dir, "t1-2-3.pdf", "link")).unwrap();
+            names.push("link");
+        }
+        names.push("fresh");
+        choose(&names);
+        let before = snapshot(&dir);
+        let (tmp, f) = crate::disk::create_private_temp(&copy).unwrap();
+        drop(f);
+        assert_eq!(tmp, tmp_name(&dir, "t1-2-3.pdf", "fresh"));
+        assert_eq!(std::fs::read(&tmp).unwrap(), b"");
+        #[cfg(unix)]
+        assert_eq!(mode(&tmp), 0o600);
+        std::fs::remove_file(&tmp).unwrap();
         assert_eq!(snapshot(&dir), before);
         std::fs::remove_dir_all(dir).unwrap();
     }

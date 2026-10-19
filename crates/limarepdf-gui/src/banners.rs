@@ -19,6 +19,12 @@ const LARGE_BYTES: u64 = 100_000_000;
 pub enum Kind {
     /// The document's digital signatures: being checked, or how they checked.
     Signatures,
+    /// The document was restored from a recovery copy.
+    Recovered,
+    /// A recovery copy made before content was removed couldn't be deleted.
+    LeftoverCopy,
+    /// Recovery copies of the document can't be written right now.
+    NoCopies,
     /// The file was damaged, and LimarePDF repaired it to open it.
     Repaired,
     /// The file was encrypted: saving drops the protection unless it is set again.
@@ -67,6 +73,9 @@ impl Banner {
                 Tone::Bad => icon::SEAL_WARNING,
                 Tone::Neutral => icon::SEAL,
             },
+            Kind::Recovered => icon::LIFEBUOY,
+            Kind::LeftoverCopy => icon::FILE_X,
+            Kind::NoCopies => icon::WARNING_CIRCLE,
             Kind::Repaired => icon::WRENCH,
             Kind::Protected => icon::LOCK_KEY,
             Kind::Redactions => icon::EYE_SLASH,
@@ -89,10 +98,55 @@ impl Banner {
             Kind::Signing => Some(("Finish signing…", Act::FinishSigning)),
             Kind::Scanned => Some(("Recognise text", Act::Ocr)),
             Kind::Forms => Some(("Highlight fields", Act::ToggleFields)),
-            Kind::Repaired => Some(("Save as…", Act::SaveAs)),
+            Kind::Repaired | Kind::Recovered => Some(("Save as…", Act::SaveAs)),
+            Kind::NoCopies => Some(("Save", Act::Save)),
+            Kind::LeftoverCopy => Some(("Show file", Act::ShowRecoveryFile)),
             Kind::Xfa | Kind::Missing | Kind::Fonts | Kind::Large => None,
         }
     }
+}
+
+/// The notice on a document restored from a recovery copy made at `time` (local time);
+/// `signed`: it holds digital signatures, which aren't checked (the design's section 7).
+pub fn recovered(time: &str, signed: bool) -> Banner {
+    let mut text = format!(
+        "Recovered copy, as it was at {time}, before LimarePDF stopped without closing \
+         normally. It isn't saved: save it to keep it."
+    );
+    if signed {
+        text.push_str(
+            " Its digital signatures can't be checked here, because they cover the original \
+             file, not this copy. Open the original to check them. Saving this copy makes them \
+             invalid.",
+        );
+    }
+    Banner::plain(Kind::Recovered, text)
+}
+
+/// The notice when a recovery copy of the document can't be written (`why`).
+pub fn no_copies(why: &str) -> Banner {
+    Banner::plain(
+        Kind::NoCopies,
+        format!(
+            "Recovery copies of this document can't be kept right now ({}). Save it to keep \
+             your changes.",
+            limarepdf_core::display_line(why, 200)
+        ),
+    )
+}
+
+/// The notice when a recovery copy made before content was removed couldn't be deleted,
+/// with where it is.
+pub fn leftover_copy(file: &std::path::Path) -> Banner {
+    Banner::plain(
+        Kind::LeftoverCopy,
+        format!(
+            "An earlier recovery copy of this document, made before the change, couldn't be \
+             deleted. It can't be offered for recovery, but its file is still on disk at {} \
+             until LimarePDF manages to delete it, or you do.",
+            file.display()
+        ),
+    )
 }
 
 /// The banner for `marks` areas marked for redaction and not yet applied. Unlike the

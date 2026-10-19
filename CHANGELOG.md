@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Crash recovery: while you work, LimarePDF keeps a private copy of each document with unsaved changes, about a
+  minute behind. If it stops without closing normally, the next start lists them: restore one as a new, unsaved
+  document, discard it, or decide later (copies are kept for 30 days). Your own files are never written by it.
+  Password-protected documents get no copies, and applying redactions, removing hidden information or setting a
+  password deletes the document's earlier copy first; if that copy can't be deleted, the command doesn't run. A
+  restored copy of a signed document doesn't have its signatures checked, since they cover the original file. Turn
+  it off with File > Keep recovery copies of unsaved changes.
+
+### Fixed
+
+- A small crafted file could make LimarePDF ask for gigabytes of memory and close, losing unsaved work in every tab:
+  a page with a huge stated size (up to 17 GB to draw), a fax or 1-bit picture of billions of pixels when optimising
+  scans or redacting (up to 4 GB), or a font's character widths (billions of entries; a width list with a huge first
+  character code also made reading the page's text fail). These sizes are now capped: a page image at 268 million pixels, which
+  gives an error naming the page (A3 still exports at 1152 dpi; of about 7,200 test pages, the largest poster
+  exports at up to 208 dpi), pictures at 268 million pixels, and widths at the 65,536 characters a font can have.
+  Printing on Windows draws pages larger than the limit at a lower resolution instead.
+
 ## [0.7.2] - 2026-10-18
 
 ### Added

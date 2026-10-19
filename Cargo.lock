@@ -2397,6 +2397,7 @@ dependencies = [
  "rsa",
  "rten",
  "rten-imageproc",
+ "rustix 1.1.5",
  "sha1",
  "sha2",
  "skrifa 0.46.2",

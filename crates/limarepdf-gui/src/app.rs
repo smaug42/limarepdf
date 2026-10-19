@@ -24,6 +24,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
+mod recover;
+
 pub const IMAGE_EXTS: [&str; 5] = ["png", "jpg", "jpeg", "tif", "tiff"];
 
 fn is_image(p: &Path) -> bool {
@@ -198,6 +200,14 @@ enum Dialog {
     /// The name for comments, being edited.
     CommentName(String),
     About(about::Page),
+    /// A message about a recovery copy, with Show file for it (or its folder).
+    RecoveryFile {
+        title: String,
+        text: String,
+        file: PathBuf,
+    },
+    /// Sign a recovered copy of a signed document, which writes the whole file?
+    ConfirmSignRecovered,
 }
 
 /// Why a signed document with redactions applied or hidden information removed is saved
@@ -207,6 +217,10 @@ const SCRUBBED: &str = "you applied redactions or removed hidden information, an
 
 /// Why a signed document that was repaired to open it is saved by writing the whole file.
 const REPAIRED: &str = "the file is damaged, and LimarePDF repaired it to open it";
+
+/// Why a signed document restored from a recovery copy is saved by writing the whole file.
+const RECOVERED: &str = "this is a recovered copy, and LimarePDF doesn't have the file as it \
+                         was signed";
 
 /// A signed document with its edits added after what was signed, ready to write once the
 /// user agrees that the signatures will report changes they don't allow.
@@ -318,6 +332,8 @@ pub struct App {
     ids_window: Option<IdsWindow>,
     /// The signing window, when open.
     sign_window: Option<SignWindow>,
+    /// Crash recovery: this run's copies, and the copies an earlier run left.
+    rescue: recover::Rescue,
 }
 
 impl App {
@@ -326,14 +342,20 @@ impl App {
         let settings = Settings::load();
         cc.egui_ctx.set_theme(settings.theme);
         let mut app = Self::with(settings, Recent::load());
+        app.start_recovery(&cc.egui_ctx, files, page);
+        app
+    }
+
+    /// Opens the files given on the command line: PDFs in tabs of their own, images as one
+    /// new document.
+    fn open_startup(&mut self, ctx: &egui::Context, files: Vec<PathBuf>, page: Option<usize>) {
         let (images, pdfs): (Vec<_>, Vec<_>) = files.into_iter().partition(|p| is_image(p));
         for f in pdfs {
-            app.spawn_open(&cc.egui_ctx, f, None, page);
+            self.spawn_open(ctx, f, None, page);
         }
         if !images.is_empty() {
-            app.new_from_images(&cc.egui_ctx, &images);
+            self.new_from_images(ctx, &images);
         }
-        app
     }
 
     /// An app with no tabs.
@@ -364,6 +386,7 @@ impl App {
             trusted: None,
             ids_window: None,
             sign_window: None,
+            rescue: recover::Rescue::default(),
         }
     }
 
@@ -718,6 +741,15 @@ impl App {
         }
     }
 
+    /// Chooses the digital signature tool for the active tab; the place comes next.
+    fn sign_tool(&mut self, certify: bool) {
+        if let Some(t) = self.tabs.get_mut(self.active) {
+            t.ed.set_tool(Tool::DigitalSign);
+            t.ed.digital_certify = certify;
+            self.show_inspector = true;
+        }
+    }
+
     /// The digital signature tool's place was chosen: opens the signing window for it.
     fn open_sign_window(&mut self) {
         let Some(t) = self.tabs.get_mut(self.active) else {
@@ -900,8 +932,9 @@ impl App {
                     if let Some(i) = replace {
                         // add_tab put it last: it takes the signed tab's place.
                         if let Some(new) = self.tabs.pop() {
-                            self.tabs[i] = new;
+                            let old = std::mem::replace(&mut self.tabs[i], new);
                             self.active = i;
+                            self.closed_copy(&old);
                         }
                     }
                     if let Some(p) = page {
@@ -1189,6 +1222,8 @@ impl App {
         }
         let appended = if tab.scrubbed {
             Err(SCRUBBED.to_string())
+        } else if tab.recovered.is_some() {
+            Err(RECOVERED.to_string())
         } else if tab.repaired {
             Err(REPAIRED.to_string())
         } else if let Some(s) = &tab.sigs {
@@ -1229,6 +1264,11 @@ impl App {
         } else if let Some(l) = &tab.label {
             d = d.set_file_name(format!("{l}.pdf"));
         }
+        // A recovered copy is suggested beside its original.
+        let original = tab.recovered.as_ref().and_then(|r| r.original.as_ref());
+        if let Some(dir) = original.and_then(|p| p.parent()).filter(|d| d.is_dir()) {
+            d = d.set_directory(dir);
+        }
         let mut p = d.save_file()?;
         if p.extension().is_none() {
             p.set_extension("pdf");
@@ -1257,6 +1297,7 @@ impl App {
                 tab.scrubbed = false;
                 tab.path = Some(path);
                 self.check_signatures(ctx, self.active, Arc::from(bytes), None);
+                self.saved_copy(self.active);
             }
             Err(e) => self.dialog = Dialog::Message("Save failed".into(), format!("{e:#}")),
         }
@@ -1281,9 +1322,11 @@ impl App {
                 tab.banners.retain(|b| b.kind != BannerKind::Repaired);
                 // The saved copy's signatures are already broken: no need to ask again.
                 tab.signed = false;
-                // The Signatures tab describes the file, so check the saved one.
+                // The Signatures tab describes the file, so check the saved one (a saved
+                // recovered copy's too, which was never checked).
                 let password = tab.encryption.as_ref().map(|e| e.user_password.clone());
-                let recheck = tab.sigs.is_some();
+                let recheck = tab.sigs.is_some()
+                    || (tab.recovered.is_some() && tab.pdf.signature_count() > 0);
                 let saved = recheck.then(|| std::fs::read(&path));
                 tab.path = Some(path);
                 match saved {
@@ -1292,13 +1335,16 @@ impl App {
                     }
                     Some(Err(e)) => {
                         let t = &mut self.tabs[self.active];
-                        t.sigs.as_mut().unwrap().check = Check::Failed(format!(
-                            "LimarePDF can't read the saved file again: {e}"
-                        ));
-                        t.sig_banner();
+                        if let Some(s) = t.sigs.as_mut() {
+                            s.check = Check::Failed(format!(
+                                "LimarePDF can't read the saved file again: {e}"
+                            ));
+                            t.sig_banner();
+                        }
                     }
                     None => {}
                 }
+                self.saved_copy(self.active);
             }
             Err(e) => self.dialog = Dialog::Message("Save failed".into(), format!("{e:#}")),
         }
@@ -1473,10 +1519,10 @@ impl App {
                          with digital ID instead."
                             .into(),
                     );
+                } else if t.recovered.is_some() && t.signed {
+                    self.dialog = Dialog::ConfirmSignRecovered;
                 } else {
-                    t.ed.set_tool(Tool::DigitalSign);
-                    t.ed.digital_certify = certify;
-                    self.show_inspector = true;
+                    self.sign_tool(certify);
                 }
             }
             Act::DigitalPlaced if has => self.open_sign_window(),
@@ -1492,6 +1538,8 @@ impl App {
                     self.close_tab(self.active);
                 }
             }
+            Act::ToggleRecovery => self.toggle_recovery(),
+            Act::ShowRecoveryFile => self.show_leftover(),
             Act::Quit => {
                 if self.tabs.iter().any(|t| t.dirty) {
                     self.dialog = Dialog::ConfirmQuit;
@@ -1697,9 +1745,13 @@ impl App {
             }),
             Act::Extract => {
                 let t = &mut self.tabs[self.active];
+                // Pages from a password-protected document get no recovery copies either.
+                let protected = t.copy.protected || t.encryption.is_some() || t.pdf.encrypted();
                 match t.pdf.extract(&t.targets()) {
                     Ok(p) => {
-                        self.add_tab(ctx, p, None, None, true);
+                        if self.add_tab(ctx, p, None, None, true) {
+                            self.tabs[self.active].copy.protected = protected;
+                        }
                     }
                     Err(e) => t.error = Some(format!("{e:#}")),
                 }
@@ -1853,6 +1905,54 @@ impl App {
         }
     }
 
+    /// Removes everything under the active tab's redaction marks, once its recovery copies
+    /// are withdrawn (recovery design, section 4).
+    fn apply_redactions(&mut self, ctx: &egui::Context) {
+        if let Err(stop) = self.withdraw_copies(self.active, "applied the redactions") {
+            self.dialog = stop;
+            return;
+        }
+        let t = &mut self.tabs[self.active];
+        let mut report = None;
+        let ok = t.edit_removing(ctx, |p| {
+            let r = p.apply_redactions()?;
+            if !r.left.is_empty() {
+                anyhow::bail!(
+                    "Nothing was changed: the check after redacting found {}",
+                    r.left.join("; ")
+                );
+            }
+            report = Some(r);
+            Ok(())
+        });
+        if let Some(r) = report.filter(|_| ok) {
+            self.dialog = Dialog::Message("Redactions applied".into(), report_text(&r));
+        }
+    }
+
+    /// Removes the kinds of hidden information `what` from the active tab, once its
+    /// recovery copies are withdrawn.
+    fn remove_hidden(&mut self, ctx: &egui::Context, what: &[limarepdf_core::Hidden]) {
+        if let Err(stop) = self.withdraw_copies(self.active, "removed the hidden information") {
+            self.dialog = stop;
+            return;
+        }
+        let t = &mut self.tabs[self.active];
+        let mut report = None;
+        let ok = t.edit_removing(ctx, |p| {
+            report = Some(p.remove_hidden(what)?);
+            Ok(())
+        });
+        if let Some(r) = report.filter(|_| ok) {
+            let mut text = String::from("Removed:\n");
+            for (h, n) in &r.removed {
+                text.push_str(&format!("• {} ({n})\n", h.label()));
+            }
+            text.push_str("\nSave the document to keep the changes; Undo brings it all back.");
+            self.dialog = Dialog::Message("Hidden information removed".into(), text);
+        }
+    }
+
     /// Carry out a button pressed in the inspector's page or document section.
     fn apply_panel(&mut self, ctx: &egui::Context, apply: Apply) {
         let active = self.active;
@@ -1888,9 +1988,19 @@ impl App {
                 t.edit(ctx, |p| p.set_view_prefs(&prefs));
             }
             Apply::Security => {
+                let encryption = self.tabs[active].forms.sec.encryption();
+                // No recovery copy made before may outlast the password (recovery design,
+                // section 4), and none is made after it.
+                if encryption.is_some() {
+                    if let Err(stop) = self.withdraw_copies(active, "added the password") {
+                        self.dialog = stop;
+                        return;
+                    }
+                }
                 let t = &mut self.tabs[active];
+                t.copy.protected |= encryption.is_some();
                 t.banners.retain(|b| b.kind != BannerKind::Protected);
-                t.set_encryption(t.forms.sec.encryption());
+                t.set_encryption(encryption);
                 self.status = "Security settings apply when you save.".into();
                 self.notify(ctx, "Changed password security".into());
             }
@@ -2057,6 +2167,7 @@ impl App {
         if i < self.tabs.len() {
             let tab = self.tabs.remove(i);
             self.active = self.active.min(self.tabs.len().saturating_sub(1));
+            self.closed_copy(&tab);
             // Dropped last (stopping its render worker), with the app's state already valid.
             drop(tab);
         }
@@ -2130,6 +2241,16 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
+            Dialog::RecoveryFile { title, text, file } => {
+                match dlg::choose(ctx, title, text, "OK", "Show file") {
+                    Choice::Second => {
+                        let file = file.clone();
+                        self.show_file(&file);
+                    }
+                    Choice::Open => {}
+                    Choice::First | Choice::Cancel => done = true,
+                }
+            }
             _ if self.tabs.is_empty() => done = true,
             Dialog::ConfirmReplace(e, n) => match dlg::confirm(
                 ctx,
@@ -2201,22 +2322,7 @@ impl App {
                 "Apply",
             ) {
                 Outcome::Apply => {
-                    let t = &mut self.tabs[self.active];
-                    let mut report = None;
-                    let ok = t.edit_removing(ctx, |p| {
-                        let r = p.apply_redactions()?;
-                        if !r.left.is_empty() {
-                            anyhow::bail!(
-                                "Nothing was changed: the check after redacting found {}",
-                                r.left.join("; ")
-                            );
-                        }
-                        report = Some(r);
-                        Ok(())
-                    });
-                    if let Some(r) = report.filter(|_| ok) {
-                        self.dialog = Dialog::Message("Redactions applied".into(), report_text(&r));
-                    }
+                    self.apply_redactions(ctx);
                     done = true;
                 }
                 Outcome::Cancel => done = true,
@@ -2255,22 +2361,7 @@ impl App {
                         .filter(|(_, n, on)| *on && *n > 0)
                         .map(|(h, _, _)| *h)
                         .collect();
-                    let t = &mut self.tabs[self.active];
-                    let mut report = None;
-                    let ok = t.edit_removing(ctx, |p| {
-                        report = Some(p.remove_hidden(&what)?);
-                        Ok(())
-                    });
-                    if let Some(r) = report.filter(|_| ok) {
-                        let mut text = String::from("Removed:\n");
-                        for (h, n) in &r.removed {
-                            text.push_str(&format!("• {} ({n})\n", h.label()));
-                        }
-                        text.push_str(
-                            "\nSave the document to keep the changes; Undo brings it all back.",
-                        );
-                        self.dialog = Dialog::Message("Hidden information removed".into(), text);
-                    }
+                    self.remove_hidden(ctx, &what);
                     done = true;
                 }
                 Outcome::Cancel => done = true,
@@ -2420,6 +2511,24 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
+            Dialog::ConfirmSignRecovered => match dlg::confirm(
+                ctx,
+                "Break the signatures?",
+                &format!(
+                    "This document is digitally signed, but LimarePDF can't add your signature \
+                     after what was signed: {RECOVERED}. Signing instead writes the whole file \
+                     again, so the earlier signatures will show as invalid in every reader. Open \
+                     the original to sign it with its signatures kept."
+                ),
+                "Sign anyway",
+            ) {
+                Outcome::Apply => {
+                    self.sign_tool(false);
+                    done = true;
+                }
+                Outcome::Cancel => done = true,
+                Outcome::Open => {}
+            },
         }
         if !done {
             self.dialog = dialog;
@@ -2446,6 +2555,7 @@ impl App {
             theme: ctx.options(|o| o.theme_preference),
             page_look: self.settings.page_look,
             pictures_too: self.settings.pictures_too,
+            recovery: self.settings.recovery,
             layout: self.settings.layout,
             cover: self.settings.cover,
             highlight: self.settings.highlight,
@@ -2846,6 +2956,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll_loads(&ctx);
+        self.recovery_tick(&ctx);
         // Page colours follow the setting and, when automatic, the app's theme.
         let colours = self.colours(&ctx);
         for t in &mut self.tabs {
@@ -3329,6 +3440,7 @@ impl eframe::App for App {
             self.run_command(&ctx, actions::name(a), |app, ctx| app.act(ctx, a));
         }
         self.dialogs(&ctx);
+        self.restore_window(&ctx);
         self.signature_windows(&ctx);
         self.digital_windows(&ctx);
 
@@ -3340,6 +3452,11 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.last_title = title;
         }
+    }
+
+    /// A normal exit (not a crash, which never gets here): no recovery copies are left.
+    fn on_exit(&mut self) {
+        self.end_recovery();
     }
 }
 

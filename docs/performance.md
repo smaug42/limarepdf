@@ -73,3 +73,8 @@ OCR speed is in [Scanning and OCR](scanning-and-ocr.md#accuracy-and-speed).
 - Edits re-save the document without compressing it, and undo keeps plain snapshots (a whole copy of the document
   per step, see [above](#memory-in-the-desktop-app)).
 - OCR, optimising, exporting images and printing run in the background.
+- A [recovery copy](gui.md#recovery-copies) is made at most once a minute per changed document. The window only
+  copies the document in memory; a background thread turns that into a file and writes it. On the 200-page scan the
+  copy in memory took 16 to 57 ms and making the file about 20 ms (138 MB, before writing it to disk); on the 1,000
+  text pages about 2 ms each (measured 2026-10-19). While a copy is written, the app holds up to about two more
+  copies of the document's size in memory.

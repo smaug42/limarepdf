@@ -14,6 +14,17 @@ use std::collections::HashMap;
 
 /// Largest decoded image accepted, in bytes.
 const MAX_DECODED: usize = 1 << 30;
+/// Most pixels an image may have: 1,200 dpi on A3. Width and height come from the file,
+/// and a few bytes of fax or 1-bit data can stand for billions of pixels, each a byte once
+/// decoded.
+const MAX_PIXELS: u64 = 1 << 28;
+
+/// `w` × `h` as a pixel size, or `None` when either is not positive or there are more
+/// than [`MAX_PIXELS`].
+fn pixel_size(w: i64, h: i64) -> Option<(u32, u32)> {
+    let n = w.checked_mul(h)?;
+    (w > 0 && h > 0 && n as u64 <= MAX_PIXELS).then_some((w as u32, h as u32))
+}
 
 /// How scanned pages are re-encoded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -315,7 +326,9 @@ fn decode(doc: &Document, s: &Stream) -> std::result::Result<Img, String> {
         return Err("the image has a mask or a Decode array".into());
     }
     let (w, h) = match (int(s, b"Width"), int(s, b"Height")) {
-        (Some(w), Some(h)) if w > 0 && h > 0 => (w as u32, h as u32),
+        (Some(w), Some(h)) if w > 0 && h > 0 => {
+            pixel_size(w, h).ok_or("the image is too large to optimise")?
+        }
         _ => return Err("the image has no size".into()),
     };
     let filters: Vec<&[u8]> = s.filters().unwrap_or_default();
@@ -405,6 +418,9 @@ pub(crate) fn decode_ccitt(s: &Stream, w: u32, h: u32) -> std::result::Result<Im
     let cols = p(b"Columns").unwrap_or(1728) as u32;
     if cols != w || w > u16::MAX as u32 || h > u16::MAX as u32 {
         return Err("unsupported CCITT image size".into());
+    }
+    if pixel_size(w as i64, h as i64).is_none() {
+        return Err("the CCITT image is too large".into());
     }
     let mut px = Vec::with_capacity((w * h) as usize);
     let data = s.content.iter().copied();

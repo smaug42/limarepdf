@@ -129,6 +129,8 @@ pub struct Settings {
     pub stamp_wordings: Vec<(String, StampColor)>,
     /// Saved signatures and initials, kept in their own file beside this one.
     pub sign: SignKit,
+    /// Keep recovery copies of documents with unsaved changes (on unless turned off).
+    pub recovery: bool,
     /// Where they are saved; `None` when there is no settings folder.
     file: Option<PathBuf>,
 }
@@ -178,6 +180,7 @@ impl Settings {
                     .and_then(|f| f.parent())
                     .map(|d| d.join("signatures.txt")),
             ),
+            recovery: true,
             file,
         };
         let text = s
@@ -224,6 +227,7 @@ impl Settings {
                 }
                 "comment_name" => s.author = Some(value.to_string()),
                 "stamp_name_and_date" => s.stamp_name_date = value != "false",
+                "recovery_copies" => s.recovery = value != "false",
                 "stamp_picture" if !value.is_empty() && s.stamp_pictures.len() < STAMP_PICTURES => {
                     s.stamp_pictures.push(PathBuf::from(value));
                 }
@@ -269,6 +273,7 @@ impl Settings {
             text += &format!("comment_name = {name}\n");
         }
         text += &format!("stamp_name_and_date = {}\n", self.stamp_name_date);
+        text += &format!("recovery_copies = {}\n", self.recovery);
         for p in &self.stamp_pictures {
             text += &format!("stamp_picture = {}\n", p.display());
         }
@@ -388,6 +393,18 @@ mod tests {
                 ("COPY".into(), StampColor::Blue)
             ]
         );
+    }
+
+    #[test]
+    fn recovery_copies_are_on_unless_turned_off() {
+        let f = file("recovery");
+        assert!(Settings::from_file(Some(f.clone())).recovery);
+        let mut s = Settings::from_file(Some(f.clone()));
+        s.recovery = false;
+        s.save();
+        assert!(!Settings::from_file(Some(f.clone())).recovery);
+        std::fs::write(&f, "recovery_copies = maybe\n").unwrap();
+        assert!(Settings::from_file(Some(f)).recovery);
     }
 
     #[test]

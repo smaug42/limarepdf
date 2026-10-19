@@ -86,7 +86,8 @@ available.
 | Certificate encryption | No | |
 | PDF/A, optimised saving | No | Saved files are pruned and compressed |
 | Comparing documents | No | |
-| Sessions, autosave, backups, preferences, custom shortcuts, translations | No | You are asked before closing unsaved work. Crash recovery is planned (see below) |
+| Crash recovery | Done | Private copies of documents with unsaved changes, about a minute behind; when LimarePDF stops without closing normally, the next start offers them, and a restored one opens as a new unsaved document. Your own files are never written by it. None for password-protected documents; a redaction, removal of hidden information or added password deletes the earlier copy first. Can be turned off. [Details](gui.md#recovery-copies) |
+| Sessions, autosave, backups, preferences, custom shortcuts, translations | No | You are asked before closing unsaved work; unsaved changes are kept in [recovery copies](gui.md#recovery-copies) |
 | XFA forms, XPS documents | No | |
 
 ## Known limits
@@ -110,6 +111,11 @@ available.
   a menu command, shortcut or panel button that fails: an error message when it changed nothing, else that tab's
   error page. Redactions and removed hidden information are recorded with the change itself, so a later save of a
   signed document always writes the file out in full.
+- Sizes a file states are capped before memory is set aside for them, so a small crafted file can't make LimarePDF
+  ask for gigabytes and close: a page image has at most 268 million pixels (A3 at 1152 dpi;
+  [export](export-and-printing.md#pages-as-images)), Optimise scans skips pictures of more than 268 million pixels
+  with the reason, redaction removes a fax picture of more than that whole, as it does any picture it can't read,
+  and a font's character widths are read for 65,536 characters at most. Pages of any real size show at every zoom.
 - Text from a file that the app shows as a label or message (link addresses, bookmark names, comment authors and
   text, file names in tab and window titles and print job titles) has direction-changing (bidi), invisible and
   control characters removed and is shortened when very long, so a link can't pretend to go somewhere else. Form
@@ -122,9 +128,9 @@ pool of features other PDF tools have is in [ideas.md](ideas.md).
 
 ### Reliability
 
-- **Crash recovery:** when LimarePDF stops without closing normally, the next start offers the documents that had
-  unsaved changes, from private copies kept while you work. Your own files are never written by it: a recovered
-  document opens as a new unsaved document.
+- **More from recovery copies:** copies of password-protected documents, kept encrypted; a recovered copy of a
+  signed document saved by adding to the original, when the original is unchanged, so its signatures stay; reopening
+  the last session's documents.
 - **Acceptance checks** of everyday workflows by hand, in other readers and on Windows and macOS, as listed in
   [Testing](testing.md#acceptance-checks). They have been run on Linux.
 - **A memory limit for undo:** each undo step keeps a whole copy of the document, so 20 edits on a large scan

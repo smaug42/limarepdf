@@ -289,6 +289,43 @@ fn group4_images_are_decoded() {
 }
 
 #[test]
+fn huge_images_are_skipped_before_decoding() {
+    // 8 KB standing for billions of pixels: a Group 4 fax picture (each 1 bit is a white
+    // row) and a 1-bit one. Each would take gigabytes once decoded.
+    let huge = [
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Image", "Width" => 65_535, "Height" => 65_535,
+            "ColorSpace" => "DeviceGray", "BitsPerComponent" => 1,
+            "Filter" => "CCITTFaxDecode",
+            "DecodeParms" => dictionary! { "K" => -1, "Columns" => 65_535 },
+        },
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Image", "Width" => 80_000, "Height" => 80_000,
+            "ColorSpace" => "DeviceGray", "BitsPerComponent" => 1,
+        },
+        // Past u32: must not wrap to a small size.
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Image", "Width" => (1i64 << 32) + 10,
+            "Height" => 10, "ColorSpace" => "DeviceGray", "BitsPerComponent" => 8,
+        },
+    ];
+    for dict in huge {
+        let mut p = scanned(DynamicImage::ImageLuma8(GrayImage::new(40, 30)), 10.0);
+        let page = p.doc.get_dictionary(p.page_ids()[0]).unwrap();
+        let res = page.get(b"Resources").unwrap().as_dict().unwrap();
+        let xo = res.get(b"XObject").unwrap().as_dict().unwrap();
+        let id = xo.get(b"Im0").unwrap().as_reference().unwrap();
+        p.doc
+            .objects
+            .insert(id, Object::Stream(Stream::new(dict, vec![0xFF; 8192])));
+        match optimize(&mut p, &opts()) {
+            ScanResult::Skipped(why) => assert!(why.contains("too large"), "{why}"),
+            r => panic!("{r:?}"),
+        }
+    }
+}
+
+#[test]
 fn no_gain_leaves_the_image() {
     let mut p = scanned(DynamicImage::ImageLuma8(text_scan(0.0)), 300.0);
     optimized(&optimize(&mut p, &opts()));

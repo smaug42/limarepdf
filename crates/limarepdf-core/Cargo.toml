@@ -46,11 +46,18 @@ rc2 = "0.9.0"
 zeroize = "1.9"
 subtle = "2.6"
 
-# Printing through the Windows print spooler and GDI (system DLLs; no C code is built).
+# Printing through the Windows print spooler and GDI (system DLLs; no C code is built), and
+# a disk's free space for crash recovery copies (disk.rs).
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_Graphics_Printing",
+    "Win32_Storage_FileSystem",
     "Win32_Storage_Xps",
 ] }
+
+# A disk's free space and this user's id, for crash recovery copies (disk.rs). Already in the
+# Linux build through the windowing crates; new to the macOS build.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs", "process", "std"] }

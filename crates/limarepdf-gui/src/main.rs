@@ -12,6 +12,7 @@ mod fields;
 mod inspector;
 mod markup;
 mod recent;
+mod recovery;
 mod selection;
 mod settings;
 mod signatures;

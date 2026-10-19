@@ -275,7 +275,8 @@ pub(crate) struct Placement {
     pub y: i32,
     pub w: i32,
     pub h: i32,
-    /// Scale to render the page at: device pixels per point, at most 600 dpi.
+    /// Scale to render the page at: device pixels per point, at most 600 dpi and at most
+    /// [`crate::render::MAX_PIXELS`] in all (the printer scales a smaller bitmap up).
     pub scale: f32,
 }
 
@@ -317,7 +318,10 @@ pub(crate) fn place(size: (f32, f32), sheet: &Sheet) -> Placement {
         y: centre(sheet.paper.1, sheet.offset.1, ah, h),
         w: w as i32,
         h: h as i32,
-        scale: (w / pw).min(600.0 / 72.0),
+        // Just under the pixel limit, so rounding in f32 can't take it over.
+        scale: (w / pw)
+            .min(600.0 / 72.0)
+            .min((crate::render::MAX_PIXELS as f32 / (pw * ph)).sqrt() * 0.999),
     }
 }
 
@@ -384,6 +388,23 @@ mod tests {
         };
         let p = place((288.0, 216.0), &sheet);
         assert!((p.scale - 600.0 / 72.0).abs() < 1e-3, "{p:?}");
+    }
+
+    #[test]
+    fn render_scale_keeps_a_poster_within_the_pixel_limit() {
+        // A0 on an A0 plotter at 600 dpi: 19,866 x 28,087 px, more than the limit.
+        let sheet = Sheet {
+            dpi: (600, 600),
+            area: (19866, 28087),
+            paper: (19866, 28087),
+            offset: (0, 0),
+        };
+        let (pw, ph) = (2384.0, 3370.0);
+        let p = place((pw, ph), &sheet);
+        assert!(p.scale < 600.0 / 72.0, "{p:?}");
+        let pixels = (pw * p.scale) as u64 * (ph * p.scale) as u64;
+        assert!(pixels <= crate::render::MAX_PIXELS, "{pixels}");
+        assert!(pixels > crate::render::MAX_PIXELS * 99 / 100, "{pixels}");
     }
 
     #[test]
