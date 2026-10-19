@@ -21,6 +21,10 @@
   gives an error naming the page (A3 still exports at 1152 dpi; of about 7,200 test pages, the largest poster
   exports at up to 208 dpi), pictures at 268 million pixels, and widths at the 65,536 characters a font can have.
   Printing on Windows draws pages larger than the limit at a lower resolution instead.
+- Editing a line of text, or adding text, a shape or a picture, on a page printed to PDF from a web browser drew the
+  new content upside down, mirrored and shrunk (a 28 pt line became about 7 pt). Such pages flip and scale the whole
+  page without restoring it afterwards, and the new content inherited that.
+- Editing invisible text (an OCR layer) moved the line down by about a fifth of its height.
 
 ## [0.7.2] - 2026-10-18
 

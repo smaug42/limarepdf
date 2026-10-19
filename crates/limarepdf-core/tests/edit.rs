@@ -626,6 +626,112 @@ fn unbalanced_q_does_not_leak_into_new_content() {
     assert!(s.is(230, 35, [0, 0, 255]));
 }
 
+/// The deepest q/Q nesting in the page's content.
+fn max_q_depth(p: &Pdf) -> usize {
+    let page = p.page_ids()[0];
+    let ops = lopdf::content::Content::decode(&p.doc.get_page_content(page))
+        .unwrap()
+        .operations;
+    let (mut depth, mut max) = (0usize, 0usize);
+    for o in &ops {
+        match o.operator.as_str() {
+            "q" => {
+                depth += 1;
+                max = max.max(depth);
+            }
+            "Q" => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    max
+}
+
+/// Browsers' printed pages flip and scale the page with a `cm` outside any q/Q, then flip
+/// each line back with its text matrix. Text written after the old content must not inherit
+/// that matrix.
+#[test]
+fn new_text_ignores_an_unsaved_page_matrix() {
+    // "Hello" is 24 pt at x = 20, baseline y = 150 in user space (50 from the top).
+    let content = ".5 0 0 -.5 0 200 cm\nBT /F1 48 Tf 1 0 0 -1 40 100 Tm (Hello) Tj ET\n";
+    let upright = |b: [f32; 4], x: f32, base: f32, size: f32| {
+        // Ascent above the baseline, descent below it, displayed y down.
+        (b[0] - x).abs() < 0.5
+            && (b[1] - (base - 0.79 * size)).abs() < 0.5
+            && (b[3] - (base + 0.21 * size)).abs() < 0.5
+    };
+    let o = make(content).page_objects(0).unwrap();
+    assert_eq!(o[0].font_size, Some(24.0));
+    assert!(upright(o[0].bbox, 20.0, 50.0, 24.0), "{:?}", o[0].bbox);
+    for e in [
+        TextEdit {
+            text: "Hello again".into(),
+            font: None,
+            size: None,
+            color: Some([0.0, 0.0, 1.0]),
+        },
+        TextEdit {
+            text: "Hello again".into(),
+            font: Some(FontChoice::from_name("Courier")),
+            size: None,
+            color: None,
+        },
+    ] {
+        let mut p = make(content);
+        p.edit_text(0, 0, &e).unwrap();
+        let o = p.page_objects(0).unwrap();
+        let t = o.iter().find(|x| x.kind == ObjectKind::Text).unwrap();
+        assert_eq!(t.text.as_deref(), Some("Hello again"));
+        assert_eq!(t.font_size, Some(24.0), "{e:?}");
+        assert!(upright(t.bbox, 20.0, 50.0, 24.0), "{e:?}: {:?}", t.bbox);
+        // Once wrapped, the old content is not wrapped again by later edits.
+        for _ in 0..5 {
+            let id = p
+                .page_objects(0)
+                .unwrap()
+                .iter()
+                .find(|x| x.kind == ObjectKind::Text)
+                .unwrap()
+                .id;
+            p.edit_text(0, id, &e).unwrap();
+        }
+        assert_eq!(max_q_depth(&p), 1);
+    }
+    // Invisible text (an OCR layer) is replaced over the same extent.
+    let mut p = make(&content.replace("BT ", "BT 3 Tr "));
+    p.edit_text(
+        0,
+        0,
+        &TextEdit {
+            text: "Hullo".into(),
+            font: None,
+            size: None,
+            color: None,
+        },
+    )
+    .unwrap();
+    let o = p.page_objects(0).unwrap();
+    assert!(o[0].hidden && o[0].text.as_deref() == Some("Hullo"));
+    assert_eq!(o[0].font_size, Some(24.0));
+    assert!(upright(o[0].bbox, 20.0, 50.0, 24.0), "{:?}", o[0].bbox);
+    let mut p = make(content);
+    p.add_text(
+        0,
+        (20.0, 180.0),
+        "Added",
+        FontChoice::from_name("Helvetica"),
+        18.0,
+        [0.0, 0.0, 0.0],
+    )
+    .unwrap();
+    let o = p.page_objects(0).unwrap();
+    let t = o
+        .iter()
+        .find(|x| x.text.as_deref() == Some("Added"))
+        .unwrap();
+    assert_eq!(t.font_size, Some(18.0));
+    assert!(upright(t.bbox, 20.0, 180.0, 18.0), "{:?}", t.bbox);
+}
+
 #[test]
 fn bad_input_is_an_error_not_a_panic() {
     let mut p = make(BASE);
