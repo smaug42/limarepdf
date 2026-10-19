@@ -58,6 +58,15 @@ compare runs before and after a change. `sh tools/render-compare.sh issue12` lim
 poppler isn't always right: many of the worst-listed pages are poppler's mistakes (a grey page, a garbled scan). Each
 listed page needs a person to judge which side is right.
 
+The timings and memory figures in [Performance](performance.md) come from
+`python3 crates/limarepdf-core/tools/measure.py`, run from the repository (Linux or macOS, Python's standard library
+only). It builds the release CLI, makes a 1,000-page text file and a 200-page colour scan in `target/tmp/measure`,
+times each task three times and prints the table with the machine and commit. Peak memory is the program's largest
+resident set, as `/usr/bin/time -v` reports it. The four rows for public test files need the files from
+`tools/render-compare.sh` (or `tools/fetch-render-samples.sh`) and are skipped without them. `--runs 1` makes a quicker
+run, and `--only scan` runs only the tasks whose names contain `scan`. A full run takes about five minutes, and one
+of the test files needs about 10 GB of memory.
+
 ## The desktop app
 
 There are no automated tests of the desktop app's screens. Its commands, selection rules and page moves are
