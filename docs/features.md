@@ -126,7 +126,13 @@ pool of features other PDF tools have is in [ideas.md](ideas.md).
   unsaved changes, from private copies kept while you work. Your own files are never written by it: a recovered
   document opens as a new unsaved document.
 - **Acceptance checks** of everyday workflows by hand, in other readers and on Windows and macOS, as listed in
-  [Testing](testing.md#acceptance-checks).
+  [Testing](testing.md#acceptance-checks). They have been run on Linux.
+- **A memory limit for undo:** each undo step keeps a whole copy of the document, so 20 edits on a large scan
+  can take gigabytes ([measured](performance.md#memory-in-the-desktop-app)). The oldest steps would go first.
+- **Some protected files with an empty password** (RC4, with a non-standard password entry) ask for a password
+  that other readers don't need.
+- **Very complex pages:** one test page with 73,000 drawn paths takes about 10 GB of memory to draw at 150 dpi
+  ([Performance](performance.md)).
 
 ### Rendering
 

@@ -44,10 +44,12 @@ Not yet available: paper size, scaling, colour and printer-specific options. The
 - Printing: `crates/limarepdf-core/tests/print.rs`, with a stand-in for `lp` (its arguments, the document it receives, and
   errors), and against a real CUPS with no printers (error messages). The Windows page placement and rotation are
   unit-tested.
-- On Linux, printing to an HP LaserJet P1606dn through CUPS gave blurred, unreadable pages. Other programs' PDFs
-  sent with `lp` came out the same, and they printed cleanly once the job named the paper size
-  (`lp -o media=Letter`), which LimarePDF now does. Comments then printed upside down on a page whose content
-  leaves the drawing turned, until each page sent was made to restore the drawing state at its end, and filled
-  form fields printed empty, because CUPS's `pdftopdf` step removed the fields (reproduced with `cupsfilter`
-  and the printer's PPD), until LimarePDF drew them in itself. On Windows only the print dialog has been tried; nothing
-  has been printed on paper. Nothing has been printed on macOS.
+- On paper on Linux, with an HP LaserJet P1606dn through CUPS (October 2026): pages, mixed A4 and Letter pages, a
+  turned page, comments and filled form fields print correctly. Getting there took three fixes, each for a way
+  CUPS handles PDFs on that setup that other PDFs sent with `lp` suffer from too: the job must name the paper
+  size, or every page prints blurred; comments are added after the page's content without resetting the drawing
+  state, so they came out upside down on pages that leave it turned; and form fields are removed without being
+  drawn. The last two were reproduced without a printer through CUPS's own `cupsfilter`
+  ([Testing](testing.md#acceptance-checks)).
+- On Windows only the print dialog has been tried; nothing has been printed on paper. Nothing has been printed on
+  macOS.

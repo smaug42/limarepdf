@@ -4,7 +4,7 @@
 
 | Platform | Status |
 | --- | --- |
-| Linux x86_64 | Built and tested; the command line run on real PDFs; the desktop app used by hand and checked by screenshot under a virtual X server, including the narrow-window layout |
+| Linux x86_64 | Built and tested; the command line run on real PDFs; the desktop app used by hand and checked by screenshot under a virtual X server, including the narrow-window layout; the acceptance checks below run, including printing on paper |
 | Windows x86_64 | Built and tested by continuous integration (`.github/workflows/ci.yml`, GitHub Actions), which also packages all four platforms. Printing, the only platform-specific code, has been tried by hand up to the print dialog; nothing has been printed on paper |
 | macOS (Intel and Apple Silicon) | Built and tested by continuous integration. Not run by hand |
 
@@ -123,7 +123,26 @@ before this table had a Status column, and wasn't run again on the date given.
 | Digital signatures | `signatures.rs`, `signing.rs`, `signature_changes.rs`, pdfsig and OpenSSL | Check a signed sample; sign, certify, add a comment and save; reopen and check; then the Acrobat round trips below | Pass (earlier run), Linux |
 | Redaction, removing hidden information | `redact.rs`, `sanitise.rs`, the after-check | Redact a phrase and part of a picture, save, then search the output with `pdftotext` and another reader's search; remove hidden information and check `pdfinfo -meta` | Pass (earlier run), Linux |
 | Damaged files | `repair.rs`, the corpus | Open a damaged file: the notice shows; Save asks; Save as writes a new file; the original's checksum is unchanged | Pass (earlier run), Linux |
-| Errors | `guard()` and `run_command` unit tests, a tab's error page | Open a cut-short file and a file with a broken page: a message, the app stays open, other tabs keep their unsaved changes | Pass, 2026-10-18 (earlier run, by hand for A2), Linux |
+| Errors | `guard()` and `run_command` unit tests, a tab's error page | Open a cut-short file and a file with a broken page: a message, the app stays open, other tabs keep their unsaved changes | Pass, 2026-10-18, Linux |
+
+Printing can be checked partly without paper: CUPS's own processing of what LimarePDF sends can be run with
+`cupsfilter`, using the printer's description file, which CUPS serves locally. To capture what LimarePDF sends,
+put a stand-in `lp` first on the `PATH` that saves its input, and print with `limarepdf-cli print` (or start the
+app from that shell):
+
+```
+mkdir -p /tmp/fakelp
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" > /tmp/fakelp/args.txt\ncat > /tmp/fakelp/job.pdf\necho "request id is fake-1"\n' > /tmp/fakelp/lp
+chmod +x /tmp/fakelp/lp
+PATH=/tmp/fakelp:$PATH limarepdf-cli print --pages 1 file.pdf
+curl -o printer.ppd http://localhost:631/printers/<queue>.ppd
+cupsfilter -p printer.ppd -i application/pdf -m application/vnd.cups-pdf /tmp/fakelp/job.pdf > after.pdf
+```
+
+`args.txt` holds the job's options, one per line (`-o media=` among them).
+
+`after.pdf` is the page as CUPS passes it on to the printer's driver; open it, or search it with `pdftotext`.
+This is how the dropped form fields were found.
 
 ## Round trips with Adobe Acrobat
 
