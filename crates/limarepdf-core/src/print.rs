@@ -235,6 +235,12 @@ impl Pdf {
         }
         let mut out = self.extract(pages)?;
         out.encryption = None;
+        // Each page's content leaves the graphics state as it found it, so annotations that
+        // CUPS draws into the page after it aren't turned by a transformation the page set
+        // and never undid (some CUPS versions add them without restoring the state).
+        for page in out.page_ids() {
+            out.wrap_contents(page, None, None)?;
+        }
         out.to_bytes()
     }
 

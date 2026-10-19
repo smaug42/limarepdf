@@ -62,6 +62,45 @@ fn sends_the_chosen_pages_unencrypted() {
 }
 
 #[test]
+fn page_content_cannot_turn_what_cups_adds() {
+    // A page whose content turns the page upside down and never turns it back, as some
+    // PDF makers write them (PDF allows it).
+    let mut p = Pdf::new();
+    p.insert_blank(0, 300.0, 200.0).unwrap();
+    let page = p.page_ids()[0];
+    let cs = p.doc.add_object(Stream::new(
+        Dictionary::new(),
+        b"1 0 0 -1 0 200 cm 1 0 0 rg 10 10 20 20 re f".to_vec(),
+    ));
+    p.doc.get_dictionary_mut(page).unwrap().set("Contents", cs);
+    let data = p.print_data(&[0], false).unwrap();
+
+    // Draw an annotation into the sent page as CUPS does: after the page's content, without
+    // restoring the graphics state first. A blue square at (100, 150)-(200, 190).
+    let mut sent = Pdf::from_bytes(&data, None).unwrap();
+    let page = sent.page_ids()[0];
+    let mark = sent.doc.add_object(Stream::new(
+        Dictionary::new(),
+        b"0 0 1 rg 100 150 100 40 re f".to_vec(),
+    ));
+    let mut contents = match sent.doc.get_dictionary(page).unwrap().get(b"Contents") {
+        Ok(Object::Array(a)) => a.clone(),
+        Ok(c) => vec![c.clone()],
+        Err(_) => Vec::new(),
+    };
+    contents.push(Object::Reference(mark));
+    sent.doc
+        .get_dictionary_mut(page)
+        .unwrap()
+        .set("Contents", contents);
+
+    // It lands where it was meant to, near the top (y = 30 from the top), not turned
+    // into the bottom half.
+    let c = pixel(sent.to_bytes().unwrap(), 150, 30);
+    assert!(c[2] > 200 && c[0] < 60, "{c:?}");
+}
+
+#[test]
 fn as_image_sends_one_picture_per_page() {
     let mut p = three_pages();
     let data = p.print_data(&[0, 1], true).unwrap();

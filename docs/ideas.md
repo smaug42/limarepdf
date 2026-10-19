@@ -62,6 +62,8 @@ Small or medium additions that build on what LimarePDF already has:
 - Measurement tools with scale calibration and CSV export (L)
 - Comment summary and export, saved comment styles (M)
 - XFDF and FDF import and export (M)
+- Style changes that show at once: ticking a setting such as an arrow head on a line just drawn should change it
+  straight away, without Apply (S–M; raised by the user 2026-10-18 after using it)
 
 ## Forms
 
@@ -126,6 +128,8 @@ Small or medium additions that build on what LimarePDF already has:
 ## Printing
 
 - Booklet and N-up printing, printing comments, paper size and scaling (M)
+- The print dialog's pages box: clicking into it should select "all", so typing page numbers replaces it instead
+  of giving "1all" (S; raised by the user 2026-10-18)
 
 ## Automation and the app
 

@@ -44,5 +44,6 @@ Not yet available: paper size, scaling, colour and printer-specific options. The
   unit-tested.
 - On Linux, printing to an HP LaserJet P1606dn through CUPS gave blurred, unreadable pages. Other programs' PDFs
   sent with `lp` came out the same, and they printed cleanly once the job named the paper size
-  (`lp -o media=Letter`), which LimarePDF now does. On Windows only the print dialog has been tried; nothing
+  (`lp -o media=Letter`), which LimarePDF now does. Comments then printed upside down on a page whose content
+  leaves the drawing turned, until each page sent was made to restore the drawing state at its end. On Windows only the print dialog has been tried; nothing
   has been printed on paper. Nothing has been printed on macOS.
