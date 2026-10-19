@@ -138,6 +138,8 @@ Small or medium additions that build on what LimarePDF already has:
 - An MCP server so AI agents can run LimarePDF's operations (M)
 - Shell completions (S); renaming files by their content (M)
 - Sessions (reopen the last documents), custom shortcuts (M each)
+- File drops on Linux Wayland: a setting or environment variable to run under XWayland, which has drops, or the
+  winit upgrade once it supports Wayland drops ([today's workaround](gui.md#opening-files)) (S)
 
 ## Left out on purpose
 
