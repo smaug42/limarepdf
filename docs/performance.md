@@ -41,6 +41,23 @@ What the numbers show:
 - The reasons for the 560 to 640 MB of the last three files weren't looked into: the 27,000-path file has no fonts at
   all, and one page of PDFBox 1910 at 36 dpi takes 114 MB.
 
+## Memory in the desktop app
+
+Measured by hand on the same machine and commit, each in a newly started app, reading the app's peak and current
+memory (`VmHWM` and `VmRSS` in `/proc/<pid>/status`):
+
+| Check | Peak memory | Memory afterwards |
+| --- | --- | --- |
+| Open the 200-page scan | 1.49 GB | 0.97 GB |
+| The same, then 20 edits | 3.71 GB | 3.58 GB |
+| Open the scan, zoom to 6400% and scroll | 1.47 GB | 0.98 GB |
+| Three documents open: the scan, the 1,000 text pages and pdf.js bug1905623 | 0.92 GB | 0.92 GB |
+
+Edits on the scan felt immediate. Each one added about 130 MB, close to the file's 139 MB, because each undo step
+keeps a whole copy of the document; the app keeps up to 20 steps per document, whatever the document's size.
+Zooming to 6400% added nothing measurable. Peaks vary somewhat from one session to the next: the three documents
+together peaked lower than the scan alone did in the other sessions.
+
 These are timings of single tasks, not a benchmark suite, and apart from the one poppler timing no comparison with
 other software was made. hayro's own documentation says its renderer has not yet been tuned for performance.
 
@@ -53,5 +70,6 @@ OCR speed is in [Scanning and OCR](scanning-and-ocr.md#accuracy-and-speed).
 - At high zoom only the part of the page in view is drawn, in 512-pixel tiles
   ([details](rendering.md#high-zoom)). A tile takes about 1 ms on text pages and about 20 ms on a dense form, at
   any zoom, while a whole Letter page at 1152 dpi takes about 0.4 s and 500 MB.
-- Edits re-save the document without compressing it, and undo keeps plain snapshots.
+- Edits re-save the document without compressing it, and undo keeps plain snapshots (a whole copy of the document
+  per step, see [above](#memory-in-the-desktop-app)).
 - OCR, optimising, exporting images and printing run in the background.
