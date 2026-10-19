@@ -48,6 +48,11 @@
 - Zooming in far on a large page could close the app, because the page was drawn as one picture bigger than the
   graphics card takes. Pages shown more than 4096 pixels a side are now drawn in tiles.
 
+### Testing
+
+- Correction: earlier notes (0.4.0) said printing on Windows had been tried and works. Only the print dialog was
+  tried; nothing has yet been printed on paper from Windows.
+
 ## [0.7.1] - 2026-10-17
 
 ### Changed

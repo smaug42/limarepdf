@@ -41,5 +41,7 @@ Not yet available: paper size, scaling, colour and printer-specific options. The
 - Printing: `crates/limarepdf-core/tests/print.rs`, with a stand-in for `lp` (its arguments, the document it receives, and
   errors), and against a real CUPS with no printers (error messages). The Windows page placement and rotation are
   unit-tested.
-- Printing has been tried on Windows, where it works. On Linux and macOS it has not yet been tried with a real
-  printer.
+- On Linux, printing to an HP LaserJet P1606dn through CUPS gave blurred, unreadable pages. Other programs' PDFs
+  sent with `lp` came out the same, and they printed cleanly once the job named the paper size
+  (`lp -o media=Letter`), which LimarePDF doesn't do yet. On Windows only the print dialog has been tried; nothing
+  has been printed on paper. Nothing has been printed on macOS.
