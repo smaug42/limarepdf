@@ -564,6 +564,64 @@ fn damaged_copies() {
     std::fs::remove_dir_all(base).unwrap();
 }
 
+/// Withdrawing a crashed session's copy (a restored tab's, before a redaction, a removal of
+/// hidden information or a password): section 6's outcomes, as for this session's copies.
+#[test]
+fn withdrawing_a_crashed_copy() {
+    // Copies of tabs 1 and 2 left by a crash, on a disk that fails as told.
+    let setup = || {
+        let m = Model::new();
+        let s = start(Arc::new(m.clone()), &root());
+        written(&s, T1, 1, &pdf(1));
+        written(&s, T2, 1, &pdf(2));
+        let disk = m.crash();
+        let f = Faulty::new(Arc::new(disk.clone()));
+        let fs: Arc<dyn Fs> = f.clone();
+        let c = find_crashed(&fs, &root(), now()).pop().unwrap();
+        (disk, f, c)
+    };
+    let next_start = |m: &Model| offered(Arc::new(m.crash()), &root());
+
+    // Both withdrawn: nothing left, and the session goes.
+    let (m, _, mut c) = setup();
+    assert_eq!(c.withdraw(T1), Withdrawal::Confirmed);
+    assert_eq!(next_start(&m), [(T2, Ok(pdf(2)))]);
+    assert_eq!(c.withdraw(T2), Withdrawal::Confirmed);
+    assert!(!m.exists(&c.dir));
+    assert!(c.docs.is_empty());
+
+    // The PDF can't be removed: invalidated, not offered, reported; a retry removes it.
+    let (m, f, mut c) = setup();
+    f.fail(Kind::Remove, "t1-");
+    let pdf_path = c.dir.join("t1-1-0.pdf");
+    assert_eq!(c.withdraw(T1), Withdrawal::Leftover(vec![pdf_path.clone()]));
+    assert_eq!(next_start(&m), [(T2, Ok(pdf(2)))]);
+    f.clear();
+    c.retry_leftovers();
+    assert!(!m.exists(&pdf_path));
+
+    // The folder sync fails: after a power cut the copy could come back.
+    let (_, f, mut c) = setup();
+    f.fail(Kind::Sync, "session-");
+    let w = c.withdraw(T1);
+    assert!(
+        matches!(&w, Withdrawal::NotConfirmed(NotConfirmed::SyncFailed { folder, .. }) if *folder == c.dir),
+        "{w:?}"
+    );
+
+    // The description can be neither removed nor replaced: it could be offered.
+    let (m, f, mut c) = setup();
+    f.fail(Kind::Remove, "t1.txt");
+    f.fail(Kind::Rename, "t1.txt");
+    let w = c.withdraw(T1);
+    assert!(
+        matches!(&w, Withdrawal::NotConfirmed(NotConfirmed::Kept { file, .. }) if *file == c.dir.join("t1.txt")),
+        "{w:?}"
+    );
+    assert_eq!(c.docs.len(), 2);
+    assert!(m.exists(&c.dir.join("t1.txt")));
+}
+
 /// The environment variable that makes [`child_session`] act.
 const CHILD: &str = "LIMAREPDF_RECOVERY_TEST_CHILD";
 

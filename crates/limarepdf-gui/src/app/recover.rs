@@ -82,17 +82,23 @@ fn left(t: &mut Tab, files: Vec<PathBuf>) {
 }
 
 /// The dialog when a command stops because an earlier copy could still be offered
-/// (section 6); `done` is what didn't happen, as "applied the redactions".
-fn stopped(n: NotConfirmed, done: &str) -> Dialog {
+/// (section 6); `done` is what didn't happen, as "applied the redactions". `ours` when the
+/// copy is this session's, which turning recovery copies off also withdraws (a restored
+/// tab's copy in a crashed session isn't).
+fn stopped(n: NotConfirmed, done: &str, ours: bool) -> Dialog {
     let title = "Recovery copy not removed".to_string();
+    let or_off = if ours {
+        ", or turn off recovery copies (File > Keep recovery copies of unsaved changes)"
+    } else {
+        ""
+    };
     match n {
         NotConfirmed::Kept { file, why } => Dialog::RecoveryFile {
             title,
             text: format!(
                 "LimarePDF couldn't remove an earlier recovery copy of this document ({}), so \
                  it hasn't {done}. Otherwise that copy, made before the change, could be offered \
-                 after a crash.\n\nThe copy is at {}. Delete it, or turn off recovery copies \
-                 (File > Keep recovery copies of unsaved changes), then try again.",
+                 after a crash.\n\nThe copy is at {}. Delete it{or_off}, then try again.",
                 display_line(&why, 300),
                 file.display()
             ),
@@ -274,6 +280,9 @@ impl App {
         // once they are gone.
         let minute = self.rescue.retried.is_none_or(|r| now >= r + INTERVAL);
         if minute && self.tabs.iter().any(|t| !t.copy.leftovers.is_empty()) {
+            for s in &mut self.rescue.found {
+                s.crashed.retry_leftovers();
+            }
             for t in &mut self.tabs {
                 t.copy.leftovers.retain(|p| q.store().exists(p));
                 if t.copy.leftovers.is_empty() {
@@ -305,10 +314,12 @@ impl App {
                         continue;
                     };
                     // Taken here, on the UI thread, so that no clone falls between a
-                    // withdrawal and the change it is for (section 4).
+                    // withdrawal and the change it is for (section 4). Pruned, so that
+                    // nothing a redaction or a removal of hidden information took out is
+                    // left in it.
                     match crate::guard(|| Ok(t.pdf.clone())) {
                         Ok(mut pdf) => {
-                            q.write(ticket, doc_info(t), Box::new(move || pdf.snapshot()));
+                            q.write(ticket, doc_info(t), Box::new(move || pdf.pruned_snapshot()));
                             t.copy.queued(now);
                         }
                         Err(e) => {
@@ -333,7 +344,22 @@ impl App {
     /// be offered (section 6). A copy invalidated but left on disk gets the tab's notice,
     /// and the command goes ahead.
     pub(super) fn withdraw_copies(&mut self, i: usize, done: &str) -> Result<(), Dialog> {
-        let (Some(q), Some(t)) = (&self.rescue.queue, self.tabs.get_mut(i)) else {
+        let Some(t) = self.tabs.get_mut(i) else {
+            return Ok(());
+        };
+        // A restored tab's copy in the crashed session was made before the change too,
+        // and is withdrawn whether or not this session keeps copies.
+        if let Some(r) = &t.recovered {
+            let src = self.rescue.found.iter_mut();
+            if let Some(src) = src.into_iter().find(|s| s.crashed.dir == r.session) {
+                match src.crashed.withdraw(r.tab) {
+                    Withdrawal::Confirmed => {}
+                    Withdrawal::Leftover(files) => left(t, files),
+                    Withdrawal::NotConfirmed(n) => return Err(stopped(n, done, false)),
+                }
+            }
+        }
+        let Some(q) = &self.rescue.queue else {
             return Ok(());
         };
         t.copy.withdrawn();
@@ -348,7 +374,7 @@ impl App {
                 left(t, files);
                 Ok(())
             }
-            Withdrawal::NotConfirmed(n) => Err(stopped(n, done)),
+            Withdrawal::NotConfirmed(n) => Err(stopped(n, done, true)),
         }
     }
 
@@ -769,6 +795,59 @@ mod tests {
     }
 
     #[test]
+    fn merging_a_protected_document_withdraws_the_copy_and_protects_the_tab() {
+        // Protected, but opening without a password: an empty user password.
+        let mut p = page();
+        p.set_encryption(Some(Encryption {
+            user_password: String::new(),
+            owner_password: "o".into(),
+            cipher: Cipher::Aes128,
+            restrictions: Restrictions::default(),
+        }));
+        let locked = std::env::temp_dir().join(format!(
+            "limarepdf-recover-{}-locked.pdf",
+            std::process::id()
+        ));
+        std::fs::write(&locked, p.to_bytes().unwrap()).unwrap();
+        let plain = locked.with_file_name(format!(
+            "limarepdf-recover-{}-plain.pdf",
+            std::process::id()
+        ));
+        std::fs::write(&plain, page().to_bytes().unwrap()).unwrap();
+
+        let ctx = egui::Context::default();
+        let m = Model::new();
+        let f = Faulty::new(Arc::new(m.clone()));
+        let mut app = app_on(&ctx, f.clone());
+        let t0 = Instant::now();
+        copy_all(&mut app, &ctx, t0);
+        // An unprotected document: copies go on.
+        app.merge_files(&ctx, std::slice::from_ref(&plain));
+        assert_eq!(app.tabs[0].page_count(), 3);
+        assert!(!app.tabs[0].copy.protected);
+        assert!(!files(&m, &app).is_empty());
+
+        // A copy that could still be offered stops the merge.
+        f.fail(Kind::Remove, "t1.txt");
+        f.fail(Kind::Rename, "t1.txt");
+        app.merge_files(&ctx, &[plain.clone(), locked.clone()]);
+        assert_eq!(app.tabs[0].page_count(), 3);
+        assert!(matches!(&app.dialog, Dialog::RecoveryFile { .. }));
+        f.clear();
+        app.dialog = Dialog::None;
+
+        app.merge_files(&ctx, &[plain.clone(), locked.clone()]);
+        let _ = std::fs::remove_file(&locked);
+        let _ = std::fs::remove_file(&plain);
+        assert_eq!(app.tabs[0].page_count(), 5);
+        assert!(app.tabs[0].copy.protected);
+        assert!(files(&m, &app).is_empty());
+        assert!(app.tabs[0].edit(&ctx, |p| p.insert_blank(0, 612.0, 792.0)));
+        copy_all(&mut app, &ctx, t0 + INTERVAL * 2);
+        assert!(files(&m, &app).is_empty());
+    }
+
+    #[test]
     fn removing_content_withdraws_the_copy_and_writes_a_new_one_at_once() {
         for redact in [true, false] {
             let ctx = egui::Context::default();
@@ -794,6 +873,121 @@ mod tests {
             assert_eq!(after.len(), 2);
             assert_ne!(after, before);
             assert_eq!(app.tabs[0].copy.copied, Some(app.tabs[0].revision));
+        }
+    }
+
+    /// A one-page document drawing "Walrus text" inside `mark`'s area, with a title, an
+    /// XMP stream and an attachment, each saying "Walrus" too.
+    fn secrets() -> Pdf {
+        use lopdf::{dictionary, Dictionary, Object, Stream};
+        let mut p = page();
+        p.set_info(&limarepdf_core::Info {
+            title: Some("Walrus title".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        let font = p.doc.add_object(dictionary! {
+            "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+            "Encoding" => "WinAnsiEncoding",
+        });
+        let text = b"BT /F1 12 Tf 100 690 Td (Walrus text) Tj ET".to_vec();
+        let s = p.doc.add_object(Stream::new(Dictionary::new(), text));
+        let xmp = p.doc.add_object(Stream::new(
+            dictionary! { "Type" => "Metadata", "Subtype" => "XML" },
+            b"<x:xmpmeta>Walrus XMP</x:xmpmeta>".to_vec(),
+        ));
+        let file = p.doc.add_object(Stream::new(
+            dictionary! { "Type" => "EmbeddedFile" },
+            b"Walrus attachment".to_vec(),
+        ));
+        let spec = p.doc.add_object(dictionary! {
+            "Type" => "Filespec", "F" => Object::string_literal("notes.txt"),
+            "EF" => dictionary! { "F" => file },
+        });
+        let id = p.page_ids()[0];
+        let d = p.doc.get_dictionary_mut(id).unwrap();
+        d.set("Contents", s);
+        d.set(
+            "Resources",
+            dictionary! { "Font" => dictionary! { "F1" => font } },
+        );
+        let names = dictionary! {
+            "Names" => vec![Object::string_literal("notes.txt"), Object::Reference(spec)],
+        };
+        let c = p.doc.catalog_mut().unwrap();
+        c.set("Metadata", xmp);
+        c.set("Names", dictionary! { "EmbeddedFiles" => names });
+        p
+    }
+
+    /// What the tab's copy on `m` says of "Walrus …", anywhere in it: every object's
+    /// strings and (decompressed) streams.
+    fn walruses(m: &Model, app: &App) -> Vec<String> {
+        use lopdf::Object;
+        fn find(o: &Object, out: &mut Vec<String>) {
+            let mut look = |b: &[u8]| {
+                let s = String::from_utf8_lossy(b);
+                for (i, _) in s.match_indices("Walrus ") {
+                    let w = s[i..].split(['<', ')']).next().unwrap_or_default();
+                    out.push(w.to_string());
+                }
+            };
+            match o {
+                Object::String(b, _) => look(b),
+                Object::Array(a) => a.iter().for_each(|x| find(x, out)),
+                Object::Dictionary(d) => d.iter().for_each(|(_, v)| find(v, out)),
+                Object::Stream(s) => {
+                    look(
+                        &s.decompressed_content()
+                            .unwrap_or_else(|_| s.content.clone()),
+                    );
+                    s.dict.iter().for_each(|(_, v)| find(v, out));
+                }
+                _ => {}
+            }
+        }
+        let dir = queue(app).store().dir().to_path_buf();
+        let pdf = files(m, app)
+            .into_iter()
+            .find(|n| n.ends_with(".pdf"))
+            .expect("a copy");
+        let doc = lopdf::Document::load_mem(&m.read(&dir.join(pdf)).unwrap()).unwrap();
+        let mut out = Vec::new();
+        doc.objects.values().for_each(|o| find(o, &mut out));
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    #[test]
+    fn the_copy_after_removing_content_has_none_of_it() {
+        for redact in [true, false] {
+            let ctx = egui::Context::default();
+            let m = Model::new();
+            let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+            app.start_recovery_in(&ctx, Arc::new(m.clone()), &root(), clock());
+            assert!(app.add_tab(&ctx, secrets(), None, None, false));
+            mark(&mut app, &ctx);
+            let t0 = Instant::now();
+            copy_all(&mut app, &ctx, t0);
+            let all = [
+                "Walrus XMP",
+                "Walrus attachment",
+                "Walrus text",
+                "Walrus title",
+            ];
+            assert_eq!(walruses(&m, &app), all);
+            let left: &[&str] = if redact {
+                app.apply_redactions(&ctx);
+                &["Walrus XMP", "Walrus attachment", "Walrus title"]
+            } else {
+                app.remove_hidden(&ctx, &Hidden::ALL);
+                &["Walrus text"]
+            };
+            assert!(app.tabs[0].scrubbed);
+            tick(&mut app, &ctx, t0 + INTERVAL + Duration::from_secs(1));
+            assert_eq!(app.tabs[0].copy.copied, Some(app.tabs[0].revision));
+            assert_eq!(walruses(&m, &app), left, "redact: {redact}");
         }
     }
 
@@ -1011,6 +1205,76 @@ mod tests {
         app.close_tab(0);
         assert!(app.rescue.found.is_empty());
         assert!(!disk.exists(&session));
+    }
+
+    #[test]
+    fn removing_content_from_a_restored_tab_withdraws_the_copy_it_came_from() {
+        let bytes = secrets().to_bytes().unwrap();
+        let cases = [
+            "applied the redactions",
+            "removed the hidden information",
+            "added the password",
+        ];
+        for (n, done) in cases.into_iter().enumerate() {
+            for stuck in [true, false] {
+                let disk = crashed_with(&bytes, DocInfo::default());
+                let f = Faulty::new(Arc::new(disk.clone()));
+                let ctx = egui::Context::default();
+                let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+                app.start_recovery_in(&ctx, f.clone(), &root(), clock());
+                app.restore_copy(&ctx, 0, TabId(7));
+                app.close_restore(&ctx);
+                let session = app.rescue.found[0].crashed.dir.clone();
+                let desc = session.join("t7.txt");
+                mark(&mut app, &ctx);
+                app.tabs[0].forms.sec = password();
+                if stuck {
+                    f.fail(Kind::Remove, "t7.txt");
+                    f.fail(Kind::Rename, "t7.txt");
+                }
+                let state = app.tabs[0].state();
+                match n {
+                    0 => app.apply_redactions(&ctx),
+                    1 => app.remove_hidden(&ctx, &[Hidden::Metadata]),
+                    _ => app.apply_panel(&ctx, Apply::Security),
+                }
+                if stuck {
+                    assert!(app.tabs[0].state() == state, "{done}: the document changed");
+                    match &app.dialog {
+                        Dialog::RecoveryFile { text, file, .. } => {
+                            assert_eq!(*file, desc, "{done}");
+                            assert!(text.contains(&format!("hasn't {done}")), "{text}");
+                            // Turning recovery off doesn't remove a crashed session's copy.
+                            assert!(!text.contains("turn off"), "{text}");
+                        }
+                        _ => panic!("{done}: no message naming the file"),
+                    }
+                    assert!(disk.exists(&desc));
+                    continue;
+                }
+                let t = &app.tabs[0];
+                assert!(
+                    if n == 2 {
+                        t.encryption.is_some()
+                    } else {
+                        t.scrubbed
+                    },
+                    "{done}"
+                );
+                assert!(
+                    !disk.exists(&session),
+                    "{done}: the old copy is still there"
+                );
+                if n == 0 {
+                    // The tab's new copy, in this session, is of the redacted document.
+                    tick(&mut app, &ctx, Instant::now());
+                    let w = walruses(&disk, &app);
+                    assert!(!w.is_empty() && !w.contains(&"Walrus text".into()), "{w:?}");
+                }
+                app.close_tab(0);
+                assert!(app.rescue.found.is_empty());
+            }
+        }
     }
 
     #[test]

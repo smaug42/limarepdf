@@ -7,10 +7,11 @@
 - Crash recovery: while you work, LimarePDF keeps a private copy of each document with unsaved changes, about a
   minute behind. If it stops without closing normally, the next start lists them: restore one as a new, unsaved
   document, discard it, or decide later (copies are kept for 30 days). Your own files are never written by it.
-  Password-protected documents get no copies, and applying redactions, removing hidden information or setting a
-  password deletes the document's earlier copy first; if that copy can't be deleted, the command doesn't run. A
-  restored copy of a signed document doesn't have its signatures checked, since they cover the original file. Turn
-  it off with File > Keep recovery copies of unsaved changes.
+  Password-protected documents get no copies, nor documents you add a protected document's pages to. Applying
+  redactions, removing hidden information or setting a password deletes the document's earlier copies first,
+  including the one a restored document came from, and later copies hold none of what was removed; if an earlier
+  copy can't be deleted, the command doesn't run. A restored copy of a signed document doesn't have its signatures
+  checked, since they cover the original file. Turn it off with File > Keep recovery copies of unsaved changes.
 
 ### Fixed
 
@@ -26,7 +27,8 @@
   page without restoring it afterwards, and the new content inherited that.
 - Editing invisible text (an OCR layer) moved the line down by about a fifth of its height.
 - Repairing a damaged file could show a PDF attached to it, stored uncompressed, instead of the file's own pages,
-  when the attachment's length was written in an object of its own. Such lengths are now looked up.
+  when the attachment's length was written in an object of its own. Such lengths are now looked up, and a copy of
+  that object inside the attachment isn't used.
 
 ## [0.7.2] - 2026-10-18
 

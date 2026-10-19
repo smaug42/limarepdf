@@ -1764,23 +1764,9 @@ impl App {
                 self.insert_blank(ctx, after, size);
             }
             Act::Merge => {
-                let Some(files) = Self::pdf_dialog().pick_files() else {
-                    return;
-                };
-                let mut docs = Vec::new();
-                for f in &files {
-                    match crate::guard(|| Pdf::open(f, None)) {
-                        Ok(d) => docs.push(d),
-                        Err(e) => {
-                            self.dialog = Dialog::Message(
-                                "Merge failed".into(),
-                                format!("{}: {e:#}", f.display()),
-                            );
-                            return;
-                        }
-                    }
+                if let Some(files) = Self::pdf_dialog().pick_files() {
+                    self.merge_files(ctx, &files);
                 }
-                self.tabs[self.active].edit(ctx, |p| p.append(docs));
             }
             Act::InsertImages => {
                 let Some(files) = Self::pick_images() else {
@@ -1927,6 +1913,35 @@ impl App {
         });
         if let Some(r) = report.filter(|_| ok) {
             self.dialog = Dialog::Message("Redactions applied".into(), report_text(&r));
+        }
+    }
+
+    /// Adds the pages of `files` to the end of the active tab. Pages from a
+    /// password-protected document (one that opens without asking) make the tab protected:
+    /// its recovery copies are withdrawn first, as for a password, and it gets no more.
+    fn merge_files(&mut self, ctx: &egui::Context, files: &[PathBuf]) {
+        let mut docs = Vec::new();
+        for f in files {
+            match crate::guard(|| Pdf::open(f, None)) {
+                Ok(d) => docs.push(d),
+                Err(e) => {
+                    self.dialog =
+                        Dialog::Message("Merge failed".into(), format!("{}: {e:#}", f.display()));
+                    return;
+                }
+            }
+        }
+        let protected = docs.iter().any(Pdf::encrypted);
+        if protected {
+            let done = "added the pages of the password-protected document";
+            if let Err(stop) = self.withdraw_copies(self.active, done) {
+                self.dialog = stop;
+                return;
+            }
+        }
+        let t = &mut self.tabs[self.active];
+        if t.edit(ctx, |p| p.append(docs)) && protected {
+            t.copy.protected = true;
         }
     }
 
