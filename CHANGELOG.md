@@ -47,6 +47,9 @@
   while the app tried again on every frame.
 - Zooming in far on a large page could close the app, because the page was drawn as one picture bigger than the
   graphics card takes. Pages shown more than 4096 pixels a side are now drawn in tiles.
+- Printing on Linux and macOS could come out blurred and unreadable: some printer setups (seen with an HP LaserJet
+  through CUPS) need the job to name the paper size, as other apps' jobs do. Each job now names the printer's
+  default paper.
 
 ### Testing
 

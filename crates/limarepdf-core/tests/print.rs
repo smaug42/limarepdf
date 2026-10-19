@@ -1,7 +1,7 @@
 //! What LimarePDF sends to CUPS, and how it talks to `lp`. No printer is needed: `lp` is
 //! replaced by a script that records its arguments and input.
 
-use limarepdf_core::print::{lp_args, send, PrintOptions, Sides};
+use limarepdf_core::print::{lp_args, paper_in_lpoptions, send, PrintOptions, Sides};
 use limarepdf_core::{render, Cipher, Encryption, ObjectKind, Pdf, Restrictions};
 use lopdf::{dictionary, Dictionary, Object, Stream};
 #[cfg(unix)]
@@ -115,11 +115,35 @@ fn lp_arguments() {
         as_image: false,
         title: "report.pdf".into(),
     };
-    let want = "-d Office -n 2 -o collate=true -o sides=two-sided-long-edge -t report.pdf";
-    assert_eq!(lp_args(&o).join(" "), want);
-    // The default printer, one copy: no -d, no collate, explicitly one-sided.
+    let want =
+        "-d Office -n 2 -o media=A4 -o collate=true -o sides=two-sided-long-edge -t report.pdf";
+    assert_eq!(lp_args(&o, Some("A4")).join(" "), want);
+    // The default printer, one copy, paper unknown: no -d, no media, no collate, explicitly
+    // one-sided.
     let o = PrintOptions::default();
-    assert_eq!(lp_args(&o).join(" "), "-n 1 -o sides=one-sided");
+    assert_eq!(lp_args(&o, None).join(" "), "-n 1 -o sides=one-sided");
+}
+
+#[test]
+fn default_paper_from_lpoptions() {
+    // As an HP LaserJet's queue lists its options.
+    let text = "PageSize/Media Size: A6 A5 Postcard *Letter Letter.Duplex A4 Custom.WIDTHxHEIGHT\n\
+                Duplex/Double-Sided Printing: DuplexNoTumble DuplexTumble *None\n\
+                ColorModel/Output Mode: *Gray\n";
+    assert_eq!(paper_in_lpoptions(text).as_deref(), Some("Letter"));
+    let a4 = "InputSlot/Media Source: *Auto Manual\nPageSize/Page Size: Letter *A4\n";
+    assert_eq!(paper_in_lpoptions(a4).as_deref(), Some("A4"));
+    // No mark, a custom size, or no PageSize line at all: leave the paper to the printer.
+    assert_eq!(paper_in_lpoptions("PageSize/Media Size: Letter A4\n"), None);
+    assert_eq!(
+        paper_in_lpoptions("PageSize/Media Size: Letter *Custom.WIDTHxHEIGHT\n"),
+        None
+    );
+    assert_eq!(
+        paper_in_lpoptions("Duplex/Double-Sided Printing: *None\n"),
+        None
+    );
+    assert_eq!(paper_in_lpoptions(""), None);
 }
 
 /// A stand-in for `lp`: saves its arguments and input next to itself, prints a reply,
@@ -150,10 +174,13 @@ fn sends_the_document_to_lp() {
     let dir = lp.parent().unwrap();
     let mut p = three_pages();
     let data = p.print_data(&[1], false).unwrap();
-    let args = lp_args(&PrintOptions {
-        printer: Some("Office".into()),
-        ..Default::default()
-    });
+    let args = lp_args(
+        &PrintOptions {
+            printer: Some("Office".into()),
+            ..Default::default()
+        },
+        Some("Letter"),
+    );
     let reply = send(&lp, &args, &data).unwrap();
     assert_eq!(reply, "request id is Office-7 (1 file(s))");
     assert_eq!(std::fs::read(dir.join("job.pdf")).unwrap(), data);
@@ -161,10 +188,13 @@ fn sends_the_document_to_lp() {
     assert_eq!(got.lines().collect::<Vec<_>>(), args);
 
     // lp's own error reaches the user.
-    let args = lp_args(&PrintOptions {
-        printer: Some("Missing".into()),
-        ..Default::default()
-    });
+    let args = lp_args(
+        &PrintOptions {
+            printer: Some("Missing".into()),
+            ..Default::default()
+        },
+        None,
+    );
     let e = send(&lp, &args, &data).unwrap_err().to_string();
     assert!(e.contains("does not exist"), "{e}");
 }

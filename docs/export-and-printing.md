@@ -25,7 +25,8 @@ default), copies and two-sided printing, and runs in the background. On the comm
 
 **Linux and macOS** print through CUPS. The chosen pages go to `lp` as an unencrypted PDF, which CUPS draws with its
 own engine, so a printout can differ from LimarePDF's screen. "Print as image" (`--as-image`) sends pages drawn by LimarePDF at
-300 dpi instead.
+300 dpi instead. Each job names the printer's default paper size (read with `lpoptions`), as other apps' jobs do:
+some printer setups print every page blurred when a job leaves it out.
 
 **Windows** prints through the print spooler. LimarePDF draws each page at the printer's resolution, at most 600 dpi. A page
 prints at actual size, shrunk to the printable area when it is larger, centred, and turned when a landscape page meets
@@ -43,5 +44,5 @@ Not yet available: paper size, scaling, colour and printer-specific options. The
   unit-tested.
 - On Linux, printing to an HP LaserJet P1606dn through CUPS gave blurred, unreadable pages. Other programs' PDFs
   sent with `lp` came out the same, and they printed cleanly once the job named the paper size
-  (`lp -o media=Letter`), which LimarePDF doesn't do yet. On Windows only the print dialog has been tried; nothing
+  (`lp -o media=Letter`), which LimarePDF now does. On Windows only the print dialog has been tried; nothing
   has been printed on paper. Nothing has been printed on macOS.
