@@ -27,7 +27,8 @@ Damaged files are repaired in `crates/limarepdf-core/src/repair.rs` when lopdf r
 to rebuild its table itself (its own scan ignores `/Length`, so its result is kept only when the repair fails): it
 scans the bytes for `N G obj` headers (skipping stream data by a `/Length` followed by `endstream`, else to the
 first `endstream`; an indirect length is looked up among every `N G obj <integer> endobj` in the file, a first pass,
-taking the latest that fits; a later copy of a number wins), takes the trailer entries from the newest trailer or
+taking the latest that fits and isn't inside the data its own value or the longest fitting one gives, so a copy
+planted in an attachment can't end the stream early; a later copy of a number wins), takes the trailer entries from the newest trailer or
 cross-reference stream dictionary outside stream data that names a catalog, appends a rebuilt cross-reference
 table, and has lopdf read the file again. Object stream members lopdf's reader skips are then read one by one, and
 when the trailers name no usable catalog, the last catalog object with a page tree is used. See
@@ -87,9 +88,11 @@ whether an earlier copy could still be offered, so the command can stop instead.
 model file system that simulates power cuts (`recovery/model.rs`). The app's side is `app/recover.rs`: each frame,
 `recovery/schedule.rs` says which tabs are due (a minute after the first change, at most once a minute); the app
 takes a ticket and a clone of the document on the UI thread and queues the write, and one recovery thread
-serialises it and publishes it in order with saves' and closes' removals. Redaction, Remove hidden information and
-an added password withdraw the tab's copies before their edit runs, and stop when the store reports that an earlier
-copy could still be offered. At start the app finds the sessions of runs that ended without cleaning up and offers
+serialises it, without the objects nothing uses (`Pdf::pruned_snapshot`, so nothing a redaction or Remove hidden
+information detached is in it), and publishes it in order with saves' and closes' removals. Redaction, Remove
+hidden information and an added password withdraw the tab's copies before their edit runs, and for a restored tab
+the crashed session's copy it came from too (`Crashed::withdraw`), and stop when either reports that an earlier copy
+could still be offered. Append PDFs does the same when a file it adds is encrypted, and marks the tab protected. At start the app finds the sessions of runs that ended without cleaning up and offers
 their copies; a normal exit (`on_exit`, which a crash never reaches) ends the session and deletes its folder.
 
 Signing (`sig_sign.rs`, `sign_document`) adds the signature dictionary with placeholders, its field or widget and
