@@ -219,7 +219,8 @@ fn endstream_inside_stream_data() {
 #[test]
 fn uncompressed_embedded_pdf() {
     // An attached PDF stored as it is, with its own objects, streams and table: none of
-    // them belong to the outer file, though their numbers are the same.
+    // them belong to the outer file, though their numbers are the same. Its length is
+    // given directly, or in an object of its own, before or after it.
     let (mut inner, at) = body(&[
         (4, "<< /Length 3 >>\nstream\n0 g\nendstream".into()),
         (1, "<< /Type /Catalog /Pages 2 0 R >>".into()),
@@ -228,18 +229,24 @@ fn uncompressed_embedded_pdf() {
     ]);
     table(&mut inner, &at, "/Root 1 0 R");
     let inner = String::from_utf8_lossy(&inner).into_owned();
-    let mut o = objects();
-    o.push((
-        6,
+    let attached = |length: &str| {
         format!(
-            "<< /Type /EmbeddedFile /Subtype /application#2Fpdf /Length {} >>\nstream\n{inner}\nendstream",
-            inner.len()
-        ),
-    ));
-    let (mut b, _) = body(&o);
-    b.extend_from_slice(TRAILER);
-    let pdf = opens_repaired(&b, None);
-    assert_eq!(pdf.info().title.as_deref(), Some("Damaged"));
+            "<< /Type /EmbeddedFile /Subtype /application#2Fpdf /Length {length} >>\nstream\n{inner}\nendstream"
+        )
+    };
+    let length = (7, inner.len().to_string());
+    for o in [
+        vec![(6, attached(&length.1))],
+        vec![(6, attached("7 0 R")), length.clone()],
+        vec![length.clone(), (6, attached("7 0 R"))],
+    ] {
+        let mut all = objects();
+        all.extend(o);
+        let (mut b, _) = body(&all);
+        b.extend_from_slice(TRAILER);
+        let pdf = opens_repaired(&b, None);
+        assert_eq!(pdf.info().title.as_deref(), Some("Damaged"));
+    }
 }
 
 #[test]

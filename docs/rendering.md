@@ -53,9 +53,10 @@ objects by reading through the file, as Acrobat, poppler and pdf.js do:
 
 - every `N G obj` header at the start of a line counts, except inside stream data, and a later copy of an object
   replaces an earlier one, as a later revision would;
-- a stream's data ends where its `/Length` says when `endstream` follows there, so a PDF attached uncompressed, or
-  `endstream` in a comment, is never taken for the file's own objects; when the length is wrong or names another
-  object, the data ends at the first `endstream`, as pdf.js, poppler and MuPDF do;
+- a stream's data ends where its `/Length` says when `endstream` follows there, whether the length is in the
+  stream's dictionary or in an object of its own, so a PDF attached uncompressed, or `endstream` in a comment, is
+  never taken for the file's own objects; when the length is wrong, or its object can't be found, the data ends at
+  the first `endstream`, as pdf.js, poppler and MuPDF do;
 - the newest trailer outside stream data that names a catalog gives the catalog, the document information and, for
   encrypted files, the encryption settings; when none names a catalog that leads to pages, the last catalog object
   found is used;
@@ -72,7 +73,7 @@ Limits:
   where the file holds several versions of an object, the last one is used even if the damaged table pointed
   elsewhere. An object a later revision deleted can come back, though nothing in the document refers to it then,
   and saving leaves it out.
-- A stream whose `/Length` is wrong or is a reference to another object ends at its first `endstream`; if its data
+- A stream whose `/Length` is wrong, or is in an object that can't be found, ends at its first `endstream`; if its data
   holds that word (an attached PDF, say), what follows it in the data may be taken for objects.
 - A repaired file's digital signatures never show as valid and unchanged, since other PDF apps may read it
   differently: a signature whose signed part is damaged shows *can't check*, and one whose signed part is intact

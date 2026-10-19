@@ -25,6 +25,8 @@
   new content upside down, mirrored and shrunk (a 28 pt line became about 7 pt). Such pages flip and scale the whole
   page without restoring it afterwards, and the new content inherited that.
 - Editing invisible text (an OCR layer) moved the line down by about a fifth of its height.
+- Repairing a damaged file could show a PDF attached to it, stored uncompressed, instead of the file's own pages,
+  when the attachment's length was written in an object of its own. Such lengths are now looked up.
 
 ## [0.7.2] - 2026-10-18
 

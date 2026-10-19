@@ -3,6 +3,7 @@
 use super::model::{Faulty, Kind, Model};
 use super::*;
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{RwLock, RwLockReadGuard};
 
 const T1: TabId = TabId(1);
 const T2: TabId = TabId(2);
@@ -104,6 +105,16 @@ fn copies(m: &Model, s: &Store) -> Vec<String> {
         .into_iter()
         .filter(|n| n != "lock")
         .collect()
+}
+
+/// A process being started shares every file this one has open, session locks included,
+/// until it runs its program; a test checking a lock on the real disk meanwhile finds it
+/// held. Tests that hold locks on the real disk read this for as long as they run, and the
+/// one that starts a process writes it while it does.
+static SPAWN: RwLock<()> = RwLock::new(());
+
+fn real_disk() -> RwLockReadGuard<'static, ()> {
+    SPAWN.read().unwrap_or_else(|e| e.into_inner())
 }
 
 /// A fresh, empty folder on the real disk for one test.
@@ -278,6 +289,7 @@ fn copy_session(from: &Path, to_root: &Path) {
 /// An app crash at each step of a publish, on the real disk: the pair found is always whole.
 #[test]
 fn app_crash_at_each_publish_step() {
+    let _disk = real_disk();
     let base = folder("app-crash");
     for first in [true, false] {
         let root = base.join(format!("root-{first}"));
@@ -504,6 +516,7 @@ fn the_previous_copy_left_behind() {
 /// good, and can be shown and discarded.
 #[test]
 fn damaged_copies() {
+    let _disk = real_disk();
     let base = folder("damaged");
     let root = base.join("recovery");
     let s = start(Arc::new(RealFs), &root);
@@ -575,6 +588,7 @@ fn child_session() {
 fn a_running_session_is_not_offered() {
     use std::io::{BufRead, Write};
     let base = folder("child");
+    let spawning = SPAWN.write().unwrap_or_else(|e| e.into_inner());
     let mut child = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "recovery::tests::child_session",
@@ -588,6 +602,7 @@ fn a_running_session_is_not_offered() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .unwrap();
+    drop(spawning);
     let out = std::io::BufReader::new(child.stdout.take().unwrap());
     let mut lines = out.lines();
     // The test harness may print the test's name on the same line first.
@@ -616,6 +631,7 @@ fn a_read_only_folder() {
     if limarepdf_core::disk::user_id() == 0 {
         return; // Permissions don't stop root.
     }
+    let _disk = real_disk();
     let base = folder("read-only");
     let s = start(Arc::new(RealFs), &base);
     written(&s, T1, 1, &pdf(1));
@@ -925,6 +941,7 @@ fn leftover_files_at_start() {
 #[test]
 fn permissions_and_a_normal_exit() {
     use std::os::unix::fs::PermissionsExt;
+    let _disk = real_disk();
     let base = folder("modes");
     let root = base.join("recovery");
     std::fs::create_dir(&root).unwrap();

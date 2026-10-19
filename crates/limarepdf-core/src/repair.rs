@@ -4,7 +4,7 @@
 //! bytes instead, as other PDF apps do, and a rebuilt table is appended for lopdf to read.
 
 use lopdf::{Dictionary, Document, Object};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::io::Cursor;
 use std::ops::Range;
@@ -159,9 +159,42 @@ impl Scan {
     }
 }
 
+/// The values of every `N G obj <integer> endobj` whose header starts a line, by number and
+/// generation, in file order: the candidates for an indirect `/Length`. Copies inside stream
+/// data are included, since where the streams end isn't known yet.
+fn integer_objects(b: &[u8]) -> HashMap<(u32, u16), Vec<u64>> {
+    let mut out: HashMap<(u32, u16), Vec<u64>> = HashMap::new();
+    let mut i = 0;
+    while i < b.len() {
+        let line = i + b[i..]
+            .iter()
+            .take_while(|c| matches!(c, b' ' | b'\t'))
+            .count();
+        if let Some(id) = object_header(&b[line..]) {
+            let rest = &b[line + find(&b[line..], b"obj").unwrap_or(0) + 3..];
+            let rest = &rest[rest.iter().take_while(|c| is_white(**c)).count()..];
+            let digits = rest.iter().take_while(|c| c.is_ascii_digit()).count();
+            let after = &rest[digits..];
+            let space = after.iter().take_while(|c| is_white(**c)).count();
+            if space > 0 && after[space..].starts_with(b"endobj") {
+                let value = std::str::from_utf8(&rest[..digits]).ok();
+                if let Some(v) = value.and_then(|v| v.parse().ok()) {
+                    out.entry(id).or_default().push(v);
+                }
+            }
+        }
+        i = match b[i..].iter().position(|c| matches!(c, b'\r' | b'\n')) {
+            Some(n) => i + n + 1,
+            None => b.len(),
+        };
+    }
+    out
+}
+
 /// Scans `b` for objects. Stream data is skipped, so headers inside an uncompressed stream
 /// (an attached PDF, say) don't count.
 fn scan_objects(b: &[u8]) -> Scan {
+    let lengths = integer_objects(b);
     let mut out = Scan::default();
     let mut header = None;
     let mut line_start = true;
@@ -171,7 +204,7 @@ fn scan_objects(b: &[u8]) -> Scan {
             && !b[..i].ends_with(b"end")
             && matches!(b.get(i + 6), Some(b'\r' | b'\n'))
         {
-            if let Some(end) = stream_end(b, header, i) {
+            if let Some(end) = stream_end(b, header, i, &lengths) {
                 out.streams.push(i..end);
                 i = end;
                 line_start = false;
@@ -197,11 +230,17 @@ fn scan_objects(b: &[u8]) -> Scan {
 }
 
 /// Where the stream whose `stream` keyword is at `at` ends, just after its `endstream`,
-/// given where its object's header is. Its `/Length` is used when it is a direct number and
-/// `endstream` follows the data there, as other PDF apps do; else the stream ends at the
-/// first `endstream`. `None` when there is no `endstream`, or the keyword is inside the
-/// object's dictionary (in a string), so no stream starts there.
-fn stream_end(b: &[u8], header: Option<usize>, at: usize) -> Option<usize> {
+/// given where its object's header is. Its `/Length` is used when `endstream` follows the
+/// data there, as other PDF apps do: a direct number, or for an indirect one the latest of
+/// `lengths`' values for that object that fits. Else the stream ends at the first
+/// `endstream`. `None` when there is no `endstream`, or the keyword is inside the object's
+/// dictionary (in a string), so no stream starts there.
+fn stream_end(
+    b: &[u8],
+    header: Option<usize>,
+    at: usize,
+    lengths: &HashMap<(u32, u16), Vec<u64>>,
+) -> Option<usize> {
     let dict = header.and_then(|h| {
         let obj = h + find(&b[h..at], b"obj")? + 3;
         let open = obj + b[obj..at].iter().position(|c| !is_white(*c))?;
@@ -217,12 +256,18 @@ fn stream_end(b: &[u8], header: Option<usize>, at: usize) -> Option<usize> {
             1
         };
         let data = at + 6 + eol;
-        let end = read_dictionary(&b[open..close])
-            .and_then(|d| d.get(b"Length").ok()?.as_i64().ok())
-            .and_then(|n| data.checked_add(usize::try_from(n).ok()?))
-            .filter(|&e| e <= b.len())
-            .map(|e| e + b[e..].iter().take_while(|c| is_white(**c)).count())
-            .filter(|&e| b[e..].starts_with(b"endstream"));
+        let ends_at = |n: u64| {
+            let e = data
+                .checked_add(usize::try_from(n).ok()?)
+                .filter(|&e| e <= b.len())?;
+            let e = e + b[e..].iter().take_while(|c| is_white(**c)).count();
+            b[e..].starts_with(b"endstream").then_some(e)
+        };
+        let end = read_dictionary(&b[open..close]).and_then(|d| match d.get(b"Length").ok()? {
+            Object::Integer(n) => ends_at(u64::try_from(*n).ok()?),
+            Object::Reference(id) => lengths.get(id)?.iter().rev().find_map(|&n| ends_at(n)),
+            _ => None,
+        });
         if let Some(end) = end {
             return Some(end + 9);
         }
@@ -481,11 +526,26 @@ mod tests {
         let scan = scan_objects(b);
         assert_eq!(numbers(&scan), vec![1]);
         assert_eq!(scan.streams, vec![25..b.len() - 8]);
-        // A length that doesn't reach an `endstream` isn't used, nor an indirect one.
+        // A length that doesn't reach an `endstream` isn't used, nor an indirect one with no
+        // object holding it.
         for length in ["14", "16", "9 0 R", "-3"] {
             let b = format!("1 0 obj\n<< /Length {length} >>\nstream\nab\nendstream\n2 0 obj\n");
             assert_eq!(numbers(&scan_objects(b.as_bytes())), vec![1, 2]);
         }
+    }
+
+    #[test]
+    fn streams_end_by_an_indirect_length() {
+        // The length object comes after the stream; an earlier copy that doesn't fit is
+        // passed over, and the latest that fits is used.
+        let b = b"1 0 obj\n<< /Length 9 0 R >>\nstream\nendstream\n2 0 obj\nendstream\nendobj\n\
+                  9 0 obj\n18\nendobj\n9 0 obj 3 endobj\n";
+        assert_eq!(numbers(&scan_objects(b)), vec![1, 9]);
+        assert_eq!(integer_objects(b).get(&(9, 0)), Some(&vec![18, 3]));
+        // A different generation isn't the same object.
+        let b = b"1 0 obj\n<< /Length 9 1 R >>\nstream\nendstream\n2 0 obj\nendstream\nendobj\n\
+                  9 0 obj\n18\nendobj\n";
+        assert_eq!(numbers(&scan_objects(b)), vec![1, 2, 9]);
     }
 
     #[test]
