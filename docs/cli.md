@@ -87,6 +87,10 @@ sound and video, and redaction marks are kept. Annotations stored without a draw
 | `limarepdf-cli split big.pdf --every 50 --out-dir parts` | Split into files of N pages: `parts/big-001.pdf`, … |
 | `limarepdf-cli split big.pdf --bookmarks --out-dir parts` | Split where the top-level bookmarks go: `parts/big-002 Introduction.pdf`, … Pages before the first bookmark go in a file of their own. `--bookmarks 2` also splits at the bookmarks one level down |
 
+Pages that `delete` removes, or that `extract` and `split` leave out, leave nothing in the output: bookmarks,
+named destinations, links, form fields and tags stop referring to them. `extract` and `split` keep the bookmarks to
+the pages they keep; `delete` keeps every bookmark, without a destination when its page went.
+
 ### Page labels
 
 Page labels are the page numbers viewers show, such as i, ii, 1, 2 or A-1. They don't change what is printed on

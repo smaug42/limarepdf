@@ -266,7 +266,7 @@ impl Pdf {
     }
 
     /// The bookmarks with their objects, in [`Pdf::outline`] order.
-    fn outline_nodes(&self) -> Vec<(ObjectId, OutlineItem)> {
+    pub(crate) fn outline_nodes(&self) -> Vec<(ObjectId, OutlineItem)> {
         let mut out = Vec::new();
         let first = self
             .doc

@@ -1959,8 +1959,13 @@ impl App {
     }
 
     /// Removes the kinds of hidden information `what` from the active tab, once its
-    /// recovery copies are withdrawn.
+    /// recovery copies are withdrawn. A removal that would be refused (it couldn't remove
+    /// all of a kind) is refused first, with nothing changed and the copies kept.
     fn remove_hidden(&mut self, ctx: &egui::Context, what: &[limarepdf_core::Hidden]) {
+        if let Err(e) = self.tabs[self.active].pdf.check_remove_hidden(what) {
+            self.dialog = Dialog::Message("Remove hidden information".into(), format!("{e:#}"));
+            return;
+        }
         if let Err(stop) = self.withdraw_copies(self.active, "removed the hidden information") {
             self.dialog = stop;
             return;

@@ -449,6 +449,13 @@ Split into files makes files of a set number of pages, or starts a file at each 
 (1 is the top level only). Files are named after their bookmark, such as `book-002 Introduction.pdf`, and the pages
 before the first bookmark get a file of their own.
 
+Pages that are deleted, or left out when extracting or splitting, leave nothing in the saved file: bookmarks,
+named destinations, links, the opening view, form fields and tags stop referring to them, so their content isn't
+kept. A link to such a page goes nowhere, and a form field whose boxes were all on those pages leaves the form. An
+extracted file or a split part keeps the bookmarks to its own pages; a bookmark to another page stays, without a
+destination, only when bookmarks below it stay. Deleting pages keeps every bookmark, without a destination when its
+page went.
+
 Crop trims margins from each side of the page as it is shown, measured from the full page; the fields start with
 the first page's current crop. Remove crop shows the whole page again. Cropping hides content but does not delete
 it.

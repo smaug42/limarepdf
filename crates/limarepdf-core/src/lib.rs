@@ -35,6 +35,7 @@ mod outline;
 mod overlay;
 pub mod page_colours;
 mod pagerange;
+mod pages_gone;
 mod pkcs12;
 pub mod print;
 #[cfg(windows)]

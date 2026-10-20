@@ -213,6 +213,59 @@ impl Pdf {
         walk.out
     }
 
+    /// Every node of the field tree, fields and widgets, each once, with whether it belongs to
+    /// a signature field (by its own or an inherited `/FT`). Unlike [`Pdf::form_fields`] it
+    /// has no field limit, and it fails rather than skip what is nested too deep: for
+    /// removing values, where a node left out could keep one.
+    pub(crate) fn value_nodes(&self) -> anyhow::Result<Vec<(ObjectId, bool)>> {
+        fn walk(
+            p: &Pdf,
+            id: ObjectId,
+            sig: bool,
+            depth: usize,
+            seen: &mut HashSet<ObjectId>,
+            out: &mut Vec<(ObjectId, bool)>,
+        ) -> anyhow::Result<()> {
+            if !seen.insert(id) {
+                return Ok(());
+            }
+            let Ok(d) = p.doc.get_dictionary(id) else {
+                return Ok(());
+            };
+            if depth > MAX_DEPTH {
+                anyhow::bail!("the form's fields are nested more than {MAX_DEPTH} deep");
+            }
+            let sig = match d.get(b"FT").and_then(|o| o.as_name()) {
+                Ok(ft) => ft == b"Sig",
+                Err(_) => sig,
+            };
+            out.push((id, sig));
+            let kids = d
+                .get(b"Kids")
+                .ok()
+                .and_then(|o| p.doc.dereference(o).ok())
+                .and_then(|(_, o)| o.as_array().ok());
+            for k in kids.into_iter().flatten() {
+                if let Ok(k) = k.as_reference() {
+                    walk(p, k, sig, depth + 1, seen, out)?;
+                }
+            }
+            Ok(())
+        }
+        let fields = self
+            .acro_form()
+            .and_then(|f| f.get(b"Fields").ok())
+            .and_then(|o| self.doc.dereference(o).ok())
+            .and_then(|(_, o)| o.as_array().ok());
+        let (mut seen, mut out) = (HashSet::new(), Vec::new());
+        for f in fields.into_iter().flatten() {
+            if let Ok(id) = f.as_reference() {
+                walk(self, id, false, 0, &mut seen, &mut out)?;
+            }
+        }
+        Ok(out)
+    }
+
     /// Whether this is an XFA-only ("dynamic XFA") form: one made for Adobe Reader, whose
     /// pages and fields are built from XML that only Adobe software lays out. The PDF's
     /// own pages are then usually a "Please wait..." placeholder. Hybrid forms, which

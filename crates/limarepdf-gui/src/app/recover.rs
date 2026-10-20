@@ -882,6 +882,57 @@ mod tests {
         }
     }
 
+    /// A removal of hidden information that is refused (a hidden layer and a drawing that
+    /// can't be read) changes nothing: not the document, its flags, revision or history,
+    /// nor its recovery copies.
+    #[test]
+    fn a_refused_removal_changes_nothing() {
+        use lopdf::{dictionary, Object, Stream};
+        let ctx = egui::Context::default();
+        let m = Model::new();
+        let mut app = app_on(&ctx, Arc::new(m.clone()));
+        let t = &mut app.tabs[0];
+        assert!(t.edit(&ctx, |p| {
+            let off = p.doc.add_object(
+                dictionary! { "Type" => "OCG", "Name" => Object::string_literal("Off") },
+            );
+            let props = dictionary! {
+                "OCGs" => vec![Object::Reference(off)],
+                "D" => dictionary! { "OFF" => vec![Object::Reference(off)] },
+            };
+            p.doc.catalog_mut()?.set("OCProperties", props);
+            let broken = p.doc.add_object(Stream::new(
+                dictionary! { "Type" => "XObject", "Subtype" => "Form", "Filter" => "FlateDecode" },
+                b"not compressed data".to_vec(),
+            ));
+            let page = p.page_ids()[0];
+            let res = dictionary! { "XObject" => dictionary! { "Fm" => broken } };
+            p.doc.get_dictionary_mut(page)?.set("Resources", res);
+            p.set_info(&limarepdf_core::Info {
+                title: Some("Walrus title".into()),
+                ..Default::default()
+            })
+        }));
+        let t0 = Instant::now();
+        copy_all(&mut app, &ctx, t0);
+        let copies = files(&m, &app);
+        assert_eq!(copies.len(), 2);
+        let t = &app.tabs[0];
+        let (state, doc) = (t.state(), t.pdf.clone().snapshot().unwrap());
+
+        app.remove_hidden(&ctx, &[Hidden::Metadata, Hidden::HiddenLayers]);
+        assert!(
+            matches!(&app.dialog, Dialog::Message(_, text) if text.contains("can't be read")),
+            "a message saying why"
+        );
+        let t = &app.tabs[0];
+        assert!(t.state() == state, "flags, revision and history unchanged");
+        assert!(!t.scrubbed);
+        assert_eq!(t.pdf.clone().snapshot().unwrap(), doc);
+        assert_eq!(t.pdf.info().title.as_deref(), Some("Walrus title"));
+        assert_eq!(files(&m, &app), copies, "the copies stay");
+    }
+
     /// A one-page document drawing "Walrus text" inside `mark`'s area, with a title, an
     /// XMP stream and an attachment, each saying "Walrus" too.
     fn secrets() -> Pdf {

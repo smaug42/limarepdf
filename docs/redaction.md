@@ -52,18 +52,26 @@ removes it. The app lists what this document has of each kind; what is ticked is
   XML metadata in the document and in pictures and other parts.
 - **JavaScript and actions that run by themselves:** document scripts, actions run on opening, closing, saving or
   printing, form field scripts (formatting, checking, calculating), and actions that launch programs, send form data,
-  import data or open attached files. Ordinary links to pages and web addresses stay. A form with both XFA and
-  ordinary fields loses its XFA part (it holds scripts); a form made only for Adobe Reader (XFA only) keeps it.
+  import data or open attached files, wherever they are: also when they follow an ordinary action (a link that
+  opens a web page and then runs a script loses only the script). Ordinary links to pages and web addresses stay.
+  A form with both XFA and ordinary fields loses its XFA part (it holds scripts); a form made only for Adobe Reader
+  (XFA only) keeps it.
 - **Attached files:** files attached to the document or to comments.
-- **Hidden layers and their content:** the content of layers that are switched off is deleted, and those layers
-  leave the layer list. Layers that are shown stay.
+- **Hidden layers and their content:** the content of layers that are switched off is deleted, wherever it is
+  drawn: on the pages, in forms drawn inside forms (up to 32 deep), in comments' and fields' drawings, in patterns,
+  soft masks and Type 3 fonts. Those layers leave the layer list; layers that are shown stay. If some drawing
+  can't be read, or is nested deeper, LimarePDF can't tell whether it holds hidden content, so the command stops
+  with a message saying what, and changes nothing. Leave hidden layers out to remove the rest.
 - **Thumbnails and private application data:** page thumbnail pictures, data other programs keep for themselves
   (such as Illustrator's), and web capture information.
 
 Not ticked at first, as they are often wanted:
 
 - **Comments and markup** (redaction marks stay).
-- **Form field values:** fields go back to their default values.
+- **Form field values:** every field's value is cleared for good, read-only fields included, along with default
+  values (so Reset form brings nothing back), values a field takes from a parent field, rich text and the drawings
+  that showed them; checkboxes and radio buttons are switched off. Fields LimarePDF can't draw lose their drawing,
+  and readers draw them empty. Signature fields are left alone. The fields themselves, and their choices, stay.
 - **Bookmarks.**
 - **Content outside the visible page area:** what lies outside each page's crop box is redacted and the page becomes
   the size it is shown at.
@@ -85,6 +93,9 @@ of the file aren't kept in it.
 - The removed text can still be in bookmarks, comments, file attachments or metadata; the check warns about the
   places it can search.
 - Redaction marks can't be moved or resized; delete one and mark again.
+- Removing hidden layers: a drawing whose compressed data decodes to nothing counts as unreadable, and stops the
+  command. Data damaged part way is read as far as the damage, as other readers read it, and what follows the
+  damage isn't looked at; it stays in the file unless the drawing held hidden content and was rewritten.
 
 ## How this was tested
 
@@ -97,5 +108,12 @@ of the file aren't kept in it.
   save warning) was used by hand on Linux.
 - Removing hidden information: `crates/limarepdf-core/tests/sanitise.rs` (made-up files for each kind) and `limarepdf-cli sanitise`
   on the PDFs in `/usr/share/doc`, which have metadata and bookmarks but no scripts, attachments or layers. Its dialog
-  was not clicked through.
+  was not clicked through. Since the second outside audit (2026-10-19), each kind's saved output is searched as
+  written, before anything repairs or prunes it: every string form of the removed text in the raw file and in every
+  stream in it, decoded, whether still used or not, with the form fields, actions and layers checked one by one
+  (`tests/common/saved.rs`). Opt-in cross-checks read the output with poppler (`pdftotext`, `pdfinfo -js`) and
+  Ghostscript (`txtwrite`, which draws form fields): `cargo test -p limarepdf-core --test sanitise -- --ignored
+  cross_check`. poppler lists only a field's own scripts, not scripts that follow other actions, so for those the
+  search is the evidence. A refused removal is checked to leave the document, its undo history and its recovery
+  copies as they were.
 - Marks made by LimarePDF were not yet opened in Acrobat or other apps, nor marks made by them applied in LimarePDF.

@@ -453,7 +453,7 @@ impl Pdf {
 
     /// Every change to which pages there are, or their order, comes through here. Page labels move with their
     /// pages.
-    fn set_page_order(&mut self, ids: &[ObjectId]) -> Result<()> {
+    pub(crate) fn set_page_order(&mut self, ids: &[ObjectId]) -> Result<()> {
         let labels = self.label_specs();
         let root = self.pages_root()?;
         {
@@ -501,10 +501,13 @@ impl Pdf {
             bail!("cannot delete every page");
         }
         self.flatten()?;
-        self.set_page_order(&keep)
+        // Bookmarks to the deleted pages stay, with no destination.
+        self.keep_pages(&keep, false)
     }
 
-    /// New document containing only the given pages (in the given order).
+    /// New document containing only the given pages (in the given order). Nothing of the
+    /// other pages is kept: bookmarks, named destinations, links, form fields and the
+    /// structure tree no longer refer to them.
     pub fn extract(&self, idx: &[usize]) -> Result<Pdf> {
         self.check_indices(idx)?;
         if idx.is_empty() {
@@ -514,7 +517,7 @@ impl Pdf {
         out.flatten()?;
         let ids = out.page_ids();
         let sel: Vec<ObjectId> = idx.iter().map(|&i| ids[i]).collect();
-        out.set_page_order(&sel)?;
+        out.keep_pages(&sel, true)?;
         Ok(out)
     }
 
