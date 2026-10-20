@@ -47,6 +47,26 @@
 - A document that opens without a password but has a permissions password showed the notice "This document was
   password-protected", as if a password had been needed. Its notice now says it opens without a password and that
   saving removes the permissions password unless you set it again.
+- Removing hidden information didn't remove everything it said it had:
+  - Form field values only went back to the form's defaults: read-only fields kept their values, default values
+    stayed (and were filled back in), and so did values held by a parent field and rich text. Every value is now
+    cleared for good, read-only fields included, along with defaults and the field drawings that showed them.
+    Signature fields are left alone. Reset form still goes back to the defaults.
+  - JavaScript and other actions that run by themselves stayed when they followed an ordinary action written
+    inside a link, bookmark, button or the opening action (a web link that then runs a script), or belonged to an
+    annotation written directly in a page's list. They are now found wherever they are; the ordinary actions stay.
+  - Hidden layers stayed in drawings nested more than eight deep, in annotations' drawings and in patterns, and a
+    drawing that couldn't be read was passed over; the removal still said the layers were gone. Drawings are now
+    looked into up to 32 deep, annotations' drawings, patterns, soft masks and Type 3 glyphs included. If something
+    can't be looked into, the command stops with a message saying what, and nothing is changed; leave out hidden
+    layers to remove the rest.
+- Extracting, deleting or splitting pages kept the other pages' content in the saved file whenever something still
+  referred to them: a bookmark, a named destination, a link, the opening view, a form field or the document's
+  structure (tags). Those references now go: a link to a page that went goes nowhere, form fields whose boxes were
+  all on those pages leave the form, and alternative text of their tagged content goes. Extracted files and split
+  parts keep the bookmarks to their own pages (a bookmark to another page stays, without a destination, only when
+  it has bookmarks below it that stay); deleting keeps every bookmark, as before, without a destination when its
+  page went. Printing selected pages goes the same way.
 
 ## [0.7.2] - 2026-10-18
 
