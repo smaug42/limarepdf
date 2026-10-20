@@ -23,6 +23,18 @@
   gives an error naming the page (A3 still exports at 1152 dpi; of about 7,200 test pages, the largest poster
   exports at up to 208 dpi), pictures at 268 million pixels, and widths at the 65,536 characters a font can have.
   Printing on Windows draws pages larger than the limit at a lower resolution instead.
+- Undo on a large document could take gigabytes of memory: each step keeps a whole copy of the document, so 20 edits
+  on a 139 MB scan took about 2.6 GB. Each document's undo steps are now limited to 1 GB together; beyond it the
+  oldest steps are dropped, so undo is shorter on very large documents (about 7 steps on that scan). The latest
+  change can always be undone.
+- A page with a very complex drawing could take about 10 GB of memory to draw at 150 dpi, and in the app, zooming
+  in on it a few steps quickly could draw it at several zooms at once, enough to close LimarePDF and lose unsaved
+  work. Pages are now drawn in bands of about 4 million pixels, which bounds the memory of each drawing (that test
+  page now takes 1.5 GB at 150 dpi), and the app stops drawing a page at a zoom you've moved past, in colours
+  you've changed, or of an edited document's older state, at the next band. Large drawings, such as exports and
+  printing at high resolution, take longer on some pages, since each band works out the page's pictures and
+  shadings again: on test pages at 288 dpi about a third longer in the middle of the range, and up to several
+  times longer on a few pages with many pictures.
 - Editing a line of text, or adding text, a shape or a picture, on a page printed to PDF from a web browser drew the
   new content upside down, mirrored and shrunk (a 28 pt line became about 7 pt). Such pages flip and scale the whole
   page without restoring it afterwards, and the new content inherited that.
@@ -30,6 +42,11 @@
 - Repairing a damaged file could show a PDF attached to it, stored uncompressed, instead of the file's own pages,
   when the attachment's length was written in an object of its own. Such lengths are now looked up, and a copy of
   that object inside the attachment isn't used.
+- Some RC4-protected files with no open password asked for one that other readers don't need: files whose password
+  entry (`/U`) holds only the 16 bytes readers compare, instead of 32. They now open without asking.
+- A document that opens without a password but has a permissions password showed the notice "This document was
+  password-protected", as if a password had been needed. Its notice now says it opens without a password and that
+  saving removes the permissions password unless you set it again.
 
 ## [0.7.2] - 2026-10-18
 

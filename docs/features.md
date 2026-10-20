@@ -47,18 +47,18 @@ available.
 | About window | Done | Version (copyable for bug reports), links, contributors, credits; "Made in Canada". [Details](gui.md#look-and-feel) |
 | Light and dark themes | Done | Follows the system, or chosen with the top bar's theme button; remembered between runs |
 | Page colour modes | Done | View > Page colours: Normal, Automatic (dark pages with the dark theme), Dark, High contrast, Sepia. Pictures keep their colours unless "Recolour pictures too" is on. On screen only: the file, printing and exports keep their colours. See [Rendering](rendering.md#page-colour-modes) |
-| Rendering | Done | Pages that can't be drawn, and pictures and fonts that can't, are reported; high zoom is drawn in tiles up to 6400%; fonts that aren't embedded use installed fonts or similar stand-ins where hayro asks (CID fonts, which Chinese, Japanese and Korean text uses), with a notice saying what to install; annotations without a drawing of their own are drawn by LimarePDF; damaged files are repaired when opened, with a notice. Known limits, mostly hayro's: some transparency groups are drawn wrongly, hairlines can come out light grey, plain fonts that aren't embedded use the standard fonts, media and 3D annotations aren't drawn, and no rich text or line captions. Compared with poppler over about 1,100 public test PDFs. [Details](rendering.md) |
+| Rendering | Done | Pages that can't be drawn, and pictures and fonts that can't, are reported; high zoom is drawn in tiles up to 6400%; large page images are drawn in bands, which bounds the memory a complex page takes (one test page from 9.7 GB to 1.5 GB), and the app stops drawing a page at a zoom it has moved past; fonts that aren't embedded use installed fonts or similar stand-ins where hayro asks (CID fonts, which Chinese, Japanese and Korean text uses), with a notice saying what to install; annotations without a drawing of their own are drawn by LimarePDF; damaged files are repaired when opened, with a notice. Known limits, mostly hayro's: some transparency groups are drawn wrongly, hairlines can come out light grey, plain fonts that aren't embedded use the standard fonts, media and 3D annotations aren't drawn, and no rich text or line captions. Compared with poppler over about 1,100 public test PDFs. [Details](rendering.md) |
 | Search | Done | Phrases across line breaks, and words hyphenated at a line end, are found and highlighted. [Details](search-and-text.md) |
 | Select and copy text | Done | With the default read tool; across pages, scrolling while you drag; in the order on the page, not the file's drawing order; includes recognised text |
 | Print or save selected text | Done | As the pages look, full width, cut down to the selected lines, or as plain text in Helvetica (Western European characters only); also saves a .txt file |
 | Page operations: insert, delete, rotate, extract, reorder, crop, remove blank pages | Done | Crop by margins; no dragging a crop box on the page. Blank means one even colour, give or take specks or a lone page number |
 | Merge and split | Done | Split by page count or at bookmarks, files named after them. Bookmarks, forms and named destinations of appended files are not carried over, and split parts have no bookmarks. Split by file size: No |
-| Undo and redo | Done | 20 levels, including password settings |
+| Undo and redo | Done | 20 levels, including password settings; fewer on very large documents (up to 1 GB per document) |
 | Headers, footers, page numbers, dates, Bates numbers | Done | Helvetica and Latin-1 characters only |
 | Watermarks | Done | Text or a PNG, JPEG or TIFF picture; centred, with size, opacity, rotation, above or behind |
 | Document properties | Done | Title, author, subject, keywords, creator, producer |
 | Password security | Done | All four ciphers and permission flags. [Things to know](security.md) |
-| Opening protected files | Done | With the open (user) password |
+| Opening protected files | Done | With the open (user) password; files with an empty one (only a permissions password) open without asking, including RC4 files with a shortened password entry that other readers accept, and their notice says so |
 | Content editing | Partial | Works on lines, not paragraphs; some fonts are replaced when edited. [Details](content-editing.md) |
 | Importing images as pages | Done | PNG, JPEG, TIFF. [Details](scanning-and-ocr.md#importing-images) |
 | Optimising scanned pages | Partial | Pages that are one image. [Details](scanning-and-ocr.md#optimising-scanned-pages) |
@@ -133,12 +133,12 @@ pool of features other PDF tools have is in [ideas.md](ideas.md).
   the last session's documents.
 - **Acceptance checks** of everyday workflows by hand, in other readers and on Windows and macOS, as listed in
   [Testing](testing.md#acceptance-checks). They have been run on Linux.
-- **A memory limit for undo:** each undo step keeps a whole copy of the document, so 20 edits on a large scan
-  can take gigabytes ([measured](performance.md#memory-in-the-desktop-app)). The oldest steps would go first.
-- **Some protected files with an empty password** (RC4, with a non-standard password entry) ask for a password
-  that other readers don't need.
-- **Very complex pages:** one test page with 73,000 drawn paths takes about 10 GB of memory to draw at 150 dpi
-  ([Performance](performance.md)).
+- **Very complex pages draw slowly:** one test page with 73,000 drawn paths and 84 shaded areas takes 54 s to draw
+  at 150 dpi, where poppler takes 9 s ([Performance](performance.md)). Its memory is now bounded by drawing in bands
+  ([Rendering](rendering.md#large-drawings)).
+- **Text from some Chinese, Japanese and Korean files:** fonts with no ToUnicode map that use a standard Unicode
+  character map (such as `UniJIS-UCS2-H`) give the wrong characters when searching, copying or exporting text
+  ([Search and text](search-and-text.md#text-extraction)).
 
 ### Rendering
 

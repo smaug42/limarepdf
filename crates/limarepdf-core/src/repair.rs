@@ -437,7 +437,7 @@ fn dictionary_len(b: &[u8]) -> Option<usize> {
 }
 
 /// Writes `o` in PDF syntax. Strings are written in hexadecimal, which needs no escaping.
-fn write_object(out: &mut String, o: &Object, depth: usize) {
+pub(crate) fn write_object(out: &mut String, o: &Object, depth: usize) {
     if depth > 32 {
         out.push_str("null");
         return;

@@ -75,6 +75,72 @@ fn tiles_match_the_whole_page() {
     }
 }
 
+/// A scale at which the vector page needs several bands, and the band count.
+fn banded_scale() -> (f32, usize) {
+    // 300 × 200 pt at 12 is 3600 × 2400 px, 8.6 million pixels.
+    let scale = 12.0;
+    let rows = (render::BAND_PIXELS / 3600) / 4 * 4;
+    let bands = 2400usize.div_ceil(rows as usize);
+    assert!(bands > 1, "{bands}");
+    (scale, bands)
+}
+
+#[test]
+fn bands_match_one_pass() {
+    let hp = render::load(vector_page(), None).unwrap();
+    let r = render::Renderer::new(&hp);
+    let (scale, _) = banded_scale();
+    let banded = r.render(0, scale).unwrap();
+    let one = r
+        .render_region(0, scale, region(0, 0, u32::MAX, u32::MAX))
+        .unwrap();
+    assert_eq!((banded.width, banded.height), (3600, 2400));
+    assert_eq!((one.width, one.height), (3600, 2400));
+    for y in 0..one.height {
+        for x in 0..one.width {
+            assert_eq!(px(&banded, x, y), px(&one, x, y), "pixel {x}, {y}");
+        }
+    }
+}
+
+#[test]
+fn drawing_stops_between_bands() {
+    let hp = render::load(vector_page(), None).unwrap();
+    let r = render::Renderer::new(&hp);
+    let (scale, bands) = banded_scale();
+    // Asked before each band.
+    let asked = std::cell::Cell::new(0);
+    let b = r
+        .render_unless(0, scale, &|| {
+            asked.set(asked.get() + 1);
+            false
+        })
+        .unwrap();
+    assert!(b.is_some());
+    assert_eq!(asked.get(), bands);
+    // Told to stop before the second band.
+    asked.set(0);
+    let b = r
+        .render_unless(0, scale, &|| {
+            asked.set(asked.get() + 1);
+            asked.get() > 1
+        })
+        .unwrap();
+    assert!(b.is_none());
+    assert_eq!(asked.get(), 2);
+    // A page that fits in one band is asked once.
+    asked.set(0);
+    let b = r
+        .render_unless(0, 1.0, &|| {
+            asked.set(asked.get() + 1);
+            false
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!((b.width, b.height), (300, 200));
+    assert_eq!(asked.get(), 1);
+}
+
 #[test]
 fn a_region_outside_the_page_is_an_error() {
     let hp = render::load(vector_page(), None).unwrap();
@@ -123,7 +189,10 @@ fn dark_tiles_keep_pictures_where_the_page_does() {
     let hp = render::load(p.snapshot().unwrap(), None).unwrap();
     let r = render::Renderer::new(&hp);
     let scale = 4.0;
-    let whole = r.render_in(0, scale, PageColours::Dark, true).unwrap();
+    let whole = r
+        .render_in(0, scale, PageColours::Dark, true, &|| false)
+        .unwrap()
+        .unwrap();
     // A tile over the picture's left edge (200 pt = 800 px) and middle row (125 pt down =
     // 500 px).
     let t = r

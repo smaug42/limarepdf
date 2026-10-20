@@ -34,6 +34,14 @@ table, and has lopdf read the file again. Object stream members lopdf's reader s
 when the trailers name no usable catalog, the last catalog object with a page tree is used. See
 [Rendering](rendering.md#damaged-files).
 
+Two workarounds in `crates/limarepdf-core/src/doc.rs` read a corrected copy of a file when lopdf refuses it (offsets
+stay where they were, so nothing counts as repaired). `blank_null_encrypt` blanks a trailer's `/Encrypt null`, which
+lopdf takes as encryption. `pad_user_hash` handles a standard-security file at revision 3 or 4 whose `/U` is
+shorter than 32 bytes: readers compare only its first 16 bytes there, and some writers store just those (PDFBox's
+test file 1910), but lopdf 0.45 refuses any length but 32 (`InvalidHashLength`) and so reports a wrong password.
+The copy has the encryption dictionary appended as an update with `/U` zero-padded to 32 bytes. The workaround
+stays until lopdf accepts the shorter `/U`; no issue has been filed upstream.
+
 Page content is read by LimarePDF's own parser (`crates/limarepdf-core/src/objects.rs`), which splits it into the objects that
 editing works on and reads the text that search, copying and export use, with its own reader for fonts' ToUnicode
 maps and Adobe's widths for the standard fonts (see [Search and text](search-and-text.md#text-extraction)).
@@ -92,7 +100,10 @@ serialises it, without the objects nothing uses (`Pdf::pruned_snapshot`, so noth
 information detached is in it), and publishes it in order with saves' and closes' removals. Redaction, Remove
 hidden information and an added password withdraw the tab's copies before their edit runs, and for a restored tab
 the crashed session's copy it came from too (`Crashed::withdraw`), and stop when either reports that an earlier copy
-could still be offered. Append PDFs does the same when a file it adds is encrypted, and marks the tab protected. At start the app finds the sessions of runs that ended without cleaning up and offers
+could still be offered. So does Redo when the step it redoes removed content (each undo step records that, as
+`Step::removal`, since `scrubbed` may already be set), as a copy written after the undo holds the content. A
+crashed copy whose withdrawal couldn't be confirmed (the folder sync failed) is kept in `Crashed::unconfirmed` and
+tried again in full at every withdrawal until a sync succeeds; its folder stays meanwhile. Append PDFs does the same when a file it adds is encrypted, and marks the tab protected. At start the app finds the sessions of runs that ended without cleaning up and offers
 their copies; a normal exit (`on_exit`, which a crash never reaches) ends the session and deletes its folder.
 
 Signing (`sig_sign.rs`, `sign_document`) adds the signature dictionary with placeholders, its field or widget and

@@ -25,6 +25,7 @@ The files: a generated 1,000-page text file (1.5 MB; a heading, 48 lines of text
 | 200-page scan: watermark | 0.18 s | 569 MB |
 | 200-page scan: AES-256 encrypt | 0.41 s | 568 MB |
 | Complex drawing, 73,000 paths on one page (PDFBox 5134): render at 150 dpi | 58.5 s | 9,707 MB |
+| The same, drawn in bands (2026-10-19, one run) | 54.4 s | 1,520 MB |
 | Complex drawing, 27,000 paths on one page (pdf.js bug1791583): render at 150 dpi | 2.05 s | 642 MB |
 | Japanese fonts not embedded, drawn with installed stand-ins, 42 pages (PDFBox 1910): render at 150 dpi | 0.53 s | 562 MB |
 | The same, 203 pages (pdf.js bug1905623): render at 150 dpi | 2.69 s | 559 MB |
@@ -37,7 +38,8 @@ What the numbers show:
 - Drawing cost grows with the number of paths and with resolution. The 73,000-path page takes 2.6 s and 707 MB at
   36 dpi but nearly a minute and almost 10 GB at 150 dpi; poppler draws it at 150 dpi in 9 s with 329 MB. In the app,
   zooming in on such a page is limited to the [tiles in view](rendering.md#high-zoom), but the whole page at a normal
-  zoom costs the same as here.
+  zoom costs the same as here. Since 2026-10-19 large pages are [drawn in bands](rendering.md#large-drawings): the
+  same page at 150 dpi now takes 54 s and 1.5 GB, and at 72 dpi 9.9 s and 1.4 GB (was 10.4 s and 2.7 GB).
 - The reasons for the 560 to 640 MB of the last three files weren't looked into: the 27,000-path file has no fonts at
   all, and one page of PDFBox 1910 at 36 dpi takes 114 MB.
 
@@ -52,10 +54,18 @@ memory (`VmHWM` and `VmRSS` in `/proc/<pid>/status`):
 | The same, then 20 edits | 3.71 GB | 3.58 GB |
 | Open the scan, zoom to 6400% and scroll | 1.47 GB | 0.98 GB |
 | Three documents open: the scan, the 1,000 text pages and pdf.js bug1905623 | 0.92 GB | 0.92 GB |
+| With the undo limit (2026-10-19): open the scan | 0.59 GB | 0.50 GB |
+| With the undo limit: the same, then 20 edits | 1.94 GB | 1.66 GB |
+| With bands (2026-10-19): open PDFBox 5134, zoom at once to over 400%, then to over 1200% | 3.96 GB | 2.28 GB |
 
 Edits on the scan felt immediate. Each one added about 130 MB, close to the file's 139 MB, because each undo step
-keeps a whole copy of the document; the app keeps up to 20 steps per document, whatever the document's size.
-Zooming to 6400% added nothing measurable. Peaks vary somewhat from one session to the next: the three documents
+keeps a whole copy of the document. The first rows were measured when the app kept up to 20 steps per document
+whatever its size. Undo steps are now limited to 1 GB per document, the oldest dropped first (about 7 steps on this
+scan), and the last two rows were measured with the limit: 20 edits added 1.16 GB instead of 2.6 GB.
+Zooming to 6400% added nothing measurable. The 5134 row was measured on a 3840 × 2160 screen at scale 1, the
+window not full screen: zooming in quickly straight after opening keeps several whole-page drawings and the tiles
+running at once, each drawing stopping only at its next band. The page showed enlarged until zooming stopped, then
+was drawn again quickly. Before bands, the same zooming would have come to an estimated 11 GB. Peaks vary somewhat from one session to the next: the three documents
 together peaked lower than the scan alone did in the other sessions.
 
 These are timings of single tasks, not a benchmark suite, and apart from the one poppler timing no comparison with
@@ -70,8 +80,10 @@ OCR speed is in [Scanning and OCR](scanning-and-ocr.md#accuracy-and-speed).
 - At high zoom only the part of the page in view is drawn, in 512-pixel tiles
   ([details](rendering.md#high-zoom)). A tile takes about 1 ms on text pages and about 20 ms on a dense form, at
   any zoom, while a whole Letter page at 1152 dpi takes about 0.4 s and 500 MB.
+- A whole-page drawing that is no longer wanted (a zoom passed through, changed colours, an edited document) stops
+  at its next [band](rendering.md#large-drawings) instead of running to the end.
 - Edits re-save the document without compressing it, and undo keeps plain snapshots (a whole copy of the document
-  per step, see [above](#memory-in-the-desktop-app)).
+  per step, up to 1 GB per document, see [above](#memory-in-the-desktop-app)).
 - OCR, optimising, exporting images and printing run in the background.
 - A [recovery copy](gui.md#recovery-copies) is made at most once a minute per changed document. The window only
   copies the document in memory; a background thread turns that into a file and writes it. On the 200-page scan the

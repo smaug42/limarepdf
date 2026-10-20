@@ -14,12 +14,12 @@ Run them with `cargo test --workspace`.
 
 | Tests | What they cover |
 | --- | --- |
-| `crates/limarepdf-core/tests/integration.rs` | Overlays, encryption round trips with all four ciphers, search, crop margins on turned pages |
+| `crates/limarepdf-core/tests/integration.rs` | Overlays, encryption round trips with all four ciphers, RC4 files with an empty password and a 16-byte `/U` (revisions 3 and 4), whether a file needed a password to open, search, crop margins on turned pages |
 | `crates/limarepdf-core/tests/edit.rs` | Content editing: objects and text edits; edited, added and invisible (OCR) text upright and in place on a page that flips and scales itself without restoring the state afterwards, as pages printed from web browsers do, and repeated edits not nesting the old content deeper. Reading text: words, search boxes placed by glyph widths, ToUnicode maps, word gaps, text inside form XObjects, phrases across lines |
 | `crates/limarepdf-core/tests/repair.rs` | Damaged files built by hand open with their page drawn and are marked repaired: wrong offsets, no table or trailer, a cross-reference stream that doesn't decode, a missing `endobj`, a later copy of an object winning, a trailer naming the wrong catalog, object stream members starting with comments, and an encrypted file (a wrong password is still reported as one); intact files and documents with no pages aren't repaired; a repaired document saves as a clean file. Crafted files: `endstream` in a content stream's comment followed by a fake page, an uncompressed attached PDF reusing the outer file's object numbers (its length given directly, or in an object before or after it, or before it with a spoofed copy of that object inside the attachment), `stream` and a line break inside a string, a stream cut off by the end of the file, a `/Length` too short, an object freed by a later revision (not on the page, not saved), and a number reused at a higher generation. Unit tests in `repair.rs` (dictionary ends, object headers, stream data skipped by `/Length`, direct or in an object of its own (not a copy inside the data), or to `endstream`, trailers inside stream data ignored, trailer values written back) |
 | `crates/limarepdf-core/tests/render_coverage.rs` | Rendering, pixel by pixel; see [Rendering](rendering.md) |
 | `crates/limarepdf-core/tests/render_compare.rs` | Opt-in: LimarePDF's rendering compared with poppler's `pdftoppm` over about 1,100 public test PDFs; see below |
-| `crates/limarepdf-core/tests/render_region.rs` | Drawing part of a page, as the app's tiles at high zoom do: tiles match the whole page pixel by pixel, are cut at the page's edges, land in place at the highest scale, and keep pictures in dark pages |
+| `crates/limarepdf-core/tests/render_region.rs` | Drawing part of a page, as the app's tiles at high zoom do: tiles match the whole page pixel by pixel, are cut at the page's edges, land in place at the highest scale, and keep pictures in dark pages; a page drawn in bands matches one drawn at once, and a drawing stops between bands when asked |
 | `crates/limarepdf-core/tests/import.rs` | Importing images as pages |
 | `crates/limarepdf-core/tests/scan.rs` | Optimising scanned pages |
 | `crates/limarepdf-core/tests/ocr.rs` | OCR text layers, their placement, search and correction |
@@ -67,7 +67,7 @@ times each task three times and prints the table with the machine and commit. Pe
 resident set, as `/usr/bin/time -v` reports it. The four rows for public test files need the files from
 `tools/render-compare.sh` (or `tools/fetch-render-samples.sh`) and are skipped without them. `--runs 1` makes a quicker
 run, and `--only scan` runs only the tasks whose names contain `scan`. A full run takes about five minutes, and one
-of the test files needs about 10 GB of memory.
+of the test files needed about 10 GB of memory before pages were drawn in bands (about 1.5 GB since).
 
 ## The desktop app
 
@@ -102,7 +102,8 @@ bookmarks) and links were checked through their core tests, `limarepdf-cli bookm
 screenshot, but none of these was clicked through. Filled forms were also opened in poppler and
 Ghostscript, including encrypted ones; not yet in Adobe Reader. Drawing pages in tiles at high zoom was checked by
 screenshot at 3200% and 6400% and used by hand on Linux, zooming and scrolling up to 6400%; not yet on a HiDPI
-screen.
+screen. Drawing large pages in bands was used by hand on Linux, zooming PDFBox 5134 on a 4K screen at scale 1 with
+its memory recorded (performance.md).
 
 Each feature page says what was not tested, under "How this was tested".
 
@@ -180,7 +181,7 @@ happened in everyday use but no result was written down.
 | Open a PDF passed on the command line, with `--page` | Not recorded | Not run | Not run |
 | Edit, save, reopen | Used by hand | Not run | Not run |
 | File dialogs (open, save as, choose a folder) | Used by hand | Not run | Not run |
-| Print to a real printer | Not run (no printer) | Printed by hand (0.3) | Not run |
+| Print to a real printer | Printed on paper (HP LaserJet P1606dn through CUPS, 2026-10-18; the "Printing" acceptance check) | Print dialog only; nothing printed on paper | Not run |
 | Keyboard shortcuts (Ctrl, or Cmd on macOS) | Used by hand | Not run | Not run |
 | HiDPI screen (scale 2) | Not run | Not run | Not run |
 | Name and icon in the taskbar, dock and Open with | Not recorded | Icon checked by hand (0.5) | Not run |

@@ -16,7 +16,7 @@ use hayro::hayro_syntax::{DecryptionError, LoadPdfError, Pdf as HPdf};
 use hayro::kurbo::Affine;
 use hayro::vello_cpu::color::palette::css::WHITE;
 use hayro::vello_cpu::{Pixmap, RasterizerSettings, RenderContext, Resources, TargetInit};
-use hayro::{render, render_into, PixmapSettings, RenderCache, RenderSettings};
+use hayro::{render_into, RenderCache, RenderSettings};
 use image::codecs::jpeg::{JpegEncoder, PixelDensity};
 use rayon::prelude::*;
 use std::collections::BTreeSet;
@@ -39,6 +39,12 @@ pub const MAX_REGION_SCALE: f32 = 256.0;
 /// The file sets the page size, and the rasteriser allocates the whole bitmap at once
 /// (up to 65,535 pixels a side, 17 GB), so a failed allocation would close the app.
 pub const MAX_PIXELS: u64 = 1 << 28;
+
+/// Most pixels drawn in one pass of the rasteriser; a bigger bitmap is drawn in bands of
+/// full width. hayro holds everything it draws until the pass ends, which on a page of
+/// many paths is a few hundred bytes a pixel (PDFBox test file 5134, 73,000 paths: 2.7 GB
+/// for its 8 million pixels at 72 dpi), so this bounds the memory of one drawing.
+pub const BAND_PIXELS: u32 = 1 << 22;
 
 /// An error when a bitmap `width` × `height` of page `index` would pass [`MAX_PIXELS`].
 fn check_pixels(index: usize, width: u32, height: u32) -> Result<()> {
@@ -224,42 +230,66 @@ impl<'a> Renderer<'a> {
     /// Render a page at `scale` (1.0 = 72 dpi, 2.0 = 144 dpi). A bitmap of more than
     /// [`MAX_PIXELS`] is an error.
     pub fn render(&self, index: usize, scale: f32) -> Result<Bitmap> {
+        self.render_unless(index, scale, &|| false)?
+            .ok_or_else(|| anyhow!("drawing page {} was stopped", index + 1))
+    }
+
+    /// [`Renderer::render`], drawn in bands of at most [`BAND_PIXELS`]. `stop` is asked
+    /// before each band, and `None` is returned once it says to stop.
+    pub fn render_unless(
+        &self,
+        index: usize,
+        scale: f32,
+        stop: &dyn Fn() -> bool,
+    ) -> Result<Option<Bitmap>> {
         let page = self.page(index)?;
         let scale = scale.clamp(0.05, 16.0);
         // The bitmap's size as `hayro::render` works it out.
         let (w, h) = page.render_dimensions();
-        check_pixels(index, (w * scale) as u16 as u32, (h * scale) as u16 as u32)?;
-        let pm = render(
-            page,
-            &self.cache,
-            &self.settings,
-            &RenderSettings::default(),
-            &PixmapSettings {
-                x_scale: scale,
-                y_scale: scale,
-                bg_color: WHITE,
-            },
-        );
-        Ok(Bitmap {
-            width: pm.width() as usize,
-            height: pm.height() as usize,
-            rgba: pm.data_as_u8_slice().to_vec(),
-        })
+        let (width, height) = ((w * scale) as u16 as u32, (h * scale) as u16 as u32);
+        check_pixels(index, width, height)?;
+        // Whole strips of 4 rows, the rasteriser's tile height, so the bands' tiles line
+        // up with those of one pass and the bitmap comes out the same.
+        let rows = (BAND_PIXELS / width.max(1)).max(4) / 4 * 4;
+        let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+        let mut y = 0;
+        while y < height {
+            if stop() {
+                return Ok(None);
+            }
+            let band = Region {
+                x: 0,
+                y,
+                width,
+                height: rows.min(height - y),
+            };
+            rgba.extend_from_slice(self.draw(page, scale, band).data_as_u8_slice());
+            y += band.height;
+        }
+        Ok(Some(Bitmap {
+            width: width as usize,
+            height: height as usize,
+            rgba,
+        }))
     }
 
-    /// Render a page at `scale` for display in a colour mode. With `keep_pictures`,
-    /// raster pictures keep their own colours. Never used for printing or export.
+    /// Render a page at `scale` for display in a colour mode, as
+    /// [`Renderer::render_unless`]. With `keep_pictures`, raster pictures keep their own
+    /// colours. Never used for printing or export.
     pub fn render_in(
         &self,
         index: usize,
         scale: f32,
         mode: PageColours,
         keep_pictures: bool,
-    ) -> Result<Bitmap> {
-        let mut b = self.render(index, scale)?;
+        stop: &dyn Fn() -> bool,
+    ) -> Result<Option<Bitmap>> {
+        let Some(mut b) = self.render_unless(index, scale, stop)? else {
+            return Ok(None);
+        };
         let transform = page_transform(self.page(index)?, scale.clamp(0.05, 16.0), 0, 0);
         self.recolour(index, &mut b, transform, mode, keep_pictures);
-        Ok(b)
+        Ok(Some(b))
     }
 
     /// Render the part `region` of a page drawn at `scale` (at most
@@ -274,6 +304,17 @@ impl<'a> Renderer<'a> {
             .within((w * scale) as u32, (h * scale) as u32)
             .ok_or_else(|| anyhow!("the region is outside page {}", index + 1))?;
         check_pixels(index, r.width, r.height)?;
+        let pm = self.draw(page, scale, r);
+        Ok(Bitmap {
+            width: pm.width() as usize,
+            height: pm.height() as usize,
+            rgba: pm.data_as_u8_slice().to_vec(),
+        })
+    }
+
+    /// Draw the part `r` (within the bitmap, at most `u16::MAX` a side) of `page` drawn at
+    /// `scale`, on white, as `hayro::render` draws a whole page.
+    fn draw(&self, page: &'a Page<'a>, scale: f32, r: Region) -> Pixmap {
         let mut ctx = RenderContext::new(r.width as u16, r.height as u16);
         render_into(
             page,
@@ -293,11 +334,7 @@ impl<'a> Renderer<'a> {
                 ..Default::default()
             },
         );
-        Ok(Bitmap {
-            width: pm.width() as usize,
-            height: pm.height() as usize,
-            rgba: pm.data_as_u8_slice().to_vec(),
-        })
+        pm
     }
 
     /// [`Renderer::render_region`] for display in a colour mode, as

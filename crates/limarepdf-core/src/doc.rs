@@ -18,6 +18,8 @@ pub struct Pdf {
     /// Whether the file's cross-reference information was damaged and LimarePDF rebuilt it
     /// to open the file.
     pub(crate) repaired: bool,
+    /// Whether the file was encrypted and needed a password to open.
+    pub(crate) password_needed: bool,
 }
 
 /// Why a repaired document may read differently in other PDF apps.
@@ -98,6 +100,13 @@ impl Pdf {
         self.repaired
     }
 
+    /// Whether the file needed a password to open. An encrypted file with an empty open
+    /// password (only a permissions password, limiting printing, copying or changes) opens
+    /// without one, in every reader.
+    pub fn password_needed(&self) -> bool {
+        self.password_needed
+    }
+
     /// Reads a document as its cross-reference information says.
     fn read(bytes: &[u8], password: Option<&str>) -> std::result::Result<Self, lopdf::Error> {
         let load = |b: &[u8]| {
@@ -112,7 +121,7 @@ impl Pdf {
             // Some writers put `/Encrypt null` (meaning not encrypted) in the trailer, and
             // lopdf takes any `/Encrypt` entry as encryption. Read a copy with those
             // entries blanked; they are the same length, so every offset holds.
-            Err(e) => match blank_null_encrypt(bytes) {
+            Err(e) => match blank_null_encrypt(bytes).or_else(|| pad_user_hash(bytes)) {
                 Some(c) => {
                     copy = c;
                     let doc = load(&copy).map_err(|_| e)?;
@@ -121,11 +130,20 @@ impl Pdf {
                 None => return Err(e),
             },
         };
+        // lopdf tries the empty password first, so a file opened without a password, or
+        // with an empty one, didn't need one. Given another, it may still not have: without
+        // a password lopdf decrypts the file only when the empty one opens it, and otherwise
+        // keeps `/Encrypt` in the trailer.
+        let password_needed = doc.was_encrypted()
+            && password.is_some_and(|p| !p.is_empty())
+            && Document::load_from_with_options(Cursor::new(read), lopdf::LoadOptions::default())
+                .map_or(true, |d| d.trailer.has(b"Encrypt"));
         let mut pdf = Self {
             doc,
             encryption: None,
             differs: None,
             repaired: false,
+            password_needed,
         };
         pdf.differs = pdf.match_other_readers(read);
         Ok(pdf)
@@ -179,6 +197,7 @@ impl Pdf {
             encryption: None,
             differs: None,
             repaired: false,
+            password_needed: false,
         }
     }
 
@@ -794,6 +813,60 @@ fn blank_null_encrypt(bytes: &[u8]) -> Option<Vec<u8>> {
         from = end;
     }
     copy
+}
+
+/// `bytes` with a copy of the encryption dictionary appended as an update, its `/U`
+/// padded to 32 bytes, or `None` when that isn't what stops lopdf. At revisions 3 and 4
+/// readers compare only the first 16 bytes of `/U`, and some writers store just those
+/// (PDFBox's test file 1910); lopdf refuses any length but 32, and then asks for a
+/// password the file doesn't have. `/U` has no other use at these revisions, so the
+/// padding changes nothing else. Appending keeps every offset in the file as it is.
+fn pad_user_hash(bytes: &[u8]) -> Option<Vec<u8>> {
+    // Without a password lopdf reads just the trailer and the encryption dictionary.
+    let doc =
+        Document::load_from_with_options(Cursor::new(bytes), lopdf::LoadOptions::default()).ok()?;
+    let (n, g) = doc
+        .trailer
+        .get(b"Encrypt")
+        .and_then(Object::as_reference)
+        .ok()?;
+    let mut enc = doc.get_dictionary((n, g)).ok()?.clone();
+    let standard = enc.get(b"Filter").and_then(Object::as_name).ok() == Some(b"Standard");
+    let revision = enc.get(b"R").and_then(Object::as_i64).ok();
+    let u = enc.get(b"U").and_then(Object::as_str).ok()?;
+    if !standard || !matches!(revision, Some(3 | 4)) || !(16..32).contains(&u.len()) {
+        return None;
+    }
+    let mut padded = u.to_vec();
+    padded.resize(32, 0);
+    enc.set(
+        "U",
+        Object::String(padded, lopdf::StringFormat::Hexadecimal),
+    );
+
+    // lopdf counts offsets from the header, as in `blank_null_encrypt`.
+    let header = bytes.windows(5).position(|w| w == b"%PDF-").unwrap_or(0);
+    let mut out = bytes.to_vec();
+    out.push(b'\n');
+    let mut trailer = Dictionary::new();
+    for key in [&b"Size"[..], b"Root", b"Info", b"ID"] {
+        if let Ok(v) = doc.trailer.get(key) {
+            trailer.set(key, v.clone());
+        }
+    }
+    trailer.set("Encrypt", (n, g));
+    trailer.set("Prev", doc.xref_start as i64);
+    let at = out.len() - header;
+    let mut text = format!("{n} {g} obj\n");
+    crate::repair::write_object(&mut text, &Object::Dictionary(enc), 0);
+    text.push_str("\nendobj\n");
+    out.extend_from_slice(text.as_bytes());
+    let xref = out.len() - header;
+    let mut text = format!("xref\n{n} 1\n{at:010} {g:05} n\r\ntrailer\n");
+    crate::repair::write_object(&mut text, &Object::Dictionary(trailer), 0);
+    text.push_str(&format!("\nstartxref\n{xref}\n%%EOF\n"));
+    out.extend_from_slice(text.as_bytes());
+    Some(out)
 }
 
 pub(crate) fn decode_text(b: &[u8]) -> String {

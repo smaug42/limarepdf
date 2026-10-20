@@ -351,7 +351,7 @@ something to do and × to dismiss it. At most two show at a time.
 | An earlier recovery copy, made before content was removed, couldn't be deleted, and where it is | Show file |
 | Recovery copies of it can't be kept right now, and why | Save |
 | The file is damaged, and LimarePDF repaired it to open it: some content may be missing. The original stays as it is: the document counts as changed (closing it warns of unsaved changes), and Save asks whether to replace the original or save the repaired copy as a new file. A signed file's signatures can't vouch for what is shown (they show *can't check*, or a change that isn't allowed), and the repaired copy can't keep them ([details](rendering.md#damaged-files)) | Save as… |
-| The document was password-protected: saving removes the protection unless you set it again | Password security |
+| The document was password-protected: saving removes the protection unless you set it again. A document that opens without a password but has a permissions password (which can limit printing, copying or changes; other readers open it without asking too) says so instead: saving removes that password unless you set it again | Password security |
 | Areas are marked for redaction but the marks haven't been applied (kept up to date while you work) | Apply redactions… |
 | Signatures and other items put down with the Sign tool can still be moved (kept up to date while you work) | Finish signing… |
 | Its pages are scans without text, so they cannot be searched or copied (checked on the first 20 pages) | Recognise text |
@@ -489,8 +489,10 @@ The other tools add content:
   the page content with "Draw on page (permanent)". Its menu also has the stamp tool (see [Stamps](#stamps)) and
   the tool that marks areas for redaction (see [Redaction](#redaction)).
 
-Everything that changes the document can be undone with Ctrl+Z. See [Content editing](content-editing.md) for how
-editing works and its limits.
+Everything that changes the document can be undone with Ctrl+Z, up to 20 steps back. Each step keeps a whole copy
+of the document, and a document's steps are limited to 1 GB together, so undo goes back fewer steps on very large
+documents (about 7 on a 139 MB scan); the latest change can always be undone. See
+[Content editing](content-editing.md) for how editing works and its limits.
 
 ## Copying text
 

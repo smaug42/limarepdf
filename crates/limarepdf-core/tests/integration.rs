@@ -105,6 +105,109 @@ fn encryption_roundtrip_all_ciphers() {
     }
 }
 
+/// `bytes` with the encryption dictionary's `/U` cut to its first 16 bytes, as some
+/// writers store it for revisions 3 and 4 (readers compare only those). Spaces take the
+/// place of the cut, so every offset holds.
+fn short_user_hash(mut bytes: Vec<u8>) -> Vec<u8> {
+    let filter = find(&bytes, b"/Filter/Standard").expect("no encryption dictionary");
+    let at = bytes[..filter]
+        .windows(3)
+        .rposition(|w| w == b"obj")
+        .unwrap();
+    let end = filter + find(&bytes[filter..], b"endobj").unwrap();
+    let u = at + find(&bytes[at..end], b"/U<").unwrap() + 3;
+    assert_eq!(bytes[u + 64], b'>', "/U is not 32 bytes of hex");
+    bytes[u + 32] = b'>';
+    bytes[u + 33..u + 65].fill(b' ');
+    bytes
+}
+
+#[test]
+fn empty_password_files_with_a_short_user_hash_open() {
+    // RC4 at revision 3, written by LimarePDF.
+    let mut p = doc_with_text();
+    p.set_encryption(Some(Encryption {
+        user_password: "".into(),
+        owner_password: "owner".into(),
+        cipher: Cipher::Rc4_128,
+        restrictions: Restrictions::default(),
+    }));
+    let r3 = short_user_hash(p.to_bytes().unwrap());
+
+    // RC4 at revision 4 through a crypt filter, with the metadata left unencrypted: the
+    // traits of PDFBox's test file 1910.
+    let mut doc = doc_with_text().doc;
+    let s = lopdf::Object::String(vec![7; 16], lopdf::StringFormat::Hexadecimal);
+    doc.trailer.set("ID", vec![s.clone(), s]);
+    doc.compress();
+    let f: std::sync::Arc<dyn lopdf::encryption::crypt_filters::CryptFilter> =
+        std::sync::Arc::new(lopdf::encryption::crypt_filters::Rc4CryptFilter);
+    let state = lopdf::EncryptionState::try_from(lopdf::EncryptionVersion::V4 {
+        document: &doc,
+        encrypt_metadata: false,
+        crypt_filters: std::collections::BTreeMap::from([(b"StdCF".to_vec(), f)]),
+        stream_filter: b"StdCF".to_vec(),
+        string_filter: b"StdCF".to_vec(),
+        owner_password: "owner",
+        user_password: "",
+        permissions: lopdf::Permissions::all(),
+    })
+    .unwrap();
+    doc.encrypt(&state).unwrap();
+    let id = doc.trailer.get(b"Encrypt").unwrap().as_reference().unwrap();
+    let enc = doc.get_object_mut(id).unwrap().as_dict_mut().unwrap();
+    for key in [b"O", b"U"] {
+        if let Ok(lopdf::Object::String(_, format)) = enc.get_mut(key) {
+            *format = lopdf::StringFormat::Hexadecimal;
+        }
+    }
+    let mut r4 = Vec::new();
+    doc.save_to(&mut r4).unwrap();
+    let r4 = short_user_hash(r4);
+    assert!(find(&r4, b"/EncryptMetadata false").is_some());
+
+    for (name, bytes) in [("revision 3", r3), ("revision 4", r4)] {
+        let p = Pdf::from_bytes(&bytes, None).unwrap_or_else(|e| panic!("{name}: {e:#}"));
+        assert_eq!(p.page_count(), 2, "{name}");
+        assert!(p.page_text(0).contains("needle"), "{name}: text not read");
+        assert!(
+            p.doc.encryption_state.is_some(),
+            "{name}: not seen as protected"
+        );
+        assert!(!p.repaired(), "{name}: not damaged");
+        assert!(!p.password_needed(), "{name}");
+        assert!(Pdf::from_bytes(&bytes, Some("owner")).is_ok(), "{name}");
+    }
+}
+
+#[test]
+fn files_tell_whether_they_needed_a_password() {
+    let protect = |user: &str| {
+        let mut p = doc_with_text();
+        p.set_encryption(Some(Encryption {
+            user_password: user.into(),
+            owner_password: "owner".into(),
+            cipher: Cipher::Aes128,
+            restrictions: Restrictions::default(),
+        }));
+        p.to_bytes().unwrap()
+    };
+    let locked = protect("user");
+    for password in ["user", "owner"] {
+        let p = Pdf::from_bytes(&locked, Some(password)).unwrap();
+        assert!(p.password_needed(), "{password}");
+    }
+    // Only a permissions password: it opens without one, even when one is given.
+    let open = protect("");
+    for password in [None, Some(""), Some("owner"), Some("anything")] {
+        let p = Pdf::from_bytes(&open, password).unwrap();
+        assert!(p.doc.was_encrypted(), "{password:?}");
+        assert!(!p.password_needed(), "{password:?}");
+    }
+    let plain = Pdf::from_bytes(&doc_with_text().to_bytes().unwrap(), None).unwrap();
+    assert!(!plain.password_needed());
+}
+
 #[test]
 fn crop_margins_follow_rotation() {
     let mut p = Pdf::new();
