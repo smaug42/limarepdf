@@ -12,7 +12,8 @@
   including the one a restored document came from, and so does redoing a redaction or removal after undoing it;
   later copies hold none of what was removed. If an earlier copy can't be deleted, or the disk can't confirm the
   deletion, the command (or the redo) doesn't run, however often it is tried, until it can. A restored copy of a signed document doesn't have its signatures
-  checked, since they cover the original file. Turn it off with File > Keep recovery copies of unsaved changes.
+  checked, since they cover the original file. A damaged copy, or a damaged description of one, is listed as
+  damaged and never stops LimarePDF from starting. Turn it off with File > Keep recovery copies of unsaved changes.
 - The window opens at the size it had when LimarePDF last closed, and maximized if it was. Its position isn't
   remembered, since Linux Wayland sessions place windows themselves.
 
@@ -28,7 +29,12 @@
   character code also made reading the page's text fail). These sizes are now capped: a page image at 268 million pixels, which
   gives an error naming the page (A3 still exports at 1152 dpi; of about 7,200 test pages, the largest poster
   exports at up to 208 dpi), pictures at 268 million pixels, and widths at the 65,536 characters a font can have.
-  Printing on Windows draws pages larger than the limit at a lower resolution instead.
+  Printing on Windows draws pages larger than the limit at a lower resolution instead. A font's map from characters
+  to text, used for searching, copying and editing text, could also ask for gigabytes (a map of 4 KB asked for
+  64 MB), or keep LimarePDF busy for many minutes when it mapped the same characters over and over (a 16 MB map
+  can ask for about 50 billion). Text for one character is now
+  limited to the 512 bytes the PDF specification allows, a map to 32 MB, and reading a map stops after about a
+  million characters; none of the test files' 2,079 maps comes near these limits.
 - Undo on a large document could take gigabytes of memory: each step keeps a whole copy of the document, so 20 edits
   on a 139 MB scan took about 2.6 GB. Each document's undo steps are now limited to 1 GB together; beyond it the
   oldest steps are dropped, so undo is shorter on very large documents (about 7 steps on that scan). The latest
@@ -98,6 +104,10 @@
   larger could lose detail, and one with a text layer could be straightened under its text. Only the selected pages
   change now; a shared picture is optimised as carefully as the most demanding of them needs, and the report says
   when the original stays elsewhere. The report also named the wrong page as the one optimised.
+- A file with a text box comment that has no drawing of its own, and a colour in its style with a letter such as
+  "é" in it, didn't open ("LimarePDF hit an internal error"), and `limarepdf-cli` couldn't draw its page. Such
+  colours are now ignored, as other malformed colours already were; a colour with a sign in it (`#+1+2+3`) is
+  ignored too, where it used to be read.
 
 ## [0.7.2] - 2026-10-18
 

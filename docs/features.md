@@ -88,7 +88,7 @@ available.
 | Certificate encryption | No | |
 | PDF/A, optimised saving | No | Saved files are pruned and compressed |
 | Comparing documents | No | |
-| Crash recovery | Done | Private copies of documents with unsaved changes, about a minute behind; when LimarePDF stops without closing normally, the next start offers them, and a restored one opens as a new unsaved document. Your own files are never written by it. None for password-protected documents, or documents a protected one's pages are appended to; a redaction, removal of hidden information or added password, or a redo of a redaction or removal, deletes the earlier copies first, including the one a restored document came from. Can be turned off. [Details](gui.md#recovery-copies) |
+| Crash recovery | Done | Private copies of documents with unsaved changes, about a minute behind; when LimarePDF stops without closing normally, the next start offers them, and a restored one opens as a new unsaved document. Your own files are never written by it. None for password-protected documents, or documents a protected one's pages are appended to; a redaction, removal of hidden information or added password, or a redo of a redaction or removal, deletes the earlier copies first, including the one a restored document came from. A damaged copy is listed as such and never stops the app starting. Can be turned off. [Details](gui.md#recovery-copies) |
 | Sessions, autosave, backups, preferences, custom shortcuts, translations | No | You are asked before closing unsaved work, text still being typed included, and Save keeps that text; unsaved changes are kept in [recovery copies](gui.md#recovery-copies) |
 | XFA forms, XPS documents | No | |
 
@@ -118,7 +118,10 @@ available.
   ask for gigabytes and close: a page image has at most 268 million pixels (A3 at 1152 dpi;
   [export](export-and-printing.md#pages-as-images)), Optimise scans skips pictures of more than 268 million pixels
   with the reason, redaction removes a fax picture of more than that whole, as it does any picture it can't read,
-  and a font's character widths are read for 65,536 characters at most. Pages of any real size show at every zoom.
+  and a font's character widths are read for 65,536 characters at most. A font's map from characters to text
+  (ToUnicode) is read for about a million characters at most, up to 32 MB, with up to 512 bytes of text for one
+  character, as the PDF specification allows ([details](search-and-text.md#text-extraction)). Pages of any real
+  size show at every zoom.
 - Text from a file that the app shows as a label or message (link addresses, bookmark names, comment authors and
   text, file names in tab and window titles and print job titles) has direction-changing (bidi), invisible and
   control characters removed and is shortened when very long, so a link can't pretend to go somewhere else. Form

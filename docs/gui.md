@@ -399,7 +399,8 @@ copy was made, how many pages, and until when the copy is kept. **Restore** open
 called "*name* (recovered)", with a notice saying when the copy was made; Save suggests "*name* (recovered).pdf"
 beside the original. **Discard** deletes the copy. **Not now** keeps them all and asks again at the next start.
 Copies are deleted 30 days after the crash if you do neither. A copy that turns out to be damaged is listed as such,
-with Show file and Discard. A restored document's copy stays until you save or close it, so a second crash doesn't
+with Show file and Discard; so is one whose description LimarePDF wrote beside it is damaged, a time in it past the
+year 9999 included. Damaged copies never stop LimarePDF from starting. A restored document's copy stays until you save or close it, so a second crash doesn't
 lose it, or until you remove content from it or set a password (below). Files given on the command line open once
 the list is closed.
 

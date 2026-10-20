@@ -45,5 +45,9 @@ Limits:
   wrong.
 - CID fonts with no ToUnicode map that rely on a standard Unicode character map (such as `UniJIS-UCS2-H`, common
   in Japanese files with fonts that aren't embedded) come out as the wrong characters.
+- A ToUnicode map is read for its first million or so characters and up to 32 MB of text, so a crafted file can't
+  ask for gigabytes; a character whose text is longer than the 512 bytes the PDF specification allows is read from
+  the font's encoding instead. Real maps are far smaller: the longest text for one character in the 2,079 maps of
+  the test files is 42 bytes.
 - Text inside form XObjects (reusable blocks of page content, which some PDF makers put all their text in) is read,
   searched and selected, but cannot be edited line by line: the form moves, resizes and deletes as one object.
