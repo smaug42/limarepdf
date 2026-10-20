@@ -16,6 +16,11 @@ redaction), it writes nothing unless `--break-signatures` is given, which writes
 
 Page lists take numbers and ranges, counted from 1: `1-3,7`, `5-` (5 to the end) or `all`.
 
+A command that fails prints `Error:` and the reason on stderr and exits with status 1 (`verify` has its own
+statuses, [below](#digital-signatures)). A malformed file that makes LimarePDF fail internally gives "LimarePDF hit
+an internal error (...). The file may be damaged."; run the command again with `RUST_BACKTRACE=1` to see where it
+happened when reporting it.
+
 ## Look at a document
 
 | Command | What it does |

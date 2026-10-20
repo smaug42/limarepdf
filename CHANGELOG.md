@@ -76,6 +76,10 @@
   parts keep the bookmarks to their own pages (a bookmark to another page stays, without a destination, only when
   it has bookmarks below it that stay); deleting keeps every bookmark, as before, without a destination when its
   page went. Printing selected pages goes the same way.
+- A malformed file that made `limarepdf-cli` fail inside a library (such as a page the renderer can't draw at some
+  resolutions) ended it with a Rust panic message and exit status 101. It now prints a plain error, "LimarePDF hit
+  an internal error (...). The file may be damaged.", and exits with status 1, as for other errors. Setting
+  `RUST_BACKTRACE=1` also prints where it happened, for bug reports.
 
 ## [0.7.2] - 2026-10-18
 

@@ -112,7 +112,8 @@ available.
   comments, the inspector) turns that tab into an error page with Save a copy and Close; other tabs carry on. So does
   a menu command, shortcut or panel button that fails: an error message when it changed nothing, else that tab's
   error page. Redactions and removed hidden information are recorded with the change itself, so a later save of a
-  signed document always writes the file out in full.
+  signed document always writes the file out in full. `limarepdf-cli` prints such a failure as a plain error and
+  exits with status 1.
 - Sizes a file states are capped before memory is set aside for them, so a small crafted file can't make LimarePDF
   ask for gigabytes and close: a page image has at most 268 million pixels (A3 at 1152 dpi;
   [export](export-and-printing.md#pages-as-images)), Optimise scans skips pictures of more than 268 million pixels
