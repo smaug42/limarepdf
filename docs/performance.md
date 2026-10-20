@@ -25,6 +25,7 @@ The files: a generated 1,000-page text file (1.5 MB; a heading, 48 lines of text
 | 200-page scan: watermark | 0.18 s | 569 MB |
 | 200-page scan: AES-256 encrypt | 0.41 s | 568 MB |
 | Complex drawing, 73,000 paths on one page (PDFBox 5134): render at 150 dpi | 58.5 s | 9,707 MB |
+| The same, drawn in bands (2026-10-19, one run) | 54.4 s | 1,520 MB |
 | Complex drawing, 27,000 paths on one page (pdf.js bug1791583): render at 150 dpi | 2.05 s | 642 MB |
 | Japanese fonts not embedded, drawn with installed stand-ins, 42 pages (PDFBox 1910): render at 150 dpi | 0.53 s | 562 MB |
 | The same, 203 pages (pdf.js bug1905623): render at 150 dpi | 2.69 s | 559 MB |

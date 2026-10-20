@@ -6,6 +6,8 @@ Pages are saved as PNG or JPEG files at 36 to 1152 dpi, one file per page, named
 number (`report-001.png`, …). The resolution is stored in each file, so the images import back at the page's size.
 LimarePDF draws the pages with its own renderer. A page image can have at most 268 million pixels (A3 at 1152 dpi;
 a 4 × 3 foot poster at about 390 dpi); a larger one is an error that names the page, and a lower resolution works.
+Large page images are drawn in bands, which bounds the memory a complex page takes but makes some pages slower to
+export ([details](rendering.md#large-drawings)).
 
 Where: the inspector's Export pages as images section, also reached from the top bar's Export menu. It runs in the
 background and asks before replacing files. On the command line: `limarepdf-cli render --format png|jpeg`.
