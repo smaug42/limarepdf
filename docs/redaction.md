@@ -108,7 +108,13 @@ of the file aren't kept in it.
   text, alternative text, drawings, pictures with soft masks, JPEG, inline images, shared pictures and forms,
   unreadable pictures, annotations, redaction marks), and `limarepdf-cli redact` on the PDFs in `/usr/share/doc` (common words
   removed throughout, renders checked, nothing found by search afterwards) and on a scanned page in three forms
-  (plain, CCITT and JPEG) with a recognised text layer.
+  (plain, CCITT and JPEG) with a recognised text layer. Since 2026-10-20 (build plan, C2) the tests search the saved
+  output as written, the same way as for removing hidden information below, and check that what touched a mark
+  (comments with their pop-ups and replies, form fields and their drawings, alternative text in the structure tree,
+  thumbnails, private data) is gone. Opt-in cross-checks read the output with poppler (`pdftotext`, and
+  `pdfimages` for a blacked-out picture) and Ghostscript: `cargo test -p limarepdf-core --test redact -- --ignored
+  cross_check`. One of them redacts the Magick++ tutorial from ImageMagick's documentation, a real file whose
+  fonts are subsets, so its text can't be found in the file's bytes and only a reader can show it's gone.
 - The app's part (the Redact tool, marking selected text and search results, the notice, Apply and its report, the
   save warning) was used by hand on Linux.
 - Removing hidden information: `crates/limarepdf-core/tests/sanitise.rs` (made-up files for each kind) and `limarepdf-cli sanitise`

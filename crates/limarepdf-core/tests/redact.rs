@@ -1,4 +1,7 @@
-use limarepdf_core::{render, Pdf};
+mod common;
+
+use common::saved::{tools, Saved};
+use limarepdf_core::{render, ObjectKind, Pdf};
 use lopdf::content::Content;
 use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream};
 
@@ -35,28 +38,10 @@ fn content(p: &Pdf, page: usize) -> String {
     String::from_utf8_lossy(&p.doc.get_page_content(id)).into_owned()
 }
 
-/// Whether `needle` is anywhere in the saved file: in any string or (decompressed) stream.
-fn file_has(p: &mut Pdf, needle: &str) -> bool {
-    let bytes = p.to_bytes().unwrap();
-    let q = Pdf::from_bytes(&bytes, None).unwrap();
-    let n = needle.as_bytes();
-    let has = |b: &[u8]| b.windows(n.len()).any(|w| w == n);
-    q.doc.objects.values().any(|o| match o {
-        Object::Stream(s) => has(&s
-            .decompressed_content()
-            .unwrap_or_else(|_| s.content.clone())),
-        Object::String(b, _) => has(b),
-        Object::Dictionary(d) => d
-            .iter()
-            .any(|(_, v)| matches!(v, Object::String(b, _) if has(b))),
-        _ => false,
-    })
-}
-
+/// Pictures in the saved file as written, whether anything still uses them or not.
 fn images_in_file(p: &mut Pdf) -> usize {
-    let bytes = p.to_bytes().unwrap();
-    let q = Pdf::from_bytes(&bytes, None).unwrap();
-    q.doc
+    Saved::of(p)
+        .doc
         .objects
         .values()
         .filter(|o| {
@@ -67,13 +52,12 @@ fn images_in_file(p: &mut Pdf) -> usize {
         .count()
 }
 
-/// Every picture in the saved file: its last filter, components and decoded samples
-/// (JPEGs decoded to 8-bit grey or RGB).
+/// Every picture in the saved file as written: its last filter, components and decoded
+/// samples (JPEGs decoded to 8-bit grey or RGB).
 fn pictures(p: &mut Pdf) -> Vec<(String, usize, Vec<u8>)> {
-    let bytes = p.to_bytes().unwrap();
-    let q = Pdf::from_bytes(&bytes, None).unwrap();
+    let saved = Saved::of(p);
     let mut out = Vec::new();
-    for o in q.doc.objects.values() {
+    for o in saved.doc.objects.values() {
         let Ok(s) = o.as_stream() else { continue };
         if s.dict.get(b"Subtype").and_then(|x| x.as_name()).ok() != Some(b"Image") {
             continue;
@@ -133,8 +117,9 @@ fn removes_the_marked_characters_and_keeps_the_rest_in_place() {
     assert!(!text.to_lowercase().contains("zebra"), "{text}");
     assert!(near(p.find_text_boxes(0, "here").unwrap()[0], here[0]));
     assert!(near(p.find_text_boxes(0, "Name:").unwrap()[0], name[0]));
-    assert!(!file_has(&mut p, "Zebra") && !file_has(&mut p, "Quokka"));
-    assert!(!file_has(&mut p, "ebra") && !file_has(&mut p, "uokk"));
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["Zebra", "Quokka", "ebra", "uokk"]);
+    saved.assert_kept(&["Name:", "here"]);
 }
 
 #[test]
@@ -160,7 +145,7 @@ fn removes_hidden_text_and_its_alternative_text() {
     let rep = p.redact(&marks).unwrap();
     assert_eq!(rep.pages[0].chars, 5);
     assert!(!content(&p, 0).contains("ActualText"));
-    assert!(!file_has(&mut p, "Zebra"));
+    Saved::of(&mut p).assert_gone(&["Zebra"]);
 }
 
 #[test]
@@ -353,8 +338,8 @@ fn drops_a_picture_from_shared_resources_when_no_page_draws_it() {
     assert!(p.page_text(1).contains("Two"));
 }
 
-#[test]
-fn redacts_inside_a_shared_form_only_on_the_marked_page() {
+/// Two pages drawing the same form, which says "Secret Walrus".
+fn shared_form() -> Pdf {
     let mut p = make(&["q /Fm1 Do Q", "q /Fm1 Do Q"]);
     let font = p.doc.add_object(dictionary! {
         "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
@@ -372,6 +357,12 @@ fn redacts_inside_a_shared_form_only_on_the_marked_page() {
             dictionary! { "XObject" => dictionary! { "Fm1" => form } },
         );
     }
+    p
+}
+
+#[test]
+fn redacts_inside_a_shared_form_only_on_the_marked_page() {
+    let mut p = shared_form();
     let marks: Vec<_> = p
         .find_redaction_marks("walrus")
         .unwrap()
@@ -423,6 +414,149 @@ fn removes_annotations_touching_a_mark() {
         .unwrap()
         .clone();
     assert_eq!(left, vec![Object::Reference(off)]);
+}
+
+/// A tagged page saying "Keep WALRUS-TEXT" (alternative text on its structure element and
+/// that element's parent), with a comment touching WALRUS-TEXT (its pop-up and a reply away
+/// from it), a filled text field touching it, a thumbnail and private data. Away from it: a
+/// footer, a comment and a field, which must stay.
+fn tagged_and_annotated() -> Pdf {
+    let mut p = make(&[
+        "/P <</MCID 0>> BDC BT /F1 20 Tf 30 100 Td (Keep WALRUS-TEXT) Tj ET EMC \
+         BT /F1 10 Tf 30 40 Td (Footer kept) Tj ET",
+    ]);
+    let page = p.page_ids()[0];
+    let font = p.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+    });
+    let rect = |r: [i64; 4]| r.iter().map(|&x| Object::Integer(x)).collect::<Vec<_>>();
+    let note = |p: &mut Pdf, r: [i64; 4], text: &str| {
+        p.doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Text", "Rect" => rect(r), "P" => page,
+            "T" => Object::string_literal("Sam"), "Contents" => Object::string_literal(text),
+        })
+    };
+    let touching = note(&mut p, [100, 100, 120, 120], "WALRUS-NOTE");
+    let popup = p.doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Popup", "Rect" => rect([150, 130, 290, 190]),
+        "Parent" => touching, "P" => page,
+    });
+    p.doc
+        .get_dictionary_mut(touching)
+        .unwrap()
+        .set("Popup", popup);
+    let reply = note(&mut p, [250, 170, 270, 190], "WALRUS-REPLY");
+    p.doc
+        .get_dictionary_mut(reply)
+        .unwrap()
+        .set("IRT", touching);
+    let away = note(&mut p, [10, 170, 30, 190], "Kept note");
+    let field = |p: &mut Pdf, name: &str, value: &str, r: [i64; 4]| {
+        let ap = p.doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Form",
+                "BBox" => rect([0, 0, r[2] - r[0], r[3] - r[1]]),
+                "Resources" => dictionary! { "Font" => dictionary! { "F1" => font } },
+            },
+            format!("/Tx BMC BT /F1 10 Tf 2 5 Td ({value}) Tj ET EMC").into_bytes(),
+        ));
+        p.doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Widget", "FT" => "Tx", "Rect" => rect(r), "P" => page,
+            "F" => 4,
+            "T" => Object::string_literal(name), "V" => Object::string_literal(value),
+            "DV" => Object::string_literal(value), "AP" => dictionary! { "N" => ap },
+        })
+    };
+    let secret = field(&mut p, "secret", "WALRUS-FIELD", [200, 95, 260, 115]);
+    let other = field(&mut p, "other", "Kept value", [10, 10, 80, 25]);
+    let thumb = p.doc.add_object(Stream::new(
+        dictionary! {
+            "Width" => 1, "Height" => 1, "ColorSpace" => "DeviceGray", "BitsPerComponent" => 8,
+        },
+        b"WALRUS-THUMB".to_vec(),
+    ));
+    let root = p.doc.new_object_id();
+    let div = p.doc.new_object_id();
+    let elem = p.doc.add_object(dictionary! {
+        "Type" => "StructElem", "S" => "P", "P" => div, "Pg" => page, "K" => 0,
+        "Alt" => Object::string_literal("WALRUS-ALT"),
+    });
+    p.doc.objects.insert(
+        div,
+        dictionary! {
+            "Type" => "StructElem", "S" => "Div", "P" => root, "K" => vec![Object::Reference(elem)],
+            "E" => Object::string_literal("WALRUS-EXPANSION"),
+        }
+        .into(),
+    );
+    p.doc.objects.insert(
+        root,
+        dictionary! {
+            "Type" => "StructTreeRoot", "K" => div,
+            "ParentTree" => dictionary! {
+                "Nums" => vec![Object::Integer(0), vec![Object::Reference(elem)].into()],
+            },
+        }
+        .into(),
+    );
+    let d = p.doc.get_dictionary_mut(page).unwrap();
+    d.set(
+        "Annots",
+        vec![touching, popup, reply, away, secret, other]
+            .into_iter()
+            .map(Object::Reference)
+            .collect::<Vec<_>>(),
+    );
+    d.set("StructParents", 0);
+    d.set("Thumb", thumb);
+    d.set(
+        "PieceInfo",
+        dictionary! { "Editor" => dictionary! { "Private" => Object::string_literal("WALRUS-PIECE") } },
+    );
+    let c = p.doc.catalog_mut().unwrap();
+    c.set("StructTreeRoot", root);
+    c.set("MarkInfo", dictionary! { "Marked" => true });
+    c.set(
+        "AcroForm",
+        dictionary! {
+            "Fields" => vec![Object::Reference(secret), Object::Reference(other)],
+            "DA" => Object::string_literal("/F1 10 Tf 0 g"),
+            "DR" => dictionary! { "Font" => dictionary! { "F1" => font } },
+        },
+    );
+    p
+}
+
+#[test]
+fn the_saved_output_holds_nothing_of_the_marked_text_or_what_touches_it() {
+    let mut p = tagged_and_annotated();
+    Saved::of(&mut p).assert_kept(&[
+        "WALRUS-TEXT",
+        "WALRUS-NOTE",
+        "WALRUS-REPLY",
+        "WALRUS-FIELD",
+        "WALRUS-THUMB",
+        "WALRUS-ALT",
+        "WALRUS-EXPANSION",
+        "WALRUS-PIECE",
+    ]);
+    let marks = p.find_redaction_marks("walrus-text").unwrap();
+    assert_eq!(marks.len(), 1);
+    let rep = p.redact(&marks).unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    assert_eq!(
+        rep.pages[0].annots, 3,
+        "the comment, its reply and the field"
+    );
+
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["WALRUS"]);
+    saved.assert_kept(&["Keep", "Footer kept", "Kept note", "Kept value"]);
+    let fields: Vec<String> = saved.fields().into_iter().map(|f| f.name).collect();
+    assert_eq!(fields, ["other"]);
+    assert!(saved.stray_pages().is_empty(), "{:?}", saved.stray_pages());
+    let q = Pdf::from_bytes(&saved.bytes, None).unwrap();
+    assert!(q.page_text(0).contains("Keep"));
 }
 
 #[test]
@@ -484,4 +618,175 @@ fn marks_survive_saving_and_are_not_flattened() {
     );
     q.flatten_annotations(None).unwrap();
     assert_eq!(q.redaction_marks().len(), 2);
+}
+
+/// Poppler and Ghostscript, reading the redacted output on their own:
+/// `cargo test -p limarepdf-core --test redact -- --ignored cross_check`.
+#[test]
+#[ignore]
+fn cross_check_redacted_output_with_poppler_and_ghostscript() {
+    let mut turned = make(&["BT /F1 20 Tf 30 100 Td (Keep Zebra Keep) Tj ET"]);
+    turned.rotate_pages(&[0], 90).unwrap();
+    // (document, what to redact, what each reader must find before and not after, what it
+    // must still find after)
+    let cases = [
+        (
+            make(&["BT /F1 20 Tf 30 100 Td (Name: Zebra Quokka here) Tj ET"]),
+            "zebra quokka",
+            &["Zebra", "Quokka"][..],
+            &["Name:", "here"][..],
+        ),
+        (
+            make(&["BT /F1 20 Tf 30 100 Td [(Sec) -200 (retX) 50 (Yzw)] TJ ET"]),
+            "retX",
+            &["retX"],
+            &["Sec", "Yzw"],
+        ),
+        (turned, "zebra", &["Zebra"], &["Keep"]),
+        (
+            tagged_and_annotated(),
+            "walrus-text",
+            &["WALRUS-TEXT", "WALRUS-FIELD"],
+            &["Keep", "Footer kept", "Kept value"],
+        ),
+    ];
+    for (mut p, query, gone, kept) in cases {
+        let before = p.to_bytes().unwrap();
+        let marks = p.find_redaction_marks(query).unwrap();
+        assert!(p.redact(&marks).unwrap().left.is_empty());
+        let after = p.to_bytes().unwrap();
+        for (tool, read) in [
+            ("pdftotext", tools::pdftotext as fn(&[u8]) -> String),
+            ("gs", tools::gs_text),
+        ] {
+            let (was, is) = (read(&before), read(&after));
+            for w in gone {
+                // Poppler doesn't draw form fields.
+                if tool == "pdftotext" && w.ends_with("FIELD") {
+                    continue;
+                }
+                assert!(was.contains(w), "{tool} finds {w} before: {was}");
+                assert!(!is.contains(w), "{tool} finds {w} after: {is}");
+            }
+            for w in kept {
+                if tool == "pdftotext" && w.starts_with("Kept value") {
+                    continue;
+                }
+                assert!(is.contains(w), "{tool} doesn't find {w} after: {is}");
+            }
+        }
+    }
+
+    // Hidden text, which poppler reads and Ghostscript doesn't draw.
+    let mut p = make(&[
+        "/Span <</ActualText (Zebra)>> BDC BT 3 Tr /F1 20 Tf 30 100 Td (Zebra) Tj ET EMC \
+         BT /F1 20 Tf 30 30 Td (Caption) Tj ET",
+    ]);
+    assert!(tools::pdftotext(&p.to_bytes().unwrap()).contains("Zebra"));
+    let marks = p.find_redaction_marks("zebra").unwrap();
+    p.redact(&marks).unwrap();
+    let text = tools::pdftotext(&p.to_bytes().unwrap());
+    assert!(
+        !text.contains("Zebra") && text.contains("Caption"),
+        "{text}"
+    );
+
+    // A form both pages draw, redacted on the first only.
+    let mut p = shared_form();
+    let marks: Vec<_> = p
+        .find_redaction_marks("walrus")
+        .unwrap()
+        .into_iter()
+        .filter(|m| m.0 == 0)
+        .collect();
+    p.redact(&marks).unwrap();
+    let text = tools::pdftotext(&p.to_bytes().unwrap());
+    // pdftotext ends each page with a form feed.
+    let pages: Vec<&str> = text.split('\x0c').collect();
+    assert!(
+        !pages[0].contains("Walrus") && pages[0].contains("Secret"),
+        "{text}"
+    );
+    assert!(pages[1].contains("Secret Walrus"), "{text}");
+}
+
+/// A real public PDF: the Magick++ tutorial ImageMagick installs. Its page 14 has text, a
+/// picture and drawings (testing.md's redaction check uses it too), and its fonts are
+/// subsets, so its text isn't in the file as written and only a reader can tell it's gone.
+const TUTORIAL: &str = "/usr/share/doc/ImageMagick-7/www/magick++/tutorial/Magick++_tutorial.pdf";
+
+/// Redacting text through the whole tutorial and half of page 14's picture, read back by
+/// poppler and Ghostscript:
+/// `cargo test -p limarepdf-core --test redact -- --ignored cross_check`.
+#[test]
+#[ignore]
+fn cross_check_a_redacted_public_pdf_with_poppler_and_ghostscript() {
+    let original = std::fs::read(TUTORIAL)
+        .unwrap_or_else(|e| panic!("{TUTORIAL}, from ImageMagick's documentation: {e}"));
+    let gone = ["imprevisible", "DrawableFillColor"];
+    let kept = ["anti-aliasing", "fully transparent", "DrawableStrokeColor"];
+    let mut p = Pdf::from_bytes(&original, None).unwrap();
+    let pages = p.page_count();
+    for read in [tools::pdftotext as fn(&[u8]) -> String, tools::gs_text] {
+        let text = read(&original);
+        for w in gone.iter().chain(&kept) {
+            assert!(text.contains(w), "{w} is in the tutorial");
+        }
+    }
+
+    let mut marks = Vec::new();
+    for w in gone {
+        marks.extend(p.find_redaction_marks(w).unwrap());
+    }
+    let pic = p
+        .page_objects(13)
+        .unwrap()
+        .into_iter()
+        .find(|o| o.kind == ObjectKind::Image)
+        .expect("page 14 has a picture")
+        .bbox;
+    marks.push((13, [pic[0], pic[1], (pic[0] + pic[2]) / 2.0, pic[3]]));
+    let rep = p.redact(&marks).unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    assert!(rep.elsewhere.is_empty(), "{:?}", rep.elsewhere);
+    assert_eq!(rep.pages.iter().map(|r| r.images_cut).sum::<usize>(), 1);
+
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&gone);
+    assert!(saved.stray_pages().is_empty(), "{:?}", saved.stray_pages());
+    assert_eq!(
+        Pdf::from_bytes(&saved.bytes, None).unwrap().page_count(),
+        pages
+    );
+    for (tool, read) in [
+        ("pdftotext", tools::pdftotext as fn(&[u8]) -> String),
+        ("gs", tools::gs_text),
+    ] {
+        let text = read(&saved.bytes);
+        for w in gone {
+            assert!(!text.contains(w), "{tool} finds {w}");
+        }
+        for w in kept {
+            assert!(text.contains(w), "{tool} doesn't find {w}");
+        }
+    }
+
+    // The picture as poppler reads it: black under the mark, as it was beside it.
+    let (was, is) = (
+        tools::pdfimages(&original, 14),
+        tools::pdfimages(&saved.bytes, 14),
+    );
+    assert_eq!(is.len(), 2, "the picture and its soft mask");
+    let was = image::load_from_memory(&was[0]).unwrap().to_rgb8();
+    let is = image::load_from_memory(&is[0]).unwrap().to_rgb8();
+    assert_eq!(was.dimensions(), is.dimensions());
+    let (w, h) = is.dimensions();
+    for y in 0..h {
+        for x in 0..w / 2 - 2 {
+            assert_eq!(is.get_pixel(x, y).0, [0, 0, 0], "at {x},{y}");
+        }
+        for x in w / 2 + 2..w {
+            assert_eq!(is.get_pixel(x, y), was.get_pixel(x, y), "at {x},{y}");
+        }
+    }
 }
