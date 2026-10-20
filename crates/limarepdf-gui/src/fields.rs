@@ -199,9 +199,18 @@ impl FormUi {
         }
     }
 
+    /// Whether text typed into a field isn't kept yet.
+    pub fn typing(&self) -> bool {
+        self.focused().is_some()
+            && matches!(
+                &self.focus,
+                Some(Focus { edit: Edit::Text { text, original, .. }, .. }) if text != original
+            )
+    }
+
     /// Keep what was typed in the field being left, when the keyboard moves on before its
-    /// text box has noticed.
-    fn commit_typing(&mut self, acts: &mut Vec<Action>) {
+    /// text box has noticed, or before saving.
+    pub fn commit_typing(&mut self, acts: &mut Vec<Action>) {
         let Some((fi, _)) = self.focused() else {
             return;
         };
@@ -728,6 +737,34 @@ mod tests {
             [Action::SetField(_, name, FieldValue::Text(t))] if name == "a" && t == "typed"
         ));
         assert_eq!(focused_name(&ui), Some("b"));
+    }
+
+    #[test]
+    fn typing_counts_until_it_is_kept() {
+        let p = form(vec![(
+            0,
+            250,
+            dictionary! { "FT" => "Tx", "T" => text("a") },
+        )]);
+        let mut ui = loaded(&p);
+        let mut acts = Vec::new();
+        ui.activate(0, 0, &mut acts);
+        // In the field, nothing typed yet.
+        assert!(!ui.typing());
+        if let Some(Focus {
+            edit: Edit::Text { text, .. },
+            ..
+        }) = &mut ui.focus
+        {
+            text.push_str("typed");
+        }
+        assert!(ui.typing());
+        ui.commit_typing(&mut acts);
+        assert!(matches!(
+            acts.as_slice(),
+            [Action::SetField(_, name, FieldValue::Text(t))] if name == "a" && t == "typed"
+        ));
+        assert!(!ui.typing(), "still counted once kept");
     }
 
     #[test]

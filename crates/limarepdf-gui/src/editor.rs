@@ -107,6 +107,15 @@ impl Writing {
             fresh: true,
         }
     }
+
+    /// Whether finishing it changes the document: a new one with some text, or changed
+    /// text.
+    fn changed(&self) -> bool {
+        match self.id {
+            Some(_) => self.text != self.original,
+            None => !self.text.trim().is_empty(),
+        }
+    }
 }
 
 /// A note's icon on screen, in pixels, whatever the zoom, as other readers show notes.
@@ -185,6 +194,19 @@ pub struct AnnotEdit {
     pub text: Option<TextStyle>,
     /// A shape's, line's or drawing's fill, width and arrowhead.
     pub shape: Option<ShapeLook>,
+}
+
+impl AnnotEdit {
+    /// The annotation's properties as they are.
+    fn of(a: &Annot) -> Self {
+        Self {
+            color: a.color,
+            opacity: a.opacity,
+            contents: a.contents.clone(),
+            text: a.text_style,
+            shape: a.shape,
+        }
+    }
 }
 
 /// Whether the annotation can be moved with the arrow tool: not locked, and not text
@@ -647,21 +669,58 @@ impl Editor {
 
     /// Keep what was typed: a new note or text box with some text, or changed text.
     pub fn finish_writing(&mut self) {
-        let Some(w) = self.writing.take() else { return };
-        match w.id {
-            Some(id) if w.text != w.original => {
-                self.actions.push(Action::AnnotText(w.page, id, w.text));
+        let Some(w) = self.writing.take().filter(Writing::changed) else {
+            return;
+        };
+        let r = w.rect;
+        self.actions.push(match w.id {
+            Some(id) => Action::AnnotText(w.page, id, w.text),
+            None if w.note => {
+                Action::AddNote(w.page, ((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0), w.text)
             }
-            None if !w.text.trim().is_empty() => {
-                let r = w.rect;
-                self.actions.push(if w.note {
-                    Action::AddNote(w.page, ((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0), w.text)
-                } else {
-                    Action::AddTextBox(w.page, r, w.text)
-                });
-            }
-            _ => {}
+            None => Action::AddTextBox(w.page, r, w.text),
+        });
+    }
+
+    /// Whether something typed isn't in the document yet: a note or text box being typed
+    /// on the page, a form field being typed in, the selected comment's changes in the
+    /// inspector, or a reply to it not yet added. Saving keeps it first, and closing asks,
+    /// as for unsaved changes.
+    pub fn pending(&self) -> bool {
+        self.writing.as_ref().is_some_and(Writing::changed)
+            || self.form.typing()
+            || self.annot_changes().is_some()
+            || self.reply_to().is_some()
+    }
+
+    /// Queue the changes that keep what [`Self::pending`] finds, as clicking away, Apply
+    /// changes and Add reply would.
+    pub fn keep_pending(&mut self) {
+        self.finish_writing();
+        self.form.commit_typing(&mut self.actions);
+        if let Some(a) = self.annot_changes() {
+            self.actions.push(a);
         }
+        if let Some(a) = self.reply_to() {
+            self.reply.clear();
+            self.actions.push(a);
+        }
+    }
+
+    /// The selected comment's changes in the inspector, as the change that applies them.
+    fn annot_changes(&self) -> Option<Action> {
+        let (id, e) = self.annot_insp.as_ref()?;
+        let a = self
+            .selected_annot()
+            .filter(|a| a.id == *id && !a.locked())?;
+        (*e != AnnotEdit::of(a)).then(|| Action::SetAnnot(a.page, a.id, e.clone()))
+    }
+
+    /// The reply typed to the selected comment, as the change that adds it.
+    fn reply_to(&self) -> Option<Action> {
+        let a = self.selected_annot()?;
+        let typed = !self.reply.trim().is_empty();
+        typed.then(|| Action::Reply(a.page, a.id, self.reply.clone()))
     }
 
     /// The note or text box being typed on `page` (drawn at `r`, `k` pixels per point):
@@ -2154,13 +2213,7 @@ impl Editor {
             ui.weak("Nothing selected.");
             return;
         };
-        let now = AnnotEdit {
-            color: a.color,
-            opacity: a.opacity,
-            contents: a.contents.clone(),
-            text: a.text_style,
-            shape: a.shape,
-        };
+        let now = AnnotEdit::of(&a);
         if self.annot_insp.as_ref().is_none_or(|(id, _)| *id != a.id) {
             if self.annot_insp.is_some() {
                 self.reply.clear();
@@ -2922,6 +2975,44 @@ pub fn pick_image_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn comment_changes_and_replies_not_yet_kept_are_pending() {
+        let mut pdf = limarepdf_core::Pdf::new();
+        pdf.insert_blank(0, 612.0, 792.0).unwrap();
+        let id = pdf
+            .add_note(0, (100.0, 100.0), [1.0, 1.0, 0.0], "Old text", "Tester")
+            .unwrap();
+        let mut ed = Editor::default();
+        let a = ed.annots(&pdf, 0)[0].clone();
+        ed.selection = Selection::Annot { page: 0, id };
+        // Selected and shown in the inspector, unchanged: nothing to keep.
+        ed.annot_insp = Some((id, AnnotEdit::of(&a)));
+        assert!(!ed.pending());
+        // A changed comment, and a reply typed.
+        if let Some((_, e)) = ed.annot_insp.as_mut() {
+            e.contents = "Walrus comment".into();
+        }
+        assert!(ed.pending());
+        ed.annot_insp = Some((id, AnnotEdit::of(&a)));
+        ed.reply = "Walrus reply".into();
+        assert!(ed.pending());
+        if let Some((_, e)) = ed.annot_insp.as_mut() {
+            e.contents = "Walrus comment".into();
+        }
+        ed.keep_pending();
+        assert!(matches!(
+            ed.actions.as_slice(),
+            [Action::SetAnnot(0, i, e), Action::Reply(0, j, r)]
+                if *i == id && e.contents == "Walrus comment" && *j == id && r == "Walrus reply"
+        ));
+        assert!(ed.reply.is_empty());
+        // A reply with nothing selected to answer isn't one.
+        ed.actions.clear();
+        ed.reply = "Walrus reply".into();
+        ed.selection = Selection::None;
+        assert!(!ed.pending());
+    }
 
     fn word(x: f32, y: f32, line: usize) -> PageWord {
         PageWord {

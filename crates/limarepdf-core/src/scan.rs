@@ -74,7 +74,13 @@ pub enum ScanResult {
         /// Tilt that was corrected, in degrees. Positive means the scan was tilted
         /// clockwise (lines ran down to the right).
         deskewed: Option<f32>,
+        /// The original image is also used elsewhere in the document (on a page that
+        /// wasn't selected, for example), so it is kept there as well as the new one.
+        original_kept: bool,
     },
+    /// The page shows the same image as this earlier page of the list (0-based), and
+    /// was optimised with it.
+    SameImage(usize),
     /// The page was left as it was, for the reason given.
     Skipped(String),
 }
@@ -82,6 +88,8 @@ pub enum ScanResult {
 /// A scanned page's image, found on the page.
 struct Target {
     id: ObjectId,
+    /// Its name in the page's resources.
+    name: Vec<u8>,
     dpi: f32,
     has_text: bool,
 }
@@ -98,6 +106,12 @@ impl Pdf {
     /// covering the page, or whose image cannot be decoded, are skipped and reported. An
     /// image is only replaced when the result is smaller, or when it was straightened or
     /// despeckled.
+    ///
+    /// Only the pages given change: they get the new image, and anything else using the
+    /// original (a page not given, for example) keeps it. An image shared by several of the
+    /// pages is processed once, as carefully as the most demanding of them needs: at the
+    /// resolution of the page showing it largest, and not straightened if any of them has
+    /// text over it.
     pub fn optimize_scans(
         &mut self,
         pages: &[usize],
@@ -110,16 +124,25 @@ impl Pdf {
             }
             found.push((p, self.scan_target(p)));
         }
-        // One result per distinct image; a shared image is processed once.
-        let mut first_use: HashMap<ObjectId, usize> = HashMap::new();
-        let jobs: Vec<(ObjectId, f32, bool)> = found
-            .iter()
-            .filter_map(|(p, t)| t.as_ref().ok().map(|t| (*p, t)))
-            .filter(|(p, t)| first_use.insert(t.id, *p).is_none())
-            .map(|(_, t)| (t.id, t.dpi, t.has_text))
-            .collect();
+        // One job per distinct image, for the first page showing it, with the lowest
+        // resolution and any text among the pages that do.
+        let mut first_use: HashMap<ObjectId, (usize, usize)> = HashMap::new();
+        let mut jobs: Vec<(ObjectId, f32, bool)> = Vec::new();
+        for (p, t) in &found {
+            let Ok(t) = t else { continue };
+            match first_use.get(&t.id) {
+                None => {
+                    first_use.insert(t.id, (*p, jobs.len()));
+                    jobs.push((t.id, t.dpi, t.has_text));
+                }
+                Some(&(_, j)) => {
+                    jobs[j].1 = jobs[j].1.min(t.dpi);
+                    jobs[j].2 |= t.has_text;
+                }
+            }
+        }
         let doc = &self.doc;
-        let done: HashMap<ObjectId, std::result::Result<(Stream, ScanResult), String>> = jobs
+        let mut done: HashMap<ObjectId, std::result::Result<(Stream, ScanResult), String>> = jobs
             .par_iter()
             .map(|&(id, dpi, has_text)| {
                 let r = match doc.get_object(id).and_then(Object::as_stream) {
@@ -129,26 +152,78 @@ impl Pdf {
                 (id, r)
             })
             .collect();
+        // The new images go in new objects, and the pages given are pointed at them.
+        let mut new: HashMap<ObjectId, ObjectId> = HashMap::new();
+        let mut results: HashMap<ObjectId, std::result::Result<ScanResult, String>> =
+            HashMap::new();
+        for (id, ..) in &jobs {
+            let r = match done.remove(id) {
+                Some(Ok((s, r))) => {
+                    new.insert(*id, self.doc.add_object(Object::Stream(s)));
+                    Ok(r)
+                }
+                Some(Err(why)) => Err(why),
+                None => continue,
+            };
+            results.insert(*id, r);
+        }
+        for (p, t) in &found {
+            if let Ok(t) = t {
+                if let Some(&to) = new.get(&t.id) {
+                    self.point_image(*p, &t.name, to)?;
+                }
+            }
+        }
+        // An original nothing else uses goes; one still used elsewhere stays there.
+        let live: std::collections::HashSet<ObjectId> =
+            self.doc.traverse_objects(|_| {}).into_iter().collect();
+        let mut kept = std::collections::HashSet::new();
+        for &old in new.keys() {
+            if live.contains(&old) {
+                kept.insert(old);
+            } else {
+                self.doc.objects.remove(&old);
+            }
+        }
         let mut out = Vec::new();
         for (p, t) in found {
             let result = match t {
                 Err(why) => ScanResult::Skipped(why),
-                Ok(t) => match &done[&t.id] {
+                Ok(t) => match &results[&t.id] {
                     Err(why) => ScanResult::Skipped(why.clone()),
-                    Ok(_) if first_use[&t.id] != p => {
-                        ScanResult::Skipped(format!("same image as page {}", first_use[&t.id] + 1))
+                    Ok(_) if first_use[&t.id].0 != p => ScanResult::SameImage(first_use[&t.id].0),
+                    Ok(r) => {
+                        let mut r = r.clone();
+                        if let ScanResult::Optimized { original_kept, .. } = &mut r {
+                            *original_kept = kept.contains(&t.id);
+                        }
+                        r
                     }
-                    Ok((_, r)) => r.clone(),
                 },
             };
             out.push((p, result));
         }
-        for (id, r) in done {
-            if let Ok((s, _)) = r {
-                self.doc.objects.insert(id, Object::Stream(s));
-            }
-        }
         Ok(out)
+    }
+
+    /// Make page `page_index` draw the image `to` under `name`, through resources of its
+    /// own, so that no other page that shared them changes.
+    fn point_image(&mut self, page_index: usize, name: &[u8], to: ObjectId) -> Result<()> {
+        let page = self.page_id_at(page_index)?;
+        let resolve = |o: &Object| -> Result<lopdf::Dictionary> {
+            Ok(self.doc.dereference(o)?.1.as_dict()?.clone())
+        };
+        let mut res = match self.inherited(page, b"Resources") {
+            Some(r) => resolve(&r)?,
+            None => anyhow::bail!("page {} has no resources", page_index + 1),
+        };
+        let mut xo = resolve(res.get(b"XObject")?)?;
+        xo.set(name.to_vec(), Object::Reference(to));
+        res.set("XObject", Object::Dictionary(xo));
+        self.doc
+            .get_dictionary_mut(page)?
+            .set("Resources", Object::Dictionary(res));
+        Ok(())
     }
 
     /// The image that makes up a scanned page, or why the page does not qualify.
@@ -205,6 +280,7 @@ impl Pdf {
         let width_in = img.ctm[0].hypot(img.ctm[1]) / 72.0;
         Ok(Target {
             id,
+            name: name.to_vec(),
             dpi: width_px as f32 / width_in.max(1e-3),
             has_text: parsed.shows_text(),
         })
@@ -285,6 +361,7 @@ fn process(
             before,
             after,
             deskewed,
+            original_kept: false,
         },
     ))
 }

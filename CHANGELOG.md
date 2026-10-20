@@ -80,6 +80,20 @@
   resolutions) ended it with a Rust panic message and exit status 101. It now prints a plain error, "LimarePDF hit
   an internal error (...). The file may be damaged.", and exits with status 1, as for other errors. Setting
   `RUST_BACKTRACE=1` also prints where it happened, for bug reports.
+- A question such as Flatten, Apply redactions, Remove hidden information or Discard changes could act on the wrong
+  document: the questions don't stop the rest of the window being used, so another tab could come to the front
+  (clicked, or a file finishing opening) or another tab could close before you answered. Each question now acts on
+  the document it was asked about, bringing it to the front. If that document changed or was closed meanwhile,
+  nothing is done, and a message says so.
+- Text being typed but not yet kept was left out by Save and lost by Close and Quit without asking: a comment or
+  text box typed on the page, a form field, the selected comment's changes in the inspector, and a reply not yet
+  added. Save now keeps it first (as clicking away would; Undo takes it back), and Close and Quit ask as for unsaved
+  changes.
+- Optimising scanned pages changed pictures on pages that weren't selected when they used the same picture as a
+  selected page, and a picture shared by selected pages was treated as the first one needed: a page showing it
+  larger could lose detail, and one with a text layer could be straightened under its text. Only the selected pages
+  change now; a shared picture is optimised as carefully as the most demanding of them needs, and the report says
+  when the original stays elsewhere. The report also named the wrong page as the one optimised.
 
 ## [0.7.2] - 2026-10-18
 

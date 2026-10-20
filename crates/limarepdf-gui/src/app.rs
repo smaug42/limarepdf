@@ -10,7 +10,7 @@ use crate::recent::Recent;
 use crate::selection::Selection;
 use crate::settings::{Layout, Settings};
 use crate::signatures::{self as sigs, Check, SigState, TrustAsk, TrustedOut, TrustedWindow};
-use crate::tab::{Side, Stamp, Tab};
+use crate::tab::{Side, Stamp, State, Tab};
 use crate::theme;
 use crate::worker::Colours;
 use eframe::egui::{self, AtomExt as _, Key};
@@ -133,17 +133,29 @@ fn link_dialog(url: String) -> Dialog {
 /// Summary of a scan optimisation for the user, and whether any page changed.
 fn scan_summary(report: &[(usize, ScanResult)]) -> (bool, String) {
     let (mut n, mut before, mut after) = (0, 0, 0);
-    let mut skipped = Vec::new();
+    let (mut skipped, mut same, mut kept) = (Vec::new(), Vec::new(), Vec::new());
     for (p, r) in report {
         match r {
             ScanResult::Optimized {
                 before: b,
                 after: a,
+                original_kept,
                 ..
             } => {
                 n += 1;
                 before += b;
                 after += a;
+                if *original_kept {
+                    kept.push((p + 1).to_string());
+                }
+            }
+            ScanResult::SameImage(first) => {
+                n += 1;
+                same.push(format!(
+                    "Page {}: the same picture as page {}, optimised with it.",
+                    p + 1,
+                    first + 1
+                ));
             }
             ScanResult::Skipped(why) => skipped.push(format!("Page {}: {why}", p + 1)),
         }
@@ -154,6 +166,27 @@ fn scan_summary(report: &[(usize, ScanResult)]) -> (bool, String) {
         mb(before),
         mb(after)
     );
+    for s in same.iter().take(12) {
+        text.push('\n');
+        text.push_str(s);
+    }
+    if same.len() > 12 {
+        text.push_str("\n…");
+    }
+    match kept.len() {
+        0 => {}
+        1 => text.push_str(&format!(
+            "\n\nPage {}'s original picture is also used elsewhere in the document (on a page \
+             that wasn't selected, for example). It stays there, so the file holds both.",
+            kept[0]
+        )),
+        _ => text.push_str(&format!(
+            "\n\nThe original pictures of pages {} are also used elsewhere in the document \
+             (on pages that weren't selected, for example). They stay there, so the file \
+             holds both versions.",
+            kept.join(", ")
+        )),
+    }
     push_skipped(&mut text, &skipped);
     (n > 0, text)
 }
@@ -168,33 +201,51 @@ struct ImageExport {
     stem: String,
 }
 
+/// The tab a question is about, as it was when asked. The answer acts on that tab only
+/// while it is open and unchanged ([`App::still`]): the dialogs don't stop the rest of the
+/// window being used, and a file can finish opening meanwhile.
+struct Asked {
+    tab: u64,
+    /// Boxed, to keep [`Dialog`] small.
+    state: Box<State>,
+}
+
+impl Asked {
+    fn of(t: &Tab) -> Self {
+        Self {
+            tab: t.id,
+            state: Box::new(t.state()),
+        }
+    }
+}
+
 /// The dialogs left: settings live in the inspector.
 enum Dialog {
     None,
     Password(dlg::Password),
     Message(String, String),
-    ConfirmClose(usize),
+    ConfirmClose(Asked),
     ConfirmQuit,
     /// Export would replace this many files.
-    ConfirmReplace(ImageExport, usize),
-    ConfirmFlatten,
-    ConfirmFlattenAnnots,
+    ConfirmReplace(Asked, ImageExport, usize),
+    ConfirmFlatten(Asked),
+    ConfirmFlattenAnnots(Asked),
     /// Save (`true`: as a new file) by writing the whole file, which breaks the
     /// document's signatures? With why the edits can't be added after what was signed.
-    ConfirmSaveSigned(bool, String),
+    ConfirmSaveSigned(Asked, bool, String),
     /// Save over a file that was repaired to open it: replace it, or save as a new file.
-    ConfirmSaveRepaired,
+    ConfirmSaveRepaired(Asked),
     /// Save edits the document's signatures don't allow?
     ConfirmSaveDisallowed(Box<SaveDisallowed>),
     /// Remove everything under this many marked areas?
-    ConfirmApplyRedactions(usize),
+    ConfirmApplyRedactions(Asked, usize),
     /// Draw this many fill-and-sign items into the pages?
-    ConfirmFinishSigning(usize),
-    RemoveHidden(dlg::RemoveHidden),
+    ConfirmFinishSigning(Asked, usize),
+    RemoveHidden(Asked, dlg::RemoveHidden),
     /// Save (`true`: as a new file) with this many marked areas not yet applied?
-    ConfirmSaveMarks(bool, usize),
-    Print(dlg::Print),
-    SaveSelection(dlg::Layout),
+    ConfirmSaveMarks(Asked, bool, usize),
+    Print(Asked, dlg::Print),
+    SaveSelection(Asked, dlg::Layout),
     /// Open this web or email address from a link?
     OpenLink(String),
     /// The name for comments, being edited.
@@ -207,7 +258,7 @@ enum Dialog {
         file: PathBuf,
     },
     /// Sign a recovered copy of a signed document, which writes the whole file?
-    ConfirmSignRecovered,
+    ConfirmSignRecovered(Asked),
 }
 
 /// Why a signed document with redactions applied or hidden information removed is saved
@@ -226,9 +277,8 @@ const RECOVERED: &str = "this is a recovered copy, and LimarePDF doesn't have th
 /// user agrees that the signatures will report changes they don't allow.
 struct SaveDisallowed {
     as_new: bool,
-    /// The tab and its revision the file was made from.
-    tab: u64,
-    revision: u64,
+    /// The tab, as it was when the file was made from it.
+    asked: Asked,
     bytes: Vec<u8>,
     disallowed: limarepdf_core::DisallowedChanges,
 }
@@ -1188,29 +1238,32 @@ impl App {
         }
     }
 
-    /// Saves. Saving over a file that was repaired to open it asks first, offering Save as
-    /// instead: the original is only replaced when the user says so.
+    /// Saves, with what is being typed kept first. Saving over a file that was repaired to
+    /// open it asks first, offering Save as instead: the original is only replaced when the
+    /// user says so.
     fn save(&mut self, ctx: &egui::Context, as_new: bool) {
+        if let Some(t) = self.tabs.get_mut(self.active) {
+            t.keep_typing(ctx);
+        }
         let over_repaired = self
             .tabs
             .get(self.active)
-            .is_some_and(|t| t.repaired && t.path.is_some());
-        if !as_new && over_repaired {
-            self.dialog = Dialog::ConfirmSaveRepaired;
-        } else {
-            self.save_unmarked(ctx, as_new);
+            .filter(|t| t.repaired && t.path.is_some());
+        match over_repaired {
+            Some(t) if !as_new => self.dialog = Dialog::ConfirmSaveRepaired(Asked::of(t)),
+            _ => self.save_unmarked(ctx, as_new),
         }
     }
 
     /// Saves, first asking when the document has redaction marks not yet applied; a
     /// signed document then goes through [`Self::save_signed`].
     fn save_unmarked(&mut self, ctx: &egui::Context, as_new: bool) {
-        let marks = self
-            .tabs
-            .get(self.active)
-            .map_or(0, |t| t.pdf.redaction_marks().len());
+        let Some(t) = self.tabs.get(self.active) else {
+            return;
+        };
+        let marks = t.pdf.redaction_marks().len();
         if marks > 0 {
-            self.dialog = Dialog::ConfirmSaveMarks(as_new, marks);
+            self.dialog = Dialog::ConfirmSaveMarks(Asked::of(t), as_new, marks);
         } else {
             self.save_signed(ctx, as_new);
         }
@@ -1246,14 +1299,13 @@ impl App {
                 Some(disallowed) => {
                     self.dialog = Dialog::ConfirmSaveDisallowed(Box::new(SaveDisallowed {
                         as_new,
-                        tab: tab.id,
-                        revision: tab.revision,
+                        asked: Asked::of(tab),
                         bytes: a.bytes,
                         disallowed,
                     }))
                 }
             },
-            Err(why) => self.dialog = Dialog::ConfirmSaveSigned(as_new, why),
+            Err(why) => self.dialog = Dialog::ConfirmSaveSigned(Asked::of(tab), as_new, why),
         }
     }
 
@@ -1429,16 +1481,19 @@ impl App {
                 let pages = selected.map_or("all".into(), inspector::range_text);
                 let selection = (a == Act::PrintSelection).then_some(dlg::Layout::Original);
                 self.dialog = match print::printers() {
-                    Ok(list) => Dialog::Print(dlg::Print {
-                        pages,
-                        selection,
-                        ..dlg::Print::new(list)
-                    }),
+                    Ok(list) => Dialog::Print(
+                        self.asked(),
+                        dlg::Print {
+                            pages,
+                            selection,
+                            ..dlg::Print::new(list)
+                        },
+                    ),
                     Err(e) => Dialog::Message("Print".into(), format!("{e:#}")),
                 }
             }
             Act::SaveSelection if has => {
-                self.dialog = Dialog::SaveSelection(dlg::Layout::Original);
+                self.dialog = Dialog::SaveSelection(self.asked(), dlg::Layout::Original);
             }
             Act::Mark(m) if has => {
                 let color = markup::color(m, &self.state(ctx));
@@ -1470,7 +1525,7 @@ impl App {
                         .into_iter()
                         .map(|h| (h, found.count(h), h.default_on()))
                         .collect();
-                    self.dialog = Dialog::RemoveHidden(dlg::RemoveHidden { kinds });
+                    self.dialog = Dialog::RemoveHidden(self.asked(), dlg::RemoveHidden { kinds });
                 }
                 Err(e) => {
                     self.dialog =
@@ -1486,7 +1541,7 @@ impl App {
                             .into(),
                     );
                 } else {
-                    self.dialog = Dialog::ConfirmApplyRedactions(n);
+                    self.dialog = Dialog::ConfirmApplyRedactions(self.asked(), n);
                 }
             }
             Act::FinishSigning if has => {
@@ -1498,7 +1553,7 @@ impl App {
                             .into(),
                     );
                 } else {
-                    self.dialog = Dialog::ConfirmFinishSigning(n);
+                    self.dialog = Dialog::ConfirmFinishSigning(self.asked(), n);
                 }
             }
             Act::SignDigital | Act::Certify if has => {
@@ -1527,7 +1582,7 @@ impl App {
                             .into(),
                     );
                 } else if t.recovered.is_some() && t.signed {
-                    self.dialog = Dialog::ConfirmSignRecovered;
+                    self.dialog = Dialog::ConfirmSignRecovered(Asked::of(t));
                 } else {
                     self.sign_tool(certify);
                 }
@@ -1539,8 +1594,8 @@ impl App {
                 }
             }
             Act::CloseTab if has => {
-                if self.tabs[self.active].dirty {
-                    self.dialog = Dialog::ConfirmClose(self.active);
+                if self.tabs[self.active].unsaved() {
+                    self.dialog = Dialog::ConfirmClose(self.asked());
                 } else {
                     self.close_tab(self.active);
                 }
@@ -1548,7 +1603,7 @@ impl App {
             Act::ToggleRecovery => self.toggle_recovery(),
             Act::ShowRecoveryFile => self.show_leftover(),
             Act::Quit => {
-                if self.tabs.iter().any(|t| t.dirty) {
+                if self.tabs.iter().any(Tab::unsaved) {
                     self.dialog = Dialog::ConfirmQuit;
                 } else {
                     self.quit_ok = true;
@@ -1618,13 +1673,13 @@ impl App {
                 t.edit(ctx, |p| p.reset_form());
                 t.notice = Some("Reset the form".into());
             }
-            Act::FlattenForm => self.dialog = Dialog::ConfirmFlatten,
+            Act::FlattenForm => self.dialog = Dialog::ConfirmFlatten(self.asked()),
             Act::FlattenAnnots => {
                 if self.tabs[self.active].pdf.annotations().is_empty() {
                     self.tabs[self.active].notice =
                         Some("There are no annotations to flatten".into());
                 } else {
-                    self.dialog = Dialog::ConfirmFlattenAnnots;
+                    self.dialog = Dialog::ConfirmFlattenAnnots(self.asked());
                 }
             }
             Act::Tool(Tool::Image) => self.tabs[self.active].choose_image(),
@@ -2171,7 +2226,8 @@ impl App {
                     .filter(|n| e.dir.join(n).exists())
                     .count();
                 if existing > 0 {
-                    self.dialog = Dialog::ConfirmReplace(e, existing);
+                    self.dialog =
+                        Dialog::ConfirmReplace(Asked::of(&self.tabs[active]), e, existing);
                 } else {
                     self.start_export(ctx, e);
                 }
@@ -2204,6 +2260,35 @@ impl App {
                 });
             }
         }
+    }
+
+    /// What a question about the tab in front is tied to.
+    fn asked(&self) -> Asked {
+        Asked::of(&self.tabs[self.active])
+    }
+
+    /// Whether the tab a question was asked about is still open and unchanged. If it is,
+    /// it comes to the front for the answer to act on; if not, nothing is done, and a
+    /// message says why.
+    fn still(&mut self, a: &Asked) -> bool {
+        let found = self.tabs.iter().position(|t| t.id == a.tab);
+        if let Some(i) = found.filter(|&i| self.tabs[i].state() == *a.state) {
+            self.active = i;
+            return true;
+        }
+        let what = if found.is_some() {
+            "changed"
+        } else {
+            "was closed"
+        };
+        self.dialog = Dialog::Message(
+            "Nothing was done".into(),
+            format!(
+                "The document {what} while the question was open, so nothing was done. \
+                 Choose the command again if you still want it."
+            ),
+        );
+        false
     }
 
     fn close_tab(&mut self, i: usize) {
@@ -2248,15 +2333,16 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
-            Dialog::ConfirmClose(i) => match dlg::confirm(
+            Dialog::ConfirmClose(asked) => match dlg::confirm(
                 ctx,
                 "Unsaved changes",
                 "This document has unsaved changes. Close it anyway?",
                 "Discard changes",
             ) {
                 Outcome::Apply => {
-                    let i = *i;
-                    self.close_tab(i);
+                    if self.still(asked) {
+                        self.close_tab(self.active);
+                    }
                     done = true;
                 }
                 Outcome::Cancel => done = true,
@@ -2295,7 +2381,7 @@ impl App {
                 }
             }
             _ if self.tabs.is_empty() => done = true,
-            Dialog::ConfirmReplace(e, n) => match dlg::confirm(
+            Dialog::ConfirmReplace(asked, e, n) => match dlg::confirm(
                 ctx,
                 "Replace files?",
                 &format!(
@@ -2306,13 +2392,15 @@ impl App {
                 "Replace",
             ) {
                 Outcome::Apply => {
-                    self.start_export(ctx, e.clone());
+                    if self.still(asked) {
+                        self.start_export(ctx, e.clone());
+                    }
                     done = true;
                 }
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
-            Dialog::ConfirmFlatten => match dlg::confirm(
+            Dialog::ConfirmFlatten(asked) => match dlg::confirm(
                 ctx,
                 "Flatten form?",
                 "The fields become part of the pages, as they look now, and can no longer be \
@@ -2321,18 +2409,20 @@ impl App {
                 "Flatten",
             ) {
                 Outcome::Apply => {
-                    let t = &mut self.tabs[self.active];
-                    t.ed.form.clear_focus();
-                    if t.edit(ctx, |p| p.flatten_form(None).map(|_| ())) {
-                        t.banners.retain(|b| b.kind != BannerKind::Forms);
-                        t.notice = Some("Flattened the form".into());
+                    if self.still(asked) {
+                        let t = &mut self.tabs[self.active];
+                        t.ed.form.clear_focus();
+                        if t.edit(ctx, |p| p.flatten_form(None).map(|_| ())) {
+                            t.banners.retain(|b| b.kind != BannerKind::Forms);
+                            t.notice = Some("Flattened the form".into());
+                        }
                     }
                     done = true;
                 }
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
-            Dialog::ConfirmFlattenAnnots => match dlg::confirm(
+            Dialog::ConfirmFlattenAnnots(asked) => match dlg::confirm(
                 ctx,
                 "Flatten annotations?",
                 "Comments, notes, highlights and drawings become part of the pages, as they \
@@ -2342,16 +2432,18 @@ impl App {
                 "Flatten",
             ) {
                 Outcome::Apply => {
-                    let t = &mut self.tabs[self.active];
-                    if t.edit(ctx, |p| p.flatten_annotations(None).map(|_| ())) {
-                        t.notice = Some("Flattened the annotations".into());
+                    if self.still(asked) {
+                        let t = &mut self.tabs[self.active];
+                        if t.edit(ctx, |p| p.flatten_annotations(None).map(|_| ())) {
+                            t.notice = Some("Flattened the annotations".into());
+                        }
                     }
                     done = true;
                 }
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
-            Dialog::ConfirmApplyRedactions(n) => match dlg::confirm(
+            Dialog::ConfirmApplyRedactions(asked, n) => match dlg::confirm(
                 ctx,
                 "Apply redactions?",
                 &format!(
@@ -2365,13 +2457,15 @@ impl App {
                 "Apply",
             ) {
                 Outcome::Apply => {
-                    self.apply_redactions(ctx);
+                    if self.still(asked) {
+                        self.apply_redactions(ctx);
+                    }
                     done = true;
                 }
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
-            Dialog::ConfirmFinishSigning(n) => match dlg::confirm(
+            Dialog::ConfirmFinishSigning(asked, n) => match dlg::confirm(
                 ctx,
                 "Finish signing?",
                 &format!(
@@ -2389,14 +2483,16 @@ impl App {
                 "Finish signing",
             ) {
                 Outcome::Apply => {
-                    let t = &mut self.tabs[self.active];
-                    t.edit(ctx, |p| p.finish_signing().map(drop));
+                    if self.still(asked) {
+                        let t = &mut self.tabs[self.active];
+                        t.edit(ctx, |p| p.finish_signing().map(drop));
+                    }
                     done = true;
                 }
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
-            Dialog::RemoveHidden(s) => match dlg::remove_hidden(ctx, s) {
+            Dialog::RemoveHidden(asked, s) => match dlg::remove_hidden(ctx, s) {
                 Outcome::Apply => {
                     let what: Vec<limarepdf_core::Hidden> = s
                         .kinds
@@ -2404,13 +2500,15 @@ impl App {
                         .filter(|(_, n, on)| *on && *n > 0)
                         .map(|(h, _, _)| *h)
                         .collect();
-                    self.remove_hidden(ctx, &what);
+                    if self.still(asked) {
+                        self.remove_hidden(ctx, &what);
+                    }
                     done = true;
                 }
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
-            Dialog::ConfirmSaveMarks(as_new, n) => {
+            Dialog::ConfirmSaveMarks(asked, as_new, n) => {
                 let as_new = *as_new;
                 match dlg::confirm(
                     ctx,
@@ -2425,14 +2523,16 @@ impl App {
                     "Save with marks",
                 ) {
                     Outcome::Apply => {
-                        self.save_signed(ctx, as_new);
+                        if self.still(asked) {
+                            self.save_signed(ctx, as_new);
+                        }
                         done = true;
                     }
                     Outcome::Cancel => done = true,
                     Outcome::Open => {}
                 }
             }
-            Dialog::ConfirmSaveRepaired => match dlg::choose(
+            Dialog::ConfirmSaveRepaired(asked) => match dlg::choose(
                 ctx,
                 "Replace the damaged original?",
                 "LimarePDF repaired this file to open it, and some of its content may be missing \
@@ -2442,17 +2542,21 @@ impl App {
                 "Replace original",
             ) {
                 Choice::First => {
-                    self.save_unmarked(ctx, true);
+                    if self.still(asked) {
+                        self.save_unmarked(ctx, true);
+                    }
                     done = true;
                 }
                 Choice::Second => {
-                    self.save_unmarked(ctx, false);
+                    if self.still(asked) {
+                        self.save_unmarked(ctx, false);
+                    }
                     done = true;
                 }
                 Choice::Cancel => done = true,
                 Choice::Open => {}
             },
-            Dialog::ConfirmSaveSigned(as_new, why) => {
+            Dialog::ConfirmSaveSigned(asked, as_new, why) => {
                 let as_new = *as_new;
                 match dlg::confirm(
                     ctx,
@@ -2467,7 +2571,9 @@ impl App {
                     "Save anyway",
                 ) {
                     Outcome::Apply => {
-                        self.save_now(ctx, as_new);
+                        if self.still(asked) {
+                            self.save_now(ctx, as_new);
+                        }
                         done = true;
                     }
                     Outcome::Cancel => done = true,
@@ -2488,17 +2594,22 @@ impl App {
                     "Save anyway",
                 ) {
                     Outcome::Apply => {
-                        let (as_new, tab, revision) = (s.as_new, s.tab, s.revision);
-                        let current = self
-                            .tabs
-                            .get(self.active)
-                            .is_some_and(|t| t.id == tab && t.revision == revision);
-                        if current {
-                            let bytes = std::mem::take(&mut s.bytes);
-                            self.save_appended(ctx, as_new, bytes);
-                        } else {
-                            // The document changed meanwhile: work it out again.
-                            self.save_signed(ctx, as_new);
+                        let as_new = s.as_new;
+                        match self.tabs.iter().position(|t| t.id == s.asked.tab) {
+                            // Closed meanwhile: says so.
+                            None => {
+                                self.still(&s.asked);
+                            }
+                            Some(i) => {
+                                self.active = i;
+                                if self.tabs[i].state() == *s.asked.state {
+                                    let bytes = std::mem::take(&mut s.bytes);
+                                    self.save_appended(ctx, as_new, bytes);
+                                } else {
+                                    // The document changed meanwhile: work it out again.
+                                    self.save_signed(ctx, as_new);
+                                }
+                            }
                         }
                         done = true;
                     }
@@ -2506,8 +2617,9 @@ impl App {
                     Outcome::Open => {}
                 }
             }
-            Dialog::Print(s) => match dlg::print(ctx, s) {
+            Dialog::Print(asked, s) => match dlg::print(ctx, s) {
                 Outcome::Apply if s.printers.is_empty() => done = true,
+                Outcome::Apply if !self.still(asked) => done = true,
                 Outcome::Apply => {
                     let t = &mut self.tabs[self.active];
                     let printer = s.printers[s.printer].name.clone();
@@ -2545,16 +2657,18 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
-            Dialog::SaveSelection(layout) => match dlg::save_selection(ctx, layout) {
+            Dialog::SaveSelection(asked, layout) => match dlg::save_selection(ctx, layout) {
                 Outcome::Apply => {
                     let layout = *layout;
                     done = true;
-                    self.save_selection(layout);
+                    if self.still(asked) {
+                        self.save_selection(layout);
+                    }
                 }
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
-            Dialog::ConfirmSignRecovered => match dlg::confirm(
+            Dialog::ConfirmSignRecovered(asked) => match dlg::confirm(
                 ctx,
                 "Break the signatures?",
                 &format!(
@@ -2566,7 +2680,9 @@ impl App {
                 "Sign anyway",
             ) {
                 Outcome::Apply => {
-                    self.sign_tool(false);
+                    if self.still(asked) {
+                        self.sign_tool(false);
+                    }
                     done = true;
                 }
                 Outcome::Cancel => done = true,
@@ -3026,7 +3142,7 @@ impl eframe::App for App {
         // Guard against closing the window with unsaved work.
         if ctx.input(|i| i.viewport().close_requested())
             && !self.quit_ok
-            && self.tabs.iter().any(|t| t.dirty)
+            && self.tabs.iter().any(Tab::unsaved)
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.dialog = Dialog::ConfirmQuit;
@@ -3649,7 +3765,7 @@ mod tests {
         app.run_command(&ctx, "Crop", |app, ctx| {
             let t = &mut app.tabs[app.active];
             assert!(t.edit(ctx, |p| p.insert_blank(0, 100.0, 100.0)));
-            app.dialog = Dialog::ConfirmFlattenAnnots;
+            app.dialog = Dialog::ConfirmFlattenAnnots(app.asked());
             panic!("half done");
         });
         let why = app.tabs[1].broken.as_deref().expect("tab marked broken");
@@ -3682,6 +3798,223 @@ mod tests {
         // The next command on the active tab works.
         app.run_command(&ctx, "Note", |app, ctx| app.act(ctx, Act::Tool(Tool::Note)));
         assert!(app.tabs[1].ed.tool == Tool::Note);
+    }
+
+    /// Draw the open dialog until its window has settled, then click its button labelled
+    /// `label`, as a user would.
+    fn click(app: &mut App, ctx: &egui::Context, label: &str) {
+        ctx.enable_accesskit();
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1000.0, 800.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |ui| app.dialogs(ui.ctx()));
+            out.textures_delta.clear();
+            out
+        };
+        for _ in 0..3 {
+            frame(app, vec![]);
+        }
+        let tree = frame(app, vec![])
+            .platform_output
+            .accesskit_update
+            .expect("the dialog's widgets");
+        let at = tree
+            .nodes
+            .iter()
+            .find(|(_, n)| n.role() == egui::accesskit::Role::Button && n.label() == Some(label))
+            .and_then(|(_, n)| n.bounds())
+            .unwrap_or_else(|| panic!("no {label} button"));
+        let pos = egui::pos2(
+            ((at.x0 + at.x1) / 2.0) as f32,
+            ((at.y0 + at.y1) / 2.0) as f32,
+        );
+        let press = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(app, vec![egui::Event::PointerMoved(pos), press(true)]);
+        frame(app, vec![press(false)]);
+    }
+
+    /// Put a comment on page 1 of every tab.
+    fn with_notes(app: &mut App, ctx: &egui::Context) {
+        for t in &mut app.tabs {
+            assert!(t.edit(ctx, |p| {
+                p.add_note(0, (100.0, 100.0), [1.0, 1.0, 0.0], "Walrus", "Tester")
+                    .map(drop)
+            }));
+        }
+    }
+
+    #[test]
+    fn a_confirmation_never_acts_on_a_tab_opened_meanwhile() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, 1);
+        with_notes(&mut app, &ctx);
+        app.act(&ctx, Act::FlattenAnnots);
+        assert!(matches!(app.dialog, Dialog::ConfirmFlattenAnnots(..)));
+        // A file finishes opening while the question is open, and its tab comes to the
+        // front (as clicking another tab does).
+        let mut pdf = Pdf::new();
+        pdf.insert_blank(0, 612.0, 792.0).unwrap();
+        pdf.add_note(0, (100.0, 100.0), [1.0, 1.0, 0.0], "Opened", "Tester")
+            .unwrap();
+        assert!(app.add_tab(&ctx, pdf, None, None, false));
+        assert_eq!(app.active, 1);
+        let opened = app.tabs[1].state();
+        click(&mut app, &ctx, "Flatten");
+        assert!(app.tabs[1].state() == opened, "the new tab was flattened");
+        assert_eq!(app.tabs[1].pdf.annotations().len(), 1);
+        // The question's own document, unchanged, is flattened and comes to the front.
+        assert_eq!(app.active, 0);
+        assert!(app.tabs[0].pdf.annotations().is_empty());
+    }
+
+    #[test]
+    fn a_confirmation_for_a_closed_tab_does_nothing() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, 2);
+        with_notes(&mut app, &ctx);
+        app.act(&ctx, Act::FlattenAnnots);
+        let other = app.tabs[0].state();
+        app.close_tab(1);
+        click(&mut app, &ctx, "Flatten");
+        assert!(app.tabs[0].state() == other, "another tab was flattened");
+        assert!(
+            matches!(&app.dialog, Dialog::Message(_, text) if text.contains("was closed")),
+            "no message saying why"
+        );
+    }
+
+    #[test]
+    fn a_confirmation_is_refused_when_its_document_changed() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, 1);
+        with_notes(&mut app, &ctx);
+        app.act(&ctx, Act::FlattenAnnots);
+        // An edit while the question is open (the dialog doesn't block the page, Undo or
+        // the shortcuts).
+        let t = &mut app.tabs[0];
+        assert!(t.edit(&ctx, |p| p.insert_blank(0, 612.0, 792.0)));
+        let state = t.state();
+        click(&mut app, &ctx, "Flatten");
+        let t = &app.tabs[0];
+        assert!(t.state() == state, "flattened after the document changed");
+        assert_eq!(t.pdf.annotations().len(), 1);
+        assert!(
+            matches!(&app.dialog, Dialog::Message(_, text) if text.contains("changed while")),
+            "no message saying why"
+        );
+    }
+
+    #[test]
+    fn discarding_changes_closes_the_tab_that_was_asked_about() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, 3);
+        let ids: Vec<u64> = app.tabs.iter().map(|t| t.id).collect();
+        app.tabs[0].dirty = false;
+        app.active = 1;
+        app.act(&ctx, Act::CloseTab);
+        assert!(matches!(app.dialog, Dialog::ConfirmClose(..)));
+        // The first tab, with nothing unsaved, is closed while the question is open.
+        app.close_tab(0);
+        click(&mut app, &ctx, "Discard changes");
+        let left: Vec<u64> = app.tabs.iter().map(|t| t.id).collect();
+        assert_eq!(left, [ids[2]], "the wrong tab was closed");
+    }
+
+    /// One tab, saved, with a comment on page 1 open for typing and `typed` typed into it
+    /// but not yet kept.
+    fn typing_in_a_note(ctx: &egui::Context, typed: &str) -> App {
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let mut pdf = Pdf::new();
+        pdf.insert_blank(0, 612.0, 792.0).unwrap();
+        let id = pdf
+            .add_note(0, (100.0, 100.0), [1.0, 1.0, 0.0], "Old text", "Tester")
+            .unwrap();
+        assert!(app.add_tab(ctx, pdf, None, None, false));
+        let t = &mut app.tabs[0];
+        t.ed.annots(&t.pdf, 0);
+        t.ed.selection = Selection::Annot { page: 0, id };
+        t.ed.write_selected();
+        t.ed.writing.as_mut().expect("open for typing").text = typed.into();
+        assert!(!t.dirty);
+        app
+    }
+
+    #[test]
+    fn closing_while_typing_a_comment_asks_first() {
+        let ctx = egui::Context::default();
+        let mut app = typing_in_a_note(&ctx, "Walrus typed");
+        app.act(&ctx, Act::CloseTab);
+        assert_eq!(app.tabs.len(), 1, "closed, and the typed text lost");
+        assert!(matches!(app.dialog, Dialog::ConfirmClose(..)));
+        // Cancel: the typing stays open as it was, and the document unchanged.
+        let state = app.tabs[0].state();
+        app.dialog = Dialog::None;
+        let t = &app.tabs[0];
+        assert!(t.state() == state && !t.dirty);
+        assert_eq!(
+            t.ed.writing.as_ref().map(|w| w.text.as_str()),
+            Some("Walrus typed")
+        );
+        app.act(&ctx, Act::Quit);
+        assert!(!app.quit_ok, "quit, and the typed text lost");
+        assert!(matches!(app.dialog, Dialog::ConfirmQuit));
+        // Discard drops it.
+        app.dialog = Dialog::None;
+        app.act(&ctx, Act::CloseTab);
+        click(&mut app, &ctx, "Discard changes");
+        assert!(app.tabs.is_empty());
+    }
+
+    #[test]
+    fn a_comment_opened_but_not_changed_is_not_unsaved_work() {
+        let ctx = egui::Context::default();
+        let mut app = typing_in_a_note(&ctx, "Old text");
+        app.act(&ctx, Act::CloseTab);
+        assert!(app.tabs.is_empty(), "asked about nothing");
+    }
+
+    #[test]
+    fn saving_keeps_a_comment_being_typed() {
+        let ctx = egui::Context::default();
+        let mut app = typing_in_a_note(&ctx, "Walrus typed");
+        let path =
+            std::env::temp_dir().join(format!("limarepdf-app-{}-typed.pdf", std::process::id()));
+        app.tabs[0].path = Some(path.clone());
+        app.act(&ctx, Act::Save);
+        let back = Pdf::from_bytes(&std::fs::read(&path).unwrap(), None).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let texts: Vec<String> = back.annotations().into_iter().map(|a| a.contents).collect();
+        assert_eq!(texts, ["Walrus typed"]);
+        assert!(!app.tabs[0].dirty, "saved, yet marked unsaved");
+    }
+
+    #[test]
+    fn scan_summary_counts_shared_pictures_and_says_when_originals_stay() {
+        let done = |kept| ScanResult::Optimized {
+            mode: limarepdf_core::ScanMode::Gray,
+            before: 3_000_000,
+            after: 1_000_000,
+            deskewed: None,
+            original_kept: kept,
+        };
+        let (changed, text) = scan_summary(&[(0, done(true)), (2, ScanResult::SameImage(0))]);
+        assert!(changed);
+        assert!(text.starts_with("2 page(s) optimised: images 3.0 MB -> 1.0 MB."));
+        assert!(text.contains("Page 3: the same picture as page 1, optimised with it."));
+        assert!(text.contains("Page 1's original picture is also used elsewhere"));
+        let (_, text) = scan_summary(&[(0, done(false))]);
+        assert!(!text.contains("elsewhere"), "{text}");
     }
 
     #[test]

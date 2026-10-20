@@ -63,7 +63,7 @@ available.
 | Opening protected files | Done | With the open (user) password; files with an empty one (only a permissions password) open without asking, including RC4 files with a shortened password entry that other readers accept, and their notice says so |
 | Content editing | Partial | Works on lines, not paragraphs; some fonts are replaced when edited. [Details](content-editing.md) |
 | Importing images as pages | Done | PNG, JPEG, TIFF. [Details](scanning-and-ocr.md#importing-images) |
-| Optimising scanned pages | Partial | Pages that are one image. [Details](scanning-and-ocr.md#optimising-scanned-pages) |
+| Optimising scanned pages | Partial | Pages that are one image; only the pages chosen change, also when they share a picture with others. [Details](scanning-and-ocr.md#optimising-scanned-pages) |
 | OCR | Partial | Latin script; built-in recognition model. [Details](scanning-and-ocr.md#recognising-text-ocr) |
 | Export pages as images, export text | Done | [Details](export-and-printing.md) |
 | Printing | Partial | No paper size or scaling options. Tried on paper on Linux (HP LaserJet, CUPS): pages, mixed sizes, a turned page, comments and form values print correctly. On Windows only the print dialog has been tried, and nothing has been printed on macOS. [Details](export-and-printing.md#printing) |
@@ -89,7 +89,7 @@ available.
 | PDF/A, optimised saving | No | Saved files are pruned and compressed |
 | Comparing documents | No | |
 | Crash recovery | Done | Private copies of documents with unsaved changes, about a minute behind; when LimarePDF stops without closing normally, the next start offers them, and a restored one opens as a new unsaved document. Your own files are never written by it. None for password-protected documents, or documents a protected one's pages are appended to; a redaction, removal of hidden information or added password, or a redo of a redaction or removal, deletes the earlier copies first, including the one a restored document came from. Can be turned off. [Details](gui.md#recovery-copies) |
-| Sessions, autosave, backups, preferences, custom shortcuts, translations | No | You are asked before closing unsaved work; unsaved changes are kept in [recovery copies](gui.md#recovery-copies) |
+| Sessions, autosave, backups, preferences, custom shortcuts, translations | No | You are asked before closing unsaved work, text still being typed included, and Save keeps that text; unsaved changes are kept in [recovery copies](gui.md#recovery-copies) |
 | XFA forms, XPS documents | No | |
 
 ## Known limits

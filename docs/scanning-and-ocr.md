@@ -27,6 +27,11 @@ Works on pages that are one image covering the page.
   and pages with other content are skipped, with the reason given.
 - An image is replaced only when the result is smaller, or was straightened or cleaned.
 - Pages with text, such as an OCR layer, are not straightened, so optimise before recognising text.
+- Only the pages chosen change. A picture they share with other pages (or other parts of the document) stays as it
+  was there, so the file then holds both; the report says when. A picture shared by several chosen pages is
+  optimised once, as carefully as the most demanding of them needs: at the resolution of the page showing it
+  largest, and not straightened if any of them has text over it. The report lists the other pages as optimised with
+  the first.
 
 Where: the inspector's Optimise scanned pages section, for the selected pages or all. It runs in the background and
 can be undone. On the command line: `limarepdf-cli optimize-scans`.

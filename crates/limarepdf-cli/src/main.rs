@@ -2748,6 +2748,7 @@ fn run(cmd: Cmd) -> Result<()> {
                         before,
                         after,
                         deskewed,
+                        original_kept,
                     } => {
                         let kind = match mode {
                             ScanMode::BlackWhite => "black and white",
@@ -2757,8 +2758,14 @@ fn run(cmd: Cmd) -> Result<()> {
                         let tilt = deskewed
                             .map(|a| format!(", straightened {a:.1}°"))
                             .unwrap_or_default();
+                        let kept = if original_kept {
+                            " (the original is also used elsewhere in the document, so the \
+                             file keeps it too)"
+                        } else {
+                            ""
+                        };
                         out!(
-                            "page {}: {kind}, {} -> {}{tilt}",
+                            "page {}: {kind}, {} -> {}{tilt}{kept}",
                             i + 1,
                             kb(before),
                             kb(after)
@@ -2766,6 +2773,11 @@ fn run(cmd: Cmd) -> Result<()> {
                         before_all += before;
                         after_all += after;
                     }
+                    ScanResult::SameImage(first) => out!(
+                        "page {}: the same image as page {}, optimised with it",
+                        i + 1,
+                        first + 1
+                    ),
                     ScanResult::Skipped(why) => out!("page {}: skipped: {why}", i + 1),
                 }
             }
