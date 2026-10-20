@@ -115,6 +115,19 @@
   "é" in it, didn't open ("LimarePDF hit an internal error"), and `limarepdf-cli` couldn't draw its page. Such
   colours are now ignored, as other malformed colours already were; a colour with a sign in it (`#+1+2+3`) is
   ignored too, where it used to be read.
+- Signing a document set to get a password when saved (Document > Password security), or setting one while signing
+  ran, lost the password: the signed file, which LimarePDF writes without one, took the document's place. Signing
+  is now refused while a password is waiting to be saved, with a message saying why. A password set, or text typed,
+  while signing runs keeps the document open as it is, and the signed file opens in a new tab.
+- A document timestamp issued by an intermediate authority showed as not trusted, even when you trusted the
+  authority above it: the intermediate certificates the timestamp carries were ignored. They are now used to reach
+  an authority you trust, as they already were for signatures and the timestamps inside them; carrying a
+  certificate never makes it trusted.
+- Splitting a document held a whole copy of it for every part until all were written: splitting a 139 MB scan into
+  one file per page took more than 8 GB of memory, and a 1,000-page text file of 1.5 MB took 5.2 GB. Each part now
+  holds only what its pages use and is written as soon as it is made (406 MB and 39 MB for those two, and faster).
+  Extracting pages and printing selected pages also take less memory. If a part can't be written, the message says
+  how many files already were.
 
 ## [0.7.2] - 2026-10-18
 

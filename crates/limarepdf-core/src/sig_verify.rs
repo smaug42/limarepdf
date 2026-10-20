@@ -802,7 +802,9 @@ fn check_into(
                 time: stamp.time,
                 source: TimeSource::Timestamp,
             });
-            (stamp.authority.clone(), vec![stamp.authority])
+            // Every certificate the token carries, so that a chain through intermediate
+            // authorities can be built; carried ones are never trusted for being there.
+            (stamp.authority, stamp.certs)
         }
         "" => return cant("the signature doesn't say what kind it is (no /SubFilter)"),
         other => {

@@ -43,6 +43,24 @@ What the numbers show:
 - The reasons for the 560 to 640 MB of the last three files weren't looked into: the 27,000-path file has no fonts at
   all, and one page of PDFBox 1910 at 36 dpi takes 114 MB.
 
+### Splitting
+
+Measured on 20 October 2026 on the same machine, one run each, `limarepdf-cli split --every N`: before at commit
+ec72e97, after with each part holding only what its pages use and written as soon as it is made. Before, every part
+was a whole copy of the document, and all of them were held until the last was made.
+
+| Split | Before | After |
+| --- | --- | --- |
+| 200-page scan, 1 page per file | over 8 GB (stopped at that limit) | 0.31 s, 406 MB |
+| 200-page scan, 2 pages per file | over 8 GB (stopped at that limit) | 0.23 s, 406 MB |
+| 200-page scan, 10 pages per file | 0.95 s, 2,827 MB | 0.17 s, 406 MB |
+| 200-page scan, 50 pages per file | 0.32 s, 680 MB | 0.16 s, 407 MB |
+| 1,000 text pages, 1 page per file | 6.42 s, 5,219 MB | 2.00 s, 39 MB |
+| 1,000 text pages, 50 pages per file | 0.09 s, 119 MB | 0.06 s, 38 MB |
+
+What is left is mostly the document itself, as opened. The files written are the same, byte for byte, as before
+(compared on 390 of the 1,089 public test files, split every 3 pages).
+
 ## Memory in the desktop app
 
 Measured by hand on the same machine and commit, each in a newly started app, reading the app's peak and current

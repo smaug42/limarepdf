@@ -4,7 +4,6 @@ use crate::doc::{decode_text, encode_text};
 use crate::{Pdf, Result};
 use anyhow::{bail, Context};
 use lopdf::{dictionary, Dictionary, Object, ObjectId, StringFormat};
-use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
@@ -40,17 +39,16 @@ pub enum BookmarkPlace {
 }
 
 impl Pdf {
-    /// Split where the bookmarks down to `level` (1 = top level only) point: one part per bookmarked page, in page
-    /// order, titled by its first bookmark. Pages before the first bookmark are a part of their own, untitled.
-    pub fn split_at_bookmarks(&self, level: usize) -> Result<Vec<(Option<String>, Pdf)>> {
+    /// The parts of [`crate::SplitBy::Bookmarks`]`(level)`, in page order.
+    pub(crate) fn bookmark_split(&self, level: usize) -> Result<Vec<(Option<String>, Vec<usize>)>> {
         let parts = bookmark_parts(&self.outline(), level, self.page_count());
         if parts.is_empty() {
             bail!("this document has no bookmarks that go to its pages");
         }
-        parts
-            .into_par_iter()
-            .map(|(title, pages)| Ok((title, self.extract(&pages.collect::<Vec<_>>())?)))
-            .collect()
+        Ok(parts
+            .into_iter()
+            .map(|(title, pages)| (title, pages.collect()))
+            .collect())
     }
 
     /// The bookmarks; empty when the document has none. Broken entries are skipped,

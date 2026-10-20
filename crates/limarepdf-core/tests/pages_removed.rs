@@ -6,7 +6,7 @@ mod common;
 
 use common::saved::{tools, Saved};
 use limarepdf_core::render::{self, Renderer};
-use limarepdf_core::{FieldValue, LinkTarget, Pdf};
+use limarepdf_core::{part_file_name, FieldValue, LinkTarget, Pdf, SplitBy};
 use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream};
 
 fn s(t: &str) -> Object {
@@ -256,7 +256,11 @@ fn four_pages() -> Pdf {
 /// Pages `kept` (1-based) of `p`'s original, as `out` saved them: nothing of the other pages in
 /// the file, everything of these, and no references to pages that aren't there.
 fn only_pages(out: &mut Pdf, kept: &[usize]) -> Saved {
-    let saved = Saved::of(out);
+    only_pages_in(Saved::of(out), kept)
+}
+
+/// [`only_pages`] for a file already written.
+fn only_pages_in(saved: Saved, kept: &[usize]) -> Saved {
     for n in 1..=4 {
         let marks = own(n);
         let marks: Vec<&str> = marks.iter().map(String::as_str).collect();
@@ -364,11 +368,18 @@ fn deleted_pages_leave_nothing_behind() {
 #[test]
 fn split_parts_keep_nothing_of_the_other_parts() {
     let mut p = four_pages();
-    let mut parts = p.split_every(2).unwrap();
-    let first = only_pages(&mut parts[0], &[1, 2]);
-    let second = only_pages(&mut parts[1], &[3, 4]);
-    draws_the_same(&mut p, &mut parts[0], &[1, 2]);
-    draws_the_same(&mut p, &mut parts[1], &[3, 4]);
+    let dir = std::env::temp_dir().join(format!("limarepdf-split-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = |n: usize, title: Option<&str>| dir.join(part_file_name("part", n, title));
+    let read = |n: usize, title: Option<&str>| Saved::new(std::fs::read(file(n, title)).unwrap());
+
+    assert_eq!(p.split(SplitBy::Every(2), file).unwrap(), 2);
+    let first = only_pages_in(read(1, None), &[1, 2]);
+    let second = only_pages_in(read(2, None), &[3, 4]);
+    for (saved, kept) in [(&first, [1, 2]), (&second, [3, 4])] {
+        let mut part = Pdf::from_bytes(&saved.bytes, None).unwrap();
+        draws_the_same(&mut p, &mut part, &kept);
+    }
     assert_eq!(first.bookmarks().len(), 4);
     assert_eq!(
         second.bookmarks(),
@@ -381,11 +392,34 @@ fn split_parts_keep_nothing_of_the_other_parts() {
     let q = Pdf::from_bytes(&second.bytes, None).unwrap();
     assert_eq!(q.outline()[0].page, Some(0));
 
-    let parts = p.split_at_bookmarks(1).unwrap();
-    assert_eq!(parts.len(), 4);
-    for (i, (title, mut part)) in parts.into_iter().enumerate() {
-        let saved = only_pages(&mut part, &[i + 1]);
+    let parts = p.split_parts(SplitBy::Bookmarks(1)).unwrap();
+    assert_eq!(p.split(SplitBy::Bookmarks(1), file).unwrap(), 4);
+    for (i, (title, pages)) in parts.into_iter().enumerate() {
+        assert_eq!(pages, [i]);
+        let saved = only_pages_in(read(i + 1, title.as_deref()), &[i + 1]);
         assert_eq!(saved.bookmarks()[0].0, title.unwrap());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A part holds only what its pages use, before it is saved: splitting a large file into
+/// many parts made a whole copy of it per part (build plan E14).
+#[test]
+fn a_part_holds_only_what_its_pages_use() {
+    let p = four_pages();
+    let part = p.extract(&[0]).unwrap();
+    let unused = part.clone().doc.prune_objects();
+    assert!(unused.is_empty(), "objects nothing uses: {unused:?}");
+    let holding = |mark: &str| {
+        part.doc.objects.values().any(|o| {
+            o.as_stream()
+                .is_ok_and(|s| s.content.windows(mark.len()).any(|w| w == mark.as_bytes()))
+        })
+    };
+    assert!(holding("WALRUS-PAGE-1") && holding("WALRUS-FORM-1"));
+    for n in 2..=4 {
+        assert!(!holding(&format!("WALRUS-PAGE-{n}")), "page {n}'s content");
+        assert!(!holding(&format!("WALRUS-FORM-{n}")), "page {n}'s form");
     }
 }
 

@@ -1,6 +1,6 @@
 //! Reading bookmarks from made-up outlines, including the broken shapes real files have.
 
-use limarepdf_core::{BookmarkPlace, OutlineItem, Pdf};
+use limarepdf_core::{BookmarkPlace, OutlineItem, Pdf, SplitBy};
 use lopdf::{dictionary, Object, ObjectId, StringFormat};
 
 fn four_pages() -> Pdf {
@@ -130,7 +130,7 @@ fn bookmarks_follow_pages_that_move() {
 #[test]
 fn splits_at_bookmarks() {
     let mut p = four_pages();
-    assert!(p.split_at_bookmarks(1).is_err());
+    assert!(p.split_parts(SplitBy::Bookmarks(1)).is_err());
     let pg = p.page_ids();
     let ids: Vec<ObjectId> = (0..3).map(|_| p.doc.new_object_id()).collect();
     let items = [
@@ -147,10 +147,10 @@ fn splits_at_bookmarks() {
     set_outline(&mut p, ids[0]);
 
     let summary = |level| -> Vec<(Option<String>, usize)> {
-        let parts = p.split_at_bookmarks(level).unwrap();
+        let parts = p.split_parts(SplitBy::Bookmarks(level)).unwrap();
         parts
             .into_iter()
-            .map(|(t, d)| (t, d.page_count()))
+            .map(|(t, pages)| (t, pages.len()))
             .collect()
     };
     let s = |t: &str| Some(t.to_string());

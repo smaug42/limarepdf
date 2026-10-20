@@ -18,7 +18,7 @@ use egui_phosphor::regular as icon;
 use limarepdf_core::render::{image_names, ImageFormat};
 use limarepdf_core::{
     parse_page_range, part_file_name, print, Bates, HeaderFooter, ImageImport, ImageWatermark,
-    OcrResult, OpenPanel, Pdf, ScanResult, TrustRole, Watermark,
+    OcrResult, OpenPanel, Pdf, ScanResult, SplitBy, TrustRole, Watermark,
 };
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -272,6 +272,13 @@ const REPAIRED: &str = "the file is damaged, and LimarePDF repaired it to open i
 /// Why a signed document restored from a recovery copy is saved by writing the whole file.
 const RECOVERED: &str = "this is a recovered copy, and LimarePDF doesn't have the file as it \
                          was signed";
+
+/// Why a document set to be saved with a password isn't signed: the signed file would be
+/// written without it.
+const PASSWORD_NOT_SIGNED: &str = "You set a password that applies when you save, and \
+    LimarePDF can't sign password-protected documents, so the signed file would be saved \
+    without it. To sign, take the password off first (Document > Password security). To keep \
+    the password, save without signing.";
 
 /// A signed document with its edits added after what was signed, ready to write once the
 /// user agrees that the signatures will report changes they don't allow.
@@ -883,6 +890,9 @@ impl App {
             if t.pdf.encrypted() {
                 anyhow::bail!("LimarePDF can't sign encrypted (password-protected) documents");
             }
+            if t.encryption.is_some() {
+                anyhow::bail!(PASSWORD_NOT_SIGNED);
+            }
             // A document opened with signature fields kept its bytes: the signature is
             // added after them, with the edits made since. Any other document has no
             // signatures to keep, so it is written out as it is now and signed. So is one
@@ -944,13 +954,14 @@ impl App {
     }
 
     /// A document was signed and written: it opens in place of the tab it was signed
-    /// from, unless that tab changed or closed meanwhile.
+    /// from, unless that tab changed or closed meanwhile. Replacing it would lose a change
+    /// to the document, a password set (signing never starts with one set, so any is
+    /// new), or text being typed.
     fn signed(&mut self, ctx: &egui::Context, s: digital::Signed, tab: u64, revision: u64) {
         self.recent.add(&s.path);
-        let replace = self
-            .tabs
-            .iter()
-            .position(|t| t.id == tab && t.revision == revision);
+        let replace = self.tabs.iter().position(|t| {
+            t.id == tab && t.revision == revision && t.encryption.is_none() && !t.ed.pending()
+        });
         let page = replace.map(|i| self.tabs[i].current);
         let what = if s.certified { "Certified" } else { "Signed" };
         let mut text = format!(
@@ -1574,6 +1585,8 @@ impl App {
                          instead."
                             .into(),
                     );
+                } else if t.encryption.is_some() {
+                    self.dialog = Dialog::Message(title.into(), PASSWORD_NOT_SIGNED.into());
                 } else if certify && t.pdf.signature_count() > 0 {
                     self.dialog = Dialog::Message(
                         title.into(),
@@ -2244,18 +2257,11 @@ impl App {
                 };
                 let stem = self.tabs[active].stem("part");
                 self.spawn_job(ctx, "Split into files", move |p| {
-                    let parts = match level {
-                        Some(level) => p.split_at_bookmarks(level)?,
-                        None => p
-                            .split_every(every)?
-                            .into_iter()
-                            .map(|d| (None, d))
-                            .collect(),
+                    let by = match level {
+                        Some(level) => SplitBy::Bookmarks(level),
+                        None => SplitBy::Every(every),
                     };
-                    let n = parts.len();
-                    for (i, (title, mut part)) in parts.into_iter().enumerate() {
-                        part.save(dir.join(part_file_name(&stem, i + 1, title.as_deref())))?;
-                    }
+                    let n = p.split(by, |n, title| dir.join(part_file_name(&stem, n, title)))?;
                     Ok((false, format!("Wrote {n} files to {}.", dir.display())))
                 });
             }
@@ -3702,6 +3708,7 @@ fn report_text(r: &limarepdf_core::RedactReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use limarepdf_core::{Cipher, Encryption, Restrictions, SignPlace};
 
     #[test]
     fn window_size_is_known_without_its_position() {
@@ -3997,6 +4004,104 @@ mod tests {
         let texts: Vec<String> = back.annotations().into_iter().map(|a| a.contents).collect();
         assert_eq!(texts, ["Walrus typed"]);
         assert!(!app.tabs[0].dirty, "saved, yet marked unsaved");
+    }
+
+    /// What the signing window hands over once a document was signed and written.
+    fn signed_copy() -> digital::Signed {
+        let mut pdf = Pdf::from_text("Signed", (612.0, 792.0)).unwrap();
+        digital::Signed {
+            path: std::env::temp_dir().join("limarepdf-app-signed-copy.pdf"),
+            bytes: pdf.to_bytes().unwrap(),
+            field: "Signature1".into(),
+            finished_items: 0,
+            rewritten: false,
+            signer: "Tester".into(),
+            self_issued: false,
+            certified: false,
+        }
+    }
+
+    /// A password set to apply when the document is saved (Document > Password security).
+    fn password() -> Option<Encryption> {
+        Some(Encryption {
+            user_password: "u".into(),
+            owner_password: "o".into(),
+            cipher: Cipher::Aes128,
+            restrictions: Restrictions::default(),
+        })
+    }
+
+    #[test]
+    fn signing_is_refused_while_a_password_waits_to_be_saved() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, 1);
+        app.tabs[0].set_encryption(password());
+        app.act(&ctx, Act::SignDigital);
+        assert_eq!(message(&app), ("Sign with digital ID", PASSWORD_NOT_SIGNED));
+        assert!(app.tabs[0].ed.tool != Tool::DigitalSign);
+        // Set after the place was chosen: refused when Sign is pressed, before asking where
+        // to save the signed file.
+        app.dialog = Dialog::None;
+        let t = &app.tabs[0];
+        let place = SignPlace::NewBox {
+            page: 0,
+            rect: [72.0, 72.0, 272.0, 132.0],
+        };
+        let mut w = SignWindow::new(t.id, t.revision, place, "a box".into(), false, false);
+        app.start_signing(&ctx, &mut w);
+        assert_eq!(w.error.as_deref(), Some(PASSWORD_NOT_SIGNED));
+        assert!(!w.busy());
+        assert!(app.tabs[0].encryption.is_some());
+    }
+
+    #[test]
+    fn the_signed_file_takes_the_place_of_an_unchanged_tab() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, 2);
+        let (id, revision) = (app.tabs[0].id, app.tabs[0].revision);
+        app.signed(&ctx, signed_copy(), id, revision);
+        assert_eq!(app.tabs.len(), 2);
+        assert!(
+            app.tabs.iter().all(|t| t.id != id),
+            "the old tab is still open"
+        );
+        assert_eq!(app.active, 0);
+        assert!(!message(&app).1.contains("changed while"));
+    }
+
+    #[test]
+    fn a_password_set_while_signing_is_kept() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, 1);
+        let (id, revision) = (app.tabs[0].id, app.tabs[0].revision);
+        // While signing runs, a password is set.
+        app.tabs[0].set_encryption(password());
+        app.signed(&ctx, signed_copy(), id, revision);
+        let old = app.tabs.iter().find(|t| t.id == id);
+        assert!(
+            old.is_some_and(|t| t.encryption.is_some()),
+            "the signed file replaced the tab, and the password was lost"
+        );
+        assert_eq!(app.tabs.len(), 2, "the signed file didn't open");
+        assert!(message(&app)
+            .1
+            .contains("changed while it was being signed"));
+    }
+
+    #[test]
+    fn typing_while_signing_is_kept() {
+        let ctx = egui::Context::default();
+        let mut app = typing_in_a_note(&ctx, "Walrus typed");
+        let (id, revision) = (app.tabs[0].id, app.tabs[0].revision);
+        app.signed(&ctx, signed_copy(), id, revision);
+        let old = app.tabs.iter().find(|t| t.id == id);
+        assert_eq!(
+            old.and_then(|t| t.ed.writing.as_ref())
+                .map(|w| w.text.as_str()),
+            Some("Walrus typed"),
+            "the signed file replaced the tab, and the typed text was lost"
+        );
+        assert_eq!(app.tabs.len(), 2, "the signed file didn't open");
     }
 
     #[test]

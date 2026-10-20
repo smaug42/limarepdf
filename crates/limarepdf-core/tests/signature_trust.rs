@@ -425,6 +425,93 @@ fn timestamp_authorities_are_judged_too() {
     );
 }
 
+/// A timestamp authority (the rsa2048 key) issued by an intermediate authority (the
+/// rsa3072 key) under the test CA (`ca`), and the intermediate's certificate.
+fn tsa_under_intermediate() -> (Id, Vec<u8>) {
+    let ca_bc = ext("2.5.29.19", true, &seq(&[&[0x01, 0x01, 0xff]]));
+    let inter = make_cert(
+        &id_with_cert("ca", "ca"),
+        &CertSpec {
+            key_of: &cert_der("rsa3072"),
+            cn: "Timestamp Intermediate",
+            not_before: "260101000000Z",
+            not_after: "360101000000Z",
+            extensions: vec![ca_bc, ext_authority_key_id(&cert_der("ca"))],
+            inner_alg: None,
+        },
+    );
+    let issuer = Id {
+        key: id("rsa3072").key,
+        cert: inter.clone(),
+    };
+    let cert = make_cert(
+        &issuer,
+        &CertSpec {
+            key_of: &cert_der("rsa2048"),
+            cn: "Intermediate Timestamp Authority",
+            not_before: "260101000000Z",
+            not_after: "360101000000Z",
+            extensions: vec![
+                ext("2.5.29.15", true, &[0x03, 0x02, 0x07, 0x80]),
+                ext("2.5.29.37", true, &seq(&[&oid("1.3.6.1.5.5.7.3.8")])),
+            ],
+            inner_alg: None,
+        },
+    );
+    let tsa = Id {
+        key: id("rsa2048").key,
+        cert,
+    };
+    (tsa, inter)
+}
+
+#[test]
+fn document_timestamps_are_judged_with_the_certificates_they_carry() {
+    let (tsa, inter) = tsa_under_intermediate();
+    let f = Field {
+        name: "Timestamp1",
+        sub_filter: "ETSI.RFC3161",
+        doc_timestamp: true,
+        invisible: true,
+        m: None,
+        reason: None,
+        ..Field::default()
+    };
+    let stamped = |extra: Vec<Vec<u8>>| {
+        sign_with(&base_pdf(), &f, |r| {
+            timestamp_token_carrying(&tsa, r, "20260601130000Z", Hash::Sha256, extra)
+        })
+    };
+    // The intermediate carried in the token completes the way to the trusted authority.
+    let carried = stamped(vec![inter.clone()]);
+    match trust(&carried, &ca()) {
+        Trust::Authority { chain, .. } => assert_eq!(
+            names(&chain),
+            [
+                "Intermediate Timestamp Authority",
+                "Timestamp Intermediate",
+                "Test Root CA"
+            ]
+        ),
+        other => panic!("{other:?}"),
+    }
+    let r = report(&carried, &ca());
+    assert_eq!(
+        names(&r.signatures[0].certificates),
+        ["Intermediate Timestamp Authority", "Timestamp Intermediate"]
+    );
+    // Not carried: there is no way to the trusted authority.
+    unknown(
+        &trust(&stamped(Vec::new()), &ca()),
+        "doesn't have the certificate of \"Timestamp Intermediate\"",
+    );
+    // Carrying the root too makes nothing trusted that the list doesn't vouch for.
+    unknown(
+        &trust(&stamped(vec![inter, cert_der("ca")]), &TrustList::default()),
+        "which you haven't trusted",
+    );
+}
+
 #[test]
 fn trust_can_be_applied_again() {
     let pdf = signed_by("t-leaf", &["t-inter"]);
