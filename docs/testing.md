@@ -16,7 +16,7 @@ Run them with `cargo test --workspace`.
 | --- | --- |
 | `crates/limarepdf-core/tests/integration.rs` | Overlays, encryption round trips with all four ciphers, RC4 files with an empty password and a 16-byte `/U` (revisions 3 and 4), whether a file needed a password to open, search, crop margins on turned pages |
 | `crates/limarepdf-core/tests/edit.rs` | Content editing: objects and text edits; edited, added and invisible (OCR) text upright and in place on a page that flips and scales itself without restoring the state afterwards, as pages printed from web browsers do, and repeated edits not nesting the old content deeper. Reading text: words, search boxes placed by glyph widths, ToUnicode maps, word gaps, text inside form XObjects, phrases across lines |
-| `crates/limarepdf-core/tests/repair.rs` | Damaged files built by hand open with their page drawn and are marked repaired: wrong offsets, no table or trailer, a cross-reference stream that doesn't decode, a missing `endobj`, a later copy of an object winning, a trailer naming the wrong catalog, object stream members starting with comments, and an encrypted file (a wrong password is still reported as one); intact files and documents with no pages aren't repaired; a repaired document saves as a clean file. Crafted files: `endstream` in a content stream's comment followed by a fake page, an uncompressed attached PDF reusing the outer file's object numbers (its length given directly, or in an object before or after it, or before it with a spoofed copy of that object inside the attachment), `stream` and a line break inside a string, a stream cut off by the end of the file, a `/Length` too short, an object freed by a later revision (not on the page, not saved), and a number reused at a higher generation. Unit tests in `repair.rs` (dictionary ends, object headers, stream data skipped by `/Length`, direct or in an object of its own (not a copy inside the data), or to `endstream`, trailers inside stream data ignored, trailer values written back) |
+| `crates/limarepdf-core/tests/repair.rs` | Damaged files built by hand open with their page drawn and are marked repaired: wrong offsets, no table or trailer, a cross-reference stream that doesn't decode, a missing `endobj`, a later copy of an object winning, a trailer naming the wrong catalog, object stream members starting with comments, and an encrypted file (a wrong password is still reported as one); a page list holding a page itself (also with the content's offset wrong), and a page whose number a second object takes (as two public test files do), mended and saved clean; intact files aren't repaired; files with no pages to find (an empty page list, one naming a missing page, a document made with none) are refused, not opened empty; a repaired document saves as a clean file. Crafted files: `endstream` in a content stream's comment followed by a fake page, an uncompressed attached PDF reusing the outer file's object numbers (its length given directly, or in an object before or after it, or before it with a spoofed copy of that object inside the attachment), `stream` and a line break inside a string, a stream cut off by the end of the file, a `/Length` too short, an object freed by a later revision (not on the page, not saved), and a number reused at a higher generation. Unit tests in `repair.rs` (dictionary ends, object headers, stream data skipped by `/Length`, direct or in an object of its own (not a copy inside the data), or to `endstream`, trailers inside stream data ignored, trailer values written back) |
 | `crates/limarepdf-core/tests/render_coverage.rs` | Rendering, pixel by pixel; see [Rendering](rendering.md) |
 | `crates/limarepdf-core/tests/render_compare.rs` | Opt-in: LimarePDF's rendering compared with poppler's `pdftoppm` over about 1,100 public test PDFs; see below |
 | `crates/limarepdf-core/tests/save_reopen.rs` | Opt-in: the same public test PDFs saved unchanged, and with page 1 turned and a comment added, then opened again: pages, page sizes and labels, annotations, form fields and values, bookmarks, page text and drawn pages compared with the document before saving; see below |
@@ -76,8 +76,8 @@ checked in a process of its own, two at a time (`SAVE_REOPEN_JOBS`), each allowe
 skipped. The report, `target/tmp/save-reopen/index.html`, lists every difference, with pictures of pages that draw
 differently; `summary.txt` has one line per file. The test fails when a file not in `tools/save-reopen-known.txt`
 (the known limits, each with its reason) differs. `SAVE_REOPEN_ONLY=issue12` limits the run. A full run takes about
-five minutes; on 2026-10-20 (commit 103ef02), 1,080 of 1,089 files were the same, 3 differed (the known limits)
-and 6 were skipped (4 need a password, 1 doesn't open, and PDFBox 2363, where hayro asks for 7.6 GB at
+five minutes; on 2026-10-20, after the page-list repair, 1,082 of 1,089 files were the same, 1 differed (the known
+limit) and 6 were skipped (4 need a password, 1 doesn't open, and PDFBox 2363, where hayro asks for 7.6 GB at
 once to fill one shape at 96 dpi). To check that it catches failures, a scratch copy whose save dropped annotations, kept page 1
 unturned, cleared field values or drew a square on page 2 was flagged in every file where the breakage showed.
 
@@ -208,6 +208,19 @@ happened in everyday use but no result was written down.
 | Window size remembered: resize, close, reopen; maximize, close, reopen, restore | KDE Wayland (2026-10-19): size and maximized kept; restoring a window that started maximized puts it at the top-left (KDE's placement) | Not run | Not run |
 | Name and icon in the taskbar, dock and Open with | Not recorded | Icon checked by hand (0.5) | Not run |
 | A damaged file and a file that fails to draw: message, no crash | Not recorded | Not run | Not run |
+| A page whose drawing asks for gigabytes at once (PDFBox 2363, below): drawn, or a message, without closing | Drawn (2026-10-20; the 7.6 GB asked for is never used, so Linux doesn't need it) | Not run | Not run |
+
+**The large memory request, on Windows.** On PDFBox 2363 (`tests/data/render/pdfbox/2363.pdf` after
+`tools/fetch-render-samples.sh`; copy it over from a Linux machine), hayro asks for one block of 7.6 GB to fill a
+single shape at 96 dpi (4.3 GB at 72 dpi), whatever the band size. Linux and macOS hand out such memory only as it
+is used, and this block is barely used, so the page draws. Windows reserves the whole block at once against RAM plus
+the page file, so on a machine with less than that free the request may fail, and a failed request closes the
+program at once, without the error page a crash in drawing gets and without saving recovery copies first. To check,
+on a Windows machine with 16 GB of memory or less: open another document and make a change (so there is unsaved
+work), then open 2363 at 100% and zoom to 150% and 200%; then run `limarepdf-cli render 2363.pdf --dpi 96 --out-dir out`
+(at 150 dpi the renderer stops with an internal error on every platform, which the CLI reports plainly). Record whether the page draws, how high Task Manager's "Committed" figure goes, and whether the app
+or the CLI closes or prints `memory allocation of ... failed`. If it closes, D12 in the build plan becomes P0 (a
+crash that loses unsaved work), and LimarePDF needs a way around hayro's request until hayro changes.
 
 On Linux, HiDPI can be tried without such a screen: run the app under a virtual X server with
 `WINIT_X11_SCALE_FACTOR=2` and take screenshots, as for other screenshots. A real HiDPI screen is still needed for

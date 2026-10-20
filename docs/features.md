@@ -142,9 +142,6 @@ pool of features other PDF tools have is in [ideas.md](ideas.md).
 - **Text from some Chinese, Japanese and Korean files:** fonts with no ToUnicode map that use a standard Unicode
   character map (such as `UniJIS-UCS2-H`) give the wrong characters when searching, copying or exporting text
   ([Search and text](search-and-text.md#text-extraction)).
-- **Two damaged test files open with no pages:** other readers find a page in them (one numbers two objects the
-  same; the other writes its page where a reference belongs). LimarePDF opens them as empty documents without saying
-  why. Found by the save-and-reopen check ([Testing](testing.md#automated-tests)).
 
 ### Rendering
 
@@ -152,11 +149,12 @@ Done for now (see the Rendering row above). Left for a later round:
 
 - **hayro's own gaps** (knockout and non-isolated transparency groups, thin-line snapping, some shadings, CMaps that
   use other CMaps, and installed fonts for plain fonts that aren't embedded, which hayro doesn't ask for yet),
-  listed in [Known to be wrong](rendering.md#known-to-be-wrong). Not reported to hayro yet; whether to is still to
-  be decided.
+  listed in [Known to be wrong](rendering.md#known-to-be-wrong). They are documented here and in the build plan,
+  and not reported to hayro.
 - **A very large memory request:** on one test file hayro asks for 7.6 GB at once to fill a single shape at 96 dpi.
   On Linux it draws, since the memory is never used; on Windows, which doesn't promise memory it hasn't got, it
-  could stop the app. Not tried on Windows yet.
+  could stop the app. Not tried on Windows yet; the check is in
+  [Testing](testing.md#platform-smoke-checks).
 - **Notices for what hayro draws wrongly:** plain fonts that aren't embedded (such as Calibri or Wingdings, drawn
   with a standard font), and knockout or non-isolated transparency groups. Offered, not yet decided.
 - **A check on a HiDPI screen** (scale factor 2): tile sizes, the 4096-pixel cap and sharpness have only been tried

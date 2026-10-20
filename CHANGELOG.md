@@ -48,6 +48,10 @@
 - Repairing a damaged file could show a PDF attached to it, stored uncompressed, instead of the file's own pages,
   when the attachment's length was written in an object of its own. Such lengths are now looked up, and a copy of
   that object inside the attachment isn't used.
+- Some damaged files opened as empty documents, with no pages and no message, where other readers show their pages:
+  files whose list of pages holds a page itself instead of a reference to it, and files that give a second object
+  the page's number. Their list of pages is now repaired, and the file is marked repaired as other damaged files
+  are. A file in which no pages can be found is no longer opened empty: LimarePDF says it can't find any pages.
 - Some RC4-protected files with no open password asked for one that other readers don't need: files whose password
   entry (`/U`) holds only the 16 bytes readers compare, instead of 32. They now open without asking.
 - A document that opens without a password but has a permissions password showed the notice "This document was

@@ -24,6 +24,11 @@ pub struct Pdf {
 
 /// Why a repaired document may read differently in other PDF apps.
 const REPAIRED: &str = "its cross-reference information is damaged, and LimarePDF rebuilt it";
+/// Why a document whose page tree was mended differs from what other readers show.
+const PAGES_MENDED: &str = "its list of pages is damaged, and LimarePDF rebuilt it";
+/// Why a document is refused when no pages can be found in it.
+const NO_PAGES: &str =
+    "LimarePDF can't find any pages in it (there are no pages, or the file is damaged)";
 
 /// Document information dictionary fields.
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
@@ -47,9 +52,10 @@ impl Pdf {
         Self::from_bytes(&bytes, password)
     }
 
-    /// Reads a document. A file whose cross-reference information is damaged, so that it
-    /// reads with no pages, is repaired: its objects are found by scanning the bytes (see
-    /// [`Pdf::repaired`]).
+    /// Reads a document. A file that reads with no pages is repaired (see
+    /// [`Pdf::repaired`]): its objects are found by scanning the bytes, in case the
+    /// cross-reference information is damaged, and a page tree other readers find pages in
+    /// is mended. A file in which no pages can be found is refused.
     pub fn from_bytes(bytes: &[u8], password: Option<&str>) -> Result<Self> {
         let opened = Self::read(bytes, password);
         let pages = match &opened {
@@ -71,6 +77,8 @@ impl Pdf {
             Some(r) => r.ok(),
             None => None,
         };
+        // The page tree is mended in the rebuilt file rather than in lopdf's reading, so that
+        // the pages' content is found too when the table's offsets are wrong.
         let repaired = rebuilt.and_then(|mut p| {
             crate::repair::unpack_object_streams(&mut p.doc);
             // The trailers may name no catalog, or the wrong object.
@@ -78,21 +86,30 @@ impl Pdf {
                 let root = crate::repair::find_catalog(&p.doc)?;
                 p.doc.trailer.set("Root", root);
             }
-            (p.page_count() > 0).then_some(p)
+            let mut why = REPAIRED;
+            if p.page_count() == 0 && crate::repair::mend_page_tree(&mut p.doc, bytes) {
+                why = PAGES_MENDED;
+            }
+            (p.page_count() > 0).then_some((p, why))
         });
-        let mut p = match repaired {
-            Some(p) => p,
+        let (mut p, why) = match repaired {
+            Some(r) => r,
             // lopdf's own rebuild.
-            None if pages > 0 => opened.map_err(cannot_open)?,
-            None => return opened.map_err(cannot_open),
+            None if pages > 0 => (opened.map_err(cannot_open)?, REPAIRED),
+            // Rather than an empty document, which other readers wouldn't show either.
+            None => {
+                opened.map_err(cannot_open)?;
+                bail!("cannot open PDF: {NO_PAGES}");
+            }
         };
         p.repaired = true;
-        p.differs = Some(REPAIRED.into());
+        p.differs = Some(why.into());
         Ok(p)
     }
 
-    /// Whether the file's cross-reference information (where each object is) was damaged,
-    /// and LimarePDF rebuilt it to open the file. Some content may be missing. Such a
+    /// Whether the file was damaged (its cross-reference information, which says where each
+    /// object is, or its list of pages), and LimarePDF rebuilt it to open the file. Some
+    /// content may be missing. Such a
     /// document counts as changed: saving writes a whole repaired copy, never a revision
     /// added to the damaged file, and its signatures never check as valid and unchanged
     /// (see [`Pdf::differs`]).
