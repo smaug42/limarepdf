@@ -102,7 +102,8 @@ bookmarks) and links were checked through their core tests, `limarepdf-cli bookm
 screenshot, but none of these was clicked through. Filled forms were also opened in poppler and
 Ghostscript, including encrypted ones; not yet in Adobe Reader. Drawing pages in tiles at high zoom was checked by
 screenshot at 3200% and 6400% and used by hand on Linux, zooming and scrolling up to 6400%; not yet on a HiDPI
-screen.
+screen. Drawing large pages in bands was used by hand on Linux, zooming PDFBox 5134 on a 4K screen at scale 1 with
+its memory recorded (performance.md).
 
 Each feature page says what was not tested, under "How this was tested".
 

@@ -56,12 +56,16 @@ memory (`VmHWM` and `VmRSS` in `/proc/<pid>/status`):
 | Three documents open: the scan, the 1,000 text pages and pdf.js bug1905623 | 0.92 GB | 0.92 GB |
 | With the undo limit (2026-10-19): open the scan | 0.59 GB | 0.50 GB |
 | With the undo limit: the same, then 20 edits | 1.94 GB | 1.66 GB |
+| With bands (2026-10-19): open PDFBox 5134, zoom at once to over 400%, then to over 1200% | 3.96 GB | 2.28 GB |
 
 Edits on the scan felt immediate. Each one added about 130 MB, close to the file's 139 MB, because each undo step
 keeps a whole copy of the document. The first rows were measured when the app kept up to 20 steps per document
 whatever its size. Undo steps are now limited to 1 GB per document, the oldest dropped first (about 7 steps on this
 scan), and the last two rows were measured with the limit: 20 edits added 1.16 GB instead of 2.6 GB.
-Zooming to 6400% added nothing measurable. Peaks vary somewhat from one session to the next: the three documents
+Zooming to 6400% added nothing measurable. The 5134 row was measured on a 3840 × 2160 screen at scale 1, the
+window not full screen: zooming in quickly straight after opening keeps several whole-page drawings and the tiles
+running at once, each drawing stopping only at its next band. The page showed enlarged until zooming stopped, then
+was drawn again quickly. Before bands, the same zooming would have come to an estimated 11 GB. Peaks vary somewhat from one session to the next: the three documents
 together peaked lower than the scan alone did in the other sessions.
 
 These are timings of single tasks, not a benchmark suite, and apart from the one poppler timing no comparison with

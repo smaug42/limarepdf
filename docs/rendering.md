@@ -209,6 +209,7 @@ on which fonts are installed, as in other viewers.
 - In the app, a whole-page drawing is stopped at its next band when it is no longer wanted: the page was drawn for
   a zoom since passed, the colours changed, or the document was edited. Before, zooming in a few steps quickly
   drew the page at every zoom passed through, one per drawing thread at a time (five on a six-core machine), which
-  for 5134 would have come to an estimated 11 GB.
+  for 5134 would have come to an estimated 11 GB. Zooming 5134 by hand straight to over 400% and then to over
+  1200% now peaks at about 4 GB on a 4K screen ([Performance](performance.md#memory-in-the-desktop-app)).
 
 For timings and how the app keeps drawing responsive, see [Performance](performance.md).
