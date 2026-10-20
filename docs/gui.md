@@ -560,7 +560,8 @@ and Phosphor icons.
 The window opens at the size it had when the app last closed, and maximized if it was; a maximized window keeps
 the size it had before, for when you restore it. A size kept on a larger monitor is shrunk to fit a smaller one.
 Its position isn't remembered: on Linux Wayland sessions the desktop places windows, not the app, and tiling window
-managers choose the size themselves.
+managers choose the size themselves. On KDE Wayland, restoring a window that opened maximized puts it at the
+top-left of the screen, since the desktop never placed it at its normal size; a later start places it as usual.
 
 ☰ > Help > About shows the version (the Copy button next to it copies the version and system, for a bug report),
 links to the website, the licence and the issue tracker, which open in your browser, and Credits for the bundled

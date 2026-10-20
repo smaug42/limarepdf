@@ -186,6 +186,7 @@ happened in everyday use but no result was written down.
 | Print to a real printer | Printed on paper (HP LaserJet P1606dn through CUPS, 2026-10-18; the "Printing" acceptance check) | Print dialog only; nothing printed on paper | Not run |
 | Keyboard shortcuts (Ctrl, or Cmd on macOS) | Used by hand | Not run | Not run |
 | HiDPI screen (scale 2) | Not run | Not run | Not run |
+| Window size remembered: resize, close, reopen; maximize, close, reopen, restore | KDE Wayland (2026-10-19): size and maximized kept; restoring a window that started maximized puts it at the top-left (KDE's placement) | Not run | Not run |
 | Name and icon in the taskbar, dock and Open with | Not recorded | Icon checked by hand (0.5) | Not run |
 | A damaged file and a file that fails to draw: message, no crash | Not recorded | Not run | Not run |
 
