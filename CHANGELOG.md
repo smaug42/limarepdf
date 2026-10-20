@@ -13,8 +13,14 @@
   later copies hold none of what was removed. If an earlier copy can't be deleted, or the disk can't confirm the
   deletion, the command (or the redo) doesn't run, however often it is tried, until it can. A restored copy of a signed document doesn't have its signatures
   checked, since they cover the original file. Turn it off with File > Keep recovery copies of unsaved changes.
+- The window opens at the size it had when LimarePDF last closed, and maximized if it was. Its position isn't
+  remembered, since Linux Wayland sessions place windows themselves.
 
 ### Fixed
+
+- Typing page numbers into a pages box that said "all" (printing, crop, watermark, headers and footers, OCR,
+  optimising scanned pages, export) gave "all2-4" instead of "2-4". Clicking or tabbing into such a box now selects "all", so typing replaces
+  it.
 
 - A small crafted file could make LimarePDF ask for gigabytes of memory and close, losing unsaved work in every tab:
   a page with a huge stated size (up to 17 GB to draw), a fax or 1-bit picture of billions of pixels when optimising
@@ -70,6 +76,24 @@
   parts keep the bookmarks to their own pages (a bookmark to another page stays, without a destination, only when
   it has bookmarks below it that stay); deleting keeps every bookmark, as before, without a destination when its
   page went. Printing selected pages goes the same way.
+- A malformed file that made `limarepdf-cli` fail inside a library (such as a page the renderer can't draw at some
+  resolutions) ended it with a Rust panic message and exit status 101. It now prints a plain error, "LimarePDF hit
+  an internal error (...). The file may be damaged.", and exits with status 1, as for other errors. Setting
+  `RUST_BACKTRACE=1` also prints where it happened, for bug reports.
+- A question such as Flatten, Apply redactions, Remove hidden information or Discard changes could act on the wrong
+  document: the questions don't stop the rest of the window being used, so another tab could come to the front
+  (clicked, or a file finishing opening) or another tab could close before you answered. Each question now acts on
+  the document it was asked about, bringing it to the front. If that document changed or was closed meanwhile,
+  nothing is done, and a message says so.
+- Text being typed but not yet kept was left out by Save and lost by Close and Quit without asking: a comment or
+  text box typed on the page, a form field, the selected comment's changes in the inspector, and a reply not yet
+  added. Save now keeps it first (as clicking away would; Undo takes it back), and Close and Quit ask as for unsaved
+  changes.
+- Optimising scanned pages changed pictures on pages that weren't selected when they used the same picture as a
+  selected page, and a picture shared by selected pages was treated as the first one needed: a page showing it
+  larger could lose detail, and one with a text layer could be straightened under its text. Only the selected pages
+  change now; a shared picture is optimised as carefully as the most demanding of them needs, and the report says
+  when the original stays elsewhere. The report also named the wrong page as the one optimised.
 
 ## [0.7.2] - 2026-10-18
 

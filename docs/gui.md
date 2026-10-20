@@ -25,6 +25,14 @@ The start screen also has Make a PDF from images…, which turns photos or scann
 
 Each document gets a tab. The tab shows its name, with `*` while it has unsaved changes.
 
+Closing a document or quitting asks first when there are unsaved changes, including text still being typed: a comment
+or text box on the page, a form field, the selected comment's changes in the inspector, or a reply not yet added.
+Saving keeps that text first, as clicking away would (Undo takes it back).
+
+A question about a document (Flatten, Apply redactions, Discard changes and the others) acts on the document it was
+asked about, even if another tab has come to the front meanwhile, and brings it back to the front. If that document
+changed or was closed while the question was open, nothing is done, and a message says so.
+
 Saving writes a temporary file beside the document and then replaces the document with it, so a save that fails
 part way leaves the original as it was. On Linux and macOS, the temporary file is readable only by you while it is
 written, and the saved document keeps the original's permissions. LimarePDF saves by rewriting the whole file, except for a digitally signed
@@ -371,7 +379,9 @@ closing normally (a crash, the system ending it, a power cut), the next start ca
 copies are not autosave: **your own files are never written by them.**
 
 - A copy is made about a minute after you change a document, then at most once a minute while you go on changing it.
-  It holds the document as it was then, so changes made in the last minute or so before a crash can be lost.
+  It holds the document as it was then, so changes made in the last minute or so before a crash can be lost. Text
+  still being typed (a comment, a form field, a reply) isn't in a copy until it is kept, by clicking away or
+  applying it.
 - Saving or closing a document deletes its copy, and quitting normally deletes them all.
 - Password-protected documents get no copies: not one opened with a password, not one you set a password on (its
   copy is deleted first), not pages taken from one, and not a document you add a protected document's pages to
@@ -426,6 +436,10 @@ What you select decides what the inspector, the right-click menu and the floatin
 | An object, words, or a tool that adds content | That object's or tool's options |
 
 Menu commands for document and page settings open the matching section of the inspector.
+
+Pages boxes, in the inspector's tools and the print dialog, take page numbers and ranges counted from 1, such as
+`1-3,7`, `5-` (5 to the end) or `all`. Clicking or tabbing into a box that says `all` selects it, so typing page
+numbers replaces it.
 
 A watermark is text or a picture (PNG, JPEG or TIFF), centred on each page. After you apply a watermark or headers
 and footers, the section's button becomes Update: change a setting and press it to redo what you just added rather
@@ -556,6 +570,12 @@ sun or moon, for the current choice) chooses System, Light or Dark; so does ☰ 
 remembered between runs, in `settings.txt` in the same folder as the recent-files list, along with the markup
 colours and your name for comments. The app uses the Inter font
 and Phosphor icons.
+
+The window opens at the size it had when the app last closed, and maximized if it was; a maximized window keeps
+the size it had before, for when you restore it. A size kept on a larger monitor is shrunk to fit a smaller one.
+Its position isn't remembered: on Linux Wayland sessions the desktop places windows, not the app, and tiling window
+managers choose the size themselves. On KDE Wayland, restoring a window that opened maximized puts it at the
+top-left of the screen, since the desktop never placed it at its normal size; a later start places it as usual.
 
 ☰ > Help > About shows the version (the Copy button next to it copies the version and system, for a bug report),
 links to the website, the licence and the issue tracker, which open in your browser, and Credits for the bundled

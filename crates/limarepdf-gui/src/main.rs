@@ -55,17 +55,20 @@ fn main() -> eframe::Result {
         Ok(icon) => viewport = viewport.with_icon(icon),
         Err(e) => eprintln!("limarepdf: app icon not loaded: {e}"),
     }
+    // The window opens at the size it had when the app last closed.
+    let settings = settings::Settings::load();
     let options = eframe::NativeOptions {
         viewport: viewport
-            .with_inner_size([1200.0, 850.0])
-            .with_min_inner_size([640.0, 420.0])
+            .with_inner_size(settings.window)
+            .with_maximized(settings.window_maximized)
+            .with_min_inner_size(settings::WINDOW_MIN)
             .with_drag_and_drop(true),
         ..Default::default()
     };
     eframe::run_native(
         "LimarePDF",
         options,
-        Box::new(move |cc| Ok(Box::new(app::App::new(cc, files, page)))),
+        Box::new(move |cc| Ok(Box::new(app::App::new(cc, settings, files, page)))),
     )
 }
 

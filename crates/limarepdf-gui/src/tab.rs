@@ -420,6 +420,19 @@ impl Tab {
 
     /// What a command can change in the tab, taken before it runs: if the command fails part
     /// way, comparing tells whether it changed anything.
+    /// Whether closing would lose work: unsaved changes, or typing not yet kept in the
+    /// document ([`Editor::pending`]).
+    pub fn unsaved(&self) -> bool {
+        self.dirty || self.ed.pending()
+    }
+
+    /// Put what has been typed but not yet kept into the document, as clicking away
+    /// would: one edit for each, which Undo takes back.
+    pub fn keep_typing(&mut self, ctx: &egui::Context) {
+        self.ed.keep_pending();
+        self.apply_actions(ctx);
+    }
+
     pub fn state(&self) -> State {
         State {
             revision: self.revision,

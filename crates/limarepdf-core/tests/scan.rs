@@ -130,8 +130,9 @@ fn optimized(r: &ScanResult) -> (ScanMode, usize, usize, Option<f32>) {
             before,
             after,
             deskewed,
+            ..
         } => (*mode, *before, *after, *deskewed),
-        ScanResult::Skipped(why) => panic!("skipped: {why}"),
+        r => panic!("not optimised: {r:?}"),
     }
 }
 
@@ -354,4 +355,171 @@ fn non_scan_pages_are_skipped() {
     assert!(matches!(&r[0].1, ScanResult::Skipped(w) if w.contains("single image")));
     assert!(matches!(&r[1].1, ScanResult::Skipped(w) if w.contains("other than an image")));
     assert!(p.optimize_scans(&[2], &opts()).is_err());
+}
+
+/// A noisy grey gradient, like a scanned photograph, `w` x `h` pixels.
+fn photo(w: u32, h: u32) -> GrayImage {
+    let mut seed = 1u32;
+    GrayImage::from_fn(w, h, |x, y| {
+        seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+        let noise = (seed >> 16) % 24;
+        Luma([((x + y) / 5 + noise) as u8])
+    })
+}
+
+/// `img` scanned at `dpi` on page 1, and a page 2 drawing the same image object over
+/// the whole of a page `scale` times as large.
+fn shared(img: DynamicImage, dpi: f32, scale: f32) -> Pdf {
+    let mut p = scanned(img, dpi);
+    let (w, h) = p.page_size(0).unwrap();
+    let id = image_id(&p, 0);
+    p.insert_blank(1, w * scale, h * scale).unwrap();
+    let page = p.page_ids()[1];
+    let cs = p.doc.add_object(Stream::new(
+        Dictionary::new(),
+        format!("q {} 0 0 {} 0 0 cm /Im0 Do Q", w * scale, h * scale).into_bytes(),
+    ));
+    let d = p.doc.get_dictionary_mut(page).unwrap();
+    d.set("Contents", cs);
+    d.set(
+        "Resources",
+        dictionary! { "XObject" => dictionary! { "Im0" => id } },
+    );
+    p
+}
+
+/// The image object drawn on page `i`, found through its own resources.
+fn image_id(p: &Pdf, i: usize) -> lopdf::ObjectId {
+    let page = p.doc.get_dictionary(p.page_ids()[i]).unwrap();
+    let res = page.get(b"Resources").unwrap();
+    let res = p.doc.dereference(res).unwrap().1.as_dict().unwrap();
+    let xo = res.get(b"XObject").unwrap();
+    let xo = p.doc.dereference(xo).unwrap().1.as_dict().unwrap();
+    xo.get(b"Im0").unwrap().as_reference().unwrap()
+}
+
+/// The image drawn on page `i`: its dictionary and its encoded bytes.
+fn image_on(p: &Pdf, i: usize) -> (Dictionary, Vec<u8>) {
+    let s = p
+        .doc
+        .get_object(image_id(p, i))
+        .unwrap()
+        .as_stream()
+        .unwrap();
+    (s.dict.clone(), s.content.clone())
+}
+
+/// The width in pixels of the image drawn on page `i`.
+fn width_on(p: &Pdf, i: usize) -> i64 {
+    image_on(p, i).0.get(b"Width").unwrap().as_i64().unwrap()
+}
+
+fn render_page(p: &mut Pdf, i: usize, scale: f32) -> GrayImage {
+    let hp = render::load(p.snapshot().unwrap(), None).unwrap();
+    let b = render::Renderer::new(&hp).render(i, scale).unwrap();
+    GrayImage::from_fn(b.width as u32, b.height as u32, |x, y| {
+        Luma([b.rgba[(y as usize * b.width + x as usize) * 4]])
+    })
+}
+
+#[test]
+fn an_image_shared_with_an_unselected_page_stays_on_that_page() {
+    let mut p = shared(DynamicImage::ImageLuma8(photo(600, 400)), 300.0, 1.0);
+    let (before, looks) = (image_on(&p, 1), render_page(&mut p, 1, 1.0));
+    let r = p.optimize_scans(&[0], &opts()).unwrap();
+    assert!(
+        matches!(
+            r[0].1,
+            ScanResult::Optimized {
+                original_kept: true,
+                ..
+            }
+        ),
+        "{:?}",
+        r[0].1
+    );
+    // Page 1 has its smaller image; page 2 still has the original, as it looks.
+    assert_eq!(name(&image_on(&p, 0).0, b"Filter"), "DCTDecode");
+    assert_eq!(width_on(&p, 0), 400);
+    assert!(image_on(&p, 1) == before, "page 2's image was changed");
+    assert_eq!(differ(&looks, &render_page(&mut p, 1, 1.0)), 0.0);
+    // Saved and read back, both pages draw their own image.
+    let back = Pdf::from_bytes(&p.to_bytes().unwrap(), None).unwrap();
+    assert_eq!(width_on(&back, 0), 400);
+    assert_eq!(image_on(&back, 1).1, before.1);
+}
+
+#[test]
+fn pages_sharing_an_image_keep_the_resolution_each_needs() {
+    // Page 1 shows the image at 300 dpi, page 2 (twice as large) at 150 dpi. Kept to at
+    // most 200 dpi, page 1 may lose detail, page 2 none.
+    let mut p = shared(DynamicImage::ImageLuma8(photo(600, 400)), 300.0, 2.0);
+    let r = p.optimize_scans(&[0, 1], &opts()).unwrap();
+    assert_eq!(r.len(), 2);
+    // Page 1 is 2 inches wide, page 2 four.
+    assert!(width_on(&p, 0) >= 400, "page 1: {} pixels", width_on(&p, 0));
+    assert!(width_on(&p, 1) >= 600, "page 2: {} pixels", width_on(&p, 1));
+}
+
+#[test]
+fn a_shared_image_under_text_is_not_straightened() {
+    // Page 1 has an OCR layer over its tilted scan; page 2 draws the same scan alone.
+    // Page 2 comes first in the selection, as the first use used to decide.
+    let mut p = shared(DynamicImage::ImageLuma8(text_scan(2.0)), 300.0, 1.0);
+    let page = p.page_ids()[0];
+    let old = p
+        .doc
+        .get_dictionary(page)
+        .unwrap()
+        .get(b"Contents")
+        .unwrap()
+        .clone();
+    let layer = p.doc.add_object(Stream::new(
+        Dictionary::new(),
+        b"BT 3 Tr /F1 12 Tf 10 10 Td (word) Tj ET".to_vec(),
+    ));
+    p.doc
+        .get_dictionary_mut(page)
+        .unwrap()
+        .set("Contents", vec![old, Object::Reference(layer)]);
+    let looks = render_page(&mut p, 0, 1.0);
+    let o = ScanOptions {
+        deskew: true,
+        ..opts()
+    };
+    p.optimize_scans(&[1, 0], &o).unwrap();
+    let f = differ(&looks, &render_page(&mut p, 0, 1.0));
+    assert!(f < 0.01, "{:.2}% of page 1's pixels changed", f * 100.0);
+}
+
+#[test]
+fn pages_sharing_an_image_are_reported_as_optimised() {
+    let mut p = shared(DynamicImage::ImageLuma8(photo(600, 400)), 300.0, 1.0);
+    let r = p.optimize_scans(&[0, 1], &opts()).unwrap();
+    assert!(
+        matches!(
+            r[0].1,
+            ScanResult::Optimized {
+                original_kept: false,
+                ..
+            }
+        ),
+        "{:?}",
+        r[0].1
+    );
+    assert_eq!(
+        r[1].1,
+        ScanResult::SameImage(0),
+        "page 2 changed with page 1 but was reported otherwise"
+    );
+    // Both pages draw the one new image; the original is gone.
+    assert_eq!(image_id(&p, 0), image_id(&p, 1));
+    let images = p
+        .doc
+        .objects
+        .values()
+        .filter_map(|o| o.as_stream().ok())
+        .filter(|s| s.dict.get(b"Subtype").and_then(|n| n.as_name()).ok() == Some(b"Image"))
+        .count();
+    assert_eq!(images, 1);
 }

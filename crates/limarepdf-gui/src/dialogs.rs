@@ -40,9 +40,27 @@ fn buttons(ui: &mut Ui, apply: &str) -> bool {
 fn range_field(ui: &mut Ui, text: &mut String) {
     ui.horizontal(|ui| {
         ui.label("Pages:");
-        ui.text_edit_singleline(text)
-            .on_hover_text("e.g. 1-3,5,8-  or  all");
+        pages_box(ui, text, None);
     });
+}
+
+/// A box for a page range, such as `1-3,5,8-` or `all`, `width` wide if given. Going into
+/// it while it says `all` selects that, so typing page numbers replaces it.
+pub fn pages_box(ui: &mut Ui, text: &mut String, width: Option<f32>) -> egui::Response {
+    let all = text.trim() == "all";
+    let mut edit = egui::TextEdit::singleline(text);
+    if let Some(w) = width {
+        edit = edit.desired_width(w);
+    }
+    let mut out = edit.show(ui);
+    if all && out.response.response.gained_focus() {
+        let range = egui::text::CCursorRange::select_all(&out.galley);
+        out.state.cursor.set_char_range(Some(range));
+        out.state.store(ui.ctx(), out.response.response.id);
+    }
+    out.response
+        .response
+        .on_hover_text("e.g. 1-3,5,8-  or  all")
 }
 
 // ------------------------------------------------------------------ print
@@ -396,4 +414,58 @@ pub fn choose(ctx: &Context, title: &str, text: &str, first: &str, second: &str)
         return Choice::Cancel;
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Shows a pages box holding `text` for one frame, given `events`; returns where it is.
+    fn frame(ctx: &Context, text: &mut String, events: Vec<egui::Event>) -> egui::Rect {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(400.0, 200.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut rect = egui::Rect::NOTHING;
+        let mut out = ctx.run_ui(raw, |ui| rect = pages_box(ui, text, None).rect);
+        out.textures_delta.clear();
+        rect
+    }
+
+    /// Clicks in the middle of a pages box holding `text`, then types `typed`.
+    fn click_and_type(text: &str, typed: &str) -> String {
+        let ctx = Context::default();
+        let mut text = text.to_string();
+        let at = frame(&ctx, &mut text, vec![]).center();
+        let click = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(
+            &ctx,
+            &mut text,
+            vec![egui::Event::PointerMoved(at), click(true)],
+        );
+        frame(&ctx, &mut text, vec![click(false)]);
+        frame(&ctx, &mut text, vec![]);
+        frame(&ctx, &mut text, vec![egui::Event::Text(typed.into())]);
+        text
+    }
+
+    #[test]
+    fn typing_into_a_pages_box_saying_all_replaces_it() {
+        assert_eq!(click_and_type("all", "2-4"), "2-4");
+    }
+
+    #[test]
+    fn other_page_ranges_are_edited_where_clicked() {
+        // The click lands past the end of the text, so typing adds to it.
+        assert_eq!(click_and_type("1-3", ",5"), "1-3,5");
+    }
 }

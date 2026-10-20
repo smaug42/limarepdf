@@ -43,8 +43,10 @@ available.
 | Zoom, fit width, continuous scrolling, page navigation | Done | Pages fit the window's width by default and follow resizing; zooming turns that off. Zoom from 10% to 6400%, drawn in tiles at high zoom so pages stay sharp. Single-page and facing-page layouts (top-bar button or View > Page layout; cover page alone or paired), per document, following the document's own preference when it has one |
 | Open at a page from the command line | Done | `limarepdf file.pdf --page N` |
 | Command palette, right-click menus, floating toolbar | Done | Toolbar customisation: No |
+| Pages boxes | Done | Numbers and ranges (`1-3,7`, `5-`, `all`) in printing and the inspector's tools; going into one that says `all` selects it, so typing replaces it. [Details](gui.md#selecting-and-the-inspector) |
 | App icon | Done | Window, taskbar and Windows `.exe`. Wayland needs the desktop entry installed. [Details](install.md#menu-entry-and-icon-on-linux) |
 | About window | Done | Version (copyable for bug reports), links, contributors, credits; "Made in Canada". [Details](gui.md#look-and-feel) |
+| Window size | Done | Remembered between runs, and whether it was maximized; position: No. [Details](gui.md#look-and-feel) |
 | Light and dark themes | Done | Follows the system, or chosen with the top bar's theme button; remembered between runs |
 | Page colour modes | Done | View > Page colours: Normal, Automatic (dark pages with the dark theme), Dark, High contrast, Sepia. Pictures keep their colours unless "Recolour pictures too" is on. On screen only: the file, printing and exports keep their colours. See [Rendering](rendering.md#page-colour-modes) |
 | Rendering | Done | Pages that can't be drawn, and pictures and fonts that can't, are reported; high zoom is drawn in tiles up to 6400%; large page images are drawn in bands, which bounds the memory a complex page takes (one test page from 9.7 GB to 1.5 GB), and the app stops drawing a page at a zoom it has moved past; fonts that aren't embedded use installed fonts or similar stand-ins where hayro asks (CID fonts, which Chinese, Japanese and Korean text uses), with a notice saying what to install; annotations without a drawing of their own are drawn by LimarePDF; damaged files are repaired when opened, with a notice. Known limits, mostly hayro's: some transparency groups are drawn wrongly, hairlines can come out light grey, plain fonts that aren't embedded use the standard fonts, media and 3D annotations aren't drawn, and no rich text or line captions. Compared with poppler over about 1,100 public test PDFs. [Details](rendering.md) |
@@ -61,7 +63,7 @@ available.
 | Opening protected files | Done | With the open (user) password; files with an empty one (only a permissions password) open without asking, including RC4 files with a shortened password entry that other readers accept, and their notice says so |
 | Content editing | Partial | Works on lines, not paragraphs; some fonts are replaced when edited. [Details](content-editing.md) |
 | Importing images as pages | Done | PNG, JPEG, TIFF. [Details](scanning-and-ocr.md#importing-images) |
-| Optimising scanned pages | Partial | Pages that are one image. [Details](scanning-and-ocr.md#optimising-scanned-pages) |
+| Optimising scanned pages | Partial | Pages that are one image; only the pages chosen change, also when they share a picture with others. [Details](scanning-and-ocr.md#optimising-scanned-pages) |
 | OCR | Partial | Latin script; built-in recognition model. [Details](scanning-and-ocr.md#recognising-text-ocr) |
 | Export pages as images, export text | Done | [Details](export-and-printing.md) |
 | Printing | Partial | No paper size or scaling options. Tried on paper on Linux (HP LaserJet, CUPS): pages, mixed sizes, a turned page, comments and form values print correctly. On Windows only the print dialog has been tried, and nothing has been printed on macOS. [Details](export-and-printing.md#printing) |
@@ -87,7 +89,7 @@ available.
 | PDF/A, optimised saving | No | Saved files are pruned and compressed |
 | Comparing documents | No | |
 | Crash recovery | Done | Private copies of documents with unsaved changes, about a minute behind; when LimarePDF stops without closing normally, the next start offers them, and a restored one opens as a new unsaved document. Your own files are never written by it. None for password-protected documents, or documents a protected one's pages are appended to; a redaction, removal of hidden information or added password, or a redo of a redaction or removal, deletes the earlier copies first, including the one a restored document came from. Can be turned off. [Details](gui.md#recovery-copies) |
-| Sessions, autosave, backups, preferences, custom shortcuts, translations | No | You are asked before closing unsaved work; unsaved changes are kept in [recovery copies](gui.md#recovery-copies) |
+| Sessions, autosave, backups, preferences, custom shortcuts, translations | No | You are asked before closing unsaved work, text still being typed included, and Save keeps that text; unsaved changes are kept in [recovery copies](gui.md#recovery-copies) |
 | XFA forms, XPS documents | No | |
 
 ## Known limits
@@ -110,7 +112,8 @@ available.
   comments, the inspector) turns that tab into an error page with Save a copy and Close; other tabs carry on. So does
   a menu command, shortcut or panel button that fails: an error message when it changed nothing, else that tab's
   error page. Redactions and removed hidden information are recorded with the change itself, so a later save of a
-  signed document always writes the file out in full.
+  signed document always writes the file out in full. `limarepdf-cli` prints such a failure as a plain error and
+  exits with status 1.
 - Sizes a file states are capped before memory is set aside for them, so a small crafted file can't make LimarePDF
   ask for gigabytes and close: a page image has at most 268 million pixels (A3 at 1152 dpi;
   [export](export-and-printing.md#pages-as-images)), Optimise scans skips pictures of more than 268 million pixels

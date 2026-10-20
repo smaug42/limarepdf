@@ -2576,8 +2576,34 @@ fn verify_json(rep: &SignatureReport) -> serde_json::Value {
     })
 }
 
+/// Run a command that a malformed file could make panic, turning a panic into a plain error, as the app's
+/// `guard` does.
+fn guard<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|p| {
+        let why = p
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| p.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown cause".into());
+        Err(anyhow!(
+            "LimarePDF hit an internal error ({why}). The file may be damaged. \
+             Run with RUST_BACKTRACE=1 to see where it happened."
+        ))
+    })
+}
+
 fn main() -> Result<()> {
-    match Cli::parse().cmd {
+    let cli = Cli::parse();
+    // Only `guard`'s error is printed for a panic; with RUST_BACKTRACE set, Rust's own message and the
+    // backtrace are printed too, for bug reports.
+    if std::env::var_os("RUST_BACKTRACE").is_none_or(|v| v == "0") {
+        std::panic::set_hook(Box::new(|_| {}));
+    }
+    guard(|| run(cli.cmd))
+}
+
+fn run(cmd: Cmd) -> Result<()> {
+    match cmd {
         Cmd::Info { input, password } => {
             let p = open(&input, &password)?;
             let i = p.info();
@@ -2722,6 +2748,7 @@ fn main() -> Result<()> {
                         before,
                         after,
                         deskewed,
+                        original_kept,
                     } => {
                         let kind = match mode {
                             ScanMode::BlackWhite => "black and white",
@@ -2731,8 +2758,14 @@ fn main() -> Result<()> {
                         let tilt = deskewed
                             .map(|a| format!(", straightened {a:.1}°"))
                             .unwrap_or_default();
+                        let kept = if original_kept {
+                            " (the original is also used elsewhere in the document, so the \
+                             file keeps it too)"
+                        } else {
+                            ""
+                        };
                         out!(
-                            "page {}: {kind}, {} -> {}{tilt}",
+                            "page {}: {kind}, {} -> {}{tilt}{kept}",
                             i + 1,
                             kb(before),
                             kb(after)
@@ -2740,6 +2773,11 @@ fn main() -> Result<()> {
                         before_all += before;
                         after_all += after;
                     }
+                    ScanResult::SameImage(first) => out!(
+                        "page {}: the same image as page {}, optimised with it",
+                        i + 1,
+                        first + 1
+                    ),
                     ScanResult::Skipped(why) => out!("page {}: skipped: {why}", i + 1),
                 }
             }
@@ -3613,4 +3651,21 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn guard_turns_panics_into_errors() {
+        assert_eq!(super::guard(|| Ok(3)).unwrap(), 3);
+        let e = super::guard::<()>(|| panic!("bad xref")).unwrap_err();
+        assert!(e.to_string().contains("bad xref"));
+        assert!(e.to_string().contains("internal error"));
+        let n = 7;
+        let e = super::guard::<()>(|| panic!("index {n}")).unwrap_err();
+        assert!(e.to_string().contains("index 7"));
+        // Errors pass through unchanged.
+        let e = super::guard::<()>(|| Err(anyhow::anyhow!("no such file"))).unwrap_err();
+        assert_eq!(e.to_string(), "no such file");
+    }
 }

@@ -1428,10 +1428,12 @@ mod tests {
 
         // Save and Sign both ask before breaking the signatures.
         app.save_signed(&ctx, false);
-        assert!(matches!(&app.dialog, Dialog::ConfirmSaveSigned(false, why) if why == RECOVERED));
+        assert!(
+            matches!(&app.dialog, Dialog::ConfirmSaveSigned(_, false, why) if why == RECOVERED)
+        );
         app.dialog = Dialog::None;
         app.act(&ctx, Act::SignDigital);
-        assert!(matches!(app.dialog, Dialog::ConfirmSignRecovered));
+        assert!(matches!(app.dialog, Dialog::ConfirmSignRecovered(_)));
         assert!(app.tabs[0].ed.tool != Tool::DigitalSign);
 
         // The copy stays while its tab is open, and goes when it is closed.

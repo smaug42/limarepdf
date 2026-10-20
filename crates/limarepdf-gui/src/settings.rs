@@ -105,6 +105,25 @@ impl PageLook {
 pub const STAMP_PICTURES: usize = 5;
 pub const STAMP_WORDINGS: usize = 5;
 
+/// The window's size in points when none is remembered, the smallest it can be, and the
+/// largest a remembered size opens at (so a size kept on a big monitor stays usable on a
+/// smaller one).
+pub const WINDOW_DEFAULT: [f32; 2] = [1200.0, 850.0];
+pub const WINDOW_MIN: [f32; 2] = [640.0, 420.0];
+pub const WINDOW_MAX: [f32; 2] = [3840.0, 2160.0];
+
+/// A window size within [`WINDOW_MIN`] and [`WINDOW_MAX`], in whole points; `None` when it
+/// isn't a real size (not a number, or under 100 points either way, as when minimized).
+fn window_size([w, h]: [f32; 2]) -> Option<[f32; 2]> {
+    let ok = |v: f32| v.is_finite() && v >= 100.0;
+    (ok(w) && ok(h)).then(|| {
+        [
+            w.round().clamp(WINDOW_MIN[0], WINDOW_MAX[0]),
+            h.round().clamp(WINDOW_MIN[1], WINDOW_MAX[1]),
+        ]
+    })
+}
+
 pub struct Settings {
     pub theme: ThemePreference,
     /// Page colours on screen, and whether pictures are recoloured too.
@@ -131,6 +150,10 @@ pub struct Settings {
     pub sign: SignKit,
     /// Keep recovery copies of documents with unsaved changes (on unless turned off).
     pub recovery: bool,
+    /// The window's size in points when it isn't maximized, and whether it was maximized,
+    /// when the app last closed.
+    pub window: [f32; 2],
+    pub window_maximized: bool,
     /// Where they are saved; `None` when there is no settings folder.
     file: Option<PathBuf>,
 }
@@ -181,6 +204,8 @@ impl Settings {
                     .map(|d| d.join("signatures.txt")),
             ),
             recovery: true,
+            window: WINDOW_DEFAULT,
+            window_maximized: false,
             file,
         };
         let text = s
@@ -228,6 +253,15 @@ impl Settings {
                 "comment_name" => s.author = Some(value.to_string()),
                 "stamp_name_and_date" => s.stamp_name_date = value != "false",
                 "recovery_copies" => s.recovery = value != "false",
+                "window" => {
+                    let size = value.split_once('x').and_then(|(w, h)| {
+                        window_size([w.trim().parse().ok()?, h.trim().parse().ok()?])
+                    });
+                    if let Some(size) = size {
+                        s.window = size;
+                    }
+                }
+                "window_maximized" => s.window_maximized = value == "true",
                 "stamp_picture" if !value.is_empty() && s.stamp_pictures.len() < STAMP_PICTURES => {
                     s.stamp_pictures.push(PathBuf::from(value));
                 }
@@ -249,6 +283,15 @@ impl Settings {
     /// The name to write into new comments and markup; may be empty.
     pub fn author(&self) -> String {
         self.author.clone().unwrap_or_else(system_user)
+    }
+
+    /// Keeps the window's current size (in points, if known) and whether it is maximized,
+    /// for [`Settings::save`]. While maximized, the size it had before is kept.
+    pub fn keep_window(&mut self, size: Option<[f32; 2]>, maximized: bool) {
+        self.window_maximized = maximized;
+        if let Some(size) = size.filter(|_| !maximized).and_then(window_size) {
+            self.window = size;
+        }
     }
 
     pub fn save(&self) {
@@ -274,6 +317,10 @@ impl Settings {
         }
         text += &format!("stamp_name_and_date = {}\n", self.stamp_name_date);
         text += &format!("recovery_copies = {}\n", self.recovery);
+        text += &format!(
+            "window = {} x {}\nwindow_maximized = {}\n",
+            self.window[0], self.window[1], self.window_maximized
+        );
         for p in &self.stamp_pictures {
             text += &format!("stamp_picture = {}\n", p.display());
         }
@@ -405,6 +452,59 @@ mod tests {
         assert!(!Settings::from_file(Some(f.clone())).recovery);
         std::fs::write(&f, "recovery_copies = maybe\n").unwrap();
         assert!(Settings::from_file(Some(f)).recovery);
+    }
+
+    #[test]
+    fn window_size_is_saved_and_read_back() {
+        let f = file("window");
+        let s = Settings::from_file(Some(f.clone()));
+        assert_eq!((s.window, s.window_maximized), (WINDOW_DEFAULT, false));
+        let mut s = Settings::from_file(Some(f.clone()));
+        s.keep_window(Some([1400.4, 900.0]), false);
+        s.save();
+        let s = Settings::from_file(Some(f.clone()));
+        assert_eq!((s.window, s.window_maximized), ([1400.0, 900.0], false));
+        // While maximized, the size from before is kept, so un-maximizing gives it back.
+        let mut s = Settings::from_file(Some(f.clone()));
+        s.keep_window(Some([2560.0, 1400.0]), true);
+        s.save();
+        let s = Settings::from_file(Some(f.clone()));
+        assert_eq!((s.window, s.window_maximized), ([1400.0, 900.0], true));
+        // A window too small to be real (minimized, say) leaves the size as it was.
+        let mut s = Settings::from_file(Some(f.clone()));
+        s.keep_window(Some([0.0, 0.0]), false);
+        s.keep_window(None, false);
+        assert_eq!((s.window, s.window_maximized), ([1400.0, 900.0], false));
+    }
+
+    #[test]
+    fn bad_window_sizes_are_ignored_or_clamped() {
+        let f = file("window-bad");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        for bad in [
+            "window = big",
+            "window = 1400",
+            "window = 1400 x",
+            "window = NaN x 900",
+            "window = inf x 900",
+            "window = 1400 x -900",
+            "window = 10 x 10",
+        ] {
+            std::fs::write(&f, format!("{bad}\nwindow_maximized = maybe\n")).unwrap();
+            let s = Settings::from_file(Some(f.clone()));
+            assert_eq!(
+                (s.window, s.window_maximized),
+                (WINDOW_DEFAULT, false),
+                "{bad}"
+            );
+        }
+        std::fs::write(&f, "window = 300 x 100000\nwindow_maximized = true\n").unwrap();
+        let s = Settings::from_file(Some(f.clone()));
+        assert_eq!(s.window, [WINDOW_MIN[0], WINDOW_MAX[1]]);
+        assert!(s.window_maximized);
+        let mut s = Settings::from_file(Some(f.clone()));
+        s.keep_window(Some([9000.0, 200.0]), false);
+        assert_eq!(s.window, [WINDOW_MAX[0], WINDOW_MIN[1]]);
     }
 
     #[test]
