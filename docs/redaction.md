@@ -61,7 +61,10 @@ removes it. The app lists what this document has of each kind; what is ticked is
   drawn: on the pages, in forms drawn inside forms (up to 32 deep), in comments' and fields' drawings, in patterns,
   soft masks and Type 3 fonts. Those layers leave the layer list; layers that are shown stay. If some drawing
   can't be read, or is nested deeper, LimarePDF can't tell whether it holds hidden content, so the command stops
-  with a message saying what, and changes nothing. Leave hidden layers out to remove the rest.
+  with a message saying what, and changes nothing. Leave hidden layers out to remove the rest. Compressed data is
+  checked to its end: if it is cut off or damaged part way, the command stops in the same way ("Part of this
+  document is damaged..."). Data that is complete but whose checksum at the end is wrong is read in full, as other
+  PDF readers read it, and the result says so.
 - **Thumbnails and private application data:** page thumbnail pictures, data other programs keep for themselves
   (such as Illustrator's), and web capture information.
 
@@ -93,9 +96,11 @@ of the file aren't kept in it.
 - The removed text can still be in bookmarks, comments, file attachments or metadata; the check warns about the
   places it can search.
 - Redaction marks can't be moved or resized; delete one and mark again.
-- Removing hidden layers: a drawing whose compressed data decodes to nothing counts as unreadable, and stops the
-  command. Data damaged part way is read as far as the damage, as other readers read it, and what follows the
-  damage isn't looked at; it stays in the file unless the drawing held hidden content and was rewritten.
+- Removing hidden layers: any drawing whose compressed (Flate) data is cut off or damaged part way stops the
+  command, even where other readers would show what comes before the damage, since what follows it can't be
+  checked. A file with such damage can have its other kinds of hidden information removed with hidden layers left
+  out. Data in the older compressions (LZW, run length) is checked only as far as lopdf reads it: if it decodes to
+  nothing it stops the command.
 
 ## How this was tested
 

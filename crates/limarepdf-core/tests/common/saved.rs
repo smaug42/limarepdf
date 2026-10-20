@@ -542,27 +542,40 @@ fn segments(b: &[u8]) -> (Vec<(usize, Vec<u8>)>, Vec<(usize, String)>) {
         .collect();
         match filters.as_slice() {
             [] => out.push((k, data.to_vec())),
-            ["FlateDecode"] => {
-                let mut d = Dictionary::new();
-                d.set("Filter", "FlateDecode");
-                let s = Stream::new(d, data.to_vec());
-                let plain = s
-                    .decompressed_content()
-                    .unwrap_or_else(|e| panic!("the stream at byte {k} doesn't decode: {e}"));
-                // lopdf gives nothing, not an error, for data it can't decode; zlib's
-                // empty stream is 8 bytes.
-                let raw = data.trim_ascii_end();
-                assert!(
-                    !plain.is_empty() || raw.len() <= 8,
-                    "the stream at byte {k} doesn't decode"
-                );
-                out.push((k, plain));
-            }
+            ["FlateDecode"] => out.push((k, inflate(k, data))),
             other => opaque.push((k, other.join(" "))),
         }
         i = end;
     }
     (out, opaque)
+}
+
+/// The Flate (zlib) segment at byte `at`, decoded to its end with flate2 itself. lopdf gives
+/// what decodes up to a fault rather than an error, so it isn't used here. A wrong checksum
+/// is read past, as other readers do; data that stops short or is damaged is a failure.
+fn inflate(at: usize, z: &[u8]) -> Vec<u8> {
+    use flate2::{Decompress, FlushDecompress, Status};
+    assert!(
+        z.len() >= 2 && z[0] & 0x0f == 8 && (u16::from(z[0]) << 8 | u16::from(z[1])) % 31 == 0,
+        "the stream at byte {at} has no zlib header"
+    );
+    let body = &z[2..];
+    let mut d = Decompress::new(false);
+    let mut out = Vec::with_capacity(body.len() * 4 + 1024);
+    loop {
+        out.reserve(out.len().max(1024));
+        let (used, made) = (d.total_in(), d.total_out());
+        let status = d
+            .decompress_vec(&body[used as usize..], &mut out, FlushDecompress::None)
+            .unwrap_or_else(|e| panic!("the stream at byte {at} doesn't decode: {e}"));
+        if status == Status::StreamEnd {
+            return out;
+        }
+        assert!(
+            d.total_in() != used || d.total_out() != made,
+            "the stream at byte {at} stops short"
+        );
+    }
 }
 
 /// Check the file's last cross-reference section, a table or an uncompressed stream:

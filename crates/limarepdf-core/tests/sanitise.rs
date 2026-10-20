@@ -717,7 +717,93 @@ fn hidden_layers_with_content_that_cant_be_read_are_refused() {
         b"not compressed data".to_vec(),
     ));
     page_res_set(&mut p, "XObject", dictionary! { "Fm" => broken }.into());
-    refuses_unchanged(p, "can't be read");
+    refuses_unchanged(p, "Part of this document is damaged");
+}
+
+/// Drawing compressed with Flate: text in hidden layer `/L1`, a long run of drawing, then
+/// visible text. Long enough that one read of the data doesn't give all of it, so a fault
+/// near its end can't be read past by chance.
+fn long_layered(dict: Dictionary, hidden: &str, tail: &str) -> Stream {
+    let mut content = format!("/OC /L1 BDC BT /F1 12 Tf 30 150 Td ({hidden}) Tj ET EMC\n");
+    content.push_str(&"q Q\n".repeat(100_000));
+    content.push_str(&format!("BT /F1 12 Tf 30 120 Td ({tail}) Tj ET"));
+    let mut s = Stream::new(dict, content.into_bytes());
+    s.compress().unwrap();
+    assert!(s.dict.has(b"Filter"));
+    s
+}
+
+/// A page whose content is `s`, with the hidden layer `/L1`.
+fn layered_page(s: Stream) -> Pdf {
+    let mut p = make("", Dictionary::new());
+    let off = add_layers(&mut p);
+    page_res_set(&mut p, "Properties", dictionary! { "L1" => off }.into());
+    let page = p.page_ids()[0];
+    let id = p.doc.get_page_contents(page)[0];
+    p.doc.objects.insert(id, Object::Stream(s));
+    p
+}
+
+#[test]
+fn hidden_layers_in_data_with_a_wrong_checksum_are_removed_and_the_fault_reported() {
+    let mut s = long_layered(Dictionary::new(), "WALRUS-CHECKSUM", "Visible tail");
+    let n = s.content.len();
+    for b in &mut s.content[n - 4..] {
+        *b ^= 0x5a;
+    }
+    let mut p = layered_page(s);
+    let rep = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    assert_eq!(rep.count(Hidden::HiddenLayers), 1);
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["WALRUS-CHECKSUM"]);
+    saved.assert_kept(&["Visible tail"]);
+    assert_eq!(
+        rep.note(),
+        Some(
+            "Some of this document's data had a small fault in it (other PDF readers overlook \
+             it too). It was all read, and nothing was skipped."
+        )
+    );
+    // Data without faults gives no note.
+    let mut p = layered_page(long_layered(Dictionary::new(), "WALRUS", "Visible"));
+    let rep = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    assert_eq!(rep.count(Hidden::HiddenLayers), 1);
+    assert_eq!(rep.note(), None);
+}
+
+#[test]
+fn hidden_layers_in_data_cut_off_part_way_are_refused() {
+    let why = "Part of this document is damaged, so LimarePDF can't check all of it for hidden \
+               layers. Nothing was changed. To remove the other kinds of information, untick \
+               Hidden layers and try again.";
+    let cut = |mut s: Stream| {
+        let n = s.content.len();
+        s.set_content(s.content[..n / 2].to_vec());
+        s
+    };
+    // In the page's content.
+    let s = long_layered(Dictionary::new(), "WALRUS-CUT", "Visible tail");
+    refuses_unchanged(layered_page(cut(s)), why);
+    // In a form the page draws.
+    let mut p = make(
+        "BT /F1 12 Tf 10 20 Td (Page text) Tj ET q /Fm Do Q",
+        Dictionary::new(),
+    );
+    let off = add_layers(&mut p);
+    let font = helvetica(&mut p);
+    let form = long_layered(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Form", "BBox" => rect([0, 0, 300, 200]),
+            "Resources" => dictionary! {
+                "Font" => dictionary! { "F1" => font }, "Properties" => dictionary! { "L1" => off },
+            },
+        },
+        "WALRUS-CUT",
+        "Visible tail",
+    );
+    let form = p.doc.add_object(cut(form));
+    page_res_set(&mut p, "XObject", dictionary! { "Fm" => form }.into());
+    refuses_unchanged(p, why);
 }
 
 /// Poppler and Ghostscript, reading the output on their own:

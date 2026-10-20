@@ -1981,6 +1981,9 @@ impl App {
             for (h, n) in &r.removed {
                 text.push_str(&format!("• {} ({n})\n", h.label()));
             }
+            if let Some(note) = r.note() {
+                text.push_str(&format!("\n{note}\n"));
+            }
             text.push_str("\nSave the document to keep the changes; Undo brings it all back.");
             self.dialog = Dialog::Message("Hidden information removed".into(), text);
         }

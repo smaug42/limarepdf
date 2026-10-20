@@ -14,6 +14,9 @@ rand.workspace = true
 image.workspace = true
 tiff.workspace = true
 fax = "0.2"
+# Checking Flate data in full before hidden layers are removed (sanitise.rs); lopdf and hayro
+# already use it. The pure-Rust zlib-rs backend, as hayro has it, so no C zlib is used.
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
 png = "0.18"
 # Glyph outlines for typed signatures; hayro already uses it to draw fonts.
 skrifa = "0.46"

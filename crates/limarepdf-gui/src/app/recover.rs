@@ -922,7 +922,7 @@ mod tests {
 
         app.remove_hidden(&ctx, &[Hidden::Metadata, Hidden::HiddenLayers]);
         assert!(
-            matches!(&app.dialog, Dialog::Message(_, text) if text.contains("can't be read")),
+            matches!(&app.dialog, Dialog::Message(_, text) if text.contains("Part of this document is damaged")),
             "a message saying why"
         );
         let t = &app.tabs[0];

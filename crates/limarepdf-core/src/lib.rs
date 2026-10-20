@@ -80,7 +80,7 @@ pub use outline::{BookmarkPlace, OutlineItem};
 pub use overlay::{text_width, Bates, HeaderFooter, ImageWatermark, Watermark};
 pub use pagerange::{format_page_range, parse_page_range};
 pub use redact::{PageRedaction, RedactReport};
-pub use sanitise::{Hidden, HiddenReport};
+pub use sanitise::{Hidden, HiddenReport, LayersDamaged};
 pub use scan::{ScanMode, ScanOptions, ScanResult};
 pub use security::{Cipher, Encryption, Restrictions};
 pub use sig_changes::{Change, ChangeKind, Refusal};

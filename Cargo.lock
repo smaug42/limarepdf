@@ -2379,6 +2379,7 @@ dependencies = [
  "der",
  "des",
  "fax",
+ "flate2",
  "fontdb",
  "getrandom 0.4.3",
  "hayro",

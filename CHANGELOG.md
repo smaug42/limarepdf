@@ -59,7 +59,10 @@
     drawing that couldn't be read was passed over; the removal still said the layers were gone. Drawings are now
     looked into up to 32 deep, annotations' drawings, patterns, soft masks and Type 3 glyphs included. If something
     can't be looked into, the command stops with a message saying what, and nothing is changed; leave out hidden
-    layers to remove the rest.
+    layers to remove the rest. Compressed data damaged part way was read only as far as the damage, and data with
+    a wrong checksum could lose its end, so content after it was never looked at (and was dropped from a drawing
+    that was rewritten). Compressed data is now checked to its end: damaged data stops the command with nothing
+    changed, and complete data with a wrong checksum is read in full, the result saying so.
 - Extracting, deleting or splitting pages kept the other pages' content in the saved file whenever something still
   referred to them: a bookmark, a named destination, a link, the opening view, a form field or the document's
   structure (tags). Those references now go: a link to a page that went goes nowhere, form fields whose boxes were

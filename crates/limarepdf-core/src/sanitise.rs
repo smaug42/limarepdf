@@ -89,6 +89,9 @@ impl Hidden {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct HiddenReport {
     pub removed: Vec<(Hidden, usize)>,
+    /// Compressed data looked into for hidden layers was complete but had a wrong checksum;
+    /// it was read in full, as other readers do.
+    pub faults_overlooked: bool,
 }
 
 impl HiddenReport {
@@ -98,7 +101,25 @@ impl HiddenReport {
             .find(|(k, _)| *k == h)
             .map_or(0, |(_, n)| *n)
     }
+
+    /// What to tell people about the removal besides the counts, if anything.
+    pub fn note(&self) -> Option<&'static str> {
+        self.faults_overlooked.then_some(
+            "Some of this document's data had a small fault in it (other PDF readers overlook \
+             it too). It was all read, and nothing was skipped.",
+        )
+    }
 }
+
+/// [`Pdf::remove_hidden`]'s refusal when compressed data that can hold hidden layers is cut
+/// off or damaged part way, so not all of it could be checked. The message is the app's.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "Part of this document is damaged, so LimarePDF can't check all of it for hidden layers. \
+     Nothing was changed. To remove the other kinds of information, untick Hidden layers and \
+     try again."
+)]
+pub struct LayersDamaged;
 
 /// Actions that run something, send data or open other files by themselves.
 const ACTIVE: [&[u8]; 6] = [
@@ -126,7 +147,22 @@ enum Drawn {
 struct LayerScan {
     edits: Vec<(Drawn, Vec<Operation>, Vec<Vec<u8>>)>,
     blocked: Vec<String>,
+    /// Some of what is in `blocked` is damaged data.
+    damaged: bool,
+    /// Some data read had a wrong checksum.
+    faults: bool,
 }
+
+/// Why a stream's content couldn't be read.
+enum Unread {
+    /// Its compressed data is cut off or damaged part way.
+    Damaged,
+    Other(anyhow::Error),
+}
+
+/// A stream's content, decoded, and whether it had a wrong checksum; or why it couldn't be
+/// read.
+type Read = std::result::Result<(Vec<u8>, bool), Unread>;
 
 impl Pdf {
     /// What [`Pdf::remove_hidden`] would remove of every kind, worked out on a copy. Hidden
@@ -148,7 +184,7 @@ impl Pdf {
     pub fn check_remove_hidden(&self, what: &[Hidden]) -> Result<()> {
         if what.contains(&Hidden::HiddenLayers) {
             if let Some((_, _, hidden)) = self.hidden_layers() {
-                refuse_blocked(&self.scan_layers(&hidden).blocked)?;
+                refuse_blocked(&self.scan_layers(&hidden))?;
             }
         }
         if what.contains(&Hidden::FormValues) {
@@ -168,7 +204,11 @@ impl Pdf {
             }
             let n = match h {
                 Hidden::OutsideCrop => self.cut_outside_crop()?,
-                Hidden::HiddenLayers => self.drop_hidden_layers(strict)?,
+                Hidden::HiddenLayers => {
+                    let (n, faults) = self.drop_hidden_layers(strict)?;
+                    report.faults_overlooked |= faults;
+                    n
+                }
                 Hidden::Comments => {
                     self.remove_annotations(|a| !matches!(a.kind, crate::AnnotKind::Redact))?
                 }
@@ -351,19 +391,21 @@ impl Pdf {
     }
 
     /// Delete the content of the layers (optional content groups) that are switched off,
-    /// and take those layers out of the layer list. Returns how many layers went. When
-    /// `strict`, refuses with nothing changed if some drawing couldn't be looked into;
-    /// otherwise (finding) counts the layers and changes nothing then.
-    fn drop_hidden_layers(&mut self, strict: bool) -> Result<usize> {
+    /// and take those layers out of the layer list. Returns how many layers went, and
+    /// whether data with a wrong checksum was read. When `strict`, refuses with nothing
+    /// changed if some drawing couldn't be looked into; otherwise (finding) counts the
+    /// layers and changes nothing then.
+    fn drop_hidden_layers(&mut self, strict: bool) -> Result<(usize, bool)> {
         let Some((props, d, hidden)) = self.hidden_layers() else {
-            return Ok(0);
+            return Ok((0, false));
         };
         let scan = self.scan_layers(&hidden);
+        let faults = scan.faults;
         if !scan.blocked.is_empty() {
             if strict {
-                refuse_blocked(&scan.blocked)?;
+                refuse_blocked(&scan)?;
             }
-            return Ok(hidden.len());
+            return Ok((hidden.len(), faults));
         }
         for (drawn, ops, inline) in scan.edits {
             match drawn {
@@ -445,7 +487,7 @@ impl Pdf {
             .catalog_mut()
             .map_err(|e| anyhow!("{e}"))?
             .set("OCProperties", props);
-        Ok(hidden.len())
+        Ok((hidden.len(), faults))
     }
 
     /// Every drawing that can hold content of the `hidden` layers, without it: the pages'
@@ -458,24 +500,9 @@ impl Pdf {
         let mut seen = HashSet::new();
         for (i, page) in self.page_ids().into_iter().enumerate() {
             let res = self.resolved_dict(self.inherited(page, b"Resources").as_ref());
-            let unreadable = self.doc.get_page_contents(page).into_iter().find_map(|c| {
-                let s = self.doc.get_object(c).and_then(|o| o.as_stream()).ok()?;
-                readable(s).err()
-            });
-            let content = match unreadable {
-                Some(e) => Err(e),
-                None => self
-                    .doc
-                    .get_page_content_with_limit(page, crate::MAX_CONTENT)
-                    .map_err(|e| anyhow!("{e}")),
-            };
-            match content.and_then(|data| self.without_hidden(&data, &res, hidden)) {
-                Ok(Some((ops, inline))) => scan.edits.push((Drawn::Page(page), ops, inline)),
-                Ok(None) => {}
-                Err(e) => scan
-                    .blocked
-                    .push(format!("page {}'s content can't be read ({e})", i + 1)),
-            }
+            let content = self.page_content(page);
+            let name = format!("page {}'s content", i + 1);
+            self.scan_read(Drawn::Page(page), content, &res, hidden, &name, &mut scan);
             self.scan_resources(&res, hidden, &mut seen, 0, &mut scan);
             for annot in self.all_annot_refs(page) {
                 let ap = self
@@ -596,15 +623,56 @@ impl Pdf {
             .get(b"Resources")
             .ok()
             .map_or_else(|| outer.clone(), |o| self.resolved_dict(Some(o)));
-        match readable(s).and_then(|data| self.without_hidden(&data, &res, hidden)) {
-            Ok(Some((ops, inline))) => scan.edits.push((Drawn::Stream(id), ops, inline)),
-            Ok(None) => {}
-            Err(e) => scan.blocked.push(format!(
-                "a drawing in the file (object {}) can't be read ({e})",
-                id.0
-            )),
-        }
+        let name = format!("a drawing in the file (object {})", id.0);
+        self.scan_read(Drawn::Stream(id), readable(s), &res, hidden, &name, scan);
         self.scan_resources(&res, hidden, seen, depth, scan);
+    }
+
+    /// Page `page`'s content streams, read with [`readable`] and joined as lopdf joins them,
+    /// at most [`crate::MAX_CONTENT`] bytes in all.
+    fn page_content(&self, page: ObjectId) -> Read {
+        let mut all = Vec::new();
+        let mut faults = false;
+        for c in self.doc.get_page_contents(page) {
+            let Ok(s) = self.doc.get_object(c).and_then(|o| o.as_stream()) else {
+                continue;
+            };
+            let (data, fault) = readable(s)?;
+            all.extend_from_slice(&data);
+            all.push(b'\n');
+            faults |= fault;
+            if all.len() > crate::MAX_CONTENT {
+                return Err(Unread::Other(anyhow!("it is too large")));
+            }
+        }
+        Ok((all, faults))
+    }
+
+    /// Record in `scan` what [`Pdf::without_hidden`] makes of drawing `drawn`, read as
+    /// `read` and drawn with resources `res`; `name` names it when it couldn't be read.
+    fn scan_read(
+        &self,
+        drawn: Drawn,
+        read: Read,
+        res: &Dictionary,
+        hidden: &HashSet<ObjectId>,
+        name: &str,
+        scan: &mut LayerScan,
+    ) {
+        let edit = read.and_then(|(data, fault)| {
+            scan.faults |= fault;
+            self.without_hidden(&data, res, hidden)
+                .map_err(Unread::Other)
+        });
+        match edit {
+            Ok(Some((ops, inline))) => scan.edits.push((drawn, ops, inline)),
+            Ok(None) => {}
+            Err(Unread::Damaged) => {
+                scan.damaged = true;
+                scan.blocked.push(format!("{name} is damaged"));
+            }
+            Err(Unread::Other(e)) => scan.blocked.push(format!("{name} can't be read ({e})")),
+        }
     }
 
     /// Take the entries naming hidden layers out of every `/Properties` resource dictionary:
@@ -754,31 +822,132 @@ impl Pdf {
     }
 }
 
-/// A stream's content, decoded; an error when it is compressed and nothing could be decoded
-/// from it. lopdf gives an empty result then rather than an error, so only data that is a
-/// compressed empty stream (zlib's two forms of one) may decode to nothing.
-fn readable(s: &lopdf::Stream) -> Result<Vec<u8>> {
-    let data = s
-        .get_plain_content_with_limit(crate::MAX_CONTENT)
-        .map_err(|e| anyhow!("{e}"))?;
-    let raw = s.content.trim_ascii_end();
-    let empty_zlib = (raw.len() == 8 && raw[2..] == [3, 0, 0, 0, 0, 1])
-        || (raw.len() == 11 && raw[2..] == [1, 0, 0, 0xff, 0xff, 0, 0, 0, 1]);
-    if data.is_empty() && !raw.is_empty() && s.dict.has(b"Filter") && !empty_zlib {
-        return Err(anyhow!("its compressed data doesn't decode"));
+/// A stream's content, decoded with its filters in turn. lopdf returns what Flate data
+/// decodes to up to a fault rather than an error, and can lose the end of data whose
+/// checksum is wrong, so Flate data is checked to its end first: complete data with a wrong
+/// or missing checksum is read in full (as other readers do) and reported; data cut off or
+/// damaged part way is [`Unread::Damaged`]. Data in other filters that decodes to nothing
+/// is an error, as lopdf gives no error for it either.
+fn readable(s: &lopdf::Stream) -> Read {
+    let max = crate::MAX_CONTENT;
+    let filters = s.filters().unwrap_or_default();
+    if filters.is_empty() {
+        let data = s.get_plain_content_with_limit(max);
+        return data
+            .map(|d| (d, false))
+            .map_err(|e| Unread::Other(anyhow!("{e}")));
     }
-    Ok(data)
+    let params = s.dict.get(b"DecodeParms").and_then(Object::as_dict).ok();
+    let mut data = s.content.clone();
+    let mut fault = false;
+    for f in &filters {
+        if *f == b"FlateDecode" && !data.is_empty() {
+            match inflate(&data, max).map_err(Unread::Other)? {
+                Inflated::Whole => {}
+                Inflated::BadChecksum(fixed) => {
+                    data = fixed;
+                    fault = true;
+                }
+                Inflated::Damaged => return Err(Unread::Damaged),
+            }
+        }
+        let mut d = Dictionary::new();
+        d.set("Filter", Object::Name(f.to_vec()));
+        if let Some(p) = params {
+            d.set("DecodeParms", p.clone());
+        }
+        data = lopdf::Stream::new(d, data)
+            .get_plain_content_with_limit(max)
+            .map_err(|e| Unread::Other(anyhow!("{e}")))?;
+    }
+    let flate = filters.iter().any(|f| *f == b"FlateDecode");
+    if data.is_empty() && !s.content.trim_ascii_end().is_empty() && !flate {
+        return Err(Unread::Other(anyhow!("its compressed data doesn't decode")));
+    }
+    Ok((data, fault))
 }
 
-/// A refusal naming what couldn't be looked into, when anything couldn't.
-fn refuse_blocked(blocked: &[String]) -> Result<()> {
-    if blocked.is_empty() {
+/// What [`inflate`] found.
+enum Inflated {
+    Whole,
+    /// Complete, but its checksum is wrong or missing: the data with the right one.
+    BadChecksum(Vec<u8>),
+    /// Cut off, or damaged part way.
+    Damaged,
+}
+
+/// Check zlib data `z` (Flate data) to its end, decoding at most `limit` bytes of it.
+fn inflate(z: &[u8], limit: usize) -> Result<Inflated> {
+    use flate2::{Decompress, FlushDecompress, Status};
+    // A zlib header: deflate, a valid window, no preset dictionary, its check bits right.
+    let header = z.len() >= 2
+        && z[0] & 0x0f == 8
+        && z[0] >> 4 <= 7
+        && z[1] & 0x20 == 0
+        && (u16::from(z[0]) << 8 | u16::from(z[1])) % 31 == 0;
+    if !header {
+        return Ok(Inflated::Damaged);
+    }
+    let body = &z[2..];
+    let mut d = Decompress::new(false);
+    let mut out = Vec::with_capacity(body.len().saturating_mul(2).min(limit + 1));
+    loop {
+        if out.len() == out.capacity() {
+            if out.len() > limit {
+                return Err(anyhow!("it is too large"));
+            }
+            out.reserve(out.len().max(1024).min(limit + 1 - out.len()));
+        }
+        let (used, made) = (d.total_in(), d.total_out());
+        match d.decompress_vec(&body[used as usize..], &mut out, FlushDecompress::None) {
+            Ok(Status::StreamEnd) => break,
+            // Nothing more comes out with room for it: the data stops short.
+            Ok(_) if d.total_in() == used && d.total_out() == made => return Ok(Inflated::Damaged),
+            Ok(_) => {}
+            Err(_) => return Ok(Inflated::Damaged),
+        }
+    }
+    if out.len() > limit {
+        return Err(anyhow!("it is too large"));
+    }
+    let end = 2 + d.total_in() as usize;
+    let sum = adler32(&out).to_be_bytes();
+    if z.get(end..end + 4) == Some(&sum[..]) {
+        return Ok(Inflated::Whole);
+    }
+    let mut fixed = z[..end].to_vec();
+    fixed.extend_from_slice(&sum);
+    Ok(Inflated::BadChecksum(fixed))
+}
+
+/// zlib's checksum (RFC 1950).
+fn adler32(data: &[u8]) -> u32 {
+    let (mut a, mut b) = (1u32, 0u32);
+    // The most bytes that can be added before the sums must be reduced.
+    for chunk in data.chunks(5552) {
+        for &x in chunk {
+            a += u32::from(x);
+            b += a;
+        }
+        a %= 65521;
+        b %= 65521;
+    }
+    b << 16 | a
+}
+
+/// A refusal naming what couldn't be looked into, when anything couldn't. Damaged data is
+/// told in plain words; it is the likely cause people meet.
+fn refuse_blocked(scan: &LayerScan) -> Result<()> {
+    if scan.damaged {
+        return Err(LayersDamaged.into());
+    }
+    if scan.blocked.is_empty() {
         return Ok(());
     }
     Err(anyhow!(
         "hidden layers can't be removed for certain: {}. Nothing was changed; leave out \
          hidden layers to remove the rest",
-        blocked.join("; ")
+        scan.blocked.join("; ")
     ))
 }
 

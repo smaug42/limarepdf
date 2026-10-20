@@ -2885,12 +2885,25 @@ fn main() -> Result<()> {
                 .into_iter()
                 .filter(|h| (h.default_on() && !keep.contains(h)) || also.contains(h))
                 .collect();
-            let rep = pdf.remove_hidden(&what)?;
+            let rep = pdf.remove_hidden(&what).map_err(|e| {
+                if e.is::<limarepdf_core::LayersDamaged>() {
+                    anyhow!(
+                        "Part of this document is damaged, so LimarePDF can't check all of it \
+                         for hidden layers. Nothing was changed. To remove the other kinds of \
+                         information, run it again with --keep hidden-layers."
+                    )
+                } else {
+                    e
+                }
+            })?;
             if rep.removed.is_empty() {
                 out!("nothing to remove");
             }
             for (h, n) in &rep.removed {
                 out!("removed {n:>5}  {}", h.label());
+            }
+            if let Some(note) = rep.note() {
+                out!("{note}");
             }
             let output = output.context("--output is needed")?;
             pdf.save(&output)?;
