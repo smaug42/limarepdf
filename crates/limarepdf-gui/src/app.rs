@@ -3035,18 +3035,15 @@ impl eframe::App for App {
         // The window's size, saved when the app closes; not while minimized or full screen.
         let (size, maximized, hidden, monitor) = ctx.input(|i| {
             let v = i.viewport();
-            let size = v.inner_rect.map(|r| r.size());
+            let size = window_size(i);
             let hidden = v.minimized == Some(true) || v.fullscreen == Some(true);
             (size, v.maximized, hidden, v.monitor_size)
         });
         if !hidden {
             let maximized = maximized.unwrap_or(self.settings.window_maximized);
-            self.settings
-                .keep_window(size.map(|s| [s.x, s.y]), maximized);
+            self.settings.keep_window(Some([size.x, size.y]), maximized);
             // A size kept on a bigger monitor is fitted to this one, once it is known.
-            if let (false, false, Some(size), Some(monitor)) =
-                (self.fitted, maximized, size, monitor)
-            {
+            if let (false, false, Some(monitor)) = (self.fitted, maximized, monitor) {
                 self.fitted = true;
                 let fit = size.min(monitor);
                 if fit != size && fit.x > 0.0 && fit.y > 0.0 {
@@ -3528,6 +3525,12 @@ impl eframe::App for App {
     }
 }
 
+/// The window's inner size in points. Not from the viewport's `inner_rect`, which egui
+/// leaves out when the window's position isn't known, as on Wayland.
+fn window_size(i: &egui::InputState) -> egui::Vec2 {
+    i.viewport_rect().size()
+}
+
 /// `one` when `n` is 1, else `many` with `{n}` replaced by the number.
 fn plural(n: usize, one: &str, many: &str) -> String {
     if n == 1 {
@@ -3583,6 +3586,23 @@ fn report_text(r: &limarepdf_core::RedactReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_size_is_known_without_its_position() {
+        // On Wayland apps aren't told where their window is, so egui has no `inner_rect`.
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(900.0, 600.0),
+            )),
+            ..Default::default()
+        };
+        let mut size = egui::Vec2::ZERO;
+        let mut out = ctx.run_ui(raw, |ui| size = ui.ctx().input(window_size));
+        out.textures_delta.clear();
+        assert_eq!(size, egui::vec2(900.0, 600.0));
+    }
 
     /// An app with `n` tabs of one blank page, each with an unsaved change (a second page),
     /// and the last one active. Nothing is read from or written to the user's settings.
