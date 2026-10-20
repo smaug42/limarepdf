@@ -13,6 +13,8 @@
   later copies hold none of what was removed. If an earlier copy can't be deleted, or the disk can't confirm the
   deletion, the command (or the redo) doesn't run, however often it is tried, until it can. A restored copy of a signed document doesn't have its signatures
   checked, since they cover the original file. Turn it off with File > Keep recovery copies of unsaved changes.
+- The window opens at the size it had when LimarePDF last closed, and maximized if it was. Its position isn't
+  remembered, since Linux Wayland sessions place windows themselves.
 
 ### Fixed
 

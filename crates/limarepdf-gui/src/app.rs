@@ -317,6 +317,8 @@ pub struct App {
     inspector_pref: bool,
     /// The window was narrower than `NARROW_WIDTH` last frame.
     narrow: bool,
+    /// The window has been fitted to its monitor, at the first frame the monitor's size was known.
+    fitted: bool,
     toast: Option<Toast>,
     /// Recently opened files, kept between runs.
     recent: Recent,
@@ -337,9 +339,13 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, files: Vec<PathBuf>, page: Option<usize>) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        settings: Settings,
+        files: Vec<PathBuf>,
+        page: Option<usize>,
+    ) -> Self {
         theme::install(&cc.egui_ctx);
-        let settings = Settings::load();
         cc.egui_ctx.set_theme(settings.theme);
         let mut app = Self::with(settings, Recent::load());
         app.start_recovery(&cc.egui_ctx, files, page);
@@ -378,6 +384,7 @@ impl App {
             show_inspector: true,
             inspector_pref: true,
             narrow: false,
+            fitted: false,
             toast: None,
             recent,
             settings,
@@ -3025,6 +3032,29 @@ impl eframe::App for App {
             self.dialog = Dialog::ConfirmQuit;
         }
 
+        // The window's size, saved when the app closes; not while minimized or full screen.
+        let (size, maximized, hidden, monitor) = ctx.input(|i| {
+            let v = i.viewport();
+            let size = v.inner_rect.map(|r| r.size());
+            let hidden = v.minimized == Some(true) || v.fullscreen == Some(true);
+            (size, v.maximized, hidden, v.monitor_size)
+        });
+        if !hidden {
+            let maximized = maximized.unwrap_or(self.settings.window_maximized);
+            self.settings
+                .keep_window(size.map(|s| [s.x, s.y]), maximized);
+            // A size kept on a bigger monitor is fitted to this one, once it is known.
+            if let (false, false, Some(size), Some(monitor)) =
+                (self.fitted, maximized, size, monitor)
+            {
+                self.fitted = true;
+                let fit = size.min(monitor);
+                if fit != size && fit.x > 0.0 && fit.y > 0.0 {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(fit));
+                }
+            }
+        }
+
         // Collapse the inspector when the window becomes narrow; when it becomes wide
         // again, restore what the user last chose at full width.
         let narrow = ctx.content_rect().width() < NARROW_WIDTH;
@@ -3493,6 +3523,8 @@ impl eframe::App for App {
     /// A normal exit (not a crash, which never gets here): no recovery copies are left.
     fn on_exit(&mut self) {
         self.end_recovery();
+        // The window's size, for the next start.
+        self.settings.save();
     }
 }
 

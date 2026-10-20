@@ -557,6 +557,11 @@ remembered between runs, in `settings.txt` in the same folder as the recent-file
 colours and your name for comments. The app uses the Inter font
 and Phosphor icons.
 
+The window opens at the size it had when the app last closed, and maximized if it was; a maximized window keeps
+the size it had before, for when you restore it. A size kept on a larger monitor is shrunk to fit a smaller one.
+Its position isn't remembered: on Linux Wayland sessions the desktop places windows, not the app, and tiling window
+managers choose the size themselves.
+
 ☰ > Help > About shows the version (the Copy button next to it copies the version and system, for a bug report),
 links to the website, the licence and the issue tracker, which open in your browser, and Credits for the bundled
 fonts, icons and text recognition model. Contributors switches the window to the people who made LimarePDF; Back returns.
