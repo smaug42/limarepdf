@@ -48,6 +48,156 @@ impl Pdf {
         Ok(())
     }
 
+    /// Clear every form field's value for good, as removing hidden information does: current,
+    /// default and inherited values, rich text and chosen options, read-only fields too, and
+    /// widgets on pages that the field tree doesn't list. Checkboxes and radio buttons go
+    /// Off; text fields and choices are redrawn empty, or lose their appearance where
+    /// LimarePDF can't draw them (readers then draw them, empty). Signature fields are left
+    /// alone. Returns how many fields held a value. Unlike [`Pdf::reset_form`], nothing can
+    /// bring the values back.
+    pub(crate) fn clear_form_values(&mut self) -> Result<usize> {
+        let nodes = self.value_nodes()?;
+        let all = self.form_nodes();
+        // The widgets of every field read, buttons and signatures included.
+        let reached: std::collections::HashSet<ObjectId> = all
+            .iter()
+            .flat_map(|(_, n)| n.widgets.iter().copied())
+            .collect();
+        let fields: Vec<(Field, Node)> = all
+            .into_iter()
+            .filter(|(f, _)| !matches!(f.kind, FieldKind::Button | FieldKind::Signature))
+            .collect();
+        let filled = |v: &FieldValue| match v {
+            FieldValue::Text(t) => !t.is_empty(),
+            FieldValue::Check(c) => *c,
+            FieldValue::Choice(c) => !c.is_empty(),
+            FieldValue::None => false,
+        };
+        let mut held = fields
+            .iter()
+            .filter(|(f, n)| {
+                let dv = self.value_of(&f.kind, n.dv.as_ref(), &n.opt, &n.widgets);
+                let rich = self.doc.get_dictionary(n.id).is_ok_and(|d| d.has(b"RV"));
+                filled(&f.value) || filled(&dv) || rich
+            })
+            .count();
+        const VALUES: [&[u8]; 4] = [b"V", b"DV", b"RV", b"I"];
+        for (id, sig) in &nodes {
+            if !sig {
+                if let Ok(d) = self.doc.get_dictionary_mut(*id) {
+                    for k in VALUES {
+                        d.remove(k);
+                    }
+                }
+            }
+        }
+        let mut undrawn = Vec::new();
+        for (field, node) in &fields {
+            for &w in &node.widgets {
+                match field.kind {
+                    FieldKind::Check | FieldKind::Radio => {
+                        if field.kind == FieldKind::Check && !self.has_appearance(w) {
+                            let _ = self.draw_check(node, w, false);
+                        }
+                        if let Ok(d) = self.doc.get_dictionary_mut(w) {
+                            d.set("AS", "Off");
+                        }
+                    }
+                    _ => {
+                        if self
+                            .draw_widget(field, node, w, &empty(&field.kind))
+                            .is_err()
+                        {
+                            undrawn.push(w);
+                        }
+                    }
+                }
+            }
+        }
+        // Widgets the tree reaches beyond the fields read above (a form of more fields than
+        // [`Pdf::form_fields`] reads): their drawings go, as they can't be redrawn.
+        for &(id, sig) in &nodes {
+            let widget = self.doc.get_dictionary(id).is_ok_and(|d| d.has(b"Rect"));
+            if !sig && widget && !reached.contains(&id) {
+                self.clear_unread_widget(id, &mut undrawn);
+            }
+        }
+        // Widgets on pages that the tree doesn't reach: their values, and their parents',
+        // go; their drawings can't be redrawn without a field, so they go too.
+        let listed: std::collections::HashSet<ObjectId> = nodes.iter().map(|n| n.0).collect();
+        for page in self.page_ids() {
+            for a in self.all_annot_refs(page) {
+                let Ok(d) = self.doc.get_dictionary(a) else {
+                    continue;
+                };
+                let widget = d.get(b"Subtype").and_then(|o| o.as_name()).ok() == Some(b"Widget");
+                if !widget || listed.contains(&a) {
+                    continue;
+                }
+                let ft = self.inherited(a, b"FT");
+                if ft.as_ref().and_then(|o| o.as_name().ok()) == Some(b"Sig") {
+                    continue;
+                }
+                let mut chain = vec![a];
+                while let Some(p) = chain.last().and_then(|&c| {
+                    let d = self.doc.get_dictionary(c).ok()?;
+                    d.get(b"Parent").ok()?.as_reference().ok()
+                }) {
+                    if chain.contains(&p) || chain.len() > 32 {
+                        break;
+                    }
+                    chain.push(p);
+                }
+                let had = chain.iter().any(|&c| {
+                    self.doc
+                        .get_dictionary(c)
+                        .is_ok_and(|d| VALUES.iter().any(|k| d.has(k)))
+                });
+                held += usize::from(had);
+                for c in chain {
+                    if let Ok(d) = self.doc.get_dictionary_mut(c) {
+                        for k in VALUES {
+                            d.remove(k);
+                        }
+                    }
+                }
+                self.clear_unread_widget(a, &mut undrawn);
+            }
+        }
+        if !undrawn.is_empty() {
+            for w in undrawn {
+                if let Ok(d) = self.doc.get_dictionary_mut(w) {
+                    d.remove(b"AP");
+                }
+            }
+            let form = self.acro_form_id()?;
+            self.doc
+                .get_dictionary_mut(form)?
+                .set("NeedAppearances", true);
+        }
+        self.form_changed();
+        Ok(held)
+    }
+
+    /// For [`Pdf::clear_form_values`], a widget of no field it read: a checkbox or radio
+    /// button goes Off, and a text field's or choice's drawing goes into `undrawn`, to be
+    /// removed. Push buttons have no value and stay.
+    fn clear_unread_widget(&mut self, id: ObjectId, undrawn: &mut Vec<ObjectId>) {
+        let ff = self
+            .inherited(id, b"Ff")
+            .and_then(|o| self.int_value(&o))
+            .unwrap_or(0);
+        match self.inherited(id, b"FT").as_ref().map(|o| o.as_name()) {
+            Some(Ok(b"Btn")) if ff & (1 << 16) == 0 => {
+                if let Ok(d) = self.doc.get_dictionary_mut(id) {
+                    d.set("AS", "Off");
+                }
+            }
+            Some(Ok(b"Tx" | b"Ch")) => undrawn.push(id),
+            _ => {}
+        }
+    }
+
     /// Draw the appearances that are missing, so that every field shows its value; all
     /// of the text and choice fields' appearances when the form asks for that
     /// (`/NeedAppearances`). Fields LimarePDF can't draw are left as they are. Returns how

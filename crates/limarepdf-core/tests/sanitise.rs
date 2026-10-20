@@ -1,5 +1,8 @@
-use limarepdf_core::{Hidden, Info, Pdf};
-use lopdf::{dictionary, Dictionary, Object, Stream};
+mod common;
+
+use common::saved::{tools, Saved};
+use limarepdf_core::{FieldValue, Hidden, Info, Pdf};
+use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream};
 
 /// A one-page 300×200 pt document drawing `content` with `/F1` (Helvetica), with extra
 /// resources.
@@ -231,4 +234,610 @@ fn cuts_what_lies_outside_the_crop_box() {
     assert!(p.page_text(0).contains("Inside"));
     assert!(!file_has(&mut p, "Walrus"));
     assert_eq!(p.page_size(0).unwrap(), (200.0, 160.0));
+}
+
+fn s(t: &str) -> Object {
+    Object::string_literal(t)
+}
+
+fn rect(r: [i64; 4]) -> Object {
+    r.into_iter()
+        .map(Object::Integer)
+        .collect::<Vec<_>>()
+        .into()
+}
+
+/// Set `key` in the first page's resources.
+fn page_res_set(p: &mut Pdf, key: &str, v: Object) {
+    let page = p.page_ids()[0];
+    let d = p.doc.get_dictionary_mut(page).unwrap();
+    let res = d.get_mut(b"Resources").unwrap().as_dict_mut().unwrap();
+    res.set(key, v);
+}
+
+/// Add `id` to the first page's annotations.
+fn add_annot(p: &mut Pdf, id: ObjectId) {
+    let page = p.page_ids()[0];
+    let d = p.doc.get_dictionary_mut(page).unwrap();
+    match d.get_mut(b"Annots") {
+        Ok(Object::Array(a)) => a.push(id.into()),
+        _ => d.set("Annots", vec![Object::Reference(id)]),
+    }
+}
+
+/// A widget on the first page, its own field, with `extra` entries.
+fn widget(p: &mut Pdf, extra: Dictionary) -> ObjectId {
+    let page = p.page_ids()[0];
+    let mut d = dictionary! {
+        "Type" => "Annot", "Subtype" => "Widget", "P" => page, "F" => 4,
+        "Rect" => rect([10, 10, 150, 30]),
+    };
+    for (k, v) in extra.iter() {
+        d.set(k.clone(), v.clone());
+    }
+    let id = p.doc.add_object(d);
+    add_annot(p, id);
+    id
+}
+
+/// A form holding values in every place a value can be: a text field's value, default and
+/// rich text; a read-only field; a value inherited from a parent; a ticked checkbox; a chosen
+/// and a typed drop-down value; and a signed signature field. Options and names aren't values.
+fn filled_form() -> Pdf {
+    let mut p = make(
+        "BT /F1 12 Tf 10 180 Td (Page text) Tj ET",
+        Dictionary::new(),
+    );
+    let helv = p.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica", "Encoding" => "WinAnsiEncoding",
+    });
+    let name = widget(&mut p, dictionary! { "FT" => "Tx", "T" => s("name") });
+    let fixed = widget(&mut p, dictionary! { "FT" => "Tx", "T" => s("fixed") });
+    let street = widget(&mut p, dictionary! { "T" => s("street") });
+    let addr = p.doc.add_object(dictionary! {
+        "FT" => "Tx", "T" => s("addr"), "V" => s("WALRUS-INHERITED"),
+        "DV" => s("WALRUS-INHERITED-DEFAULT"), "Kids" => vec![Object::Reference(street)],
+    });
+    p.doc
+        .get_dictionary_mut(street)
+        .unwrap()
+        .set("Parent", addr);
+    let agree = widget(
+        &mut p,
+        dictionary! { "FT" => "Btn", "T" => s("agree"), "V" => "Yes", "AS" => "Yes" },
+    );
+    let opts = vec![
+        Object::from(vec![s("red"), s("WALRUS-OPTION-Red")]),
+        Object::from(vec![s("blue"), s("Blue")]),
+    ];
+    let colour = widget(
+        &mut p,
+        dictionary! { "FT" => "Ch", "Ff" => 1 << 17, "T" => s("colour"), "Opt" => opts },
+    );
+    let typed = widget(
+        &mut p,
+        dictionary! { "FT" => "Ch", "Ff" => (1 << 17) | (1 << 18), "T" => s("typed"), "Opt" => vec![s("One")] },
+    );
+    let sig = widget(
+        &mut p,
+        dictionary! {
+            "FT" => "Sig", "T" => s("signature"),
+            "V" => dictionary! { "Type" => "Sig", "Name" => s("WALRUS-SIGNER") },
+        },
+    );
+    let fields: Vec<Object> = [name, fixed, addr, agree, colour, typed, sig]
+        .into_iter()
+        .map(Object::Reference)
+        .collect();
+    catalog_set(
+        &mut p,
+        "AcroForm",
+        dictionary! {
+            "Fields" => fields, "DA" => s("/Helv 0 Tf 0 g"),
+            "DR" => dictionary! { "Font" => dictionary! { "Helv" => helv } },
+        }
+        .into(),
+    );
+    p.set_field("name", FieldValue::Text("WALRUS-CURRENT".into()))
+        .unwrap();
+    p.set_field("fixed", FieldValue::Text("WALRUS-READONLY".into()))
+        .unwrap();
+    p.set_field("colour", FieldValue::Choice(vec!["red".into()]))
+        .unwrap();
+    p.set_field("typed", FieldValue::Choice(vec!["WALRUS-TYPED".into()]))
+        .unwrap();
+    p.refresh_appearances();
+    let d = p.doc.get_dictionary_mut(name).unwrap();
+    d.set("DV", s("WALRUS-DEFAULT"));
+    d.set("RV", s("<body><p>WALRUS-RICH</p></body>"));
+    p.doc.get_dictionary_mut(fixed).unwrap().set("Ff", 1);
+    // A widget on the page that the form's field list leaves out, showing its value.
+    let shown = p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Form", "BBox" => rect([0, 0, 140, 20]),
+            "Resources" => dictionary! { "Font" => dictionary! { "Helv" => helv } },
+        },
+        b"BT /Helv 10 Tf 2 6 Td (WALRUS-ORPHAN) Tj ET".to_vec(),
+    ));
+    widget(
+        &mut p,
+        dictionary! {
+            "FT" => "Tx", "T" => s("orphan"), "V" => s("WALRUS-ORPHAN"),
+            "AP" => dictionary! { "N" => shown },
+        },
+    );
+    p
+}
+
+const FORM_VALUES: [&str; 7] = [
+    "WALRUS-CURRENT",
+    "WALRUS-DEFAULT",
+    "WALRUS-RICH",
+    "WALRUS-READONLY",
+    "WALRUS-INHERITED",
+    "WALRUS-TYPED",
+    "WALRUS-ORPHAN",
+];
+
+#[test]
+fn form_values_are_cleared_everywhere_they_are_kept() {
+    let mut p = filled_form();
+    Saved::of(&mut p).assert_kept(&FORM_VALUES);
+    let rep = p.remove_hidden(&[Hidden::FormValues]).unwrap();
+    assert_eq!(rep.count(Hidden::FormValues), 7, "{rep:?}");
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&FORM_VALUES);
+    let fields = saved.fields();
+    let held: Vec<_> = fields
+        .iter()
+        .filter(|f| f.name != "signature" && !f.values.is_empty())
+        .collect();
+    assert!(held.is_empty(), "{held:?}");
+    let colour = fields.iter().find(|f| f.name == "colour").unwrap();
+    assert!(!colour.appearance.contains("WALRUS"), "{colour:?}");
+    // Kept: the signature, the options, every field and the page.
+    saved.assert_kept(&["WALRUS-SIGNER", "WALRUS-OPTION-Red", "Page text"]);
+    let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "name",
+            "fixed",
+            "addr",
+            "addr.street",
+            "agree",
+            "colour",
+            "typed",
+            "signature"
+        ]
+    );
+    // Reset form has nothing to bring back.
+    let mut q = Pdf::from_bytes(&saved.bytes, None).unwrap();
+    assert!(!q.repaired());
+    q.reset_form().unwrap();
+    for f in q.form_fields() {
+        let empty = match &f.value {
+            FieldValue::Text(t) => t.is_empty(),
+            FieldValue::Check(c) => !c,
+            FieldValue::Choice(c) => c.is_empty(),
+            FieldValue::None => true,
+        };
+        assert!(empty, "{f:?}");
+    }
+}
+
+/// Links, a button, the opening action and a bookmark whose ordinary actions are followed,
+/// through direct dictionaries, by actions that run something.
+fn nested_actions() -> Pdf {
+    let mut p = make(
+        "BT /F1 12 Tf 10 180 Td (Page text) Tj ET",
+        Dictionary::new(),
+    );
+    let page = p.page_ids()[0];
+    let fit = || vec![Object::Reference(page), "Fit".into()];
+    let link = p.doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Link", "Rect" => rect([0, 0, 50, 50]),
+        "A" => dictionary! {
+            "S" => "URI", "URI" => s("https://example.org/kept"),
+            "Next" => dictionary! { "S" => "JavaScript", "JS" => s("app.alert('WALRUS-NEXT')") },
+        },
+    });
+    let chain = p.doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Link", "Rect" => rect([60, 0, 110, 50]),
+        "A" => dictionary! {
+            "S" => "GoTo", "D" => fit(),
+            "Next" => vec![Object::from(dictionary! {
+                "S" => "URI", "URI" => s("https://example.org/also"),
+                "Next" => dictionary! { "S" => "Launch", "F" => s("WALRUS-LAUNCH.exe") },
+            })],
+        },
+    });
+    add_annot(&mut p, link);
+    add_annot(&mut p, chain);
+    // An annotation written directly in the page's list, with actions of its own.
+    let d = p.doc.get_dictionary_mut(page).unwrap();
+    if let Ok(Object::Array(a)) = d.get_mut(b"Annots") {
+        a.push(
+            dictionary! {
+                "Type" => "Annot", "Subtype" => "Square", "Rect" => rect([120, 0, 170, 50]),
+                "AA" => dictionary! { "E" => dictionary! { "S" => "JavaScript", "JS" => s("WALRUS-DIRECT-AA") } },
+            }
+            .into(),
+        );
+    }
+    let item = p.doc.add_object(dictionary! {
+        "Title" => s("Chapter"),
+        "A" => dictionary! {
+            "S" => "GoTo", "D" => fit(),
+            "Next" => dictionary! { "S" => "JavaScript", "JS" => s("WALRUS-OUTLINE") },
+        },
+    });
+    let root = p.doc.add_object(
+        dictionary! { "Type" => "Outlines", "First" => item, "Last" => item, "Count" => 1 },
+    );
+    p.doc.get_dictionary_mut(item).unwrap().set("Parent", root);
+    catalog_set(&mut p, "Outlines", Object::Reference(root));
+    // A push button (poppler lists a widget's additional actions), and the opening action.
+    let button = widget(
+        &mut p,
+        dictionary! {
+            "FT" => "Btn", "Ff" => 1 << 16, "T" => s("go"), "Rect" => rect([180, 0, 230, 50]),
+            "A" => dictionary! {
+                "S" => "URI", "URI" => s("https://example.org/button"),
+                "Next" => dictionary! { "S" => "JavaScript", "JS" => s("WALRUS-BUTTON-NEXT") },
+            },
+            "AA" => dictionary! { "D" => dictionary! { "S" => "JavaScript", "JS" => s("WALRUS-BUTTON-AA") } },
+        },
+    );
+    catalog_set(
+        &mut p,
+        "AcroForm",
+        dictionary! { "Fields" => vec![Object::Reference(button)] }.into(),
+    );
+    catalog_set(
+        &mut p,
+        "OpenAction",
+        dictionary! {
+            "S" => "GoTo", "D" => fit(),
+            "Next" => dictionary! { "S" => "JavaScript", "JS" => s("WALRUS-OPEN-NEXT") },
+        }
+        .into(),
+    );
+    p
+}
+
+#[test]
+fn scripts_in_nested_direct_actions_are_removed() {
+    let mut p = nested_actions();
+    assert!(!Saved::of(&mut p).actions().is_empty());
+    let rep = p.remove_hidden(&[Hidden::Scripts]).unwrap();
+    assert_eq!(rep.count(Hidden::Scripts), 7, "{rep:?}");
+    let saved = Saved::of(&mut p);
+    let left = saved.actions();
+    assert!(left.is_empty(), "{left:?}");
+    saved.assert_gone(&[
+        "WALRUS-NEXT",
+        "WALRUS-LAUNCH",
+        "WALRUS-DIRECT-AA",
+        "WALRUS-OUTLINE",
+        "WALRUS-BUTTON-NEXT",
+        "WALRUS-BUTTON-AA",
+        "WALRUS-OPEN-NEXT",
+    ]);
+    // Kept: the ordinary actions they followed, the bookmark and the opening page.
+    saved.assert_kept(&[
+        "https://example.org/kept",
+        "https://example.org/also",
+        "https://example.org/button",
+    ]);
+    assert!(saved.doc.catalog().unwrap().has(b"OpenAction"));
+    let q = Pdf::from_bytes(&saved.bytes, None).unwrap();
+    let targets: Vec<_> = q
+        .page_links(0)
+        .unwrap()
+        .into_iter()
+        .map(|l| l.target)
+        .collect();
+    assert_eq!(
+        targets,
+        [
+            limarepdf_core::LinkTarget::Uri("https://example.org/kept".into()),
+            limarepdf_core::LinkTarget::Page(0),
+        ]
+    );
+    assert_eq!(q.outline()[0].page, Some(0));
+}
+
+/// Add a layer that is switched off and one that is on; returns the one that is off.
+fn add_layers(p: &mut Pdf) -> ObjectId {
+    let off = p
+        .doc
+        .add_object(dictionary! { "Type" => "OCG", "Name" => s("Off") });
+    let on = p
+        .doc
+        .add_object(dictionary! { "Type" => "OCG", "Name" => s("On") });
+    catalog_set(
+        p,
+        "OCProperties",
+        dictionary! {
+            "OCGs" => vec![Object::Reference(off), Object::Reference(on)],
+            "D" => dictionary! { "OFF" => vec![Object::Reference(off)] },
+        }
+        .into(),
+    );
+    off
+}
+
+fn helvetica(p: &mut Pdf) -> ObjectId {
+    p.doc.add_object(
+        dictionary! { "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica" },
+    )
+}
+
+/// A page drawing a chain of `depth` forms, each drawing the next; the last draws text in a
+/// hidden layer and text outside it.
+fn nested_layers(depth: usize) -> Pdf {
+    let mut p = make(
+        "BT /F1 12 Tf 10 20 Td (Page text) Tj ET q /Fm Do Q",
+        Dictionary::new(),
+    );
+    let off = add_layers(&mut p);
+    let font = helvetica(&mut p);
+    let mut next: Option<ObjectId> = None;
+    for _ in 0..depth {
+        let mut res = dictionary! {
+            "Font" => dictionary! { "F1" => font }, "Properties" => dictionary! { "L1" => off },
+        };
+        let content = match next {
+            None => "/OC /L1 BDC BT /F1 12 Tf 30 150 Td (WALRUS-DEEP) Tj ET EMC \
+                     BT /F1 12 Tf 30 120 Td (Visible deep) Tj ET"
+                .to_string(),
+            Some(n) => {
+                res.set("XObject", dictionary! { "Fm" => n });
+                "q /Fm Do Q".to_string()
+            }
+        };
+        let form = Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Form", "BBox" => rect([0, 0, 300, 200]),
+                "Resources" => res,
+            },
+            content.into_bytes(),
+        );
+        next = Some(p.doc.add_object(form));
+    }
+    page_res_set(
+        &mut p,
+        "XObject",
+        dictionary! { "Fm" => next.unwrap() }.into(),
+    );
+    page_res_set(&mut p, "Properties", dictionary! { "L1" => off }.into());
+    p
+}
+
+#[test]
+fn hidden_layers_in_deeply_nested_forms_are_removed() {
+    let mut p = nested_layers(12);
+    let rep = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    assert_eq!(rep.count(Hidden::HiddenLayers), 1);
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["WALRUS-DEEP"]);
+    saved.assert_kept(&["Visible deep", "Page text"]);
+    let users = saved.hidden_layer_users();
+    assert!(users.is_empty(), "{users:?}");
+}
+
+#[test]
+fn hidden_layers_in_appearances_and_patterns_are_removed() {
+    let mut p = make(
+        "BT /F1 12 Tf 10 20 Td (Page text) Tj ET /Pattern cs /P1 scn 0 100 300 100 re f",
+        Dictionary::new(),
+    );
+    let off = add_layers(&mut p);
+    let font = helvetica(&mut p);
+    let res = || {
+        dictionary! { "Font" => dictionary! { "F1" => font }, "Properties" => dictionary! { "L1" => off } }
+    };
+    let pattern = p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "Pattern", "PatternType" => 1, "PaintType" => 1, "TilingType" => 1,
+            "BBox" => rect([0, 0, 100, 100]), "XStep" => 100, "YStep" => 100, "Resources" => res(),
+        },
+        b"/OC /L1 BDC BT /F1 12 Tf 5 50 Td (WALRUS-PATTERN) Tj ET EMC \
+          BT /F1 12 Tf 5 20 Td (Visible pattern) Tj ET"
+            .to_vec(),
+    ));
+    page_res_set(&mut p, "Pattern", dictionary! { "P1" => pattern }.into());
+    let ap = p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Form", "BBox" => rect([0, 0, 100, 50]),
+            "Resources" => res(),
+        },
+        b"/OC /L1 BDC BT /F1 12 Tf 5 30 Td (WALRUS-APPEARANCE) Tj ET EMC \
+          BT /F1 12 Tf 5 10 Td (Visible note) Tj ET"
+            .to_vec(),
+    ));
+    let square = p.doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Square", "Rect" => rect([100, 100, 200, 150]),
+        "AP" => dictionary! { "N" => ap },
+    });
+    add_annot(&mut p, square);
+    let rep = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    assert_eq!(rep.count(Hidden::HiddenLayers), 1);
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["WALRUS-PATTERN", "WALRUS-APPEARANCE"]);
+    saved.assert_kept(&["Visible pattern", "Visible note", "Page text"]);
+    let users = saved.hidden_layer_users();
+    assert!(users.is_empty(), "{users:?}");
+}
+
+/// A removal that can't look at everything refuses before changing anything, while finding
+/// what there is still works.
+fn refuses_unchanged(mut p: Pdf, why: &str) {
+    p.set_info(&Info {
+        title: Some("Walrus title".into()),
+        ..Default::default()
+    })
+    .unwrap();
+    // Serialising moves lopdf's object counter on, so copies are compared.
+    let before = p.clone();
+    let err = p
+        .remove_hidden(&[Hidden::Metadata, Hidden::HiddenLayers])
+        .unwrap_err();
+    assert!(format!("{err:#}").contains(why), "{err:#}");
+    assert_eq!(
+        p.clone().snapshot().unwrap(),
+        before.clone().snapshot().unwrap()
+    );
+    let found = p.find_hidden().unwrap();
+    assert_eq!(found.count(Hidden::HiddenLayers), 1);
+    assert_eq!(found.count(Hidden::Metadata), 1);
+    // Without the hidden layers, the rest goes.
+    p.remove_hidden(&[Hidden::Metadata]).unwrap();
+    assert_eq!(p.info().title, None);
+}
+
+#[test]
+fn hidden_layers_nested_too_deep_to_look_at_are_refused() {
+    refuses_unchanged(nested_layers(40), "nested more than 32 deep");
+}
+
+#[test]
+fn hidden_layers_with_content_that_cant_be_read_are_refused() {
+    let mut p = make(
+        "BT /F1 12 Tf 10 20 Td (Page text) Tj ET q /Fm Do Q",
+        Dictionary::new(),
+    );
+    add_layers(&mut p);
+    let broken = p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Form", "BBox" => rect([0, 0, 300, 200]),
+            "Filter" => "FlateDecode",
+        },
+        b"not compressed data".to_vec(),
+    ));
+    page_res_set(&mut p, "XObject", dictionary! { "Fm" => broken }.into());
+    refuses_unchanged(p, "Part of this document is damaged");
+}
+
+/// Drawing compressed with Flate: text in hidden layer `/L1`, a long run of drawing, then
+/// visible text. Long enough that one read of the data doesn't give all of it, so a fault
+/// near its end can't be read past by chance.
+fn long_layered(dict: Dictionary, hidden: &str, tail: &str) -> Stream {
+    let mut content = format!("/OC /L1 BDC BT /F1 12 Tf 30 150 Td ({hidden}) Tj ET EMC\n");
+    content.push_str(&"q Q\n".repeat(100_000));
+    content.push_str(&format!("BT /F1 12 Tf 30 120 Td ({tail}) Tj ET"));
+    let mut s = Stream::new(dict, content.into_bytes());
+    s.compress().unwrap();
+    assert!(s.dict.has(b"Filter"));
+    s
+}
+
+/// A page whose content is `s`, with the hidden layer `/L1`.
+fn layered_page(s: Stream) -> Pdf {
+    let mut p = make("", Dictionary::new());
+    let off = add_layers(&mut p);
+    page_res_set(&mut p, "Properties", dictionary! { "L1" => off }.into());
+    let page = p.page_ids()[0];
+    let id = p.doc.get_page_contents(page)[0];
+    p.doc.objects.insert(id, Object::Stream(s));
+    p
+}
+
+#[test]
+fn hidden_layers_in_data_with_a_wrong_checksum_are_removed_and_the_fault_reported() {
+    let mut s = long_layered(Dictionary::new(), "WALRUS-CHECKSUM", "Visible tail");
+    let n = s.content.len();
+    for b in &mut s.content[n - 4..] {
+        *b ^= 0x5a;
+    }
+    let mut p = layered_page(s);
+    let rep = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    assert_eq!(rep.count(Hidden::HiddenLayers), 1);
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["WALRUS-CHECKSUM"]);
+    saved.assert_kept(&["Visible tail"]);
+    assert_eq!(
+        rep.note(),
+        Some(
+            "Some of this document's data had a small fault in it (other PDF readers overlook \
+             it too). It was all read, and nothing was skipped."
+        )
+    );
+    // Data without faults gives no note.
+    let mut p = layered_page(long_layered(Dictionary::new(), "WALRUS", "Visible"));
+    let rep = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    assert_eq!(rep.count(Hidden::HiddenLayers), 1);
+    assert_eq!(rep.note(), None);
+}
+
+#[test]
+fn hidden_layers_in_data_cut_off_part_way_are_refused() {
+    let why = "Part of this document is damaged, so LimarePDF can't check all of it for hidden \
+               layers. Nothing was changed. To remove the other kinds of information, untick \
+               Hidden layers and try again.";
+    let cut = |mut s: Stream| {
+        let n = s.content.len();
+        s.set_content(s.content[..n / 2].to_vec());
+        s
+    };
+    // In the page's content.
+    let s = long_layered(Dictionary::new(), "WALRUS-CUT", "Visible tail");
+    refuses_unchanged(layered_page(cut(s)), why);
+    // In a form the page draws.
+    let mut p = make(
+        "BT /F1 12 Tf 10 20 Td (Page text) Tj ET q /Fm Do Q",
+        Dictionary::new(),
+    );
+    let off = add_layers(&mut p);
+    let font = helvetica(&mut p);
+    let form = long_layered(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Form", "BBox" => rect([0, 0, 300, 200]),
+            "Resources" => dictionary! {
+                "Font" => dictionary! { "F1" => font }, "Properties" => dictionary! { "L1" => off },
+            },
+        },
+        "WALRUS-CUT",
+        "Visible tail",
+    );
+    let form = p.doc.add_object(cut(form));
+    page_res_set(&mut p, "XObject", dictionary! { "Fm" => form }.into());
+    refuses_unchanged(p, why);
+}
+
+/// Poppler and Ghostscript, reading the output on their own:
+/// `cargo test -p limarepdf-core --test sanitise -- --ignored cross_check`.
+#[test]
+#[ignore]
+fn cross_check_removed_information_with_poppler_and_ghostscript() {
+    // Form values: Ghostscript draws the fields.
+    let mut p = filled_form();
+    let shown = tools::gs_text(&p.to_bytes().unwrap());
+    assert!(shown.contains("WALRUS-CURRENT"), "{shown}");
+    p.remove_hidden(&[Hidden::FormValues]).unwrap();
+    let shown = tools::gs_text(&p.to_bytes().unwrap());
+    for v in FORM_VALUES {
+        assert!(!shown.contains(v), "{v} in {shown}");
+    }
+    assert!(shown.contains("Page text"), "{shown}");
+
+    // Scripts: poppler lists only a widget's additional actions (not actions that follow
+    // others, links or the opening action), so the saved-output checker's search is the
+    // evidence for those.
+    let mut p = nested_actions();
+    let js = tools::pdfinfo_js(&p.to_bytes().unwrap());
+    assert!(js.contains("WALRUS-BUTTON-AA"), "{js}");
+    p.remove_hidden(&[Hidden::Scripts]).unwrap();
+    let js = tools::pdfinfo_js(&p.to_bytes().unwrap());
+    assert!(!js.contains("WALRUS"), "{js}");
+
+    // Hidden layers: neither reader finds the text.
+    let mut p = nested_layers(12);
+    p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    let bytes = p.to_bytes().unwrap();
+    for text in [tools::pdftotext(&bytes), tools::gs_text(&bytes)] {
+        assert!(!text.contains("WALRUS"), "{text}");
+        assert!(text.contains("Visible deep"), "{text}");
+    }
 }

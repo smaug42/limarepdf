@@ -391,6 +391,16 @@ impl Pdf {
 
     /// The annotations a page refers to (direct dictionaries, which the format doesn't
     /// allow, are skipped).
+    /// Every annotation a page lists, without [`Pdf::annot_refs`]'s limit: for removing
+    /// information, where one left out could keep what should go.
+    pub(crate) fn all_annot_refs(&self, page: ObjectId) -> Vec<ObjectId> {
+        self.annots_array(page)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|o| o.as_reference().ok())
+            .collect()
+    }
+
     pub(crate) fn annot_refs(&self, page: ObjectId) -> Vec<ObjectId> {
         self.annots_array(page)
             .unwrap_or_default()
