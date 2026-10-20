@@ -19,6 +19,7 @@ Run them with `cargo test --workspace`.
 | `crates/limarepdf-core/tests/repair.rs` | Damaged files built by hand open with their page drawn and are marked repaired: wrong offsets, no table or trailer, a cross-reference stream that doesn't decode, a missing `endobj`, a later copy of an object winning, a trailer naming the wrong catalog, object stream members starting with comments, and an encrypted file (a wrong password is still reported as one); intact files and documents with no pages aren't repaired; a repaired document saves as a clean file. Crafted files: `endstream` in a content stream's comment followed by a fake page, an uncompressed attached PDF reusing the outer file's object numbers (its length given directly, or in an object before or after it, or before it with a spoofed copy of that object inside the attachment), `stream` and a line break inside a string, a stream cut off by the end of the file, a `/Length` too short, an object freed by a later revision (not on the page, not saved), and a number reused at a higher generation. Unit tests in `repair.rs` (dictionary ends, object headers, stream data skipped by `/Length`, direct or in an object of its own (not a copy inside the data), or to `endstream`, trailers inside stream data ignored, trailer values written back) |
 | `crates/limarepdf-core/tests/render_coverage.rs` | Rendering, pixel by pixel; see [Rendering](rendering.md) |
 | `crates/limarepdf-core/tests/render_compare.rs` | Opt-in: LimarePDF's rendering compared with poppler's `pdftoppm` over about 1,100 public test PDFs; see below |
+| `crates/limarepdf-core/tests/save_reopen.rs` | Opt-in: the same public test PDFs saved unchanged, and with page 1 turned and a comment added, then opened again: pages, page sizes and labels, annotations, form fields and values, bookmarks, page text and drawn pages compared with the document before saving; see below |
 | `crates/limarepdf-core/tests/render_region.rs` | Drawing part of a page, as the app's tiles at high zoom do: tiles match the whole page pixel by pixel, are cut at the page's edges, land in place at the highest scale, and keep pictures in dark pages; a page drawn in bands matches one drawn at once, and a drawing stops between bands when asked |
 | `crates/limarepdf-core/tests/import.rs` | Importing images as pages |
 | `crates/limarepdf-core/tests/scan.rs` | Optimising scanned pages |
@@ -62,6 +63,23 @@ compare runs before and after a change. `sh tools/render-compare.sh issue12` lim
 
 poppler isn't always right: many of the worst-listed pages are poppler's mistakes (a grey page, a garbled scan). Each
 listed page needs a person to judge which side is right.
+
+The save-and-reopen check uses the same files. From the repository, after fetching them:
+`cargo test --release -p limarepdf-core --test save_reopen -- --ignored --nocapture`. Each file is opened as the app
+opens it and saved as the app saves it (a signed file by adding a revision, unless it was repaired), twice: unchanged,
+and with page 1 turned and a comment added. The copy opened again must need no repair and have the same pages, page
+sizes, page labels, annotations, form fields and their values, bookmarks and page text, and draw the same pages
+`render_compare.rs` draws, allowing only for anti-aliasing; in the second check, the pages after the first must draw
+as in the file itself. Bytes aren't compared, since a save may renumber objects and compress streams. Each file is
+checked in a process of its own, two at a time (`SAVE_REOPEN_JOBS`), each allowed 2 GiB on Linux
+(`SAVE_REOPEN_MEMORY`, in MiB) and three minutes, so a file needing more stops only its own check and is listed as
+skipped. The report, `target/tmp/save-reopen/index.html`, lists every difference, with pictures of pages that draw
+differently; `summary.txt` has one line per file. The test fails when a file not in `tools/save-reopen-known.txt`
+(the known limits, each with its reason) differs. `SAVE_REOPEN_ONLY=issue12` limits the run. A full run takes about
+five minutes; on 2026-10-20 (commit 103ef02), 1,080 of 1,089 files were the same, 3 differed (the known limits)
+and 6 were skipped (4 need a password, 1 doesn't open, and PDFBox 2363, where hayro asks for 7.6 GB at
+once to fill one shape at 96 dpi). To check that it catches failures, a scratch copy whose save dropped annotations, kept page 1
+unturned, cleared field values or drew a square on page 2 was flagged in every file where the breakage showed.
 
 The timings and memory figures in [Performance](performance.md) come from
 `python3 crates/limarepdf-core/tools/measure.py`, run from the repository (Linux or macOS, Python's standard library

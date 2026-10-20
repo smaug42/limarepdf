@@ -1,0 +1,8 @@
+# Known limits of the save-and-reopen check (tests/save_reopen.rs): files that differ after
+# saving and opening again, for a reason recorded in the build plan. The check lists them but
+# doesn't fail on them.
+#
+# Columns: name (as in summary.txt, such as pdfjs/issue1234), then the reason.
+pdfbox/5283 D11: opens with no pages (a second object 8 in the cross-reference table replaces the page)
+pdfjs/issue9540 D11: opens with no pages (the page is written directly in /Kids, not by reference)
+pdfbox/3728 D13: hayro draws the added comment's icon a pixel differently once its drawing is compressed

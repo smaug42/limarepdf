@@ -17,7 +17,11 @@
 //!
 //! The test fails only when it can't run at all; the differences are for a person to judge.
 
-use limarepdf_core::render::{self, Bitmap, Missing, Renderer};
+mod common;
+
+use common::compare::{differences, side_by_side, Image};
+use common::corpus::{samples, Sample};
+use limarepdf_core::render::{self, Missing, Renderer};
 use limarepdf_core::Pdf;
 use rayon::prelude::*;
 use std::collections::BTreeSet;
@@ -35,62 +39,6 @@ const FLAG: f64 = 0.005;
 const SIZE_SLACK: usize = 2;
 /// Time allowed for one file on each side.
 const TIMEOUT: Duration = Duration::from_secs(60);
-
-struct Sample {
-    /// `pdfjs/issue1234`, the file's path under tests/data/render without `.pdf`.
-    name: String,
-    first: usize,
-    last: usize,
-    password: Option<String>,
-}
-
-fn samples(only: &str) -> Vec<Sample> {
-    let list = Path::new(env!("CARGO_MANIFEST_DIR")).join("tools/render-samples.txt");
-    let text = std::fs::read_to_string(&list).expect("tools/render-samples.txt");
-    text.lines()
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(|l| {
-            let f: Vec<&str> = l.split_whitespace().collect();
-            let dir = f[0].rsplit('-').next().unwrap();
-            let (a, b) = f[3].split_once('-').expect("pages as first-last");
-            Sample {
-                name: format!("{dir}/{}", f[1]),
-                first: a.parse().unwrap(),
-                last: b.parse().unwrap(),
-                password: f.get(4).map(|s| s.to_string()),
-            }
-        })
-        .filter(|s| s.name.contains(only))
-        .collect()
-}
-
-struct Image {
-    width: usize,
-    height: usize,
-    rgb: Vec<u8>,
-}
-
-impl Image {
-    fn from_bitmap(b: &Bitmap) -> Self {
-        let rgb = b
-            .rgba
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .flat_map(|&[r, g, b, _]| [r, g, b])
-            .collect();
-        Image {
-            width: b.width,
-            height: b.height,
-            rgb,
-        }
-    }
-
-    fn px(&self, x: usize, y: usize) -> [u8; 3] {
-        let i = (y * self.width + x) * 3;
-        [self.rgb[i], self.rgb[i + 1], self.rgb[i + 2]]
-    }
-}
 
 /// What one side made of one page.
 enum Drawn {
@@ -194,66 +142,6 @@ fn poppler(path: &Path, s: &Sample, n: usize, dpi: u32, tmp: &Path) -> Drawn {
     }
 }
 
-/// Whether `a`'s pixel at (x, y) is, in some channel, further than [`TOLERANCE`] outside
-/// the range of `b`'s pixels within one of it. Any blend of neighbouring colours, as
-/// anti-aliasing at an edge a fraction of a pixel away gives, is inside the range.
-fn unmatched(a: &Image, b: &Image, x: usize, y: usize, w: usize, h: usize) -> bool {
-    let p = a.px(x, y);
-    let (mut lo, mut hi) = ([255u8; 3], [0u8; 3]);
-    for qy in y.saturating_sub(1)..=(y + 1).min(h - 1) {
-        for qx in x.saturating_sub(1)..=(x + 1).min(w - 1) {
-            let q = b.px(qx, qy);
-            for k in 0..3 {
-                lo[k] = lo[k].min(q[k]);
-                hi[k] = hi[k].max(q[k]);
-            }
-        }
-    }
-    (0..3).any(|k| p[k].saturating_add(TOLERANCE) < lo[k] || p[k] > hi[k].saturating_add(TOLERANCE))
-}
-
-/// The pixels that differ beyond anti-aliasing, over the area both images cover.
-fn differences(a: &Image, b: &Image) -> (Vec<bool>, usize, usize) {
-    let (w, h) = (a.width.min(b.width), a.height.min(b.height));
-    let mut mask = vec![false; w * h];
-    mask.par_chunks_mut(w.max(1))
-        .enumerate()
-        .for_each(|(y, row)| {
-            for (x, m) in row.iter_mut().enumerate() {
-                *m = unmatched(a, b, x, y, w, h) || unmatched(b, a, x, y, w, h);
-            }
-        });
-    (mask, w, h)
-}
-
-/// LimarePDF, poppler and the differences (red on a faded poppler page), side by side.
-fn side_by_side(a: &Image, b: &Image, mask: &[bool], w: usize) -> image::RgbImage {
-    const GAP: usize = 8;
-    let h = a.height.max(b.height);
-    let total = a.width + b.width + w + 2 * GAP;
-    let mut out = image::RgbImage::from_pixel(total as u32, h as u32, image::Rgb([128; 3]));
-    let mut put = |img: &Image, left: usize| {
-        for y in 0..img.height {
-            for x in 0..img.width {
-                out.put_pixel((left + x) as u32, y as u32, image::Rgb(img.px(x, y)));
-            }
-        }
-    };
-    put(a, 0);
-    put(b, a.width + GAP);
-    let left = a.width + b.width + 2 * GAP;
-    for (i, &m) in mask.iter().enumerate() {
-        let (x, y) = (i % w, i / w);
-        let c = if m {
-            [230, 0, 0]
-        } else {
-            b.px(x, y).map(|v| 255 - (255 - v) / 4)
-        };
-        out.put_pixel((left + x) as u32, y as u32, image::Rgb(c));
-    }
-    out
-}
-
 /// One page's result.
 struct Row {
     name: String,
@@ -302,7 +190,7 @@ fn compare(s: &Sample, root: &Path, out: &Path, dpi: u32) -> Vec<Row> {
             (Drawn::Failed(a), Drawn::Ok(..)) => row(n, None, format!("LimarePDF fails: {a}")),
             (Drawn::Ok(..), Drawn::Failed(b)) => row(n, None, format!("poppler fails: {b}")),
             (Drawn::Ok(a, missing), Drawn::Ok(b, _)) => {
-                let (mask, w, h) = differences(&a, &b);
+                let (mask, w, h) = differences(&a, &b, TOLERANCE);
                 let share = mask.iter().filter(|&&m| m).count() as f64 / (w * h).max(1) as f64;
                 let mut notes = Vec::new();
                 if a.width.abs_diff(b.width) > SIZE_SLACK
