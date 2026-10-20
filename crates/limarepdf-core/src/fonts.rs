@@ -140,6 +140,9 @@ pub(crate) struct FontCtx<'a> {
     /// Whether [`FontCtx::codes`] splits strings the way the font does: always for simple
     /// fonts, and for Type 0 fonts with a fixed two-byte encoding.
     pub codes_known: bool,
+    /// A Type 0 font that writes downwards (its CMap's `/WMode` 1, or a predefined `-V`
+    /// one). Its text is still measured as if it ran across.
+    pub vertical: bool,
 }
 
 fn f(doc: &Document, o: &Object) -> Option<f32> {
@@ -190,6 +193,18 @@ impl<'a> FontCtx<'a> {
                 || enc_name.as_deref().is_some_and(|n| {
                     n.starts_with("Identity-") || n.contains("UCS2") || n.contains("UTF16")
                 }),
+            vertical: type0
+                && match &enc_name {
+                    Some(n) => n.ends_with("-V"),
+                    None => {
+                        dict.get(b"Encoding")
+                            .ok()
+                            .and_then(|o| doc.dereference(o).ok())
+                            .and_then(|(_, o)| o.as_stream().ok())
+                            .and_then(|s| f(doc, s.dict.get(b"WMode").ok()?))
+                            == Some(1.0)
+                    }
+                },
         };
         if name(dict, b"Subtype").as_deref() == Some("Type3") {
             let fm = dict
@@ -435,5 +450,25 @@ mod tests {
         assert_eq!(ctx.width(u32::MAX), 500.0);
         assert!(ctx.wmap.len() <= MAX_CID as usize + 1, "{}", ctx.wmap.len());
         assert!(ctx.wmap.keys().all(|&c| c <= MAX_CID));
+    }
+
+    #[test]
+    fn vertical_writing_is_told_by_the_cmap() {
+        let (mut doc, mut font) = widths(vec![]);
+        let vertical = |doc: &Document, font: &Dictionary| FontCtx::new(doc, font).vertical;
+        assert!(!vertical(&doc, &font));
+        font.set("Encoding", "UniJIS-UCS2-V");
+        assert!(vertical(&doc, &font));
+        for (mode, down) in [(0, false), (1, true)] {
+            let cmap = doc.add_object(lopdf::Stream::new(
+                dictionary! { "Type" => "CMap", "WMode" => mode },
+                Vec::new(),
+            ));
+            font.set("Encoding", cmap);
+            assert_eq!(vertical(&doc, &font), down, "WMode {mode}");
+        }
+        // Only Type 0 fonts write downwards.
+        let simple = dictionary! { "Subtype" => "Type1", "Encoding" => "Identity-V" };
+        assert!(!vertical(&doc, &simple));
     }
 }

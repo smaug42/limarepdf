@@ -1,8 +1,83 @@
 //! Inline images (`BI … ID <data> EI`) cannot be round-tripped through lopdf's content parser, so they are
-//! lifted out of the stream before parsing (replaced by a placeholder operator) and put back verbatim after
-//! encoding.
+//! lifted out of the stream before parsing (replaced by a placeholder operator) and put back verbatim when
+//! the operators are encoded again.
 
-pub(crate) const TAG: &str = "LIMAREINLINEIMG";
+use lopdf::content::{Content, Operation};
+
+const TAG: &str = "LIMAREINLINEIMG";
+
+/// The inline images lifted out of one content stream.
+#[derive(Debug)]
+pub(crate) struct Inline {
+    /// What every placeholder operator starts with: [`TAG`], followed by as many `K`s as it
+    /// takes for it not to occur anywhere in the stream, so that no operator or text there
+    /// can pass for a placeholder.
+    tag: String,
+    raws: Vec<Vec<u8>>,
+}
+
+impl Inline {
+    /// The raw inline image (from `BI` to `EI`) a placeholder operator stands for.
+    pub fn raw(&self, operator: &str) -> Option<&[u8]> {
+        let code = operator.strip_prefix(self.tag.as_str())?;
+        if code.is_empty() || !code.bytes().all(|b| (b'A'..=b'J').contains(&b)) {
+            return None;
+        }
+        let digits: String = code.bytes().map(|b| (b - b'A' + b'0') as char).collect();
+        self.raws
+            .get(digits.parse::<usize>().ok()?)
+            .map(Vec::as_slice)
+    }
+
+    /// `ops` as content stream bytes, each placeholder operator replaced by its raw inline
+    /// image. Placeholders are recognised as operators only, never inside text.
+    pub fn encode(&self, ops: Vec<Operation>) -> lopdf::Result<Vec<u8>> {
+        if self.raws.is_empty() {
+            return Content { operations: ops }.encode();
+        }
+        // Operators are separated by line breaks, as lopdf separates them.
+        fn put(out: &mut Vec<u8>, bytes: &[u8]) {
+            if !out.is_empty() {
+                out.push(b'\n');
+            }
+            out.extend_from_slice(bytes);
+        }
+        let mut out = Vec::new();
+        let mut run = Vec::new();
+        for o in ops {
+            match self.raw(&o.operator) {
+                Some(raw) => {
+                    if !run.is_empty() {
+                        let operations = std::mem::take(&mut run);
+                        put(&mut out, &Content { operations }.encode()?);
+                    }
+                    put(&mut out, raw);
+                }
+                None => run.push(o),
+            }
+        }
+        if !run.is_empty() {
+            put(&mut out, &Content { operations: run }.encode()?);
+        }
+        Ok(out)
+    }
+}
+
+/// [`TAG`] with enough `K`s after it that it occurs nowhere in `d`: one more than the
+/// longest run of them after any `TAG` there.
+fn tag_for(d: &[u8]) -> String {
+    let t = TAG.as_bytes();
+    let longest = d
+        .windows(t.len())
+        .enumerate()
+        .filter(|(_, w)| *w == t)
+        .map(|(i, _)| d[i + t.len()..].iter().take_while(|&&b| b == b'K').count())
+        .max();
+    match longest {
+        None => TAG.to_string(),
+        Some(k) => format!("{TAG}{}", "K".repeat(k + 1)),
+    }
+}
 
 fn ws(b: u8) -> bool {
     matches!(b, 0 | 9 | 10 | 12 | 13 | 32)
@@ -143,9 +218,10 @@ fn find_ei(d: &[u8], from: usize) -> Option<usize> {
 }
 
 /// Replace every inline image by a placeholder operator. Returns the new stream and the raw images.
-pub(crate) fn extract(d: &[u8]) -> Result<(Vec<u8>, Vec<Vec<u8>>), String> {
+pub(crate) fn extract(d: &[u8]) -> Result<(Vec<u8>, Inline), String> {
     let n = d.len();
     let mut out = Vec::with_capacity(n);
+    let tag = tag_for(d);
     let mut raws = vec![];
     let mut i = 0;
     while i < n {
@@ -234,20 +310,10 @@ pub(crate) fn extract(d: &[u8]) -> Result<(Vec<u8>, Vec<Vec<u8>>), String> {
             .bytes()
             .map(|b| (b - b'0' + b'A') as char)
             .collect();
-        out.extend_from_slice(format!("\n{TAG}{code}\n").as_bytes());
+        out.extend_from_slice(format!("\n{tag}{code}\n").as_bytes());
         i = end;
     }
-    Ok((out, raws))
-}
-
-/// The index of the raw inline image a placeholder operator stands for.
-pub(crate) fn placeholder_index(operator: &str) -> Option<usize> {
-    let code = operator.strip_prefix(TAG)?;
-    let digits: String = code
-        .bytes()
-        .map(|b| (b.wrapping_sub(b'A') + b'0') as char)
-        .collect();
-    digits.parse().ok()
+    Ok((out, Inline { tag, raws }))
 }
 
 /// A raw inline image's dictionary entries (the text between `BI` and `ID`) and its data
@@ -279,35 +345,4 @@ pub(crate) fn split(raw: &[u8]) -> Option<(&[u8], &[u8])> {
         end -= 1;
     }
     Some((&raw[2..id_at], &raw[d0.min(end)..end]))
-}
-
-/// Put the raw inline images back in place of their placeholders.
-pub(crate) fn restore(encoded: Vec<u8>, raws: &[Vec<u8>]) -> Vec<u8> {
-    if raws.is_empty() {
-        return encoded;
-    }
-    let mut out = Vec::with_capacity(encoded.len());
-    let mut i = 0;
-    let tag = TAG.as_bytes();
-    while i < encoded.len() {
-        if encoded[i..].starts_with(tag) && (i == 0 || ws(encoded[i - 1])) {
-            let mut j = i + tag.len();
-            let s = j;
-            while j < encoded.len() && (b'A'..=b'J').contains(&encoded[j]) {
-                j += 1;
-            }
-            let digits: String = encoded[s..j]
-                .iter()
-                .map(|&b| (b - b'A' + b'0') as char)
-                .collect();
-            if let Some(raw) = digits.parse::<usize>().ok().and_then(|k| raws.get(k)) {
-                out.extend_from_slice(raw);
-                i = j;
-                continue;
-            }
-        }
-        out.push(encoded[i]);
-        i += 1;
-    }
-    out
 }

@@ -379,6 +379,116 @@ fn move_text_with_tj_array_and_quote() {
     assert!((after[1].bbox[1] - before[1].bbox[1]).abs() < 0.5);
 }
 
+/// Where the ink of colour `c` starts: its leftmost column and lowest row.
+fn ink(s: &Shot, c: [u8; 3]) -> Option<(usize, usize)> {
+    let mut at: Option<(usize, usize)> = None;
+    for y in 0..s.0.height {
+        for x in 0..s.0.width {
+            if s.is(x, y, c) {
+                at = Some(at.map_or((x, y), |(ax, ay)| (ax.min(x), ay.max(y))));
+            }
+        }
+    }
+    at
+}
+
+#[test]
+fn removing_or_changing_text_keeps_the_text_after_it_in_place() {
+    // "World" carries on from where "Hello" ends, and "Next" starts a line below
+    // "Hello"'s, so where both are drawn depends on what is done to "Hello".
+    const LINE: &str = "BT /F1 20 Tf 20 100 Td (Hello) Tj 1 0 0 rg (World) Tj \
+                        0 -30 Td 0 0.6 0 rg (Next) Tj ET\n";
+    const HIDDEN: &str = "BT /F1 20 Tf 20 100 Td 3 Tr (Hello) Tj 0 Tr 1 0 0 rg (World) Tj \
+                          0 -30 Td 0 0.6 0 rg (Next) Tj ET\n";
+    const GREEN: [u8; 3] = [0, 153, 0];
+    fn edit(text: &str, font: Option<&str>) -> TextEdit {
+        TextEdit {
+            text: text.into(),
+            font: font.map(FontChoice::from_name),
+            size: None,
+            color: None,
+        }
+    }
+    type Change = fn(&mut Pdf, usize);
+    let cases: [(&str, &str, Change); 5] = [
+        ("deleted", LINE, |p, id| p.delete_object(0, id).unwrap()),
+        ("changed in place", LINE, |p, id| {
+            p.edit_text(0, id, &edit("Hi", None)).unwrap()
+        }),
+        ("set in another font", LINE, |p, id| {
+            p.edit_text(0, id, &edit("Hi", Some("Courier"))).unwrap()
+        }),
+        ("changed while invisible", HIDDEN, |p, id| {
+            p.edit_text(0, id, &edit("Hi", None)).unwrap()
+        }),
+        ("moved", LINE, |p, id| {
+            let b = p.page_objects(0).unwrap()[id].bbox;
+            p.set_object_bbox(0, id, [b[0], b[1] - 40.0, b[2], b[3] - 40.0])
+                .unwrap()
+        }),
+    ];
+    let mut moved = Vec::new();
+    for (what, content, change) in cases {
+        let mut p = make(content);
+        let find = |p: &Pdf, t: &str| {
+            p.page_objects(0)
+                .unwrap()
+                .into_iter()
+                .find(|o| o.text.as_deref() == Some(t))
+                .unwrap_or_else(|| panic!("{what}: no {t}"))
+        };
+        let hello = find(&p, "Hello").id;
+        let kept = [
+            ("World", find(&p, "World").bbox),
+            ("Next", find(&p, "Next").bbox),
+        ];
+        let before = shot(&mut p);
+        change(&mut p, hello);
+        for (t, was) in kept {
+            let now = find(&p, t).bbox;
+            if now.iter().zip(was).any(|(a, b)| (a - b).abs() > 0.01) {
+                moved.push(format!("{what}: {t} moved from {was:?} to {now:?}"));
+            }
+        }
+        let after = shot(&mut p);
+        for c in [RED, GREEN] {
+            let (was, now) = (ink(&before, c).unwrap(), ink(&after, c).unwrap());
+            if was.0.abs_diff(now.0) > 1 || was.1 != now.1 {
+                moved.push(format!("{what}: {c:?} drawn from {was:?}, then {now:?}"));
+            }
+        }
+    }
+    assert!(moved.is_empty(), "{moved:#?}");
+}
+
+#[test]
+fn text_after_vertical_writing_is_left_as_it_was() {
+    // A font writing downwards: LimarePDF measures its text as if it ran across, so it
+    // doesn't know where the line ends, and leaves the text after it as it was.
+    let mut p = make("BT /F2 20 Tf 150 180 Td <00410042> Tj 1 0 0 rg <0043> Tj ET\n");
+    let desc = p.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "CIDFontType2", "BaseFont" => "V", "DW" => 1000,
+    });
+    let font = p.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type0", "BaseFont" => "V",
+        "Encoding" => "Identity-V", "DescendantFonts" => vec![desc.into()],
+    });
+    let page = p.page_ids()[0];
+    let res = dictionary! { "Font" => dictionary! { "F2" => font } };
+    p.doc
+        .get_dictionary_mut(page)
+        .unwrap()
+        .set("Resources", res);
+    let objs = p.page_objects(0).unwrap();
+    assert_eq!(objs.len(), 2, "{objs:?}");
+    p.delete_object(0, objs[0].id).unwrap();
+    let ops = lopdf::content::Content::decode(&p.doc.get_page_content(page))
+        .unwrap()
+        .operations;
+    let names: Vec<&str> = ops.iter().map(|o| o.operator.as_str()).collect();
+    assert_eq!(names, ["BT", "Tf", "Td", "rg", "Tj", "ET"]);
+}
+
 #[test]
 fn edit_text_in_place_and_with_new_font() {
     let mut p = make(BASE);
@@ -755,10 +865,12 @@ fn bad_input_is_an_error_not_a_panic() {
     assert!(p.page_objects(5).is_err());
 }
 
-fn inline_pdf() -> Vec<u8> {
+/// A red 4 × 4 inline image drawn 100 pt square at (50, 50), then `after`.
+fn inline_pdf_with(after: &[u8]) -> Vec<u8> {
     let mut content = b"q 100 0 0 100 50 50 cm\nBI /W 4 /H 4 /BPC 8 /CS /RGB ID ".to_vec();
     content.extend(std::iter::repeat_n([255u8, 0, 0], 16).flatten());
-    content.extend(b"\nEI Q\nBT /F1 12 Tf 50 200 Td (after inline) Tj ET\n");
+    content.extend(b"\nEI Q\n");
+    content.extend(after);
     let mut objs: Vec<Vec<u8>> = vec![
         b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
@@ -790,6 +902,42 @@ fn inline_pdf() -> Vec<u8> {
         .into_bytes(),
     );
     out
+}
+
+fn inline_pdf() -> Vec<u8> {
+    inline_pdf_with(b"BT /F1 12 Tf 50 200 Td (after inline) Tj ET\n")
+}
+
+#[test]
+fn inline_images_come_back_only_where_they_were() {
+    // Text that reads like LimarePDF's placeholder for an inline image, and an operator
+    // spelled like one (in a compatibility section, where readers skip operators they
+    // don't know). A square is deleted, so that the page is written again.
+    const SQUARE: &[u8] = b"0 0 1 rg 260 10 20 20 re f\n";
+    let text = "see LIMAREINLINEIMGA or LIMAREINLINEIMGKKA";
+    let kinds = |o: &[limarepdf_core::PageObject], k| o.iter().filter(|o| o.kind == k).count();
+    let edited = |after: &[u8]| {
+        let mut p = Pdf::from_bytes(&inline_pdf_with(&[after, SQUARE].concat()), None).unwrap();
+        let objs = p.page_objects(0).unwrap();
+        assert_eq!(kinds(&objs, ObjectKind::Image), 1, "{objs:?}");
+        let square = objs.iter().find(|o| o.kind == ObjectKind::Path).unwrap().id;
+        p.delete_object(0, square).unwrap();
+        let bytes = p.to_bytes().unwrap();
+        let q = Pdf::from_bytes(&bytes, None).unwrap();
+        let objs = q.page_objects(0).unwrap();
+        assert_eq!(kinds(&objs, ObjectKind::Image), 1, "{objs:?}");
+        assert_eq!(kinds(&objs, ObjectKind::Path), 0, "{objs:?}");
+        let hp = render::load(bytes, None).unwrap();
+        let s = Shot(render::Renderer::new(&hp).render(0, 1.0).unwrap());
+        assert!(s.is(100, 200, RED), "the image is still drawn");
+        assert!(s.is(200, 100, WHITE), "and only where it was");
+        q
+    };
+
+    let q = edited(format!("BT /F1 12 Tf 20 20 Td ({text}) Tj ET\n").as_bytes());
+    assert_eq!(q.page_text(0), text);
+    // The text after it keeps hayro from taking the image to end at the operator's "EI".
+    edited(b"q 100 0 0 100 150 150 cm BX LIMAREINLINEIMGA EX Q\nBT /F1 12 Tf 20 20 Td (x) Tj ET\n");
 }
 
 #[test]

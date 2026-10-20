@@ -14,8 +14,16 @@ per inline image.
   fonts, at the same position, size and colour.
 - **Adding** text, shapes or images draws them on top of the page.
 - **Invisible text** from OCR is edited as invisible text and stays in place.
+- **Text after a changed line** stays where it was. Text on the same line can carry on from where the line ended
+  (a show operator with no line move before it); when the line is deleted, edited or moved, its end is set again
+  with `Tm` before that text, and the line position is set again before the next line move, which `Tm` also
+  changes.
+- **Inline images** are lifted out of the content before it is read, each replaced by a placeholder operator, and
+  written back in place of those operators only, never of text that looks like one. The placeholder's name is
+  chosen per content stream so that nothing in the stream already has it.
 
-Every edit is checked to re-parse before it is applied. An edit that fails leaves the document unchanged.
+Every edit is checked to re-parse before it is applied, inline images lifted out as when the page is next read.
+An edit that fails leaves the document unchanged.
 
 ## Limits
 
@@ -25,6 +33,10 @@ Every edit is checked to re-parse before it is applied. An edit that fails leave
   Times or Courier, and the inspector says so. Text edited into a new font is limited to WinAnsi characters; others
   print as `?`.
 - Editing text does not change its width: longer text can overlap its neighbours.
+- Where the text after a changed line starts is worked out from the font's character widths. Where a file doesn't
+  give them for a font that isn't one of the standard 14, or a CID font's characters can't be told apart, they are
+  estimated, so that text can move a little. In vertical writing the text after a changed line still moves with
+  the change: LimarePDF measures vertical text as if it ran across, so it doesn't know where such a line ends.
 - A clip region set before an object stays where it was, so a moved or enlarged object can be cut off by its old
   clip. A path that is itself used as a clip (`W n`) cannot be selected.
 - Shading and pattern fills can be selected, but their colour cannot be changed in the inspector (it may apply a flat

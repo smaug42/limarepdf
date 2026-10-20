@@ -51,6 +51,13 @@
   new content upside down, mirrored and shrunk (a 28 pt line became about 7 pt). Such pages flip and scale the whole
   page without restoring it afterwards, and the new content inherited that.
 - Editing invisible text (an OCR layer) moved the line down by about a fifth of its height.
+- Deleting or editing a line of text moved the text that carried on after it on the same line, such as a word in
+  another font or colour, by the width of what was deleted or changed; moving a line moved the line below it
+  sideways. The text after a changed line now stays where it was.
+- Editing, redacting or removing hidden layers on a page with an inline picture (one written into the page's own
+  content) changed any text on the page holding the word LimarePDF uses inside to mark such pictures, putting the
+  picture's data in its place, and a crafted file could make the picture appear a second time. Pictures now go
+  back only where they were, and text is left as it was.
 - Repairing a damaged file could show a PDF attached to it, stored uncompressed, instead of the file's own pages,
   when the attachment's length was written in an object of its own. Such lengths are now looked up, and a copy of
   that object inside the attachment isn't used.

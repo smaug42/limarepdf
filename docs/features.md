@@ -61,7 +61,7 @@ available.
 | Document properties | Done | Title, author, subject, keywords, creator, producer |
 | Password security | Done | All four ciphers and permission flags. [Things to know](security.md) |
 | Opening protected files | Done | With the open (user) password; files with an empty one (only a permissions password) open without asking, including RC4 files with a shortened password entry that other readers accept, and their notice says so |
-| Content editing | Partial | Works on lines, not paragraphs; some fonts are replaced when edited. [Details](content-editing.md) |
+| Content editing | Partial | Works on lines, not paragraphs; some fonts are replaced when edited; the text after a deleted, edited or moved line stays where it was (except in vertical writing). [Details](content-editing.md) |
 | Importing images as pages | Done | PNG, JPEG, TIFF. [Details](scanning-and-ocr.md#importing-images) |
 | Optimising scanned pages | Partial | Pages that are one image; only the pages chosen change, also when they share a picture with others. [Details](scanning-and-ocr.md#optimising-scanned-pages) |
 | OCR | Partial | Latin script; built-in recognition model. [Details](scanning-and-ocr.md#recognising-text-ocr) |
