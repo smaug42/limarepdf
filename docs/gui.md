@@ -427,6 +427,10 @@ What you select decides what the inspector, the right-click menu and the floatin
 
 Menu commands for document and page settings open the matching section of the inspector.
 
+Pages boxes, in the inspector's tools and the print dialog, take page numbers and ranges counted from 1, such as
+`1-3,7`, `5-` (5 to the end) or `all`. Clicking or tabbing into a box that says `all` selects it, so typing page
+numbers replaces it.
+
 A watermark is text or a picture (PNG, JPEG or TIFF), centred on each page. After you apply a watermark or headers
 and footers, the section's button becomes Update: change a setting and press it to redo what you just added rather
 than stamping a second copy. Add another keeps it and adds a new one. Any other change returns the button to Apply.

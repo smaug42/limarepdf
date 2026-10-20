@@ -18,6 +18,10 @@
 
 ### Fixed
 
+- Typing page numbers into a pages box that said "all" (printing, crop, watermark, headers and footers, OCR,
+  optimising scanned pages, export) gave "all2-4" instead of "2-4". Clicking or tabbing into such a box now selects "all", so typing replaces
+  it.
+
 - A small crafted file could make LimarePDF ask for gigabytes of memory and close, losing unsaved work in every tab:
   a page with a huge stated size (up to 17 GB to draw), a fax or 1-bit picture of billions of pixels when optimising
   scans or redacting (up to 4 GB), or a font's character widths (billions of entries; a width list with a huge first

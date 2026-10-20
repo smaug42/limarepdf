@@ -128,8 +128,6 @@ Small or medium additions that build on what LimarePDF already has:
 ## Printing
 
 - Booklet and N-up printing, printing comments, paper size and scaling (M)
-- The print dialog's pages box: clicking into it should select "all", so typing page numbers replaces it instead
-  of giving "1all" (S; raised by the user 2026-10-18)
 
 ## Automation and the app
 

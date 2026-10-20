@@ -581,8 +581,7 @@ fn act_button(ui: &mut Ui, act: Act, c: &Ctx) -> bool {
 fn range_row(ui: &mut Ui, text: &mut String) {
     ui.horizontal(|ui| {
         ui.label("Pages");
-        ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY))
-            .on_hover_text("e.g. 1-3,5,8-  or  all");
+        crate::dialogs::pages_box(ui, text, Some(f32::INFINITY));
     });
 }
 
