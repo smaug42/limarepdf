@@ -27,6 +27,14 @@
   on a 139 MB scan took about 2.6 GB. Each document's undo steps are now limited to 1 GB together; beyond it the
   oldest steps are dropped, so undo is shorter on very large documents (about 7 steps on that scan). The latest
   change can always be undone.
+- A page with a very complex drawing could take about 10 GB of memory to draw at 150 dpi, and in the app, zooming
+  in on it a few steps quickly could draw it at several zooms at once, enough to close LimarePDF and lose unsaved
+  work. Pages are now drawn in bands of about 4 million pixels, which bounds the memory of each drawing (that test
+  page now takes 1.5 GB at 150 dpi), and the app stops drawing a page at a zoom you've moved past, in colours
+  you've changed, or of an edited document's older state, at the next band. Large drawings, such as exports and
+  printing at high resolution, take longer on some pages, since each band works out the page's pictures and
+  shadings again: on test pages at 288 dpi about a third longer in the middle of the range, and up to several
+  times longer on a few pages with many pictures.
 - Editing a line of text, or adding text, a shape or a picture, on a page printed to PDF from a web browser drew the
   new content upside down, mirrored and shrunk (a 28 pt line became about 7 pt). Such pages flip and scale the whole
   page without restoring it afterwards, and the new content inherited that.

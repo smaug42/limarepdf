@@ -37,7 +37,8 @@ What the numbers show:
 - Drawing cost grows with the number of paths and with resolution. The 73,000-path page takes 2.6 s and 707 MB at
   36 dpi but nearly a minute and almost 10 GB at 150 dpi; poppler draws it at 150 dpi in 9 s with 329 MB. In the app,
   zooming in on such a page is limited to the [tiles in view](rendering.md#high-zoom), but the whole page at a normal
-  zoom costs the same as here.
+  zoom costs the same as here. Since 2026-10-19 large pages are [drawn in bands](rendering.md#large-drawings): the
+  same page at 150 dpi now takes 54 s and 1.5 GB, and at 72 dpi 9.9 s and 1.4 GB (was 10.4 s and 2.7 GB).
 - The reasons for the 560 to 640 MB of the last three files weren't looked into: the 27,000-path file has no fonts at
   all, and one page of PDFBox 1910 at 36 dpi takes 114 MB.
 
@@ -74,6 +75,8 @@ OCR speed is in [Scanning and OCR](scanning-and-ocr.md#accuracy-and-speed).
 - At high zoom only the part of the page in view is drawn, in 512-pixel tiles
   ([details](rendering.md#high-zoom)). A tile takes about 1 ms on text pages and about 20 ms on a dense form, at
   any zoom, while a whole Letter page at 1152 dpi takes about 0.4 s and 500 MB.
+- A whole-page drawing that is no longer wanted (a zoom passed through, changed colours, an edited document) stops
+  at its next [band](rendering.md#large-drawings) instead of running to the end.
 - Edits re-save the document without compressing it, and undo keeps plain snapshots (a whole copy of the document
   per step, up to 1 GB per document, see [above](#memory-in-the-desktop-app)).
 - OCR, optimising, exporting images and printing run in the background.

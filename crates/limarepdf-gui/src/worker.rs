@@ -34,8 +34,42 @@ pub struct Response {
 
 struct Queue {
     items: Vec<(Key, f32)>,
+    /// The jobs being drawn and their colours, one entry per thread.
+    running: Vec<Job>,
+    /// Running jobs no longer wanted: a whole page stops at its next band and sends
+    /// nothing, as its key has also left the tab's pending set.
+    dropped: Vec<Job>,
     colours: Colours,
     closed: bool,
+}
+
+/// A job being drawn: its key and the colours it is drawn in.
+type Job = (Key, Colours);
+
+impl Queue {
+    /// Whether the running `job` should stop.
+    fn stopped(&self, job: &Job) -> bool {
+        self.closed || self.dropped.contains(job)
+    }
+
+    /// Stop the running jobs for which `stop` is true.
+    fn drop_running(&mut self, stop: impl Fn(&Job) -> bool) {
+        for job in &self.running {
+            if stop(job) && !self.dropped.contains(job) {
+                self.dropped.push(*job);
+            }
+        }
+    }
+
+    /// `job` is no longer running.
+    fn finished(&mut self, job: &Job) {
+        if let Some(at) = self.running.iter().position(|j| j == job) {
+            self.running.swap_remove(at);
+        }
+        if !self.running.contains(job) {
+            self.dropped.retain(|j| j != job);
+        }
+    }
 }
 
 /// Lock the queue. Nothing panics while holding it, but if something ever did, the queue
@@ -54,6 +88,8 @@ impl Worker {
         let shared = Arc::new((
             Mutex::new(Queue {
                 items: Vec::new(),
+                running: Vec::new(),
+                dropped: Vec::new(),
                 colours,
                 closed: false,
             }),
@@ -85,18 +121,21 @@ impl Worker {
                                 return;
                             }
                             if let Some(j) = q.items.pop() {
-                                break (j, q.colours);
+                                let colours = q.colours;
+                                q.running.push((j.0, colours));
+                                break (j, colours);
                             }
                             q = cv.wait(q).unwrap_or_else(PoisonError::into_inner);
                         }
                     };
                     let (key, scale) = job;
+                    let stop = || queue(&shared.0).stopped(&(key, colours));
                     let bitmap = match (&renderer, &*parsed) {
                         (Some(r), _) => {
                             // A malformed page must not take the whole viewer down.
                             let (mode, keep) = (colours.mode, !colours.pictures_too);
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match key.2 {
-                                None => r.render_in(key.0, scale, mode, keep),
+                                None => r.render_in(key.0, scale, mode, keep, &stop),
                                 Some((c, row)) => {
                                     let region = Region {
                                         x: c * TILE,
@@ -105,6 +144,7 @@ impl Worker {
                                         height: TILE,
                                     };
                                     r.render_region_in(key.0, scale, region, mode, keep)
+                                        .map(Some)
                                 }
                             }))
                             .map_err(|_| "renderer panicked on this page".to_string())
@@ -112,6 +152,12 @@ impl Worker {
                         }
                         (None, Err(e)) => Err(e.clone()),
                         _ => Err("renderer unavailable".into()),
+                    };
+                    queue(&shared.0).finished(&(key, colours));
+                    // Stopped: what couldn't be drawn is reported with the next job.
+                    let bitmap = match bitmap.transpose() {
+                        Some(b) => b,
+                        None => continue,
                     };
                     let missing = renderer.as_ref().map(|r| r.take_missing());
                     let r = Response {
@@ -132,20 +178,28 @@ impl Worker {
 
     pub fn request(&self, key: Key, scale: f32) {
         let (lock, cv) = &*self.shared;
-        queue(lock).items.push((key, scale));
+        let mut q = queue(lock);
+        // Wanted again: a drawing of it under way in these colours finishes after all.
+        let job = (key, q.colours);
+        q.dropped.retain(|j| *j != job);
+        q.items.push((key, scale));
         cv.notify_one();
     }
 
-    /// Draw pages from now on in `colours`, dropping the queued jobs.
+    /// Draw pages from now on in `colours`, dropping the queued jobs and stopping the
+    /// running ones.
     pub fn set_colours(&self, colours: Colours) {
         let mut q = queue(&self.shared.0);
         q.colours = colours;
         q.items.clear();
+        q.drop_running(|_| true);
     }
 
-    /// Drop queued jobs that are no longer wanted.
+    /// Drop the jobs that are no longer wanted, queued or running.
     pub fn retain(&self, keep: impl Fn(&Key) -> bool) {
-        queue(&self.shared.0).items.retain(|(k, _)| keep(k));
+        let mut q = queue(&self.shared.0);
+        q.items.retain(|(k, _)| keep(k));
+        q.drop_running(|(k, _)| !keep(k));
     }
 }
 
@@ -174,5 +228,64 @@ mod tests {
         assert!(w.shared.0.is_poisoned());
         w.request((0, 100, None), 1.0);
         drop(w);
+    }
+
+    #[test]
+    fn running_jobs_stop_when_no_longer_wanted() {
+        let mut q = Queue {
+            items: Vec::new(),
+            running: Vec::new(),
+            dropped: Vec::new(),
+            colours: Colours::default(),
+            closed: false,
+        };
+        let dark = Colours {
+            mode: PageColours::Dark,
+            pictures_too: false,
+        };
+        let (a, b) = (((0, 20, None), dark), ((0, 30, None), dark));
+        q.running.extend([a, b, b]);
+        // Dropped once however often it is asked.
+        q.drop_running(|j| j.0 .1 == 30);
+        q.drop_running(|j| j.0 .1 == 30);
+        assert_eq!(q.dropped, [b]);
+        assert!(q.stopped(&b) && !q.stopped(&a));
+        // The same key in other colours is another job.
+        assert!(!q.stopped(&(b.0, Colours::default())));
+        // Stopped until the last thread drawing it is done.
+        q.finished(&b);
+        assert!(q.stopped(&b));
+        q.finished(&b);
+        assert!(q.dropped.is_empty() && q.running == [a]);
+        // Closing stops everything.
+        q.closed = true;
+        assert!(q.stopped(&a));
+    }
+
+    #[test]
+    fn requests_and_colours_decide_what_keeps_running() {
+        let w = Worker::spawn(
+            eframe::egui::Context::default(),
+            limarepdf_core::Pdf::new().app_snapshot().unwrap(),
+            Colours::default(),
+        );
+        // Stand in for a thread drawing a page, without drawing it.
+        let key = (0, 20, None);
+        let job = (key, Colours::default());
+        queue(&w.shared.0).running.push(job);
+        w.retain(|k| *k != key);
+        assert!(queue(&w.shared.0).stopped(&job));
+        // Wanted again in the same colours: it finishes after all.
+        w.request(key, 1.0);
+        assert!(!queue(&w.shared.0).stopped(&job));
+        // New colours stop it, and asking for the key again doesn't bring it back.
+        let dark = Colours {
+            mode: PageColours::Dark,
+            pictures_too: false,
+        };
+        w.set_colours(dark);
+        w.request(key, 1.0);
+        assert!(queue(&w.shared.0).stopped(&job));
+        queue(&w.shared.0).finished(&job);
     }
 }

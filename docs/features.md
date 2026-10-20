@@ -133,8 +133,9 @@ pool of features other PDF tools have is in [ideas.md](ideas.md).
   the last session's documents.
 - **Acceptance checks** of everyday workflows by hand, in other readers and on Windows and macOS, as listed in
   [Testing](testing.md#acceptance-checks). They have been run on Linux.
-- **Very complex pages:** one test page with 73,000 drawn paths takes about 10 GB of memory to draw at 150 dpi
-  ([Performance](performance.md)).
+- **Very complex pages draw slowly:** one test page with 73,000 drawn paths and 84 shaded areas takes 54 s to draw
+  at 150 dpi, where poppler takes 9 s ([Performance](performance.md)). Its memory is now bounded by drawing in bands
+  ([Rendering](rendering.md#large-drawings)).
 - **Text from some Chinese, Japanese and Korean files:** fonts with no ToUnicode map that use a standard Unicode
   character map (such as `UniJIS-UCS2-H`) give the wrong characters when searching, copying or exporting text
   ([Search and text](search-and-text.md#text-extraction)).

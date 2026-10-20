@@ -19,7 +19,7 @@ Run them with `cargo test --workspace`.
 | `crates/limarepdf-core/tests/repair.rs` | Damaged files built by hand open with their page drawn and are marked repaired: wrong offsets, no table or trailer, a cross-reference stream that doesn't decode, a missing `endobj`, a later copy of an object winning, a trailer naming the wrong catalog, object stream members starting with comments, and an encrypted file (a wrong password is still reported as one); intact files and documents with no pages aren't repaired; a repaired document saves as a clean file. Crafted files: `endstream` in a content stream's comment followed by a fake page, an uncompressed attached PDF reusing the outer file's object numbers (its length given directly, or in an object before or after it, or before it with a spoofed copy of that object inside the attachment), `stream` and a line break inside a string, a stream cut off by the end of the file, a `/Length` too short, an object freed by a later revision (not on the page, not saved), and a number reused at a higher generation. Unit tests in `repair.rs` (dictionary ends, object headers, stream data skipped by `/Length`, direct or in an object of its own (not a copy inside the data), or to `endstream`, trailers inside stream data ignored, trailer values written back) |
 | `crates/limarepdf-core/tests/render_coverage.rs` | Rendering, pixel by pixel; see [Rendering](rendering.md) |
 | `crates/limarepdf-core/tests/render_compare.rs` | Opt-in: LimarePDF's rendering compared with poppler's `pdftoppm` over about 1,100 public test PDFs; see below |
-| `crates/limarepdf-core/tests/render_region.rs` | Drawing part of a page, as the app's tiles at high zoom do: tiles match the whole page pixel by pixel, are cut at the page's edges, land in place at the highest scale, and keep pictures in dark pages |
+| `crates/limarepdf-core/tests/render_region.rs` | Drawing part of a page, as the app's tiles at high zoom do: tiles match the whole page pixel by pixel, are cut at the page's edges, land in place at the highest scale, and keep pictures in dark pages; a page drawn in bands matches one drawn at once, and a drawing stops between bands when asked |
 | `crates/limarepdf-core/tests/import.rs` | Importing images as pages |
 | `crates/limarepdf-core/tests/scan.rs` | Optimising scanned pages |
 | `crates/limarepdf-core/tests/ocr.rs` | OCR text layers, their placement, search and correction |
@@ -67,7 +67,7 @@ times each task three times and prints the table with the machine and commit. Pe
 resident set, as `/usr/bin/time -v` reports it. The four rows for public test files need the files from
 `tools/render-compare.sh` (or `tools/fetch-render-samples.sh`) and are skipped without them. `--runs 1` makes a quicker
 run, and `--only scan` runs only the tasks whose names contain `scan`. A full run takes about five minutes, and one
-of the test files needs about 10 GB of memory.
+of the test files needed about 10 GB of memory before pages were drawn in bands (about 1.5 GB since).
 
 ## The desktop app
 

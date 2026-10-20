@@ -2108,9 +2108,14 @@ impl Tab {
             self.tiles.retain(|k, _| keep_tiles.contains(k));
             self.covered
                 .retain(|&p, _| p >= visible.0 && p <= visible.1);
+            // Whole pages are wanted near the view and only at the current zoom: those of
+            // a zoom passed through stop, as each can take seconds and much memory.
+            let whole: HashMap<usize, u32> = (lo.saturating_sub(3)..(hi + 4).min(n))
+                .map(|i| (i, self.page_key(&ctx, i, self.zoom * BASE * ppp).0 .1))
+                .collect();
             let keep = |k: &Key| match k.2 {
                 Some(_) => keep_tiles.contains(k),
-                None => k.1 == 0 || (k.0 + 3 >= lo && k.0 <= hi + 3),
+                None => k.1 == 0 || whole.get(&k.0) == Some(&k.1),
             };
             self.worker.retain(keep);
             self.pending.retain(keep);

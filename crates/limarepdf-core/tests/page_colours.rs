@@ -31,8 +31,15 @@ fn dark_pages_keep_pictures_unless_asked() {
     let hp = render::load(page_with_picture(), None).unwrap();
     let r = render::Renderer::new(&hp);
     let normal = r.render(0, 2.0).unwrap();
-    let kept = r.render_in(0, 2.0, PageColours::Dark, true).unwrap();
-    let all = r.render_in(0, 2.0, PageColours::Dark, false).unwrap();
+    let go = || false;
+    let kept = r
+        .render_in(0, 2.0, PageColours::Dark, true, &go)
+        .unwrap()
+        .unwrap();
+    let all = r
+        .render_in(0, 2.0, PageColours::Dark, false, &go)
+        .unwrap()
+        .unwrap();
     // Paper turns dark in both.
     assert_eq!(px(&kept, 20, 20), PageColours::Dark.paper());
     assert_eq!(px(&all, 20, 20), PageColours::Dark.paper());
@@ -52,6 +59,9 @@ fn normal_is_the_plain_render() {
     let hp = render::load(page_with_picture(), None).unwrap();
     let r = render::Renderer::new(&hp);
     let a = r.render(0, 1.0).unwrap();
-    let b = r.render_in(0, 1.0, PageColours::Normal, true).unwrap();
+    let b = r
+        .render_in(0, 1.0, PageColours::Normal, true, &|| false)
+        .unwrap()
+        .unwrap();
     assert_eq!(a.rgba, b.rgba);
 }

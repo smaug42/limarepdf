@@ -185,9 +185,30 @@ on which fonts are installed, as in other viewers.
   between a tile and the whole page, as the picture is sampled from a different starting point.
 - Memory and texture size stay bounded at any zoom, up to the highest, 6400%. Tiles are drawn at up to 256 pixels
   per point (6400% on a screen with three pixels per point); beyond that they are shown stretched.
-- Printing and exports don't use tiles. They draw whole pages, at most 1152 dpi and at most 268 million pixels
+- Printing and exports don't use tiles. They draw whole pages ([in bands](#large-drawings) when large), at most
+  1152 dpi and at most 268 million pixels
   ([details](export-and-printing.md#pages-as-images)). A page stated so large that even the whole-page bitmap the
   app draws at the lowest scale would pass that shows an error instead of being drawn.
 - Tiles have only been tried on screens at scale 1, not on a HiDPI screen.
+
+## Large drawings
+
+- hayro holds everything it draws for a page until the drawing is done, and some content costs memory for every
+  pixel: it fills each shaded area of the mesh kinds (types 4 to 7) by working out a picture of it as large as the
+  area painted, which for an `sh` operator is the whole page. PDFBox test file 5134 paints 84 of them, so drawing
+  its 8-million-pixel page at 72 dpi took 84 such pictures of 32 MB, 2.7 GB in all, and 9.7 GB at 150 dpi.
+- So a page bitmap of more than about 4 million pixels is drawn in full-width bands of at most that size, each by
+  hayro on its own, with the view moved to that part of the page, as tiles are. The memory of a drawing is that
+  of one band (5134 at 150 dpi: 1.5 GB).
+- The bands come out as one drawing would, except for slight differences in a few pixels, mostly within raster
+  pictures, as with tiles. A test checks that a banded page matches one drawn at once.
+- Each band reads the page's content again and works out its pictures, soft masks and shadings again. Measured on
+  the first pages of 571 of the test files at 288 dpi (8 million pixels for Letter), of the pages that took more
+  than 50 ms the middle one took about a third longer, and a few took several times longer, up to 0.6 s becoming
+  5.9 s for a page with large pictures. Bitmaps of 4 million pixels or less, which include most pages on screen, are drawn at once as before.
+- In the app, a whole-page drawing is stopped at its next band when it is no longer wanted: the page was drawn for
+  a zoom since passed, the colours changed, or the document was edited. Before, zooming in a few steps quickly
+  drew the page at every zoom passed through, one per drawing thread at a time (five on a six-core machine), which
+  for 5134 would have come to an estimated 11 GB.
 
 For timings and how the app keeps drawing responsive, see [Performance](performance.md).
