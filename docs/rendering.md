@@ -74,6 +74,19 @@ The original file is never replaced without asking: a repaired document counts a
 unsaved changes, and Save asks whether to replace the original or save the repaired copy as a new file.
 `limarepdf-cli` prints a note on stderr, and writes only where `-o` says. Of about 1,100 test files collected from bug reports, 59 needed repair.
 
+### Files other apps may show differently
+
+Some files open without repair but aren't put together quite as the PDF format asks, so PDF apps can disagree
+about what they hold: a part in use that the cross-reference information deletes or doesn't list, data after the
+end-of-file marker, entries that point at the wrong object (which LimarePDF's PDF library quietly corrects, and
+other apps may correct differently), or cross-reference information that can't be read as written. LimarePDF shows
+such a file as the PDF standard says (the parts it deletes stay deleted). Since a crafted file can use this to show
+one thing in LimarePDF and another elsewhere, the app shows a notice saying other apps may show the file
+differently, with a Save as… button: the saved copy is written the way LimarePDF shows it, which every app reads
+the same. `limarepdf-cli` prints a note on stderr. Repaired files get the repair notice instead, and signed files
+the signatures notice, whose signatures show *can't check* with the reason ([details](signatures.md)). Of about
+1,100 test files collected from bug reports, 31 that open without repair get the notice.
+
 Limits:
 
 - What the repair finds may not be what the file's author meant: an object whose header is damaged is lost, and

@@ -107,6 +107,10 @@ available.
 - A damaged file is repaired to open it, with a notice; the original is only replaced if you choose to when saving
   ([details](rendering.md#damaged-files)). Stream data is skipped by its stated length, so an attached PDF or text
   crafted to look like objects isn't taken for the file's own content.
+- A file other PDF apps may show differently (parts it deletes still in use, data after its end, entries pointing
+  at the wrong object) is shown as the PDF standard says, with a notice and a Save as… button that writes a copy
+  every app reads the same; the command line prints a note
+  ([details](rendering.md#files-other-apps-may-show-differently)).
 - A malformed file that makes LimarePDF fail while opening, editing or saving gets an error message, and a failed edit
   leaves the document as it was. A failure while showing the document (pages, thumbnails, search, bookmarks,
   comments, the inspector) turns that tab into an error page with Save a copy and Close; other tabs carry on. So does

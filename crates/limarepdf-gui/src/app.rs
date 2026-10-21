@@ -1387,9 +1387,11 @@ impl App {
                 self.recent.add(&path);
                 tab.dirty = false;
                 tab.scrubbed = false;
-                // The saved file is the repaired copy, with nothing left to repair.
+                // The saved file is the repaired copy, with nothing left to repair, and it
+                // reads the same in every app.
                 tab.repaired = false;
-                tab.banners.retain(|b| b.kind != BannerKind::Repaired);
+                tab.banners
+                    .retain(|b| !matches!(b.kind, BannerKind::Repaired | BannerKind::OtherApps));
                 // The saved copy's signatures are already broken: no need to ask again.
                 tab.signed = false;
                 // The Signatures tab describes the file, so check the saved one (a saved

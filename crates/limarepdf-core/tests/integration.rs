@@ -208,6 +208,31 @@ fn files_tell_whether_they_needed_a_password() {
     assert!(!plain.password_needed());
 }
 
+/// lopdf drops the encryption dictionary of a file it decrypted, which the
+/// cross-reference stream still names; other apps read the file as LimarePDF does.
+#[test]
+fn encrypted_files_read_as_other_apps_read_them() {
+    for (user, cipher) in [
+        ("user", Cipher::Aes128),
+        ("", Cipher::Aes128),
+        ("", Cipher::Aes256),
+        ("", Cipher::Rc4_128),
+    ] {
+        let mut p = doc_with_text();
+        p.set_encryption(Some(Encryption {
+            user_password: user.into(),
+            owner_password: "owner".into(),
+            cipher,
+            restrictions: Restrictions::default(),
+        }));
+        let bytes = p.to_bytes().unwrap();
+        for password in [Some(user), Some("owner")] {
+            let opened = Pdf::from_bytes(&bytes, password).unwrap();
+            assert_eq!(opened.differs(), None, "{cipher:?} {password:?}");
+        }
+    }
+}
+
 #[test]
 fn crop_margins_follow_rotation() {
     let mut p = Pdf::new();

@@ -16,8 +16,16 @@
   damaged and never stops LimarePDF from starting. Turn it off with File > Keep recovery copies of unsaved changes.
 - The window opens at the size it had when LimarePDF last closed, and maximized if it was. Its position isn't
   remembered, since Linux Wayland sessions place windows themselves.
+- A notice when a file isn't put together quite as the PDF format asks, so other PDF apps may show it differently
+  (for example, a part the file deletes is still in use, or data follows its end): a crafted file could show one
+  thing in LimarePDF and another elsewhere. Its Save as… button writes a copy every app reads the same. The command
+  line prints a note on stderr. Until now this only stopped signatures from being vouched for.
 
 ### Fixed
+
+- Every encrypted file whose cross-reference information is a stream (the files LimarePDF itself writes with a
+  password among them) counted as one other PDF apps may read differently, so a signature in one would show
+  *can't check*. Of about 1,100 public test files, 17 no longer count as such, and no others changed.
 
 - Text in many Chinese, Japanese and Korean files came out as "�" or the wrong characters when searching, copying
   or exporting: fonts without a ToUnicode map (common when the fonts aren't embedded) are now read through their

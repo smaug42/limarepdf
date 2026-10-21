@@ -27,6 +27,8 @@ pub enum Kind {
     NoCopies,
     /// The file was damaged, and LimarePDF repaired it to open it.
     Repaired,
+    /// Other PDF apps may show the file differently from LimarePDF (see `Pdf::differs`).
+    OtherApps,
     /// The file was encrypted: saving drops the protection unless it is set again.
     Protected,
     /// Areas are marked for redaction but nothing under them is removed yet.
@@ -77,6 +79,7 @@ impl Banner {
             Kind::LeftoverCopy => icon::FILE_X,
             Kind::NoCopies => icon::WARNING_CIRCLE,
             Kind::Repaired => icon::WRENCH,
+            Kind::OtherApps => icon::NOT_EQUALS,
             Kind::Protected => icon::LOCK_KEY,
             Kind::Redactions => icon::EYE_SLASH,
             Kind::Signing => icon::SIGNATURE,
@@ -98,7 +101,7 @@ impl Banner {
             Kind::Signing => Some(("Finish signing…", Act::FinishSigning)),
             Kind::Scanned => Some(("Recognise text", Act::Ocr)),
             Kind::Forms => Some(("Highlight fields", Act::ToggleFields)),
-            Kind::Repaired | Kind::Recovered => Some(("Save as…", Act::SaveAs)),
+            Kind::Repaired | Kind::Recovered | Kind::OtherApps => Some(("Save as…", Act::SaveAs)),
             Kind::NoCopies => Some(("Save", Act::Save)),
             Kind::LeftoverCopy => Some(("Show file", Act::ShowRecoveryFile)),
             Kind::Xfa | Kind::Missing | Kind::Fonts | Kind::Large => None,
@@ -330,6 +333,15 @@ pub fn detect(pdf: &Pdf, bytes: Option<u64>) -> Vec<Banner> {
                  saving.{signed}"
             ),
         ));
+    } else if pdf.differs().is_some() && pdf.signature_count() == 0 {
+        // A signed file's signatures banner says why they can't be checked instead.
+        v.push(Banner::plain(
+            Kind::OtherApps,
+            "This file isn't put together quite as the PDF format asks, so other PDF apps may \
+             show it differently from LimarePDF: some content could be missing or different in \
+             them. Saving a copy writes it the way LimarePDF shows it, which every app reads \
+             the same.",
+        ));
     }
     if pdf.doc.was_encrypted() {
         v.push(Banner::plain(
@@ -455,6 +467,31 @@ mod tests {
         let b = &detect(&p, None)[0];
         assert!(b.text.contains("repaired"));
         assert_eq!(b.action().map(|a| a.1), Some(Act::SaveAs));
+    }
+
+    /// Data after the end-of-file marker, which apps find the newest revision past in
+    /// different ways.
+    fn with_data_after_its_end() -> Vec<u8> {
+        let mut bytes = blank(1).to_bytes().unwrap();
+        bytes.extend_from_slice(b"\n3 0 obj\n<< /Pages 9 0 R >>\nendobj\n");
+        bytes
+    }
+
+    #[test]
+    fn files_other_apps_may_show_differently_say_so() {
+        let p = Pdf::from_bytes(&with_data_after_its_end(), None).unwrap();
+        assert!(p.differs().is_some());
+        assert_eq!(kinds(&p, None), [Kind::OtherApps]);
+        let b = &detect(&p, None)[0];
+        assert!(
+            b.text.contains("other PDF apps may show it differently"),
+            "{}",
+            b.text
+        );
+        assert_eq!(b.action().map(|a| a.1), Some(Act::SaveAs));
+        // Once saved, it reads the same everywhere.
+        let saved = Pdf::from_bytes(&p.clone().to_bytes().unwrap(), None).unwrap();
+        assert!(kinds(&saved, None).is_empty());
     }
 
     #[test]

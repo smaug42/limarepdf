@@ -1330,13 +1330,21 @@ fn open(p: &Path, pw: &Option<String>) -> Result<Pdf> {
     Pdf::open(p, pw.as_deref()).map(|pdf| note_repaired(p, pdf))
 }
 
-/// Says on stderr when `pdf`, read from `p`, was damaged and repaired to read it.
+/// Says on stderr when `pdf`, read from `p`, was damaged and repaired to read it, or when
+/// other PDF apps may show it differently.
 fn note_repaired(p: &Path, pdf: Pdf) -> Pdf {
+    let name = || display_line(&p.display().to_string(), 300);
     if pdf.repaired() {
         eprintln!(
             "note: {} is damaged; LimarePDF repaired it to read it, and some content may be \
              missing",
-            display_line(&p.display().to_string(), 300)
+            name()
+        );
+    } else if pdf.differs().is_some() {
+        eprintln!(
+            "note: {} isn't put together quite as the PDF format asks, so other PDF apps may \
+             show it differently from LimarePDF",
+            name()
         );
     }
     pdf
