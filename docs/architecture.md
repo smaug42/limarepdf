@@ -44,7 +44,10 @@ stays until lopdf accepts the shorter `/U`; no issue has been filed upstream.
 
 Page content is read by LimarePDF's own parser (`crates/limarepdf-core/src/objects.rs`), which splits it into the objects that
 editing works on and reads the text that search, copying and export use, with its own reader for fonts' ToUnicode
-maps and Adobe's widths for the standard fonts (see [Search and text](search-and-text.md#text-extraction)).
+maps and Adobe's widths for the standard fonts (see [Search and text](search-and-text.md#text-extraction)). CID
+fonts' character maps, and Adobe's tables from character numbers to Unicode, are read with hayro's CMap parser
+(`hayro_cmap`, reached through hayro, which carries the predefined maps); the predefined ones are read once per
+process (`fonts::predefined`).
 
 Redaction (`crates/limarepdf-core/src/redact.rs`) has its own pass over the page content rather than editing the
 parser's objects: it rewrites each text-showing operator character by character, keeping the rest in place with
