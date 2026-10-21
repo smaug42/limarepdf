@@ -21,7 +21,7 @@ Run them with `cargo test --workspace`.
 | `crates/limarepdf-core/tests/render_compare.rs` | Opt-in: LimarePDF's rendering compared with poppler's `pdftoppm` over about 1,100 public test PDFs; see below |
 | `crates/limarepdf-core/tests/save_reopen.rs` | Opt-in: the same public test PDFs saved unchanged, and with page 1 turned and a comment added, then opened again: pages, page sizes and labels, annotations, form fields and values, bookmarks, page text and drawn pages compared with the document before saving; see below |
 | `crates/limarepdf-core/tests/render_region.rs` | Drawing part of a page, as the app's tiles at high zoom do: tiles match the whole page pixel by pixel, are cut at the page's edges, land in place at the highest scale, and keep pictures in dark pages; a page drawn in bands matches one drawn at once, and a drawing stops between bands when asked |
-| `crates/limarepdf-core/tests/import.rs` | Importing images as pages |
+| `crates/limarepdf-core/tests/import.rs` | Importing images as pages; picture sizes read from the file's header, with each format's orientation |
 | `crates/limarepdf-core/tests/scan.rs` | Optimising scanned pages |
 | `crates/limarepdf-core/tests/ocr.rs` | OCR text layers, their placement, search and correction |
 | `crates/limarepdf-core/tests/export.rs` | Exporting pages as images and text |

@@ -31,7 +31,15 @@ pub(crate) fn reading_order(boxes: &[[f32; 4]]) -> Vec<(usize, usize)> {
     let h = heights.get(heights.len() / 2).copied().unwrap_or(10.0);
     let mut out = Vec::with_capacity(boxes.len());
     let mut rows = 0;
-    cut(boxes, (0..boxes.len()).collect(), h, &mut out, &mut rows);
+    // Regions still to read, the next on top: a list rather than recursion, as a page
+    // can have tens of thousands of blocks (one per line) and run out of stack.
+    let mut todo: Vec<Vec<usize>> = vec![(0..boxes.len()).collect()];
+    while let Some(idx) = todo.pop() {
+        match cut(boxes, idx, h) {
+            Ok(parts) => todo.extend(parts.into_iter().rev()),
+            Err(idx) => read_rows(boxes, idx, &mut out, &mut rows),
+        }
+    }
     out
 }
 
@@ -56,15 +64,40 @@ fn gaps(boxes: &[[f32; 4]], idx: &[usize], axis: usize) -> Vec<(f32, f32)> {
     out
 }
 
-/// Where to cut the boxes `idx` of text height `h`, as (axis, position), if anywhere.
-fn split_at(boxes: &[[f32; 4]], idx: &[usize], h: f32) -> Option<(usize, f32)> {
-    let wider = |a: &&(f32, f32), b: &&(f32, f32)| (a.1 - a.0).total_cmp(&(b.1 - b.0));
-    let rows = gaps(boxes, idx, 1);
-    if let Some(g) = rows.iter().max_by(wider) {
-        if g.1 - g.0 >= ROW_GAP * h {
-            return Some((1, (g.0 + g.1) / 2.0));
-        }
+/// The boxes `idx` of text height `h` cut into blocks in reading order, or `idx` back if
+/// they can't be cut. Wide bands across are cut first, all at once: cutting at the widest
+/// and then within each side, as the method goes, ends the same way, since a side's
+/// bands are the region's bands on that side.
+fn cut(boxes: &[[f32; 4]], idx: Vec<usize>, h: f32) -> Result<Vec<Vec<usize>>, Vec<usize>> {
+    if idx.len() < 2 {
+        return Err(idx);
     }
+    let at: Vec<f32> = gaps(boxes, &idx, 1)
+        .into_iter()
+        .filter(|g| g.1 - g.0 >= ROW_GAP * h)
+        .map(|g| (g.0 + g.1) / 2.0)
+        .collect();
+    if !at.is_empty() {
+        // No box crosses a gap, so each lies wholly in one block.
+        let mut parts = vec![Vec::new(); at.len() + 1];
+        for i in idx {
+            parts[at.partition_point(|&y| y <= boxes[i][1])].push(i);
+        }
+        return Ok(parts);
+    }
+    match column_at(boxes, &idx, h) {
+        Some(x) => {
+            let (a, b) = idx.into_iter().partition(|&i| boxes[i][0] < x);
+            Ok(vec![a, b])
+        }
+        None => Err(idx),
+    }
+}
+
+/// Where to cut the boxes `idx` of text height `h` into two columns, if anywhere: the
+/// widest strip down them that separates columns.
+fn column_at(boxes: &[[f32; 4]], idx: &[usize], h: f32) -> Option<f32> {
+    let wider = |a: &&(f32, f32), b: &&(f32, f32)| (a.1 - a.0).total_cmp(&(b.1 - b.0));
     let cols = gaps(boxes, idx, 0);
     let (left, right) = idx.iter().fold((f32::MAX, f32::MIN), |(l, r), &i| {
         (l.min(boxes[i][0]), r.max(boxes[i][2]))
@@ -74,28 +107,7 @@ fn split_at(boxes: &[[f32; 4]], idx: &[usize], h: f32) -> Option<(usize, f32)> {
             g.1 - g.0 >= COL_GAP * h && g.0 - left >= COL_WIDTH * h && right - g.1 >= COL_WIDTH * h
         })
         .max_by(wider)
-        .map(|g| (0, (g.0 + g.1) / 2.0))
-}
-
-fn cut(
-    boxes: &[[f32; 4]],
-    idx: Vec<usize>,
-    h: f32,
-    out: &mut Vec<(usize, usize)>,
-    rows: &mut usize,
-) {
-    if idx.len() > 1 {
-        let split = split_at(boxes, &idx, h);
-        if let Some((axis, at)) = split {
-            // No box crosses the gap, so each lies wholly on one side.
-            let (a, b): (Vec<usize>, Vec<usize>) =
-                idx.into_iter().partition(|&i| boxes[i][axis] < at);
-            cut(boxes, a, h, out, rows);
-            cut(boxes, b, h, out, rows);
-            return;
-        }
-    }
-    read_rows(boxes, idx, out, rows);
+        .map(|g| (g.0 + g.1) / 2.0)
 }
 
 /// Boxes with no wide gaps between them: group them into rows by their vertical middles
@@ -219,5 +231,83 @@ mod tests {
     fn nothing_or_one_word() {
         assert!(reading_order(&[]).is_empty());
         assert_eq!(reading_order(&[word(0.0, 0.0, 5.0)]), [(0, 0)]);
+    }
+
+    #[test]
+    fn many_lines_far_apart_fit_a_small_stack() {
+        // Each line its own block, as on a crafted page: cutting them off one at a time
+        // went 30,000 calls deep, more than a 2 MiB thread (rayon's, the app's) holds.
+        let boxes: Vec<[f32; 4]> = (0..30_000)
+            .map(|i| word(30.0, 20.0 * i as f32, 40.0))
+            .collect();
+        let got = std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(move || order(&boxes))
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(got.into_iter().eq(0..30_000));
+    }
+
+    /// The method as first written: cut at the widest gap, then each side in turn.
+    fn by_widest_cut(boxes: &[[f32; 4]]) -> Vec<(usize, usize)> {
+        fn go(
+            b: &[[f32; 4]],
+            idx: Vec<usize>,
+            h: f32,
+            out: &mut Vec<(usize, usize)>,
+            r: &mut usize,
+        ) {
+            if idx.len() > 1 {
+                let wider = |a: &&(f32, f32), c: &&(f32, f32)| (a.1 - a.0).total_cmp(&(c.1 - c.0));
+                let row = gaps(b, &idx, 1)
+                    .iter()
+                    .max_by(wider)
+                    .filter(|g| g.1 - g.0 >= ROW_GAP * h)
+                    .map(|g| (1, (g.0 + g.1) / 2.0));
+                if let Some((axis, at)) = row.or_else(|| column_at(b, &idx, h).map(|x| (0, x))) {
+                    let (l, m): (Vec<usize>, Vec<usize>) =
+                        idx.into_iter().partition(|&i| b[i][axis] < at);
+                    go(b, l, h, out, r);
+                    go(b, m, h, out, r);
+                    return;
+                }
+            }
+            read_rows(b, idx, out, r);
+        }
+        let mut heights: Vec<f32> = boxes
+            .iter()
+            .map(|b| b[3] - b[1])
+            .filter(|h| *h > 0.0)
+            .collect();
+        heights.sort_by(f32::total_cmp);
+        let h = heights.get(heights.len() / 2).copied().unwrap_or(10.0);
+        let (mut out, mut rows) = (Vec::new(), 0);
+        go(boxes, (0..boxes.len()).collect(), h, &mut out, &mut rows);
+        out
+    }
+
+    #[test]
+    fn cutting_all_wide_bands_at_once_reads_as_cutting_the_widest_first() {
+        // Pseudo-random pages: rows with gaps from a few sizes (so many tie), words in
+        // a few columns, some taller, some overlapping their neighbours.
+        let mut seed = 0x2545_f491_u64;
+        let mut next = |n: u64| {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (seed >> 33) % n
+        };
+        for _ in 0..500 {
+            let mut boxes = Vec::new();
+            let mut y = 0.0;
+            for _ in 0..1 + next(40) {
+                y += [2.0, 9.0, 12.0, 25.0, 40.0][next(5) as usize];
+                for _ in 0..next(6) {
+                    let x = [30.0, 80.0, 150.0, 300.0, 420.0][next(5) as usize] + next(20) as f32;
+                    let tall = if next(8) == 0 { 14.0 } else { 0.0 };
+                    boxes.push([x, y, x + 10.0 + next(120) as f32, y + 10.0 + tall]);
+                }
+            }
+            assert_eq!(reading_order(&boxes), by_widest_cut(&boxes), "{boxes:?}");
+        }
     }
 }

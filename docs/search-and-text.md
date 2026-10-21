@@ -43,6 +43,9 @@ Limits:
   give the wrong characters.
 - CID fonts whose codes are not two bytes long (some older Chinese, Japanese and Korean encodings) can come out
   wrong.
+- A page with tens of thousands of words spaced out along one line, which only a crafted file has, takes seconds to
+  read (50,000 words: 4.5 s), as its columns are worked out one at a time. Tens of thousands of separate lines are
+  quick (50,000: 0.2 s).
 - CID fonts with no ToUnicode map that rely on a standard Unicode character map (such as `UniJIS-UCS2-H`, common
   in Japanese files with fonts that aren't embedded) come out as the wrong characters.
 - A ToUnicode map is read for its first million or so characters and up to 32 MB of text, so a crafted file can't

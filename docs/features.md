@@ -121,7 +121,8 @@ available.
   and a font's character widths are read for 65,536 characters at most. A font's map from characters to text
   (ToUnicode) is read for about a million characters at most, up to 32 MB, with up to 512 bytes of text for one
   character, as the PDF specification allows ([details](search-and-text.md#text-extraction)). Pages of any real
-  size show at every zoom.
+  size show at every zoom. Working out the reading order of a page with tens of thousands of separate lines can't
+  run out of stack (which closes a program outright, with no chance to catch it).
 - Text from a file that the app shows as a label or message (link addresses, bookmark names, comment authors and
   text, file names in tab and window titles and print job titles) has direction-changing (bidi), invisible and
   control characters removed and is shortened when very long, so a link can't pretend to go somewhere else. Form

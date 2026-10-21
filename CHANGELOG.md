@@ -128,6 +128,18 @@
   holds only what its pages use and is written as soon as it is made (406 MB and 39 MB for those two, and faster).
   Extracting pages and printing selected pages also take less memory. If a part can't be written, the message says
   how many files already were.
+- A small crafted page with tens of thousands of lines of text, each set apart from the next, closed LimarePDF
+  (losing unsaved work in every tab) when its text was read for selecting, searching, copying or exporting, and
+  closed `limarepdf-cli text` and `search`. Such pages now read normally, and pages with many separate lines read
+  faster (3,000 lines: 0.1 s, was 0.4 s). The order text is read in is unchanged (the same for all 1,089 public
+  test files).
+- Choosing a picture to place on a page, or a picture stamp, decoded the whole picture only to learn its size,
+  every page of a TIFF: an 8000 × 8000 PNG took 0.6 s and 370 MB more. The size now comes from the file's header.
+  A picture damaged after its header is now refused when it is placed, with the same message, instead of when it
+  is chosen.
+- Exporting pages as images and removing blank pages read each page's fonts again for every page. Each worker now
+  keeps them from page to page: exporting a 203-page Japanese document takes 1.6 s instead of 2.1 s, and finding its
+  blank pages 0.7 s instead of 1.0 s, for up to about 15% more memory on such documents.
 
 ## [0.7.2] - 2026-10-18
 

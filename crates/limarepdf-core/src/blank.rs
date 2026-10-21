@@ -23,15 +23,17 @@ impl Pdf {
         let hp = render::load(self.render_snapshot()?, None)?;
         let blank: Vec<bool> = (0..self.page_count())
             .into_par_iter()
-            .map(|i| {
-                let r = Renderer::new(&hp);
-                let Ok((w, h)) = r.page_size(i) else {
-                    return false;
-                };
-                let scale = (MAX_SIDE / w.max(h).max(1.0)).min(1.0);
-                r.render(i, scale)
-                    .is_ok_and(|b| marked_share(&b) * 100.0 <= tolerance)
-            })
+            .map_init(
+                || Renderer::new(&hp),
+                |r, i| {
+                    let Ok((w, h)) = r.page_size(i) else {
+                        return false;
+                    };
+                    let scale = (MAX_SIDE / w.max(h).max(1.0)).min(1.0);
+                    r.render(i, scale)
+                        .is_ok_and(|b| marked_share(&b) * 100.0 <= tolerance)
+                },
+            )
             .collect();
         Ok((0..blank.len()).filter(|&i| blank[i]).collect())
     }

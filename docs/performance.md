@@ -61,6 +61,72 @@ was a whole copy of the document, and all of them were held until the last was m
 What is left is mostly the document itself, as opened. The files written are the same, byte for byte, as before
 (compared on 390 of the 1,089 public test files, split every 3 pages).
 
+### Reading order, renderers, picture sizes and signatures
+
+Measured on 20 October 2026 on the same machine: before at commit dc4e5e4, after with the changes below. Five
+places an outside review suggested could be faster; three were changed. The command-line rows are the median of
+three runs, the rest single runs of small measuring programs, each in a process of its own.
+
+**Reading order** (the order a page's words are read in, used by selection, search, copying and text export). A
+page is cut at the widest empty band, then each side again, so a page of many separate lines was cut one line at a
+time: time grew with the square of the lines, and each cut went one call deeper, until the program ran out of
+stack and closed. Now every wide band is cut at once, which gives the same order (shown in a test against the old
+method, and the text of all 1,089 public test files is the same), with no deepening calls.
+
+| Generated page | Before | After |
+| --- | --- | --- |
+| 30,000 words in 3,000 lines set apart | 0.42 s | 0.10 s |
+| The same words, lines close together | 0.10 s | 0.10 s |
+| 12,000 words in 6,000 lines set apart | 0.32 s | 0.04 s |
+| 20,000 lines set apart | 1.74 s; closed with a stack overflow on a thread of 2 MB (the app's and the command line's) | 0.08 s |
+| 50,000 lines set apart (a 51 KB file) | closed with a stack overflow | 0.17 s |
+| 50,000 words spaced along one line | closed with a stack overflow | 4.5 s |
+
+Columns are still cut one at a time, as how wide a column must be depends on what is left; only a crafted page
+gets slow that way.
+
+**One renderer per thread.** Exporting pages and finding blank pages made a new renderer for every page, so each
+page read its fonts again. Each thread now keeps one:
+
+| Task | Before | After |
+| --- | --- | --- |
+| 1,000 text pages: render at 100 dpi | 3.90 s, 71 MB | 3.41 s, 80 MB |
+| 200-page scan: render at 100 dpi | 2.13 s, 407 MB | 1.98 s, 407 MB |
+| PDFBox 1910 (42 pages, Japanese fonts): render at 150 dpi | 0.51 s, 523 MB | 0.42 s, 599 MB |
+| pdf.js bug1905623 (203 pages, Japanese fonts): render at 150 dpi | 2.13 s, 597 MB | 1.60 s, 634 MB |
+| pdf.js bug1905623: remove blank pages | 0.95 s, 485 MB | 0.67 s, 457 MB |
+
+Drawn one after another, the 203 pages take 2.9 s with a new renderer each and 0.87 s with one, but one renderer
+keeps every font it has read (1910: 161 MB against 533 MB), which is why it is one per thread. OCR still makes one
+per page: it reads only pages without text, where there are no fonts to keep.
+
+**Picture sizes.** Choosing a picture to place, and a picture stamp, decoded the whole picture to learn its size;
+now the size comes from the file's header. Peak memory includes the file itself, read whole.
+
+| Picture | Before | After |
+| --- | --- | --- |
+| PNG, 8000 × 8000 (181 MB) | 0.60 s, 544 MB | under 1 ms, 177 MB |
+| TIFF, 10 pages of 2550 × 3300 (252 MB, every page decoded) | 0.03 s, 487 MB | under 1 ms, 246 MB |
+| JPEG, 8000 × 8000 (55 MB; only its header was ever read) | 7 ms, 109 MB | under 1 ms, 57 MB |
+
+**Not changed, as the numbers didn't justify it:**
+
+- *Reusing the app's page workers after an edit.* Each edit starts new workers on the new document. Reading the
+  document again takes under 1 ms (the 1,000 text pages 2 ms); the copy handed to the workers takes 1 to 21 ms (the
+  scan) and is needed anyway. What is lost is the renderer's fonts: the next page takes 19 ms instead of 6 ms on
+  PDFBox 1910, 12 ms instead of 2 ms on bug1905623. A renderer can't be kept across documents, as the fonts belong
+  to the old one.
+- *Pictures decoded again for each band.* Since pages are [drawn in bands](rendering.md#large-drawings), a picture
+  across several bands is decoded once per band: a 300 dpi scan page takes 0.11 s instead of 0.05 s, at 600 dpi
+  0.34 s instead of 0.11 s, the same pixels either way. Only hayro, which draws the pages, can keep decoded
+  pictures, so this is recorded for discussion with it.
+- *Reading signed documents again, and trusted certificates.* Checking a file with 1, 5, 20 and 50 signatures
+  takes 1 ms, 8 ms, 74 ms and 0.40 s, of which reading the document is 1 to 4 ms. The trusted certificates are
+  read again for each signature: with 121 of them (a whole system list, far more than anyone trusts in LimarePDF)
+  that adds 5 ms per signature, with a few nothing measurable.
+
+The command-line program is 28.04 MB after these changes, 30 KB (0.1%) larger than before.
+
 ## Memory in the desktop app
 
 Measured by hand on the same machine and commit, each in a newly started app, reading the app's peak and current

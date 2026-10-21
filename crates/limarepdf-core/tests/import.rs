@@ -430,6 +430,55 @@ fn inserts_at_position() {
 }
 
 #[test]
+fn sizes_are_read_from_the_header() {
+    use limarepdf_core::{image_dimensions, Stamp};
+    use tiff::encoder::{colortype, TiffEncoder};
+    use tiff::tags::Tag;
+    let img = DynamicImage::ImageRgb8(quadrants());
+    // The pixels aren't decoded: a PNG whose data is cut off still gives its size, and
+    // so does a TIFF whose second page LimarePDF can't read.
+    let mut png = encode_png(&img);
+    let idat = png.windows(4).position(|w| w == b"IDAT").unwrap();
+    png.truncate(idat + 10);
+    assert_eq!(image_dimensions(&png).unwrap(), (40, 20));
+    let tiff = |orientation: Option<u16>, second: bool| {
+        let mut buf = Cursor::new(Vec::new());
+        let mut enc = TiffEncoder::new(&mut buf).unwrap();
+        let mut a = enc.new_image::<colortype::RGB8>(40, 20).unwrap();
+        if let Some(o) = orientation {
+            a.encoder().write_tag(Tag::Orientation, o).unwrap();
+        }
+        a.write_data(&quadrants().into_raw()).unwrap();
+        if second {
+            enc.write_image::<colortype::Gray32>(2, 2, &[7u32; 4])
+                .unwrap();
+        }
+        buf.into_inner()
+    };
+    assert_eq!(image_dimensions(&tiff(None, true)).unwrap(), (40, 20));
+    // Each format's orientation is still honoured: turned a quarter, the 40 x 20
+    // picture makes a stamp 20 wide and 40 high.
+    let cases = [
+        (
+            encode_png(&img),
+            with_chunk(encode_png(&img), b"eXIf", &exif(6)),
+        ),
+        (
+            encode_jpeg(&img, None),
+            with_exif(encode_jpeg(&img, None), 6),
+        ),
+        (tiff(None, false), tiff(Some(6), false)),
+    ];
+    for (plain, turned) in cases {
+        assert_eq!(image_dimensions(&turned).unwrap(), (40, 20));
+        let (w, h) = Stamp::Picture(&plain).size("").unwrap();
+        assert!(w > h);
+        assert_eq!(Stamp::Picture(&turned).size("").unwrap(), (h, w));
+    }
+    assert!(image_dimensions(b"not an image").is_err());
+}
+
+#[test]
 fn a_bad_file_changes_nothing() {
     let mut p = Pdf::new();
     p.insert_blank(0, 100.0, 100.0).unwrap();
