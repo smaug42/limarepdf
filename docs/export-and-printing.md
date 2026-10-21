@@ -12,6 +12,10 @@ export ([details](rendering.md#large-drawings)).
 Where: the inspector's Export pages as images section, also reached from the top bar's Export menu. It runs in the
 background and asks before replacing files. On the command line: `limarepdf-cli render --format png|jpeg`.
 
+Known limit of the command line: a filled form field with no drawing of its own (some apps leave drawing it to the
+reader) comes out empty in `limarepdf-cli render`'s images. The app draws such fields when it opens a file, so its
+exports show them, and printing draws them everywhere. To be fixed.
+
 ## Text
 
 Export text writes every page's text to a `.txt` file, with pages separated by form feeds, as pdftotext does. Where:
@@ -36,7 +40,8 @@ form.
 A filled field with no drawing of its own is drawn by LimarePDF when printed, however the pages are sent (as a PDF,
 as images, or on Windows). On every system, a filled field meant for printing that has no drawing of its own, and
 whose text LimarePDF can't draw (characters beyond Western European, filled in by an app that left the drawing to the reader), would come out
-empty. Print names those fields and asks first (Print anyway); `limarepdf-cli print` names them and sends nothing.
+empty. Print names those fields and asks first (Print anyway); `limarepdf-cli print` names them and sends nothing
+(it has no way to print anyway: open the file in the app for that).
 
 **Windows** prints through the print spooler. LimarePDF draws each page at the printer's resolution, at most 600 dpi
 and at most 268 million pixels (A0 is drawn at about 415 dpi, which the printer scales up). A page

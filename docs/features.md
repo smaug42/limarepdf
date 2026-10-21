@@ -95,6 +95,8 @@ available.
 ## Known limits
 
 - Header, footer, Bates and watermark text uses Helvetica and Latin-1 only; other characters print as `?`.
+- `limarepdf-cli render` leaves a filled form field empty when the field has no drawing of its own; the app's
+  exports and all printing draw it. To be fixed ([details](export-and-printing.md#pages-as-images)).
 - Headers, footers and watermarks are added to the page content. They are not annotations and cannot be removed one
   by one later; use Undo before saving.
 - Saving rewrites the whole file, except for digitally signed documents, whose changes are added after what was

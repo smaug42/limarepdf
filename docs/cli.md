@@ -31,7 +31,7 @@ happened when reporting it.
 | `limarepdf-cli text in.pdf --pages 1-2` | Print the text of pages |
 | `limarepdf-cli search in.pdf "invoice"` | Find text; `--boxes` also prints where each match is on its page |
 | `limarepdf-cli objects in.pdf --pages 1` | List the editable objects (text lines, images, paths) with their boxes; OCR text is marked "(hidden)" |
-| `limarepdf-cli render in.pdf --dpi 150 --out-dir pngs` | Save pages as images, as the app shows them; `--format jpeg --quality 85` for JPEG |
+| `limarepdf-cli render in.pdf --dpi 150 --out-dir pngs` | Save pages as images, as the app shows them; `--format jpeg --quality 85` for JPEG. Known limit: a filled form field with no drawing of its own comes out empty ([details](export-and-printing.md#pages-as-images)) |
 | `limarepdf-cli annot list in.pdf` | List the annotations (comments, notes, highlights, drawings): number, page, type, author, date and comment, and which one a reply answers. `--pages 2-3` for some pages; links and form fields are left out |
 | `limarepdf-cli annot list in.pdf --json` | The same as a JSON array, with each annotation's colour, opacity and box on the page (points from the top left) |
 | `limarepdf-cli form list in.pdf` | List the form fields: name, kind, value, pages, and whether each is required or read-only, with a choice's options |
@@ -256,6 +256,6 @@ See [Password security](security.md).
 | Command | What it does |
 | --- | --- |
 | `limarepdf-cli printers` | List the printers; the default is marked |
-| `limarepdf-cli print in.pdf --printer Office --pages 1-3 --copies 2 --sides long-edge` | Print; `--as-image` sends pages drawn by LimarePDF. Refuses, naming the fields and sending nothing, when filled fields meant for printing would come out empty (no drawing, and text LimarePDF can't draw) |
+| `limarepdf-cli print in.pdf --printer Office --pages 1-3 --copies 2 --sides long-edge` | Print; `--as-image` sends pages drawn by LimarePDF. Refuses, naming the fields and sending nothing, when filled fields meant for printing would come out empty (no drawing, and text LimarePDF can't draw); to print such a file without them, open it in the app and choose Print anyway |
 
 See [Export and printing](export-and-printing.md).
