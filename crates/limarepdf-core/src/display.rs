@@ -51,6 +51,23 @@ pub fn display_text(s: &str, max: usize) -> String {
     shorten(out.trim().to_string(), max)
 }
 
+/// Names from a file in quotes, each as [`display_line`] shows it: `"A"`, `"A" and "B"`,
+/// `"A", "B" and "C"`; after four, `"A", "B", "C", "D" and 3 more`.
+pub fn quoted_list(names: &[String]) -> String {
+    const SHOWN: usize = 4;
+    let q: Vec<String> = names
+        .iter()
+        .take(SHOWN)
+        .map(|n| format!("\"{}\"", display_line(n, 60)))
+        .collect();
+    match q.as_slice() {
+        [] => String::new(),
+        [one] => one.clone(),
+        _ if names.len() > SHOWN => format!("{} and {} more", q.join(", "), names.len() - SHOWN),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
 fn shorten(s: String, max: usize) -> String {
     match s.char_indices().nth(max.saturating_sub(1)) {
         Some((i, _)) if s[i..].chars().nth(1).is_some() => format!("{}…", s[..i].trim_end()),
@@ -94,5 +111,20 @@ mod tests {
         assert_eq!(display_line("abcdefg", 6), "abcde…");
         assert_eq!(display_line("ééééééé", 3), "éé…");
         assert_eq!(display_line("", 3), "");
+    }
+
+    #[test]
+    fn lists_names() {
+        let names = |n: &[&str]| -> Vec<String> { n.iter().map(|s| s.to_string()).collect() };
+        assert_eq!(quoted_list(&[]), "");
+        assert_eq!(quoted_list(&names(&["a\nb"])), "\"a b\"");
+        assert_eq!(
+            quoted_list(&names(&["a", "b", "c"])),
+            "\"a\", \"b\" and \"c\""
+        );
+        assert_eq!(
+            quoted_list(&names(&["a", "b", "c", "d", "e", "f"])),
+            "\"a\", \"b\", \"c\", \"d\" and 2 more"
+        );
     }
 }

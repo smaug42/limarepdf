@@ -33,6 +33,11 @@ some printer setups print every page blurred when a job leaves it out. Form fiel
 (those meant for printing), since some CUPS setups drop fields without drawing them; the open document keeps its
 form.
 
+A filled field with no drawing of its own is drawn by LimarePDF when printed, however the pages are sent (as a PDF,
+as images, or on Windows). On every system, a filled field meant for printing that has no drawing of its own, and
+whose text LimarePDF can't draw (characters beyond Western European, filled in by an app that left the drawing to the reader), would come out
+empty. Print names those fields and asks first (Print anyway); `limarepdf-cli print` names them and sends nothing.
+
 **Windows** prints through the print spooler. LimarePDF draws each page at the printer's resolution, at most 600 dpi
 and at most 268 million pixels (A0 is drawn at about 415 dpi, which the printer scales up). A page
 prints at actual size, shrunk to the printable area when it is larger, centred, and turned when a landscape page meets

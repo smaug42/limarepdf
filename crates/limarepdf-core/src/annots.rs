@@ -12,8 +12,9 @@ use anyhow::anyhow;
 use lopdf::{Dictionary, Object, ObjectId};
 use std::collections::HashSet;
 
-/// Limit per page that keeps a malformed or hostile file from running away.
-const MAX_ANNOTS: usize = 10_000;
+/// How many of a page's annotations are shown, a limit that keeps a malformed or hostile
+/// file from running away. Removing information reads them all.
+pub const MAX_ANNOTS: usize = 10_000;
 
 /// Annotation flags (`/F`).
 const HIDDEN: i64 = 1 << 1;
@@ -257,21 +258,73 @@ impl Pdf {
     /// drawn in).
     pub fn page_annotations(&self, page_index: usize) -> Result<Vec<Annot>> {
         let page = self.page_id_at(page_index)?;
+        self.annotations_in(page_index, self.annot_refs(page))
+    }
+
+    /// Every annotation on every page, without [`Pdf::annot_refs`]'s limit: for removing
+    /// information, where one left out could keep what should go.
+    pub(crate) fn every_annotation(&self) -> Vec<Annot> {
+        let ids = self.page_ids();
+        (0..ids.len())
+            .flat_map(|i| {
+                self.annotations_in(i, self.all_annot_refs(ids[i]))
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
+    fn annotations_in(&self, page_index: usize, refs: Vec<ObjectId>) -> Result<Vec<Annot>> {
+        let page = self.page_id_at(page_index)?;
         let (vd, _, _) = self.vis_down(page);
         let to_vis = mx::inv(vd).ok_or_else(|| anyhow!("degenerate page transform"))?;
-        Ok(self
-            .annot_refs(page)
+        Ok(refs
             .into_iter()
             .filter_map(|id| self.annot(id, page_index, to_vis))
             .collect())
     }
 
+    /// The pages (zero-based) with more annotations than are shown ([`MAX_ANNOTS`]).
+    pub fn pages_past_annotation_limit(&self) -> Vec<usize> {
+        let ids = self.page_ids();
+        (0..ids.len())
+            .filter(|&i| {
+                self.annots_array(ids[i])
+                    .is_some_and(|a| a.len() > MAX_ANNOTS)
+            })
+            .collect()
+    }
+
+    /// Give annotations written into a page's `/Annots` directly, which the format doesn't
+    /// allow, objects of their own, so that removing information finds them like any other.
+    /// How they look and what they hold is unchanged.
+    pub(crate) fn own_direct_annots(&mut self) -> Result<()> {
+        for page in self.page_ids() {
+            let Some(list) = self.annots_array(page) else {
+                continue;
+            };
+            if !list.iter().any(|o| o.as_dict().is_ok()) {
+                continue;
+            }
+            let list: Vec<Object> = list
+                .into_iter()
+                .map(|o| match o {
+                    Object::Dictionary(d) => Object::Reference(self.doc.add_object(d)),
+                    o => o,
+                })
+                .collect();
+            self.doc.get_dictionary_mut(page)?.set("Annots", list);
+        }
+        Ok(())
+    }
+
     /// Remove the annotations `pick` chooses, with the replies to them and their popups.
-    /// Locked ones are removed too; the app checks [`Annot::locked`] first. Returns how
-    /// many were removed, replies included.
+    /// Locked ones are removed too; the app checks [`Annot::locked`] first. Every
+    /// annotation is offered to `pick`, not only those shown. Returns how many were
+    /// removed, replies included.
     pub fn remove_annotations(&mut self, pick: impl Fn(&Annot) -> bool) -> Result<usize> {
+        self.own_direct_annots()?;
         let gone = self
-            .annotations()
+            .every_annotation()
             .iter()
             .filter(|a| pick(a))
             .map(|a| a.id)
@@ -282,7 +335,7 @@ impl Pdf {
     /// Remove the annotations `gone` (of any kind, links and form widgets too), with the
     /// replies to them and their popups. Returns how many were removed, replies included.
     pub(crate) fn drop_annotations(&mut self, mut gone: HashSet<ObjectId>) -> Result<usize> {
-        let all = self.annotations();
+        let all = self.every_annotation();
         loop {
             let before = gone.len();
             for a in &all {
@@ -389,10 +442,9 @@ impl Pdf {
             .cloned()
     }
 
-    /// The annotations a page refers to (direct dictionaries, which the format doesn't
-    /// allow, are skipped).
     /// Every annotation a page lists, without [`Pdf::annot_refs`]'s limit: for removing
-    /// information, where one left out could keep what should go.
+    /// information, where one left out could keep what should go. Direct dictionaries are
+    /// skipped; [`Pdf::own_direct_annots`] gives them objects first.
     pub(crate) fn all_annot_refs(&self, page: ObjectId) -> Vec<ObjectId> {
         self.annots_array(page)
             .unwrap_or_default()
@@ -401,6 +453,8 @@ impl Pdf {
             .collect()
     }
 
+    /// The annotations a page refers to, the first [`MAX_ANNOTS`] only: for showing them
+    /// (direct dictionaries, which the format doesn't allow, are skipped).
     pub(crate) fn annot_refs(&self, page: ObjectId) -> Vec<ObjectId> {
         self.annots_array(page)
             .unwrap_or_default()

@@ -970,9 +970,9 @@ impl Pdf {
     }
 
     /// The areas the document's redaction marks cover: (page, box in displayed-page
-    /// points, y down), one per marked area.
+    /// points, y down), one per marked area. Every mark counts, not only those shown.
     pub fn redaction_marks(&self) -> Vec<(usize, [f32; 4])> {
-        self.annotations()
+        self.every_annotation()
             .into_iter()
             .filter(|a| a.kind == crate::AnnotKind::Redact)
             .flat_map(|a| {
@@ -989,13 +989,14 @@ impl Pdf {
     /// Apply the document's redaction marks: remove everything under them as
     /// [`Pdf::redact`] does, then remove the marks.
     pub fn apply_redactions(&mut self) -> Result<RedactReport> {
+        self.own_direct_annots()?;
         let marks = self.redaction_marks();
         if marks.is_empty() {
             bail!("the document has no redaction marks");
         }
         let report = self.redact(&marks)?;
         let ids = self
-            .annotations()
+            .every_annotation()
             .into_iter()
             .filter(|a| a.kind == crate::AnnotKind::Redact)
             .map(|a| a.id)
@@ -1035,6 +1036,7 @@ impl Pdf {
             }
             by_page.entry(p).or_default().push(b);
         }
+        self.own_direct_annots()?;
         let mut report = RedactReport::default();
         let mut dropped = HashSet::new();
         for (&p, rects) in &by_page {
@@ -1130,7 +1132,7 @@ impl Pdf {
     fn redact_annots(&mut self, page: ObjectId, areas: &[[f32; 4]]) -> Result<usize> {
         let mut gone = HashSet::new();
         let mut widgets = HashSet::new();
-        for id in self.annot_refs(page) {
+        for id in self.all_annot_refs(page) {
             let Ok(d) = self.doc.get_dictionary(id) else {
                 continue;
             };
@@ -1488,7 +1490,7 @@ impl Pdf {
                 fold(&b.title),
             ));
         }
-        for a in self.annotations() {
+        for a in self.every_annotation() {
             let all = format!("{} {} {}", a.contents, a.author, a.subject);
             other.push((format!("a comment on page {}", a.page + 1), fold(&all)));
         }

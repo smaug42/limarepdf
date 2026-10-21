@@ -245,6 +245,8 @@ enum Dialog {
     /// Save (`true`: as a new file) with this many marked areas not yet applied?
     ConfirmSaveMarks(Asked, bool, usize),
     Print(Asked, dlg::Print),
+    /// Print with fields whose values won't show on paper?
+    ConfirmPrintFields(Box<PrintFields>),
     SaveSelection(Asked, dlg::Layout),
     /// Open this web or email address from a link?
     OpenLink(String),
@@ -288,6 +290,15 @@ struct SaveDisallowed {
     asked: Asked,
     bytes: Vec<u8>,
     disallowed: limarepdf_core::DisallowedChanges,
+}
+
+/// A print job waiting for the user to agree that these fields won't show on paper:
+/// LimarePDF can't draw their values, and they have no drawing of their own.
+struct PrintFields {
+    asked: Asked,
+    fields: Vec<String>,
+    pages: Vec<usize>,
+    opts: print::PrintOptions,
 }
 
 /// What selected text is printed or saved from, taken from the tab so a background job
@@ -1154,6 +1165,16 @@ impl App {
         });
         self.busy = true;
         self.status = format!("{title}…");
+    }
+
+    /// Send `pages` (zero-based) of the active tab to the printer on a background thread.
+    fn start_print(&mut self, ctx: &egui::Context, pages: Vec<usize>, opts: print::PrintOptions) {
+        let printer = opts.printer.clone().unwrap_or_default();
+        self.spawn_job(ctx, "Print", move |p| {
+            let reply = p.print(&pages, &opts)?;
+            let n = pages.len();
+            Ok((false, format!("Sent {n} page(s) to {printer}.\n{reply}")))
+        });
     }
 
     /// Write page images on a background thread; the document is not changed.
@@ -2651,11 +2672,17 @@ impl App {
                     } else {
                         match parse_page_range(&s.pages, t.page_count()) {
                             Ok(pages) => {
-                                self.spawn_job(ctx, "Print", move |p| {
-                                    let reply = p.print(&pages, &opts)?;
-                                    let n = pages.len();
-                                    Ok((false, format!("Sent {n} page(s) to {printer}.\n{reply}")))
-                                });
+                                let fields = t.pdf.unprintable_fields(&pages);
+                                if fields.is_empty() {
+                                    self.start_print(ctx, pages, opts);
+                                } else {
+                                    self.dialog = Dialog::ConfirmPrintFields(Box::new(PrintFields {
+                                        asked: Asked::of(t),
+                                        fields,
+                                        pages,
+                                        opts,
+                                    }));
+                                }
                                 done = true;
                             }
                             Err(e) => t.error = Some(e.to_string()),
@@ -2665,6 +2692,32 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
+            Dialog::ConfirmPrintFields(q) => {
+                let (these, values) = match q.fields.len() {
+                    1 => ("This field", "its value"),
+                    _ => ("These fields", "their values"),
+                };
+                match dlg::confirm(
+                    ctx,
+                    "Print without these fields?",
+                    &format!(
+                        "{these} won't show on paper, because LimarePDF can't draw {values}: \
+                         {}.\n\nPrint anyway?",
+                        limarepdf_core::quoted_list(&q.fields)
+                    ),
+                    "Print anyway",
+                ) {
+                    Outcome::Apply => {
+                        if self.still(&q.asked) {
+                            let pages = std::mem::take(&mut q.pages);
+                            self.start_print(ctx, pages, q.opts.clone());
+                        }
+                        done = true;
+                    }
+                    Outcome::Cancel => done = true,
+                    Outcome::Open => {}
+                }
+            }
             Dialog::SaveSelection(asked, layout) => match dlg::save_selection(ctx, layout) {
                 Outcome::Apply => {
                     let layout = *layout;
@@ -3901,6 +3954,52 @@ mod tests {
             matches!(&app.dialog, Dialog::Message(_, text) if text.contains("was closed")),
             "no message saying why"
         );
+    }
+
+    #[test]
+    fn printing_asks_first_when_fields_would_print_empty() {
+        use lopdf::{dictionary, Object, StringFormat};
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, 1);
+        // A printed text field filled in another app with text LimarePDF can't draw, and
+        // no drawing of its own.
+        assert!(app.tabs[0].edit(&ctx, |p| {
+            let mut v = vec![0xFE, 0xFF];
+            v.extend("日本語".encode_utf16().flat_map(u16::to_be_bytes));
+            let rect: Vec<Object> = [20, 20, 280, 50].map(Object::from).to_vec();
+            let w = p.doc.add_object(dictionary! {
+                "Type" => "Annot", "Subtype" => "Widget", "FT" => "Tx", "F" => 4,
+                "T" => Object::string_literal("Name"), "Rect" => rect,
+                "V" => Object::String(v, StringFormat::Hexadecimal),
+            });
+            let page = p.page_ids()[0];
+            p.doc
+                .get_dictionary_mut(page)?
+                .set("Annots", vec![w.into()]);
+            p.doc
+                .catalog_mut()?
+                .set("AcroForm", dictionary! { "Fields" => vec![w.into()] });
+            Ok(())
+        }));
+        let state = app.tabs[0].state();
+        let printer = print::Printer {
+            name: "limarepdf-test-no-such-printer".into(),
+            default: true,
+        };
+        app.dialog = Dialog::Print(app.asked(), dlg::Print::new(vec![printer]));
+
+        click(&mut app, &ctx, "Print");
+        // Nothing sent yet: the question names the field.
+        assert!(!app.busy, "a print job started");
+        match &app.dialog {
+            Dialog::ConfirmPrintFields(q) => assert_eq!(q.fields, ["Name"]),
+            _ => panic!("no question asked"),
+        }
+        // The question's own Cancel is its window's close button.
+        click(&mut app, &ctx, "Close window");
+        assert!(matches!(app.dialog, Dialog::None));
+        assert!(!app.busy, "a print job started");
+        assert!(app.tabs[0].state() == state);
     }
 
     #[test]

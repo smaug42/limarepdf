@@ -278,31 +278,38 @@ impl Pdf {
     /// flag but not NoView, so annotations flagged NoView are marked Hidden in the copy that
     /// is serialised. The document itself is not changed.
     pub fn render_snapshot(&mut self) -> Result<Vec<u8>> {
-        self.snapshot_hiding(|flags, _| flags & 32 != 0)
+        self.snapshot_hiding(|flags, _| flags & 32 != 0, false)
     }
 
     /// Like [`Pdf::render_snapshot`], for the app, which draws sticky notes itself at a
     /// fixed size on screen: notes are left out too.
     pub fn app_snapshot(&mut self) -> Result<Vec<u8>> {
-        self.snapshot_hiding(|flags, sub| flags & 32 != 0 || sub == b"Text")
+        self.snapshot_hiding(|flags, sub| flags & 32 != 0 || sub == b"Text", false)
     }
 
     /// Like [`Pdf::render_snapshot`], for printing: annotations without the Print flag
-    /// (bit 3) are marked Hidden instead.
+    /// (bit 3) are marked Hidden instead, and form fields are drawn as
+    /// [`Pdf::refresh_appearances`] would draw them in every document, since the command
+    /// line, unlike the app, doesn't draw them when opening a file.
     pub fn print_snapshot(&mut self) -> Result<Vec<u8>> {
-        self.snapshot_hiding(|flags, _| flags & 4 == 0)
+        self.snapshot_hiding(|flags, _| flags & 4 == 0, true)
     }
 
     /// A snapshot in which annotations whose flags and subtype match `hide` are marked
     /// Hidden, and annotations without a drawing get LimarePDF's (the document itself keeps
-    /// none). In a signed document, form fields are drawn this way too, as
-    /// [`Pdf::refresh_appearances`] would draw them: the app doesn't draw a signed
-    /// document's fields into it when opening it, so that saving adds only the edits made
-    /// to what was signed.
-    fn snapshot_hiding(&mut self, hide: impl Fn(i64, &[u8]) -> bool) -> Result<Vec<u8>> {
+    /// none). In a signed document, or in any with `all_fields`, form fields are drawn this
+    /// way too, as [`Pdf::refresh_appearances`] would draw them: the app doesn't draw a
+    /// signed document's fields into it when opening it, so that saving adds only the edits
+    /// made to what was signed.
+    fn snapshot_hiding(
+        &mut self,
+        hide: impl Fn(i64, &[u8]) -> bool,
+        all_fields: bool,
+    ) -> Result<Vec<u8>> {
         let ids = self.annots_where(hide);
         let missing = self.missing_appearances(&self.page_ids());
-        let fields = self.signature_count() > 0 && !self.appearances_to_draw().is_empty();
+        let fields =
+            (all_fields || self.signature_count() > 0) && !self.appearances_to_draw().is_empty();
         if ids.is_empty() && missing.is_empty() && !fields {
             return self.snapshot();
         }

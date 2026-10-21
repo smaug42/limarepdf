@@ -8,6 +8,13 @@ fn text(s: &str) -> Object {
     Object::String(s.as_bytes().to_vec(), StringFormat::Literal)
 }
 
+/// A text string in UTF-16, as PDF makers write text beyond Latin-1.
+fn utf16(s: &str) -> Object {
+    let mut b = vec![0xFE, 0xFF];
+    b.extend(s.encode_utf16().flat_map(u16::to_be_bytes));
+    Object::String(b, StringFormat::Hexadecimal)
+}
+
 fn rect(x: f32, y: f32, w: f32, h: f32) -> Object {
     vec![x.into(), y.into(), (x + w).into(), (y + h).into()].into()
 }
@@ -229,4 +236,82 @@ fn flattens_some_pages_and_keeps_the_rest_fillable() {
     p.set_field("both", FieldValue::Text("MM".into())).unwrap();
     assert_eq!(p.flatten_form(Some(&[1])).unwrap(), 1);
     assert!(!has_form(&p));
+}
+
+#[test]
+fn refuses_to_lose_values_it_cannot_draw() {
+    let (mut p, _) = doc(vec![
+        // Filled in another app, which left the drawing to the reader: LimarePDF can't
+        // write these characters in a field yet.
+        widget(dictionary! {
+            "FT" => "Tx", "T" => text("name"), "Rect" => rect(10.0, 150.0, 150.0, 20.0),
+            "V" => utf16("日本語"),
+        }),
+        // No drawing either, but LimarePDF can draw it.
+        widget(dictionary! {
+            "FT" => "Tx", "T" => text("city"), "Rect" => rect(10.0, 100.0, 150.0, 20.0),
+            "V" => text("Oslo"),
+        }),
+    ]);
+    // Saving numbers an object of its own, so each save is of a copy.
+    let before = p.clone().to_bytes().unwrap();
+
+    let e = p.flatten_form(None).unwrap_err().to_string();
+    assert!(e.contains("\"name\"") && !e.contains("city"), "{e}");
+    assert!(e.ends_with("Nothing was changed."), "{e}");
+    assert!(
+        p.clone().to_bytes().unwrap() == before,
+        "the document changed"
+    );
+    assert_eq!(p.form_fields().len(), 2);
+
+    // The other page has none of its widgets, so there is nothing to lose there.
+    assert_eq!(p.flatten_form(Some(&[1])).unwrap(), 0);
+    assert_eq!(p.form_fields().len(), 2);
+}
+
+#[test]
+fn flattens_values_drawn_elsewhere_and_ones_not_shown() {
+    let (mut p, ids) = doc(vec![
+        // The same text, with a drawing of its own from the app that filled it.
+        widget(dictionary! {
+            "FT" => "Tx", "T" => text("drawn"), "Rect" => rect(10.0, 150.0, 150.0, 20.0),
+            "V" => utf16("日本語"),
+        }),
+        // Hidden: removed, not drawn, so nothing shown is lost.
+        widget(dictionary! {
+            "FT" => "Tx", "T" => text("hidden"), "Rect" => rect(10.0, 100.0, 150.0, 20.0),
+            "V" => utf16("日本語"), "F" => 2,
+        }),
+        // No size: shows nothing anywhere.
+        widget(dictionary! {
+            "FT" => "Tx", "T" => text("tiny"), "Rect" => rect(10.0, 80.0, 0.0, 0.0),
+            "V" => utf16("日本語"),
+        }),
+        // Empty, and a push button: no values to lose.
+        widget(dictionary! {
+            "FT" => "Tx", "T" => text("empty"), "Rect" => rect(10.0, 50.0, 150.0, 20.0),
+        }),
+        widget(dictionary! {
+            "FT" => "Btn", "Ff" => 1 << 16, "T" => text("button"),
+            "Rect" => rect(200.0, 50.0, 50.0, 20.0),
+        }),
+    ]);
+    let look = lopdf::Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Form", "BBox" => rect(0.0, 0.0, 150.0, 20.0),
+        },
+        b"0 g 0 0 150 20 re f".to_vec(),
+    );
+    let look = p.doc.add_object(look);
+    p.doc
+        .get_dictionary_mut(ids[0])
+        .unwrap()
+        .set("AP", dictionary! { "N" => look });
+
+    p.flatten_form(None).unwrap();
+    assert!(!has_form(&p));
+    // The drawn field's box, at y 30-50 from the top.
+    let b = ink(&mut p, 0).expect("the drawing kept");
+    assert!(b[1] >= 29 && b[3] <= 51, "{b:?}");
 }

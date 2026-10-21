@@ -264,8 +264,10 @@ shows its signature's details (see [Digital signatures](#digital-signatures)).
 
 LimarePDF draws the filled fields itself, so the values show the same in other readers. Text must be Latin-1 (Western
 European) for now; anything else is refused with a message rather than saved wrongly. Fields that have a value but
-no drawing of their own are drawn when the file opens. See [Command line](cli.md#forms) for filling forms in
-scripts.
+no drawing of their own are drawn when the file opens. A value filled in by another app in other characters (Japanese,
+for example) shows only if that app drew it: if it didn't, LimarePDF can't either, so Flatten form… stops and names
+the fields rather than lose their values, and Print asks whether to print without them, since they would come out
+empty on paper. See [Command line](cli.md#forms) for filling forms in scripts.
 
 ## Filling and signing
 
@@ -367,6 +369,7 @@ something to do and × to dismiss it. At most two show at a time.
 | Areas are marked for redaction but the marks haven't been applied (kept up to date while you work) | Apply redactions… |
 | Signatures and other items put down with the Sign tool can still be moved (kept up to date while you work) | Finish signing… |
 | Its pages are scans without text, so they cannot be searched or copied (checked on the first 20 pages) | Recognise text |
+| A page has more annotations than LimarePDF shows (10,000), so some can't be seen or chosen; Remove comments, removing attachments and redaction still deal with all of them, and redaction marks among them are applied | |
 | It is a form made for Adobe Reader (an XFA form), which only Adobe software can show or fill in; LimarePDF shows the placeholder page the file contains, often "Please wait..." | |
 | Parts of it couldn't be drawn: a picture that can't be decoded. Found as pages are drawn, so it can appear later; it comes back if something new turns up after you dismiss it | |
 | Fonts it names aren't in the file or installed: which ones are shown with a similar font, or which language's text can't be shown at all, and what to install to see it as it was made (such as Noto Sans CJK JP for Japanese). Found as pages are drawn, like the one above ([details](rendering.md#fonts-that-arent-embedded)) | |

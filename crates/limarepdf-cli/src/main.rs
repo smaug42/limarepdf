@@ -3608,6 +3608,19 @@ fn run(cmd: Cmd) -> Result<()> {
         } => {
             let mut p = open(&input, &password)?;
             let idx = parse_page_range(&pages, p.page_count())?;
+            // The app asks; here the fields are named instead.
+            let blank = p.unprintable_fields(&idx);
+            if !blank.is_empty() {
+                let (these, their) = match blank.len() {
+                    1 => ("this field", "its value"),
+                    _ => ("these fields", "their values"),
+                };
+                bail!(
+                    "{these} wouldn't show on paper, because LimarePDF can't draw {their}: {}. \
+                     Nothing was sent to the printer.",
+                    limarepdf_core::quoted_list(&blank)
+                );
+            }
             let opts = print::PrintOptions {
                 printer,
                 copies,

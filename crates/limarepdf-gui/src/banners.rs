@@ -37,6 +37,8 @@ pub enum Kind {
     Signing,
     /// An XFA-only form: only Adobe software builds its pages.
     Xfa,
+    /// Pages have more annotations than LimarePDF shows.
+    ManyAnnotations,
     /// Parts of pages couldn't be drawn.
     Missing,
     /// Fonts the document names aren't installed: which, and what to install.
@@ -84,6 +86,7 @@ impl Banner {
             Kind::Redactions => icon::EYE_SLASH,
             Kind::Signing => icon::SIGNATURE,
             Kind::Xfa => icon::WARNING,
+            Kind::ManyAnnotations => icon::CHATS,
             Kind::Missing => icon::IMAGE_BROKEN,
             Kind::Fonts => icon::TEXT_AA,
             Kind::Scanned => icon::SCAN,
@@ -104,7 +107,7 @@ impl Banner {
             Kind::Repaired | Kind::Recovered | Kind::OtherApps => Some(("Save as…", Act::SaveAs)),
             Kind::NoCopies => Some(("Save", Act::Save)),
             Kind::LeftoverCopy => Some(("Show file", Act::ShowRecoveryFile)),
-            Kind::Xfa | Kind::Missing | Kind::Fonts | Kind::Large => None,
+            Kind::Xfa | Kind::ManyAnnotations | Kind::Missing | Kind::Fonts | Kind::Large => None,
         }
     }
 }
@@ -364,6 +367,30 @@ pub fn detect(pdf: &Pdf, bytes: Option<u64>) -> Vec<Banner> {
              or fill it in; what you see is the placeholder page the file contains.",
         ));
     }
+    let crowded: Vec<String> = pdf
+        .pages_past_annotation_limit()
+        .iter()
+        .map(|p| (p + 1).to_string())
+        .collect();
+    if !crowded.is_empty() {
+        let names: Vec<&str> = crowded.iter().map(String::as_str).collect();
+        let (pages, have) = match names.len() {
+            1 => ("Page", "has"),
+            _ => ("Pages", "have"),
+        };
+        let shown = limarepdf_core::MAX_ANNOTS;
+        v.push(Banner::plain(
+            Kind::ManyAnnotations,
+            format!(
+                "{pages} {} {have} more annotations than LimarePDF shows ({},{:03}), so some \
+                 can't be seen or chosen here. Removing comments or redacting still deals with \
+                 all of them.",
+                list(&names),
+                shown / 1000,
+                shown % 1000
+            ),
+        ));
+    }
     let scans = scanned_pages(pdf);
     if scans > 0 {
         let what = if scans == pdf.page_count() {
@@ -591,6 +618,37 @@ mod tests {
         let catalog = p.doc.catalog_mut().unwrap();
         catalog.set("AcroForm", dictionary! { "Fields" => empty, "XFA" => xfa });
         assert_eq!(kinds(&p, None), [Kind::Xfa]);
+    }
+
+    #[test]
+    fn pages_with_more_annotations_than_shown_say_so() {
+        let mut p = blank(3);
+        let note = dictionary! {
+            "Type" => "Annot", "Subtype" => "Text",
+            "Rect" => vec![0.into(), 0.into(), 5.into(), 5.into()],
+        };
+        let mut list: Vec<Object> = (0..limarepdf_core::MAX_ANNOTS)
+            .map(|_| p.doc.add_object(note.clone()).into())
+            .collect();
+        // Exactly as many as are shown: no banner.
+        let first = p.page_ids()[0];
+        let page = p.doc.get_dictionary_mut(first).unwrap();
+        page.set("Annots", list.clone());
+        assert!(kinds(&p, None).is_empty());
+        // One more on the second page.
+        list.push(p.doc.add_object(note).into());
+        let second = p.page_ids()[1];
+        let page = p.doc.get_dictionary_mut(second).unwrap();
+        page.set("Annots", list);
+        assert_eq!(kinds(&p, None), [Kind::ManyAnnotations]);
+        let b = &detect(&p, None)[0];
+        assert!(
+            b.text
+                .starts_with("Page 2 has more annotations than LimarePDF shows (10,000)"),
+            "{}",
+            b.text
+        );
+        assert_eq!(b.action(), None);
     }
 
     #[test]

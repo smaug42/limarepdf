@@ -198,6 +198,7 @@ impl Pdf {
         if strict {
             self.check_remove_hidden(what)?;
         }
+        self.own_direct_annots()?;
         let mut report = HiddenReport::default();
         for h in Hidden::ALL {
             if !what.contains(&h) {
@@ -293,7 +294,7 @@ impl Pdf {
         }
         n += self.drop_keys_everywhere(&[b"AF"]);
         let files: HashSet<ObjectId> = self
-            .annotations()
+            .every_annotation()
             .into_iter()
             .filter(|a| matches!(&a.kind, crate::AnnotKind::Other(s) if s == "FileAttachment"))
             .map(|a| a.id)

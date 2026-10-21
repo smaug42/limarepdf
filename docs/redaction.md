@@ -27,7 +27,8 @@ For each area:
 - **Grouped content** that several pages share (a logo, a header) is redacted inside, on this page only; other pages
   keep it as it was.
 - **Comments, links and form fields** touching the area are removed, with the replies to them. A removed field loses
-  its value.
+  its value. All of a page's are checked, also on a page with more than the 10,000 the app shows, and so are all
+  of its redaction marks when they are applied.
 - **Alternative text** that accessibility tools and copying use, on content that lost anything.
 - The page's **thumbnail picture** and private application data.
 
@@ -70,7 +71,8 @@ removes it. The app lists what this document has of each kind; what is ticked is
 
 Not ticked at first, as they are often wanted:
 
-- **Comments and markup** (redaction marks stay).
+- **Comments and markup** (redaction marks stay), every one, also on a page with more than the 10,000 the app
+  shows. Attached files are removed in the same way.
 - **Form field values:** every field's value is cleared for good, read-only fields included, along with default
   values (so Reset form brings nothing back), values a field takes from a parent field, rich text and the drawings
   that showed them; checkboxes and radio buttons are switched off. Fields LimarePDF can't draw lose their drawing,

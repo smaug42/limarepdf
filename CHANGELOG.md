@@ -1,5 +1,24 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Flattening a form lost a filled field's value when the field had no drawing of its own and LimarePDF can't draw
+  its text (Japanese, for example, filled in by an app that leaves the drawing to the reader): the field went and
+  its value with it. Flattening now refuses, with nothing changed, and names the fields. Printing asks first
+  whether to print without them, as they would come out empty on paper, and the command line's `print` refuses
+  and names them.
+- On a page with more than 10,000 annotations, the ones past the 10,000 LimarePDF shows were left alone by
+  Remove comments, Remove attachments (the attached file stayed in the document) and redaction (comments
+  touching a marked area stayed, and a redaction mark among them was never applied, with nothing said). Removing a
+  comment also kept its replies there. These now deal with every annotation, as do annotations written into the
+  page in a way the PDF format doesn't allow. Such a page gets a notice, since what is past the limit can't be
+  seen in the app.
+- Printing from the command line with `--as-image`, and every command-line print on Windows, left a filled form
+  field blank when the field had no drawing of its own, even one LimarePDF can draw. Its value is now drawn in, as
+  the app and ordinary printing already did.
+
 ## [0.8.0] - 2026-10-20
 
 ### Added

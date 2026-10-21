@@ -44,7 +44,7 @@ happened when reporting it.
 | `limarepdf-cli form fill in.pdf -o out.pdf --set name=Ann --set agree=on` | Fill in fields. Checkboxes take `on` or `off`; a multi-select list takes its choices separated by `\|` |
 | `limarepdf-cli form fill in.pdf -o out.pdf --values values.json` | Fill in fields from a JSON object in the form `limarepdf-cli form list --json` prints, so you can list, edit and fill. A choice can be given by its export value or by the text shown for it. `--set` can be added and is applied after the file |
 | `limarepdf-cli form reset in.pdf -o out.pdf` | Put every field back to its default value |
-| `limarepdf-cli form flatten in.pdf -o out.pdf` | Draw the fields into the pages as they look now and remove them, so the values can't be changed. `--pages 1-3` flattens only those pages; fields elsewhere stay fillable |
+| `limarepdf-cli form flatten in.pdf -o out.pdf` | Draw the fields into the pages as they look now and remove them, so the values can't be changed. `--pages 1-3` flattens only those pages; fields elsewhere stay fillable. Refuses, naming the fields, when a shown value has no drawing and LimarePDF can't draw it (text beyond Western European), rather than lose it |
 | `limarepdf-cli form fill in.pdf -o out.pdf --values values.json --flatten` | Fill in, then flatten |
 
 Filling checks every value first: an unknown field name, a read-only field, text too long for the field, a line
@@ -256,6 +256,6 @@ See [Password security](security.md).
 | Command | What it does |
 | --- | --- |
 | `limarepdf-cli printers` | List the printers; the default is marked |
-| `limarepdf-cli print in.pdf --printer Office --pages 1-3 --copies 2 --sides long-edge` | Print; `--as-image` sends pages drawn by LimarePDF |
+| `limarepdf-cli print in.pdf --printer Office --pages 1-3 --copies 2 --sides long-edge` | Print; `--as-image` sends pages drawn by LimarePDF. Refuses, naming the fields and sending nothing, when filled fields meant for printing would come out empty (no drawing, and text LimarePDF can't draw) |
 
 See [Export and printing](export-and-printing.md).
