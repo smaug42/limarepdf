@@ -50,7 +50,7 @@ available.
 | Light and dark themes | Done | Follows the system, or chosen with the top bar's theme button; remembered between runs |
 | Page colour modes | Done | View > Page colours: Normal, Automatic (dark pages with the dark theme), Dark, High contrast, Sepia. Pictures keep their colours unless "Recolour pictures too" is on. On screen only: the file, printing and exports keep their colours. See [Rendering](rendering.md#page-colour-modes) |
 | Rendering | Done | Pages that can't be drawn, and pictures and fonts that can't, are reported; high zoom is drawn in tiles up to 6400%; large page images are drawn in bands, which bounds the memory a complex page takes (one test page from 9.7 GB to 1.5 GB), and the app stops drawing a page at a zoom it has moved past; fonts that aren't embedded use installed fonts or similar stand-ins where hayro asks (CID fonts, which Chinese, Japanese and Korean text uses), with a notice saying what to install; annotations without a drawing of their own are drawn by LimarePDF; damaged files are repaired when opened, with a notice. Known limits, mostly hayro's: some transparency groups are drawn wrongly, hairlines can come out light grey, plain fonts that aren't embedded use the standard fonts, media and 3D annotations aren't drawn, and no rich text or line captions. Compared with poppler over about 1,100 public test PDFs. [Details](rendering.md) |
-| Search | Done | Phrases across line breaks, and words hyphenated at a line end, are found and highlighted. [Details](search-and-text.md) |
+| Search | Done | Phrases across line breaks, and words hyphenated at a line end, are found and highlighted. Chinese, Japanese and Korean text in fonts without a ToUnicode map is read through the font's character map. [Details](search-and-text.md) |
 | Select and copy text | Done | With the default read tool; across pages, scrolling while you drag; in the order on the page, not the file's drawing order; includes recognised text |
 | Print or save selected text | Done | As the pages look, full width, cut down to the selected lines, or as plain text in Helvetica (Western European characters only); also saves a .txt file |
 | Page operations: insert, delete, rotate, extract, reorder, crop, remove blank pages | Done | Crop by margins; no dragging a crop box on the page. Blank means one even colour, give or take specks or a lone page number. Deleted and extracted-away pages leave nothing in the saved file: bookmarks, named destinations, links, form fields and tags no longer refer to them ([details](gui.md#selecting-and-the-inspector)) |
@@ -107,6 +107,10 @@ available.
 - A damaged file is repaired to open it, with a notice; the original is only replaced if you choose to when saving
   ([details](rendering.md#damaged-files)). Stream data is skipped by its stated length, so an attached PDF or text
   crafted to look like objects isn't taken for the file's own content.
+- A file other PDF apps may show differently (parts it deletes still in use, data after its end, entries pointing
+  at the wrong object) is shown as the PDF standard says, with a notice and a Save as… button that writes a copy
+  every app reads the same; the command line prints a note
+  ([details](rendering.md#files-other-apps-may-show-differently)).
 - A malformed file that makes LimarePDF fail while opening, editing or saving gets an error message, and a failed edit
   leaves the document as it was. A failure while showing the document (pages, thumbnails, search, bookmarks,
   comments, the inspector) turns that tab into an error page with Save a copy and Close; other tabs carry on. So does
@@ -126,7 +130,9 @@ available.
 - Text from a file that the app shows as a label or message (link addresses, bookmark names, comment authors and
   text, file names in tab and window titles and print job titles) has direction-changing (bidi), invisible and
   control characters removed and is shortened when very long, so a link can't pretend to go somewhere else. Form
-  field values and the command line's output are shown as they are.
+  field values are shown as they are. The command line's listings (`info`, `bookmarks list`, `annot list`, `form
+  list`, `labels list`, `view-prefs list`, `objects`, `search`, `verify`) clean such text the same way, without
+  shortening it, so a file can't send escape codes to the terminal; `--json` output stays exact.
 
 ## Planned and proposed
 
@@ -143,9 +149,6 @@ pool of features other PDF tools have is in [ideas.md](ideas.md).
 - **Very complex pages draw slowly:** one test page with 73,000 drawn paths and 84 shaded areas takes 54 s to draw
   at 150 dpi, where poppler takes 9 s ([Performance](performance.md)). Its memory is now bounded by drawing in bands
   ([Rendering](rendering.md#large-drawings)).
-- **Text from some Chinese, Japanese and Korean files:** fonts with no ToUnicode map that use a standard Unicode
-  character map (such as `UniJIS-UCS2-H`) give the wrong characters when searching, copying or exporting text
-  ([Search and text](search-and-text.md#text-extraction)).
 
 ### Rendering
 
@@ -198,10 +201,9 @@ Checking, trust, digital IDs, signing, certifying and saving signed documents ar
 - **Round trips with Adobe Acrobat**, on a tester's computer: Acrobat-signed and certified files checked in LimarePDF,
   LimarePDF's signatures and exported digital IDs used in Acrobat, and signed files saved with changes going each way.
   The compatibility list in [Digital signatures](signatures.md#compatibility) names only what has been tested.
-- **Timestamps** from a timestamp server when signing, then long-term validation (revocation answers added to the
-  document).
 
-Not planned for now: revocation checks, Adobe's and the EU's lists of trusted authorities, smart cards and system
+Not planned for now: timestamps from a timestamp server when signing (the signing time comes from your computer's
+clock) and long-term validation, revocation checks, Adobe's and the EU's lists of trusted authorities, smart cards and system
 keystores, signing encrypted files (see [ideas](ideas.md)).
 
 ### Packaging

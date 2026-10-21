@@ -29,6 +29,11 @@ copying, so they always agree.
 
 - **Characters:** taken from the font's ToUnicode map, which says what text each character code stands for, and
   otherwise from its encoding. Ligatures such as "ﬁ" come out as their letters, so searching for "find" finds it.
+  Chinese, Japanese and Korean fonts without a ToUnicode map (common in files whose fonts aren't embedded) are read
+  through their character map, as pdf.js does: a Unicode one (such as `UniJIS-UCS2-H`) gives the text directly;
+  others (such as Shift-JIS `90ms-RKSJ-H`) give character numbers, which Adobe's tables for Japanese, Simplified and
+  Traditional Chinese and Korean turn into text. Their codes are split as the map says, one to four bytes each, and
+  their widths found by character number, so highlights and selections sit on the right characters.
 - **Spaces:** a gap between words is a space, whether the file has a space character there or only moves the next
   word along (as justified text and many PDF makers do).
 - **Order:** words come in reading order worked out from where they sit on the page, not the order the file draws
@@ -41,13 +46,12 @@ Limits:
 
 - Fonts with no ToUnicode map and a custom encoding (some Type 3 fonts, and some fonts made by old software) can
   give the wrong characters.
-- CID fonts whose codes are not two bytes long (some older Chinese, Japanese and Korean encodings) can come out
-  wrong.
+- CID fonts with no ToUnicode map whose character map can't be read, or that use their own character numbers
+  rather than Adobe's tables, come out as "�" or the wrong characters. A file that names Adobe's tables but numbers
+  its characters otherwise reads wrong in pdf.js too.
 - A page with tens of thousands of words spaced out along one line, which only a crafted file has, takes seconds to
   read (50,000 words: 4.5 s), as its columns are worked out one at a time. Tens of thousands of separate lines are
   quick (50,000: 0.2 s).
-- CID fonts with no ToUnicode map that rely on a standard Unicode character map (such as `UniJIS-UCS2-H`, common
-  in Japanese files with fonts that aren't embedded) come out as the wrong characters.
 - A ToUnicode map is read for its first million or so characters and up to 32 MB of text, so a crafted file can't
   ask for gigabytes; a character whose text is longer than the 512 bytes the PDF specification allows is read from
   the font's encoding instead. Real maps are far smaller: the longest text for one character in the 2,079 maps of

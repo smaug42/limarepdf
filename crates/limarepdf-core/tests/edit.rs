@@ -175,6 +175,65 @@ fn reads_text_through_a_compact_tounicode_map() {
     assert_eq!(p.search("fine").unwrap().len(), 1);
 }
 
+/// A page showing the codes `hex` at (10, 150) in 20 pt, in a Type 0 font with the
+/// predefined CMap `cmap`, no ToUnicode map and no font program, as Japanese filings often
+/// are. The descendant says Adobe-Japan1 and makes CID 34 ("A") 500 wide, every other 1000.
+fn cjk(cmap: &str, hex: &str) -> Pdf {
+    let mut p = make(&format!("BT /F2 20 Tf 10 150 Td <{hex}> Tj ET"));
+    let desc = p.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "CIDFontType0", "BaseFont" => "HeiseiMin-W3",
+        "CIDSystemInfo" => dictionary! {
+            "Registry" => Object::string_literal("Adobe"),
+            "Ordering" => Object::string_literal("Japan1"),
+            "Supplement" => 2,
+        },
+        "DW" => 1000, "W" => vec![34.into(), vec![500.into()].into()],
+    });
+    let font = p.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type0", "BaseFont" => "HeiseiMin-W3",
+        "Encoding" => cmap, "DescendantFonts" => vec![desc.into()],
+    });
+    let page = p.page_ids()[0];
+    let res = dictionary! { "Font" => dictionary! { "F2" => font } };
+    p.doc
+        .get_dictionary_mut(page)
+        .unwrap()
+        .set("Resources", res);
+    p
+}
+
+#[test]
+fn reads_text_through_predefined_cmaps() {
+    // UCS-2 codes are Unicode already.
+    let p = cjk("UniJIS-UCS2-H", "67714EAC0041");
+    assert_eq!(p.page_text(0), "東京A");
+    assert_eq!(p.search("東京").unwrap().len(), 1);
+    // In UTF-16, a character past U+FFFF is one four-byte code.
+    let p = cjk("UniJIS-UTF16-H", "D842DFB70041");
+    assert_eq!(p.page_text(0), "𠮷A");
+    // Shift-JIS: one byte for "A", two for each kanji. The CMap gives CIDs, which
+    // Adobe-Japan1's UCS-2 map turns into text.
+    let p = cjk("90ms-RKSJ-H", "41938C8B9E");
+    assert_eq!(p.page_text(0), "A東京");
+}
+
+#[test]
+fn predefined_cmap_widths_are_found_by_cid() {
+    // "A" is code 0x0041 but CID 34, 500 wide: at 20 pt, 10 wide after two 20-wide kanji.
+    let p = cjk("UniJIS-UCS2-H", "67714EAC0041");
+    let b = p.find_text_boxes(0, "a").unwrap();
+    assert_eq!(b.len(), 1, "{b:?}");
+    assert!((b[0][0] - 50.0).abs() < 0.5, "{b:?}");
+    assert!((b[0][2] - 60.0).abs() < 0.5, "{b:?}");
+    // In Shift-JIS "A" is one byte, and the kanji after it start 10 along. (In
+    // 90msp-RKSJ-H; 90ms-RKSJ-H gives it a half-width CID instead.)
+    let p = cjk("90msp-RKSJ-H", "41938C8B9E");
+    let b = p.find_text_boxes(0, "東京").unwrap();
+    assert_eq!(b.len(), 1, "{b:?}");
+    assert!((b[0][0] - 20.0).abs() < 0.5, "{b:?}");
+    assert!((b[0][2] - 60.0).abs() < 0.5, "{b:?}");
+}
+
 #[test]
 fn finds_phrases_across_lines() {
     let p = make("BT /F1 20 Tf 10 150 Td (one two) Tj 0 -30 Td (three four) Tj ET");

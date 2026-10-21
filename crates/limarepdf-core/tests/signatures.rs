@@ -1293,9 +1293,12 @@ fn dss_samples() {
             &[Broken("doesn't match")],
             "malformed DigestInfo",
         ),
+        // The document timestamp covers the whole file, whose last two revisions point at
+        // cross-references that aren't there, so it opens only repaired (DSS repairs it too and
+        // calls all six valid).
         (
             "pades-5-signatures-and-1-document-timestamp.pdf",
-            &[Valid, Valid, Valid, Valid, Valid, Valid],
+            &[Valid, Valid, Valid, Valid, Valid, Cant("rebuilt it")],
             "six",
         ),
         (

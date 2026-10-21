@@ -16,8 +16,30 @@
   damaged and never stops LimarePDF from starting. Turn it off with File > Keep recovery copies of unsaved changes.
 - The window opens at the size it had when LimarePDF last closed, and maximized if it was. Its position isn't
   remembered, since Linux Wayland sessions place windows themselves.
+- A notice when a file isn't put together quite as the PDF format asks, so other PDF apps may show it differently
+  (for example, a part the file deletes is still in use, or data follows its end): a crafted file could show one
+  thing in LimarePDF and another elsewhere. Its Save as… button writes a copy every app reads the same. The command
+  line prints a note on stderr. Until now this only stopped signatures from being vouched for.
 
 ### Fixed
+
+- Every encrypted file whose cross-reference information is a stream (the files LimarePDF itself writes with a
+  password among them) counted as one other PDF apps may read differently, so a signature in one would show
+  *can't check*. Of about 1,100 public test files, 17 no longer count as such, and no others changed.
+
+- Text in many Chinese, Japanese and Korean files came out as "�" or the wrong characters when searching, copying
+  or exporting: fonts without a ToUnicode map (common when the fonts aren't embedded) are now read through their
+  character map, as pdf.js does, and highlights sit on the right characters. Of about 1,100 public test files, 43
+  read better, such as a 42-page Japanese company report that came out entirely as "�" and now matches poppler,
+  and none worse.
+
+- The command line printed some text from the file exactly as it was: the document's title and other details
+  (`info`), comment authors (`annot list`), form field names (`form list`), page labels (`labels list`,
+  `view-prefs list`), font names (`objects`) and the text around search matches (`search`); bookmark titles
+  (`bookmarks list`) kept direction-changing characters. A crafted file could use this to send escape codes to the
+  terminal (changing colours or the window title, clearing the screen) or make a line read differently. These
+  listings now remove control, invisible and direction-changing characters, as `verify` already did; `--json` output
+  is unchanged.
 
 - Typing page numbers into a pages box that said "all" (printing, crop, watermark, headers and footers, OCR,
   optimising scanned pages, export) gave "all2-4" instead of "2-4". Clicking or tabbing into such a box now selects "all", so typing replaces

@@ -945,6 +945,7 @@ fn shows_one_million(text: &str, what: impl std::fmt::Debug) {
 fn limarepdf_shows_what_other_apps_show() {
     let control = Pdf::from_bytes(&hidden_payment(Hide::Not), None).unwrap();
     assert!(control.page_text(0).contains("Pay one hundred"));
+    assert_eq!(control.differs(), None);
     for hide in HIDES {
         let bytes = hidden_payment(hide);
         let lopdf = lopdf::Document::load_mem(&bytes).unwrap();
@@ -955,6 +956,8 @@ fn limarepdf_shows_what_other_apps_show() {
         );
         let pdf = Pdf::from_bytes(&bytes, None).unwrap();
         assert!(!pdf.doc.objects.contains_key(&(5, 0)), "{hide:?}");
+        // The app and the CLI say so.
+        assert!(pdf.differs().is_some(), "{hide:?}");
         shows_one_million(&pdf.page_text(0), hide);
     }
 }

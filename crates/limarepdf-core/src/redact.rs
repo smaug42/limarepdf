@@ -806,9 +806,7 @@ impl<'a> Redactor<'a> {
                     let mut codes = Vec::new();
                     match font {
                         Some(f) => {
-                            let step = if f.type0 { 2 } else { 1 };
-                            for (k, (code, space)) in f.codes(s).into_iter().enumerate() {
-                                let raw = &s[k * step..(k * step + step).min(s.len())];
+                            for (code, space, raw) in f.codes(s) {
                                 let glyph = f.width(code) / 1000.0 * scale;
                                 let a = glyph + (g.tc + if space { g.tw } else { 0.0 }) * th;
                                 codes.push(Code {

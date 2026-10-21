@@ -117,6 +117,14 @@ impl Pdf {
         self.repaired
     }
 
+    /// Why other PDF apps may show the file this was opened from differently from LimarePDF,
+    /// if they may: hidden objects in use, data after its end, objects LimarePDF can't read
+    /// as they do, or a repair. Signing such a file is refused, and its signatures can't be
+    /// checked.
+    pub fn differs(&self) -> Option<&str> {
+        self.differs.as_deref()
+    }
+
     /// Whether the file needed a password to open. An encrypted file with an empty open
     /// password (only a permissions password, limiting printing, copying or changes) opens
     /// without one, in every reader.

@@ -1070,10 +1070,16 @@ fn skip_object_streams(id: ObjectId, o: &mut Object) -> Option<(ObjectId, Object
     (!objstm).then_some((id, Object::Null))
 }
 
-/// Every reference in `doc`, in its trailer and its objects, however deeply nested.
+/// Every reference in `doc`, in its trailer and its objects, however deeply nested, but the
+/// encryption dictionary's. lopdf drops that dictionary once it has decrypted the file,
+/// while a cross-reference stream still names it; it holds no content, and the file
+/// decrypted with it reads as other apps read it.
 pub(crate) fn references(doc: &Document) -> HashSet<ObjectId> {
+    fn content(d: &Dictionary) -> impl Iterator<Item = (&Vec<u8>, &Object)> {
+        d.iter().filter(|(k, _)| k.as_slice() != b"Encrypt")
+    }
     let mut out = HashSet::new();
-    let mut stack: Vec<&Object> = doc.trailer.iter().map(|(_, o)| o).collect();
+    let mut stack: Vec<&Object> = content(&doc.trailer).map(|(_, o)| o).collect();
     stack.extend(doc.objects.values());
     while let Some(o) = stack.pop() {
         match o {
@@ -1082,6 +1088,9 @@ pub(crate) fn references(doc: &Document) -> HashSet<ObjectId> {
             }
             Object::Array(a) => stack.extend(a),
             Object::Dictionary(d) => stack.extend(d.iter().map(|(_, o)| o)),
+            Object::Stream(s) if s.dict.has_type(b"XRef") => {
+                stack.extend(content(&s.dict).map(|(_, o)| o))
+            }
             Object::Stream(s) => stack.extend(s.dict.iter().map(|(_, o)| o)),
             _ => {}
         }

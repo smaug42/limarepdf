@@ -123,6 +123,53 @@ fn removes_the_marked_characters_and_keeps_the_rest_in_place() {
 }
 
 #[test]
+fn removes_characters_of_a_shift_jis_font_whole() {
+    // 90ms-RKSJ-H mixes one-byte codes ("A", "B") with two-byte ones (the kanji). The
+    // descendant has no widths, so every CID is 1000 wide: 20 pt each.
+    let mut p = make(&["BT /F2 20 Tf 30 100 Td <41938C8B9E42> Tj ET"]);
+    let desc = p.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "CIDFontType0", "BaseFont" => "HeiseiMin-W3",
+        "CIDSystemInfo" => dictionary! {
+            "Registry" => Object::string_literal("Adobe"),
+            "Ordering" => Object::string_literal("Japan1"),
+            "Supplement" => 2,
+        },
+    });
+    let font = p.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type0", "BaseFont" => "HeiseiMin-W3",
+        "Encoding" => "90ms-RKSJ-H", "DescendantFonts" => vec![desc.into()],
+    });
+    let page = p.page_ids()[0];
+    p.doc.get_dictionary_mut(page).unwrap().set(
+        "Resources",
+        dictionary! { "Font" => dictionary! { "F2" => font } },
+    );
+    assert_eq!(p.page_text(0), "A東京B");
+    let b = p.find_text_boxes(0, "b").unwrap()[0];
+    assert!((b[0] - 90.0).abs() < 0.5, "{b:?}");
+
+    let marks = p.find_redaction_marks("東京").unwrap();
+    assert_eq!(marks.len(), 1);
+    let rep = p.redact(&marks).unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    assert_eq!(rep.pages[0].chars, 2);
+    assert_eq!(p.page_text(0).replace(' ', ""), "AB");
+    assert!(near(p.find_text_boxes(0, "b").unwrap()[0], b));
+    let ops = Content::decode(&p.doc.get_page_content(page)).unwrap();
+    // The two kanji go whole, with a 40 pt gap left in their place.
+    let tj: Vec<&Object> = ops
+        .operations
+        .iter()
+        .filter(|o| o.operator == "TJ")
+        .flat_map(|o| o.operands[0].as_array().unwrap())
+        .collect();
+    assert_eq!(tj.len(), 3, "{tj:?}");
+    assert_eq!(tj[0].as_str().unwrap(), b"A");
+    assert_eq!(tj[1].as_float().unwrap(), -2000.0);
+    assert_eq!(tj[2].as_str().unwrap(), b"B");
+}
+
+#[test]
 fn keeps_tj_spacing_and_later_strings_in_place() {
     let mut p = make(&["BT /F1 20 Tf 30 100 Td [(Sec) -200 (retX) 50 (Yzw)] TJ ET"]);
     let sec = p.find_text_boxes(0, "Sec").unwrap()[0];
