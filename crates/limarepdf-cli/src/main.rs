@@ -1050,7 +1050,7 @@ fn annot_list(input: &Path, pages: &Option<String>, json: bool, pw: &Option<Stri
             if s.is_empty() {
                 "-".to_string()
             } else {
-                s.to_string()
+                shown(s)
             }
         };
         out!(
@@ -1226,6 +1226,12 @@ fn kind_name(k: &FieldKind) -> String {
     }
 }
 
+/// Text from the file as one line of a listing: escape codes, bidi controls and line breaks
+/// can't reach the terminal ([`display_line`]), and nothing is cut. JSON output stays exact.
+fn shown(s: &str) -> String {
+    display_line(s, usize::MAX)
+}
+
 /// A field's value as JSON: a string for text and single choices, true or false for
 /// checkboxes, an array for multi-select lists, null when nothing is chosen. `None` for
 /// fields without a value (push buttons and signatures).
@@ -1311,7 +1317,7 @@ fn form_list(input: &Path, json: bool, password: &Option<String>) -> Result<()> 
         }
         out!(
             "{} [{}] = {} ({})",
-            f.name,
+            shown(&f.name),
             kind_name(&f.kind),
             value,
             notes.join(", ")
@@ -2617,7 +2623,7 @@ fn run(cmd: Cmd) -> Result<()> {
                 ("producer", i.producer),
             ] {
                 if let Some(v) = v {
-                    out!("{k}: {v}");
+                    out!("{k}: {}", shown(&v));
                 }
             }
             for n in 0..p.page_count().min(5) {
@@ -3300,7 +3306,7 @@ fn run(cmd: Cmd) -> Result<()> {
             let p = open(&input, &password)?;
             let hits = p.search(&query)?;
             for h in &hits {
-                out!("p{}: …{}…", h.page + 1, h.snippet);
+                out!("p{}: …{}…", h.page + 1, shown(&h.snippet));
             }
             out!("{} match(es)", hits.len());
             if boxes {
@@ -3343,7 +3349,7 @@ fn run(cmd: Cmd) -> Result<()> {
                             .map(|t| format!(
                                 "{:?} ({} {:.1}pt)",
                                 t,
-                                o.font_name.clone().unwrap_or_default(),
+                                shown(o.font_name.as_deref().unwrap_or_default()),
                                 o.font_size.unwrap_or(0.0)
                             ))
                             .unwrap_or_default()
@@ -3401,8 +3407,10 @@ fn run(cmd: Cmd) -> Result<()> {
                     let e = starts.get(k + 1).map_or(labels.len(), |&n| n) - 1;
                     let pages = format_page_range(&(s..=e).collect::<Vec<_>>());
                     match s == e {
-                        true => out!("{pages:<12} {}", labels[s]),
-                        false => out!("{pages:<12} {} to {}", labels[s], labels[e]),
+                        true => out!("{pages:<12} {}", shown(&labels[s])),
+                        false => {
+                            out!("{pages:<12} {} to {}", shown(&labels[s]), shown(&labels[e]))
+                        }
                     }
                 }
             }
@@ -3442,7 +3450,9 @@ fn run(cmd: Cmd) -> Result<()> {
                 let prefs = p.view_prefs();
                 let labels = p.page_labels();
                 let page = prefs.page.map(|n| match &labels {
-                    Some(l) if l[n] != (n + 1).to_string() => format!("{} (label {})", n + 1, l[n]),
+                    Some(l) if l[n] != (n + 1).to_string() => {
+                        format!("{} (label {})", n + 1, shown(&l[n]))
+                    }
                     _ => (n + 1).to_string(),
                 });
                 out!("layout: {}", prefs.layout.map_or("not set", |l| l.name()));
@@ -3495,7 +3505,11 @@ fn run(cmd: Cmd) -> Result<()> {
                 for (n, item) in items.iter().enumerate() {
                     let page = item.page.map_or("-".into(), |p| (p + 1).to_string());
                     let indent = "  ".repeat(item.depth);
-                    out!("{:>width$}  p. {page:<5} {indent}{}", n + 1, item.title);
+                    out!(
+                        "{:>width$}  p. {page:<5} {indent}{}",
+                        n + 1,
+                        shown(&item.title)
+                    );
                 }
             }
             BookmarksCmd::Add {

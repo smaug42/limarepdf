@@ -74,9 +74,9 @@ Small or medium additions that build on what LimarePDF already has:
 
 ## Signing, beyond digital signatures
 
-- **First after digital signatures:** timestamps from a timestamp server when signing (M; needs network access
-  and an HTTP crate; Acrobat has none set up by default), then long-term validation, adding revocation answers
-  to the document (L)
+- Timestamps from a timestamp server when signing (M; connects to the server you choose, only while signing;
+  Acrobat has none set up by default), then long-term validation, adding revocation answers to the document (L).
+  Waiting until someone asks for it; signatures carry the computer's time until then
 - Revocation checking (OCSP, CRL) for certificates from authorities (M; network)
 - Adobe's list of trusted authorities (AATL; only distributed to Adobe products as far as known) or the EU
   trusted lists (large, changing XML with its own signatures) (L)

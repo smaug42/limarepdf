@@ -126,7 +126,9 @@ available.
 - Text from a file that the app shows as a label or message (link addresses, bookmark names, comment authors and
   text, file names in tab and window titles and print job titles) has direction-changing (bidi), invisible and
   control characters removed and is shortened when very long, so a link can't pretend to go somewhere else. Form
-  field values and the command line's output are shown as they are.
+  field values are shown as they are. The command line's listings (`info`, `bookmarks list`, `annot list`, `form
+  list`, `labels list`, `view-prefs list`, `objects`, `search`, `verify`) clean such text the same way, without
+  shortening it, so a file can't send escape codes to the terminal; `--json` output stays exact.
 
 ## Planned and proposed
 
@@ -198,10 +200,9 @@ Checking, trust, digital IDs, signing, certifying and saving signed documents ar
 - **Round trips with Adobe Acrobat**, on a tester's computer: Acrobat-signed and certified files checked in LimarePDF,
   LimarePDF's signatures and exported digital IDs used in Acrobat, and signed files saved with changes going each way.
   The compatibility list in [Digital signatures](signatures.md#compatibility) names only what has been tested.
-- **Timestamps** from a timestamp server when signing, then long-term validation (revocation answers added to the
-  document).
 
-Not planned for now: revocation checks, Adobe's and the EU's lists of trusted authorities, smart cards and system
+Not planned for now: timestamps from a timestamp server when signing (the signing time comes from your computer's
+clock) and long-term validation, revocation checks, Adobe's and the EU's lists of trusted authorities, smart cards and system
 keystores, signing encrypted files (see [ideas](ideas.md)).
 
 ### Packaging

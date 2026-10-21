@@ -19,6 +19,14 @@
 
 ### Fixed
 
+- The command line printed some text from the file exactly as it was: the document's title and other details
+  (`info`), comment authors (`annot list`), form field names (`form list`), page labels (`labels list`,
+  `view-prefs list`), font names (`objects`) and the text around search matches (`search`); bookmark titles
+  (`bookmarks list`) kept direction-changing characters. A crafted file could use this to send escape codes to the
+  terminal (changing colours or the window title, clearing the screen) or make a line read differently. These
+  listings now remove control, invisible and direction-changing characters, as `verify` already did; `--json` output
+  is unchanged.
+
 - Typing page numbers into a pages box that said "all" (printing, crop, watermark, headers and footers, OCR,
   optimising scanned pages, export) gave "all2-4" instead of "2-4". Clicking or tabbing into such a box now selects "all", so typing replaces
   it.

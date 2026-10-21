@@ -24,7 +24,7 @@ fn invisible(c: char) -> bool {
 /// and other control characters turned into spaces (runs of them into one), trimmed, and
 /// cut to `max` characters with "…" when longer.
 pub fn display_line(s: &str, max: usize) -> String {
-    let mut out = String::with_capacity(s.len().min(max * 4));
+    let mut out = String::with_capacity(s.len().min(max.saturating_mul(4)));
     let mut space = false;
     for c in s.chars().filter(|&c| !invisible(c)) {
         if c.is_control() || c.is_whitespace() {

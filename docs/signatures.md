@@ -702,7 +702,7 @@ the limitations) is to be confirmed in those tests. The checks still to run are 
 - A file the PDF reader can't open at all can't be checked.
 - In the app, a signature goes in a field or a box you choose on the page; it can't be moved or resized afterwards
   (sign again in a new copy instead).
-- Signatures carry no timestamp from a timestamp authority yet (planned), so their signing time is your computer's
+- Signatures carry no timestamp from a timestamp authority, so their signing time is your computer's
   claim, and once your certificate expires, checkers can't tell the signature was made while it was valid. No
   long-term validation data is added either.
 - Encrypted (password-protected) documents can't be signed.
