@@ -24,6 +24,11 @@ pub struct Pdf {
 
 /// Why a repaired document may read differently in other PDF apps.
 const REPAIRED: &str = "its cross-reference information is damaged, and LimarePDF rebuilt it";
+/// Why a document whose page tree was mended differs from what other readers show.
+const PAGES_MENDED: &str = "its list of pages is damaged, and LimarePDF rebuilt it";
+/// Why a document is refused when no pages can be found in it.
+const NO_PAGES: &str =
+    "LimarePDF can't find any pages in it (there are no pages, or the file is damaged)";
 
 /// Document information dictionary fields.
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
@@ -47,9 +52,10 @@ impl Pdf {
         Self::from_bytes(&bytes, password)
     }
 
-    /// Reads a document. A file whose cross-reference information is damaged, so that it
-    /// reads with no pages, is repaired: its objects are found by scanning the bytes (see
-    /// [`Pdf::repaired`]).
+    /// Reads a document. A file that reads with no pages is repaired (see
+    /// [`Pdf::repaired`]): its objects are found by scanning the bytes, in case the
+    /// cross-reference information is damaged, and a page tree other readers find pages in
+    /// is mended. A file in which no pages can be found is refused.
     pub fn from_bytes(bytes: &[u8], password: Option<&str>) -> Result<Self> {
         let opened = Self::read(bytes, password);
         let pages = match &opened {
@@ -71,6 +77,8 @@ impl Pdf {
             Some(r) => r.ok(),
             None => None,
         };
+        // The page tree is mended in the rebuilt file rather than in lopdf's reading, so that
+        // the pages' content is found too when the table's offsets are wrong.
         let repaired = rebuilt.and_then(|mut p| {
             crate::repair::unpack_object_streams(&mut p.doc);
             // The trailers may name no catalog, or the wrong object.
@@ -78,21 +86,30 @@ impl Pdf {
                 let root = crate::repair::find_catalog(&p.doc)?;
                 p.doc.trailer.set("Root", root);
             }
-            (p.page_count() > 0).then_some(p)
+            let mut why = REPAIRED;
+            if p.page_count() == 0 && crate::repair::mend_page_tree(&mut p.doc, bytes) {
+                why = PAGES_MENDED;
+            }
+            (p.page_count() > 0).then_some((p, why))
         });
-        let mut p = match repaired {
-            Some(p) => p,
+        let (mut p, why) = match repaired {
+            Some(r) => r,
             // lopdf's own rebuild.
-            None if pages > 0 => opened.map_err(cannot_open)?,
-            None => return opened.map_err(cannot_open),
+            None if pages > 0 => (opened.map_err(cannot_open)?, REPAIRED),
+            // Rather than an empty document, which other readers wouldn't show either.
+            None => {
+                opened.map_err(cannot_open)?;
+                bail!("cannot open PDF: {NO_PAGES}");
+            }
         };
         p.repaired = true;
-        p.differs = Some(REPAIRED.into());
+        p.differs = Some(why.into());
         Ok(p)
     }
 
-    /// Whether the file's cross-reference information (where each object is) was damaged,
-    /// and LimarePDF rebuilt it to open the file. Some content may be missing. Such a
+    /// Whether the file was damaged (its cross-reference information, which says where each
+    /// object is, or its list of pages), and LimarePDF rebuilt it to open the file. Some
+    /// content may be missing. Such a
     /// document counts as changed: saving writes a whole repaired copy, never a revision
     /// added to the damaged file, and its signatures never check as valid and unchanged
     /// (see [`Pdf::differs`]).
@@ -513,12 +530,63 @@ impl Pdf {
         if idx.is_empty() {
             bail!("no pages selected");
         }
-        let mut out = self.clone();
+        // Built on a copy without the streams' data, which is copied in only for what the
+        // kept pages still use: a whole copy per part made splitting a large file hold
+        // many copies of it.
+        let mut out = self.without_stream_data();
         out.flatten()?;
         let ids = out.page_ids();
         let sel: Vec<ObjectId> = idx.iter().map(|&i| ids[i]).collect();
         out.keep_pages(&sel, true)?;
+        out.doc.prune_objects();
+        for (id, o) in &mut out.doc.objects {
+            if let (Object::Stream(s), Some(Object::Stream(from))) = (o, self.doc.objects.get(id)) {
+                if s.content.is_empty() {
+                    s.content = from.content.clone();
+                }
+            }
+        }
         Ok(out)
+    }
+
+    /// A copy whose streams have their dictionaries but no data.
+    fn without_stream_data(&self) -> Pdf {
+        let d = &self.doc;
+        let objects = d
+            .objects
+            .iter()
+            .map(|(&id, o)| {
+                let o = match o {
+                    Object::Stream(s) => Object::Stream(Stream {
+                        dict: s.dict.clone(),
+                        content: Vec::new(),
+                        allows_compression: s.allows_compression,
+                        start_position: s.start_position,
+                    }),
+                    o => o.clone(),
+                };
+                (id, o)
+            })
+            .collect();
+        Pdf {
+            doc: Document {
+                version: d.version.clone(),
+                binary_mark: d.binary_mark.clone(),
+                trailer: d.trailer.clone(),
+                reference_table: d.reference_table.clone(),
+                objects,
+                max_id: d.max_id,
+                max_bookmark_id: d.max_bookmark_id,
+                bookmarks: d.bookmarks.clone(),
+                bookmark_table: d.bookmark_table.clone(),
+                xref_start: d.xref_start,
+                encryption_state: d.encryption_state.clone(),
+            },
+            encryption: self.encryption.clone(),
+            differs: self.differs.clone(),
+            repaired: self.repaired,
+            password_needed: self.password_needed,
+        }
     }
 
     /// Rotate pages clockwise by a multiple of 90 degrees.
@@ -641,19 +709,58 @@ impl Pdf {
         Ok(base)
     }
 
-    /// Split into parts of at most `n` pages each.
-    pub fn split_every(&self, n: usize) -> Result<Vec<Pdf>> {
-        if n == 0 {
-            bail!("part size must be at least 1");
+    /// The parts a split makes, in order: each one's title (its first bookmark's, when
+    /// split at bookmarks) and its pages (zero-based).
+    pub fn split_parts(&self, by: SplitBy) -> Result<Vec<(Option<String>, Vec<usize>)>> {
+        match by {
+            SplitBy::Every(0) => bail!("part size must be at least 1"),
+            SplitBy::Every(n) => {
+                let pages: Vec<usize> = (0..self.page_count()).collect();
+                Ok(pages.chunks(n).map(|c| (None, c.to_vec())).collect())
+            }
+            SplitBy::Bookmarks(level) => self.bookmark_split(level),
         }
-        let total = self.page_count();
-        let chunks: Vec<Vec<usize>> = (0..total)
-            .collect::<Vec<_>>()
-            .chunks(n)
-            .map(|c| c.to_vec())
-            .collect();
-        chunks.par_iter().map(|c| self.extract(c)).collect()
     }
+
+    /// Split into files, part `n` (from 1) written to `path(n, title)`. Each part is
+    /// written and dropped as soon as it is made, so no more parts are held at once than
+    /// are being made. Returns how many files were written.
+    pub fn split(
+        &self,
+        by: SplitBy,
+        path: impl Fn(usize, Option<&str>) -> std::path::PathBuf + Sync,
+    ) -> Result<usize> {
+        let parts = self.split_parts(by)?;
+        let written = std::sync::atomic::AtomicUsize::new(0);
+        let done = parts
+            .par_iter()
+            .enumerate()
+            .try_for_each(|(i, (title, pages))| {
+                self.extract(pages)?.save(path(i + 1, title.as_deref()))?;
+                written.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok::<_, anyhow::Error>(())
+            });
+        let written = written.into_inner();
+        match done {
+            Ok(()) => Ok(parts.len()),
+            Err(e) if written > 0 => Err(e.context(format!(
+                "{written} of the {} files were written before this",
+                parts.len()
+            ))),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// How [`Pdf::split`] divides a document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SplitBy {
+    /// Parts of at most this many pages.
+    Every(usize),
+    /// Where the bookmarks down to this level (1 = top level only) point: one part per
+    /// bookmarked page, titled by its first bookmark. Pages before the first bookmark are
+    /// a part of their own, untitled.
+    Bookmarks(usize),
 }
 
 /// The file name for part `n` (1-based) of a split: `stem-003.pdf`, or `stem-003 Title.pdf` with the title cut to
@@ -1005,11 +1112,15 @@ mod tests {
         let bytes = m.to_bytes().unwrap();
         let re = Pdf::from_bytes(&bytes, None).unwrap();
         assert_eq!(re.page_count(), 5);
-        let parts = re.split_every(2).unwrap();
+        let parts = re.split_parts(SplitBy::Every(2)).unwrap();
         assert_eq!(
-            parts.iter().map(|p| p.page_count()).collect::<Vec<_>>(),
+            parts
+                .iter()
+                .map(|(_, pages)| re.extract(pages).unwrap().page_count())
+                .collect::<Vec<_>>(),
             vec![2, 2, 1]
         );
+        assert!(re.split_parts(SplitBy::Every(0)).is_err());
     }
 
     #[test]

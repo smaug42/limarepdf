@@ -62,6 +62,13 @@ objects by reading through the file, as Acrobat, poppler and pdf.js do:
   found is used;
 - objects packed into object streams are read too, one by one when the stream's own index can't be followed.
 
+A file whose cross-reference table reads but whose list of pages (the page tree) gives no pages is repaired the same
+way, when other readers find its pages: a page written directly in the list, where a reference to it belongs, is
+made an object of its own, and when the list refers to an object that isn't a page (the file gives a second object
+the page's number), the copy of that number that is a page is used. This is done after reading through the whole
+file as above, so that the pages' content is found even when the table is wrong too. A file in which no pages can be found either way isn't opened as an empty document: LimarePDF says it can't
+find any pages in it.
+
 The app then shows a notice that the file was repaired and some content may be missing, with a Save as… button.
 The original file is never replaced without asking: a repaired document counts as changed, so closing it warns of
 unsaved changes, and Save asks whether to replace the original or save the repaired copy as a new file.

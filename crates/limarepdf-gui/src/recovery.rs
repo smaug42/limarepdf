@@ -274,7 +274,7 @@ impl Description {
                 }
                 "length" => len = Some(v.parse::<u64>().map_err(|_| bad())?),
                 "sha256" => sha256 = Some(unhex(v).ok_or_else(bad)?),
-                "time" => time = Some(v.parse::<u64>().map_err(|_| bad())?),
+                "time" => time = Some(v.parse().ok().and_then(time_at).ok_or_else(bad)?),
                 "pages" => pages = Some(v.parse::<usize>().map_err(|_| bad())?),
                 "title" => {
                     info.title = String::from_utf8_lossy(&unescape(v).ok_or_else(bad)?).into()
@@ -297,7 +297,7 @@ impl Description {
         info.pages = pages.ok_or_else(|| missing("page count"))?;
         Ok(Some(Description {
             info,
-            time: UNIX_EPOCH + Duration::from_secs(time.ok_or_else(|| missing("time"))?),
+            time: time.ok_or_else(|| missing("time"))?,
             pdf: pdf.ok_or_else(|| missing("file name"))?,
             len: len.ok_or_else(|| missing("length"))?,
             sha256: sha256.ok_or_else(|| missing("checksum"))?,
@@ -864,8 +864,16 @@ impl std::fmt::Debug for Crashed {
 fn session_start(name: &str) -> Option<SystemTime> {
     let mut parts = name.strip_prefix("session-")?.split('-');
     parts.next()?.parse::<u32>().ok()?;
-    let s = parts.next()?.parse::<u64>().ok()?;
-    Some(UNIX_EPOCH + Duration::from_secs(s))
+    time_at(parts.next()?.parse().ok()?)
+}
+
+/// The last second of the year 9999.
+const LATEST: u64 = 253_402_300_799;
+
+/// A time read from disk, in seconds since 1970. `None` past `LATEST`: no copy is made
+/// then, and later times can be more than this computer or the date display can hold.
+fn time_at(secs: u64) -> Option<SystemTime> {
+    (secs <= LATEST).then(|| UNIX_EPOCH + Duration::from_secs(secs))
 }
 
 /// Checks a copy against its description.
@@ -963,6 +971,7 @@ pub fn find_crashed(fs: &Arc<dyn Fs>, root: &Path, now: SystemTime) -> Vec<Crash
             .chain([started])
             .max()
             .unwrap_or(started);
+        // Times read are at most `LATEST`, so this can't overflow.
         let keep_until = crashed_at + KEEP;
         if docs.is_empty() || now > keep_until {
             drop(held);

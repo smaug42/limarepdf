@@ -12,7 +12,8 @@
   including the one a restored document came from, and so does redoing a redaction or removal after undoing it;
   later copies hold none of what was removed. If an earlier copy can't be deleted, or the disk can't confirm the
   deletion, the command (or the redo) doesn't run, however often it is tried, until it can. A restored copy of a signed document doesn't have its signatures
-  checked, since they cover the original file. Turn it off with File > Keep recovery copies of unsaved changes.
+  checked, since they cover the original file. A damaged copy, or a damaged description of one, is listed as
+  damaged and never stops LimarePDF from starting. Turn it off with File > Keep recovery copies of unsaved changes.
 - The window opens at the size it had when LimarePDF last closed, and maximized if it was. Its position isn't
   remembered, since Linux Wayland sessions place windows themselves.
 
@@ -28,7 +29,12 @@
   character code also made reading the page's text fail). These sizes are now capped: a page image at 268 million pixels, which
   gives an error naming the page (A3 still exports at 1152 dpi; of about 7,200 test pages, the largest poster
   exports at up to 208 dpi), pictures at 268 million pixels, and widths at the 65,536 characters a font can have.
-  Printing on Windows draws pages larger than the limit at a lower resolution instead.
+  Printing on Windows draws pages larger than the limit at a lower resolution instead. A font's map from characters
+  to text, used for searching, copying and editing text, could also ask for gigabytes (a map of 4 KB asked for
+  64 MB), or keep LimarePDF busy for many minutes when it mapped the same characters over and over (a 16 MB map
+  can ask for about 50 billion). Text for one character is now
+  limited to the 512 bytes the PDF specification allows, a map to 32 MB, and reading a map stops after about a
+  million characters; none of the test files' 2,079 maps comes near these limits.
 - Undo on a large document could take gigabytes of memory: each step keeps a whole copy of the document, so 20 edits
   on a 139 MB scan took about 2.6 GB. Each document's undo steps are now limited to 1 GB together; beyond it the
   oldest steps are dropped, so undo is shorter on very large documents (about 7 steps on that scan). The latest
@@ -45,9 +51,20 @@
   new content upside down, mirrored and shrunk (a 28 pt line became about 7 pt). Such pages flip and scale the whole
   page without restoring it afterwards, and the new content inherited that.
 - Editing invisible text (an OCR layer) moved the line down by about a fifth of its height.
+- Deleting or editing a line of text moved the text that carried on after it on the same line, such as a word in
+  another font or colour, by the width of what was deleted or changed; moving a line moved the line below it
+  sideways. The text after a changed line now stays where it was.
+- Editing, redacting or removing hidden layers on a page with an inline picture (one written into the page's own
+  content) changed any text on the page holding the word LimarePDF uses inside to mark such pictures, putting the
+  picture's data in its place, and a crafted file could make the picture appear a second time. Pictures now go
+  back only where they were, and text is left as it was.
 - Repairing a damaged file could show a PDF attached to it, stored uncompressed, instead of the file's own pages,
   when the attachment's length was written in an object of its own. Such lengths are now looked up, and a copy of
   that object inside the attachment isn't used.
+- Some damaged files opened as empty documents, with no pages and no message, where other readers show their pages:
+  files whose list of pages holds a page itself instead of a reference to it, and files that give a second object
+  the page's number. Their list of pages is now repaired, and the file is marked repaired as other damaged files
+  are. A file in which no pages can be found is no longer opened empty: LimarePDF says it can't find any pages.
 - Some RC4-protected files with no open password asked for one that other readers don't need: files whose password
   entry (`/U`) holds only the 16 bytes readers compare, instead of 32. They now open without asking.
 - A document that opens without a password but has a permissions password showed the notice "This document was
@@ -94,6 +111,35 @@
   larger could lose detail, and one with a text layer could be straightened under its text. Only the selected pages
   change now; a shared picture is optimised as carefully as the most demanding of them needs, and the report says
   when the original stays elsewhere. The report also named the wrong page as the one optimised.
+- A file with a text box comment that has no drawing of its own, and a colour in its style with a letter such as
+  "é" in it, didn't open ("LimarePDF hit an internal error"), and `limarepdf-cli` couldn't draw its page. Such
+  colours are now ignored, as other malformed colours already were; a colour with a sign in it (`#+1+2+3`) is
+  ignored too, where it used to be read.
+- Signing a document set to get a password when saved (Document > Password security), or setting one while signing
+  ran, lost the password: the signed file, which LimarePDF writes without one, took the document's place. Signing
+  is now refused while a password is waiting to be saved, with a message saying why. A password set, or text typed,
+  while signing runs keeps the document open as it is, and the signed file opens in a new tab.
+- A document timestamp issued by an intermediate authority showed as not trusted, even when you trusted the
+  authority above it: the intermediate certificates the timestamp carries were ignored. They are now used to reach
+  an authority you trust, as they already were for signatures and the timestamps inside them; carrying a
+  certificate never makes it trusted.
+- Splitting a document held a whole copy of it for every part until all were written: splitting a 139 MB scan into
+  one file per page took more than 8 GB of memory, and a 1,000-page text file of 1.5 MB took 5.2 GB. Each part now
+  holds only what its pages use and is written as soon as it is made (406 MB and 39 MB for those two, and faster).
+  Extracting pages and printing selected pages also take less memory. If a part can't be written, the message says
+  how many files already were.
+- A small crafted page with tens of thousands of lines of text, each set apart from the next, closed LimarePDF
+  (losing unsaved work in every tab) when its text was read for selecting, searching, copying or exporting, and
+  closed `limarepdf-cli text` and `search`. Such pages now read normally, and pages with many separate lines read
+  faster (3,000 lines: 0.1 s, was 0.4 s). The order text is read in is unchanged (the same for all 1,089 public
+  test files).
+- Choosing a picture to place on a page, or a picture stamp, decoded the whole picture only to learn its size,
+  every page of a TIFF: an 8000 × 8000 PNG took 0.6 s and 370 MB more. The size now comes from the file's header.
+  A picture damaged after its header is now refused when it is placed, with the same message, instead of when it
+  is chosen.
+- Exporting pages as images and removing blank pages read each page's fonts again for every page. Each worker now
+  keeps them from page to page: exporting a 203-page Japanese document takes 1.6 s instead of 2.1 s, and finding its
+  blank pages 0.7 s instead of 1.0 s, for up to about 15% more memory on such documents.
 
 ## [0.7.2] - 2026-10-18
 

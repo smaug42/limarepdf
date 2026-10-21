@@ -342,7 +342,10 @@ changes under each signature. See [Digital signatures](signatures.md) for what e
 certification: click an empty signature field or drag a box on the page, then pick your digital ID, type its
 password, and optionally a reason and a location. Sign… asks where to save the signed copy (`NAME-signed.pdf` by
 default), signs in the background, and opens the signed copy in place of the document. Changes made since opening
-are signed with it; when they would show on earlier signatures as not allowed, LimarePDF asks first.
+are signed with it; when they would show on earlier signatures as not allowed, LimarePDF asks first. If the
+document changes while it is being signed (an edit, a password set, text being typed), it stays open as it is and
+the signed copy opens in a new tab. A document set to get a password when saved (Document > Password security)
+isn't signed: LimarePDF can't sign password-protected documents, so the signed copy would be saved without it.
 
 ☰ > Edit > Digital IDs… makes, imports, exports and removes your digital IDs, and chooses the default. See
 [Signing](signatures.md#signing) and [Digital IDs](signatures.md#digital-ids).
@@ -399,7 +402,8 @@ copy was made, how many pages, and until when the copy is kept. **Restore** open
 called "*name* (recovered)", with a notice saying when the copy was made; Save suggests "*name* (recovered).pdf"
 beside the original. **Discard** deletes the copy. **Not now** keeps them all and asks again at the next start.
 Copies are deleted 30 days after the crash if you do neither. A copy that turns out to be damaged is listed as such,
-with Show file and Discard. A restored document's copy stays until you save or close it, so a second crash doesn't
+with Show file and Discard; so is one whose description LimarePDF wrote beside it is damaged, a time in it past the
+year 9999 included. Damaged copies never stop LimarePDF from starting. A restored document's copy stays until you save or close it, so a second crash doesn't
 lose it, or until you remove content from it or set a password (below). Files given on the command line open once
 the list is closed.
 
@@ -461,7 +465,8 @@ document now; Apply saves them into the document like any other change, and Undo
 
 Split into files makes files of a set number of pages, or starts a file at each bookmark down to the chosen level
 (1 is the top level only). Files are named after their bookmark, such as `book-002 Introduction.pdf`, and the pages
-before the first bookmark get a file of their own.
+before the first bookmark get a file of their own. Each file is written as soon as its part is made, so a large
+document split into many files needs little more memory than the document itself.
 
 Pages that are deleted, or left out when extracting or splitting, leave nothing in the saved file: bookmarks,
 named destinations, links, the opening view, form fields and tags stop referring to them, so their content isn't

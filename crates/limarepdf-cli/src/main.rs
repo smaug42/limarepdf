@@ -13,8 +13,8 @@ use limarepdf_core::{
     format_page_range, parse_page_range, part_file_name, print, render, Annot, AnnotKind, Bates,
     BookmarkPlace, Cipher, Encryption, Field, FieldKind, FieldValue, HeaderFooter, ImageImport,
     ImageWatermark, Info, LabelRange, LabelStyle, Ocr, OcrResult, OpenLayout, OpenPanel, Pdf,
-    Restrictions, ScanMode, ScanOptions, ScanResult, Stamp, StampColor, StampKind, StampPlace,
-    ViewPrefs, Watermark,
+    Restrictions, ScanMode, ScanOptions, ScanResult, SplitBy, Stamp, StampColor, StampKind,
+    StampPlace, ViewPrefs, Watermark,
 };
 use limarepdf_core::{sign_label, InkColor, SignArt, SignRole, SignStyle};
 use limarepdf_core::{
@@ -2665,21 +2665,14 @@ fn run(cmd: Cmd) -> Result<()> {
                 .and_then(|s| s.to_str())
                 .unwrap_or("part")
                 .to_string();
-            let parts = match bookmarks {
-                Some(level) => p.split_at_bookmarks(level)?,
-                None => p
-                    .split_every(every)?
-                    .into_iter()
-                    .map(|d| (None, d))
-                    .collect(),
+            let by = match bookmarks {
+                Some(level) => SplitBy::Bookmarks(level),
+                None => SplitBy::Every(every),
             };
+            // Asked first, so that nothing is written when the document can't be split.
+            p.split_parts(by)?;
             std::fs::create_dir_all(&out_dir)?;
-            let n = parts.len();
-            parts.into_par_iter().enumerate().try_for_each(
-                |(i, (title, mut part))| -> Result<()> {
-                    part.save(out_dir.join(part_file_name(&stem, i + 1, title.as_deref())))
-                },
-            )?;
+            let n = p.split(by, |n, title| out_dir.join(part_file_name(&stem, n, title)))?;
             out!("split into {n} files in {}", out_dir.display());
         }
         Cmd::Extract { io, pages } => run_edit(&io, |p| {

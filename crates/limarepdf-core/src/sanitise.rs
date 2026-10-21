@@ -3,6 +3,7 @@
 //! private application data), and optionally comments, form values, bookmarks and what
 //! lies outside the visible page area.
 
+use crate::inline::Inline;
 use crate::{Pdf, Result};
 use anyhow::anyhow;
 use lopdf::content::{Content, Operation};
@@ -145,7 +146,7 @@ enum Drawn {
 /// into.
 #[derive(Default)]
 struct LayerScan {
-    edits: Vec<(Drawn, Vec<Operation>, Vec<Vec<u8>>)>,
+    edits: Vec<(Drawn, Vec<Operation>, Inline)>,
     blocked: Vec<String>,
     /// Some of what is in `blocked` is damaged data.
     damaged: bool,
@@ -411,10 +412,9 @@ impl Pdf {
             match drawn {
                 Drawn::Page(page) => self.commit(page, ops, 0, &inline)?,
                 Drawn::Stream(id) => {
-                    let bytes = Content { operations: ops }
-                        .encode()
+                    let bytes = inline
+                        .encode(ops)
                         .map_err(|e| anyhow!("cannot encode a form: {e}"))?;
-                    let bytes = crate::inline::restore(bytes, &inline);
                     if let Ok(s) = self.doc.get_object_mut(id).and_then(|o| o.as_stream_mut()) {
                         s.dict.remove(b"Filter");
                         s.dict.remove(b"DecodeParms");
@@ -756,7 +756,7 @@ impl Pdf {
         data: &[u8],
         res: &Dictionary,
         hidden: &HashSet<ObjectId>,
-    ) -> Result<Option<(Vec<Operation>, Vec<Vec<u8>>)>> {
+    ) -> Result<Option<(Vec<Operation>, Inline)>> {
         let (data, inline) = crate::inline::extract(data).map_err(|e| anyhow!("{e}"))?;
         let ops = Content::decode(&data)
             .map_err(|e| anyhow!("cannot parse the page content: {e}"))?

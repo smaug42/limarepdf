@@ -1,6 +1,7 @@
 //! Editing page content: move/resize, delete, change text, restyle paths, replace images, insert objects.
 
 use crate::fonts::{winansi_bytes, FontChoice};
+use crate::inline::Inline;
 use crate::matrix::{self as mx, mul, M};
 use crate::objects::{Obj, ObjectKind, Parsed, Show};
 use crate::{Pdf, Result};
@@ -114,6 +115,70 @@ fn closed(mut ops: Vec<Operation>, depth_left: usize) -> Vec<Operation> {
     ops
 }
 
+/// What keeps the text after a line in place when the line's shows are taken out, rewritten
+/// or moved. The text after it can carry on from where the line ended (a show with no line
+/// move before it), and the shows that are left don't end where the old ones did. `Tm` puts
+/// the text matrix back before that show; as `Tm` sets the line matrix too, which the old
+/// shows never changed, another `Tm` puts that back before the next line move. Not after
+/// vertical writing, whose end isn't known (it is measured as if it ran across).
+struct Following {
+    /// The show that carries on from the line, and the first line move after it.
+    show: Option<usize>,
+    line: Option<usize>,
+    tm: M,
+    tlm: M,
+    vertical: bool,
+}
+
+impl Following {
+    fn of(ops: &[Operation], obj: &Obj) -> Self {
+        let (tm, tlm) = obj
+            .text
+            .as_ref()
+            .map_or((mx::ID, mx::ID), |t| (t.tm_end, t.tlm_end));
+        let vertical = obj.text.as_ref().is_some_and(|t| t.vertical);
+        // The first operator from `from` on that sets the text matrix, or that shows text.
+        let next = |from: usize, shows: bool| {
+            (from..ops.len()).find(|&i| match ops[i].operator.as_str() {
+                "Tj" | "TJ" => shows,
+                "'" | "\"" | "Td" | "TD" | "T*" | "Tm" | "BT" | "ET" => true,
+                _ => false,
+            })
+        };
+        let is = |i: &usize, names: &[&str]| names.contains(&ops[*i].operator.as_str());
+        let show = obj
+            .text
+            .as_ref()
+            .and_then(|_| next(obj.last + 1, true))
+            .filter(|i| is(i, &["Tj", "TJ"]));
+        let line = show
+            .and_then(|s| next(s + 1, false))
+            .filter(|i| is(i, &["'", "\"", "Td", "TD", "T*"]));
+        Self {
+            show,
+            line,
+            tm,
+            tlm,
+            vertical,
+        }
+    }
+
+    /// What goes in before operator `i`.
+    fn before(&self, i: usize) -> Option<Operation> {
+        if self.vertical {
+            return None;
+        }
+        let m = if self.show == Some(i) {
+            self.tm
+        } else if self.line == Some(i) {
+            self.tlm
+        } else {
+            return None;
+        };
+        Some(op("Tm", m.iter().map(|&x| r(x)).collect()))
+    }
+}
+
 /// The same text shown with a plain Tj/TJ (no line move), for use after an explicit Tm.
 fn plain_show(o: &Operation, show: Show) -> Operation {
     match show {
@@ -146,21 +211,23 @@ impl Pdf {
         page: ObjectId,
         mut ops: Vec<Operation>,
         depth_left: usize,
-        inline: &[Vec<u8>],
+        inline: &Inline,
     ) -> Result<()> {
         for _ in 0..depth_left {
             ops.push(op("Q", vec![]));
         }
         let expect = ops.len();
-        let bytes = Content { operations: ops }
-            .encode()
+        let bytes = inline
+            .encode(ops)
             .map_err(|e| anyhow!("cannot encode the page content: {e}"))?;
+        // Read back as the page will be read next time, inline images lifted out first.
+        let (plain, _) = crate::inline::extract(&bytes)
+            .map_err(|e| anyhow!("edited content does not parse: {e}"))?;
         let back =
-            Content::decode(&bytes).map_err(|e| anyhow!("edited content does not parse: {e}"))?;
+            Content::decode(&plain).map_err(|e| anyhow!("edited content does not parse: {e}"))?;
         if back.operations.len() != expect {
             bail!("the edited page content did not round-trip safely; nothing was changed");
         }
-        let bytes = crate::inline::restore(bytes, inline);
         let id = self.doc.add_object(Stream::new(Dictionary::new(), bytes));
         self.doc
             .get_dictionary_mut(page)?
@@ -244,8 +311,10 @@ impl Pdf {
         let ictm = mx::inv(obj.ctm)
             .ok_or_else(|| anyhow!("the object has a degenerate transform and cannot be edited"))?;
         let m = mul(mul(obj.ctm, d), ictm);
+        let mut following = Following::of(&parsed.ops, &obj);
         let mut out: Vec<Operation> = Vec::with_capacity(parsed.ops.len() + 8);
         for (i, o) in parsed.ops.iter().enumerate() {
+            out.extend(following.before(i));
             if i == obj.first && obj.kind != ObjectKind::Text {
                 out.push(op("q", vec![]));
                 out.push(cm(m));
@@ -272,19 +341,12 @@ impl Pdf {
                         }
                     }
                 }
-                // Restore the text matrix the following operators expect.
-                let mut relative = false;
-                for o3 in parsed.ops[obj.last + 1..].iter() {
-                    match o3.operator.as_str() {
-                        "Tj" | "TJ" | "ET" => break,
-                        "'" | "\"" | "Td" | "TD" | "T*" => {
-                            relative = true;
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-                let tm = if relative { t.tlm_end } else { t.tm_end };
+                // Restore the text matrix the following operators expect: here, as BT has
+                // just reset it, and the line matrix later if a show carries on first.
+                let tm = match following.show.take() {
+                    Some(_) => t.tm_end,
+                    None => t.tlm_end,
+                };
                 out.extend([
                     op("ET", vec![]),
                     op("Q", vec![]),
@@ -307,8 +369,10 @@ impl Pdf {
     pub fn delete_object(&mut self, page_index: usize, id: usize) -> Result<()> {
         let (page, parsed) = self.load_edit(page_index)?;
         let obj = Self::pick(&parsed, id)?.clone();
+        let following = Following::of(&parsed.ops, &obj);
         let mut out = Vec::with_capacity(parsed.ops.len());
         for (i, o) in parsed.ops.iter().enumerate() {
+            out.extend(following.before(i));
             let inside = i >= obj.first && i <= obj.last;
             if !inside {
                 out.push(o.clone());
@@ -345,6 +409,7 @@ impl Pdf {
             .text
             .clone()
             .ok_or_else(|| anyhow!("object {id} is not text"))?;
+        let following = Following::of(&parsed.ops, &obj);
         let mut out = Vec::with_capacity(parsed.ops.len() + 8);
         if t.hidden {
             // Invisible text (an OCR layer): replace the line with one invisible show of
@@ -352,6 +417,7 @@ impl Pdf {
             // invisible and lines up with the image. Style changes do not apply. Empty text
             // removes the line.
             for (i, o) in parsed.ops.iter().enumerate() {
+                out.extend(following.before(i));
                 match t.runs.iter().find(|r| r.op == i) {
                     Some(run) => out.extend(move_only(run.show)),
                     None => out.push(o.clone()),
@@ -392,6 +458,7 @@ impl Pdf {
         if keep_style && t.reuse && ascii {
             let first_run = t.runs[0].op;
             for (i, o) in parsed.ops.iter().enumerate() {
+                out.extend(following.before(i));
                 match t.runs.iter().find(|r| r.op == i) {
                     Some(run) if i == first_run => {
                         out.extend(move_only(run.show));
@@ -405,6 +472,7 @@ impl Pdf {
         }
         // Replacement: remove the old shows, append the new text on top.
         for (i, o) in parsed.ops.iter().enumerate() {
+            out.extend(following.before(i));
             match t.runs.iter().find(|r| r.op == i) {
                 Some(run) => out.extend(move_only(run.show)),
                 None => out.push(o.clone()),

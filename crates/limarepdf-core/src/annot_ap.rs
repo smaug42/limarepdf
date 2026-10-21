@@ -1180,7 +1180,9 @@ fn parse_style(s: &str) -> (Option<f32>, Option<[f32; 3]>) {
                     .or(size);
             }
             "color" => {
-                let hex = value.strip_prefix('#').filter(|h| h.len() == 6);
+                let hex = value
+                    .strip_prefix('#')
+                    .filter(|h| h.len() == 6 && h.bytes().all(|b| b.is_ascii_hexdigit()));
                 color = hex.and_then(|h| {
                     let c = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
                     Some([c(0)?, c(2)?, c(4)?].map(|v| v as f32 / 255.0))
@@ -1210,6 +1212,22 @@ mod tests {
         assert_eq!(size, Some(14.5));
         assert_eq!(color, Some([1.0, 0.0, 0.0]));
         assert_eq!(parse_style("text-align:left"), (None, None));
+    }
+
+    #[test]
+    fn style_colours_must_be_six_hex_digits() {
+        // Six bytes that aren't six characters were cut inside a character, a panic (E15);
+        // a sign was taken as part of a number.
+        for bad in [
+            "#aé123", "#éaaaa", "#+1+2+3", "#12345", "#1234567", "#12 456", "#gg0000",
+        ] {
+            assert_eq!(parse_style(&format!("color:{bad}")).1, None, "{bad}");
+        }
+        assert_eq!(
+            parse_style("color:#00ff80").1,
+            Some([0.0, 1.0, 128.0 / 255.0])
+        );
+        assert_eq!(parse_style("font: 12pt; color:#aé123"), (Some(12.0), None));
     }
 
     #[test]

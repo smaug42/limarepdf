@@ -9,8 +9,8 @@
 //! - **Structure, explicitly:** form fields (values, defaults, rich text, inherited ones) and
 //!   their appearances, actions and JavaScript wherever they are, optional content, pages and
 //!   references to pages that aren't in the page tree.
-//! - **Outside readers** (`pdftotext`, Ghostscript's `txtwrite`, which draws form fields, and
-//!   `pdfinfo -js`), for the opt-in `cross_check` tests.
+//! - **Outside readers** (`pdftotext`, Ghostscript's `txtwrite`, which draws form fields,
+//!   `pdfinfo -js` and `pdfimages`), for the opt-in `cross_check` tests.
 
 use limarepdf_core::Pdf;
 use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
@@ -743,27 +743,57 @@ pub mod tools {
     /// The standard output of `tool` run on `bytes` written to a file; `{}` in `args` is the
     /// file's path.
     pub fn run(tool: &str, args: &[&str], bytes: &[u8]) -> String {
+        run_with_files(tool, args, bytes).0
+    }
+
+    /// As [`run`], with the files `tool` wrote beside the input (`{dir}` in `args` is their
+    /// folder): (name, contents), by name.
+    #[allow(clippy::type_complexity)]
+    fn run_with_files(tool: &str, args: &[&str], bytes: &[u8]) -> (String, Vec<(String, Vec<u8>)>) {
         let n = N.fetch_add(1, Ordering::SeqCst);
         let dir = std::env::temp_dir().join(format!("limarepdf-saved-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("saved.pdf");
         std::fs::write(&path, bytes).unwrap();
         let p = path.to_str().unwrap();
-        let args: Vec<&str> = args
+        let d = dir.to_str().unwrap();
+        let args: Vec<String> = args
             .iter()
-            .map(|a| if *a == "{}" { p } else { a })
+            .map(|a| a.replace("{dir}", d).replace("{}", p))
             .collect();
         let out = Command::new(tool)
             .args(&args)
             .output()
             .unwrap_or_else(|e| panic!("{tool} installed: {e}"));
+        let mut files: Vec<(String, Vec<u8>)> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|f| *f != path)
+            .map(|f| {
+                let name = f.file_name().unwrap().to_string_lossy().into_owned();
+                (name, std::fs::read(&f).unwrap())
+            })
+            .collect();
+        files.sort();
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(
             out.status.success(),
             "{tool} failed: {}",
             String::from_utf8_lossy(&out.stderr)
         );
-        String::from_utf8_lossy(&out.stdout).into_owned()
+        (String::from_utf8_lossy(&out.stdout).into_owned(), files)
+    }
+
+    /// The pictures poppler finds on page `page` (1-based), soft masks included, as PNG
+    /// files, in the order `pdfimages -list` gives them.
+    pub fn pdfimages(bytes: &[u8], page: usize) -> Vec<Vec<u8>> {
+        let page = page.to_string();
+        let args = ["-png", "-f", &page, "-l", &page, "{}", "{dir}/img"];
+        run_with_files("pdfimages", &args, bytes)
+            .1
+            .into_iter()
+            .map(|(_, data)| data)
+            .collect()
     }
 
     /// The page text as poppler reads it.

@@ -28,7 +28,8 @@ signer or your organisation sends you (`.cer`, `.crt`, `.pem`, or `.p7c` as Acro
 
 [Signing](#signing) needs a [digital ID](#digital-ids) and its password: one you make in LimarePDF, or one you import
 from Acrobat, your computer or a certificate authority. The ID must be valid on the day you sign, by your
-computer's clock, and the document must not be encrypted. For others to see your signatures as trusted, they need
+computer's clock, and the document must not be encrypted, nor set to get a password when saved (the signed file
+would be written without it). For others to see your signatures as trusted, they need
 your certificate, which LimarePDF exports, and a way to check its fingerprint with you.
 
 ## Checking a signed PDF
@@ -199,8 +200,9 @@ certificates the signature carries and those in the document's validation data (
 up to ten certificates long. Those certificates only help find the way: trust comes from your list alone. The trust
 list's own certificate for an authority is the end of the chain, whatever the document carries under that name.
 
-A **timestamp authority** is judged the same way, for its timestamp: trusted directly or through an authority, and
-its certificate must be meant for timestamps. A document timestamp's Trust line is about its authority, and an
+A **timestamp authority** is judged the same way, for its timestamp: trusted directly or through an authority (the
+certificates the timestamp carries help find the way, as a signature's do), and its certificate must be meant for
+timestamps. A document timestamp's Trust line is about its authority, and an
 embedded timestamp shows *(trusted)*, *(LimarePDF can't confirm this authority)* or *(NOT TRUSTED: …)* on its Timestamp
 line.
 

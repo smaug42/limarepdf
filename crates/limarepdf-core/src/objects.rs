@@ -72,6 +72,8 @@ pub(crate) struct TextData {
     pub reuse: bool,
     /// Every show of the line is invisible (see [`PageObject::hidden`]).
     pub hidden: bool,
+    /// Some of the line is in vertical writing, which is measured as if it ran across.
+    pub vertical: bool,
     /// Where each show's characters are, for locating matches within the line.
     pub pieces: Vec<Piece>,
 }
@@ -117,7 +119,7 @@ pub(crate) struct Parsed {
     /// Unbalanced `q` operators left open at the end of the stream.
     pub depth_left: usize,
     /// Raw inline images, referenced by placeholder operators in `ops`.
-    pub inline: Vec<Vec<u8>>,
+    pub inline: crate::inline::Inline,
     /// Text lines inside form XObjects the content draws, in page user space. They
     /// are read and searched like the others but are not page objects: editing works
     /// on the page's own operators.
@@ -226,6 +228,7 @@ struct RunInfo {
     lead: f32,
     ctm: M,
     visible: bool,
+    vertical: bool,
     tm_after: M,
     tlm_after: M,
 }
@@ -481,6 +484,7 @@ impl Pdf {
                         lead,
                         ctm: gs.ctm,
                         visible: gs.tr != 3 && gs.tr != 7,
+                        vertical: fc.is_some_and(|f| f.vertical),
                         tm_after: tm,
                         tlm_after: tlm,
                     };
@@ -613,7 +617,7 @@ impl Pdf {
                         }
                     }
                 }
-                t if t.starts_with(crate::inline::TAG) => objs.push(Obj {
+                t if inline.raw(t).is_some() => objs.push(Obj {
                     kind: ObjectKind::Image,
                     first: i,
                     last: i,
@@ -990,6 +994,7 @@ fn group_runs(runs: Vec<RunInfo>, out: &mut Vec<Obj>) {
                 fill: first.fill,
                 reuse: first.reuse,
                 hidden: !group.iter().any(|r| r.visible),
+                vertical: group.iter().any(|r| r.vertical),
                 pieces,
             }),
             path: None,

@@ -564,6 +564,48 @@ fn damaged_copies() {
     std::fs::remove_dir_all(base).unwrap();
 }
 
+/// Times on disk too large to hold, or past the year 9999, never stop a start (E12): a
+/// description with one is damaged, and a session folder named with one counts as old.
+#[test]
+fn damaged_times_never_stop_a_start() {
+    for time in [u64::MAX, 10_000_000_000_000, 253_402_300_800] {
+        let (m, s) = model_store();
+        written(&s, T1, 1, &pdf(1));
+        let desc = s.dir().join(T1.description());
+        drop(s);
+        let text = String::from_utf8(m.read(&desc).unwrap()).unwrap();
+        let bad = text.replace(&format!("time {T0}\n"), &format!("time {time}\n"));
+        assert_ne!(bad, text);
+        let tmp = m.write_temp(&desc, bad.as_bytes()).unwrap();
+        m.rename(&tmp, &desc).unwrap();
+        let fs: Arc<dyn Fs> = Arc::new(m.clone());
+        let found = find_crashed(&fs, &root(), now());
+        assert_eq!(
+            found[0].docs[0].state,
+            Err("its description has a bad time line".into()),
+            "{time}"
+        );
+    }
+    // The last second of 9999 is still a time.
+    assert!(Description::decode(
+        T1,
+        format!(
+            "{HEADER}\npdf t1-1-0.pdf\nlength 1\nsha256 {}\ntime 253402300799\npages 1\n",
+            "00".repeat(32)
+        )
+        .as_bytes()
+    )
+    .is_ok());
+    for time in [u64::MAX, 10_000_000_000_000] {
+        let m = Model::new();
+        let dir = root().join(format!("session-1-{time}"));
+        m.create_dir_all(&dir).unwrap();
+        let fs: Arc<dyn Fs> = Arc::new(m.clone());
+        assert!(find_crashed(&fs, &root(), now()).is_empty());
+        assert!(!m.exists(&dir), "{time}");
+    }
+}
+
 /// Withdrawing a crashed session's copy (a restored tab's, before a redaction, a removal of
 /// hidden information or a password): section 6's outcomes, as for this session's copies.
 #[test]

@@ -2,9 +2,11 @@
 //! wrong bytes, a cross-reference stream that doesn't read, or no table at all. lopdf
 //! trusts the table and then finds no pages, so the objects are found by scanning the
 //! bytes instead, as other PDF apps do, and a rebuilt table is appended for lopdf to read.
+//! A page tree that lopdf reads with no pages, for reasons other readers look past, is
+//! mended too (see [`mend_page_tree`]).
 
 use lopdf::{Dictionary, Document, Object};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::io::Cursor;
 use std::ops::Range;
@@ -15,6 +17,8 @@ const MAX_OBJECT: u32 = 8_388_607;
 const MAX_TRAILERS: usize = 16;
 /// The longest trailer dictionary read, in bytes.
 const MAX_TRAILER_BYTES: usize = 64 * 1024;
+/// The deepest page tree mended, as deep as page attributes are inherited from.
+const MAX_PAGE_TREE_DEPTH: usize = 64;
 /// The most bytes an object stream is unpacked to.
 const MAX_OBJECT_STREAM: usize = 64 << 20;
 /// Trailer entries carried into the rebuilt table. `/Encrypt` and `/ID` must be there when
@@ -140,6 +144,104 @@ pub(crate) fn unpack_object_streams(doc: &mut Document) {
     if let Some(&(top, _)) = doc.objects.keys().next_back() {
         doc.max_id = doc.max_id.max(top);
     }
+}
+
+/// Mends a page tree in which lopdf finds no pages although other readers do: a page or
+/// page tree node written directly in a `/Kids` array is made an object of its own, and a
+/// kid whose object isn't a page or a node takes another copy of that object in `bytes` that
+/// is one (the file may give a second object the page's number, and lopdf keeps that one).
+/// Returns whether anything changed.
+pub(crate) fn mend_page_tree(doc: &mut Document, bytes: &[u8]) -> bool {
+    let Some(root) = doc
+        .catalog()
+        .ok()
+        .and_then(|c| c.get(b"Pages").ok())
+        .and_then(|p| p.as_reference().ok())
+    else {
+        return false;
+    };
+    let start = bytes.windows(5).position(|w| w == b"%PDF-").unwrap_or(0);
+    let body = &bytes[start..];
+    let mut scan = None;
+    let mut changed = false;
+    let mut seen = HashSet::new();
+    let mut todo = vec![(root, 0)];
+    while let Some((node, depth)) = todo.pop() {
+        if depth > MAX_PAGE_TREE_DEPTH || !seen.insert(node) {
+            continue;
+        }
+        let kids = match doc.get_dictionary(node).and_then(|d| d.get(b"Kids")) {
+            Ok(Object::Array(a)) => a.clone(),
+            Ok(Object::Reference(r)) => match doc.get_object(*r) {
+                Ok(Object::Array(a)) => a.clone(),
+                _ => continue,
+            },
+            _ => continue,
+        };
+        let mut mended = kids.clone();
+        for kid in &mut mended {
+            let id = match kid {
+                Object::Dictionary(d) if is_page_node(d) => {
+                    let mut d = d.clone();
+                    d.set("Parent", node);
+                    doc.add_object(d)
+                }
+                Object::Reference(id) => {
+                    let id = *id;
+                    if !doc.get_dictionary(id).is_ok_and(is_page_node) {
+                        let scan = scan.get_or_insert_with(|| scan_objects(body));
+                        match page_node_copy(body, scan, id) {
+                            Some(d) => {
+                                doc.objects.insert(id, Object::Dictionary(d));
+                                changed = true;
+                            }
+                            None => continue,
+                        }
+                    }
+                    id
+                }
+                _ => continue,
+            };
+            *kid = Object::Reference(id);
+            todo.push((id, depth + 1));
+        }
+        if mended != kids {
+            if let Ok(d) = doc.get_dictionary_mut(node) {
+                d.set("Kids", mended);
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+/// Whether `d` is a page or a page tree node.
+fn is_page_node(d: &Dictionary) -> bool {
+    d.has_type(b"Page") || d.has_type(b"Pages")
+}
+
+/// The first copy of object `id` in `b`, outside stream data, that is a page or a page tree
+/// node.
+fn page_node_copy(b: &[u8], scan: &Scan, id: lopdf::ObjectId) -> Option<Dictionary> {
+    let mut i = 0;
+    while i < b.len() {
+        let line = i + b[i..]
+            .iter()
+            .take_while(|c| matches!(c, b' ' | b'\t'))
+            .count();
+        if object_header(&b[line..]) == Some(id) && !scan.in_stream(line) {
+            let after = line + find(&b[line..], b"obj")? + 3;
+            let at = after + b[after..].iter().take_while(|c| is_white(**c)).count();
+            if let Some(d) = read_dictionary(&b[at..]).filter(is_page_node) {
+                return Some(d);
+            }
+        }
+        i = match b[i..].iter().position(|c| matches!(c, b'\r' | b'\n')) {
+            Some(n) => i + n + 1,
+            None => b.len(),
+        };
+    }
+    None
 }
 
 /// What a scan of a file's bytes finds.

@@ -94,7 +94,9 @@ sound and video, and redaction marks are kept. Annotations stored without a draw
 
 Pages that `delete` removes, or that `extract` and `split` leave out, leave nothing in the output: bookmarks,
 named destinations, links, form fields and tags stop referring to them. `extract` and `split` keep the bookmarks to
-the pages they keep; `delete` keeps every bookmark, without a destination when its page went.
+the pages they keep; `delete` keeps every bookmark, without a destination when its page went. `split` writes each
+file as soon as its part is made (several at once, one per core); if one can't be written, the error says how many
+files already were.
 
 ### Page labels
 

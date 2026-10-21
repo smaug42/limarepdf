@@ -81,11 +81,10 @@ fn intact_files_are_not_repaired() {
     let pdf = Pdf::from_bytes(&b, None).unwrap();
     assert!(!pdf.repaired());
     assert_eq!(pdf.page_count(), 1);
-    // A document with no pages isn't damaged either.
+    // A document with no pages isn't repaired into one: it is refused (see
+    // `files_with_no_pages_are_refused`).
     let empty = Pdf::new().to_bytes().unwrap();
-    let pdf = Pdf::from_bytes(&empty, None).unwrap();
-    assert!(!pdf.repaired());
-    assert_eq!(pdf.page_count(), 0);
+    assert!(Pdf::from_bytes(&empty, None).is_err());
 }
 
 #[test]
@@ -358,4 +357,65 @@ fn repaired_files_save_whole_and_clean() {
     let back = Pdf::from_bytes(&pdf.to_bytes().unwrap(), None).unwrap();
     assert!(!back.repaired());
     assert_eq!(back.page_count(), 1);
+}
+
+/// Opens `bytes` repaired, as [`opens_repaired`], and checks that its saved copy opens with
+/// the page and no repair.
+fn page_list_mended(bytes: &[u8]) {
+    let mut pdf = opens_repaired(bytes, None);
+    let back = Pdf::from_bytes(&pdf.to_bytes().unwrap(), None).unwrap();
+    assert!(!back.repaired());
+    assert_eq!(back.page_count(), 1);
+    assert_eq!(back.page_size(0).unwrap(), (200.0, 100.0));
+}
+
+#[test]
+fn a_page_written_directly_in_the_page_list() {
+    // As pdf.js issue9540: the page tree holds the page itself instead of a reference to
+    // it. Object 3 is left unused.
+    let mut o = objects();
+    o[1].1 = format!("<< /Type /Pages /Kids [{}] /Count 1 >>", page(200));
+    o[2].1 = "<< >>".into();
+    let (mut b, at) = body(&o);
+    table(&mut b, &at, "/Root 1 0 R /Info 5 0 R");
+    page_list_mended(&b);
+}
+
+#[test]
+fn a_page_list_mended_where_the_content_is_out_of_place_too() {
+    // As above, with the table's offset for the page's content wrong as well: the page must
+    // still draw its content, which only scanning the file finds.
+    let mut o = objects();
+    o[1].1 = format!("<< /Type /Pages /Kids [{}] /Count 1 >>", page(200));
+    o[2].1 = "<< >>".into();
+    let (mut b, mut at) = body(&o);
+    at[3] += 3;
+    table(&mut b, &at, "/Root 1 0 R /Info 5 0 R");
+    page_list_mended(&b);
+}
+
+#[test]
+fn a_page_whose_number_another_object_takes() {
+    // As PDFBox 5283: a second object written with the page's number (a copy of its
+    // resources), where the table's entry for object 6 points, takes the page's place.
+    let mut o = objects();
+    o.push((3, "<< /ProcSet [/PDF] >>".into()));
+    let (mut b, at) = body(&o);
+    table(&mut b, &at, "/Root 1 0 R /Info 5 0 R");
+    page_list_mended(&b);
+}
+
+#[test]
+fn files_with_no_pages_are_refused() {
+    // An empty page tree, and one whose only page isn't in the file: rather than an empty
+    // document, an error saying why.
+    for kids in ["/Kids [] /Count 0", "/Kids [9 0 R] /Count 1"] {
+        let mut o = objects();
+        o[1].1 = format!("<< /Type /Pages {kids} >>");
+        o[2].1 = "<< >>".into();
+        let (mut b, at) = body(&o);
+        table(&mut b, &at, "/Root 1 0 R /Info 5 0 R");
+        let e = Pdf::from_bytes(&b, None).err().expect("it opens");
+        assert!(format!("{e:#}").contains("no pages"), "{kids}: {e:#}");
+    }
 }

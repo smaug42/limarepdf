@@ -188,7 +188,7 @@ impl Gs {
 /// A content stream after redaction.
 struct Rewritten {
     ops: Vec<Operation>,
-    inline: Vec<Vec<u8>>,
+    inline: crate::inline::Inline,
     res: Dictionary,
     /// `q` operators left open at the end.
     depth: usize,
@@ -531,13 +531,9 @@ impl<'a> Redactor<'a> {
                         _ => {}
                     }
                 }
-                t if t.starts_with(crate::inline::TAG)
-                    && self.hit(mx::transform_rect(gs.ctm, UNIT)) =>
-                {
+                t if inline.raw(t).is_some() && self.hit(mx::transform_rect(gs.ctm, UNIT)) => {
                     // An inline image becomes a picture object, cut like any other.
-                    let pic = crate::inline::placeholder_index(t)
-                        .and_then(|k| inline.get(k))
-                        .and_then(|raw| inline_stream(raw, &spaces));
+                    let pic = inline.raw(t).and_then(|raw| inline_stream(raw, &spaces));
                     let cut = match &pic {
                         Some(s) => self.cut_image(s, &spaces, gs.ctm),
                         None => Err("unreadable inline image".into()),
@@ -617,10 +613,9 @@ impl<'a> Redactor<'a> {
         }
         let mut ops = inner.ops;
         ops.extend((0..inner.depth).map(|_| op("Q", vec![])));
-        let Ok(bytes) = (Content { operations: ops }).encode() else {
+        let Ok(bytes) = inner.inline.encode(ops) else {
             return Ok(None);
         };
-        let bytes = crate::inline::restore(bytes, &inner.inline);
         let mut dict = s.dict.clone();
         for k in [&b"Filter"[..], b"DecodeParms", b"Length"] {
             dict.remove(k);
@@ -1432,11 +1427,8 @@ impl Pdf {
                 let Some(draw) = parsed.ops.get(o.first) else {
                     continue;
                 };
-                let pic = match crate::inline::placeholder_index(&draw.operator) {
-                    Some(k) => parsed
-                        .inline
-                        .get(k)
-                        .and_then(|raw| inline_stream(raw, &spaces)),
+                let pic = match parsed.inline.raw(&draw.operator) {
+                    Some(raw) => inline_stream(raw, &spaces),
                     None => draw
                         .operands
                         .first()

@@ -5,9 +5,14 @@
 
 use std::collections::HashMap;
 
-/// Most codes one range may map, and most mappings kept, against hostile files.
+/// Most codes one range may map, and most mappings read, against hostile files.
 const MAX_RANGE: u32 = 65_536;
 const MAX_ENTRIES: usize = 1 << 20;
+/// Most bytes the mappings may take, each counted with its entry's own size, and the
+/// longest destination a CMap may have (the PDF specification's limit, 512 bytes).
+const MAX_BYTES: usize = 32 << 20;
+const MAX_DST: usize = 512;
+const ENTRY: usize = std::mem::size_of::<(u32, String)>();
 
 #[derive(Debug, Default)]
 pub(crate) struct ToUnicode {
@@ -18,21 +23,18 @@ impl ToUnicode {
     /// Read the mappings of a CMap program. `None` when it has none.
     pub fn parse(data: &[u8]) -> Option<Self> {
         let toks = tokens(data);
-        let mut map = HashMap::new();
-        let put = |map: &mut HashMap<u32, String>, code: u32, text: String| {
-            if map.len() < MAX_ENTRIES {
-                map.insert(code, text);
-            }
-        };
+        let mut m = Mappings::default();
         let mut i = 0;
-        while i < toks.len() {
+        'read: while i < toks.len() {
             match &toks[i] {
                 Tok::Word(w) if *w == b"beginbfchar" => {
                     i += 1;
                     while let (Some(Tok::Hex(src)), Some(Tok::Hex(dst))) =
                         (toks.get(i), toks.get(i + 1))
                     {
-                        put(&mut map, code(src), text(&units(dst)));
+                        if !m.put(code(src), &units(dst)) {
+                            break 'read;
+                        }
                         i += 2;
                     }
                 }
@@ -44,15 +46,20 @@ impl ToUnicode {
                         let (lo, hi) = (code(lo), code(hi));
                         let hi = hi.min(lo.saturating_add(MAX_RANGE - 1));
                         match toks.get(i + 2) {
-                            // Consecutive codes: the last UTF-16 unit counts up.
+                            // Consecutive codes: the last UTF-16 unit counts up. A destination
+                            // too long skips the whole range.
                             Some(Tok::Hex(dst)) => {
                                 let base = units(dst);
-                                for (k, c) in (lo..=hi).enumerate() {
-                                    let mut u = base.clone();
-                                    if let Some(last) = u.last_mut() {
-                                        *last = last.wrapping_add(k as u16);
+                                if base.len() <= MAX_DST / 2 {
+                                    for (k, c) in (lo..=hi).enumerate() {
+                                        let mut u = base.clone();
+                                        if let Some(last) = u.last_mut() {
+                                            *last = last.wrapping_add(k as u16);
+                                        }
+                                        if !m.put(c, &u) {
+                                            break 'read;
+                                        }
                                     }
-                                    put(&mut map, c, text(&u));
                                 }
                                 i += 3;
                             }
@@ -61,8 +68,8 @@ impl ToUnicode {
                                 let mut j = i + 3;
                                 let mut c = lo;
                                 while let Some(Tok::Hex(dst)) = toks.get(j) {
-                                    if c <= hi {
-                                        put(&mut map, c, text(&units(dst)));
+                                    if c <= hi && !m.put(c, &units(dst)) {
+                                        break 'read;
                                     }
                                     c = c.saturating_add(1);
                                     j += 1;
@@ -79,12 +86,43 @@ impl ToUnicode {
                 _ => i += 1,
             }
         }
+        let map = m.map;
         (!map.is_empty()).then_some(Self { map })
     }
 
     /// The text a code stands for, if the map has it.
     pub fn get(&self, code: u32) -> Option<&str> {
         self.map.get(&code).map(String::as_str)
+    }
+}
+
+/// The mappings read so far, within `MAX_ENTRIES` and `MAX_BYTES`.
+#[derive(Default)]
+struct Mappings {
+    map: HashMap<u32, String>,
+    read: usize,
+    bytes: usize,
+}
+
+impl Mappings {
+    /// Maps `code` to the text of the UTF-16 units `dst`, unless it is longer than a CMap
+    /// allows. False once a limit is reached: nothing more is read.
+    fn put(&mut self, code: u32, dst: &[u16]) -> bool {
+        if self.read == MAX_ENTRIES {
+            return false;
+        }
+        self.read += 1;
+        if dst.len() > MAX_DST / 2 {
+            return true;
+        }
+        let text = text(dst);
+        let cost = ENTRY + text.len();
+        if self.bytes + cost > MAX_BYTES {
+            return false;
+        }
+        self.bytes += cost;
+        self.map.insert(code, text);
+        true
     }
 }
 
@@ -239,6 +277,71 @@ mod tests {
         assert!(ToUnicode::parse(b"").is_none());
         let huge = b"1 beginbfrange <00000000> <FFFFFFFF> <0041> endbfrange";
         let m = ToUnicode::parse(huge).unwrap();
+        assert_eq!(m.map.len(), MAX_RANGE as usize);
+    }
+
+    /// The bytes the map holds, counting each entry's own size.
+    fn held(m: &ToUnicode) -> usize {
+        m.map.values().map(|t| ENTRY + t.len()).sum()
+    }
+
+    #[test]
+    fn destinations_longer_than_a_cmap_allows_are_skipped() {
+        // A map of about 4 KB, one range to 1,000 letters, asked for 64 MiB of text (E8).
+        let long = format!(
+            "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n\
+             1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n\
+             1 beginbfrange\n<0000> <FFFF> <{}>\nendbfrange\nendcmap\nend\nend\n",
+            "0041".repeat(1000)
+        );
+        assert!(long.len() < 4200);
+        assert!(ToUnicode::parse(long.as_bytes()).is_none());
+        // 512 bytes is the longest a destination may be; one past it is skipped.
+        let at = |n: usize| format!("<{}>", "0041".repeat(n));
+        let m = ToUnicode::parse(
+            format!(
+                "3 beginbfchar <01> {} <02> {} <03> <0042> endbfchar\n\
+                 1 beginbfrange <10> <11> [{} {}] endbfrange",
+                at(256),
+                at(257),
+                at(257),
+                at(1)
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(m.get(1).map(str::len), Some(256));
+        assert_eq!(m.get(2), None);
+        assert_eq!(m.get(3), Some("B"));
+        assert_eq!(m.get(0x10), None);
+        assert_eq!(m.get(0x11), Some("A"));
+    }
+
+    #[test]
+    fn bounds_the_bytes_mapped() {
+        // Sixteen ranges of 65,536 four-byte codes, each to 256 letters: 256 MiB of text.
+        let ranges: String = (0..16)
+            .map(|r| format!("<{r:04X}0000> <{r:04X}FFFF> <{}>\n", "0041".repeat(256)))
+            .collect();
+        let m =
+            ToUnicode::parse(format!("16 beginbfrange\n{ranges}endbfrange").as_bytes()).unwrap();
+        assert!(held(&m) <= MAX_BYTES, "{} bytes", held(&m));
+        assert!(held(&m) > MAX_BYTES - 1024, "{} bytes", held(&m));
+        assert_eq!(m.get(0).map(str::len), Some(256));
+    }
+
+    #[test]
+    fn bounds_the_work_of_ranges_that_overlap() {
+        // Each range maps the same 65,536 codes again, so the map never fills: a 16 MiB map
+        // of them is about 52 billion codes to work through. Reading stops after
+        // `MAX_ENTRIES` codes, so a later mapping is never reached.
+        let ranges = "<0000> <FFFF> <0041>\n".repeat(64);
+        let m = ToUnicode::parse(
+            format!("64 beginbfrange\n{ranges}endbfrange\n1 beginbfchar <0000> <0042> endbfchar")
+                .as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(m.get(0), Some("A"));
         assert_eq!(m.map.len(), MAX_RANGE as usize);
     }
 }

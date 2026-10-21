@@ -64,7 +64,7 @@ pub use annots::{Annot, AnnotKind, ShapeLook, TextStyle};
 pub use blank::BLANK_TOLERANCE;
 pub use cms_check::CertInfo;
 pub use display::{display_line, display_text, local_date, local_time};
-pub use doc::{part_file_name, write_file, Info, Pdf};
+pub use doc::{part_file_name, write_file, Info, Pdf, SplitBy};
 pub use edit::{PathStyle, Shape, TextEdit};
 pub use fonts::{Family, FontChoice};
 pub use forms::{Field, FieldKind, FieldValue, Widget};

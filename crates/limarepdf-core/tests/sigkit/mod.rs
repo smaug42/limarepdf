@@ -560,6 +560,17 @@ pub fn make_cert(issuer: &Id, s: &CertSpec) -> Vec<u8> {
 
 /// A timestamp token (RFC 3161) from `tsa` over `data` at `time` (GeneralizedTime).
 pub fn timestamp_token(tsa: &Id, data: &[&[u8]], time: &str, h: Hash) -> Vec<u8> {
+    timestamp_token_carrying(tsa, data, time, h, Vec::new())
+}
+
+/// [`timestamp_token`], carrying `extra_certs` besides the authority's own.
+pub fn timestamp_token_carrying(
+    tsa: &Id,
+    data: &[&[u8]],
+    time: &str,
+    h: Hash,
+    extra_certs: Vec<Vec<u8>>,
+) -> Vec<u8> {
     let info = seq(&[
         &int(1),
         &oid("1.2.3.4.5"),
@@ -575,6 +586,7 @@ pub fn timestamp_token(tsa: &Id, data: &[&[u8]], time: &str, h: Hash) -> Vec<u8>
             econtent_type: TST_INFO,
             econtent: Some(info.clone()),
             signing_time: None,
+            extra_certs,
             ..Cms::default()
         },
     )

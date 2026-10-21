@@ -410,14 +410,12 @@ pub fn load(bytes: Vec<u8>, password: Option<&str>) -> Result<HPdf> {
     })
 }
 
-/// Render the given pages in parallel (one renderer per rayon task).
+/// Render the given pages in parallel (one renderer per worker thread, so fonts are read
+/// once per thread rather than once per page).
 pub fn render_pages_parallel(pdf: &HPdf, pages: &[usize], scale: f32) -> Vec<Result<Bitmap>> {
     pages
         .par_iter()
-        .map(|&i| {
-            let r = Renderer::new(pdf);
-            r.render(i, scale)
-        })
+        .map_init(|| Renderer::new(pdf), |r, &i| r.render(i, scale))
         .collect()
 }
 
@@ -519,9 +517,9 @@ pub fn encode_pages(
     encode_batched(pdf, pages, dpi, format, |_, bytes| Ok(bytes))
 }
 
-/// Render and encode `pages` in parallel, in batches that keep the bitmaps in memory to
-/// about 1 GB, passing each file and its position in `pages` to `f`. Returns the results
-/// of `f` in order.
+/// Render and encode `pages` in parallel, on as many threads as keep the bitmaps in memory
+/// to about 1 GB, passing each file and its position in `pages` to `f`. Returns the
+/// results of `f` in order.
 fn encode_batched<T: Send>(
     pdf: &HPdf,
     pages: &[usize],
@@ -545,18 +543,19 @@ fn encode_batched<T: Send>(
     let batch = ((1u64 << 30) as f32 / page_bytes) as usize;
     let batch = batch.clamp(1, rayon::current_num_threads());
     let jobs: Vec<(usize, usize)> = pages.iter().copied().enumerate().collect();
-    let mut out = Vec::with_capacity(pages.len());
-    for chunk in jobs.chunks(batch) {
-        let done: Vec<T> = chunk
-            .par_iter()
-            .map(|&(k, i)| {
-                let b = Renderer::new(pdf).render(i, scale)?;
-                f(k, encode(&b, format, dpi)?)
-            })
-            .collect::<Result<_>>()?;
-        out.extend(done);
-    }
-    Ok(out)
+    // Each thread keeps its renderer, and so the fonts it has read, from page to page.
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(batch).build()?;
+    pool.install(|| {
+        jobs.par_iter()
+            .map_init(
+                || Renderer::new(pdf),
+                |r, &(k, i)| {
+                    let b = r.render(i, scale)?;
+                    f(k, encode(&b, format, dpi)?)
+                },
+            )
+            .collect()
+    })
 }
 
 impl Pdf {

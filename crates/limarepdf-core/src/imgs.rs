@@ -58,20 +58,57 @@ pub(crate) struct Raster {
 
 /// Pixel size of a PNG, JPEG or TIFF file (the first page of a TIFF), as stored.
 pub fn image_dimensions(bytes: &[u8]) -> Result<(u32, u32)> {
-    let r = first(decode(bytes)?)?;
-    Ok((r.w, r.h))
+    let (w, h, _) = header(bytes)?;
+    Ok((w, h))
 }
 
 /// A picture's width and height in pixels as it is meant to be seen, after its EXIF
 /// orientation.
 pub(crate) fn decode_upright_size(bytes: &[u8]) -> Result<(f32, f32)> {
-    let r = first(decode(bytes)?)?;
-    let (w, h) = (r.w as f32, r.h as f32);
-    Ok(if swaps_axes(r.orientation) {
-        (h, w)
-    } else {
-        (w, h)
-    })
+    let (w, h, o) = header(bytes)?;
+    let (w, h) = (w as f32, h as f32);
+    Ok(if swaps_axes(o) { (h, w) } else { (w, h) })
+}
+
+/// Pixel size and orientation of a PNG, JPEG or TIFF file (the first page of a TIFF),
+/// read from its header: decoding a large picture only to learn its size took seconds
+/// and hundreds of megabytes, every page of a TIFF. Damage past the header shows when
+/// the picture is decoded to be placed.
+fn header(bytes: &[u8]) -> Result<(u32, u32, Orientation)> {
+    let fmt = image::guess_format(bytes)
+        .map_err(|_| anyhow!("unrecognised image format (PNG, JPEG and TIFF are supported)"))?;
+    let (w, h, o) = match fmt {
+        image::ImageFormat::Jpeg => {
+            let info = jpeg_header(bytes)?;
+            (info.w, info.h, info.orientation)
+        }
+        image::ImageFormat::Tiff => {
+            let err = |e: tiff::TiffError| anyhow!("cannot decode the TIFF: {e}");
+            let mut d = Decoder::new(Cursor::new(bytes)).map_err(err)?;
+            let (w, h) = d.dimensions().map_err(err)?;
+            let o = d
+                .find_tag_unsigned::<u8>(Tag::Orientation)
+                .map_err(err)?
+                .and_then(Orientation::from_exif)
+                .unwrap_or(Orientation::NoTransforms);
+            (w, h, o)
+        }
+        _ => {
+            let (w, h) = image::ImageReader::with_format(Cursor::new(bytes), fmt)
+                .into_dimensions()
+                .map_err(|e| anyhow!("cannot decode the image: {e}"))?;
+            let o = if fmt == image::ImageFormat::Png {
+                png_meta(bytes).1
+            } else {
+                Orientation::NoTransforms
+            };
+            (w, h, o)
+        }
+    };
+    if w == 0 || h == 0 {
+        bail!("empty image");
+    }
+    Ok((w, h, o))
 }
 
 pub(crate) fn first(rasters: Vec<Raster>) -> Result<Raster> {
@@ -96,7 +133,8 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Vec<Raster>> {
     Ok(out)
 }
 
-fn decode_jpeg(bytes: &[u8]) -> Result<Raster> {
+/// A JPEG file's header, refused unless LimarePDF can embed the file.
+fn jpeg_header(bytes: &[u8]) -> Result<JpegInfo> {
     let info = jpeg_info(bytes).ok_or_else(|| anyhow!("cannot read the JPEG header"))?;
     if !matches!(info.components, 1 | 3 | 4) {
         bail!(
@@ -104,6 +142,11 @@ fn decode_jpeg(bytes: &[u8]) -> Result<Raster> {
             info.components
         );
     }
+    Ok(info)
+}
+
+fn decode_jpeg(bytes: &[u8]) -> Result<Raster> {
+    let info = jpeg_header(bytes)?;
     Ok(Raster {
         w: info.w,
         h: info.h,
