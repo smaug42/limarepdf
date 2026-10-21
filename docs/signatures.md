@@ -604,7 +604,8 @@ Changes after signing were checked on the same samples, among them files changed
 Reader (a comment added, a second field signed), iText (a signature added) and PAdES tools (timestamps and
 validation data), which LimarePDF reports as allowed, and the DSS attack samples (shadow hide and replace, a page added,
 a signature appearance changed, a reason replaced), which LimarePDF refuses. One DSS sample whose later revisions point
-to cross-reference sections that don't exist is refused as malformed, where DSS repairs the file and accepts it.
+to cross-reference sections that don't exist is refused as malformed, and its document timestamp, which covers those
+damaged revisions, shows *can't check*, where DSS repairs the file and accepts it.
 `pdfsig` doesn't judge changes after signing, so there is no cross-check for this part.
 
 Trust was checked on chains made with OpenSSL for the purpose (good chains, and each way a chain can fail), whose
