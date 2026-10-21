@@ -4,6 +4,10 @@
 //! - **The bytes as written,** before any repair or pruning: every form a marker can take in a
 //!   string (literal, hex, UTF-16) in the raw file, and in every `stream` segment of the file
 //!   decoded, whether any object still uses it or not.
+//! - **Strings in content,** as a reader shows them: each decoded segment read as content
+//!   (escapes, line continuations and hex spacing undone), with a `TJ` array's strings joined.
+//!   lopdf's content parser stops at the first operation it can't read, so what follows is
+//!   searched as bytes only.
 //! - **The file's own cross-reference table,** checked entry by entry, so the structure read
 //!   here is the one written and not one lopdf rebuilt by scanning.
 //! - **Structure, explicitly:** form fields (values, defaults, rich text, inherited ones) and
@@ -13,6 +17,7 @@
 //!   `pdfinfo -js` and `pdfimages`), for the opt-in `cross_check` tests.
 
 use limarepdf_core::Pdf;
+use lopdf::content::Content;
 use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
 use std::collections::HashSet;
 
@@ -36,6 +41,8 @@ pub struct Saved {
     pub doc: Document,
     /// Every `stream` segment in the file, decoded, with its byte offset.
     segments: Vec<(usize, Vec<u8>)>,
+    /// The strings each segment that reads as content shows, with its byte offset.
+    shown: Vec<(usize, Vec<Vec<u8>>)>,
     /// Segments whose filters the checker doesn't decode (pictures), with their offsets and
     /// filters: what a marker search can't see into.
     pub opaque: Vec<(usize, String)>,
@@ -51,16 +58,18 @@ impl Saved {
         check_xref(&bytes);
         let doc = Document::load_mem(&bytes).expect("the saved file loads");
         let (segments, opaque) = segments(&bytes);
+        let shown = shown(&segments);
         Self {
             bytes,
             doc,
             segments,
+            shown,
             opaque,
         }
     }
 
-    /// Every place `needle` is in the file: in its raw bytes, in a decoded stream segment, or in
-    /// a string of an object (escapes undone).
+    /// Every place `needle` is in the file: in its raw bytes, in a decoded stream segment, in a
+    /// string the segment shows as content, or in a string of an object (escapes undone).
     pub fn places(&self, needle: &str) -> Vec<String> {
         let forms = forms(needle);
         let mut out = Vec::new();
@@ -72,6 +81,11 @@ impl Saved {
         for (at, data) in &self.segments {
             if forms.iter().any(|f| contains(data, f)) {
                 out.push(format!("stream at {at}, decoded"));
+            }
+        }
+        for (at, strings) in &self.shown {
+            if strings.iter().any(|s| forms.iter().any(|f| contains(s, f))) {
+                out.push(format!("stream at {at}, a string in its content"));
             }
         }
         for (id, o) in &self.doc.objects {
@@ -548,6 +562,35 @@ fn segments(b: &[u8]) -> (Vec<(usize, Vec<u8>)>, Vec<(usize, String)>) {
         i = end;
     }
     (out, opaque)
+}
+
+/// For each segment that reads as content, the strings it shows, escapes undone: every string
+/// operand (inline dictionaries' too), and a `TJ` array's strings joined, as a reader puts them
+/// together. A segment that doesn't read as content is left out.
+fn shown(segments: &[(usize, Vec<u8>)]) -> Vec<(usize, Vec<Vec<u8>>)> {
+    segments
+        .iter()
+        .filter_map(|(at, data)| {
+            let content = Content::decode(data).ok()?;
+            let mut strings = Vec::new();
+            for op in &content.operations {
+                for o in &op.operands {
+                    each_string(o, 0, &mut |s| strings.push(s.to_vec()));
+                }
+                if let ("TJ", Some(Object::Array(a))) = (op.operator.as_str(), op.operands.first())
+                {
+                    strings.push(
+                        a.iter()
+                            .filter_map(|x| x.as_str().ok())
+                            .flatten()
+                            .copied()
+                            .collect(),
+                    );
+                }
+            }
+            Some((*at, strings))
+        })
+        .collect()
 }
 
 /// The Flate (zlib) segment at byte `at`, decoded to its end with flate2 itself. lopdf gives
