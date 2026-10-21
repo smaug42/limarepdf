@@ -169,6 +169,171 @@ fn removes_characters_of_a_shift_jis_font_whole() {
     assert_eq!(tj[2].as_str().unwrap(), b"B");
 }
 
+/// A page showing `content` with `/F2`, a Type 0 font with its own CMap: codespace lines
+/// `space`, and only the codes `chars` mapped, to Adobe-Japan1 CIDs (34 "A", 36 "C", 37 "D").
+/// CID 34 is 500 wide, every other 1000. No ToUnicode map and no font program.
+fn own_cmap(space: &str, chars: &str, content: &str) -> Pdf {
+    let mut p = make(&[content]);
+    let n = chars.split_whitespace().count() / 2;
+    let cmap = format!(
+        "/CIDInit /ProcSet findresource begin 12 dict begin begincmap \
+         /CIDSystemInfo << /Registry (Adobe) /Ordering (Japan1) /Supplement 2 >> def \
+         /CMapName /Sparse def /CMapType 1 def {space} {n} begincidchar {chars} endcidchar \
+         endcmap CMapName currentdict /CMap defineresource pop end end"
+    );
+    let cmap = p
+        .doc
+        .add_object(Stream::new(Dictionary::new(), cmap.into_bytes()));
+    let desc = p.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "CIDFontType0", "BaseFont" => "HeiseiMin-W3",
+        "CIDSystemInfo" => dictionary! {
+            "Registry" => Object::string_literal("Adobe"),
+            "Ordering" => Object::string_literal("Japan1"),
+            "Supplement" => 2,
+        },
+        "DW" => 1000, "W" => vec![34.into(), vec![500.into()].into()],
+    });
+    let font = p.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type0", "BaseFont" => "HeiseiMin-W3",
+        "Encoding" => cmap, "DescendantFonts" => vec![desc.into()],
+    });
+    let page = p.page_ids()[0];
+    p.doc.get_dictionary_mut(page).unwrap().set(
+        "Resources",
+        dictionary! { "Font" => dictionary! { "F2" => font } },
+    );
+    p
+}
+
+/// Every code is two bytes, but only "A", "C" and "D" are mapped. The middle string holds the
+/// unmapped code `<0042>` and then "A". At 20 pt, poppler reads C at x 10 to 30, the unmapped
+/// code to 50, A to 60 and D to 80.
+fn sparse_cmap() -> Pdf {
+    own_cmap(
+        "1 begincodespacerange <0000> <FFFF> endcodespacerange",
+        "<0041> 34 <0043> 36 <0044> 37",
+        "BT /F2 20 Tf 10 100 Td <0043> Tj <00420041> Tj <0044> Tj ET",
+    )
+}
+
+/// The left and right edges of where `p` reads `s` on page 1.
+fn xs(p: &Pdf, s: &str) -> Vec<[f32; 2]> {
+    let b = p.find_text_boxes(0, s).unwrap();
+    b.iter().map(|b| [b[0], b[2]]).collect()
+}
+
+/// Whether two bytes `pair` appear together in any string page 1's content shows.
+fn shows_pair(p: &Pdf, pair: [u8; 2]) -> bool {
+    let ops = Content::decode(&p.doc.get_page_content(p.page_ids()[0])).unwrap();
+    fn strings(o: &Object, out: &mut Vec<Vec<u8>>) {
+        match o {
+            Object::String(b, _) => out.push(b.clone()),
+            Object::Array(a) => a.iter().for_each(|x| strings(x, out)),
+            _ => {}
+        }
+    }
+    let mut all = Vec::new();
+    for o in &ops.operations {
+        o.operands.iter().for_each(|x| strings(x, &mut all));
+    }
+    all.iter().any(|s| s.windows(2).any(|w| w == pair))
+}
+
+#[test]
+fn reads_codes_of_its_own_cmap_by_the_codespace_as_other_readers_do() {
+    let p = sparse_cmap();
+    assert_eq!(xs(&p, "C"), [[10.0, 30.0]]);
+    assert_eq!(xs(&p, "A"), [[50.0, 60.0]]);
+    assert_eq!(xs(&p, "D"), [[60.0, 80.0]]);
+    // One-byte codes below 0x80, two-byte codes from 0x8140 to 0x9FFC (each byte in its
+    // range). 0x8150 and 0x42 aren't mapped; 0x8120 starts like a two-byte code, so poppler
+    // takes two bytes for it too.
+    let p = own_cmap(
+        "2 begincodespacerange <00> <7F> <8140> <9FFC> endcodespacerange",
+        "<41> 34 <8141> 36 <8142> 37",
+        "BT /F2 20 Tf 10 100 Td <41815042814181208142> Tj ET",
+    );
+    assert_eq!(xs(&p, "A"), [[10.0, 20.0]]);
+    assert_eq!(xs(&p, "C"), [[60.0, 80.0]]);
+    assert_eq!(xs(&p, "D"), [[100.0, 120.0]]);
+    // A one-byte code mapped though it starts like the three-byte codes (as pdf.js's issue
+    // 11768 has): one byte, as poppler and hayro read it.
+    let p = own_cmap(
+        "2 begincodespacerange <00> <7F> <E08080> <EFBFBF> endcodespacerange",
+        "<E0> 34 <43> 36 <44> 37",
+        "BT /F2 20 Tf 10 100 Td <E0E0E04344> Tj ET",
+    );
+    assert_eq!(p.page_text(0), "AAACD");
+    assert_eq!(xs(&p, "C"), [[40.0, 60.0]]);
+    assert_eq!(xs(&p, "D"), [[60.0, 80.0]]);
+}
+
+#[test]
+fn an_area_over_a_character_of_a_sparse_cmap_removes_it_where_other_readers_put_it() {
+    // Over A where poppler reads it.
+    let mut p = sparse_cmap();
+    let rep = p.redact(&[(0, [49.0, 80.0, 61.0, 108.0])]).unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    assert!(!shows_pair(&p, [0x00, 0x41]));
+    assert!(!p.page_text(0).contains('A'), "{}", p.page_text(0));
+    assert_eq!(xs(&p, "C"), [[10.0, 30.0]]);
+    assert_eq!(xs(&p, "D"), [[60.0, 80.0]]);
+    // A mark found by search does the same.
+    let mut p = sparse_cmap();
+    let marks = p.find_redaction_marks("a").unwrap();
+    assert_eq!(marks.len(), 1);
+    assert!(p.redact(&marks).unwrap().left.is_empty());
+    assert!(!shows_pair(&p, [0x00, 0x41]));
+    assert_eq!(xs(&p, "C"), [[10.0, 30.0]]);
+    assert_eq!(xs(&p, "D"), [[60.0, 80.0]]);
+}
+
+/// LimarePDF draws a code that its CMap doesn't map as one byte, as hayro does, so it can draw
+/// a string's later characters elsewhere than other readers put them. An area over where
+/// LimarePDF draws them removes them too.
+#[test]
+fn an_area_over_a_character_where_limarepdf_draws_it_removes_it() {
+    // Poppler: A at x 70 to 80. Drawn: four one-byte codes, then A at x 110 to 120.
+    let mut p = own_cmap(
+        "1 begincodespacerange <0000> <FFFF> endcodespacerange",
+        "<0041> 34 <0043> 36 <0044> 37",
+        "BT /F2 20 Tf 10 100 Td <0043> Tj <004200420041> Tj <0044> Tj ET",
+    );
+    assert_eq!(xs(&p, "A"), [[70.0, 80.0]]);
+    let rep = p.redact(&[(0, [109.0, 80.0, 121.0, 108.0])]).unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    assert!(!shows_pair(&p, [0x00, 0x41]));
+    assert_eq!(xs(&p, "C"), [[10.0, 30.0]]);
+    assert_eq!(xs(&p, "D"), [[80.0, 100.0]]);
+    // A CMap mapping a two-byte code outside its one-byte codespace: read by the codespace,
+    // but drawn as mapped, where poppler puts it too (A at x 10 to 20).
+    let mut p = own_cmap(
+        "1 begincodespacerange <00> <FF> endcodespacerange",
+        "<0041> 34 <43> 36 <44> 37",
+        "BT /F2 20 Tf 10 100 Td <00414344> Tj ET",
+    );
+    let rep = p.redact(&[(0, [9.0, 80.0, 21.0, 108.0])]).unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    assert!(!shows_pair(&p, [0x00, 0x41]));
+}
+
+#[test]
+fn characters_of_a_cmap_without_a_codespace_go_with_their_whole_string() {
+    // Where its codes start and end isn't certain, so a mark over A takes C with it. D, on
+    // the line below, stays.
+    let mut p = own_cmap(
+        "",
+        "<0041> 34 <0043> 36 <0044> 37",
+        "BT /F2 20 Tf 10 100 Td <00430041> Tj 0 -50 Td <0044> Tj ET",
+    );
+    assert_eq!(xs(&p, "A"), [[30.0, 40.0]]);
+    let rep = p.redact(&[(0, [29.0, 80.0, 41.0, 108.0])]).unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    assert!(!shows_pair(&p, [0x00, 0x41]));
+    assert!(!shows_pair(&p, [0x00, 0x43]));
+    assert_eq!(xs(&p, "D"), [[10.0, 30.0]]);
+}
+
 #[test]
 fn keeps_tj_spacing_and_later_strings_in_place() {
     let mut p = make(&["BT /F1 20 Tf 30 100 Td [(Sec) -200 (retX) 50 (Yzw)] TJ ET"]);
@@ -419,6 +584,55 @@ fn keeps_a_shared_picture_another_page_draws_from_deeply_nested_forms() {
             .get_dictionary_mut(page)
             .unwrap()
             .set("Resources", shared);
+    }
+    let dark = |p: &mut Pdf| {
+        let doc = render::load(p.snapshot().unwrap(), None).unwrap();
+        let b = render::Renderer::new(&doc).render(1, 1.0).unwrap();
+        b.rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|px| px[0] < 100)
+            .count()
+    };
+    let before = dark(&mut p);
+    assert!(before > 2000, "{before}");
+    let rep = p.redact(&[(0, [110.0, 100.0, 120.0, 110.0])]).unwrap();
+    assert_eq!(rep.pages[0].images_cut, 1);
+    assert_eq!(dark(&mut p), before, "page 2's picture");
+}
+
+/// A form without resources of its own draws `/Pic`, which is a different picture on each
+/// page. Page 1's own use of page 2's picture is blacked out; page 2 still draws it through
+/// the form, so it stays in page 2's resources.
+#[test]
+fn keeps_a_picture_another_page_draws_through_a_form_using_that_page_s_names() {
+    let mut p = make(&["q 50 0 0 50 100 50 cm /Im1 Do Q q /Fm Do Q", "q /Fm Do Q"]);
+    let picture = |p: &mut Pdf, v: u8| {
+        p.doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Image", "Width" => 1, "Height" => 1,
+                "ColorSpace" => "DeviceGray", "BitsPerComponent" => 8,
+            },
+            vec![v],
+        ))
+    };
+    let (img, other) = (picture(&mut p, 0x20), picture(&mut p, 0x40));
+    let bbox: Vec<Object> = [0, 0, 300, 200].into_iter().map(Object::Integer).collect();
+    let fm = p.doc.add_object(Stream::new(
+        dictionary! { "Type" => "XObject", "Subtype" => "Form", "BBox" => bbox },
+        b"q 50 0 0 50 200 120 cm /Pic Do Q".to_vec(),
+    ));
+    let pages = p.page_ids();
+    let xobjects = [
+        dictionary! { "Im1" => img, "Fm" => fm, "Pic" => other },
+        dictionary! { "Fm" => fm, "Pic" => img },
+    ];
+    for (page, xo) in pages.into_iter().zip(xobjects) {
+        p.doc
+            .get_dictionary_mut(page)
+            .unwrap()
+            .set("Resources", dictionary! { "XObject" => xo });
     }
     let dark = |p: &mut Pdf| {
         let doc = render::load(p.snapshot().unwrap(), None).unwrap();
@@ -980,6 +1194,41 @@ fn cross_check_redacted_output_with_poppler_and_ghostscript() {
         "{text}"
     );
     assert!(pages[1].contains("Secret Walrus"), "{text}");
+
+    // An area over a character of a sparse CMap, where poppler puts it: poppler then reads
+    // the characters around it where they were, and nothing under the area.
+    let words = |bytes: &[u8]| -> Vec<(String, f32, f32)> {
+        let html = tools::run("pdftotext", &["-bbox", "{}", "-"], bytes);
+        let attr = |w: &str, k: &str| -> f32 {
+            let v = &w[w.find(&format!("{k}=\"")).unwrap() + k.len() + 2..];
+            v[..v.find('"').unwrap()].parse().unwrap()
+        };
+        html.split("<word ")
+            .skip(1)
+            .map(|w| {
+                let text = &w[w.find('>').unwrap() + 1..w.find("</word>").unwrap()];
+                (text.to_string(), attr(w, "xMin"), attr(w, "xMax"))
+            })
+            .collect()
+    };
+    let mut p = sparse_cmap();
+    let before = words(&p.to_bytes().unwrap());
+    assert_eq!(
+        before,
+        [("C".into(), 10.0, 30.0), ("AD".into(), 50.0, 80.0)],
+        "poppler before"
+    );
+    assert!(p
+        .redact(&[(0, [49.0, 80.0, 61.0, 108.0])])
+        .unwrap()
+        .left
+        .is_empty());
+    let after = words(&p.to_bytes().unwrap());
+    assert_eq!(
+        after,
+        [("C".into(), 10.0, 30.0), ("D".into(), 60.0, 80.0)],
+        "poppler after"
+    );
 }
 
 /// A real public PDF: the Magick++ tutorial ImageMagick installs. Its page 14 has text, a

@@ -128,6 +128,10 @@ These come from hayro 0.8, the library that draws the pages:
 - Non-isolated groups are drawn as isolated, which changes colours where a blend mode such as Multiply is used
   inside the group.
 - Shading patterns that carry their own graphics state, and CMaps built on other CMaps, aren't supported.
+- A code that a font's character map (CMap) leaves out is drawn as one byte, whatever the map's code ranges say,
+  so in a font with two-byte codes the characters after it are drawn further along than poppler and pdf.js draw
+  them. Text selection, search and redaction follow those readers; redaction also removes such text where
+  LimarePDF draws it ([Redaction limits](redaction.md#limits)).
 
 Other gaps:
 

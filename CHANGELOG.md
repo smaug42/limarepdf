@@ -32,7 +32,17 @@
   form field touching a mark when its form was nested more than 32 deep. Tags at any depth now lose their text;
   such a form, or tags whose index is nested more than 32 deep, make redaction refuse with nothing changed.
 - Redaction could make a picture disappear from another page, when that page drew it from inside drawings nested
-  more than 8 deep and the same picture was under a mark elsewhere.
+  more than 8 deep, or through a drawing it shares with other pages that uses each page's own names for pictures,
+  and the same picture was under a mark elsewhere.
+- Removing hidden layers could make a hidden layer's content show, when a drawing that has no resources of its
+  own was used on pages that give its layers different meanings: it was checked only as the first of them has it.
+  Such a drawing now makes the command stop, with nothing changed, as other drawings it can't check do.
+- Chinese, Japanese and Korean text in a font with its own character map put the characters after a code the map
+  leaves out in the wrong places, so a redaction area over a character where other readers show it could leave
+  that character in the file, with the check afterwards finding nothing. Such codes now take as many bytes as the
+  map's code ranges say, as other readers take them. LimarePDF draws such codes differently, so a piece of text
+  it draws elsewhere than it reads is removed whole when the area covers it in either place; so is text in a font
+  whose code ranges can't be read.
 
 ## [0.8.0] - 2026-10-20
 

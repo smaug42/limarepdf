@@ -640,7 +640,7 @@ impl Pdf {
                     .ok()
                     .and_then(|o| o.as_name().ok())
                     .is_some_and(|n| n == b"WinAnsiEncoding");
-                let metrics = Metrics(std::array::from_fn(|c| ctx.width(c as u32)));
+                let metrics = Metrics(std::array::from_fn(|c| ctx.width(c as u32, 1)));
                 // A zero width is how some makers (LibreOffice, for one) mark a character
                 // the font in the file doesn't have.
                 let has_all = winansi_bytes(text)

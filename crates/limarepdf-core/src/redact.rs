@@ -78,6 +78,10 @@ const MAX_PLACES: usize = 10;
 /// The unit square pictures are drawn in.
 const UNIT: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 
+/// Forms read for the pictures and forms they draw, each with the names (`/XObject`
+/// entries) it was read with when it has no resources of its own, else with none.
+type FormsRead = HashSet<(ObjectId, Vec<(Vec<u8>, ObjectId)>)>;
+
 /// A name for a new entry in a resource dictionary.
 fn fresh_name(d: &Dictionary) -> Vec<u8> {
     (1..)
@@ -787,7 +791,14 @@ impl<'a> Redactor<'a> {
         let (tfs, th) = (g.size, g.th);
         let scale = tfs * th;
         let (d0, a0) = (-0.21 * tfs + g.rise, 0.79 * tfs + g.rise);
-        let known = font.is_some_and(|f| f.codes_known);
+        // A font whose strings LimarePDF draws elsewhere than it reads them (and other
+        // readers put them): which characters are where isn't certain.
+        let drawn = font.filter(|f| {
+            items
+                .iter()
+                .any(|it| matches!(it, Object::String(s, _) if !f.drawn_alike(s)))
+        });
+        let known = font.is_some_and(|f| f.codes_known) && drawn.is_none();
 
         // Each character code: its bytes, its text, where it starts and how far it moves.
         struct Code {
@@ -807,7 +818,7 @@ impl<'a> Redactor<'a> {
                     match font {
                         Some(f) => {
                             for (code, space, raw) in f.codes(s) {
-                                let glyph = f.width(code) / 1000.0 * scale;
+                                let glyph = f.width(code, raw.len()) / 1000.0 * scale;
                                 let a = glyph + (g.tc + if space { g.tw } else { 0.0 }) * th;
                                 codes.push(Code {
                                     bytes: raw.to_vec(),
@@ -848,10 +859,26 @@ impl<'a> Redactor<'a> {
 
         if !known {
             // The string can't be split into characters reliably: if any of it is under
-            // a mark, all of it goes, keeping its advance. The box is widened, as the
-            // widths may be wrong.
-            let w = adv.abs().max(0.5 * scale.abs());
-            let b = norm([-w * 0.5, d0, adv + w * 0.5, a0]);
+            // a mark, all of it goes, keeping its advance. The box reaches as far as
+            // LimarePDF draws the string too, and is widened, as the widths may be wrong.
+            let far = drawn.map_or(adv, |f| {
+                let mut far = 0.0f32;
+                for it in &items {
+                    match it {
+                        Object::String(s, _) => {
+                            for (code, space, raw) in f.drawn_codes(s) {
+                                far += f.width(code, raw.len()) / 1000.0 * scale
+                                    + (g.tc + if space { g.tw } else { 0.0 }) * th;
+                            }
+                        }
+                        x => far -= x.as_float().unwrap_or(0.0) / 1000.0 * scale,
+                    }
+                }
+                far
+            });
+            let (lo, hi) = (adv.min(far).min(0.0), adv.max(far).max(0.0));
+            let w = (hi - lo).max(0.5 * scale.abs());
+            let b = norm([lo - w * 0.5, d0, hi + w * 0.5, a0]);
             if !self.hit(mx::transform_rect(m, b)) {
                 return None;
             }
@@ -1323,6 +1350,7 @@ impl Pdf {
             return Ok(());
         }
         let mut used = HashSet::new();
+        let mut read = HashSet::new();
         let mut holders = Vec::new();
         let mut held = HashSet::new();
         for page in self.page_ids() {
@@ -1331,7 +1359,7 @@ impl Pdf {
                 .doc
                 .get_page_content_with_limit(page, crate::MAX_CONTENT)
                 .ok();
-            self.xobjects_drawn(data, res, &mut used);
+            self.xobjects_drawn(data, res, &mut used, &mut read);
             let mut cur = Some(page);
             while let Some(id) = cur.filter(|&id| held.insert(id)) {
                 holders.push(id);
@@ -1355,12 +1383,26 @@ impl Pdf {
 
     /// Collect the pictures and forms content `data` (drawn with resources `res`) draws, forms'
     /// insides included, each form read once however deeply it is nested: one left out would
-    /// count as unused and be taken out of resources it is still drawn from. Content that
-    /// can't be read (`None`) may draw anything its resources list, so all of that counts.
-    fn xobjects_drawn(&self, data: Option<Vec<u8>>, res: Dictionary, used: &mut HashSet<ObjectId>) {
+    /// count as unused and be taken out of resources it is still drawn from. A form without
+    /// resources of its own draws with the names of where it is drawn, so it is read again
+    /// for other names; `read` holds the forms read, with those names. Content that can't be
+    /// read (`None`) may draw anything its resources list, so all of that counts.
+    fn xobjects_drawn(
+        &self,
+        data: Option<Vec<u8>>,
+        res: Dictionary,
+        used: &mut HashSet<ObjectId>,
+        read: &mut FormsRead,
+    ) {
         let mut todo = vec![(data, res)];
         while let Some((data, res)) = todo.pop() {
             let xobjs = self.resolved_dict(res.get(b"XObject").ok());
+            let names = || -> Vec<(Vec<u8>, ObjectId)> {
+                xobjs
+                    .iter()
+                    .filter_map(|(n, o)| Some((n.clone(), o.as_reference().ok()?)))
+                    .collect()
+            };
             let content = data
                 .and_then(|d| crate::inline::extract(&d).ok())
                 .and_then(|(d, _)| Content::decode(&d).ok());
@@ -1378,9 +1420,7 @@ impl Pdf {
                 else {
                     continue;
                 };
-                if !used.insert(id) {
-                    continue;
-                }
+                used.insert(id);
                 if let Ok(s) = self.doc.get_object(id).and_then(|o| o.as_stream()) {
                     if s.dict.get(b"Subtype").and_then(|o| o.as_name()).ok() == Some(b"Form") {
                         let own = s
@@ -1388,6 +1428,10 @@ impl Pdf {
                             .get(b"Resources")
                             .ok()
                             .map(|o| self.resolved_dict(Some(o)));
+                        let with = if own.is_some() { Vec::new() } else { names() };
+                        if !read.insert((id, with)) {
+                            continue;
+                        }
                         let c = s.get_plain_content_with_limit(crate::MAX_CONTENT).ok();
                         todo.push((c, own.unwrap_or_else(|| res.clone())));
                     }

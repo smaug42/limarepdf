@@ -32,7 +32,8 @@ copying, so they always agree.
   Chinese, Japanese and Korean fonts without a ToUnicode map (common in files whose fonts aren't embedded) are read
   through their character map, as pdf.js does: a Unicode one (such as `UniJIS-UCS2-H`) gives the text directly;
   others (such as Shift-JIS `90ms-RKSJ-H`) give character numbers, which Adobe's tables for Japanese, Simplified and
-  Traditional Chinese and Korean turn into text. Their codes are split as the map says, one to four bytes each, and
+  Traditional Chinese and Korean turn into text. Their codes are split as the map says, one to four bytes each (a
+  code the map leaves out takes as many bytes as the map's code ranges say, as poppler and pdf.js read it), and
   their widths found by character number, so highlights and selections sit on the right characters.
 - **Spaces:** a gap between words is a space, whether the file has a space character there or only moves the next
   word along (as justified text and many PDF makers do).
@@ -49,6 +50,9 @@ Limits:
 - CID fonts with no ToUnicode map whose character map can't be read, or that use their own character numbers
   rather than Adobe's tables, come out as "�" or the wrong characters. A file that names Adobe's tables but numbers
   its characters otherwise reads wrong in pdf.js too.
+- After a code a font's character map leaves out, LimarePDF draws the rest of that piece of text further along
+  than it reads it (see [Rendering](rendering.md#known-to-be-wrong)), so highlights there sit where other readers
+  put the characters, not on the drawn ones.
 - A page with tens of thousands of words spaced out along one line, which only a crafted file has, takes seconds to
   read (50,000 words: 4.5 s), as its columns are worked out one at a time. Tens of thousands of separate lines are
   quick (50,000: 0.2 s).

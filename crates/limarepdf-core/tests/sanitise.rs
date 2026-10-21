@@ -716,6 +716,80 @@ fn hidden_layers_in_appearances_and_patterns_are_removed() {
     assert!(users.is_empty(), "{users:?}");
 }
 
+/// Two pages sharing a form with no resources of its own, so its layer `/L` is whichever
+/// layer the page it is drawn from names: the hidden one on the pages marked in `hidden`, the
+/// one that is on elsewhere. Pages marked in `draws` draw the form; the others only list it.
+/// Page 2 also names a hidden layer `/L9` the form doesn't use.
+fn shared_unresourced(hidden: [bool; 2], draws: [bool; 2]) -> Pdf {
+    let mut p = make("", Dictionary::new());
+    p.insert_blank(1, 300.0, 200.0).unwrap();
+    let off = add_layers(&mut p);
+    let ocgs = p.doc.catalog().unwrap().get(b"OCProperties").unwrap();
+    let on = ocgs
+        .as_dict()
+        .unwrap()
+        .get(b"OCGs")
+        .unwrap()
+        .as_array()
+        .unwrap()[1]
+        .clone();
+    let font = helvetica(&mut p);
+    let form = p.doc.add_object(Stream::new(
+        dictionary! { "Type" => "XObject", "Subtype" => "Form", "BBox" => rect([0, 0, 300, 200]) },
+        b"/OC /L BDC BT /F1 12 Tf 30 150 Td (WALRUS-SHARED) Tj ET EMC \
+          BT /F1 12 Tf 30 120 Td (Visible shared) Tj ET"
+            .to_vec(),
+    ));
+    for (i, page) in p.page_ids().into_iter().enumerate() {
+        let mut props = dictionary! { "L" => if hidden[i] { off.into() } else { on.clone() } };
+        if i == 1 {
+            props.set("L9", off);
+        }
+        let draw = if draws[i] { " q /Fx Do Q" } else { "" };
+        let content = format!("BT /F1 12 Tf 10 20 Td (Page {}) Tj ET{draw}", i + 1);
+        let s = p
+            .doc
+            .add_object(Stream::new(Dictionary::new(), content.into_bytes()));
+        let d = p.doc.get_dictionary_mut(page).unwrap();
+        d.set("Contents", s);
+        d.set(
+            "Resources",
+            dictionary! {
+                "Font" => dictionary! { "F1" => font }, "XObject" => dictionary! { "Fx" => form },
+                "Properties" => props,
+            },
+        );
+    }
+    p
+}
+
+#[test]
+fn hidden_layers_in_a_drawing_shared_with_other_layer_names_are_refused() {
+    let why = "is shared between places that set its layers differently";
+    for (hidden, draws) in [
+        ([false, true], [true, true]),
+        // The first page only lists the form.
+        ([false, true], [false, true]),
+        // The other way round.
+        ([true, false], [true, true]),
+        ([true, false], [true, false]),
+    ] {
+        refuses_unchanged(shared_unresourced(hidden, draws), why);
+    }
+}
+
+#[test]
+fn hidden_layers_in_a_drawing_shared_with_the_same_layer_names_are_removed() {
+    let mut p = shared_unresourced([true, true], [true, true]);
+    let rep = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    assert_eq!(rep.count(Hidden::HiddenLayers), 1);
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["WALRUS-SHARED"]);
+    saved.assert_kept(&["Visible shared", "Page 1", "Page 2"]);
+    let users = saved.hidden_layer_users();
+    assert!(users.is_empty(), "{users:?}");
+}
+
 /// A removal that can't look at everything refuses before changing anything, while finding
 /// what there is still works.
 fn refuses_unchanged(mut p: Pdf, why: &str) {
@@ -877,12 +951,19 @@ fn cross_check_removed_information_with_poppler_and_ghostscript() {
     let js = tools::pdfinfo_js(&p.to_bytes().unwrap());
     assert!(!js.contains("WALRUS"), "{js}");
 
-    // Hidden layers: neither reader finds the text.
+    // Hidden layers: neither reader finds the text, nested or in a drawing two pages share.
     let mut p = nested_layers(12);
     p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
     let bytes = p.to_bytes().unwrap();
     for text in [tools::pdftotext(&bytes), tools::gs_text(&bytes)] {
         assert!(!text.contains("WALRUS"), "{text}");
         assert!(text.contains("Visible deep"), "{text}");
+    }
+    let mut p = shared_unresourced([true, true], [true, true]);
+    p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    let bytes = p.to_bytes().unwrap();
+    for text in [tools::pdftotext(&bytes), tools::gs_text(&bytes)] {
+        assert!(!text.contains("WALRUS"), "{text}");
+        assert_eq!(text.matches("Visible shared").count(), 2, "{text}");
     }
 }
