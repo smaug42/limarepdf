@@ -29,10 +29,15 @@ For each area:
 - **Comments, links and form fields** touching the area are removed, with the replies to them. A removed field loses
   its value. All of a page's are checked, also on a page with more than the 10,000 the app shows, and so are all
   of its redaction marks when they are applied.
-- **Alternative text** that accessibility tools and copying use, on content that lost anything.
+- **Alternative text** that accessibility tools and copying use, on content that lost anything, and on every tag
+  above it, however many there are.
 - The page's **thumbnail picture** and private application data.
 
 Pictures and drawings that no page uses any more are left out of the saved file.
+
+Redaction stops with a message, and changes nothing, when it can't follow everything it would have to remove: when
+a form field touching an area belongs to a form nested more than 32 deep (fields inside fields), or when the index
+that leads from a page to its tags is nested more than 32 deep.
 
 ## The check afterwards
 
@@ -76,7 +81,10 @@ Not ticked at first, as they are often wanted:
 - **Form field values:** every field's value is cleared for good, read-only fields included, along with default
   values (so Reset form brings nothing back), values a field takes from a parent field, rich text and the drawings
   that showed them; checkboxes and radio buttons are switched off. Fields LimarePDF can't draw lose their drawing,
-  and readers draw them empty. Signature fields are left alone. The fields themselves, and their choices, stay.
+  and readers draw them empty. Signature fields are left alone. The fields themselves, and their choices, stay. A
+  form nested more than 32 deep (fields inside fields, form boxes included, also boxes the form's list of fields
+  leaves out) can't be followed to its end, so the command stops with a message and changes nothing; leave form
+  values out to remove the rest.
 - **Bookmarks.**
 - **Content outside the visible page area:** what lies outside each page's crop box is redacted and the page becomes
   the size it is shown at.

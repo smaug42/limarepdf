@@ -3,7 +3,7 @@
 use crate::doc::encode_text;
 use crate::fonts::{winansi_bytes, FontChoice, FontCtx};
 use crate::form_ap::{self, Body, Border, Look, Metrics};
-use crate::forms::{button_export, Node};
+use crate::forms::{button_export, Node, MAX_DEPTH};
 use crate::{std14, Field, FieldKind, FieldValue, Pdf, Result};
 use anyhow::{anyhow, bail};
 use lopdf::content::{Content, Operation};
@@ -57,6 +57,7 @@ impl Pdf {
     /// bring the values back.
     pub(crate) fn clear_form_values(&mut self) -> Result<usize> {
         let nodes = self.value_nodes()?;
+        let orphans = self.orphan_widgets(&nodes)?;
         let all = self.form_nodes();
         // The widgets of every field read, buttons and signatures included.
         let reached: std::collections::HashSet<ObjectId> = all
@@ -124,7 +125,44 @@ impl Pdf {
         }
         // Widgets on pages that the tree doesn't reach: their values, and their parents',
         // go; their drawings can't be redrawn without a field, so they go too.
+        for chain in orphans {
+            let had = chain.iter().any(|&c| {
+                self.doc
+                    .get_dictionary(c)
+                    .is_ok_and(|d| VALUES.iter().any(|k| d.has(k)))
+            });
+            held += usize::from(had);
+            for &c in &chain {
+                if let Ok(d) = self.doc.get_dictionary_mut(c) {
+                    for k in VALUES {
+                        d.remove(k);
+                    }
+                }
+            }
+            self.clear_unread_widget(chain[0], &mut undrawn);
+        }
+        if !undrawn.is_empty() {
+            for w in undrawn {
+                if let Ok(d) = self.doc.get_dictionary_mut(w) {
+                    d.remove(b"AP");
+                }
+            }
+            let form = self.acro_form_id()?;
+            self.doc
+                .get_dictionary_mut(form)?
+                .set("NeedAppearances", true);
+        }
+        self.form_changed();
+        Ok(held)
+    }
+
+    /// The widgets on pages that the field tree (`nodes`, as [`Pdf::value_nodes`] reads it)
+    /// doesn't reach, signature fields' left out, each followed by its parents. Fails rather
+    /// than leave a parent out, as it could hold a value, when they are nested more than
+    /// [`MAX_DEPTH`] deep.
+    pub(crate) fn orphan_widgets(&self, nodes: &[(ObjectId, bool)]) -> Result<Vec<Vec<ObjectId>>> {
         let listed: std::collections::HashSet<ObjectId> = nodes.iter().map(|n| n.0).collect();
+        let mut out = Vec::new();
         for page in self.page_ids() {
             for a in self.all_annot_refs(page) {
                 let Ok(d) = self.doc.get_dictionary(a) else {
@@ -143,40 +181,18 @@ impl Pdf {
                     let d = self.doc.get_dictionary(c).ok()?;
                     d.get(b"Parent").ok()?.as_reference().ok()
                 }) {
-                    if chain.contains(&p) || chain.len() > 32 {
+                    if chain.contains(&p) {
                         break;
+                    }
+                    if chain.len() > MAX_DEPTH {
+                        bail!("the form's fields are nested more than {MAX_DEPTH} deep");
                     }
                     chain.push(p);
                 }
-                let had = chain.iter().any(|&c| {
-                    self.doc
-                        .get_dictionary(c)
-                        .is_ok_and(|d| VALUES.iter().any(|k| d.has(k)))
-                });
-                held += usize::from(had);
-                for c in chain {
-                    if let Ok(d) = self.doc.get_dictionary_mut(c) {
-                        for k in VALUES {
-                            d.remove(k);
-                        }
-                    }
-                }
-                self.clear_unread_widget(a, &mut undrawn);
+                out.push(chain);
             }
         }
-        if !undrawn.is_empty() {
-            for w in undrawn {
-                if let Ok(d) = self.doc.get_dictionary_mut(w) {
-                    d.remove(b"AP");
-                }
-            }
-            let form = self.acro_form_id()?;
-            self.doc
-                .get_dictionary_mut(form)?
-                .set("NeedAppearances", true);
-        }
-        self.form_changed();
-        Ok(held)
+        Ok(out)
     }
 
     /// For [`Pdf::clear_form_values`], a widget of no field it read: a checkbox or radio

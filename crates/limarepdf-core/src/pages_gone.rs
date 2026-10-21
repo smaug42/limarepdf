@@ -4,9 +4,11 @@
 //! everything still referred to. So the references to what went are cut, and the saved
 //! file holds nothing of those pages.
 
+use crate::forms::MAX_DEPTH;
 use crate::{Pdf, Result};
+use anyhow::bail;
 use lopdf::{Dictionary, Object, ObjectId};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// What went: the pages, the annotations only they listed, and the form fields left with no
 /// widget; and the named destinations that went to those pages.
@@ -128,7 +130,8 @@ impl Pdf {
     /// Make `keep` the document's pages, in that order, and cut what the other pages leave
     /// behind. With `bookmarks`, bookmarks to the other pages go too (keeping one without a
     /// destination when it has kept children), as for a new document of some pages; without,
-    /// they stay and lose their destination, as when deleting pages.
+    /// they stay and lose their destination, as when deleting pages. Refuses, with nothing
+    /// changed, when it can't tell everything that goes: a form nested too deep.
     pub(crate) fn keep_pages(&mut self, keep: &[ObjectId], bookmarks: bool) -> Result<()> {
         let kept: HashSet<ObjectId> = keep.iter().copied().collect();
         let all = self.page_ids();
@@ -138,9 +141,10 @@ impl Pdf {
         } else {
             Vec::new()
         };
-        let gone = self.what_goes(keep, pages);
+        let gone = self.what_goes(keep, pages)?;
+        self.flatten()?;
         self.set_page_order(keep)?;
-        self.strip_gone_alt(&gone.pages);
+        self.strip_gone_alt(&gone);
         let pairs: std::collections::HashMap<ObjectId, &[u8]> =
             pair_arrays(&self.doc).into_iter().collect();
         let ids: Vec<ObjectId> = self.doc.objects.keys().copied().collect();
@@ -204,7 +208,7 @@ impl Pdf {
     /// What goes with `pages`: them, the annotations only they list, and the form fields all
     /// of whose widgets are among those (and parents all of whose fields went); and the
     /// named destinations to them.
-    fn what_goes(&self, keep: &[ObjectId], pages: HashSet<ObjectId>) -> Gone {
+    fn what_goes(&self, keep: &[ObjectId], pages: HashSet<ObjectId>) -> Result<Gone> {
         let staying: HashSet<ObjectId> =
             keep.iter().flat_map(|&p| self.all_annot_refs(p)).collect();
         let mut objects: HashSet<ObjectId> = pages.clone();
@@ -225,7 +229,7 @@ impl Pdf {
         let mut seen = HashSet::new();
         for f in fields {
             if let Ok(f) = f.as_reference() {
-                self.field_goes(f, &mut objects, &mut seen, 0);
+                self.field_goes(f, &mut objects, &mut seen, 0)?;
             }
         }
         let mut gone = Gone {
@@ -234,23 +238,27 @@ impl Pdf {
             names: HashSet::new(),
         };
         gone.names = self.dead_names(&gone);
-        gone
+        Ok(gone)
     }
 
     /// Whether form field node `id` goes: a widget that went, or a node all of whose kids
-    /// go. Those that go are added to `gone`.
+    /// go. Those that go are added to `gone`. Fails when the fields are nested more than
+    /// [`MAX_DEPTH`] deep, rather than keep a field (and its value) that might go.
     fn field_goes(
         &self,
         id: ObjectId,
         gone: &mut HashSet<ObjectId>,
         seen: &mut HashSet<ObjectId>,
         depth: usize,
-    ) -> bool {
+    ) -> Result<bool> {
         if gone.contains(&id) {
-            return true;
+            return Ok(true);
         }
-        if depth > 32 || !seen.insert(id) {
-            return false;
+        if !seen.insert(id) {
+            return Ok(false);
+        }
+        if depth > MAX_DEPTH {
+            bail!("the form's fields are nested more than {MAX_DEPTH} deep");
         }
         let kids: Vec<ObjectId> = self
             .doc
@@ -262,21 +270,21 @@ impl Pdf {
             .map(|a| a.iter().filter_map(|k| k.as_reference().ok()).collect())
             .unwrap_or_default();
         if kids.is_empty() {
-            return false;
+            return Ok(false);
         }
         let mut all = true;
         for k in kids {
             // Every kid is looked at, so nested fields that go are found too.
-            all &= self.field_goes(k, gone, seen, depth + 1);
+            all &= self.field_goes(k, gone, seen, depth + 1)?;
         }
         if all {
             gone.insert(id);
         }
-        all
+        Ok(all)
     }
 
     /// The named destinations (in the catalog's `/Dests` and the `/Names /Dests` tree) that
-    /// go to pages that went.
+    /// go to pages that went. The whole tree is read, each node once, however deep it is.
     fn dead_names(&self, gone: &Gone) -> HashSet<Vec<u8>> {
         let mut out = HashSet::new();
         let resolve = |o: &Object| -> Object {
@@ -298,10 +306,12 @@ impl Pdf {
             .and_then(|c| c.get(b"Names").ok())
             .map(|o| self.resolved_dict(Some(o)))
             .and_then(|n| n.get(b"Dests").ok().cloned());
-        let mut todo: Vec<(Object, usize)> = tree.into_iter().map(|t| (t, 0)).collect();
+        // Nodes are taken from a list, not by recursion, so depth costs no stack; nodes that
+        // are objects are read once, so loops end, and direct ones can't loop.
+        let mut todo: Vec<Object> = tree.into_iter().collect();
         let mut seen = HashSet::new();
-        while let Some((node, depth)) = todo.pop() {
-            if depth > 32 || node.as_reference().is_ok_and(|id| !seen.insert(id)) {
+        while let Some(node) = todo.pop() {
+            if node.as_reference().is_ok_and(|id| !seen.insert(id)) {
                 continue;
             }
             let node = self.resolved_dict(Some(&node));
@@ -320,37 +330,111 @@ impl Pdf {
                 }
             }
             if let Ok(Object::Array(kids)) = node.get(b"Kids").map(resolve) {
-                todo.extend(kids.into_iter().map(|k| (k, depth + 1)));
+                todo.extend(kids);
             }
         }
         out
     }
 
-    /// Take the alternative text off structure elements whose content was on `pages`: an
-    /// element on such a page (`/Pg`), or with a content item on one.
-    fn strip_gone_alt(&mut self, pages: &HashSet<ObjectId>) {
-        let on_gone = |d: &Dictionary| {
-            d.get(b"Pg")
-                .and_then(|o| o.as_reference())
-                .is_ok_and(|p| pages.contains(&p))
-        };
-        let elems: Vec<ObjectId> = self
-            .doc
+    /// Take the alternative text off the structure elements with content on a page that went,
+    /// and off every element above one, as their text describes it too; also when an element
+    /// has content on kept pages (decision D3). An element is on a page that went by its own
+    /// `/Pg`, or by a content item of its `/K`: marked content on that page (the item's `/Pg`,
+    /// else the element's, else the nearest parent's), or an object reference to something
+    /// that went. Items are followed whether they are held directly or as objects of their
+    /// own, in an array or not (audit R06). Each element is looked at once, so loops in the
+    /// tree end, and as nothing is followed by recursion there is no depth to stop at.
+    fn strip_gone_alt(&mut self, gone: &Gone) {
+        let doc = &self.doc;
+        let elems: HashSet<ObjectId> = doc
             .objects
             .iter()
             .filter(|(_, o)| {
-                o.as_dict().is_ok_and(|d| {
-                    let kids = match d.get(b"K") {
-                        Ok(Object::Array(a)) => a.iter().any(|k| k.as_dict().is_ok_and(on_gone)),
-                        Ok(Object::Dictionary(k)) => on_gone(k),
-                        _ => false,
-                    };
-                    d.has(b"S") && (on_gone(d) || kids)
-                })
+                o.as_dict()
+                    .is_ok_and(|d| match d.get(b"Type").and_then(|t| t.as_name()) {
+                        Ok(t) => t == b"StructElem",
+                        // Border styles and actions have an `/S` too, but no parent or kids.
+                        Err(_) => {
+                            d.get(b"S").is_ok_and(|s| s.as_name().is_ok())
+                                && (d.has(b"P") || d.has(b"K"))
+                        }
+                    })
             })
             .map(|(id, _)| *id)
             .collect();
-        for id in elems {
+        let reference = |d: &Dictionary, key: &[u8]| d.get(key).and_then(Object::as_reference).ok();
+        // The page each element's marked content is on: its own, else the nearest parent's.
+        let mut page_of: HashMap<ObjectId, Option<ObjectId>> = HashMap::new();
+        for &e in &elems {
+            let mut path = Vec::new();
+            let mut on_path = HashSet::new();
+            let mut cur = Some(e);
+            let page = loop {
+                let Some(id) = cur.filter(|id| elems.contains(id) && on_path.insert(*id)) else {
+                    break None;
+                };
+                if let Some(&p) = page_of.get(&id) {
+                    break p;
+                }
+                path.push(id);
+                let d = doc.get_dictionary(id).ok();
+                if let Some(p) = d.and_then(|d| reference(d, b"Pg")) {
+                    break Some(p);
+                }
+                cur = d.and_then(|d| reference(d, b"P"));
+            };
+            for id in path {
+                page_of.insert(id, page);
+            }
+        }
+        let gone_page = |p: Option<ObjectId>| p.is_some_and(|p| gone.pages.contains(&p));
+        // Elements with content on a page that went, and each element's parents: its `/P`, and
+        // the elements listing it in their `/K`.
+        let mut todo = Vec::new();
+        let mut parents: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
+        for &e in &elems {
+            let Ok(d) = doc.get_dictionary(e) else {
+                continue;
+            };
+            let own = page_of.get(&e).copied().flatten();
+            if let Some(p) = reference(d, b"P").filter(|p| elems.contains(p)) {
+                parents.entry(e).or_default().push(p);
+            }
+            let items = match d.get(b"K").map(|k| doc.dereference(k)) {
+                Ok(Ok((_, Object::Array(a)))) => a.iter().collect(),
+                Ok(Ok((_, k))) => vec![k],
+                _ => Vec::new(),
+            };
+            let mut on_gone = gone_page(reference(d, b"Pg"));
+            for item in items {
+                let Ok((id, item)) = doc.dereference(item) else {
+                    continue;
+                };
+                match item {
+                    Object::Integer(_) => on_gone |= gone_page(own),
+                    Object::Dictionary(k) => match id.filter(|id| elems.contains(id)) {
+                        Some(kid) => parents.entry(kid).or_default().push(e),
+                        // A marked-content or object reference.
+                        None => {
+                            let obj = reference(k, b"Obj");
+                            on_gone |= obj.is_some_and(|o| gone.objects.contains(&o))
+                                || gone_page(reference(k, b"Pg").or(own));
+                        }
+                    },
+                    _ => {}
+                }
+            }
+            if on_gone {
+                todo.push(e);
+            }
+        }
+        let mut strip = HashSet::new();
+        while let Some(e) = todo.pop() {
+            if strip.insert(e) {
+                todo.extend(parents.get(&e).into_iter().flatten());
+            }
+        }
+        for id in strip {
             if let Ok(d) = self.doc.get_dictionary_mut(id) {
                 for k in [&b"ActualText"[..], b"Alt", b"E"] {
                     d.remove(k);

@@ -121,7 +121,7 @@ impl Pdf {
         if whole {
             self.remove_form()?;
         } else if !removed.is_empty() {
-            self.prune_fields(&removed)?;
+            self.prune_fields(&removed, false)?;
         }
         Ok(drawn)
     }
@@ -333,8 +333,10 @@ impl Pdf {
     }
 
     /// Take the removed widgets out of the field tree, then the fields left without
-    /// widgets, then the form when it has no fields left.
-    pub(crate) fn prune_fields(&mut self, removed: &HashSet<ObjectId>) -> Result<()> {
+    /// widgets, then the form when it has no fields left. Fields nested more than
+    /// [`MAX_DEPTH`] deep are kept, or with `strict` (for removing information, where one
+    /// kept could hold the value of a removed widget) make it fail.
+    pub(crate) fn prune_fields(&mut self, removed: &HashSet<ObjectId>, strict: bool) -> Result<()> {
         let Some(form) = self.acro_form() else {
             return Ok(());
         };
@@ -342,17 +344,20 @@ impl Pdf {
             let o = form.get(key).ok()?;
             Some(self.doc.dereference(o).ok()?.1.as_array().ok()?.clone())
         };
-        let fields = list(b"Fields").unwrap_or_default();
+        let all = list(b"Fields").unwrap_or_default();
         let order = list(b"CO");
         let mut gone = removed.clone();
         let mut seen = HashSet::new();
-        let fields: Vec<Object> = fields
-            .into_iter()
-            .filter(|f| {
-                f.as_reference()
-                    .map_or(true, |f| self.prune_field(f, &mut gone, &mut seen, 0))
-            })
-            .collect();
+        let mut fields = Vec::new();
+        for f in all {
+            let keep = match f.as_reference() {
+                Ok(id) => self.prune_field(id, &mut gone, &mut seen, 0, strict)?,
+                Err(_) => true,
+            };
+            if keep {
+                fields.push(f);
+            }
+        }
         if fields.is_empty() {
             return self.remove_form();
         }
@@ -376,19 +381,21 @@ impl Pdf {
         Ok(())
     }
 
-    /// Prune one field's kids; false when the field itself goes.
+    /// Prune one field's kids; false when the field itself goes. With `strict`, fails when
+    /// the kids are nested too deep to look at.
     fn prune_field(
         &mut self,
         id: ObjectId,
         gone: &mut HashSet<ObjectId>,
         seen: &mut HashSet<ObjectId>,
         depth: usize,
-    ) -> bool {
+        strict: bool,
+    ) -> Result<bool> {
         if gone.contains(&id) {
-            return false;
+            return Ok(false);
         }
-        if depth > MAX_DEPTH || !seen.insert(id) {
-            return true;
+        if !seen.insert(id) {
+            return Ok(true);
         }
         let Some(kids) = self
             .doc
@@ -399,25 +406,34 @@ impl Pdf {
             .and_then(|(_, o)| o.as_array().ok())
             .cloned()
         else {
-            return true;
+            return Ok(true);
         };
-        let n = kids.len();
-        let kids: Vec<Object> = kids
-            .into_iter()
-            .filter(|k| {
-                k.as_reference()
-                    .map_or(true, |k| self.prune_field(k, gone, seen, depth + 1))
-            })
-            .collect();
-        if kids.is_empty() {
-            gone.insert(id);
-            return false;
+        if depth > MAX_DEPTH {
+            if strict {
+                bail!("the form's fields are nested more than {MAX_DEPTH} deep");
+            }
+            return Ok(true);
         }
-        if kids.len() < n {
-            if let Ok(d) = self.doc.get_dictionary_mut(id) {
-                d.set("Kids", kids);
+        let n = kids.len();
+        let mut kept = Vec::new();
+        for k in kids {
+            let keep = match k.as_reference() {
+                Ok(k) => self.prune_field(k, gone, seen, depth + 1, strict)?,
+                Err(_) => true,
+            };
+            if keep {
+                kept.push(k);
             }
         }
-        true
+        if kept.is_empty() {
+            gone.insert(id);
+            return Ok(false);
+        }
+        if kept.len() < n {
+            if let Ok(d) = self.doc.get_dictionary_mut(id) {
+                d.set("Kids", kept);
+            }
+        }
+        Ok(true)
     }
 }

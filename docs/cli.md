@@ -95,7 +95,9 @@ sound and video, and redaction marks are kept. Annotations stored without a draw
 | `limarepdf-cli split big.pdf --bookmarks --out-dir parts` | Split where the top-level bookmarks go: `parts/big-002 Introduction.pdf`, … Pages before the first bookmark go in a file of their own. `--bookmarks 2` also splits at the bookmarks one level down |
 
 Pages that `delete` removes, or that `extract` and `split` leave out, leave nothing in the output: bookmarks,
-named destinations, links, form fields and tags stop referring to them. `extract` and `split` keep the bookmarks to
+named destinations, links, form fields and tags stop referring to them, and tags with content on them (and the
+tags above those) lose their alternative text. A form nested more than 32 deep makes them stop with an error.
+`extract` and `split` keep the bookmarks to
 the pages they keep; `delete` keeps every bookmark, without a destination when its page went. `split` writes each
 file as soon as its part is made (several at once, one per core); if one can't be written, the error says how many
 files already were.

@@ -385,6 +385,58 @@ fn drops_a_picture_from_shared_resources_when_no_page_draws_it() {
     assert!(p.page_text(1).contains("Two"));
 }
 
+/// A picture page 2 still draws, from inside forms nested deeper than redaction redacts into,
+/// stays listed in the resources the pages share after page 1's use of it is blacked out.
+#[test]
+fn keeps_a_shared_picture_another_page_draws_from_deeply_nested_forms() {
+    let mut p = make(&["q 50 0 0 50 100 50 cm /Im1 Do Q", "q /Fm1 Do Q"]);
+    let img = p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Image", "Width" => 1, "Height" => 1,
+            "ColorSpace" => "DeviceGray", "BitsPerComponent" => 8,
+        },
+        vec![0x20],
+    ));
+    // Forms 1 to 12, each drawing the next, without resources of their own; the last draws
+    // the picture.
+    let mut xobjects = dictionary! { "Im1" => img };
+    for i in 1..=12 {
+        let content = if i == 12 {
+            "q 50 0 0 50 100 50 cm /Im1 Do Q".to_string()
+        } else {
+            format!("/Fm{} Do", i + 1)
+        };
+        let bbox: Vec<Object> = [0, 0, 300, 200].into_iter().map(Object::Integer).collect();
+        let fm = p.doc.add_object(Stream::new(
+            dictionary! { "Type" => "XObject", "Subtype" => "Form", "BBox" => bbox },
+            content.into_bytes(),
+        ));
+        xobjects.set(format!("Fm{i}"), fm);
+    }
+    let shared = p.doc.add_object(dictionary! { "XObject" => xobjects });
+    for page in p.page_ids() {
+        p.doc
+            .get_dictionary_mut(page)
+            .unwrap()
+            .set("Resources", shared);
+    }
+    let dark = |p: &mut Pdf| {
+        let doc = render::load(p.snapshot().unwrap(), None).unwrap();
+        let b = render::Renderer::new(&doc).render(1, 1.0).unwrap();
+        b.rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|px| px[0] < 100)
+            .count()
+    };
+    let before = dark(&mut p);
+    assert!(before > 2000, "{before}");
+    let rep = p.redact(&[(0, [110.0, 100.0, 120.0, 110.0])]).unwrap();
+    assert_eq!(rep.pages[0].images_cut, 1);
+    assert_eq!(dark(&mut p), before, "page 2's picture");
+}
+
 /// Two pages drawing the same form, which says "Secret Walrus".
 fn shared_form() -> Pdf {
     let mut p = make(&["q /Fm1 Do Q", "q /Fm1 Do Q"]);
@@ -604,6 +656,179 @@ fn the_saved_output_holds_nothing_of_the_marked_text_or_what_touches_it() {
     assert!(saved.stray_pages().is_empty(), "{:?}", saved.stray_pages());
     let q = Pdf::from_bytes(&saved.bytes, None).unwrap();
     assert!(q.page_text(0).contains("Keep"));
+}
+
+/// A tagged page saying "Keep WALRUS-TEXT", the second word in a structure element with
+/// `ancestors` elements above it, the topmost with alternative text; `parent_tree` makes the
+/// page's entry in the parent tree out of the leaf holding it.
+fn tagged_deep(ancestors: usize, parent_tree: impl Fn(&mut Pdf, Object) -> Object) -> Pdf {
+    let content = "BT /F1 20 Tf 30 100 Td (Keep ) Tj ET \
+                   /Span <</MCID 0>> BDC BT /F1 20 Tf 90 100 Td (WALRUS-TEXT) Tj ET EMC";
+    let mut p = make(&[content]);
+    let page = p.page_ids()[0];
+    let root = p.doc.new_object_id();
+    let mut parent = root;
+    let mut top = None;
+    for i in 0..ancestors {
+        let mut d = dictionary! { "Type" => "StructElem", "S" => "Div", "P" => parent };
+        if i == 0 {
+            d.set("Alt", Object::string_literal("WALRUS-TOP-ALT"));
+        }
+        let id = p.doc.add_object(d);
+        if i > 0 {
+            p.doc
+                .get_dictionary_mut(parent)
+                .unwrap()
+                .set("K", vec![Object::Reference(id)]);
+        }
+        top.get_or_insert(id);
+        parent = id;
+    }
+    let elem = p.doc.add_object(dictionary! {
+        "Type" => "StructElem", "S" => "Span", "P" => parent, "Pg" => page, "K" => 0,
+    });
+    if parent != root {
+        p.doc
+            .get_dictionary_mut(parent)
+            .unwrap()
+            .set("K", vec![Object::Reference(elem)]);
+    }
+    let leaf =
+        dictionary! { "Nums" => vec![Object::Integer(0), vec![Object::Reference(elem)].into()] };
+    let leaf = parent_tree(&mut p, leaf.into());
+    p.doc.objects.insert(
+        root,
+        dictionary! {
+            "Type" => "StructTreeRoot", "K" => top.unwrap_or(elem), "ParentTree" => leaf,
+        }
+        .into(),
+    );
+    p.doc
+        .get_dictionary_mut(page)
+        .unwrap()
+        .set("StructParents", 0);
+    let c = p.doc.catalog_mut().unwrap();
+    c.set("StructTreeRoot", root);
+    c.set("MarkInfo", dictionary! { "Marked" => true });
+    p
+}
+
+/// The leaf `levels` kids down a number tree of its own objects.
+fn nested(levels: usize) -> impl Fn(&mut Pdf, Object) -> Object {
+    move |p: &mut Pdf, leaf: Object| {
+        let mut node = p.doc.add_object(leaf);
+        for _ in 0..levels {
+            node = p
+                .doc
+                .add_object(dictionary! { "Kids" => vec![Object::Reference(node)] });
+        }
+        Object::Reference(node)
+    }
+}
+
+/// The alternative text of every element above marked content goes, however many there
+/// are.
+#[test]
+fn alternative_text_far_up_the_structure_tree_goes() {
+    let mut p = tagged_deep(70, nested(0));
+    Saved::of(&mut p).assert_kept(&["WALRUS-TOP-ALT"]);
+    let marks = p.find_redaction_marks("walrus-text").unwrap();
+    let rep = p.redact(&marks).unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["WALRUS"]);
+    saved.assert_kept(&["Keep"]);
+}
+
+/// A parent tree nested too deep to look the page up in makes redaction refuse, with nothing
+/// changed, rather than leave the alternative text of what is under the marks; just inside the
+/// limit, and in a tree that lists itself as a kid, it is found and goes.
+#[test]
+fn a_parent_tree_nested_too_deep_is_refused_unchanged() {
+    let mut p = tagged_deep(1, nested(33));
+    let marks = p.find_redaction_marks("walrus-text").unwrap();
+    // Serialising moves lopdf's object counter on, so copies are compared.
+    let before = p.clone().snapshot().unwrap();
+    let err = format!("{:#}", p.redact(&marks).unwrap_err());
+    assert!(err.contains("nested more than 32 deep"), "{err}");
+    assert_eq!(p.clone().snapshot().unwrap(), before);
+
+    let looped = |p: &mut Pdf, leaf: Object| {
+        let leaf = p.doc.add_object(leaf);
+        let node = p.doc.new_object_id();
+        let kids = vec![Object::Reference(node), Object::Reference(leaf)];
+        p.doc
+            .objects
+            .insert(node, dictionary! { "Kids" => kids }.into());
+        Object::Reference(node)
+    };
+    for mut p in [tagged_deep(1, nested(32)), tagged_deep(1, looped)] {
+        let marks = p.find_redaction_marks("walrus-text").unwrap();
+        let rep = p.redact(&marks).unwrap();
+        assert!(rep.left.is_empty(), "{:?}", rep.left);
+        Saved::of(&mut p).assert_gone(&["WALRUS"]);
+    }
+}
+
+/// A page saying "Keep WALRUS-TEXT", with a widget over the second word `levels` fields below
+/// the form's top-level field, which holds a value.
+fn deep_widget(levels: usize) -> Pdf {
+    let mut p = make(&["BT /F1 20 Tf 30 100 Td (Keep WALRUS-TEXT) Tj ET"]);
+    let page = p.page_ids()[0];
+    let rect: Vec<Object> = [100, 98, 140, 112]
+        .into_iter()
+        .map(Object::Integer)
+        .collect();
+    let widget = p.doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Widget", "Rect" => rect, "P" => page, "F" => 4,
+    });
+    p.doc
+        .get_dictionary_mut(page)
+        .unwrap()
+        .set("Annots", vec![Object::Reference(widget)]);
+    let mut kid = widget;
+    for d in (0..levels).rev() {
+        let node = p.doc.add_object(dictionary! {
+            "T" => Object::string_literal(format!("level-{d}")),
+            "Kids" => vec![Object::Reference(kid)],
+        });
+        p.doc.get_dictionary_mut(kid).unwrap().set("Parent", node);
+        kid = node;
+    }
+    let top = p.doc.get_dictionary_mut(kid).unwrap();
+    top.set("FT", "Tx");
+    top.set("V", Object::string_literal("WALRUS-FIELD-VALUE"));
+    p.doc.catalog_mut().unwrap().set(
+        "AcroForm",
+        dictionary! { "Fields" => vec![Object::Reference(kid)] },
+    );
+    p
+}
+
+/// A widget under a mark whose field is nested too deep to follow makes redaction refuse,
+/// with nothing changed, rather than keep the field's value; just inside the limit the field
+/// goes, and a deep field away from the marks doesn't stop redaction.
+#[test]
+fn a_widget_under_a_mark_in_a_form_nested_too_deep_is_refused_unchanged() {
+    let mut p = deep_widget(34);
+    let marks = p.find_redaction_marks("walrus-text").unwrap();
+    // Serialising moves lopdf's object counter on, so copies are compared.
+    let before = p.clone().snapshot().unwrap();
+    let err = format!("{:#}", p.redact(&marks).unwrap_err());
+    assert!(err.contains("nested more than 32 deep"), "{err}");
+    assert_eq!(p.clone().snapshot().unwrap(), before);
+
+    let marks = p.find_redaction_marks("keep").unwrap();
+    p.redact(&marks).unwrap();
+    Saved::of(&mut p).assert_kept(&["WALRUS-TEXT", "WALRUS-FIELD-VALUE"]);
+
+    let mut p = deep_widget(32);
+    let marks = p.find_redaction_marks("walrus-text").unwrap();
+    let rep = p.redact(&marks).unwrap();
+    assert_eq!(rep.pages[0].annots, 1);
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["WALRUS"]);
+    assert!(saved.fields().is_empty());
 }
 
 #[test]

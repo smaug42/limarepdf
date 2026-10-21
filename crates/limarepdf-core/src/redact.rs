@@ -1036,13 +1036,28 @@ impl Pdf {
             }
             by_page.entry(p).or_default().push(b);
         }
-        self.own_direct_annots()?;
-        let mut report = RedactReport::default();
-        let mut dropped = HashSet::new();
+        // Looked up before anything changes, as a structure tree or a form that can't be
+        // followed is refused.
+        let mut struct_parents = HashMap::new();
+        let mut page_areas = HashMap::new();
+        let mut widgets = false;
         for (&p, rects) in &by_page {
             let page = self.page_id_at(p)?;
             let (vd, _, _) = self.vis_down(page);
             let areas: Vec<[f32; 4]> = rects.iter().map(|&b| mx::transform_rect(vd, b)).collect();
+            widgets |= self.widget_touched(page, &areas);
+            struct_parents.insert(p, self.struct_parents(page)?);
+            page_areas.insert(p, areas);
+        }
+        if widgets {
+            self.value_nodes()?;
+        }
+        self.own_direct_annots()?;
+        let mut report = RedactReport::default();
+        let mut dropped = HashSet::new();
+        for &p in by_page.keys() {
+            let page = self.page_id_at(p)?;
+            let areas = page_areas.remove(&p).unwrap_or_default();
             let data = self
                 .doc
                 .get_page_content_with_limit(page, crate::MAX_CONTENT)?;
@@ -1081,7 +1096,7 @@ impl Pdf {
             pd.set("Resources", done.res);
             pd.remove(b"Thumb");
             pd.remove(b"PieceInfo");
-            self.strip_struct_alt(page, &mcids);
+            self.strip_struct_alt(&struct_parents[&p], &mcids);
             out.annots = self.redact_annots(page, &areas)?;
             out.page = p;
             out.text = text;
@@ -1155,17 +1170,35 @@ impl Pdf {
         }
         let n = self.drop_annotations(gone)?;
         if !widgets.is_empty() {
-            self.prune_fields(&widgets)?;
+            self.prune_fields(&widgets, true)?;
         }
         Ok(n)
     }
 
-    /// Take the alternative text off the structure elements (and their parents) of the
-    /// page's marked content `mcids`.
-    fn strip_struct_alt(&mut self, page: ObjectId, mcids: &HashSet<i64>) {
-        if mcids.is_empty() {
-            return;
-        }
+    /// Whether [`Pdf::redact_annots`] would remove a form widget of `page`: one touching
+    /// `areas`, direct dictionaries included, as they are given objects before it runs.
+    fn widget_touched(&self, page: ObjectId, areas: &[[f32; 4]]) -> bool {
+        self.annots_array(page).unwrap_or_default().iter().any(|o| {
+            let Some(d) = self
+                .doc
+                .dereference(o)
+                .ok()
+                .and_then(|(_, o)| o.as_dict().ok())
+            else {
+                return false;
+            };
+            d.get(b"Subtype").and_then(|o| o.as_name()).ok() == Some(b"Widget")
+                && d.get(b"Rect")
+                    .ok()
+                    .and_then(|o| self.rect(o))
+                    .is_some_and(|b| areas.iter().any(|&a| touches(norm(b), a)))
+        })
+    }
+
+    /// The structure elements of `page`'s marked content, by MCID: its entry in the structure
+    /// tree's parent tree, or nothing. Fails when the parent tree is nested too deep to look
+    /// the page up, as alternative text could then be left behind.
+    fn struct_parents(&self, page: ObjectId) -> Result<Vec<Object>> {
         let key = self
             .doc
             .get_dictionary(page)
@@ -1179,32 +1212,33 @@ impl Pdf {
             .and_then(|c| c.get(b"StructTreeRoot").ok())
             .and_then(|o| self.doc.dereference(o).ok())
             .and_then(|(_, o)| o.as_dict().ok())
-            .and_then(|d| d.get(b"ParentTree").ok())
-            .cloned();
+            .and_then(|d| d.get(b"ParentTree").ok());
         let (Some(key), Some(tree)) = (key, tree) else {
-            return;
+            return Ok(Vec::new());
         };
-        let Some(list) = self.number_tree_get(&tree, key, 0) else {
-            return;
+        let Some(list) = self.number_tree_get(tree, key, 0, &mut HashSet::new())? else {
+            return Ok(Vec::new());
         };
-        let list = self
+        Ok(self
             .doc
             .dereference(&list)
             .ok()
             .and_then(|(_, o)| o.as_array().ok())
             .cloned()
-            .unwrap_or_default();
+            .unwrap_or_default())
+    }
+
+    /// Take the alternative text off the structure elements of the page's marked content
+    /// `mcids`, and off every element above them. `list` is the page's [`Pdf::struct_parents`].
+    fn strip_struct_alt(&mut self, list: &[Object], mcids: &HashSet<i64>) {
+        // Each element is visited once, so the walk up ends without a limit on its length.
         let mut elems = HashSet::new();
         for &mcid in mcids {
             let mut cur = usize::try_from(mcid)
                 .ok()
                 .and_then(|i| list.get(i))
                 .and_then(|o| o.as_reference().ok());
-            for _ in 0..64 {
-                let Some(id) = cur else { break };
-                if !elems.insert(id) {
-                    break;
-                }
+            while let Some(id) = cur.filter(|&id| elems.insert(id)) {
                 let Ok(d) = self.doc.get_dictionary_mut(id) else {
                     break;
                 };
@@ -1219,21 +1253,54 @@ impl Pdf {
         }
     }
 
-    fn number_tree_get(&self, node: &Object, key: i64, depth: usize) -> Option<Object> {
-        if depth > 32 {
-            return None;
+    /// The value of `key` in the number tree `node`, looking at each node once. Fails when the
+    /// node to look in is nested more than 32 deep.
+    fn number_tree_get(
+        &self,
+        node: &Object,
+        key: i64,
+        depth: usize,
+        seen: &mut HashSet<ObjectId>,
+    ) -> Result<Option<Object>> {
+        let Ok((id, d)) = self.doc.dereference(node) else {
+            return Ok(None);
+        };
+        let Ok(d) = d.as_dict() else {
+            return Ok(None);
+        };
+        if id.is_some_and(|id| !seen.insert(id)) {
+            return Ok(None);
         }
-        let d = self.doc.dereference(node).ok()?.1.as_dict().ok()?;
+        if depth > 32 {
+            bail!(
+                "the document's accessibility tags are nested more than 32 deep, so LimarePDF \
+                 can't find all the descriptions of what is under the marks. Nothing was changed"
+            );
+        }
         if let Ok(nums) = d.get(b"Nums").and_then(|o| o.as_array()) {
             for [k, v] in nums.as_chunks::<2>().0 {
                 if k.as_i64().ok() == Some(key) {
-                    return Some(v.clone());
+                    return Ok(Some(v.clone()));
                 }
             }
         }
-        let kids = d.get(b"Kids").ok()?;
-        for kid in self.doc.dereference(kids).ok()?.1.as_array().ok()? {
-            let kd = self.doc.dereference(kid).ok()?.1.as_dict().ok()?;
+        let Some(kids) = d
+            .get(b"Kids")
+            .ok()
+            .and_then(|k| self.doc.dereference(k).ok())
+            .and_then(|(_, k)| k.as_array().ok())
+        else {
+            return Ok(None);
+        };
+        for kid in kids {
+            let Some(kd) = self
+                .doc
+                .dereference(kid)
+                .ok()
+                .and_then(|(_, k)| k.as_dict().ok())
+            else {
+                continue;
+            };
             let inside = kd
                 .get(b"Limits")
                 .and_then(|o| o.as_array())
@@ -1241,12 +1308,12 @@ impl Pdf {
                 .and_then(|l| Some((l.first()?.as_i64().ok()?, l.get(1)?.as_i64().ok()?)))
                 .is_none_or(|(lo, hi)| lo <= key && key <= hi);
             if inside {
-                if let Some(v) = self.number_tree_get(kid, key, depth + 1) {
-                    return Some(v);
+                if let Some(v) = self.number_tree_get(kid, key, depth + 1, seen)? {
+                    return Ok(Some(v));
                 }
             }
         }
-        None
+        Ok(None)
     }
 
     /// Of the pictures and forms `dropped`, take those no page draws any more out of the
@@ -1257,19 +1324,16 @@ impl Pdf {
         }
         let mut used = HashSet::new();
         let mut holders = Vec::new();
+        let mut held = HashSet::new();
         for page in self.page_ids() {
             let res = self.resolved_dict(self.inherited(page, b"Resources").as_ref());
-            if let Ok(data) = self
+            let data = self
                 .doc
                 .get_page_content_with_limit(page, crate::MAX_CONTENT)
-            {
-                self.xobjects_drawn(&data, &res, 0, &mut used);
-            }
+                .ok();
+            self.xobjects_drawn(data, res, &mut used);
             let mut cur = Some(page);
-            while let Some(id) = cur {
-                if holders.contains(&id) || holders.len() > 100_000 {
-                    break;
-                }
+            while let Some(id) = cur.filter(|&id| held.insert(id)) {
                 holders.push(id);
                 cur = self
                     .doc
@@ -1289,43 +1353,43 @@ impl Pdf {
         Ok(())
     }
 
-    /// Collect the pictures and forms a content stream draws, forms' insides included.
-    fn xobjects_drawn(
-        &self,
-        data: &[u8],
-        res: &Dictionary,
-        depth: usize,
-        used: &mut HashSet<ObjectId>,
-    ) {
-        let Ok((data, _)) = crate::inline::extract(data) else {
-            return;
-        };
-        let Ok(content) = Content::decode(&data) else {
-            return;
-        };
-        let xobjs = self.resolved_dict(res.get(b"XObject").ok());
-        for o in content.operations.iter().filter(|o| o.operator == "Do") {
-            let Some(id) = o
-                .operands
-                .first()
-                .and_then(|n| n.as_name().ok())
-                .and_then(|n| xobjs.get(n).ok())
-                .and_then(|e| e.as_reference().ok())
-            else {
+    /// Collect the pictures and forms content `data` (drawn with resources `res`) draws, forms'
+    /// insides included, each form read once however deeply it is nested: one left out would
+    /// count as unused and be taken out of resources it is still drawn from. Content that
+    /// can't be read (`None`) may draw anything its resources list, so all of that counts.
+    fn xobjects_drawn(&self, data: Option<Vec<u8>>, res: Dictionary, used: &mut HashSet<ObjectId>) {
+        let mut todo = vec![(data, res)];
+        while let Some((data, res)) = todo.pop() {
+            let xobjs = self.resolved_dict(res.get(b"XObject").ok());
+            let content = data
+                .and_then(|d| crate::inline::extract(&d).ok())
+                .and_then(|(d, _)| Content::decode(&d).ok());
+            let Some(content) = content else {
+                used.extend(xobjs.iter().filter_map(|(_, o)| o.as_reference().ok()));
                 continue;
             };
-            if !used.insert(id) || depth >= MAX_NESTING {
-                continue;
-            }
-            if let Ok(s) = self.doc.get_object(id).and_then(|o| o.as_stream()) {
-                if s.dict.get(b"Subtype").and_then(|o| o.as_name()).ok() == Some(b"Form") {
-                    let own = s
-                        .dict
-                        .get(b"Resources")
-                        .ok()
-                        .map(|o| self.resolved_dict(Some(o)));
-                    if let Ok(c) = s.get_plain_content_with_limit(crate::MAX_CONTENT) {
-                        self.xobjects_drawn(&c, own.as_ref().unwrap_or(res), depth + 1, used);
+            for o in content.operations.iter().filter(|o| o.operator == "Do") {
+                let Some(id) = o
+                    .operands
+                    .first()
+                    .and_then(|n| n.as_name().ok())
+                    .and_then(|n| xobjs.get(n).ok())
+                    .and_then(|e| e.as_reference().ok())
+                else {
+                    continue;
+                };
+                if !used.insert(id) {
+                    continue;
+                }
+                if let Ok(s) = self.doc.get_object(id).and_then(|o| o.as_stream()) {
+                    if s.dict.get(b"Subtype").and_then(|o| o.as_name()).ok() == Some(b"Form") {
+                        let own = s
+                            .dict
+                            .get(b"Resources")
+                            .ok()
+                            .map(|o| self.resolved_dict(Some(o)));
+                        let c = s.get_plain_content_with_limit(crate::MAX_CONTENT).ok();
+                        todo.push((c, own.unwrap_or_else(|| res.clone())));
                     }
                 }
             }

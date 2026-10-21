@@ -426,6 +426,51 @@ fn form_values_are_cleared_everywhere_they_are_kept() {
     }
 }
 
+/// A text widget on the page that the form's field list leaves out, `parents` fields below
+/// one holding a value. With `looped`, the top field's parent is the widget's own, so the
+/// parents go round in a loop.
+fn orphan_below(parents: usize, looped: bool) -> Pdf {
+    let mut p = make("BT /F1 12 Tf 10 20 Td (Page text) Tj ET", Dictionary::new());
+    let top = p
+        .doc
+        .add_object(dictionary! { "V" => s("WALRUS-ORPHAN-TOP") });
+    let mut parent = top;
+    for _ in 1..parents {
+        parent = p.doc.add_object(dictionary! { "Parent" => parent });
+    }
+    if looped {
+        p.doc.get_dictionary_mut(top).unwrap().set("Parent", parent);
+    }
+    widget(&mut p, dictionary! { "FT" => "Tx", "Parent" => parent });
+    p
+}
+
+/// An orphan widget's parents more than 32 deep can't all be followed, so clearing form values
+/// refuses with nothing changed rather than leave a value behind (audit R07); up to 32 deep,
+/// and in a loop, every parent's value goes.
+#[test]
+fn form_values_above_an_orphan_widget_are_cleared_or_refused() {
+    let mut p = orphan_below(33, false);
+    let before = p.clone().snapshot().unwrap();
+    for err in [
+        p.check_remove_hidden(&[Hidden::FormValues]).unwrap_err(),
+        p.remove_hidden(&[Hidden::FormValues]).unwrap_err(),
+    ] {
+        let err = format!("{err:#}");
+        assert!(err.contains("nested more than 32 deep"), "{err}");
+    }
+    assert_eq!(p.clone().snapshot().unwrap(), before);
+
+    for mut p in [orphan_below(32, false), orphan_below(3, true)] {
+        Saved::of(&mut p).assert_kept(&["WALRUS-ORPHAN-TOP"]);
+        let rep = p.remove_hidden(&[Hidden::FormValues]).unwrap();
+        assert_eq!(rep.count(Hidden::FormValues), 1, "{rep:?}");
+        let saved = Saved::of(&mut p);
+        saved.assert_gone(&["WALRUS"]);
+        saved.assert_kept(&["Page text"]);
+    }
+}
+
 /// Links, a button, the opening action and a bookmark whose ordinary actions are followed,
 /// through direct dictionaries, by actions that run something.
 fn nested_actions() -> Pdf {

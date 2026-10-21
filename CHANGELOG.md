@@ -18,6 +18,21 @@
 - Printing from the command line with `--as-image`, and every command-line print on Windows, left a filled form
   field blank when the field had no drawing of its own, even one LimarePDF can draw. Its value is now drawn in, as
   the app and ordinary printing already did.
+- Deleting, extracting or splitting pages kept the alternative text (the descriptions accessibility tools read) of
+  content on the pages that went, when the document's tags pointed at that content in some of the ways the PDF
+  format allows, or gave its page only on a tag further up. All of it now goes, and so does the text of a tag with
+  content on both kept and removed pages, and of every tag above one.
+- Deleting, extracting or splitting pages kept a form field of the pages that went, with its value, when the form
+  was nested more than 32 deep; they now refuse such a form, with nothing changed. A link by name to a page that
+  went stayed when the list of named destinations was nested that deep; it is now found at any depth.
+- Removing form field values left a value behind when it was more than 32 fields above a form box that the form's
+  list of fields leaves out. Such a form is now refused with nothing changed, as other forms nested that deep
+  already were.
+- Redaction kept the alternative text of tags more than 64 levels above the marked content, and the value of a
+  form field touching a mark when its form was nested more than 32 deep. Tags at any depth now lose their text;
+  such a form, or tags whose index is nested more than 32 deep, make redaction refuse with nothing changed.
+- Redaction could make a picture disappear from another page, when that page drew it from inside drawings nested
+  more than 8 deep and the same picture was under a mark elsewhere.
 
 ## [0.8.0] - 2026-10-20
 

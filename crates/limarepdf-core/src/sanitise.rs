@@ -189,7 +189,7 @@ impl Pdf {
             }
         }
         if what.contains(&Hidden::FormValues) {
-            self.value_nodes()?;
+            self.orphan_widgets(&self.value_nodes()?)?;
         }
         Ok(())
     }

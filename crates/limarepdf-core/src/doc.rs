@@ -464,7 +464,7 @@ impl Pdf {
     }
 
     /// Push inherited page attributes down onto each page and flatten the page tree.
-    fn flatten(&mut self) -> Result<()> {
+    pub(crate) fn flatten(&mut self) -> Result<()> {
         let ids = self.page_ids();
         for &id in &ids {
             for key in INHERITABLE {
@@ -532,7 +532,6 @@ impl Pdf {
         if keep.is_empty() {
             bail!("cannot delete every page");
         }
-        self.flatten()?;
         // Bookmarks to the deleted pages stay, with no destination.
         self.keep_pages(&keep, false)
     }
@@ -549,7 +548,6 @@ impl Pdf {
         // kept pages still use: a whole copy per part made splitting a large file hold
         // many copies of it.
         let mut out = self.without_stream_data();
-        out.flatten()?;
         let ids = out.page_ids();
         let sel: Vec<ObjectId> = idx.iter().map(|&i| ids[i]).collect();
         out.keep_pages(&sel, true)?;

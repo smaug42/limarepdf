@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 /// Limits that keep a malformed or hostile file from running away.
 const MAX_FIELDS: usize = 10_000;
-const MAX_DEPTH: usize = 32;
+pub(crate) const MAX_DEPTH: usize = 32;
 
 // Field flags (`/Ff`), as bit masks.
 const READ_ONLY: i64 = 1;

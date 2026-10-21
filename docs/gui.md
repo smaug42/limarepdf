@@ -474,7 +474,10 @@ document split into many files needs little more memory than the document itself
 
 Pages that are deleted, or left out when extracting or splitting, leave nothing in the saved file: bookmarks,
 named destinations, links, the opening view, form fields and tags stop referring to them, so their content isn't
-kept. A link to such a page goes nowhere, and a form field whose boxes were all on those pages leaves the form. An
+kept. A link to such a page goes nowhere, and a form field whose boxes were all on those pages leaves the form.
+Tags with content on those pages lose their alternative text (also when they have content on kept pages too), and
+so do the tags above them. A form nested more than 32 deep can't be followed to its end, so deleting, extracting
+or splitting stops with a message saying why. An
 extracted file or a split part keeps the bookmarks to its own pages; a bookmark to another page stays, without a
 destination, only when bookmarks below it stay. Deleting pages keeps every bookmark, without a destination when its
 page went.
