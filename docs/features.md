@@ -1,6 +1,6 @@
 # Features and status
 
-**Status: 0.7, for testing.** Most testing has been on Linux. Annotations can be viewed, moved, deleted and flattened;
+**Status: 0.8, for testing.** Most testing has been on Linux. Annotations can be viewed, moved, deleted and flattened;
 text can be highlighted and marked; notes, text boxes, shapes, lines, freehand drawings and replies added. Content
 can be redacted for good, and documents filled in and signed with a picture of your signature. Digital signatures
 can be checked, made with your own or an imported digital ID, certified, and kept valid when a signed document is
