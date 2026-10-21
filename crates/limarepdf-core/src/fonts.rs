@@ -2,9 +2,11 @@
 
 use crate::std14;
 use crate::tounicode::ToUnicode;
+use hayro::hayro_interpret::hayro_cmap::{load_embedded, BfString, CMap, CMapName, CidFamily};
 use lopdf::Encoding;
 use lopdf::{Dictionary, Document, Object};
 use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Family {
@@ -127,6 +129,14 @@ pub(crate) struct FontCtx<'a> {
     /// The font's ToUnicode map, read by LimarePDF (lopdf rejects many that are laid out
     /// differently from the usual template). Consulted before `enc`.
     to_unicode: Option<ToUnicode>,
+    /// A Type 0 font's CMap, from codes to CIDs: Identity, one of the predefined ones
+    /// (hayro carries them), or the font's own. `None` when it can't be read.
+    cmap: Option<Arc<CMap>>,
+    /// The CMap's codes are Unicode, as UTF-16 (`UniJIS-UCS2-H`, `UniGB-UTF16-V`, ...).
+    utf16: bool,
+    /// For a Type 0 font with no ToUnicode map: its character collection's map from CIDs
+    /// to Unicode (`Adobe-Japan1-UCS2` and its kin), as pdf.js and hayro use.
+    cid_text: Option<Arc<CMap>>,
     first: u32,
     widths: Vec<f32>,
     missing: f32,
@@ -138,7 +148,7 @@ pub(crate) struct FontCtx<'a> {
     /// own glyph space (`/FontMatrix`).
     scale: f32,
     /// Whether [`FontCtx::codes`] splits strings the way the font does: always for simple
-    /// fonts, and for Type 0 fonts with a fixed two-byte encoding.
+    /// fonts, and for Type 0 fonts whose CMap was read or is two-byte Unicode.
     pub codes_known: bool,
     /// A Type 0 font that writes downwards (its CMap's `/WMode` 1, or a predefined `-V`
     /// one). Its text is still measured as if it ran across.
@@ -147,6 +157,42 @@ pub(crate) struct FontCtx<'a> {
 
 fn f(doc: &Document, o: &Object) -> Option<f32> {
     doc.dereference(o).ok()?.1.as_float().ok()
+}
+
+/// The character collection a CID font's `/CIDSystemInfo` names (`Adobe-Japan1`, ...).
+fn system_family(doc: &Document, desc: &Dictionary) -> Option<CidFamily> {
+    let (_, info) = doc.dereference(desc.get(b"CIDSystemInfo").ok()?).ok()?;
+    let info = info.as_dict().ok()?;
+    let s = |k: &[u8]| {
+        let (_, o) = doc.dereference(info.get(k).ok()?).ok()?;
+        o.as_str().ok().map(<[u8]>::to_vec)
+    };
+    Some(CidFamily::from_registry_ordering(
+        &s(b"Registry")?,
+        &s(b"Ordering")?,
+    ))
+}
+
+/// A predefined CMap by name (`Identity-H`, `UniJIS-UCS2-H`, `90ms-RKSJ-H`, ...). Each is
+/// read once and kept: there are fewer than 200, and reading the large ones for every font
+/// on every page made text of CJK documents several times slower.
+fn predefined(name: CMapName) -> Option<Arc<CMap>> {
+    /// Each CMap read so far by name; `None` for one that couldn't be.
+    type Read = HashMap<Vec<u8>, Option<Arc<CMap>>>;
+    static READ: LazyLock<Mutex<Read>> = LazyLock::new(Default::default);
+    if let CMapName::Custom(_) = name {
+        return None;
+    }
+    let mut read = READ.lock().unwrap_or_else(|e| e.into_inner());
+    let entry = read.entry(name.to_bytes().to_vec()).or_insert_with(|| {
+        match name {
+            CMapName::IdentityH => Some(CMap::identity_h()),
+            CMapName::IdentityV => Some(CMap::identity_v()),
+            n => CMap::parse(load_embedded(n)?, load_embedded),
+        }
+        .map(Arc::new)
+    });
+    entry.clone()
 }
 
 impl<'a> FontCtx<'a> {
@@ -181,6 +227,9 @@ impl<'a> FontCtx<'a> {
             base,
             enc: dict.get_font_encoding(doc).ok(),
             to_unicode,
+            cmap: None,
+            utf16: false,
+            cid_text: None,
             first: 0,
             widths: Vec::new(),
             missing: 0.0,
@@ -239,6 +288,30 @@ impl<'a> FontCtx<'a> {
                 {
                     ctx.parse_w(doc, w);
                 }
+            }
+            ctx.cmap = match dict
+                .get(b"Encoding")
+                .ok()
+                .and_then(|o| doc.dereference(o).ok())
+            {
+                Some((_, Object::Name(n))) => predefined(CMapName::from_bytes(n)),
+                Some((_, Object::Stream(s))) => s
+                    .get_plain_content_with_limit(MAX_CMAP)
+                    .ok()
+                    .and_then(|data| CMap::parse(&data, load_embedded))
+                    .map(Arc::new),
+                _ => None,
+            };
+            ctx.codes_known |= ctx.cmap.is_some();
+            ctx.utf16 = enc_name.as_deref().is_some_and(|n| {
+                n.starts_with("Uni") && (n.contains("-UCS2-") || n.contains("-UTF16-"))
+            });
+            if ctx.to_unicode.is_none() && !ctx.utf16 {
+                let family = desc.and_then(|d| system_family(doc, d)).or_else(|| {
+                    let cc = ctx.cmap.as_ref()?.metadata().character_collection.as_ref();
+                    cc.map(|c| c.family.clone())
+                });
+                ctx.cid_text = family.and_then(|f| predefined(f.ucs2_cmap()?));
             }
         } else {
             ctx.first = dict
@@ -313,10 +386,21 @@ impl<'a> FontCtx<'a> {
         }
     }
 
+    /// The CID a Type 0 font's code stands for. Without a CMap, the code itself.
+    fn cid(&self, code: u32) -> Option<u32> {
+        match &self.cmap {
+            // Codes of different lengths but the same value are rare; hayro takes the
+            // shortest too.
+            Some(m) => (1..=4).find_map(|len| m.lookup_cid_code(code, len)),
+            None => Some(code),
+        }
+    }
+
     /// Glyph width in 1/1000 em.
     pub fn width(&self, code: u32) -> f32 {
         if self.type0 {
-            return self.wmap.get(&code).copied().unwrap_or(self.dw);
+            let w = self.cid(code).and_then(|c| self.wmap.get(&c));
+            return w.copied().unwrap_or(self.dw);
         }
         if self.has_widths {
             return code
@@ -335,24 +419,41 @@ impl<'a> FontCtx<'a> {
         c.and_then(|c| std14::width(&self.base, c)).unwrap_or(556.0)
     }
 
-    /// Split a string into character codes. The flag marks the single-byte space (word spacing applies).
-    pub fn codes(&self, bytes: &[u8]) -> Vec<(u32, bool)> {
-        if self.type0 {
-            bytes
-                .chunks(2)
-                .map(|c| {
-                    (
-                        if c.len() == 2 {
-                            (c[0] as u32) << 8 | c[1] as u32
-                        } else {
-                            c[0] as u32
-                        },
-                        false,
-                    )
-                })
-                .collect()
-        } else {
-            bytes.iter().map(|&b| (b as u32, b == 32)).collect()
+    /// Split a string into character codes, each with its bytes. The flag marks the
+    /// single-byte space (word spacing applies).
+    pub fn codes<'s>(&self, bytes: &'s [u8]) -> Vec<(u32, bool, &'s [u8])> {
+        let mut out = Vec::new();
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            let len = self.code_len(rest);
+            let (raw, tail) = rest.split_at(len);
+            let code = raw.iter().fold(0, |c, &b| c << 8 | b as u32);
+            out.push((code, raw == b" ", raw));
+            rest = tail;
+        }
+        out
+    }
+
+    /// How many bytes the code `bytes` starts with takes: one in a simple font; in a
+    /// Type 0 font, two, or four for a UTF-16 surrogate pair, or as many as the CMap
+    /// says (one where it knows none, as hayro does).
+    fn code_len(&self, bytes: &[u8]) -> usize {
+        if !self.type0 {
+            return 1;
+        }
+        match &self.cmap {
+            Some(m) if !self.utf16 => {
+                let mut code = 0;
+                for (n, &b) in bytes.iter().take(4).enumerate() {
+                    code = code << 8 | b as u32;
+                    if m.lookup_cid_code(code, n as u8 + 1).is_some() {
+                        return n + 1;
+                    }
+                }
+                1
+            }
+            _ if self.utf16 && bytes.len() >= 4 && (0xD8..=0xDB).contains(&bytes[0]) => 4,
+            _ => bytes.len().min(2),
         }
     }
 
@@ -370,6 +471,26 @@ impl<'a> FontCtx<'a> {
     fn decode_raw(&self, code: u32, raw: &[u8]) -> String {
         if let Some(s) = self.to_unicode.as_ref().and_then(|m| m.get(code)) {
             return s.to_owned();
+        }
+        if self.utf16 {
+            let units: Vec<u16> = raw
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&c| u16::from_be_bytes(c))
+                .collect();
+            let mut s = String::from_utf16_lossy(&units);
+            if raw.len() % 2 == 1 {
+                s.push('\u{FFFD}');
+            }
+            return s;
+        }
+        if let Some(m) = &self.cid_text {
+            match self.cid(code).and_then(|c| m.lookup_bf_string(c)) {
+                Some(BfString::Char(c)) => return c.to_string(),
+                Some(BfString::String(s)) => return s,
+                None => {}
+            }
         }
         if let Some(e) = &self.enc {
             if let Ok(s) = e.bytes_to_string(raw) {

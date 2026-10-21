@@ -19,6 +19,12 @@
 
 ### Fixed
 
+- Text in many Chinese, Japanese and Korean files came out as "�" or the wrong characters when searching, copying
+  or exporting: fonts without a ToUnicode map (common when the fonts aren't embedded) are now read through their
+  character map, as pdf.js does, and highlights sit on the right characters. Of about 1,100 public test files, 43
+  read better, such as a 42-page Japanese company report that came out entirely as "�" and now matches poppler,
+  and none worse.
+
 - The command line printed some text from the file exactly as it was: the document's title and other details
   (`info`), comment authors (`annot list`), form field names (`form list`), page labels (`labels list`,
   `view-prefs list`), font names (`objects`) and the text around search matches (`search`); bookmark titles
