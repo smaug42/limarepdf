@@ -31,6 +31,50 @@ with Acrobat are still to be tested.
 - **Command line:** everything above, for scripts and batches.
 - **Private:** no network connections, accounts or licence checks.
 
+## What doesn't work yet
+
+Things you would expect an everyday PDF editor to do that LimarePDF doesn't yet, as of 0.8. Each is removed from
+this list once it works. The feature table below has the details.
+
+**Typing and editing text**
+
+- New text (the Add text tool) is typed in a box in the inspector, then placed on the page; you don't yet see it
+  on the page as you type. Being changed: typing on the page, as in a word processor.
+- Only Western European characters can be added: in new or edited text, text boxes, headers, footers, Bates
+  numbers, watermarks, stamps, form values and typed signatures. Others (Greek, Cyrillic, Chinese, Japanese,
+  Korean and so on) come out as `?`.
+- New text uses Helvetica, Times or Courier only. Editing a line keeps its font only when the file's font allows
+  it (not for most embedded fonts); otherwise the line becomes Helvetica, Times or Courier
+  ([details](content-editing.md#limits)).
+- Text is edited one line at a time: a paragraph doesn't rewrap as you type, so a longer line can run into
+  whatever is beside it.
+- While typing on the page (an edited line, a text box or a note), Esc throws away what you typed. Being changed:
+  Esc will keep it, and Ctrl+Z will remove it.
+- No spell checking.
+
+**Selecting and arranging**
+
+- One object at a time: several pictures, shapes or lines of text can't be selected to move or delete together.
+- Pages are cropped by typing margins; you can't yet drag a crop box on the page.
+- Bookmarks can't be moved or reordered, and links can't be added or edited.
+- Merging doesn't carry over the bookmarks and form fields of the files added.
+
+**Forms, signatures and printing**
+
+- Forms made only for Adobe Reader (XFA) can't be shown or filled; form data files (FDF, XFDF) and form
+  JavaScript aren't supported.
+- Digital signatures carry your computer's time, not a timestamp from a timestamp server; encrypted documents
+  can't be signed; digital IDs on smart cards and USB tokens can't be used.
+- Printing has no paper size or scaling options.
+
+**Other**
+
+- No export to Word or Excel, no comparing documents, no PDF/A.
+- Text recognition (OCR) reads Latin script only.
+- No autosave or custom shortcuts, and English only (unsaved work is kept in recovery copies).
+- Tested mostly on Linux: Windows only partly, macOS not at all; printing on paper only on Linux. Dropping files
+  onto the window doesn't work in Linux Wayland sessions yet.
+
 ## Feature status
 
 **Done:** works, and is covered by tests or has been run. **Partial:** works within the limits noted. **No:** not

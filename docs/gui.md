@@ -580,7 +580,9 @@ the box and out again without typing changes nothing, and text that isn't a size
 The other tools add content. Each puts one thing down and then gives way to the read tool, with the new item
 selected so you can adjust it (see [Keep tool active](#keep-tool-active)):
 
-- **Text:** click where the text starts, type, press Enter.
+- **Text:** click where the text starts, type in the inspector's box, press Enter. For now the text is typed in
+  the inspector rather than on the page, and only Western European characters can be added: others come out as
+  `?` (see [What doesn't work yet](features.md#what-doesnt-work-yet)).
 - **Image:** choose a PNG, JPEG or TIFF, then drag a box.
 - **Comment:** sticky notes, text boxes, rectangles, ellipses, lines and the pen, saved as annotations rather
   than page content; see [Notes and text boxes](#notes-and-text-boxes) and
