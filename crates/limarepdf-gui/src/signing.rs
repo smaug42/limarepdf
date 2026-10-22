@@ -776,8 +776,6 @@ pub fn menu_ui(ui: &mut egui::Ui, menu: &SignMenu, acts: &mut Vec<Act>) {
 pub struct PaneOut {
     /// The Finish signing command.
     pub finish: bool,
-    /// The Sign with digital ID command.
-    pub digital: bool,
 }
 
 impl SignPane {
@@ -922,8 +920,8 @@ impl SignPane {
         ui.add_space(6.0);
         ui.label(
             "Click on the page to put the picked item down, or drag a box to size it. Click \
-             an empty signature field to sign in it. Ctrl+click an item to select it, then \
-             move or resize it.",
+             an empty signature field to sign in it. Click an item with the read tool (or \
+             Ctrl+click it here) to select it, then move or resize it.",
         );
         ui.label(
             egui::RichText::new(
@@ -932,15 +930,6 @@ impl SignPane {
             )
             .weak(),
         );
-        if ui
-            .button("Sign with digital ID…")
-            .on_hover_text(
-                "A signature that proves who signed and shows any change made afterwards",
-            )
-            .clicked()
-        {
-            out.digital = true;
-        }
         ui.add_space(6.0);
         ui.label(match items {
             0 => "Nothing placed yet.".to_string(),

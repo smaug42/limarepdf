@@ -381,7 +381,7 @@ changes under each signature. See [Digital signatures](signatures.md) for what e
 
 ### Signing with a digital ID
 
-☰ > Document > Digital signatures > Sign with digital ID… (also a button in the Sign tool's pane), or Certify… for the author's
+☰ > Document > Digital signatures > Sign with digital ID…, or Certify… for the author's
 certification: click an empty signature field or drag a box on the page, then pick your digital ID, type its
 password, and optionally a reason and a location. Sign… asks where to save the signed copy (`NAME-signed.pdf` by
 default), signs in the background, and opens the signed copy in place of the document. Changes made since opening
@@ -572,7 +572,8 @@ The inspector shows the selected object's position and size, and for text the st
 shapes the fill, outline and width; for images "Replace image". Changes there are kept as you make them, without
 an Apply button: typed text when you press Enter or leave the box, a number when you stop dragging it or leave its
 box, a colour when its picker closes. Each is one undo step. The font size box shows the exact size, which isn't
-rounded to a listed one; type any size, or pick one from the list beside it.
+rounded to a listed one (10.126 shows as 10.126); type any size, or pick one from the list beside it. Going into
+the box and out again without typing changes nothing, and text that isn't a size leaves the size as it was.
 
 The other tools add content. Each puts one thing down and then gives way to the read tool, with the new item
 selected so you can adjust it (see [Keep tool active](#keep-tool-active)):

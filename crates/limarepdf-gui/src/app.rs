@@ -3417,9 +3417,6 @@ fn inspector_body(
         if std::mem::take(&mut t.ed.finish_signing) {
             t.requested.push(Act::FinishSigning);
         }
-        if std::mem::take(&mut t.ed.sign_digital) {
-            t.requested.push(Act::SignDigital);
-        }
         if t.ed.sign_kit != s.sign {
             s.sign = t.ed.sign_kit.clone();
             s.sign.save();
@@ -4473,6 +4470,34 @@ mod tests {
             ] {
                 assert!(names.contains(&Some(name.into())), "no {name} at {width}");
             }
+        }
+    }
+
+    #[test]
+    fn fill_and_sign_leaves_digital_signing_to_the_document_menu() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        app.act(&ctx, Act::Tool(Tool::Sign));
+        let names = focusable(&mut app, &ctx, 1400.0);
+        assert!(names.contains(&Some("Finish signing…".into())));
+        let digital = names
+            .iter()
+            .flatten()
+            .find(|n| n.to_lowercase().contains("digital"));
+        assert_eq!(digital, None);
+        // Signing and certifying are still in Document > Digital signatures.
+        for act in [Act::SignDigital, Act::Certify] {
+            let a = actions::get(act);
+            assert_eq!(
+                (a.group, a.submenu),
+                (Group::Document, "Digital signatures")
+            );
+            app.act(&ctx, act);
+            assert_eq!(app.tabs[0].ed.tool, Tool::DigitalSign);
+            assert_eq!(app.tabs[0].ed.digital_certify, act == Act::Certify);
+            app.act(&ctx, Act::Tool(Tool::Read));
         }
     }
 

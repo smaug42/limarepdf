@@ -404,10 +404,10 @@ const SIZES: [f32; 16] = [
     6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 14.0, 16.0, 18.0, 20.0, 24.0, 28.0, 36.0, 48.0, 72.0,
 ];
 
-/// A size as the size box shows it: the exact value to two places, without trailing zeros.
+/// A size as the size box shows it: the exact value, as short as it can be written and still
+/// read back the same, so an unusual size such as 10.126 isn't shown rounded.
 fn size_text(v: f32) -> String {
-    let s = format!("{v:.2}");
-    s.trim_end_matches('0').trim_end_matches('.').to_string()
+    format!("{v}")
 }
 
 /// A size typed in the size box, kept within `range`; `None` if it isn't a number.
@@ -418,26 +418,29 @@ fn parse_size(s: &str, range: &std::ops::RangeInclusive<f32>) -> Option<f32> {
 
 /// The font size: a box showing the exact size, which can be typed in (Enter or leaving it
 /// keeps it), and a list of the usual sizes beside it. Returns true when a size was chosen.
+/// Going into the box and out again without typing changes nothing; text that isn't a
+/// number leaves the size as it was.
 fn size_ui(ui: &mut egui::Ui, size: &mut f32, range: std::ops::RangeInclusive<f32>) -> bool {
     let id = ui.id().with("size-box");
-    let mut text = ui
-        .data(|d| d.get_temp::<String>(id))
-        .unwrap_or_else(|| size_text(*size));
+    // What was typed, kept only once something has been.
+    let typed = ui.data(|d| d.get_temp::<String>(id));
+    let mut text = typed.clone().unwrap_or_else(|| size_text(*size));
     let r = ui.add(
         egui::TextEdit::singleline(&mut text)
             .id(id)
-            .desired_width(44.0),
+            .desired_width(52.0),
     );
     r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Font size"));
+    let edited = typed.is_some() || r.changed();
     let mut chosen = false;
-    if r.lost_focus() {
-        if let Some(v) = parse_size(&text, &range) {
-            chosen = (v - *size).abs() > 0.005;
+    if r.lost_focus() && edited {
+        if let Some(v) = parse_size(&text, &range).filter(|v| *v != *size) {
+            chosen = true;
             *size = v;
         }
     }
     // While typing, the box keeps what is typed; otherwise it shows the size.
-    if r.has_focus() {
+    if r.has_focus() && edited {
         ui.data_mut(|d| d.insert_temp(id, text));
     } else {
         ui.data_mut(|d| d.remove::<String>(id));
@@ -447,7 +450,7 @@ fn size_ui(ui: &mut egui::Ui, size: &mut f32, range: std::ops::RangeInclusive<f3
     egui::containers::menu::MenuButton::from_button(list)
         .ui(ui, |ui| {
             for v in SIZES.into_iter().filter(|v| range.contains(v)) {
-                let on = (v - *size).abs() < 0.005;
+                let on = v == *size;
                 if ui.selectable_label(on, size_text(v)).clicked() {
                     chosen |= !on;
                     *size = v;
@@ -456,7 +459,8 @@ fn size_ui(ui: &mut egui::Ui, size: &mut f32, range: std::ops::RangeInclusive<f3
             }
         })
         .0
-        .on_hover_text("Font sizes");
+        .on_hover_text("Font sizes")
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Font sizes"));
     ui.label("pt");
     chosen
 }
@@ -615,8 +619,6 @@ pub struct Editor {
     pub finish_signing: bool,
     /// Why the Sign tool couldn't put something down.
     sign_error: Option<String>,
-    /// The Sign tool's pane asked for a digital signature.
-    pub sign_digital: bool,
     /// The digital signature tool places a certification rather than a signature.
     pub digital_certify: bool,
     /// The empty signature fields (full name, page), listed in the digital signature
@@ -694,7 +696,6 @@ impl Default for Editor {
             sign_items: 0,
             finish_signing: false,
             sign_error: None,
-            sign_digital: false,
             digital_certify: false,
             digital_fields: Vec::new(),
             digital_place: None,
@@ -967,7 +968,7 @@ impl Editor {
                 let te = TextEdit {
                     text: insp.text.replace(['\n', '\r'], " "),
                     font: (insp.font != insp.orig_font).then_some(insp.font),
-                    size: ((insp.size - insp.orig_size).abs() > 0.005).then_some(insp.size),
+                    size: (insp.size != insp.orig_size).then_some(insp.size),
                     color: (!same_color(insp.color, insp.orig_color)).then_some(insp.color),
                 };
                 let same = obj.text.as_deref() == Some(te.text.as_str())
@@ -3299,7 +3300,6 @@ impl Editor {
                     .sign
                     .ui(ui, &mut self.sign_kit, &mut self.author, self.sign_items);
                 self.finish_signing |= out.finish;
-                self.sign_digital |= out.digital;
                 if let Some(e) = &self.sign_error {
                     ui.colored_label(ui.visuals().error_fg_color, e);
                 }
@@ -3661,8 +3661,9 @@ mod tests {
         assert_eq!(size_text(12.0), "12");
         assert_eq!(size_text(10.98), "10.98");
         assert_eq!(size_text(10.5), "10.5");
-        // Not rounded to a listed size.
-        assert_eq!(size_text(11.333), "11.33");
+        // Not rounded, to a listed size or to two places.
+        assert_eq!(size_text(11.333), "11.333");
+        assert_eq!(size_text(10.126), "10.126");
         let range = 1.0..=400.0;
         assert_eq!(parse_size(" 13.5 ", &range), Some(13.5));
         assert_eq!(parse_size("9pt", &range), Some(9.0));
@@ -3671,6 +3672,104 @@ mod tests {
         assert_eq!(parse_size("0", &range), Some(1.0));
         assert_eq!(parse_size("big", &range), None);
         assert_eq!(parse_size("NaN", &range), None);
+    }
+
+    /// Draws the size box for a frame with `events`, after putting the keyboard in it
+    /// (`Some(true)`) or taking it away (`Some(false)`). Returns whether a size was chosen.
+    fn size_frame(
+        ctx: &egui::Context,
+        size: &mut f32,
+        focus: Option<bool>,
+        events: Vec<egui::Event>,
+    ) -> bool {
+        let id = egui::Id::new("size test");
+        let field = ctx.data(|d| d.get_temp::<egui::Id>(id));
+        match (focus, field) {
+            (Some(true), Some(f)) => ctx.memory_mut(|m| m.request_focus(f)),
+            (Some(false), Some(f)) => ctx.memory_mut(|m| m.surrender_focus(f)),
+            _ => {}
+        }
+        let mut chosen = false;
+        let raw = egui::RawInput {
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(raw, |ui| {
+            ui.push_id(id, |ui| {
+                ui.data_mut(|d| d.insert_temp(id, ui.id().with("size-box")));
+                chosen = size_ui(ui, size, 1.0..=400.0);
+            });
+        });
+        out.textures_delta.clear();
+        chosen
+    }
+
+    fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn the_size_box_changes_nothing_until_a_size_is_typed() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut size = 10.126_f32;
+        let none = egui::Modifiers::NONE;
+        let mut chosen = false;
+        // Into the box and out again, twice, and Enter in it, without typing.
+        for _ in 0..2 {
+            chosen |= size_frame(&ctx, &mut size, None, vec![]);
+            chosen |= size_frame(&ctx, &mut size, Some(true), vec![]);
+            chosen |= size_frame(&ctx, &mut size, None, vec![]);
+            chosen |= size_frame(&ctx, &mut size, Some(false), vec![]);
+            chosen |= size_frame(&ctx, &mut size, None, vec![]);
+        }
+        chosen |= size_frame(&ctx, &mut size, Some(true), vec![]);
+        chosen |= size_frame(&ctx, &mut size, None, vec![key(egui::Key::Enter, none)]);
+        assert_eq!(size, 10.126);
+        assert!(!chosen);
+        // Text that isn't a size leaves it as it was.
+        size_frame(&ctx, &mut size, Some(true), vec![]);
+        size_frame(&ctx, &mut size, None, vec![egui::Event::Text("x".into())]);
+        let c = size_frame(&ctx, &mut size, None, vec![key(egui::Key::Enter, none)]);
+        assert_eq!(size, 10.126);
+        assert!(!c);
+        // A size typed is chosen once.
+        size_frame(&ctx, &mut size, Some(true), vec![]);
+        let all = key(egui::Key::A, egui::Modifiers::COMMAND);
+        size_frame(
+            &ctx,
+            &mut size,
+            None,
+            vec![all, egui::Event::Text("11.5".into())],
+        );
+        let c = size_frame(&ctx, &mut size, None, vec![key(egui::Key::Enter, none)]);
+        assert_eq!(size, 11.5);
+        assert!(c);
+        assert!(!size_frame(&ctx, &mut size, None, vec![]));
+    }
+
+    #[test]
+    fn an_unusual_size_is_kept_exactly() {
+        let (_, mut ed) = page_with_objects();
+        ed.select_object(0, 2);
+        ed.sync_insp();
+        let insp = ed.insp.as_mut().unwrap();
+        insp.orig_size = 10.126;
+        insp.size = 10.126;
+        assert!(!ed.pending());
+        // A change smaller than a hundredth is still a change.
+        ed.insp.as_mut().unwrap().size = 10.13;
+        ed.keep_pending();
+        assert!(matches!(
+            ed.actions.as_slice(),
+            [Action::EditText(0, 2, te)] if te.size == Some(10.13)
+        ));
     }
 
     #[test]

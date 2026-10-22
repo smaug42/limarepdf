@@ -57,9 +57,14 @@
   their thumbnails, Print's printer, page range and copies, the signature drawing area and ink colours, and the
   banners' Dismiss button. Closing the inspector's pop-out with Esc returns the keyboard to its button.
 - Creating a digital ID shows a problem beside the field it is about, and the keyboard starts in the Name field.
+- The Fill and sign pane no longer has a Sign with digital ID button: digital signing and certifying are in
+  Document > Digital signatures.
 
 ### Fixed
 
+- Going into the font size box and out again, or pressing Enter in it, without typing rounded an unusual size such
+  as 10.126 to 10.13; it now changes nothing, and the box shows the exact size. A change of size smaller than a
+  hundredth of a point was also lost.
 - Ctrl+A and other single-key shortcuts were missed when the key and Ctrl arrived together, as with a quick tap.
 - Selecting a coloured comment or mark could count as an unkept change (asking about it on closing), because the
   colour button stored its colour back very slightly changed.
