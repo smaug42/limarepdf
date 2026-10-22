@@ -1411,7 +1411,7 @@ fn save_edited(io: &Io, pdf: &mut Pdf, original: &[u8], removes: bool) -> Result
                 eprintln!("warning: the signatures will report changes they don't allow:{list}");
             }
             saved(limarepdf_core::write_file(&io.output, &a.bytes))?;
-            if a.objects > 0 {
+            if a.bytes.len() > original.len() {
                 eprintln!(
                     "note: the changes were added after what was signed, so the signatures stay"
                 );
@@ -2709,6 +2709,12 @@ fn main() -> Result<()> {
     };
     if e.is::<Closed>() {
         return Ok(());
+    }
+    // The file is in place, so never "nothing was written" (decision D7).
+    if let Some(n) = e.downcast_ref::<limarepdf_core::NotConfirmed>() {
+        return Err(anyhow!(
+            "{n}. If the computer lost power just now, run the command again."
+        ));
     }
     // Said plainly, without what the command was doing when it wrote.
     match e.downcast_ref::<Unwritten>() {

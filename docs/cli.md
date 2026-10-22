@@ -28,6 +28,11 @@ happened when reporting it.
 
 When what a command prints can't be written (a full disk, for example), it stops there with an error and status
 1; a command that had already saved its file says so ("the file was saved, but its report couldn't be written").
+
+On Linux and macOS a written file is then confirmed on disk, so a power cut can't undo it. When the system can't
+confirm it, the file is in place all the same, and the command stops with status 1 and "*file* was saved, but your
+system couldn't confirm it is safely on disk (...). If the computer lost power just now, run the command again."
+Windows has no way to confirm this: there a power cut in the moment after a file is put in place can still lose it.
 When whatever reads the output stops early, as `limarepdf-cli text file.pdf | head` does, the command stops quietly
 with the status it would have had otherwise.
 

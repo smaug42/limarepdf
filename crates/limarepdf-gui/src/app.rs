@@ -275,6 +275,17 @@ const REPAIRED: &str = "the file is damaged, and LimarePDF repaired it to open i
 const RECOVERED: &str = "this is a recovered copy, and LimarePDF doesn't have the file as it \
                          was signed";
 
+/// What a save that replaced the file but couldn't confirm it on disk says (decision D7).
+pub const NOT_CONFIRMED: &str = "The file was saved, but your system couldn't confirm it is \
+                                 safely on disk. If the computer lost power just now, save it \
+                                 again.";
+
+/// Whether `e` is a save that replaced the file but couldn't confirm it on disk: the file
+/// is the new one, never the old one kept.
+pub fn not_confirmed(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<limarepdf_core::NotConfirmed>().is_some()
+}
+
 /// Why a document set to be saved with a password isn't signed: the signed file would be
 /// written without it.
 const PASSWORD_NOT_SIGNED: &str = "You set a password that applies when you save, and \
@@ -997,6 +1008,9 @@ impl App {
                 )
             ));
         }
+        if !s.confirmed {
+            text.push_str(&format!("\n\n{NOT_CONFIRMED}"));
+        }
         if s.self_issued {
             text.push_str(
                 "\n\nOthers see you as an unknown signer until they trust your certificate: \
@@ -1019,6 +1033,8 @@ impl App {
                     if let Some(p) = page {
                         self.tabs[self.active].go_to(p);
                     }
+                    // Saving again is one click (decision D7).
+                    self.tabs[self.active].dirty = !s.confirmed;
                     self.check_signatures(ctx, self.active, bytes, None);
                 }
                 if replace.is_none() {
@@ -1249,6 +1265,9 @@ impl App {
         };
         match result {
             Ok(()) => self.status = format!("Saved the selected text to {}", path.display()),
+            Err(e) if not_confirmed(&e) => {
+                self.dialog = Dialog::Message("Saved, not confirmed".into(), NOT_CONFIRMED.into())
+            }
             Err(e) => {
                 self.dialog = Dialog::Message("Save failed".into(), format!("{e:#}"));
             }
@@ -1376,21 +1395,26 @@ impl App {
         let Some(path) = Self::save_path(tab, as_new) else {
             return;
         };
-        match limarepdf_core::write_file(&path, &bytes) {
-            Ok(()) => {
-                self.status = format!(
-                    "Saved {}; the changes were added after what was signed, so the signatures \
-                     stay",
-                    path.display()
-                );
-                self.recent.add(&path);
-                tab.dirty = false;
-                tab.scrubbed = false;
-                tab.path = Some(path);
-                self.check_signatures(ctx, self.active, Arc::from(bytes), None);
-                self.saved_copy(self.active);
+        let confirmed = match limarepdf_core::write_file(&path, &bytes) {
+            Ok(()) => true,
+            Err(e) if not_confirmed(&e) => false,
+            Err(e) => {
+                self.dialog = Dialog::Message("Save failed".into(), format!("{e:#}"));
+                return;
             }
-            Err(e) => self.dialog = Dialog::Message("Save failed".into(), format!("{e:#}")),
+        };
+        self.status = format!(
+            "Saved {}; the changes were added after what was signed, so the signatures stay",
+            path.display()
+        );
+        self.recent.add(&path);
+        tab.dirty = !confirmed;
+        tab.scrubbed = false;
+        tab.path = Some(path);
+        self.check_signatures(ctx, self.active, Arc::from(bytes), None);
+        self.saved_copy(self.active, confirmed);
+        if !confirmed {
+            self.dialog = Dialog::Message("Saved, not confirmed".into(), NOT_CONFIRMED.into());
         }
     }
 
@@ -1402,44 +1426,47 @@ impl App {
             return;
         };
         tab.pdf.set_encryption(tab.encryption.clone());
-        match crate::guard(|| tab.pdf.save(&path)) {
-            Ok(()) => {
-                self.status = format!("Saved {}", path.display());
-                self.recent.add(&path);
-                tab.dirty = false;
-                tab.scrubbed = false;
-                // The saved file is the repaired copy, with nothing left to repair, and it
-                // reads the same in every app.
-                tab.repaired = false;
-                tab.banners
-                    .retain(|b| !matches!(b.kind, BannerKind::Repaired | BannerKind::OtherApps));
-                // The saved copy's signatures are already broken: no need to ask again.
-                tab.signed = false;
-                // The Signatures tab describes the file, so check the saved one (a saved
-                // recovered copy's too, which was never checked).
-                let password = tab.encryption.as_ref().map(|e| e.user_password.clone());
-                let recheck = tab.sigs.is_some()
-                    || (tab.recovered.is_some() && tab.pdf.signature_count() > 0);
-                let saved = recheck.then(|| std::fs::read(&path));
-                tab.path = Some(path);
-                match saved {
-                    Some(Ok(bytes)) => {
-                        self.check_signatures(ctx, self.active, Arc::from(bytes), password)
-                    }
-                    Some(Err(e)) => {
-                        let t = &mut self.tabs[self.active];
-                        if let Some(s) = t.sigs.as_mut() {
-                            s.check = Check::Failed(format!(
-                                "LimarePDF can't read the saved file again: {e}"
-                            ));
-                            t.sig_banner();
-                        }
-                    }
-                    None => {}
-                }
-                self.saved_copy(self.active);
+        let confirmed = match crate::guard(|| tab.pdf.save(&path)) {
+            Ok(()) => true,
+            Err(e) if not_confirmed(&e) => false,
+            Err(e) => {
+                self.dialog = Dialog::Message("Save failed".into(), format!("{e:#}"));
+                return;
             }
-            Err(e) => self.dialog = Dialog::Message("Save failed".into(), format!("{e:#}")),
+        };
+        self.status = format!("Saved {}", path.display());
+        self.recent.add(&path);
+        tab.dirty = !confirmed;
+        tab.scrubbed = false;
+        // The saved file is the repaired copy, with nothing left to repair, and it reads the
+        // same in every app.
+        tab.repaired = false;
+        tab.banners
+            .retain(|b| !matches!(b.kind, BannerKind::Repaired | BannerKind::OtherApps));
+        // The saved copy's signatures are already broken: no need to ask again.
+        tab.signed = false;
+        // The Signatures tab describes the file, so check the saved one (a saved recovered
+        // copy's too, which was never checked).
+        let password = tab.encryption.as_ref().map(|e| e.user_password.clone());
+        let recheck =
+            tab.sigs.is_some() || (tab.recovered.is_some() && tab.pdf.signature_count() > 0);
+        let saved = recheck.then(|| std::fs::read(&path));
+        tab.path = Some(path);
+        match saved {
+            Some(Ok(bytes)) => self.check_signatures(ctx, self.active, Arc::from(bytes), password),
+            Some(Err(e)) => {
+                let t = &mut self.tabs[self.active];
+                if let Some(s) = t.sigs.as_mut() {
+                    s.check =
+                        Check::Failed(format!("LimarePDF can't read the saved file again: {e}"));
+                    t.sig_banner();
+                }
+            }
+            None => {}
+        }
+        self.saved_copy(self.active, confirmed);
+        if !confirmed {
+            self.dialog = Dialog::Message("Saved, not confirmed".into(), NOT_CONFIRMED.into());
         }
     }
 
@@ -2284,8 +2311,19 @@ impl App {
                         Some(level) => SplitBy::Bookmarks(level),
                         None => SplitBy::Every(every),
                     };
-                    let n = p.split(by, |n, title| dir.join(part_file_name(&stem, n, title)))?;
-                    Ok((false, format!("Wrote {n} files to {}.", dir.display())))
+                    match p.split(by, |n, title| dir.join(part_file_name(&stem, n, title))) {
+                        Ok(n) => Ok((false, format!("Wrote {n} files to {}.", dir.display()))),
+                        Err(e) if not_confirmed(&e) => Ok((
+                            false,
+                            format!(
+                                "Wrote the files to {}, but your system couldn't confirm they \
+                                 are safely on disk. If the computer lost power just now, \
+                                 split the document again.",
+                                dir.display()
+                            ),
+                        )),
+                        Err(e) => Err(e),
+                    }
                 });
             }
         }
@@ -4119,6 +4157,7 @@ mod tests {
             signer: "Tester".into(),
             self_issued: false,
             certified: false,
+            confirmed: true,
         }
     }
 
@@ -4168,6 +4207,27 @@ mod tests {
         );
         assert_eq!(app.active, 0);
         assert!(!message(&app).1.contains("changed while"));
+        assert!(!app.tabs[0].dirty);
+        assert!(!message(&app).1.contains(NOT_CONFIRMED));
+    }
+
+    /// A signed file written but not confirmed on disk (decision D7) still takes the tab's
+    /// place, as the new file; the message says so and the document stays marked unsaved.
+    #[test]
+    fn a_signed_file_not_confirmed_on_disk() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, 2);
+        let (id, revision) = (app.tabs[0].id, app.tabs[0].revision);
+        let s = digital::Signed {
+            confirmed: false,
+            ..signed_copy()
+        };
+        let path = s.path.clone();
+        app.signed(&ctx, s, id, revision);
+        assert!(app.tabs.iter().all(|t| t.id != id));
+        assert_eq!(app.tabs[0].path.as_ref(), Some(&path));
+        assert!(app.tabs[0].dirty, "marked saved");
+        assert!(message(&app).1.contains(NOT_CONFIRMED));
     }
 
     #[test]

@@ -66,6 +66,17 @@
   be trusted) when it broke those limits: a PKCS#1 v1.5 signature, or an RSA-PSS one with another digest or mask
   than the certificate names or a shorter salt. Such a signature is now broken, and limits that can't be read
   give "can't check". The same goes for timestamps, and for the certificates of a chain to a trusted authority.
+- At the start, crash recovery followed a symbolic link in its folder, so a link there to another folder could get
+  that folder's PDF files deleted, or offered as recovery copies. It now looks only in real folders of yours, and
+  leaves anything else untouched.
+- Saving a signed document whose only change was to the file's trailer, such as its document information removed,
+  wrote nothing, so the change was lost on reopening. Such a change is now added as a revision of its own, and
+  checked when read back.
+- On Linux and macOS a save could be undone by a power cut just after it, as the folder holding the file wasn't
+  synced. It now is. When the system can't confirm it, the file is in place all the same: the app says so and
+  keeps the document marked unsaved, and `limarepdf-cli` says so and exits with status 1. Settings, the recent
+  files list and saved signatures, which were written into the old file in place (a crash part way lost them), are
+  now saved the same way.
 
 ## [0.8.0] - 2026-10-20
 

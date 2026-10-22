@@ -8,9 +8,10 @@ mod sigkit;
 
 use limarepdf_core::{
     append_edits, sign_document, verify_signatures, AnnotKind, AppendedEdits, ChangeKind, Cipher,
-    DisallowedChanges, Encryption, FieldValue, IdStore, InkColor, LockAction, Pdf, Permissions,
-    Restrictions, SigKind, SigStatus, SignArt, SignPlace, SignRequest, SignRole, SignStyle,
-    SignatureReport, SignedDocument, Stamp, StampPlace, Trust, TrustList, TrustRole, UnlockedId,
+    DisallowedChanges, Encryption, FieldValue, IdStore, Info, InkColor, LockAction, Pdf,
+    Permissions, Restrictions, SigKind, SigStatus, SignArt, SignPlace, SignRequest, SignRole,
+    SignStyle, SignatureReport, SignedDocument, Stamp, StampPlace, Trust, TrustList, TrustRole,
+    UnlockedId,
 };
 use lopdf::{dictionary, Dictionary, Object, ObjectId};
 use sigkit::*;
@@ -639,6 +640,33 @@ fn saving_without_changes_adds_nothing() {
     let copy = p.snapshot().unwrap();
     let back = Pdf::from_bytes(&copy, None).unwrap();
     assert_eq!(append_edits(&s, &back).unwrap().objects, 0);
+}
+
+/// Removing the document information, a change to the trailer alone, is saved after what
+/// was signed (R02): the earlier revisions stay byte for byte and the signature valid.
+#[test]
+fn a_trailer_only_change_is_added_after_what_was_signed() {
+    let s = sign(&base_pdf(), &req(rsa(), new_box(0))).bytes;
+    let titled = Info {
+        title: Some("Report".into()),
+        ..Info::default()
+    };
+    let a = save(&s, |p| p.set_info(&titled).unwrap());
+    assert_eq!(Pdf::from_bytes(&a.bytes, None).unwrap().info(), titled);
+    let b = save(&a.bytes, |p| {
+        p.doc.trailer.remove(b"Info");
+    });
+    assert!(b.bytes.len() > a.bytes.len() && b.bytes.starts_with(&a.bytes));
+    assert_eq!(
+        Pdf::from_bytes(&b.bytes, None).unwrap().info(),
+        Info::default()
+    );
+    assert_eq!(report(&b.bytes).signatures[0].status, SigStatus::Valid);
+    // Saving it again adds nothing.
+    let again = save(&b.bytes, |p| {
+        p.doc.trailer.remove(b"Info");
+    });
+    assert_eq!(again.bytes, b.bytes);
 }
 
 #[test]

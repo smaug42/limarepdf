@@ -35,7 +35,11 @@ changed or was closed while the question was open, nothing is done, and a messag
 
 Saving writes a temporary file beside the document and then replaces the document with it, so a save that fails
 part way leaves the original as it was. On Linux and macOS, the temporary file is readable only by you while it is
-written, and the saved document keeps the original's permissions. LimarePDF saves by rewriting the whole file, except for a digitally signed
+written, and the saved document keeps the original's permissions; afterwards LimarePDF asks the system to confirm the
+change is on disk, so a power cut can't undo it. If the system can't confirm it, a message says "The file was saved,
+but your system couldn't confirm it is safely on disk. If the computer lost power just now, save it again.", and the
+document stays marked unsaved so saving again is one click. (Windows has no way to confirm this: there a power cut
+in the moment after a save can still lose it.) LimarePDF saves by rewriting the whole file, except for a digitally signed
 document: its changes are added after what was signed, so the signatures stay valid. LimarePDF asks first when the
 signatures don't allow the changes, and before writing a signed document in full when it must (after redacting, for
 example), which breaks the signatures; see [Saving a signed document](signatures.md#saving-a-signed-document).
@@ -395,7 +399,8 @@ copies are not autosave: **your own files are never written by them.**
   with Append PDFs (its copy is deleted first too; this includes protected files that open without a password).
 - The copies are kept in a folder only you can read: `~/.local/state/limarepdf/recovery` on Linux (or
   `$XDG_STATE_HOME/limarepdf/recovery`), `~/Library/Application Support/limarepdf/recovery` on macOS, and
-  `%LOCALAPPDATA%\limarepdf\recovery` on Windows.
+  `%LOCALAPPDATA%\limarepdf\recovery` on Windows. At the start, LimarePDF looks only in real folders of yours there:
+  a recovery folder, or a folder inside it, that is a symbolic link or belongs to another user is left untouched.
 - To stop them, turn off ☰ > File > **Keep recovery copies of unsaved changes** (also in the command palette).
   Copies already made are deleted at once, and the choice is remembered.
 - If a copy can't be written, for example when the disk would be left with less than 1 GB free, a notice on the

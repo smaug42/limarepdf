@@ -1,5 +1,6 @@
 //! Replacing a file in one step: the new contents go to a temporary file beside it, which is
-//! then renamed over it, so a failure part way leaves any existing file as it was.
+//! synced and then renamed over it, so a failure part way leaves any existing file as it
+//! was. The folder is synced after the rename, so a power cut can't undo it (Unix).
 //!
 //! The temporary file is always created new (`create_new`, which fails when anything is at
 //! the name, a symbolic link included, and never follows one), under a fresh name each time.
@@ -28,8 +29,32 @@ pub(crate) enum Access {
     Private,
 }
 
+/// A file was replaced, but the folder holding it couldn't be synced, so a power cut now
+/// could still undo the replacement (decision D7 of the third audit). It is a third outcome,
+/// apart from saved and failed: the new file is in place, so callers treat the file as the
+/// new one, never as the old one kept, and say it may need saving again.
+#[derive(Debug)]
+pub struct NotConfirmed {
+    pub path: PathBuf,
+    pub why: String,
+}
+
+impl std::fmt::Display for NotConfirmed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} was saved, but your system couldn't confirm it is safely on disk ({})",
+            self.path.display(),
+            self.why
+        )
+    }
+}
+
+impl std::error::Error for NotConfirmed {}
+
 /// Writes a file through `write` to a temporary file beside `path`, then renames it over
-/// `path`. On failure only the temporary file this call created is removed.
+/// `path` and syncs the folder. On failure only the temporary file this call created is
+/// removed. When only the folder sync fails, the error is a [`NotConfirmed`].
 pub(crate) fn replace(
     path: &Path,
     access: Access,
@@ -69,8 +94,39 @@ pub(crate) fn replace(
     })();
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
+        return written;
     }
-    written
+    match sync_folder(&path) {
+        Ok(()) => Ok(()),
+        // Nothing more can be done there, as on Windows.
+        Err(e) if matches!(e.kind(), ErrorKind::InvalidInput | ErrorKind::Unsupported) => Ok(()),
+        Err(e) => Err(NotConfirmed {
+            path,
+            why: e.to_string(),
+        }
+        .into()),
+    }
+}
+
+/// Syncs the folder holding `path`, which makes its rename durable (Unix). Windows has no
+/// call for it: there the file is synced before the rename, and a power cut just after it
+/// can still lose the rename (the platform note in docs/architecture.md).
+fn sync_folder(path: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if let Some(r) = tests::folder_sync(path) {
+        return r;
+    }
+    #[cfg(unix)]
+    {
+        let dir = path
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        File::open(dir)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
 }
 
 /// Creates a new, empty temporary file beside `path` for this user only, under a fresh name,
@@ -151,6 +207,20 @@ mod tests {
         static SUFFIXES: RefCell<VecDeque<String>> = const { RefCell::new(VecDeque::new()) };
         #[allow(clippy::type_complexity)]
         static OBSERVER: RefCell<Option<Box<dyn FnMut(&Path)>>> = const { RefCell::new(None) };
+        #[allow(clippy::type_complexity)]
+        static FOLDER_SYNC: RefCell<Option<Box<dyn FnMut(&Path) -> std::io::Result<()>>>> =
+            const { RefCell::new(None) };
+    }
+
+    /// What a test made of the sync of the folder holding `path`, in place of the real one.
+    pub(super) fn folder_sync(path: &Path) -> Option<std::io::Result<()>> {
+        FOLDER_SYNC.with(|s| s.borrow_mut().as_mut().map(|f| f(path)))
+    }
+
+    /// `f` is called in place of each folder sync on this thread, with the file replaced,
+    /// until [`unwatch`].
+    fn on_folder_sync(f: impl FnMut(&Path) -> std::io::Result<()> + 'static) {
+        FOLDER_SYNC.with(|s| *s.borrow_mut() = Some(Box::new(f)));
     }
 
     /// The next name part a test chose, if any are left.
@@ -181,6 +251,7 @@ mod tests {
 
     fn unwatch() {
         OBSERVER.with(|o| *o.borrow_mut() = None);
+        FOLDER_SYNC.with(|s| *s.borrow_mut() = None);
     }
 
     /// A fresh, empty folder for one test.
@@ -499,6 +570,63 @@ mod tests {
         #[cfg(unix)]
         assert_eq!(mode(&doc), 0o640);
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The folder is synced once per save, after the rename (R04): the new file is in place
+    /// and the temporary one gone. The same for documents and private files.
+    #[test]
+    fn the_folder_is_synced_after_the_rename() {
+        let dir = folder("sync");
+        let doc = dir.join("doc.pdf");
+        std::fs::write(&doc, "old").unwrap();
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let (d, c) = (dir.clone(), calls.clone());
+        on_folder_sync(move |path| {
+            assert_eq!(path.parent(), Some(d.canonicalize().unwrap().as_path()));
+            assert_eq!(std::fs::read(path).unwrap(), b"new");
+            assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1);
+            c.set(c.get() + 1);
+            Ok(())
+        });
+        crate::write_file(&doc, b"new").unwrap();
+        assert_eq!(calls.get(), 1);
+        std::fs::remove_file(&doc).unwrap();
+        crate::write_private(&dir.canonicalize().unwrap().join("doc.pdf"), b"new").unwrap();
+        assert_eq!(calls.get(), 2);
+        unwatch();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A folder sync that fails after the rename is a third outcome, apart from saved and
+    /// failed (decision D7): the error says the file was saved but not confirmed on disk,
+    /// and the new file is in place. A file system that can't sync folders at all counts as
+    /// synced.
+    #[test]
+    fn a_failed_folder_sync_is_not_confirmed() {
+        let dir = folder("sync-fails");
+        let doc = dir.join("doc.pdf");
+        std::fs::write(&doc, "old").unwrap();
+        on_folder_sync(|_| Err(std::io::Error::other("test failure")));
+        let e = crate::write_file(&doc, b"new").unwrap_err();
+        let n = e.downcast_ref::<NotConfirmed>().expect("not confirmed");
+        assert_eq!(n.path, doc.canonicalize().unwrap());
+        assert!(e.to_string().contains("couldn't confirm"), "{e}");
+        assert_eq!(std::fs::read(&doc).unwrap(), b"new");
+        let mut p = crate::Pdf::new();
+        p.insert_blank(0, 300.0, 200.0).unwrap();
+        let e = p.save(&doc).unwrap_err();
+        assert!(e.downcast_ref::<NotConfirmed>().is_some(), "{e:#}");
+        assert!(std::fs::read(&doc).unwrap().starts_with(b"%PDF"));
+        let e = crate::write_private(&doc, b"private").unwrap_err();
+        assert!(e.downcast_ref::<NotConfirmed>().is_some(), "{e:#}");
+        assert_eq!(std::fs::read(&doc).unwrap(), b"private");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        on_folder_sync(|_| Err(std::io::ErrorKind::InvalidInput.into()));
+        crate::write_file(&doc, b"unsyncable").unwrap();
+        on_folder_sync(|_| Err(std::io::ErrorKind::Unsupported.into()));
+        crate::write_file(&doc, b"unsupported").unwrap();
+        unwatch();
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

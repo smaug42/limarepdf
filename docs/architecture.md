@@ -84,8 +84,14 @@ certificate by checking a signature made with its key rather than by labels) ove
 reader and writer on `asn1.rs` (which also writes DER): it derives and wipes the password keys itself (`pbkdf2`,
 `hmac`, the PKCS#12 derivation), so `pkcs5` isn't needed, and reads BER as Windows writes it. Private files (ID
 files, the trust list) go through `limarepdf_core::write_private`. It and every document save (`Pdf::save`,
-`write_file`) replace files through `atomic.rs`: a temporary file beside the target, always created new under a fresh
-name (never one already there), private to the user on Unix while written, then renamed over the target.
+`write_file`, which the app's settings, recent files and signing settings also use) replace files through `atomic.rs`:
+a temporary file beside the target, always created new under a fresh name (never one already there), private to the
+user on Unix while written, synced, then renamed over the target, and on Unix the folder is synced after the rename
+so a power cut can't undo it. When only that folder sync fails, the error is a `NotConfirmed`, a third outcome apart
+from saved and failed: the app and the CLI treat the file as the new one and warn that it may need saving again (the
+app keeps the document marked unsaved, and its recovery copy). A file system that can't sync folders at all counts as
+synced. Platform note: Windows has no call for syncing a folder, so there the file is synced before the rename and a
+power cut just after it can still lose the rename.
 
 Crash recovery copies are kept by `crates/limarepdf-gui/src/recovery.rs`, in a private
 per-user state folder with one subfolder per running app, which holds a locked `lock` file while the app runs. A tab's

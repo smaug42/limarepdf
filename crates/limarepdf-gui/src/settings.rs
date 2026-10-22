@@ -327,7 +327,7 @@ impl Settings {
         for (wording, color) in &self.stamp_wordings {
             text += &format!("stamp_wording = {} {wording}\n", color.name());
         }
-        let _ = std::fs::write(file, text);
+        let _ = limarepdf_core::write_file(file, text.as_bytes());
     }
 }
 
@@ -340,6 +340,23 @@ mod tests {
             std::env::temp_dir().join(format!("limarepdf-settings-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir.join("settings.txt")
+    }
+
+    /// Saved through the safe writer (R04): the file is replaced in one step, not written
+    /// into, so another name for the old file (a hard link) keeps the old contents.
+    #[test]
+    fn saved_in_one_step() {
+        let f = file("one-step");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, "theme = dark\n").unwrap();
+        let other = f.with_file_name("other.txt");
+        std::fs::hard_link(&f, &other).unwrap();
+        Settings::from_file(Some(f.clone())).save();
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "theme = dark\n");
+        assert!(std::fs::read_to_string(&f)
+            .unwrap()
+            .starts_with("theme = dark\npage_colours = "));
+        std::fs::remove_dir_all(f.parent().unwrap()).unwrap();
     }
 
     #[test]

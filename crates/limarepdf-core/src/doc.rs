@@ -737,7 +737,8 @@ impl Pdf {
 
     /// Split into files, part `n` (from 1) written to `path(n, title)`. Each part is
     /// written and dropped as soon as it is made, so no more parts are held at once than
-    /// are being made. Returns how many files were written.
+    /// are being made. Returns how many files were written. When every file was written but
+    /// one wasn't confirmed on disk, the error is that file's [`crate::NotConfirmed`].
     pub fn split(
         &self,
         by: SplitBy,
@@ -745,17 +746,26 @@ impl Pdf {
     ) -> Result<usize> {
         let parts = self.split_parts(by)?;
         let written = std::sync::atomic::AtomicUsize::new(0);
+        let unconfirmed = std::sync::Mutex::new(None);
         let done = parts
             .par_iter()
             .enumerate()
             .try_for_each(|(i, (title, pages))| {
-                self.extract(pages)?.save(path(i + 1, title.as_deref()))?;
+                match self.extract(pages)?.save(path(i + 1, title.as_deref())) {
+                    // Written: the other parts go on.
+                    Err(e) if e.is::<crate::NotConfirmed>() => {
+                        let mut u = unconfirmed.lock().unwrap_or_else(|e| e.into_inner());
+                        u.get_or_insert(e);
+                    }
+                    r => r?,
+                }
                 written.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 Ok::<_, anyhow::Error>(())
             });
         let written = written.into_inner();
+        let unconfirmed = unconfirmed.into_inner().unwrap_or_else(|e| e.into_inner());
         match done {
-            Ok(()) => Ok(parts.len()),
+            Ok(()) => unconfirmed.map_or(Ok(parts.len()), Err),
             Err(e) if written > 0 => Err(e.context(format!(
                 "{written} of the {} files were written before this",
                 parts.len()

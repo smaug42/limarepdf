@@ -449,13 +449,15 @@ impl App {
     }
 
     /// After tab `i` was saved: its recovery copy goes, and a restored tab's copy in the
-    /// crashed session too (section 7).
-    pub(super) fn saved_copy(&mut self, i: usize) {
+    /// crashed session too (section 7). A save not `confirmed` on disk keeps the tab's
+    /// recovery copy, which still holds its edits if a power cut undoes the save; the file
+    /// is the new one all the same, so the restored tab's copy goes (decision D7).
+    pub(super) fn saved_copy(&mut self, i: usize, confirmed: bool) {
         let Some(t) = self.tabs.get_mut(i) else {
             return;
         };
         if let Some(q) = &self.rescue.queue {
-            if t.copy.asked {
+            if t.copy.asked && confirmed {
                 q.remove(TabId(t.id));
             }
         }
