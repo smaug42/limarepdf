@@ -78,7 +78,7 @@ impl Recent {
         if let Some(dir) = file.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(file, text);
+        let _ = limarepdf_core::write_file(file, text.as_bytes());
     }
 }
 
@@ -93,6 +93,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let file = dir.join("recent.txt");
         (Recent::from_file(Some(file.clone())), file)
+    }
+
+    /// Saved through the safe writer (R04): the file is replaced in one step, not written
+    /// into, so another name for the old file (a hard link) keeps the old contents.
+    #[test]
+    fn saved_in_one_step() {
+        let (_, file) = list("one-step");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "/a.pdf\n").unwrap();
+        let other = file.with_file_name("other.txt");
+        std::fs::hard_link(&file, &other).unwrap();
+        let mut r = Recent::from_file(Some(file.clone()));
+        r.add(Path::new("/b.pdf"));
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "/a.pdf\n");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "/b.pdf\n/a.pdf\n");
+        std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
     }
 
     #[test]

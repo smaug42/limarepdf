@@ -278,31 +278,38 @@ impl Pdf {
     /// flag but not NoView, so annotations flagged NoView are marked Hidden in the copy that
     /// is serialised. The document itself is not changed.
     pub fn render_snapshot(&mut self) -> Result<Vec<u8>> {
-        self.snapshot_hiding(|flags, _| flags & 32 != 0)
+        self.snapshot_hiding(|flags, _| flags & 32 != 0, false)
     }
 
     /// Like [`Pdf::render_snapshot`], for the app, which draws sticky notes itself at a
     /// fixed size on screen: notes are left out too.
     pub fn app_snapshot(&mut self) -> Result<Vec<u8>> {
-        self.snapshot_hiding(|flags, sub| flags & 32 != 0 || sub == b"Text")
+        self.snapshot_hiding(|flags, sub| flags & 32 != 0 || sub == b"Text", false)
     }
 
     /// Like [`Pdf::render_snapshot`], for printing: annotations without the Print flag
-    /// (bit 3) are marked Hidden instead.
+    /// (bit 3) are marked Hidden instead, and form fields are drawn as
+    /// [`Pdf::refresh_appearances`] would draw them in every document, since the command
+    /// line, unlike the app, doesn't draw them when opening a file.
     pub fn print_snapshot(&mut self) -> Result<Vec<u8>> {
-        self.snapshot_hiding(|flags, _| flags & 4 == 0)
+        self.snapshot_hiding(|flags, _| flags & 4 == 0, true)
     }
 
     /// A snapshot in which annotations whose flags and subtype match `hide` are marked
     /// Hidden, and annotations without a drawing get LimarePDF's (the document itself keeps
-    /// none). In a signed document, form fields are drawn this way too, as
-    /// [`Pdf::refresh_appearances`] would draw them: the app doesn't draw a signed
-    /// document's fields into it when opening it, so that saving adds only the edits made
-    /// to what was signed.
-    fn snapshot_hiding(&mut self, hide: impl Fn(i64, &[u8]) -> bool) -> Result<Vec<u8>> {
+    /// none). In a signed document, or in any with `all_fields`, form fields are drawn this
+    /// way too, as [`Pdf::refresh_appearances`] would draw them: the app doesn't draw a
+    /// signed document's fields into it when opening it, so that saving adds only the edits
+    /// made to what was signed.
+    fn snapshot_hiding(
+        &mut self,
+        hide: impl Fn(i64, &[u8]) -> bool,
+        all_fields: bool,
+    ) -> Result<Vec<u8>> {
         let ids = self.annots_where(hide);
         let missing = self.missing_appearances(&self.page_ids());
-        let fields = self.signature_count() > 0 && !self.appearances_to_draw().is_empty();
+        let fields =
+            (all_fields || self.signature_count() > 0) && !self.appearances_to_draw().is_empty();
         if ids.is_empty() && missing.is_empty() && !fields {
             return self.snapshot();
         }
@@ -457,7 +464,7 @@ impl Pdf {
     }
 
     /// Push inherited page attributes down onto each page and flatten the page tree.
-    fn flatten(&mut self) -> Result<()> {
+    pub(crate) fn flatten(&mut self) -> Result<()> {
         let ids = self.page_ids();
         for &id in &ids {
             for key in INHERITABLE {
@@ -525,7 +532,6 @@ impl Pdf {
         if keep.is_empty() {
             bail!("cannot delete every page");
         }
-        self.flatten()?;
         // Bookmarks to the deleted pages stay, with no destination.
         self.keep_pages(&keep, false)
     }
@@ -542,7 +548,6 @@ impl Pdf {
         // kept pages still use: a whole copy per part made splitting a large file hold
         // many copies of it.
         let mut out = self.without_stream_data();
-        out.flatten()?;
         let ids = out.page_ids();
         let sel: Vec<ObjectId> = idx.iter().map(|&i| ids[i]).collect();
         out.keep_pages(&sel, true)?;
@@ -609,7 +614,7 @@ impl Pdf {
             let cur = self.page_rotation(ids[i]);
             self.doc
                 .get_dictionary_mut(ids[i])?
-                .set("Rotate", (cur + degrees).rem_euclid(360));
+                .set("Rotate", (cur + degrees.rem_euclid(360)).rem_euclid(360));
         }
         Ok(())
     }
@@ -732,7 +737,8 @@ impl Pdf {
 
     /// Split into files, part `n` (from 1) written to `path(n, title)`. Each part is
     /// written and dropped as soon as it is made, so no more parts are held at once than
-    /// are being made. Returns how many files were written.
+    /// are being made. Returns how many files were written. When every file was written but
+    /// one wasn't confirmed on disk, the error is that file's [`crate::NotConfirmed`].
     pub fn split(
         &self,
         by: SplitBy,
@@ -740,17 +746,26 @@ impl Pdf {
     ) -> Result<usize> {
         let parts = self.split_parts(by)?;
         let written = std::sync::atomic::AtomicUsize::new(0);
+        let unconfirmed = std::sync::Mutex::new(None);
         let done = parts
             .par_iter()
             .enumerate()
             .try_for_each(|(i, (title, pages))| {
-                self.extract(pages)?.save(path(i + 1, title.as_deref()))?;
+                match self.extract(pages)?.save(path(i + 1, title.as_deref())) {
+                    // Written: the other parts go on.
+                    Err(e) if e.is::<crate::NotConfirmed>() => {
+                        let mut u = unconfirmed.lock().unwrap_or_else(|e| e.into_inner());
+                        u.get_or_insert(e);
+                    }
+                    r => r?,
+                }
                 written.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 Ok::<_, anyhow::Error>(())
             });
         let written = written.into_inner();
+        let unconfirmed = unconfirmed.into_inner().unwrap_or_else(|e| e.into_inner());
         match done {
-            Ok(()) => Ok(parts.len()),
+            Ok(()) => unconfirmed.map_or(Ok(parts.len()), Err),
             Err(e) if written > 0 => Err(e.context(format!(
                 "{written} of the {} files were written before this",
                 parts.len()

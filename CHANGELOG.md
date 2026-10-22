@@ -1,5 +1,92 @@
 # Changelog
 
+## [0.8.1] - 2026-10-21
+
+### Changed
+
+- `limarepdf-cli` refuses, with nothing written, an output (`-o`) that is the command's input, by any path or a
+  link to it. It used to replace the input with the result, so a redaction or removed information left no
+  original to go back to.
+- A digital ID whose certificate or key allows only RSA-PSS signatures can't be imported or signed with, and the
+  reason is given. LimarePDF signs RSA with PKCS#1 v1.5, which such an ID mustn't make. Certificate details show
+  such a key as "RSA-PSS" with its size.
+
+### Fixed
+
+- Flattening a form lost a filled field's value when the field had no drawing of its own and LimarePDF can't draw
+  its text (Japanese, for example, filled in by an app that leaves the drawing to the reader): the field went and
+  its value with it. Flattening now refuses, with nothing changed, and names the fields. Printing asks first
+  whether to print without them, as they would come out empty on paper, and the command line's `print` refuses
+  and names them.
+- On a page with more than 10,000 annotations, the ones past the 10,000 LimarePDF shows were left alone by
+  Remove comments, Remove attachments (the attached file stayed in the document) and redaction (comments
+  touching a marked area stayed, and a redaction mark among them was never applied, with nothing said). Removing a
+  comment also kept its replies there. These now deal with every annotation, as do annotations written into the
+  page in a way the PDF format doesn't allow. Such a page gets a notice, since what is past the limit can't be
+  seen in the app.
+- Printing from the command line with `--as-image`, and every command-line print on Windows, left a filled form
+  field blank when the field had no drawing of its own, even one LimarePDF can draw. Its value is now drawn in, as
+  the app and ordinary printing already did.
+- Deleting, extracting or splitting pages kept the alternative text (the descriptions accessibility tools read) of
+  content on the pages that went, when the document's tags pointed at that content in some of the ways the PDF
+  format allows, or gave its page only on a tag further up. All of it now goes, and so does the text of a tag with
+  content on both kept and removed pages, and of every tag above one.
+- Deleting, extracting or splitting pages kept a form field of the pages that went, with its value, when the form
+  was nested more than 32 deep; they now refuse such a form, with nothing changed. A link by name to a page that
+  went stayed when the list of named destinations was nested that deep; it is now found at any depth.
+- Removing form field values left a value behind when it was more than 32 fields above a form box that the form's
+  list of fields leaves out. Such a form is now refused with nothing changed, as other forms nested that deep
+  already were.
+- Redaction kept the alternative text of tags more than 64 levels above the marked content, and the value of a
+  form field touching a mark when its form was nested more than 32 deep. Tags at any depth now lose their text;
+  such a form, or tags whose index is nested more than 32 deep, make redaction refuse with nothing changed.
+- Redaction could make a picture disappear from another page, when that page drew it from inside drawings nested
+  more than 8 deep, or through a drawing it shares with other pages that uses each page's own names for pictures,
+  and the same picture was under a mark elsewhere.
+- Removing hidden layers could make a hidden layer's content show, when a drawing that has no resources of its
+  own was used on pages that give its layers different meanings: it was checked only as the first of them has it.
+  Such a drawing now makes the command stop, with nothing changed, as other drawings it can't check do.
+- Chinese, Japanese and Korean text in a font with its own character map put the characters after a code the map
+  leaves out in the wrong places, so a redaction area over a character where other readers show it could leave
+  that character in the file, with the check afterwards finding nothing. Such codes now take as many bytes as the
+  map's code ranges say, as other readers take them. LimarePDF draws such codes differently, so a piece of text
+  it draws elsewhere than it reads is removed whole when the area covers it in either place; so is text in a font
+  whose code ranges can't be read.
+- A small crafted file could keep the app busy for hours on opening or in the Bookmarks tab, with no way to stop it,
+  when its list of named destinations listed the same part many times over. Each part is now read once, and a
+  lookup gives up after 100,000 parts; a bookmark, link or opening page whose name it gave up on goes nowhere.
+  Redaction refuses, with nothing changed, when the index from a page to its tags is too large to search that way.
+- `limarepdf-cli verify --signed-version` wrote into the output file in place, so an output that was a hard link
+  to the input cut the input short. It now writes a new file and puts it in place, as every other command does,
+  and refuses an output that is the input itself or a link to it.
+- `limarepdf-cli` said nothing and exited with status 0 when it couldn't write what it prints, a full disk for
+  example. It now stops with a plain error and status 1, and says whether it had already saved its file. A reader
+  that stops early (`… | head`) still stops it quietly.
+- A signature by an RSA key whose certificate allows it only for RSA-PSS signatures was called valid (and could
+  be trusted) when it broke those limits: a PKCS#1 v1.5 signature, or an RSA-PSS one with another digest or mask
+  than the certificate names or a shorter salt. Such a signature is now broken, and limits that can't be read
+  give "can't check". The same goes for timestamps, and for the certificates of a chain to a trusted authority.
+- At the start, crash recovery followed a symbolic link in its folder, so a link there to another folder could get
+  that folder's PDF files deleted, or offered as recovery copies. It now looks only in real folders of yours, and
+  leaves anything else untouched.
+- Saving a signed document whose only change was to the file's trailer, such as its document information removed,
+  wrote nothing, so the change was lost on reopening. Such a change is now added as a revision of its own, and
+  checked when read back.
+- On Linux and macOS a save could be undone by a power cut just after it, as the folder holding the file wasn't
+  synced. It now is. When the system can't confirm it, the file is in place all the same: the app says so and
+  keeps the document marked unsaved, and `limarepdf-cli` says so and exits with status 1. Settings, the recent
+  files list and saved signatures, which were written into the old file in place (a crash part way lost them), are
+  now saved the same way.
+- Headers, footers, Bates numbers and the text layer OCR adds could change the font of text already on the page,
+  so its words came out wider or narrower, when the page's own font had the name LimarePDF gives its Helvetica.
+  They now take a name the page doesn't use.
+- Bates numbers that would go past 18446744073709551615 stopped part way, with the first pages stamped and the
+  command line reporting an internal error. They are now refused before any page changes, with a plain message.
+  A rotation by a number of degrees close to the largest LimarePDF can take did the same; it now turns the pages
+  by what is left after whole turns.
+- Straightening a dark scanned page took up to two and a half times the memory of optimising it without
+  straightening (211 MB against 86 MB on a black 4000 × 4000 page). It now takes about the same.
+
 ## [0.8.0] - 2026-10-20
 
 ### Added

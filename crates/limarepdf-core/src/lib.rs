@@ -57,13 +57,15 @@ mod stamps;
 mod std14;
 mod text;
 mod tounicode;
+mod trees;
 mod trust;
 mod viewprefs;
 
-pub use annots::{Annot, AnnotKind, ShapeLook, TextStyle};
+pub use annots::{Annot, AnnotKind, ShapeLook, TextStyle, MAX_ANNOTS};
+pub use atomic::NotConfirmed;
 pub use blank::BLANK_TOLERANCE;
 pub use cms_check::CertInfo;
-pub use display::{display_line, display_text, local_date, local_time};
+pub use display::{display_line, display_text, local_date, local_time, quoted_list};
 pub use doc::{part_file_name, write_file, Info, Pdf, SplitBy};
 pub use edit::{PathStyle, Shape, TextEdit};
 pub use fonts::{Family, FontChoice};
@@ -139,11 +141,12 @@ pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
         b.create(dir)
             .with_context(|| format!("making the folder {}", dir.display()))?;
     }
+    // A context, so that a `NotConfirmed` can still be told apart.
     atomic::replace(path, atomic::Access::Private, |w| {
         use std::io::Write;
         Ok(w.write_all(bytes)?)
     })
-    .map_err(|e| anyhow::anyhow!("saving {}: {e:#}", path.display()))
+    .with_context(|| format!("saving {}", path.display()))
 }
 
 /// The most a page's content, a drawing's content or a text stream may decompress to, so a

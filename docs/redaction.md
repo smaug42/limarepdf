@@ -27,11 +27,18 @@ For each area:
 - **Grouped content** that several pages share (a logo, a header) is redacted inside, on this page only; other pages
   keep it as it was.
 - **Comments, links and form fields** touching the area are removed, with the replies to them. A removed field loses
-  its value.
-- **Alternative text** that accessibility tools and copying use, on content that lost anything.
+  its value. All of a page's are checked, also on a page with more than the 10,000 the app shows, and so are all
+  of its redaction marks when they are applied.
+- **Alternative text** that accessibility tools and copying use, on content that lost anything, and on every tag
+  above it, however many there are.
 - The page's **thumbnail picture** and private application data.
 
 Pictures and drawings that no page uses any more are left out of the saved file.
+
+Redaction stops with a message, and changes nothing, when it can't follow everything it would have to remove: when
+a form field touching an area belongs to a form nested more than 32 deep (fields inside fields), or when the index
+that leads from a page to its tags is nested more than 32 deep or too large to search (more than 100,000 parts
+looked at).
 
 ## The check afterwards
 
@@ -61,7 +68,9 @@ removes it. The app lists what this document has of each kind; what is ticked is
   drawn: on the pages, in forms drawn inside forms (up to 32 deep), in comments' and fields' drawings, in patterns,
   soft masks and Type 3 fonts. Those layers leave the layer list; layers that are shown stay. If some drawing
   can't be read, or is nested deeper, LimarePDF can't tell whether it holds hidden content, so the command stops
-  with a message saying what, and changes nothing. Leave hidden layers out to remove the rest. Compressed data is
+  with a message saying what, and changes nothing. It stops in the same way for a drawing without resources of its
+  own that is used in places giving its layers different meanings (hidden in one, shown in another), as its hidden
+  content can't be taken out of one place only. Leave hidden layers out to remove the rest. Compressed data is
   checked to its end: if it is cut off or damaged part way, the command stops in the same way ("Part of this
   document is damaged..."). Data that is complete but whose checksum at the end is wrong is read in full, as other
   PDF readers read it, and the result says so.
@@ -70,11 +79,15 @@ removes it. The app lists what this document has of each kind; what is ticked is
 
 Not ticked at first, as they are often wanted:
 
-- **Comments and markup** (redaction marks stay).
+- **Comments and markup** (redaction marks stay), every one, also on a page with more than the 10,000 the app
+  shows. Attached files are removed in the same way.
 - **Form field values:** every field's value is cleared for good, read-only fields included, along with default
   values (so Reset form brings nothing back), values a field takes from a parent field, rich text and the drawings
   that showed them; checkboxes and radio buttons are switched off. Fields LimarePDF can't draw lose their drawing,
-  and readers draw them empty. Signature fields are left alone. The fields themselves, and their choices, stay.
+  and readers draw them empty. Signature fields are left alone. The fields themselves, and their choices, stay. A
+  form nested more than 32 deep (fields inside fields, form boxes included, also boxes the form's list of fields
+  leaves out) can't be followed to its end, so the command stops with a message and changes nothing; leave form
+  values out to remove the rest.
 - **Bookmarks.**
 - **Content outside the visible page area:** what lies outside each page's crop box is redacted and the page becomes
   the size it is shown at.
@@ -87,8 +100,11 @@ of the file aren't kept in it.
 - The width of the gap shows how long the removed text was.
 - Fonts embedded in the file keep the shapes of the letters they contain, including removed ones (not the text
   itself).
-- Text in fonts whose characters can't be told apart reliably (some Asian-language encodings) is removed a whole
-  piece at a time when any of it is under the area.
+- Text whose characters can't be placed for certain is removed a whole piece at a time when any of it is under the
+  area: text in fonts whose character map, or its code ranges, can't be read (some Asian-language encodings), and
+  text holding a code its font's character map leaves out. LimarePDF draws such a code as one byte, so the
+  characters after it can show elsewhere than other readers put them; the piece goes when the area covers it in
+  either place.
 - Text set in vertical writing, and text and pictures inside tiling patterns, aren't redacted.
 - A picture drawn at an angle (not a quarter turn) is blacked out over a rectangle in the picture that holds the
   whole area, so a little more than the area can go black.
@@ -114,7 +130,11 @@ of the file aren't kept in it.
   thumbnails, private data) is gone. Opt-in cross-checks read the output with poppler (`pdftotext`, and
   `pdfimages` for a blacked-out picture) and Ghostscript: `cargo test -p limarepdf-core --test redact -- --ignored
   cross_check`. One of them redacts the Magick++ tutorial from ImageMagick's documentation, a real file whose
-  fonts are subsets, so its text can't be found in the file's bytes and only a reader can show it's gone.
+  fonts are subsets, so its text can't be found in the file's bytes and only a reader can show it's gone. Another
+  places an area over a character of a font whose character map leaves codes out, where poppler shows it, and
+  checks with `pdftotext -bbox` that poppler then reads nothing there and the characters around it in their places.
+  Where those characters are was taken from poppler first (since the third outside audit, 2026-10-21), so the
+  tests don't only agree with LimarePDF's own reading.
 - The app's part (the Redact tool, marking selected text and search results, the notice, Apply and its report, the
   save warning) was used by hand on Linux.
 - Removing hidden information: `crates/limarepdf-core/tests/sanitise.rs` (made-up files for each kind) and `limarepdf-cli sanitise`

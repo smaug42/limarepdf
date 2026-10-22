@@ -1103,6 +1103,73 @@ fn leftover_files_at_start() {
     assert_eq!(m.names(&dir), ["lock", "t1-1-0.pdf", "t1.txt"]);
 }
 
+/// A session entry that isn't a real folder of this user's (a symbolic link, another user's)
+/// is left untouched at start, and nothing in it is offered (R01).
+#[test]
+fn only_real_session_folders_are_scanned() {
+    let (m, s) = model_store();
+    written(&s, T1, 1, &pdf(1));
+    let dir = s.dir().to_path_buf();
+    let other = m.write_temp(&dir.join("report.pdf"), b"someone's").unwrap();
+    m.rename(&other, &dir.join("report.pdf")).unwrap();
+    drop(s);
+    let before = m.names(&dir);
+    let f = Faulty::new(Arc::new(m.clone()));
+    f.fail(Kind::Check, dir.file_name().unwrap().to_str().unwrap());
+    let fs: Arc<dyn Fs> = f;
+    assert!(find_crashed(&fs, &root(), now()).is_empty());
+    assert_eq!(m.names(&dir), before);
+    // Control: as a real folder, the copy is offered and the stray file removed.
+    let fs: Arc<dyn Fs> = Arc::new(m.clone());
+    assert_eq!(find_crashed(&fs, &root(), now())[0].docs.len(), 1);
+    assert_eq!(m.names(&dir), ["lock", "t1-1-0.pdf", "t1.txt"]);
+}
+
+/// On the real disk (R01): a session entry that is a symbolic link, and a recovery folder
+/// that is one, are never followed. The folder they lead to keeps its files, and nothing in
+/// it is offered.
+#[cfg(unix)]
+#[test]
+fn symbolic_links_are_not_followed_at_start() {
+    let _disk = real_disk();
+    let base = folder("links");
+    let s = start(Arc::new(RealFs), &base.join("made"));
+    written(&s, T1, 1, &pdf(1));
+    let name = s.dir().file_name().unwrap().to_owned();
+    // A crashed session's files, with an unrelated PDF beside them, in a folder elsewhere.
+    let elsewhere = base.join("elsewhere");
+    copy_session(s.dir(), &elsewhere);
+    drop(s);
+    let outside = elsewhere.join(&name);
+    std::fs::write(outside.join("report.pdf"), b"someone's").unwrap();
+    let listing = |d: &Path| {
+        let mut v: Vec<_> = std::fs::read_dir(d)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        v.sort();
+        v
+    };
+    let before = listing(&outside);
+    let fs: Arc<dyn Fs> = Arc::new(RealFs);
+    let root = base.join("recovery");
+    std::fs::create_dir(&root).unwrap();
+    std::os::unix::fs::symlink(&outside, root.join(&name)).unwrap();
+    assert!(find_crashed(&fs, &root, now()).is_empty());
+    assert_eq!(listing(&outside), before);
+    assert!(std::fs::symlink_metadata(root.join(&name)).is_ok());
+    let linked = base.join("linked");
+    std::os::unix::fs::symlink(&elsewhere, &linked).unwrap();
+    assert!(find_crashed(&fs, &linked, now()).is_empty());
+    assert_eq!(listing(&outside), before);
+    // Control: the same folder as the recovery folder itself is scanned and tidied.
+    let found = find_crashed(&fs, &elsewhere, now());
+    assert_eq!(found[0].read(0).unwrap(), pdf(1));
+    assert!(!outside.join("report.pdf").exists());
+    drop(found);
+    std::fs::remove_dir_all(base).unwrap();
+}
+
 /// On the real disk: folders 0700, files 0600, a wider recovery folder tightened, and nothing
 /// left after a normal exit.
 #[cfg(unix)]

@@ -150,6 +150,186 @@ fn every_rsa_digest_and_padding() {
     }
 }
 
+/// A certificate from the test CA for `key`'s RSA key (an ID name), its algorithm
+/// identifier replaced by `key_alg` (RFC 4055 section 1.2); `None` keeps a plain RSA key.
+fn rsa_cert(key: &str, key_alg: Option<&[u8]>) -> Vec<u8> {
+    make_cert_with(
+        &id("ca"),
+        &CertSpec {
+            key_of: &cert_der(key),
+            cn: "Restricted Signer",
+            not_before: "260101000000Z",
+            not_after: "360101000000Z",
+            extensions: vec![ext_signing_key_usage()],
+            inner_alg: None,
+        },
+        key_alg,
+        false,
+    )
+}
+
+/// RSA-PSS-only keys (RFC 4055 sections 1.2 and 3.1) against the signatures made with
+/// them: (name, document, verdict). The first five are the third audit's.
+fn pss_cases() -> Vec<(&'static str, Vec<u8>, Want)> {
+    use Hash::*;
+    let restricted = |h: Hash, m: Hash, salt: u64| {
+        pss_alg(Some(&pss_params(Some(h), Some(m), Some(salt), None)))
+    };
+    let pss = |hash: Hash, salt: usize| Cms {
+        hash,
+        pss: true,
+        pss_salt: Some(salt),
+        ..Cms::default()
+    };
+    let case = |name: &'static str, key_alg: Option<Vec<u8>>, o: Cms, want: Want| {
+        let signer = Id {
+            key: id("rsa3072").key,
+            cert: rsa_cert("rsa3072", key_alg.as_deref()),
+        };
+        (
+            name,
+            sign(&base_pdf(), &signer, &Field::default(), &o),
+            want,
+        )
+    };
+    let defaults = pss_alg(Some(&seq(&[])));
+    vec![
+        case("rsa_pkcs_control", None, Cms::default(), Want::Valid),
+        case(
+            "pss_unrestricted_pkcs",
+            Some(pss_alg(None)),
+            Cms::default(),
+            Want::Broken("allows its key only for RSA-PSS signatures"),
+        ),
+        case(
+            "pss_match_control",
+            Some(restricted(Sha256, Sha256, 32)),
+            pss(Sha256, 32),
+            Want::Valid,
+        ),
+        case(
+            "pss_wrong_hash",
+            Some(restricted(Sha384, Sha384, 32)),
+            pss(Sha256, 32),
+            Want::Broken("only for RSA-PSS with SHA-384"),
+        ),
+        case(
+            "pss_short_salt",
+            Some(restricted(Sha256, Sha256, 64)),
+            pss(Sha256, 32),
+            Want::Broken("salt of at least 64 bytes"),
+        ),
+        // A salt longer than the key's minimum is allowed.
+        case(
+            "pss_longer_salt",
+            Some(restricted(Sha256, Sha256, 20)),
+            pss(Sha256, 32),
+            Want::Valid,
+        ),
+        // Absent parameters allow any RSA-PSS signature; present ones, even empty, mean
+        // their defaults (SHA-1, MGF1 with SHA-1, salt 20).
+        case(
+            "pss_unrestricted_pss",
+            Some(pss_alg(None)),
+            pss(Sha256, 32),
+            Want::Valid,
+        ),
+        case(
+            "pss_explicit_defaults",
+            Some(defaults.clone()),
+            pss(Sha256, 32),
+            Want::Broken("only for RSA-PSS with SHA-1"),
+        ),
+        case(
+            "pss_explicit_defaults_sha1",
+            Some(defaults),
+            pss(Sha1, 20),
+            Want::Valid,
+        ),
+        case(
+            "pss_wrong_mask",
+            Some(restricted(Sha256, Sha384, 32)),
+            pss(Sha256, 32),
+            Want::Broken("mask function uses SHA-384"),
+        ),
+        // Limits LimarePDF can't read are never dropped. Trailer field 1 is the only one
+        // RFC 4055 defines.
+        case(
+            "pss_unknown_trailer",
+            Some(pss_alg(Some(&pss_params(
+                Some(Sha256),
+                Some(Sha256),
+                Some(32),
+                Some(2),
+            )))),
+            pss(Sha256, 32),
+            Want::Cant("trailer field 2"),
+        ),
+        case(
+            "pss_null_params",
+            Some(pss_alg(Some(&null()))),
+            pss(Sha256, 32),
+            Want::Cant("RSA-PSS key limits can't be read"),
+        ),
+        case(
+            "pss_garbled_params",
+            Some(pss_alg(Some(&seq(&[&ctx(2, &octets(b"x"))])))),
+            pss(Sha256, 32),
+            Want::Cant("RSA-PSS key limits can't be read"),
+        ),
+    ]
+}
+
+#[test]
+fn rsa_pss_only_keys() {
+    for (name, pdf, want) in pss_cases() {
+        let s = only(&pdf);
+        match (&s.status, want) {
+            (SigStatus::Valid, Want::Valid) => {}
+            (SigStatus::Broken(w), Want::Broken(why))
+            | (SigStatus::CantCheck(w), Want::Cant(why))
+                if w.contains(why) => {}
+            (got, _) => panic!("{name}: got {got:?}"),
+        }
+    }
+    let (_, pdf, _) = pss_cases()
+        .into_iter()
+        .find(|c| c.0 == "pss_unrestricted_pss")
+        .unwrap();
+    let s = only(&pdf);
+    assert_eq!(s.algorithm, Some("RSA-PSS"));
+    assert_eq!(s.signer.unwrap().key, "RSA-PSS 3072-bit");
+
+    // The older signature kinds with an RSA-PSS-only key: a bare PKCS#1 v1.5 value...
+    let pss_only = rsa_cert("rsa2048", Some(&pss_alg(None)));
+    let f = Field {
+        sub_filter: "adbe.x509.rsa_sha1",
+        cert: Some(pss_only.clone()),
+        ..Field::default()
+    };
+    let b = sign_with(&base_pdf(), &f, |r| {
+        rsa_sha1_value(&id("rsa2048"), r, Hash::Sha256)
+    });
+    assert_broken(&only(&b), "allows its key only for RSA-PSS signatures");
+    // ...and a document timestamp whose authority signs with PKCS#1 v1.5.
+    let f = Field {
+        name: "Timestamp1",
+        sub_filter: "ETSI.RFC3161",
+        doc_timestamp: true,
+        m: None,
+        reason: None,
+        ..Field::default()
+    };
+    let authority = Id {
+        key: id("rsa2048").key,
+        cert: pss_only,
+    };
+    let b = sign_with(&base_pdf(), &f, |r| {
+        timestamp_token(&authority, r, "20260601130000Z", Hash::Sha256)
+    });
+    assert_broken(&only(&b), "allows its key only for RSA-PSS signatures");
+}
+
 #[test]
 fn cades_subfilter() {
     let f = Field {
@@ -1587,38 +1767,66 @@ fn cross_check_with_pdfsig_and_openssl() {
             *pdfsig_says == "Signature is Valid.",
             "{name}"
         );
-        // OpenSSL checks the CMS over the signed ranges.
-        let [_, b, c, d] = last_range(bytes);
-        let hex = &bytes[b + 1..c - 1];
-        let raw: Vec<u8> = hex
-            .chunks(2)
-            .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
-            .collect();
-        std::fs::write(dir.join("sig.der"), &raw[..der_len(&raw)]).unwrap();
-        std::fs::write(
-            dir.join("data.bin"),
-            [&bytes[..b], &bytes[c..c + d]].concat(),
-        )
-        .unwrap();
-        let ok = std::process::Command::new("openssl")
-            .args([
-                "cms",
-                "-verify",
-                "-binary",
-                "-noverify",
-                "-inform",
-                "DER",
-                "-in",
-            ])
-            .arg(dir.join("sig.der"))
-            .arg("-content")
-            .arg(dir.join("data.bin"))
-            .args(["-out", "/dev/null"])
-            .status()
-            .expect("openssl installed")
-            .success();
         assert_eq!(
-            ok, limarepdf_valid,
+            openssl_accepts(&dir, bytes),
+            limarepdf_valid,
+            "{name}: openssl and LimarePDF disagree"
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Whether OpenSSL accepts the CMS of the last signature in `bytes` over its signed
+/// ranges, without judging trust (`-noverify`). Works in `dir`.
+fn openssl_accepts(dir: &std::path::Path, bytes: &[u8]) -> bool {
+    let [_, b, c, d] = last_range(bytes);
+    let hex = &bytes[b + 1..c - 1];
+    let raw: Vec<u8> = hex
+        .chunks(2)
+        .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
+        .collect();
+    std::fs::write(dir.join("sig.der"), &raw[..der_len(&raw)]).unwrap();
+    std::fs::write(
+        dir.join("data.bin"),
+        [&bytes[..b], &bytes[c..c + d]].concat(),
+    )
+    .unwrap();
+    std::process::Command::new("openssl")
+        .args([
+            "cms",
+            "-verify",
+            "-binary",
+            "-noverify",
+            "-inform",
+            "DER",
+            "-in",
+        ])
+        .arg(dir.join("sig.der"))
+        .arg("-content")
+        .arg(dir.join("data.bin"))
+        .args(["-out", "/dev/null"])
+        .status()
+        .expect("openssl installed")
+        .success()
+}
+
+/// The RSA-PSS-only key cases against OpenSSL's check of the same CMS, which applies the
+/// key's limits: `cargo test -p limarepdf-core --test signatures -- --ignored cross_check`.
+#[test]
+#[ignore]
+fn cross_check_rsa_pss_keys_with_openssl() {
+    let dir = std::env::temp_dir().join(format!("limarepdf-pss-cross-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // Left out because LimarePDF is stricter by design: OpenSSL 3.6 ignores the key's
+    // trailer field, which RFC 4055 allows only to be 1.
+    let stricter = ["pss_unknown_trailer"];
+    for (name, pdf, _) in pss_cases() {
+        if stricter.contains(&name) {
+            continue;
+        }
+        assert_eq!(
+            openssl_accepts(&dir, &pdf),
+            report(&pdf).all_valid(),
             "{name}: openssl and LimarePDF disagree"
         );
     }

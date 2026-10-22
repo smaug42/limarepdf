@@ -20,7 +20,8 @@ pub struct AppendedEdits {
     /// The file to write: the opened bytes, then the new revision. Just the opened bytes
     /// when nothing changed.
     pub bytes: Vec<u8>,
-    /// How many objects the new revision holds; 0 when nothing changed.
+    /// How many objects the new revision holds; 0 when nothing changed, or only the
+    /// trailer did (say, the document information was removed).
     pub objects: usize,
     /// The earlier signers whose signatures will report changes they don't allow, which
     /// they didn't report before. The file can still be saved (each signature stays valid
@@ -53,7 +54,7 @@ pub fn append_edits(original: &[u8], edited: &Pdf) -> Result<AppendedEdits> {
     }
     // Also refuses a damaged file, unless nothing changed.
     let appended = incremental::append_revision(original, &edited.doc)?;
-    if appended.offsets.is_empty() {
+    if appended.bytes.len() == original.len() {
         return Ok(AppendedEdits {
             bytes: appended.bytes,
             objects: 0,

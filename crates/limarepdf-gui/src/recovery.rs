@@ -908,14 +908,22 @@ fn description_tab(name: &str) -> Option<TabId> {
 
 /// Finds sessions under `root` that ended without cleaning up (their lock can be taken), at
 /// start (sections 5 and 7). Removes expired ones, leftover temporary files and copies no
-/// description names, and sessions with nothing left to offer.
+/// description names, and sessions with nothing left to offer. Only real folders of this
+/// user's are looked in, `root` included: a symbolic link is never followed.
 pub fn find_crashed(fs: &Arc<dyn Fs>, root: &Path, now: SystemTime) -> Vec<Crashed> {
     let mut found = Vec::new();
+    if fs.check_folder(root).is_err() {
+        return found;
+    }
     let Ok(names) = fs.list(root) else {
         return found;
     };
     for name in names.iter().filter(|n| n.starts_with("session-")) {
         let dir = root.join(name);
+        // A symbolic link, or another user's, is left untouched: nothing in it is ours.
+        if fs.check_folder(&dir).is_err() {
+            continue;
+        }
         let started = session_start(name).unwrap_or(UNIX_EPOCH);
         let held = match fs.lock(&dir.join("lock"), false) {
             Ok(Some(h)) => Some(h),

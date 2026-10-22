@@ -649,18 +649,18 @@ fn estimate_skew(img: &Img) -> Option<f32> {
         }
     };
     let (w, h) = b.dimensions();
-    let mut dark: Vec<(f32, f32)> = Vec::new();
-    for (x, y, p) in b.enumerate_pixels() {
-        if p.0[0] == 0 {
-            dark.push((x as f32, y as f32));
-        }
-    }
-    let n = dark.len();
+    // Counted first, so that only the sample is ever kept: a dark page has millions.
+    let n = b.pixels().filter(|p| p.0[0] == 0).count();
     if n < 500 || n * 2 > (w * h) as usize {
         return None;
     }
     let stride = (n / 200_000).max(1);
-    let sample: Vec<(f32, f32)> = dark.into_iter().step_by(stride).collect();
+    let sample: Vec<(f32, f32)> = b
+        .enumerate_pixels()
+        .filter(|(_, _, p)| p.0[0] == 0)
+        .step_by(stride)
+        .map(|(x, y, _)| (x as f32, y as f32))
+        .collect();
     let span = (w as f32 * 5f32.to_radians().tan()).ceil() as i64;
     let score = |a: f32| -> f64 {
         let t = a.tan();

@@ -148,6 +148,101 @@ fn form_values_are_sent_drawn_in() {
 }
 
 #[test]
+fn fields_that_would_print_empty_are_named_before_printing() {
+    // Three filled fields with no drawing: two printed (flag 4), one only shown on screen.
+    // LimarePDF can't draw the Japanese values; it can draw the Latin one.
+    let mut p = Pdf::new();
+    p.insert_blank(0, 300.0, 200.0).unwrap();
+    p.insert_blank(1, 300.0, 200.0).unwrap();
+    let japanese = || {
+        let mut b = vec![0xFE, 0xFF];
+        b.extend("日本語".encode_utf16().flat_map(u16::to_be_bytes));
+        Object::String(b, lopdf::StringFormat::Hexadecimal)
+    };
+    let field = |name: &str, y: i64, flags: i64, value: Object| {
+        let rect: Vec<Object> = [20, y, 280, y + 30].map(Object::from).to_vec();
+        dictionary! {
+            "Type" => "Annot", "Subtype" => "Widget", "FT" => "Tx", "F" => flags,
+            "T" => Object::string_literal(name), "Rect" => rect, "V" => value,
+        }
+    };
+    let ids = [
+        p.doc.add_object(field("Name", 140, 4, japanese())),
+        p.doc.add_object(field("Note", 90, 0, japanese())),
+        p.doc
+            .add_object(field("City", 40, 4, Object::string_literal("Oslo"))),
+    ];
+    let refs: Vec<Object> = ids.iter().map(|&i| i.into()).collect();
+    let page = p.page_ids()[0];
+    p.doc
+        .get_dictionary_mut(page)
+        .unwrap()
+        .set("Annots", refs.clone());
+    let form = p.doc.add_object(dictionary! {
+        "Fields" => refs, "DA" => Object::string_literal("/Helv 12 Tf 0 g"),
+    });
+    p.doc.catalog_mut().unwrap().set("AcroForm", form);
+    // Saving numbers an object of its own, so each save is of a copy.
+    let before = p.clone().to_bytes().unwrap();
+
+    assert_eq!(p.unprintable_fields(&[0, 1]), ["Name"]);
+    assert!(p.unprintable_fields(&[1]).is_empty());
+    assert!(
+        p.clone().to_bytes().unwrap() == before,
+        "asking changed the document"
+    );
+
+    // Printing anyway sends the page without that value, and with the others drawn in.
+    let sent = Pdf::from_bytes(&p.print_data(&[0], false).unwrap(), None).unwrap();
+    assert!(sent.form_fields().is_empty());
+    let text = sent.page_text(0);
+    assert!(text.contains("Oslo"), "{text:?}");
+}
+
+#[test]
+fn as_image_draws_filled_fields_that_have_no_drawing() {
+    // A printed field with a value and no drawing, in a file just opened, as the command
+    // line prints it (the app draws such fields when it opens a file; the command line
+    // doesn't).
+    let mut p = Pdf::new();
+    p.insert_blank(0, 300.0, 200.0).unwrap();
+    let rect: Vec<Object> = [20, 80, 280, 120].map(Object::from).to_vec();
+    let w = p.doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Widget", "FT" => "Tx", "F" => 4,
+        "T" => Object::string_literal("City"), "V" => Object::string_literal("MMMMMMMM"),
+        "Rect" => rect,
+    });
+    let page = p.page_ids()[0];
+    p.doc
+        .get_dictionary_mut(page)
+        .unwrap()
+        .set("Annots", vec![w.into()]);
+    let form = p.doc.add_object(dictionary! {
+        "Fields" => vec![w.into()], "DA" => Object::string_literal("/Helv 20 Tf 0 g"),
+    });
+    p.doc.catalog_mut().unwrap().set("AcroForm", form);
+    let mut p = Pdf::from_bytes(&p.to_bytes().unwrap(), None).unwrap();
+    assert!(p.unprintable_fields(&[0]).is_empty());
+
+    // Dark pixels in the field's box (y 80-120 from the top), as sent both ways.
+    let dark = |pdf: Vec<u8>| {
+        let hp = render::load(pdf, None).unwrap();
+        let b = render::Renderer::new(&hp).render(0, 1.0).unwrap();
+        (80..120)
+            .flat_map(|y| (20..280).map(move |x| (y * b.width + x) * 4))
+            .filter(|&i| b.rgba[i] < 128 && b.rgba[i + 1] < 128 && b.rgba[i + 2] < 128)
+            .count()
+    };
+    assert!(dark(p.print_data(&[0], false).unwrap()) > 0, "not drawn");
+    assert!(
+        dark(p.print_data(&[0], true).unwrap()) > 0,
+        "blank as images"
+    );
+    // The document being printed keeps no drawing of LimarePDF's.
+    assert!(p.doc.get_dictionary(w).unwrap().get(b"AP").is_err());
+}
+
+#[test]
 fn as_image_sends_one_picture_per_page() {
     let mut p = three_pages();
     let data = p.print_data(&[0, 1], true).unwrap();

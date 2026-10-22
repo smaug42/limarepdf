@@ -21,6 +21,7 @@ use crate::fonts::FontCtx;
 use crate::matrix::{self as mx, apply, mul, M};
 use crate::objects::span_boxes;
 use crate::redact_img::{black_out, inline_stream, is_clear};
+use crate::trees::{self, Lookup};
 use crate::{Pdf, Result};
 use anyhow::{anyhow, bail};
 use lopdf::content::{Content, Operation};
@@ -77,6 +78,10 @@ const MAX_PLACES: usize = 10;
 
 /// The unit square pictures are drawn in.
 const UNIT: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
+
+/// Forms read for the pictures and forms they draw, each with the names (`/XObject`
+/// entries) it was read with when it has no resources of its own, else with none.
+type FormsRead = HashSet<(ObjectId, Vec<(Vec<u8>, ObjectId)>)>;
 
 /// A name for a new entry in a resource dictionary.
 fn fresh_name(d: &Dictionary) -> Vec<u8> {
@@ -787,7 +792,14 @@ impl<'a> Redactor<'a> {
         let (tfs, th) = (g.size, g.th);
         let scale = tfs * th;
         let (d0, a0) = (-0.21 * tfs + g.rise, 0.79 * tfs + g.rise);
-        let known = font.is_some_and(|f| f.codes_known);
+        // A font whose strings LimarePDF draws elsewhere than it reads them (and other
+        // readers put them): which characters are where isn't certain.
+        let drawn = font.filter(|f| {
+            items
+                .iter()
+                .any(|it| matches!(it, Object::String(s, _) if !f.drawn_alike(s)))
+        });
+        let known = font.is_some_and(|f| f.codes_known) && drawn.is_none();
 
         // Each character code: its bytes, its text, where it starts and how far it moves.
         struct Code {
@@ -807,7 +819,7 @@ impl<'a> Redactor<'a> {
                     match font {
                         Some(f) => {
                             for (code, space, raw) in f.codes(s) {
-                                let glyph = f.width(code) / 1000.0 * scale;
+                                let glyph = f.width(code, raw.len()) / 1000.0 * scale;
                                 let a = glyph + (g.tc + if space { g.tw } else { 0.0 }) * th;
                                 codes.push(Code {
                                     bytes: raw.to_vec(),
@@ -848,10 +860,26 @@ impl<'a> Redactor<'a> {
 
         if !known {
             // The string can't be split into characters reliably: if any of it is under
-            // a mark, all of it goes, keeping its advance. The box is widened, as the
-            // widths may be wrong.
-            let w = adv.abs().max(0.5 * scale.abs());
-            let b = norm([-w * 0.5, d0, adv + w * 0.5, a0]);
+            // a mark, all of it goes, keeping its advance. The box reaches as far as
+            // LimarePDF draws the string too, and is widened, as the widths may be wrong.
+            let far = drawn.map_or(adv, |f| {
+                let mut far = 0.0f32;
+                for it in &items {
+                    match it {
+                        Object::String(s, _) => {
+                            for (code, space, raw) in f.drawn_codes(s) {
+                                far += f.width(code, raw.len()) / 1000.0 * scale
+                                    + (g.tc + if space { g.tw } else { 0.0 }) * th;
+                            }
+                        }
+                        x => far -= x.as_float().unwrap_or(0.0) / 1000.0 * scale,
+                    }
+                }
+                far
+            });
+            let (lo, hi) = (adv.min(far).min(0.0), adv.max(far).max(0.0));
+            let w = (hi - lo).max(0.5 * scale.abs());
+            let b = norm([lo - w * 0.5, d0, hi + w * 0.5, a0]);
             if !self.hit(mx::transform_rect(m, b)) {
                 return None;
             }
@@ -970,9 +998,9 @@ impl Pdf {
     }
 
     /// The areas the document's redaction marks cover: (page, box in displayed-page
-    /// points, y down), one per marked area.
+    /// points, y down), one per marked area. Every mark counts, not only those shown.
     pub fn redaction_marks(&self) -> Vec<(usize, [f32; 4])> {
-        self.annotations()
+        self.every_annotation()
             .into_iter()
             .filter(|a| a.kind == crate::AnnotKind::Redact)
             .flat_map(|a| {
@@ -989,13 +1017,14 @@ impl Pdf {
     /// Apply the document's redaction marks: remove everything under them as
     /// [`Pdf::redact`] does, then remove the marks.
     pub fn apply_redactions(&mut self) -> Result<RedactReport> {
+        self.own_direct_annots()?;
         let marks = self.redaction_marks();
         if marks.is_empty() {
             bail!("the document has no redaction marks");
         }
         let report = self.redact(&marks)?;
         let ids = self
-            .annotations()
+            .every_annotation()
             .into_iter()
             .filter(|a| a.kind == crate::AnnotKind::Redact)
             .map(|a| a.id)
@@ -1035,12 +1064,28 @@ impl Pdf {
             }
             by_page.entry(p).or_default().push(b);
         }
-        let mut report = RedactReport::default();
-        let mut dropped = HashSet::new();
+        // Looked up before anything changes, as a structure tree or a form that can't be
+        // followed is refused.
+        let mut struct_parents = HashMap::new();
+        let mut page_areas = HashMap::new();
+        let mut widgets = false;
         for (&p, rects) in &by_page {
             let page = self.page_id_at(p)?;
             let (vd, _, _) = self.vis_down(page);
             let areas: Vec<[f32; 4]> = rects.iter().map(|&b| mx::transform_rect(vd, b)).collect();
+            widgets |= self.widget_touched(page, &areas);
+            struct_parents.insert(p, self.struct_parents(page)?);
+            page_areas.insert(p, areas);
+        }
+        if widgets {
+            self.value_nodes()?;
+        }
+        self.own_direct_annots()?;
+        let mut report = RedactReport::default();
+        let mut dropped = HashSet::new();
+        for &p in by_page.keys() {
+            let page = self.page_id_at(p)?;
+            let areas = page_areas.remove(&p).unwrap_or_default();
             let data = self
                 .doc
                 .get_page_content_with_limit(page, crate::MAX_CONTENT)?;
@@ -1079,7 +1124,7 @@ impl Pdf {
             pd.set("Resources", done.res);
             pd.remove(b"Thumb");
             pd.remove(b"PieceInfo");
-            self.strip_struct_alt(page, &mcids);
+            self.strip_struct_alt(&struct_parents[&p], &mcids);
             out.annots = self.redact_annots(page, &areas)?;
             out.page = p;
             out.text = text;
@@ -1130,7 +1175,7 @@ impl Pdf {
     fn redact_annots(&mut self, page: ObjectId, areas: &[[f32; 4]]) -> Result<usize> {
         let mut gone = HashSet::new();
         let mut widgets = HashSet::new();
-        for id in self.annot_refs(page) {
+        for id in self.all_annot_refs(page) {
             let Ok(d) = self.doc.get_dictionary(id) else {
                 continue;
             };
@@ -1153,17 +1198,35 @@ impl Pdf {
         }
         let n = self.drop_annotations(gone)?;
         if !widgets.is_empty() {
-            self.prune_fields(&widgets)?;
+            self.prune_fields(&widgets, true)?;
         }
         Ok(n)
     }
 
-    /// Take the alternative text off the structure elements (and their parents) of the
-    /// page's marked content `mcids`.
-    fn strip_struct_alt(&mut self, page: ObjectId, mcids: &HashSet<i64>) {
-        if mcids.is_empty() {
-            return;
-        }
+    /// Whether [`Pdf::redact_annots`] would remove a form widget of `page`: one touching
+    /// `areas`, direct dictionaries included, as they are given objects before it runs.
+    fn widget_touched(&self, page: ObjectId, areas: &[[f32; 4]]) -> bool {
+        self.annots_array(page).unwrap_or_default().iter().any(|o| {
+            let Some(d) = self
+                .doc
+                .dereference(o)
+                .ok()
+                .and_then(|(_, o)| o.as_dict().ok())
+            else {
+                return false;
+            };
+            d.get(b"Subtype").and_then(|o| o.as_name()).ok() == Some(b"Widget")
+                && d.get(b"Rect")
+                    .ok()
+                    .and_then(|o| self.rect(o))
+                    .is_some_and(|b| areas.iter().any(|&a| touches(norm(b), a)))
+        })
+    }
+
+    /// The structure elements of `page`'s marked content, by MCID: its entry in the structure
+    /// tree's parent tree, or nothing. Fails when the parent tree is nested too deep to look
+    /// the page up, as alternative text could then be left behind.
+    fn struct_parents(&self, page: ObjectId) -> Result<Vec<Object>> {
         let key = self
             .doc
             .get_dictionary(page)
@@ -1177,32 +1240,44 @@ impl Pdf {
             .and_then(|c| c.get(b"StructTreeRoot").ok())
             .and_then(|o| self.doc.dereference(o).ok())
             .and_then(|(_, o)| o.as_dict().ok())
-            .and_then(|d| d.get(b"ParentTree").ok())
-            .cloned();
+            .and_then(|d| d.get(b"ParentTree").ok());
         let (Some(key), Some(tree)) = (key, tree) else {
-            return;
+            return Ok(Vec::new());
         };
-        let Some(list) = self.number_tree_get(&tree, key, 0) else {
-            return;
+        let list = match trees::number(&self.doc, tree, key) {
+            Lookup::Found(list) => list,
+            Lookup::Missing => return Ok(Vec::new()),
+            Lookup::TooDeep => bail!(
+                "the document's accessibility tags are nested more than {} deep, so LimarePDF \
+                 can't find all the descriptions of what is under the marks. Nothing was changed",
+                trees::MAX_DEPTH
+            ),
+            Lookup::TooLarge => bail!(
+                "the index of the document's accessibility tags is too large to search, so \
+                 LimarePDF can't find all the descriptions of what is under the marks. Nothing \
+                 was changed"
+            ),
         };
-        let list = self
+        Ok(self
             .doc
             .dereference(&list)
             .ok()
             .and_then(|(_, o)| o.as_array().ok())
             .cloned()
-            .unwrap_or_default();
+            .unwrap_or_default())
+    }
+
+    /// Take the alternative text off the structure elements of the page's marked content
+    /// `mcids`, and off every element above them. `list` is the page's [`Pdf::struct_parents`].
+    fn strip_struct_alt(&mut self, list: &[Object], mcids: &HashSet<i64>) {
+        // Each element is visited once, so the walk up ends without a limit on its length.
         let mut elems = HashSet::new();
         for &mcid in mcids {
             let mut cur = usize::try_from(mcid)
                 .ok()
                 .and_then(|i| list.get(i))
                 .and_then(|o| o.as_reference().ok());
-            for _ in 0..64 {
-                let Some(id) = cur else { break };
-                if !elems.insert(id) {
-                    break;
-                }
+            while let Some(id) = cur.filter(|&id| elems.insert(id)) {
                 let Ok(d) = self.doc.get_dictionary_mut(id) else {
                     break;
                 };
@@ -1217,36 +1292,6 @@ impl Pdf {
         }
     }
 
-    fn number_tree_get(&self, node: &Object, key: i64, depth: usize) -> Option<Object> {
-        if depth > 32 {
-            return None;
-        }
-        let d = self.doc.dereference(node).ok()?.1.as_dict().ok()?;
-        if let Ok(nums) = d.get(b"Nums").and_then(|o| o.as_array()) {
-            for [k, v] in nums.as_chunks::<2>().0 {
-                if k.as_i64().ok() == Some(key) {
-                    return Some(v.clone());
-                }
-            }
-        }
-        let kids = d.get(b"Kids").ok()?;
-        for kid in self.doc.dereference(kids).ok()?.1.as_array().ok()? {
-            let kd = self.doc.dereference(kid).ok()?.1.as_dict().ok()?;
-            let inside = kd
-                .get(b"Limits")
-                .and_then(|o| o.as_array())
-                .ok()
-                .and_then(|l| Some((l.first()?.as_i64().ok()?, l.get(1)?.as_i64().ok()?)))
-                .is_none_or(|(lo, hi)| lo <= key && key <= hi);
-            if inside {
-                if let Some(v) = self.number_tree_get(kid, key, depth + 1) {
-                    return Some(v);
-                }
-            }
-        }
-        None
-    }
-
     /// Of the pictures and forms `dropped`, take those no page draws any more out of the
     /// resources of pages and page-tree nodes, so they aren't kept in the file.
     pub(crate) fn drop_unused_xobjects(&mut self, dropped: &HashSet<ObjectId>) -> Result<()> {
@@ -1254,20 +1299,18 @@ impl Pdf {
             return Ok(());
         }
         let mut used = HashSet::new();
+        let mut read = HashSet::new();
         let mut holders = Vec::new();
+        let mut held = HashSet::new();
         for page in self.page_ids() {
             let res = self.resolved_dict(self.inherited(page, b"Resources").as_ref());
-            if let Ok(data) = self
+            let data = self
                 .doc
                 .get_page_content_with_limit(page, crate::MAX_CONTENT)
-            {
-                self.xobjects_drawn(&data, &res, 0, &mut used);
-            }
+                .ok();
+            self.xobjects_drawn(data, res, &mut used, &mut read);
             let mut cur = Some(page);
-            while let Some(id) = cur {
-                if holders.contains(&id) || holders.len() > 100_000 {
-                    break;
-                }
+            while let Some(id) = cur.filter(|&id| held.insert(id)) {
                 holders.push(id);
                 cur = self
                     .doc
@@ -1287,43 +1330,59 @@ impl Pdf {
         Ok(())
     }
 
-    /// Collect the pictures and forms a content stream draws, forms' insides included.
+    /// Collect the pictures and forms content `data` (drawn with resources `res`) draws, forms'
+    /// insides included, each form read once however deeply it is nested: one left out would
+    /// count as unused and be taken out of resources it is still drawn from. A form without
+    /// resources of its own draws with the names of where it is drawn, so it is read again
+    /// for other names; `read` holds the forms read, with those names. Content that can't be
+    /// read (`None`) may draw anything its resources list, so all of that counts.
     fn xobjects_drawn(
         &self,
-        data: &[u8],
-        res: &Dictionary,
-        depth: usize,
+        data: Option<Vec<u8>>,
+        res: Dictionary,
         used: &mut HashSet<ObjectId>,
+        read: &mut FormsRead,
     ) {
-        let Ok((data, _)) = crate::inline::extract(data) else {
-            return;
-        };
-        let Ok(content) = Content::decode(&data) else {
-            return;
-        };
-        let xobjs = self.resolved_dict(res.get(b"XObject").ok());
-        for o in content.operations.iter().filter(|o| o.operator == "Do") {
-            let Some(id) = o
-                .operands
-                .first()
-                .and_then(|n| n.as_name().ok())
-                .and_then(|n| xobjs.get(n).ok())
-                .and_then(|e| e.as_reference().ok())
-            else {
+        let mut todo = vec![(data, res)];
+        while let Some((data, res)) = todo.pop() {
+            let xobjs = self.resolved_dict(res.get(b"XObject").ok());
+            let names = || -> Vec<(Vec<u8>, ObjectId)> {
+                xobjs
+                    .iter()
+                    .filter_map(|(n, o)| Some((n.clone(), o.as_reference().ok()?)))
+                    .collect()
+            };
+            let content = data
+                .and_then(|d| crate::inline::extract(&d).ok())
+                .and_then(|(d, _)| Content::decode(&d).ok());
+            let Some(content) = content else {
+                used.extend(xobjs.iter().filter_map(|(_, o)| o.as_reference().ok()));
                 continue;
             };
-            if !used.insert(id) || depth >= MAX_NESTING {
-                continue;
-            }
-            if let Ok(s) = self.doc.get_object(id).and_then(|o| o.as_stream()) {
-                if s.dict.get(b"Subtype").and_then(|o| o.as_name()).ok() == Some(b"Form") {
-                    let own = s
-                        .dict
-                        .get(b"Resources")
-                        .ok()
-                        .map(|o| self.resolved_dict(Some(o)));
-                    if let Ok(c) = s.get_plain_content_with_limit(crate::MAX_CONTENT) {
-                        self.xobjects_drawn(&c, own.as_ref().unwrap_or(res), depth + 1, used);
+            for o in content.operations.iter().filter(|o| o.operator == "Do") {
+                let Some(id) = o
+                    .operands
+                    .first()
+                    .and_then(|n| n.as_name().ok())
+                    .and_then(|n| xobjs.get(n).ok())
+                    .and_then(|e| e.as_reference().ok())
+                else {
+                    continue;
+                };
+                used.insert(id);
+                if let Ok(s) = self.doc.get_object(id).and_then(|o| o.as_stream()) {
+                    if s.dict.get(b"Subtype").and_then(|o| o.as_name()).ok() == Some(b"Form") {
+                        let own = s
+                            .dict
+                            .get(b"Resources")
+                            .ok()
+                            .map(|o| self.resolved_dict(Some(o)));
+                        let with = if own.is_some() { Vec::new() } else { names() };
+                        if !read.insert((id, with)) {
+                            continue;
+                        }
+                        let c = s.get_plain_content_with_limit(crate::MAX_CONTENT).ok();
+                        todo.push((c, own.unwrap_or_else(|| res.clone())));
                     }
                 }
             }
@@ -1488,7 +1547,7 @@ impl Pdf {
                 fold(&b.title),
             ));
         }
-        for a in self.annotations() {
+        for a in self.every_annotation() {
             let all = format!("{} {} {}", a.contents, a.author, a.subject);
             other.push((format!("a comment on page {}", a.page + 1), fold(&all)));
         }

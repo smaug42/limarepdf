@@ -8,7 +8,7 @@ use crate::{Pdf, Result};
 use anyhow::anyhow;
 use lopdf::content::{Content, Operation};
 use lopdf::{Dictionary, Object, ObjectId};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// A kind of hidden information.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -154,6 +154,21 @@ struct LayerScan {
     faults: bool,
 }
 
+/// A drawing the layer scan has looked into. One without resources of its own draws with
+/// those of where it is used, so its layer names can mean other layers there: for such a
+/// drawing, the resources it was first looked into with, and the names each set of resources
+/// it has been checked against gives hidden layers.
+#[derive(Default)]
+struct Seen {
+    first: Option<Dictionary>,
+    checked: Vec<HiddenNames>,
+}
+
+/// The names resources give content in hidden layers: in `/Properties`, and in `/XObject`
+/// (pictures and forms in a hidden layer), each sorted. A drawing loses the same content
+/// with any resources that give the same names.
+type HiddenNames = (Vec<Vec<u8>>, Vec<Vec<u8>>);
+
 /// Why a stream's content couldn't be read.
 enum Unread {
     /// Its compressed data is cut off or damaged part way.
@@ -189,7 +204,7 @@ impl Pdf {
             }
         }
         if what.contains(&Hidden::FormValues) {
-            self.value_nodes()?;
+            self.orphan_widgets(&self.value_nodes()?)?;
         }
         Ok(())
     }
@@ -198,6 +213,7 @@ impl Pdf {
         if strict {
             self.check_remove_hidden(what)?;
         }
+        self.own_direct_annots()?;
         let mut report = HiddenReport::default();
         for h in Hidden::ALL {
             if !what.contains(&h) {
@@ -293,7 +309,7 @@ impl Pdf {
         }
         n += self.drop_keys_everywhere(&[b"AF"]);
         let files: HashSet<ObjectId> = self
-            .annotations()
+            .every_annotation()
             .into_iter()
             .filter(|a| matches!(&a.kind, crate::AnnotKind::Other(s) if s == "FileAttachment"))
             .map(|a| a.id)
@@ -493,11 +509,13 @@ impl Pdf {
     /// Every drawing that can hold content of the `hidden` layers, without it: the pages'
     /// content, then what their resources and their annotations' appearances draw (forms,
     /// tiling patterns, Type 3 glyphs, soft masks), nested up to [`MAX_NESTING`], each once
-    /// (layer states are the document's, so a drawing looks the same wherever it is used).
-    /// What couldn't be read, or is nested deeper, goes in `blocked`.
+    /// (layer states are the document's, so a drawing with its own resources looks the same
+    /// wherever it is used). One without resources of its own is checked against every
+    /// place it is used from. What couldn't be read, is nested deeper, or would lose
+    /// different content in different places, goes in `blocked`.
     fn scan_layers(&self, hidden: &HashSet<ObjectId>) -> LayerScan {
         let mut scan = LayerScan::default();
-        let mut seen = HashSet::new();
+        let mut seen = HashMap::new();
         for (i, page) in self.page_ids().into_iter().enumerate() {
             let res = self.resolved_dict(self.inherited(page, b"Resources").as_ref());
             let content = self.page_content(page);
@@ -526,7 +544,8 @@ impl Pdf {
                 }
             }
         }
-        scan.blocked.dedup();
+        let mut once = HashSet::new();
+        scan.blocked.retain(|b| once.insert(b.clone()));
         scan
     }
 
@@ -535,7 +554,7 @@ impl Pdf {
         &self,
         res: &Dictionary,
         hidden: &HashSet<ObjectId>,
-        seen: &mut HashSet<ObjectId>,
+        seen: &mut HashMap<ObjectId, Seen>,
         depth: usize,
         scan: &mut LayerScan,
     ) {
@@ -589,10 +608,7 @@ impl Pdf {
             .map(|id| (id, res.clone()))
             .chain(glyphs);
         for (id, outer) in todo {
-            if seen.contains(&id) {
-                continue;
-            }
-            if depth >= MAX_NESTING {
+            if !seen.contains_key(&id) && depth >= MAX_NESTING {
                 scan.blocked
                     .push(format!("drawings are nested more than {MAX_NESTING} deep"));
                 return;
@@ -602,30 +618,112 @@ impl Pdf {
     }
 
     /// [`Pdf::scan_layers`] for drawing `id`, which draws with its own resources, else with
-    /// `outer`.
+    /// `outer`. One looked into already is only checked against `outer`, when it draws with
+    /// it.
     fn scan_drawing(
         &self,
         id: ObjectId,
         outer: &Dictionary,
         hidden: &HashSet<ObjectId>,
-        seen: &mut HashSet<ObjectId>,
+        seen: &mut HashMap<ObjectId, Seen>,
         depth: usize,
         scan: &mut LayerScan,
     ) {
-        if !seen.insert(id) {
-            return;
-        }
         let Ok(s) = self.doc.get_object(id).and_then(|o| o.as_stream()) else {
+            seen.entry(id).or_default();
             return;
         };
-        let res = s
-            .dict
-            .get(b"Resources")
-            .ok()
-            .map_or_else(|| outer.clone(), |o| self.resolved_dict(Some(o)));
+        let own = s.dict.get(b"Resources").ok();
+        if let Some(was) = seen.get_mut(&id) {
+            if own.is_none() {
+                self.check_shared(id, s, outer, hidden, was, scan);
+            }
+            return;
+        }
+        let res = own.map_or_else(|| outer.clone(), |o| self.resolved_dict(Some(o)));
+        let mut was = Seen::default();
+        if own.is_none() {
+            was.first = Some(res.clone());
+            was.checked.push(self.hidden_names(&res, hidden));
+        }
+        seen.insert(id, was);
         let name = format!("a drawing in the file (object {})", id.0);
         self.scan_read(Drawn::Stream(id), readable(s), &res, hidden, &name, scan);
         self.scan_resources(&res, hidden, seen, depth, scan);
+    }
+
+    /// Check drawing `id` (stream `s`), which has no resources of its own and was looked
+    /// into with `was.first`, against resources `res` of another place it is used from.
+    /// Where it would lose other content, the removal can't be done on the one drawing:
+    /// that goes in `blocked`.
+    fn check_shared(
+        &self,
+        id: ObjectId,
+        s: &lopdf::Stream,
+        res: &Dictionary,
+        hidden: &HashSet<ObjectId>,
+        was: &mut Seen,
+        scan: &mut LayerScan,
+    ) {
+        let names = self.hidden_names(res, hidden);
+        if was.checked.contains(&names) {
+            return;
+        }
+        was.checked.push(names);
+        let (Some(first), Ok((data, _))) = (&was.first, readable(s)) else {
+            return;
+        };
+        // What can't be read is in `blocked` already, from the first look.
+        let (Ok(a), Ok(b)) = (
+            self.without_hidden(&data, first, hidden),
+            self.without_hidden(&data, res, hidden),
+        ) else {
+            return;
+        };
+        let same = match (a, b) {
+            (None, None) => true,
+            (Some((a, _)), Some((b, _))) => {
+                a.len() == b.len()
+                    && a.iter()
+                        .zip(&b)
+                        .all(|(x, y)| x.operator == y.operator && x.operands == y.operands)
+            }
+            _ => false,
+        };
+        if !same {
+            scan.blocked.push(format!(
+                "a drawing in the file (object {}) is shared between places that set its \
+                 layers differently",
+                id.0
+            ));
+        }
+    }
+
+    /// The names resources `res` give content in the `hidden` layers, as
+    /// [`Pdf::without_hidden`] looks them up.
+    fn hidden_names(&self, res: &Dictionary, hidden: &HashSet<ObjectId>) -> HiddenNames {
+        let props = self.resolved_dict(res.get(b"Properties").ok());
+        let mut layers: Vec<Vec<u8>> = props
+            .iter()
+            .filter(|(_, o)| self.oc_hidden(o, hidden))
+            .map(|(n, _)| n.clone())
+            .collect();
+        let xobjs = self.resolved_dict(res.get(b"XObject").ok());
+        let mut drawings: Vec<Vec<u8>> = xobjs
+            .iter()
+            .filter(|(_, e)| {
+                self.doc
+                    .dereference(e)
+                    .ok()
+                    .and_then(|(_, s)| s.as_stream().ok())
+                    .and_then(|s| s.dict.get(b"OC").ok())
+                    .is_some_and(|oc| self.oc_hidden(oc, hidden))
+            })
+            .map(|(n, _)| n.clone())
+            .collect();
+        layers.sort();
+        drawings.sort();
+        (layers, drawings)
     }
 
     /// Page `page`'s content streams, read with [`readable`] and joined as lopdf joins them,

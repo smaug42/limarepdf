@@ -35,7 +35,11 @@ changed or was closed while the question was open, nothing is done, and a messag
 
 Saving writes a temporary file beside the document and then replaces the document with it, so a save that fails
 part way leaves the original as it was. On Linux and macOS, the temporary file is readable only by you while it is
-written, and the saved document keeps the original's permissions. LimarePDF saves by rewriting the whole file, except for a digitally signed
+written, and the saved document keeps the original's permissions; afterwards LimarePDF asks the system to confirm the
+change is on disk, so a power cut can't undo it. If the system can't confirm it, a message says "The file was saved,
+but your system couldn't confirm it is safely on disk. If the computer lost power just now, save it again.", and the
+document stays marked unsaved so saving again is one click. (Windows has no way to confirm this: there a power cut
+in the moment after a save can still lose it.) LimarePDF saves by rewriting the whole file, except for a digitally signed
 document: its changes are added after what was signed, so the signatures stay valid. LimarePDF asks first when the
 signatures don't allow the changes, and before writing a signed document in full when it must (after redacting, for
 example), which breaks the signatures; see [Saving a signed document](signatures.md#saving-a-signed-document).
@@ -264,8 +268,10 @@ shows its signature's details (see [Digital signatures](#digital-signatures)).
 
 LimarePDF draws the filled fields itself, so the values show the same in other readers. Text must be Latin-1 (Western
 European) for now; anything else is refused with a message rather than saved wrongly. Fields that have a value but
-no drawing of their own are drawn when the file opens. See [Command line](cli.md#forms) for filling forms in
-scripts.
+no drawing of their own are drawn when the file opens. A value filled in by another app in other characters (Japanese,
+for example) shows only if that app drew it: if it didn't, LimarePDF can't either, so Flatten form… stops and names
+the fields rather than lose their values, and Print asks whether to print without them, since they would come out
+empty on paper. See [Command line](cli.md#forms) for filling forms in scripts.
 
 ## Filling and signing
 
@@ -367,6 +373,7 @@ something to do and × to dismiss it. At most two show at a time.
 | Areas are marked for redaction but the marks haven't been applied (kept up to date while you work) | Apply redactions… |
 | Signatures and other items put down with the Sign tool can still be moved (kept up to date while you work) | Finish signing… |
 | Its pages are scans without text, so they cannot be searched or copied (checked on the first 20 pages) | Recognise text |
+| A page has more annotations than LimarePDF shows (10,000), so some can't be seen or chosen; Remove comments, removing attachments and redaction still deal with all of them, and redaction marks among them are applied | |
 | It is a form made for Adobe Reader (an XFA form), which only Adobe software can show or fill in; LimarePDF shows the placeholder page the file contains, often "Please wait..." | |
 | Parts of it couldn't be drawn: a picture that can't be decoded. Found as pages are drawn, so it can appear later; it comes back if something new turns up after you dismiss it | |
 | Fonts it names aren't in the file or installed: which ones are shown with a similar font, or which language's text can't be shown at all, and what to install to see it as it was made (such as Noto Sans CJK JP for Japanese). Found as pages are drawn, like the one above ([details](rendering.md#fonts-that-arent-embedded)) | |
@@ -392,7 +399,8 @@ copies are not autosave: **your own files are never written by them.**
   with Append PDFs (its copy is deleted first too; this includes protected files that open without a password).
 - The copies are kept in a folder only you can read: `~/.local/state/limarepdf/recovery` on Linux (or
   `$XDG_STATE_HOME/limarepdf/recovery`), `~/Library/Application Support/limarepdf/recovery` on macOS, and
-  `%LOCALAPPDATA%\limarepdf\recovery` on Windows.
+  `%LOCALAPPDATA%\limarepdf\recovery` on Windows. At the start, LimarePDF looks only in real folders of yours there:
+  a recovery folder, or a folder inside it, that is a symbolic link or belongs to another user is left untouched.
 - To stop them, turn off ☰ > File > **Keep recovery copies of unsaved changes** (also in the command palette).
   Copies already made are deleted at once, and the choice is remembered.
 - If a copy can't be written, for example when the disk would be left with less than 1 GB free, a notice on the
@@ -471,7 +479,10 @@ document split into many files needs little more memory than the document itself
 
 Pages that are deleted, or left out when extracting or splitting, leave nothing in the saved file: bookmarks,
 named destinations, links, the opening view, form fields and tags stop referring to them, so their content isn't
-kept. A link to such a page goes nowhere, and a form field whose boxes were all on those pages leaves the form. An
+kept. A link to such a page goes nowhere, and a form field whose boxes were all on those pages leaves the form.
+Tags with content on those pages lose their alternative text (also when they have content on kept pages too), and
+so do the tags above them. A form nested more than 32 deep can't be followed to its end, so deleting, extracting
+or splitting stops with a message saying why. An
 extracted file or a split part keeps the bookmarks to its own pages; a bookmark to another page stays, without a
 destination, only when bookmarks below it stay. Deleting pages keeps every bookmark, without a destination when its
 page went.

@@ -763,18 +763,27 @@ fn nested_state_and_ctm_are_respected() {
         (b[0] - 30.0).abs() < 0.5 && (b[2] - 70.0).abs() < 0.5 && (b[1] - 150.0).abs() < 0.5,
         "{b:?}"
     );
+    let second = o[1].bbox; // user (200..240, 150..170) -> vis y 30..50
+    let near = |a: [f32; 4], b: [f32; 4]| (0..4).all(|k| (a[k] - b[k]).abs() < 0.5);
+    assert!(near(second, [200.0, 30.0, 240.0, 50.0]), "{second:?}");
+    // the moved rectangle overlaps the second one's left edge, which is drawn over it
     p.set_object_bbox(0, 0, [130.0, 10.0, 210.0, 50.0]).unwrap();
     let s = shot(&mut p);
     assert!(s.is(170, 30, RED));
     assert!(s.is(50, 160, WHITE));
-    // untouched second rectangle is still blue and not red
-    assert!(s.is(220, 40, WHITE) || true);
+    // the untouched second rectangle is still blue, where it was, and still on top
+    let blue = [0, 0, 255];
+    assert!(s.is(220, 40, blue));
+    assert!(s.is(205, 40, blue));
+    assert!(s.is(245, 40, WHITE) && s.is(220, 55, WHITE));
     let o2 = p.page_objects(0).unwrap();
+    assert_eq!(o2.len(), 2);
     let b0 = o2[0].bbox;
     assert!(
         (b0[0] - 130.0).abs() < 0.5 && (b0[3] - 50.0).abs() < 0.5,
         "{b0:?}"
     );
+    assert!(near(o2[1].bbox, second), "{:?}", o2[1].bbox);
 }
 
 #[test]
@@ -1078,4 +1087,68 @@ fn watermarks_keep_their_own_opacity_and_inherited_resources() {
     let res = p.doc.get_dictionary(page).unwrap().get(b"Resources");
     let gs = res.unwrap().as_dict().unwrap().get(b"ExtGState").unwrap();
     assert_eq!(gs.as_dict().unwrap().len(), 2);
+}
+
+#[test]
+fn headers_and_footers_leave_a_page_font_of_the_same_name_alone() {
+    // The page's own font is Courier, named as LimarePDF names its Helvetica: "iiii" at
+    // 20 pt is 4 * 12 = 48 wide in Courier, 17.76 in Helvetica.
+    let width = |p: &Pdf, text: &str| -> Vec<f32> {
+        let w = p.page_words(0).unwrap();
+        w.iter()
+            .filter(|w| w.text == text)
+            .map(|w| w.bbox[2] - w.bbox[0])
+            .collect()
+    };
+    for place in ["direct", "indirect", "inherited"] {
+        let mut p = Pdf::new();
+        p.insert_blank(0, W as f32, H as f32).unwrap();
+        let page = p.page_ids()[0];
+        let content = "BT /LimareF1 20 Tf 10 150 Td (iiii) Tj ET";
+        let font = p.doc.add_object(dictionary! { "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Courier", "Encoding" => "WinAnsiEncoding" });
+        let s = p
+            .doc
+            .add_object(Stream::new(Dictionary::new(), content.as_bytes().to_vec()));
+        let fonts = dictionary! { "LimareF1" => font };
+        let res = match place {
+            "direct" => Object::Dictionary(dictionary! { "Font" => fonts }),
+            _ => {
+                let f = p.doc.add_object(fonts);
+                p.doc.add_object(dictionary! { "Font" => f }).into()
+            }
+        };
+        let d = p.doc.get_dictionary_mut(page).unwrap();
+        d.set("Contents", Object::Reference(s));
+        if place == "inherited" {
+            d.remove(b"Resources");
+            let parent = d.get(b"Parent").unwrap().as_reference().unwrap();
+            p.doc
+                .get_dictionary_mut(parent)
+                .unwrap()
+                .set("Resources", res);
+        } else {
+            d.set("Resources", res);
+        }
+        let w = width(&p, "iiii");
+        assert!(w.len() == 1 && (w[0] - 48.0).abs() < 0.5, "{place}: {w:?}");
+        for n in 1..=2 {
+            p.add_header_footer(&[0], &Default::default()).unwrap();
+            if n == 1 {
+                // (After two, the footers lie on top of each other.)
+                assert!(p.page_text(0).contains("Page 1 of 1"), "{place}");
+            }
+            let w = width(&p, "iiii");
+            assert!(
+                w.len() == 1 && (w[0] - 48.0).abs() < 0.5,
+                "{place} {n}: {w:?}"
+            );
+            // The footer itself is still Helvetica: "Page" at 10 pt is 23.35 wide.
+            let w = width(&p, "Page");
+            assert_eq!(w.len(), n, "{place} {n}");
+            assert!(
+                w.iter().all(|w| (w - 23.35).abs() < 0.5),
+                "{place} {n}: {w:?}"
+            );
+        }
+    }
 }

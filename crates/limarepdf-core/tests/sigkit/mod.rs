@@ -204,42 +204,76 @@ impl Hash {
     }
 }
 
+pub const RSA_PSS: &str = "1.2.840.113549.1.1.10";
+pub const MGF1: &str = "1.2.840.113549.1.1.8";
+
+/// RSASSA-PSS parameters (RFC 4055): the digest, MGF1 with `mgf`, the salt length and the
+/// trailer field, each left out when `None` (the defaults are SHA-1, MGF1 with SHA-1, 20
+/// and 1).
+pub fn pss_params(
+    hash: Option<Hash>,
+    mgf: Option<Hash>,
+    salt: Option<u64>,
+    trailer: Option<u64>,
+) -> Vec<u8> {
+    let mut parts = Vec::new();
+    if let Some(h) = hash {
+        parts.push(ctx(0, &h.alg()));
+    }
+    if let Some(m) = mgf {
+        parts.push(ctx(1, &seq(&[&oid(MGF1), &m.alg()])));
+    }
+    if let Some(s) = salt {
+        parts.push(ctx(2, &int(s)));
+    }
+    if let Some(t) = trailer {
+        parts.push(ctx(3, &int(t)));
+    }
+    seq(&parts.iter().map(Vec::as_slice).collect::<Vec<_>>())
+}
+
+/// The RSA-PSS algorithm identifier with `params`; `None` leaves them out, as an
+/// RSA-PSS-only key may.
+pub fn pss_alg(params: Option<&[u8]>) -> Vec<u8> {
+    match params {
+        Some(p) => seq(&[&oid(RSA_PSS), p]),
+        None => seq(&[&oid(RSA_PSS)]),
+    }
+}
+
+/// Signs the digest `hash` (made with `h`) with RSA-PSS, MGF1 with the same digest, and a
+/// salt of `salt` bytes. Returns the value and the signature algorithm identifier.
+pub fn sign_pss(k: &rsa::RsaPrivateKey, h: Hash, hash: &[u8], salt: usize) -> (Vec<u8>, Vec<u8>) {
+    let mut rng = rsa::rand_core::UnwrapErr(getrandom::SysRng);
+    let sig = match h {
+        Hash::Sha1 => k.sign_with_rng(&mut rng, rsa::Pss::<sha1::Sha1>::new_with_salt(salt), hash),
+        Hash::Sha256 => k.sign_with_rng(
+            &mut rng,
+            rsa::Pss::<sha2::Sha256>::new_with_salt(salt),
+            hash,
+        ),
+        Hash::Sha384 => k.sign_with_rng(
+            &mut rng,
+            rsa::Pss::<sha2::Sha384>::new_with_salt(salt),
+            hash,
+        ),
+        Hash::Sha512 => k.sign_with_rng(
+            &mut rng,
+            rsa::Pss::<sha2::Sha512>::new_with_salt(salt),
+            hash,
+        ),
+    }
+    .unwrap();
+    let params = pss_params(Some(h), Some(h), Some(salt as u64), None);
+    (sig, pss_alg(Some(&params)))
+}
+
 /// Signs the digest `hash` (made with `h`) with `key`: PKCS#1 v1.5 or, with `pss`, PSS
 /// with a salt as long as the digest; ECDSA for EC keys. Returns the value and the
 /// signature algorithm identifier.
 pub fn sign_hash(key: &Key, h: Hash, hash: &[u8], pss: bool) -> (Vec<u8>, Vec<u8>) {
     match key {
-        Key::Rsa(k) if pss => {
-            let mut rng = rsa::rand_core::UnwrapErr(getrandom::SysRng);
-            let salt = hash.len();
-            let sig = match h {
-                Hash::Sha1 => {
-                    k.sign_with_rng(&mut rng, rsa::Pss::<sha1::Sha1>::new_with_salt(salt), hash)
-                }
-                Hash::Sha256 => k.sign_with_rng(
-                    &mut rng,
-                    rsa::Pss::<sha2::Sha256>::new_with_salt(salt),
-                    hash,
-                ),
-                Hash::Sha384 => k.sign_with_rng(
-                    &mut rng,
-                    rsa::Pss::<sha2::Sha384>::new_with_salt(salt),
-                    hash,
-                ),
-                Hash::Sha512 => k.sign_with_rng(
-                    &mut rng,
-                    rsa::Pss::<sha2::Sha512>::new_with_salt(salt),
-                    hash,
-                ),
-            }
-            .unwrap();
-            let params = seq(&[
-                &ctx(0, &h.alg()),
-                &ctx(1, &seq(&[&oid("1.2.840.113549.1.1.8"), &h.alg()])),
-                &ctx(2, &int(salt as u64)),
-            ]);
-            (sig, seq(&[&oid("1.2.840.113549.1.1.10"), &params]))
-        }
+        Key::Rsa(k) if pss => sign_pss(k, h, hash, hash.len()),
         Key::Rsa(k) => {
             let scheme = match h {
                 Hash::Sha1 => rsa::Pkcs1v15Sign::new::<sha1::Sha1>(),
@@ -297,6 +331,8 @@ pub enum Ess {
 pub struct Cms {
     pub hash: Hash,
     pub pss: bool,
+    /// With `pss`, the salt length; by default as long as the digest.
+    pub pss_salt: Option<usize>,
     pub signed_attrs: bool,
     /// The content-type attribute's value; `None` leaves the attribute out.
     pub content_type: Option<&'static str>,
@@ -332,6 +368,7 @@ impl Default for Cms {
         Self {
             hash: Hash::Sha256,
             pss: false,
+            pss_salt: None,
             signed_attrs: true,
             content_type: Some(DATA),
             message_digest: Md::Right,
@@ -421,7 +458,11 @@ fn signer_info(signer: &Id, message: &[&[u8]], o: &Cms) -> Vec<u8> {
         (message.iter().map(|p| p.to_vec()).collect(), None)
     };
     let parts: Vec<&[u8]> = to_sign.iter().map(Vec::as_slice).collect();
-    let (mut value, sig_alg) = sign_hash(&signer.key, o.hash, &o.hash.of(&parts), o.pss);
+    let hash = o.hash.of(&parts);
+    let (mut value, sig_alg) = match (&signer.key, o.pss, o.pss_salt) {
+        (Key::Rsa(k), true, Some(salt)) => sign_pss(k, o.hash, &hash, salt),
+        _ => sign_hash(&signer.key, o.hash, &hash, o.pss),
+    };
     if o.corrupt {
         let n = value.len() / 2;
         value[n] ^= 1;
@@ -516,6 +557,12 @@ pub struct CertSpec<'a> {
 /// A certificate issued by `issuer` (an RSA key and its certificate), signed with
 /// SHA-256, built by hand so tests can make shapes OpenSSL won't.
 pub fn make_cert(issuer: &Id, s: &CertSpec) -> Vec<u8> {
+    make_cert_with(issuer, s, None, false)
+}
+
+/// [`make_cert`] with the key's algorithm identifier replaced by `key_alg` (such as an
+/// RSA-PSS-only key's, RFC 4055) and, with `pss`, signed with RSA-PSS (SHA-256, salt 32).
+pub fn make_cert_with(issuer: &Id, s: &CertSpec, key_alg: Option<&[u8]>, pss: bool) -> Vec<u8> {
     use der::{Decode, Encode};
     let parse = |d: &[u8]| x509_cert::Certificate::from_der(d).unwrap();
     let issuer_name = parse(&issuer.cert)
@@ -523,12 +570,24 @@ pub fn make_cert(issuer: &Id, s: &CertSpec) -> Vec<u8> {
         .subject()
         .to_der()
         .unwrap();
-    let spki = parse(s.key_of)
+    let key = parse(s.key_of)
         .tbs_certificate()
         .subject_public_key_info()
-        .to_der()
-        .unwrap();
-    let alg = seq(&[&oid(SHA256_RSA), &null()]);
+        .clone();
+    let spki = match key_alg {
+        Some(a) => seq(&[a, &key.subject_public_key.to_der().unwrap()]),
+        None => key.to_der().unwrap(),
+    };
+    let alg = if pss {
+        pss_alg(Some(&pss_params(
+            Some(Hash::Sha256),
+            Some(Hash::Sha256),
+            Some(32),
+            None,
+        )))
+    } else {
+        seq(&[&oid(SHA256_RSA), &null()])
+    };
     let subject = seq(&[&set(&[&seq(&[
         &oid("2.5.4.3"),
         &tlv(0x0c, s.cn.as_bytes()),
@@ -549,12 +608,13 @@ pub fn make_cert(issuer: &Id, s: &CertSpec) -> Vec<u8> {
     let Key::Rsa(k) = &issuer.key else {
         panic!("make_cert signs with RSA keys");
     };
-    let value = k
-        .sign(
-            rsa::Pkcs1v15Sign::new::<sha2::Sha256>(),
-            &Hash::Sha256.of(&[&tbs]),
-        )
-        .unwrap();
+    let hash = Hash::Sha256.of(&[&tbs]);
+    let value = if pss {
+        sign_pss(k, Hash::Sha256, &hash, 32).0
+    } else {
+        k.sign(rsa::Pkcs1v15Sign::new::<sha2::Sha256>(), &hash)
+            .unwrap()
+    };
     seq(&[&tbs, &alg, &tlv(0x03, &[&[0u8][..], &value].concat())])
 }
 

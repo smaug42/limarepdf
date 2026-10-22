@@ -245,6 +245,8 @@ enum Dialog {
     /// Save (`true`: as a new file) with this many marked areas not yet applied?
     ConfirmSaveMarks(Asked, bool, usize),
     Print(Asked, dlg::Print),
+    /// Print with fields whose values won't show on paper?
+    ConfirmPrintFields(Box<PrintFields>),
     SaveSelection(Asked, dlg::Layout),
     /// Open this web or email address from a link?
     OpenLink(String),
@@ -273,6 +275,17 @@ const REPAIRED: &str = "the file is damaged, and LimarePDF repaired it to open i
 const RECOVERED: &str = "this is a recovered copy, and LimarePDF doesn't have the file as it \
                          was signed";
 
+/// What a save that replaced the file but couldn't confirm it on disk says (decision D7).
+pub const NOT_CONFIRMED: &str = "The file was saved, but your system couldn't confirm it is \
+                                 safely on disk. If the computer lost power just now, save it \
+                                 again.";
+
+/// Whether `e` is a save that replaced the file but couldn't confirm it on disk: the file
+/// is the new one, never the old one kept.
+pub fn not_confirmed(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<limarepdf_core::NotConfirmed>().is_some()
+}
+
 /// Why a document set to be saved with a password isn't signed: the signed file would be
 /// written without it.
 const PASSWORD_NOT_SIGNED: &str = "You set a password that applies when you save, and \
@@ -288,6 +301,15 @@ struct SaveDisallowed {
     asked: Asked,
     bytes: Vec<u8>,
     disallowed: limarepdf_core::DisallowedChanges,
+}
+
+/// A print job waiting for the user to agree that these fields won't show on paper:
+/// LimarePDF can't draw their values, and they have no drawing of their own.
+struct PrintFields {
+    asked: Asked,
+    fields: Vec<String>,
+    pages: Vec<usize>,
+    opts: print::PrintOptions,
 }
 
 /// What selected text is printed or saved from, taken from the tab so a background job
@@ -986,6 +1008,9 @@ impl App {
                 )
             ));
         }
+        if !s.confirmed {
+            text.push_str(&format!("\n\n{NOT_CONFIRMED}"));
+        }
         if s.self_issued {
             text.push_str(
                 "\n\nOthers see you as an unknown signer until they trust your certificate: \
@@ -1008,6 +1033,8 @@ impl App {
                     if let Some(p) = page {
                         self.tabs[self.active].go_to(p);
                     }
+                    // Saving again is one click (decision D7).
+                    self.tabs[self.active].dirty = !s.confirmed;
                     self.check_signatures(ctx, self.active, bytes, None);
                 }
                 if replace.is_none() {
@@ -1156,6 +1183,16 @@ impl App {
         self.status = format!("{title}…");
     }
 
+    /// Send `pages` (zero-based) of the active tab to the printer on a background thread.
+    fn start_print(&mut self, ctx: &egui::Context, pages: Vec<usize>, opts: print::PrintOptions) {
+        let printer = opts.printer.clone().unwrap_or_default();
+        self.spawn_job(ctx, "Print", move |p| {
+            let reply = p.print(&pages, &opts)?;
+            let n = pages.len();
+            Ok((false, format!("Sent {n} page(s) to {printer}.\n{reply}")))
+        });
+    }
+
     /// Write page images on a background thread; the document is not changed.
     fn start_export(&mut self, ctx: &egui::Context, e: ImageExport) {
         self.spawn_job(ctx, "Export pages as images", move |p| {
@@ -1228,6 +1265,9 @@ impl App {
         };
         match result {
             Ok(()) => self.status = format!("Saved the selected text to {}", path.display()),
+            Err(e) if not_confirmed(&e) => {
+                self.dialog = Dialog::Message("Saved, not confirmed".into(), NOT_CONFIRMED.into())
+            }
             Err(e) => {
                 self.dialog = Dialog::Message("Save failed".into(), format!("{e:#}"));
             }
@@ -1355,21 +1395,26 @@ impl App {
         let Some(path) = Self::save_path(tab, as_new) else {
             return;
         };
-        match limarepdf_core::write_file(&path, &bytes) {
-            Ok(()) => {
-                self.status = format!(
-                    "Saved {}; the changes were added after what was signed, so the signatures \
-                     stay",
-                    path.display()
-                );
-                self.recent.add(&path);
-                tab.dirty = false;
-                tab.scrubbed = false;
-                tab.path = Some(path);
-                self.check_signatures(ctx, self.active, Arc::from(bytes), None);
-                self.saved_copy(self.active);
+        let confirmed = match limarepdf_core::write_file(&path, &bytes) {
+            Ok(()) => true,
+            Err(e) if not_confirmed(&e) => false,
+            Err(e) => {
+                self.dialog = Dialog::Message("Save failed".into(), format!("{e:#}"));
+                return;
             }
-            Err(e) => self.dialog = Dialog::Message("Save failed".into(), format!("{e:#}")),
+        };
+        self.status = format!(
+            "Saved {}; the changes were added after what was signed, so the signatures stay",
+            path.display()
+        );
+        self.recent.add(&path);
+        tab.dirty = !confirmed;
+        tab.scrubbed = false;
+        tab.path = Some(path);
+        self.check_signatures(ctx, self.active, Arc::from(bytes), None);
+        self.saved_copy(self.active, confirmed);
+        if !confirmed {
+            self.dialog = Dialog::Message("Saved, not confirmed".into(), NOT_CONFIRMED.into());
         }
     }
 
@@ -1381,44 +1426,47 @@ impl App {
             return;
         };
         tab.pdf.set_encryption(tab.encryption.clone());
-        match crate::guard(|| tab.pdf.save(&path)) {
-            Ok(()) => {
-                self.status = format!("Saved {}", path.display());
-                self.recent.add(&path);
-                tab.dirty = false;
-                tab.scrubbed = false;
-                // The saved file is the repaired copy, with nothing left to repair, and it
-                // reads the same in every app.
-                tab.repaired = false;
-                tab.banners
-                    .retain(|b| !matches!(b.kind, BannerKind::Repaired | BannerKind::OtherApps));
-                // The saved copy's signatures are already broken: no need to ask again.
-                tab.signed = false;
-                // The Signatures tab describes the file, so check the saved one (a saved
-                // recovered copy's too, which was never checked).
-                let password = tab.encryption.as_ref().map(|e| e.user_password.clone());
-                let recheck = tab.sigs.is_some()
-                    || (tab.recovered.is_some() && tab.pdf.signature_count() > 0);
-                let saved = recheck.then(|| std::fs::read(&path));
-                tab.path = Some(path);
-                match saved {
-                    Some(Ok(bytes)) => {
-                        self.check_signatures(ctx, self.active, Arc::from(bytes), password)
-                    }
-                    Some(Err(e)) => {
-                        let t = &mut self.tabs[self.active];
-                        if let Some(s) = t.sigs.as_mut() {
-                            s.check = Check::Failed(format!(
-                                "LimarePDF can't read the saved file again: {e}"
-                            ));
-                            t.sig_banner();
-                        }
-                    }
-                    None => {}
-                }
-                self.saved_copy(self.active);
+        let confirmed = match crate::guard(|| tab.pdf.save(&path)) {
+            Ok(()) => true,
+            Err(e) if not_confirmed(&e) => false,
+            Err(e) => {
+                self.dialog = Dialog::Message("Save failed".into(), format!("{e:#}"));
+                return;
             }
-            Err(e) => self.dialog = Dialog::Message("Save failed".into(), format!("{e:#}")),
+        };
+        self.status = format!("Saved {}", path.display());
+        self.recent.add(&path);
+        tab.dirty = !confirmed;
+        tab.scrubbed = false;
+        // The saved file is the repaired copy, with nothing left to repair, and it reads the
+        // same in every app.
+        tab.repaired = false;
+        tab.banners
+            .retain(|b| !matches!(b.kind, BannerKind::Repaired | BannerKind::OtherApps));
+        // The saved copy's signatures are already broken: no need to ask again.
+        tab.signed = false;
+        // The Signatures tab describes the file, so check the saved one (a saved recovered
+        // copy's too, which was never checked).
+        let password = tab.encryption.as_ref().map(|e| e.user_password.clone());
+        let recheck =
+            tab.sigs.is_some() || (tab.recovered.is_some() && tab.pdf.signature_count() > 0);
+        let saved = recheck.then(|| std::fs::read(&path));
+        tab.path = Some(path);
+        match saved {
+            Some(Ok(bytes)) => self.check_signatures(ctx, self.active, Arc::from(bytes), password),
+            Some(Err(e)) => {
+                let t = &mut self.tabs[self.active];
+                if let Some(s) = t.sigs.as_mut() {
+                    s.check =
+                        Check::Failed(format!("LimarePDF can't read the saved file again: {e}"));
+                    t.sig_banner();
+                }
+            }
+            None => {}
+        }
+        self.saved_copy(self.active, confirmed);
+        if !confirmed {
+            self.dialog = Dialog::Message("Saved, not confirmed".into(), NOT_CONFIRMED.into());
         }
     }
 
@@ -2263,8 +2311,19 @@ impl App {
                         Some(level) => SplitBy::Bookmarks(level),
                         None => SplitBy::Every(every),
                     };
-                    let n = p.split(by, |n, title| dir.join(part_file_name(&stem, n, title)))?;
-                    Ok((false, format!("Wrote {n} files to {}.", dir.display())))
+                    match p.split(by, |n, title| dir.join(part_file_name(&stem, n, title))) {
+                        Ok(n) => Ok((false, format!("Wrote {n} files to {}.", dir.display()))),
+                        Err(e) if not_confirmed(&e) => Ok((
+                            false,
+                            format!(
+                                "Wrote the files to {}, but your system couldn't confirm they \
+                                 are safely on disk. If the computer lost power just now, \
+                                 split the document again.",
+                                dir.display()
+                            ),
+                        )),
+                        Err(e) => Err(e),
+                    }
                 });
             }
         }
@@ -2651,11 +2710,17 @@ impl App {
                     } else {
                         match parse_page_range(&s.pages, t.page_count()) {
                             Ok(pages) => {
-                                self.spawn_job(ctx, "Print", move |p| {
-                                    let reply = p.print(&pages, &opts)?;
-                                    let n = pages.len();
-                                    Ok((false, format!("Sent {n} page(s) to {printer}.\n{reply}")))
-                                });
+                                let fields = t.pdf.unprintable_fields(&pages);
+                                if fields.is_empty() {
+                                    self.start_print(ctx, pages, opts);
+                                } else {
+                                    self.dialog = Dialog::ConfirmPrintFields(Box::new(PrintFields {
+                                        asked: Asked::of(t),
+                                        fields,
+                                        pages,
+                                        opts,
+                                    }));
+                                }
                                 done = true;
                             }
                             Err(e) => t.error = Some(e.to_string()),
@@ -2665,6 +2730,32 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
+            Dialog::ConfirmPrintFields(q) => {
+                let (these, values) = match q.fields.len() {
+                    1 => ("This field", "its value"),
+                    _ => ("These fields", "their values"),
+                };
+                match dlg::confirm(
+                    ctx,
+                    "Print without these fields?",
+                    &format!(
+                        "{these} won't show on paper, because LimarePDF can't draw {values}: \
+                         {}.\n\nPrint anyway?",
+                        limarepdf_core::quoted_list(&q.fields)
+                    ),
+                    "Print anyway",
+                ) {
+                    Outcome::Apply => {
+                        if self.still(&q.asked) {
+                            let pages = std::mem::take(&mut q.pages);
+                            self.start_print(ctx, pages, q.opts.clone());
+                        }
+                        done = true;
+                    }
+                    Outcome::Cancel => done = true,
+                    Outcome::Open => {}
+                }
+            }
             Dialog::SaveSelection(asked, layout) => match dlg::save_selection(ctx, layout) {
                 Outcome::Apply => {
                     let layout = *layout;
@@ -3904,6 +3995,52 @@ mod tests {
     }
 
     #[test]
+    fn printing_asks_first_when_fields_would_print_empty() {
+        use lopdf::{dictionary, Object, StringFormat};
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, 1);
+        // A printed text field filled in another app with text LimarePDF can't draw, and
+        // no drawing of its own.
+        assert!(app.tabs[0].edit(&ctx, |p| {
+            let mut v = vec![0xFE, 0xFF];
+            v.extend("日本語".encode_utf16().flat_map(u16::to_be_bytes));
+            let rect: Vec<Object> = [20, 20, 280, 50].map(Object::from).to_vec();
+            let w = p.doc.add_object(dictionary! {
+                "Type" => "Annot", "Subtype" => "Widget", "FT" => "Tx", "F" => 4,
+                "T" => Object::string_literal("Name"), "Rect" => rect,
+                "V" => Object::String(v, StringFormat::Hexadecimal),
+            });
+            let page = p.page_ids()[0];
+            p.doc
+                .get_dictionary_mut(page)?
+                .set("Annots", vec![w.into()]);
+            p.doc
+                .catalog_mut()?
+                .set("AcroForm", dictionary! { "Fields" => vec![w.into()] });
+            Ok(())
+        }));
+        let state = app.tabs[0].state();
+        let printer = print::Printer {
+            name: "limarepdf-test-no-such-printer".into(),
+            default: true,
+        };
+        app.dialog = Dialog::Print(app.asked(), dlg::Print::new(vec![printer]));
+
+        click(&mut app, &ctx, "Print");
+        // Nothing sent yet: the question names the field.
+        assert!(!app.busy, "a print job started");
+        match &app.dialog {
+            Dialog::ConfirmPrintFields(q) => assert_eq!(q.fields, ["Name"]),
+            _ => panic!("no question asked"),
+        }
+        // The question's own Cancel is its window's close button.
+        click(&mut app, &ctx, "Close window");
+        assert!(matches!(app.dialog, Dialog::None));
+        assert!(!app.busy, "a print job started");
+        assert!(app.tabs[0].state() == state);
+    }
+
+    #[test]
     fn a_confirmation_is_refused_when_its_document_changed() {
         let ctx = egui::Context::default();
         let mut app = app_with(&ctx, 1);
@@ -4020,6 +4157,7 @@ mod tests {
             signer: "Tester".into(),
             self_issued: false,
             certified: false,
+            confirmed: true,
         }
     }
 
@@ -4069,6 +4207,27 @@ mod tests {
         );
         assert_eq!(app.active, 0);
         assert!(!message(&app).1.contains("changed while"));
+        assert!(!app.tabs[0].dirty);
+        assert!(!message(&app).1.contains(NOT_CONFIRMED));
+    }
+
+    /// A signed file written but not confirmed on disk (decision D7) still takes the tab's
+    /// place, as the new file; the message says so and the document stays marked unsaved.
+    #[test]
+    fn a_signed_file_not_confirmed_on_disk() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, 2);
+        let (id, revision) = (app.tabs[0].id, app.tabs[0].revision);
+        let s = digital::Signed {
+            confirmed: false,
+            ..signed_copy()
+        };
+        let path = s.path.clone();
+        app.signed(&ctx, s, id, revision);
+        assert!(app.tabs.iter().all(|t| t.id != id));
+        assert_eq!(app.tabs[0].path.as_ref(), Some(&path));
+        assert!(app.tabs[0].dirty, "marked saved");
+        assert!(message(&app).1.contains(NOT_CONFIRMED));
     }
 
     #[test]

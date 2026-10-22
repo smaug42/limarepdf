@@ -800,6 +800,8 @@ pub struct Signed {
     pub signer: String,
     pub self_issued: bool,
     pub certified: bool,
+    /// Whether the signed file was confirmed on disk (decision D7).
+    pub confirmed: bool,
 }
 
 /// What the signing window did this frame.
@@ -933,7 +935,12 @@ impl SignWindow {
                     accept_disallowed,
                 },
             )?;
-            limarepdf_core::write_file(&input.out, &signed.bytes)?;
+            let confirmed = match limarepdf_core::write_file(&input.out, &signed.bytes) {
+                Ok(()) => true,
+                // The signed file is in place all the same (decision D7).
+                Err(e) if crate::app::not_confirmed(&e) => false,
+                Err(e) => return Err(e),
+            };
             // The ID just used becomes the default; failing to note that doesn't undo the
             // signing.
             let _ = store.set_default(&id);
@@ -946,6 +953,7 @@ impl SignWindow {
                 signer: label(&id),
                 self_issued: id.cert.self_issued,
                 certified: certify.is_some(),
+                confirmed,
             })
         }));
     }

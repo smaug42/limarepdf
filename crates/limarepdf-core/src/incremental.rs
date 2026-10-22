@@ -6,8 +6,8 @@
 //! Each object of the edited document is compared with the opened file, and only those
 //! that differ are written. Losing an edit is the risk, so the result is read back twice
 //! before it is handed out: LimarePDF's strict reader of cross-reference sections checks the new
-//! revision, and lopdf's reading of the whole result must give every edited object as it
-//! is in memory. Anything else and nothing is written.
+//! revision, and lopdf's reading of the whole result must give every edited object, and
+//! the trailer's entries, as they are in memory. Anything else and nothing is written.
 
 use crate::{sig_changes, Pdf, Result};
 use anyhow::{anyhow, bail};
@@ -27,8 +27,9 @@ pub(crate) struct Appended {
 const TRAILER_KEYS: [&[u8]; 3] = [b"Root", b"Info", b"ID"];
 
 /// `original` (the file as it was opened, unencrypted) with a revision appended holding
-/// every object of `edited` that differs from it. Objects the edits deleted are written
-/// as `null` when something still refers to them, so they read as gone. When nothing
+/// every object of `edited` that differs from it, and `edited`'s trailer. Objects the edits
+/// deleted are written as `null` when something still refers to them, so they read as
+/// gone. A change to the trailer alone appends a revision with no objects. When nothing
 /// differs, nothing is appended: the result is `original` with no offsets.
 pub(crate) fn append_revision(original: &[u8], edited: &Document) -> Result<Appended> {
     let opened = Pdf::from_bytes(original, None)?;
@@ -71,7 +72,11 @@ pub(crate) fn append_revision(original: &[u8], edited: &Document) -> Result<Appe
     for id in &nulled {
         changed.insert(*id, Object::Null);
     }
-    if changed.is_empty() {
+    // Removing the document information, say, changes the trailer alone.
+    let trailer_changed = TRAILER_KEYS
+        .iter()
+        .any(|k| !same_entry(&edited.trailer, &base.trailer, k));
+    if changed.is_empty() && !trailer_changed {
         return Ok(Appended {
             bytes: original.to_vec(),
             offsets: HashMap::new(),
@@ -133,7 +138,23 @@ pub(crate) fn append_revision(original: &[u8], edited: &Document) -> Result<Appe
             return Err(lost(format!("object {} is still there", id.0)));
         }
     }
+    for key in TRAILER_KEYS {
+        if !same_entry(&back.trailer, &edited.trailer, key) {
+            return Err(lost(format!(
+                "the trailer's {} differs",
+                String::from_utf8_lossy(key)
+            )));
+        }
+    }
     Ok(Appended { bytes, offsets })
+}
+
+/// Whether the dictionaries `a` and `b` hold the same `key`, or both lack it.
+fn same_entry(a: &Dictionary, b: &Dictionary, key: &[u8]) -> bool {
+    match (a.get(key), b.get(key)) {
+        (Ok(x), Ok(y)) => same_stored(x, y),
+        (x, y) => x.is_err() && y.is_err(),
+    }
 }
 
 /// Why nothing can be appended to `original` (lopdf's reading of it is `base`), if
@@ -228,7 +249,7 @@ const MAX_DEPTH: usize = 256;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lopdf::dictionary;
+    use lopdf::{dictionary, StringFormat};
 
     fn base() -> Vec<u8> {
         let mut p = Pdf::new();
@@ -258,6 +279,38 @@ mod tests {
         let out = append_revision(&original, &same.doc).unwrap();
         assert!(out.offsets.is_empty());
         assert_eq!(out.bytes, original);
+    }
+
+    /// A change to the trailer alone, the document information removed or a new `/ID`, is
+    /// appended as a revision of its own and reads back as edited (R02).
+    #[test]
+    fn a_trailer_only_change_is_appended() {
+        let mut p = Pdf::from_bytes(&base(), None).unwrap();
+        p.set_info(&crate::Info {
+            title: Some("Kept".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        let original = p.snapshot().unwrap();
+        let mut removed = Pdf::from_bytes(&original, None).unwrap();
+        removed.doc.trailer.remove(b"Info");
+        let mut new_id = Pdf::from_bytes(&original, None).unwrap();
+        let id = Object::String(b"0123456789abcdef".to_vec(), StringFormat::Hexadecimal);
+        new_id.doc.trailer.set("ID", vec![id.clone(), id]);
+        for edited in [removed, new_id] {
+            let out = append_revision(&original, &edited.doc).unwrap();
+            assert!(out.bytes.len() > original.len() && out.bytes.starts_with(&original));
+            assert!(out.offsets.is_empty());
+            let back = Pdf::from_bytes(&out.bytes, None).unwrap();
+            for key in TRAILER_KEYS {
+                assert_eq!(
+                    back.doc.trailer.get(key).ok(),
+                    edited.doc.trailer.get(key).ok(),
+                    "{}",
+                    String::from_utf8_lossy(key)
+                );
+            }
+        }
     }
 
     #[test]

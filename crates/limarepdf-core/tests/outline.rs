@@ -113,6 +113,75 @@ fn reads_nested_bookmarks_and_every_kind_of_destination() {
     );
 }
 
+/// Bookmarks titled by `names`, each going to the named destination of the same name.
+fn named_bookmarks(p: &mut Pdf, names: &[&str]) {
+    let ids: Vec<ObjectId> = names.iter().map(|_| p.doc.new_object_id()).collect();
+    for (i, name) in names.iter().enumerate() {
+        let mut d = dictionary! { "Title" => text(name), "Dest" => text(name) };
+        if let Some(next) = ids.get(i + 1) {
+            d.set("Next", *next);
+        }
+        p.doc.objects.insert(ids[i], d.into());
+    }
+    set_outline(p, ids[0]);
+}
+
+/// A name tree whose nodes list the same kid twice is looked through once per node: at the
+/// depth limit, a name it doesn't have is soon known not to be there (it once took about
+/// 2^32 visits), and one in its deepest leaf is found (audit R05).
+#[test]
+fn a_name_tree_of_shared_kids_is_read_once_per_node() {
+    let mut p = four_pages();
+    let pg = p.page_ids();
+    let mut node = p.doc.add_object(dictionary! {
+        "Names" => vec![text("there"), vec![pg[2].into(), "Fit".into()].into()],
+    });
+    for _ in 0..32 {
+        let kids = vec![Object::Reference(node), Object::Reference(node)];
+        node = p.doc.add_object(dictionary! { "Kids" => kids });
+    }
+    p.doc
+        .catalog_mut()
+        .unwrap()
+        .set("Names", dictionary! { "Dests" => node });
+    named_bookmarks(&mut p, &["nowhere", "there"]);
+    assert_eq!(
+        p.outline(),
+        vec![
+            item("nowhere", 0, None, false, false),
+            item("there", 0, Some(2), false, false),
+        ]
+    );
+}
+
+/// A name tree too large to search gives up, and its names are destinations that can't be
+/// followed, rather than read on and on; a name met before the lookup gives up is found.
+#[test]
+fn a_name_tree_too_large_to_search_gives_up() {
+    let mut p = four_pages();
+    let pg = p.page_ids();
+    let leaf = |name: &str, page| -> Object {
+        dictionary! { "Names" => vec![text(name), vec![Object::Reference(page), "Fit".into()].into()] }
+            .into()
+    };
+    let mut kids = vec![leaf("first", pg[1])];
+    kids.extend((0..100_000).map(|_| Object::Dictionary(dictionary! {})));
+    kids.push(leaf("last", pg[3]));
+    let tree = p.doc.add_object(dictionary! { "Kids" => kids });
+    p.doc
+        .catalog_mut()
+        .unwrap()
+        .set("Names", dictionary! { "Dests" => tree });
+    named_bookmarks(&mut p, &["first", "last"]);
+    assert_eq!(
+        p.outline(),
+        vec![
+            item("first", 0, Some(1), false, false),
+            item("last", 0, None, false, false),
+        ]
+    );
+}
+
 #[test]
 fn bookmarks_follow_pages_that_move() {
     let mut p = four_pages();

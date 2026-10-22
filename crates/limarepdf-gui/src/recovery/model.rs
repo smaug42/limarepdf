@@ -283,6 +283,8 @@ impl Fs for Model {
 /// The operations [`Faulty`] can make fail.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Kind {
+    /// `check_folder`: the folder is a symbolic link or another user's.
+    Check,
     WriteTemp,
     Rename,
     Remove,
@@ -393,6 +395,7 @@ impl Fs for Faulty {
     }
 
     fn check_folder(&self, dir: &Path) -> io::Result<()> {
+        self.check(Kind::Check, dir)?;
         self.inner.check_folder(dir)
     }
 

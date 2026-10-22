@@ -4,7 +4,10 @@
 options with `limarepdf-cli <command> --help`.
 
 Commands that change a document take the input file first and write the result to `-o out.pdf`; the input is
-never changed. Add `--password` to open a protected input. A damaged input is repaired to read it, as in the app,
+never changed: an `-o` that names the input, by any path or link to it, is refused with nothing written (on
+Windows a hard link to the input isn't recognised, and gets a file of its own instead). The result is written
+whole or not at all: it goes to a new file that is then put in place in one step, so a name that is a hard link
+to another file gets a file of its own, and the other file keeps its bytes. Add `--password` to open a protected input. A damaged input is repaired to read it, as in the app,
 and a note on stderr says so; some of its content may be missing ([details](rendering.md#damaged-files)). An input
 other PDF apps may show differently gets a note on stderr too
 ([details](rendering.md#files-other-apps-may-show-differently)).
@@ -23,6 +26,16 @@ statuses, [below](#digital-signatures)). A malformed file that makes LimarePDF f
 an internal error (...). The file may be damaged."; run the command again with `RUST_BACKTRACE=1` to see where it
 happened when reporting it.
 
+When what a command prints can't be written (a full disk, for example), it stops there with an error and status
+1; a command that had already saved its file says so ("the file was saved, but its report couldn't be written").
+
+On Linux and macOS a written file is then confirmed on disk, so a power cut can't undo it. When the system can't
+confirm it, the file is in place all the same, and the command stops with status 1 and "*file* was saved, but your
+system couldn't confirm it is safely on disk (...). If the computer lost power just now, run the command again."
+Windows has no way to confirm this: there a power cut in the moment after a file is put in place can still lose it.
+When whatever reads the output stops early, as `limarepdf-cli text file.pdf | head` does, the command stops quietly
+with the status it would have had otherwise.
+
 ## Look at a document
 
 | Command | What it does |
@@ -31,7 +44,7 @@ happened when reporting it.
 | `limarepdf-cli text in.pdf --pages 1-2` | Print the text of pages |
 | `limarepdf-cli search in.pdf "invoice"` | Find text; `--boxes` also prints where each match is on its page |
 | `limarepdf-cli objects in.pdf --pages 1` | List the editable objects (text lines, images, paths) with their boxes; OCR text is marked "(hidden)" |
-| `limarepdf-cli render in.pdf --dpi 150 --out-dir pngs` | Save pages as images, as the app shows them; `--format jpeg --quality 85` for JPEG |
+| `limarepdf-cli render in.pdf --dpi 150 --out-dir pngs` | Save pages as images, as the app shows them; `--format jpeg --quality 85` for JPEG. Known limit: a filled form field with no drawing of its own comes out empty ([details](export-and-printing.md#pages-as-images)) |
 | `limarepdf-cli annot list in.pdf` | List the annotations (comments, notes, highlights, drawings): number, page, type, author, date and comment, and which one a reply answers. `--pages 2-3` for some pages; links and form fields are left out |
 | `limarepdf-cli annot list in.pdf --json` | The same as a JSON array, with each annotation's colour, opacity and box on the page (points from the top left) |
 | `limarepdf-cli form list in.pdf` | List the form fields: name, kind, value, pages, and whether each is required or read-only, with a choice's options |
@@ -44,7 +57,7 @@ happened when reporting it.
 | `limarepdf-cli form fill in.pdf -o out.pdf --set name=Ann --set agree=on` | Fill in fields. Checkboxes take `on` or `off`; a multi-select list takes its choices separated by `\|` |
 | `limarepdf-cli form fill in.pdf -o out.pdf --values values.json` | Fill in fields from a JSON object in the form `limarepdf-cli form list --json` prints, so you can list, edit and fill. A choice can be given by its export value or by the text shown for it. `--set` can be added and is applied after the file |
 | `limarepdf-cli form reset in.pdf -o out.pdf` | Put every field back to its default value |
-| `limarepdf-cli form flatten in.pdf -o out.pdf` | Draw the fields into the pages as they look now and remove them, so the values can't be changed. `--pages 1-3` flattens only those pages; fields elsewhere stay fillable |
+| `limarepdf-cli form flatten in.pdf -o out.pdf` | Draw the fields into the pages as they look now and remove them, so the values can't be changed. `--pages 1-3` flattens only those pages; fields elsewhere stay fillable. Refuses, naming the fields, when a shown value has no drawing and LimarePDF can't draw it (text beyond Western European), rather than lose it |
 | `limarepdf-cli form fill in.pdf -o out.pdf --values values.json --flatten` | Fill in, then flatten |
 
 Filling checks every value first: an unknown field name, a read-only field, text too long for the field, a line
@@ -95,7 +108,9 @@ sound and video, and redaction marks are kept. Annotations stored without a draw
 | `limarepdf-cli split big.pdf --bookmarks --out-dir parts` | Split where the top-level bookmarks go: `parts/big-002 Introduction.pdf`, … Pages before the first bookmark go in a file of their own. `--bookmarks 2` also splits at the bookmarks one level down |
 
 Pages that `delete` removes, or that `extract` and `split` leave out, leave nothing in the output: bookmarks,
-named destinations, links, form fields and tags stop referring to them. `extract` and `split` keep the bookmarks to
+named destinations, links, form fields and tags stop referring to them, and tags with content on them (and the
+tags above those) lose their alternative text. A form nested more than 32 deep makes them stop with an error.
+`extract` and `split` keep the bookmarks to
 the pages they keep; `delete` keeps every bookmark, without a destination when its page went. `split` writes each
 file as soon as its part is made (several at once, one per core); if one can't be written, the error says how many
 files already were.
@@ -256,6 +271,6 @@ See [Password security](security.md).
 | Command | What it does |
 | --- | --- |
 | `limarepdf-cli printers` | List the printers; the default is marked |
-| `limarepdf-cli print in.pdf --printer Office --pages 1-3 --copies 2 --sides long-edge` | Print; `--as-image` sends pages drawn by LimarePDF |
+| `limarepdf-cli print in.pdf --printer Office --pages 1-3 --copies 2 --sides long-edge` | Print; `--as-image` sends pages drawn by LimarePDF. Refuses, naming the fields and sending nothing, when filled fields meant for printing would come out empty (no drawing, and text LimarePDF can't draw); to print such a file without them, open it in the app and choose Print anyway |
 
 See [Export and printing](export-and-printing.md).

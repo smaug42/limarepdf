@@ -395,7 +395,7 @@ impl Pdf {
                             Object::String(s, _) => match fc {
                                 Some(f) => {
                                     for (code, space, raw) in f.codes(s) {
-                                        let glyph = f.width(code) / 1000.0 * tfs * th;
+                                        let glyph = f.width(code, raw.len()) / 1000.0 * tfs * th;
                                         let decoded = f.decode_code(code, raw);
                                         let chars = decoded.chars().count();
                                         let part = glyph / chars.max(1) as f32;

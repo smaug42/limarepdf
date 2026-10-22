@@ -205,7 +205,7 @@ impl SignKit {
                 text += &format!("{key} = {}\n", e.saved.line());
             }
         }
-        let _ = std::fs::write(file, text);
+        let _ = limarepdf_core::write_file(file, text.as_bytes());
     }
 
     pub fn list(&self, role: SignRole) -> &[Entry] {
@@ -907,6 +907,23 @@ mod tests {
             std::env::temp_dir().join(format!("limarepdf-sign-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir.join("signatures.txt")
+    }
+
+    /// Saved through the safe writer (R04): the file is replaced in one step, not written
+    /// into, so another name for the old file (a hard link) keeps the old contents.
+    #[test]
+    fn saved_in_one_step() {
+        let f = file("one-step");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, "ink = blue\n").unwrap();
+        let other = f.with_file_name("other.txt");
+        std::fs::hard_link(&f, &other).unwrap();
+        SignKit::from_file(Some(f.clone())).save();
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "ink = blue\n");
+        assert!(std::fs::read_to_string(&f)
+            .unwrap()
+            .starts_with("ink = blue\ndate = "));
+        std::fs::remove_dir_all(f.parent().unwrap()).unwrap();
     }
 
     #[test]

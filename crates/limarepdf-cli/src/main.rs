@@ -1,10 +1,10 @@
 use anyhow::{anyhow, bail, Context, Result};
 
-/// println! that ignores a closed pipe (e.g. `limarepdf-cli text file.pdf | head`).
+/// println! that returns from the function when the output can't be written: see [`unwritten`].
 macro_rules! out {
     ($($t:tt)*) => {{
         use std::io::Write;
-        let _ = writeln!(std::io::stdout(), $($t)*);
+        writeln!(std::io::stdout(), $($t)*).map_err(unwritten)?;
     }};
 }
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -23,6 +23,7 @@ use limarepdf_core::{
 };
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use zeroize::Zeroizing;
 
 #[derive(Parser)]
@@ -1360,6 +1361,7 @@ fn run_edit(io: &Io, f: impl FnOnce(&mut Pdf) -> Result<()>) -> Result<()> {
 
 /// Opens `io.input`, with its bytes for [`save_edited`].
 fn open_io(io: &Io) -> Result<(Pdf, Vec<u8>)> {
+    not_an_input(&[&io.input], &io.output)?;
     let bytes =
         std::fs::read(&io.input).with_context(|| format!("reading {}", io.input.display()))?;
     let pdf = Pdf::from_bytes(&bytes, io.password.as_deref())?;
@@ -1375,7 +1377,7 @@ fn open_io(io: &Io) -> Result<(Pdf, Vec<u8>)> {
 /// hold: those always need the whole file written.
 fn save_edited(io: &Io, pdf: &mut Pdf, original: &[u8], removes: bool) -> Result<()> {
     if Pdf::from_bytes(original, io.password.as_deref())?.signature_count() == 0 {
-        return pdf.save(&io.output);
+        return saved(pdf.save(&io.output));
     }
     let input = display_line(&io.input.display().to_string(), 300);
     let appended = if removes {
@@ -1408,8 +1410,8 @@ fn save_edited(io: &Io, pdf: &mut Pdf, original: &[u8], removes: bool) -> Result
                 }
                 eprintln!("warning: the signatures will report changes they don't allow:{list}");
             }
-            limarepdf_core::write_file(&io.output, &a.bytes)?;
-            if a.objects > 0 {
+            saved(limarepdf_core::write_file(&io.output, &a.bytes))?;
+            if a.bytes.len() > original.len() {
                 eprintln!(
                     "note: the changes were added after what was signed, so the signatures stay"
                 );
@@ -1424,7 +1426,7 @@ fn save_edited(io: &Io, pdf: &mut Pdf, original: &[u8], removes: bool) -> Result
                     display_line(&format!("{e:#}"), 300)
                 );
             }
-            pdf.save(&io.output)?;
+            saved(pdf.save(&io.output))?;
             eprintln!(
                 "warning: the whole file was written, so the signatures in {} are broken",
                 display_line(&io.output.display().to_string(), 300)
@@ -1588,7 +1590,7 @@ fn some(s: &Option<String>) -> String {
 const VERIFY_TIME: &str = "%Y-%m-%d %H:%M:%S %:z";
 
 /// `limarepdf-cli verify` as text. Everything taken from the file is cleaned for display.
-fn print_verify(input: &Path, rep: &SignatureReport) {
+fn print_verify(input: &Path, rep: &SignatureReport) -> Result<()> {
     let clean = |s: &str| limarepdf_core::display_line(s, 80);
     let n = rep.signatures.len();
     match n {
@@ -1596,7 +1598,11 @@ fn print_verify(input: &Path, rep: &SignatureReport) {
         1 => out!("{}: 1 digital signature", input.display()),
         _ => out!("{}: {n} digital signatures", input.display()),
     }
-    let row = |label: &str, value: String| out!("   {label:<12} {value}");
+    macro_rules! row {
+        ($label:expr, $value:expr $(,)?) => {
+            out!("   {:<12} {}", $label, $value)
+        };
+    }
     for (i, s) in rep.signatures.iter().enumerate() {
         out!("");
         let fields: Vec<String> = s
@@ -1622,7 +1628,7 @@ fn print_verify(input: &Path, rep: &SignatureReport) {
         } else {
             "; LimarePDF can't confirm who that is"
         };
-        row(
+        row!(
             "Status:",
             match &s.status {
                 SigStatus::Valid if !s.changes_allowed() && stamp => {
@@ -1666,24 +1672,24 @@ fn print_verify(input: &Path, rep: &SignatureReport) {
                     )
                 });
             }
-            row("Trust:", line);
+            row!("Trust:", line);
         }
         if !s.changes.is_empty() {
             let signed = s
                 .signed_len
                 .map(|l| format!(" ({l} of {} bytes signed)", rep.file_len))
                 .unwrap_or_default();
-            row("Changes:", format!("after signing{signed}:"));
+            row!("Changes:", format!("after signing{signed}:"));
             for c in &s.changes {
                 let line = match &c.refused {
                     None => format!("- allowed: {}", clean(&c.to_string())),
                     Some(r) => format!("- NOT ALLOWED: {} ({r})", clean(&c.to_string())),
                 };
-                row("", line);
+                row!("", line);
             }
         }
         if let SigKind::Certification(p) = s.kind {
-            row("Certified:", p.to_string());
+            row!("Certified:", p.to_string());
         }
         if let Some(c) = &s.signer {
             let mut who = clean(c.display_name());
@@ -1706,13 +1712,13 @@ fn print_verify(input: &Path, rep: &SignatureReport) {
             } else {
                 "Signed by:"
             };
-            row(label, who);
+            row!(label, who);
             let issuer = if c.self_issued {
                 "itself (a self-made digital ID)".into()
             } else {
                 clean(c.issuer_common_name.as_deref().unwrap_or(&c.issuer))
             };
-            row("Issued by:", issuer);
+            row!("Issued by:", issuer);
         }
         if let Some(t) = &s.time {
             let from = match t.source {
@@ -1724,7 +1730,7 @@ fn print_verify(input: &Path, rep: &SignatureReport) {
             } else {
                 "Signed at:"
             };
-            row(label, format!("{} ({from})", t.time.format(VERIFY_TIME)));
+            row!(label, format!("{} ({from})", t.time.format(VERIFY_TIME)));
         }
         if let Some(ts) = s
             .timestamp
@@ -1736,7 +1742,7 @@ fn print_verify(input: &Path, rep: &SignatureReport) {
                 Some(Trust::Failed(why)) => format!(" (NOT TRUSTED: {})", clean(why)),
                 _ => " (LimarePDF can't confirm this authority)".to_string(),
             };
-            row(
+            row!(
                 "Timestamp:",
                 format!(
                     "{} by {}{trusted}",
@@ -1752,7 +1758,7 @@ fn print_verify(input: &Path, rep: &SignatureReport) {
             ("Contact:", &s.contact),
         ] {
             if let Some(v) = v.as_deref().filter(|v| !v.trim().is_empty()) {
-                row(label, clean(v));
+                row!(label, clean(v));
             }
         }
         let mut alg: Vec<String> = Vec::new();
@@ -1765,13 +1771,13 @@ fn print_verify(input: &Path, rep: &SignatureReport) {
             alg.push(clean(&s.sub_filter));
         }
         if !alg.is_empty() {
-            row("Algorithm:", alg.join(", "));
+            row!("Algorithm:", alg.join(", "));
         }
         if let Some(l) = &s.locks {
-            row("Locked:", lock_text(l, &clean));
+            row!("Locked:", lock_text(l, &clean));
         }
         if let Some(c) = &s.signer {
-            row(
+            row!(
                 "Certificate:",
                 format!(
                     "serial {}, valid {} to {}",
@@ -1780,10 +1786,10 @@ fn print_verify(input: &Path, rep: &SignatureReport) {
                     c.not_after.format("%Y-%m-%d")
                 ),
             );
-            row("SHA-256:", c.sha256.clone());
+            row!("SHA-256:", c.sha256.clone());
         }
         for w in &s.warnings {
-            row("Warning:", display_line(&w.to_string(), 300));
+            row!("Warning:", display_line(&w.to_string(), 300));
         }
     }
     for f in &rep.empty_fields {
@@ -1797,6 +1803,7 @@ fn print_verify(input: &Path, rep: &SignatureReport) {
             out!("   {:<12} {}", "Locks:", lock_text(l, &clean));
         }
     }
+    Ok(())
 }
 
 /// Whether a signer is trusted, and why, in one line.
@@ -2002,7 +2009,7 @@ fn run_trust(cmd: TrustCmd) -> Result<()> {
                 choose(certs, "certificate in the file")?
             };
             let added = list.add(&cert.der, role, label.as_deref())?;
-            list.save(&path)?;
+            saved(list.save(&path))?;
             let e = list
                 .entries
                 .iter()
@@ -2050,7 +2057,7 @@ fn run_trust(cmd: TrustCmd) -> Result<()> {
                 })?,
             };
             let e = list.remove(index).context("no such entry")?;
-            list.save(&path)?;
+            saved(list.save(&path))?;
             out!(
                 "No longer trusting \"{}\" (SHA-256 {}). {TRUST_NOTE}",
                 clean(&e.label),
@@ -2108,7 +2115,7 @@ fn choose_password(file: &Option<PathBuf>, prompt: &str) -> Result<Zeroizing<Str
 }
 
 /// The facts about an ID's certificate, indented under its heading.
-fn id_details(id: &DigitalId, clean: &dyn Fn(&str) -> String) {
+fn id_details(id: &DigitalId, clean: &dyn Fn(&str) -> String) -> Result<()> {
     let c = &id.cert;
     out!("   {:<12} {}", "Certificate:", clean(&c.subject));
     let issuer = if c.self_issued {
@@ -2140,6 +2147,7 @@ fn id_details(id: &DigitalId, clean: &dyn Fn(&str) -> String) {
         c.not_after.format("%Y-%m-%d")
     );
     out!("   {:<12} {}", "SHA-256:", c.sha256);
+    Ok(())
 }
 
 fn run_id(cmd: IdCmd) -> Result<()> {
@@ -2200,7 +2208,7 @@ fn run_id(cmd: IdCmd) -> Result<()> {
                     clean(id.cert.display_name()),
                     id.name
                 );
-                id_details(id, &clean);
+                id_details(id, &clean)?;
             }
             for p in &list.problems {
                 out!("");
@@ -2228,14 +2236,14 @@ fn run_id(cmd: IdCmd) -> Result<()> {
                     limarepdf_core::MIN_PASSWORD
                 ),
             )?;
-            let id = store.create(&new, &password)?;
+            let id = saved(store.create(&new, &password))?;
             out!(
                 "Made the digital ID \"{}\" ({}), in {}. It is the default for signing.",
                 clean(id.cert.display_name()),
                 id.name,
                 id.path.display()
             );
-            id_details(&id, &clean);
+            id_details(&id, &clean)?;
             out!("");
             out!(
                 "Keep the password safe: LimarePDF can't recover it, and without it the ID can't \
@@ -2266,14 +2274,14 @@ fn run_id(cmd: IdCmd) -> Result<()> {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
             let password = read_password(&password_file, &format!("Password of {file_name}: "))?;
-            let id = store.import(&bytes, &password, name.as_deref())?;
+            let id = saved(store.import(&bytes, &password, name.as_deref()))?;
             out!(
                 "Imported the digital ID \"{}\" ({}), in {}. It is the default for signing.",
                 clean(id.cert.display_name()),
                 id.name,
                 id.path.display()
             );
-            id_details(&id, &clean);
+            id_details(&id, &clean)?;
             out!("");
             out!(
                 "It keeps its password, now with LimarePDF's own encryption. {} still holds the ID: \
@@ -2321,7 +2329,7 @@ fn run_id(cmd: IdCmd) -> Result<()> {
                         password
                     };
                     let bytes = unlocked.to_p12(&file_password)?;
-                    limarepdf_core::write_private(&output, &bytes)?;
+                    saved(limarepdf_core::write_private(&output, &bytes))?;
                     out!(
                         "Exported the digital ID \"{label}\" with its key to {}, protected by {}.",
                         output.display(),
@@ -2334,8 +2342,10 @@ fn run_id(cmd: IdCmd) -> Result<()> {
                     out!("Keep it safe: anyone with this file and its password can sign as you.");
                 }
                 "cer" | "crt" | "der" => {
-                    std::fs::write(&output, &id.cert.der)
-                        .with_context(|| format!("writing {}", output.display()))?;
+                    saved(
+                        std::fs::write(&output, &id.cert.der)
+                            .with_context(|| format!("writing {}", output.display())),
+                    )?;
                     out!(
                         "Exported the certificate of \"{label}\" to {}. It holds no key, so it \
                          is safe to share.",
@@ -2381,7 +2391,7 @@ fn run_id(cmd: IdCmd) -> Result<()> {
                     return Ok(());
                 }
             }
-            store.remove(&id)?;
+            saved(store.remove(&id))?;
             out!("Removed the digital ID \"{label}\" ({}).", id.name);
         }
     }
@@ -2396,6 +2406,38 @@ fn trust_path(explicit: &Option<PathBuf>) -> Result<PathBuf> {
 
 /// The trust list for checking: an explicit file must load; LimarePDF's own may be missing or
 /// unusable, which leaves every signer unconfirmed, with a warning.
+/// Whether `a` and `b` name the same file: the same path once links are followed, or on Unix
+/// the same device and inode, as a hard link is.
+fn same_file(a: &Path, b: &Path) -> bool {
+    if a.canonicalize()
+        .is_ok_and(|a| b.canonicalize().is_ok_and(|b| a == b))
+    {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(a), Ok(b)) = (std::fs::metadata(a), std::fs::metadata(b)) {
+            return a.dev() == b.dev() && a.ino() == b.ino();
+        }
+    }
+    false
+}
+
+/// Refuses an `output` that is one of the `inputs`, by any path or link to it, so the input is
+/// never changed.
+fn not_an_input(inputs: &[impl AsRef<Path>], output: &Path) -> Result<()> {
+    if let Some(input) = inputs.iter().find(|i| same_file(i.as_ref(), output)) {
+        bail!(
+            "{} is the input {}; the result must be saved to another file, as the input is never \
+             changed. Nothing was written",
+            display_line(&output.display().to_string(), 300),
+            display_line(&input.as_ref().display().to_string(), 300)
+        );
+    }
+    Ok(())
+}
+
 fn trust_for_checking(explicit: &Option<PathBuf>) -> Result<TrustList> {
     let list = match (explicit, TrustList::default_path()) {
         (Some(p), _) if !p.exists() => bail!("there is no trust list at {}", p.display()),
@@ -2606,6 +2648,51 @@ fn guard<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
     })
 }
 
+/// Set once the command has saved a file, so that a report it can't write afterwards says so.
+static SAVED: AtomicBool = AtomicBool::new(false);
+
+/// `r`, noting that a file was saved when it is `Ok`.
+fn saved<T>(r: Result<T>) -> Result<T> {
+    if r.is_ok() {
+        SAVED.store(true, Ordering::Relaxed);
+    }
+    r
+}
+
+/// The reader of the output went away, as with `limarepdf-cli text file.pdf | head`: the
+/// command stops quietly, with the status it would have had otherwise (decision D5).
+#[derive(Debug)]
+struct Closed;
+
+impl std::fmt::Display for Closed {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("the output was closed")
+    }
+}
+
+impl std::error::Error for Closed {}
+
+/// The output couldn't be written for another reason, such as a full disk.
+#[derive(Debug)]
+struct Unwritten(std::io::Error);
+
+impl std::fmt::Display for Unwritten {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "couldn't write the output: {}", self.0)
+    }
+}
+
+impl std::error::Error for Unwritten {}
+
+/// The error for output that couldn't be written (audit R15).
+fn unwritten(e: std::io::Error) -> anyhow::Error {
+    if e.kind() == std::io::ErrorKind::BrokenPipe {
+        Closed.into()
+    } else {
+        Unwritten(e).into()
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     // Only `guard`'s error is printed for a panic; with RUST_BACKTRACE set, Rust's own message and the
@@ -2613,7 +2700,30 @@ fn main() -> Result<()> {
     if std::env::var_os("RUST_BACKTRACE").is_none_or(|v| v == "0") {
         std::panic::set_hook(Box::new(|_| {}));
     }
-    guard(|| run(cli.cmd))
+    let done = guard(|| run(cli.cmd)).and_then(|()| {
+        use std::io::Write;
+        std::io::stdout().flush().map_err(unwritten)
+    });
+    let Err(e) = done else {
+        return Ok(());
+    };
+    if e.is::<Closed>() {
+        return Ok(());
+    }
+    // The file is in place, so never "nothing was written" (decision D7).
+    if let Some(n) = e.downcast_ref::<limarepdf_core::NotConfirmed>() {
+        return Err(anyhow!(
+            "{n}. If the computer lost power just now, run the command again."
+        ));
+    }
+    // Said plainly, without what the command was doing when it wrote.
+    match e.downcast_ref::<Unwritten>() {
+        Some(Unwritten(why)) if SAVED.load(Ordering::Relaxed) => Err(anyhow!(
+            "the file was saved, but its report couldn't be written: {why}"
+        )),
+        Some(u) => Err(anyhow!("{u}")),
+        None => Err(e),
+    }
 }
 
 fn run(cmd: Cmd) -> Result<()> {
@@ -2658,12 +2768,13 @@ fn run(cmd: Cmd) -> Result<()> {
             })
         })?,
         Cmd::Merge { inputs, output } => {
+            not_an_input(&inputs, &output)?;
             let docs = inputs
                 .par_iter()
                 .map(|p| open(p, &None))
                 .collect::<Result<Vec<_>>>()?;
             let mut m = Pdf::merge(docs)?;
-            m.save(&output)?;
+            saved(m.save(&output))?;
             out!("wrote {} ({} pages)", output.display(), m.page_count());
         }
         Cmd::Split {
@@ -2686,7 +2797,7 @@ fn run(cmd: Cmd) -> Result<()> {
             // Asked first, so that nothing is written when the document can't be split.
             p.split_parts(by)?;
             std::fs::create_dir_all(&out_dir)?;
-            let n = p.split(by, |n, title| out_dir.join(part_file_name(&stem, n, title)))?;
+            let n = saved(p.split(by, |n, title| out_dir.join(part_file_name(&stem, n, title))))?;
             out!("split into {n} files in {}", out_dir.display());
         }
         Cmd::Extract { io, pages } => run_edit(&io, |p| {
@@ -2721,8 +2832,9 @@ fn run(cmd: Cmd) -> Result<()> {
             output,
             size,
         } => {
+            not_an_input(&inputs, &output)?;
             let mut p = Pdf::from_images(&read_all(&inputs)?, &size.opts())?;
-            p.save(&output)?;
+            saved(p.save(&output))?;
             out!("wrote {} ({} pages)", output.display(), p.page_count());
         }
         Cmd::OptimizeScans {
@@ -2897,6 +3009,9 @@ fn run(cmd: Cmd) -> Result<()> {
             list,
             break_signatures,
         } => {
+            if let Some(output) = output.as_ref().filter(|_| !list) {
+                not_an_input(&[&input], output)?;
+            }
             let mut pdf = open(&input, &password)?;
             let signed = pdf.signature_count() > 0;
             if !list && !break_signatures && signed {
@@ -2951,7 +3066,7 @@ fn run(cmd: Cmd) -> Result<()> {
                 out!("{note}");
             }
             let output = output.context("--output is needed")?;
-            pdf.save(&output)?;
+            saved(pdf.save(&output))?;
             if signed {
                 eprintln!(
                     "warning: the whole file was written, so the signatures in {} are broken",
@@ -3155,10 +3270,10 @@ fn run(cmd: Cmd) -> Result<()> {
                 let len = s.signed_len.with_context(|| {
                     format!("LimarePDF can't tell which version signature {n} signed")
                 })?;
-                if output.canonicalize().ok() == input.canonicalize().ok() {
-                    bail!("the signed version must be saved to another file");
-                }
-                std::fs::write(&output, &bytes[..len])
+                not_an_input(&[&input], &output)?;
+                // A new file renamed into place, so a name that is a link to the input (or to
+                // anything else) never has its bytes cut short (audit R16).
+                saved(limarepdf_core::write_file(&output, &bytes[..len]))
                     .with_context(|| format!("writing {}", output.display()))?;
                 out!(
                     "Saved the version signature {n} signed ({len} of {} bytes) to {}",
@@ -3173,13 +3288,21 @@ fn run(cmd: Cmd) -> Result<()> {
                 }
                 return Ok(());
             }
-            if json {
-                out!("{}", serde_json::to_string_pretty(&verify_json(&rep))?);
-            } else {
-                print_verify(&input, &rep);
-            }
-            if !rep.all_ok() || (require_trusted && !rep.all_trusted()) {
-                std::process::exit(1);
+            let shown = (|| -> Result<()> {
+                if json {
+                    out!("{}", serde_json::to_string_pretty(&verify_json(&rep))?);
+                } else {
+                    print_verify(&input, &rep)?;
+                }
+                Ok(())
+            })();
+            // A reader that went away doesn't change the verdict's status (decision D5).
+            match shown {
+                Err(e) if !e.is::<Closed>() => return Err(e),
+                _ if !rep.all_ok() || (require_trusted && !rep.all_trusted()) => {
+                    std::process::exit(1)
+                }
+                shown => shown?,
             }
         }
         Cmd::Trust { cmd } => run_trust(cmd)?,
@@ -3219,6 +3342,7 @@ fn run(cmd: Cmd) -> Result<()> {
                 _ => bail!("say where to sign: --field NAME, or --page N with --rect X,Y,W,H"),
             };
             let style = SignStyle::from_number(style).context("--style is 1, 2, 3 or 4")?;
+            not_an_input(&[&input], &output)?;
             let picture = match &image {
                 Some(path) => Some(
                     std::fs::read(path).with_context(|| format!("reading {}", path.display()))?,
@@ -3271,7 +3395,7 @@ fn run(cmd: Cmd) -> Result<()> {
                     accept_disallowed: false,
                 },
             )?;
-            limarepdf_core::write_file(&output, &signed.bytes)?;
+            saved(limarepdf_core::write_file(&output, &signed.bytes))?;
             store.set_default(&chosen)?;
             let what = if certify.is_some() {
                 "Certified"
@@ -3608,6 +3732,19 @@ fn run(cmd: Cmd) -> Result<()> {
         } => {
             let mut p = open(&input, &password)?;
             let idx = parse_page_range(&pages, p.page_count())?;
+            // The app asks; here the fields are named instead.
+            let blank = p.unprintable_fields(&idx);
+            if !blank.is_empty() {
+                let (these, their) = match blank.len() {
+                    1 => ("this field", "its value"),
+                    _ => ("these fields", "their values"),
+                };
+                bail!(
+                    "{these} wouldn't show on paper, because LimarePDF can't draw {their}: {}. \
+                     Nothing was sent to the printer.",
+                    limarepdf_core::quoted_list(&blank)
+                );
+            }
             let opts = print::PrintOptions {
                 printer,
                 copies,
@@ -3661,7 +3798,9 @@ fn run(cmd: Cmd) -> Result<()> {
                 FormatArg::Jpeg => render::ImageFormat::Jpeg(quality),
             };
             let t = std::time::Instant::now();
-            render::write_images(&hp, &idx, dpi, format, &out_dir, &stem)?;
+            saved(render::write_images(
+                &hp, &idx, dpi, format, &out_dir, &stem,
+            ))?;
             out!("rendered {} page(s) in {:.2?}", idx.len(), t.elapsed());
         }
     }

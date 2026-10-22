@@ -194,6 +194,16 @@ impl Cert {
             .is_none_or(|k| k.digital_signature() || k.non_repudiation())
     }
 
+    /// Whether the certificate allows its RSA key only for RSA-PSS signatures (RFC 4055).
+    pub fn rsa_pss_only(&self) -> bool {
+        self.cert
+            .tbs_certificate()
+            .subject_public_key_info()
+            .algorithm
+            .oid
+            == oid::RSA_PSS
+    }
+
     /// Whether the certificate is meant for a timestamp authority.
     pub fn for_timestamping(&self) -> bool {
         use x509_cert::ext::pkix::ExtendedKeyUsage;
@@ -322,9 +332,19 @@ fn name_part(name: &x509_cert::name::Name, o: Oid) -> Option<String> {
 
 /// A signer's public key.
 enum PublicKey {
-    Rsa(rsa::RsaPublicKey),
+    /// An RSA key, and what its certificate allows it to make.
+    Rsa(rsa::RsaPublicKey, RsaUse),
     P256(p256::ecdsa::VerifyingKey),
     P384(p384::ecdsa::VerifyingKey),
+}
+
+/// What signatures an RSA key may make (RFC 4055 section 1.2).
+enum RsaUse {
+    /// rsaEncryption: any RSA signature.
+    Any,
+    /// id-RSASSA-PSS: RSA-PSS signatures only, with these parameters when the certificate
+    /// gives them.
+    PssOnly(Option<PssParams>),
 }
 
 impl PublicKey {
@@ -335,13 +355,16 @@ impl PublicKey {
             .as_bytes()
             .ok_or_else(|| Fail::CantCheck("the certificate's key is malformed".into()))?;
         match spki.algorithm.oid {
-            oid::RSA | oid::RSA_PSS => {
+            o @ (oid::RSA | oid::RSA_PSS) => {
                 use pkcs1::DecodeRsaPublicKey;
-                rsa::RsaPublicKey::from_pkcs1_der(bits)
-                    .map(Self::Rsa)
-                    .map_err(|e| {
-                        Fail::CantCheck(format!("the certificate's RSA key can't be used ({e})"))
-                    })
+                let used = match o {
+                    oid::RSA => RsaUse::Any,
+                    _ => RsaUse::PssOnly(pss_key_limits(spki.algorithm.parameters.as_ref())?),
+                };
+                let k = rsa::RsaPublicKey::from_pkcs1_der(bits).map_err(|e| {
+                    Fail::CantCheck(format!("the certificate's RSA key can't be used ({e})"))
+                })?;
+                Ok(Self::Rsa(k, used))
             }
             oid::EC_PUBLIC_KEY => {
                 let curve = spki
@@ -371,7 +394,7 @@ impl PublicKey {
     fn bits(&self) -> usize {
         use rsa::traits::PublicKeyParts;
         match self {
-            Self::Rsa(k) => k.n().bits_vartime() as usize,
+            Self::Rsa(k, _) => k.n().bits_vartime() as usize,
             Self::P256(_) => 256,
             Self::P384(_) => 384,
         }
@@ -379,11 +402,91 @@ impl PublicKey {
 
     fn describe(&self) -> String {
         match self {
-            Self::Rsa(_) => format!("RSA {}-bit", self.bits()),
+            Self::Rsa(_, RsaUse::Any) => format!("RSA {}-bit", self.bits()),
+            Self::Rsa(_, RsaUse::PssOnly(_)) => format!("RSA-PSS {}-bit", self.bits()),
             Self::P256(_) => "ECDSA P-256".into(),
             Self::P384(_) => "ECDSA P-384".into(),
         }
     }
+
+    /// Checks that the key's certificate allows a `scheme` signature with `digest` (RFC 4055
+    /// sections 1.2 and 3.1): an RSA-PSS-only key makes no PKCS#1 v1.5 signatures, and its
+    /// parameters, when given, must be the signature's, except that a longer salt is
+    /// allowed. `whose` and `what` name the certificate and the signature in the reason.
+    fn allows(&self, scheme: Scheme, digest: DigestAlg, whose: &str, what: &str) -> Check<()> {
+        let Self::Rsa(_, RsaUse::PssOnly(limits)) = self else {
+            return Ok(());
+        };
+        let only = format!("the {whose} certificate allows its key only for RSA-PSS");
+        let Scheme::RsaPss { salt } = scheme else {
+            return broken(format!(
+                "{only} signatures, and {what} is {}",
+                scheme.name()
+            ));
+        };
+        let Some(k) = limits else {
+            return Ok(());
+        };
+        // Trailer field 1 is the only one defined, so the certificate is malformed.
+        if k.trailer != 1 {
+            return cant(format!(
+                "the {whose} certificate limits its RSA-PSS key to trailer field {}, which \
+                 LimarePDF doesn't know",
+                k.trailer
+            ));
+        }
+        let name =
+            |o: Oid| DigestAlg::from_oid(o).map_or_else(|_| o.to_string(), |d| d.name().into());
+        let is_digest = |o: Oid| DigestAlg::from_oid(o).is_ok_and(|d| d == digest);
+        if !is_digest(k.digest) {
+            return broken(format!(
+                "{only} with {}, and {what} uses {}",
+                name(k.digest),
+                digest.name()
+            ));
+        }
+        match k.mgf1_digest {
+            None => {
+                return broken(format!(
+                    "{only} with a mask function other than MGF1, and {what} uses MGF1"
+                ))
+            }
+            Some(m) if !is_digest(m) => {
+                return broken(format!(
+                    "{only} where the mask function uses {}, and {what} uses {}",
+                    name(m),
+                    digest.name()
+                ))
+            }
+            Some(_) => {}
+        }
+        if salt < k.salt {
+            return broken(format!(
+                "{only} with a salt of at least {} bytes, and {what} has {salt}",
+                k.salt
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The limits an RSA-PSS-only key's parameters set; absent parameters set none (RFC 4055
+/// section 3.1). Parameters that can't be read give "can't check", never no limits.
+fn pss_key_limits(p: Option<&der::Any>) -> Check<Option<PssParams>> {
+    let Some(p) = p else {
+        return Ok(None);
+    };
+    let unreadable = |e: anyhow::Error| {
+        Fail::CantCheck(format!(
+            "the certificate's RSA-PSS key limits can't be read ({e})"
+        ))
+    };
+    let raw = der::Encode::to_der(p).map_err(|e| unreadable(anyhow!("{e}")))?;
+    let t = Tlv::read_all(&raw).map_err(unreadable)?;
+    if t.tag != asn1::SEQUENCE {
+        return Err(unreadable(anyhow!("they aren't a sequence")));
+    }
+    PssParams::parse(Some(t)).map(Some).map_err(unreadable)
 }
 
 /// An algorithm identifier: the algorithm and its parameters, if any.
@@ -454,47 +557,80 @@ fn scheme(alg: &AlgId, digest: DigestAlg) -> Check<(Scheme, DigestAlg)> {
     })
 }
 
-/// RSASSA-PSS parameters (RFC 4055): the digest (default SHA-1), MGF1 with the same
-/// digest, the salt length (default 20) and trailer field 1.
-fn pss_params(p: Option<Tlv>) -> Result<Check<(Scheme, DigestAlg)>> {
-    let mut digest = oid::SHA1;
-    let mut mgf_digest = digest;
-    let mut salt = 20usize;
-    for f in p.map(|p| p.children()).transpose()?.unwrap_or_default() {
-        let inner = Tlv::read_all(f.body)?;
-        match f.tag {
-            0xa0 => digest = AlgId::parse(inner)?.oid,
-            0xa1 => {
-                let mgf = AlgId::parse(inner)?;
-                if mgf.oid != oid::MGF1 {
-                    return Ok(cant(
-                        "it uses an RSA-PSS mask function LimarePDF doesn't support",
-                    ));
-                }
-                let p = mgf.params.ok_or_else(|| anyhow!("MGF1 without a digest"))?;
-                mgf_digest = AlgId::parse(p)?.oid;
+/// RSASSA-PSS parameters as written (RFC 4055 section 3.1), with the defaults for those left
+/// out: SHA-1, MGF1 with SHA-1, a salt of 20 bytes and trailer field 1.
+struct PssParams {
+    digest: Oid,
+    /// MGF1's digest; `None` for another mask function.
+    mgf1_digest: Option<Oid>,
+    salt: usize,
+    trailer: usize,
+}
+
+impl PssParams {
+    /// Reads the parameters, in order and each at most once.
+    fn parse(p: Option<Tlv>) -> Result<Self> {
+        let mut params = Self {
+            digest: oid::SHA1,
+            mgf1_digest: Some(oid::SHA1),
+            salt: 20,
+            trailer: 1,
+        };
+        let mut last = None;
+        for f in p.map(|p| p.children()).transpose()?.unwrap_or_default() {
+            if last.is_some_and(|t| f.tag <= t) {
+                bail!("RSA-PSS parameters out of order or repeated");
             }
-            0xa2 => {
-                let n = inner.expect(asn1::INTEGER, "salt length")?.body;
-                if n.len() > 2 || n.first().is_some_and(|b| b & 0x80 != 0) {
-                    bail!("bad salt length");
+            last = Some(f.tag);
+            let inner = Tlv::read_all(f.body)?;
+            match f.tag {
+                0xa0 => params.digest = AlgId::parse(inner)?.oid,
+                0xa1 => {
+                    let mgf = AlgId::parse(inner)?;
+                    params.mgf1_digest = match mgf.oid {
+                        oid::MGF1 => {
+                            let p = mgf.params.ok_or_else(|| anyhow!("MGF1 without a digest"))?;
+                            Some(AlgId::parse(p)?.oid)
+                        }
+                        _ => None,
+                    };
                 }
-                salt = n.iter().fold(0, |a, &b| (a << 8) | usize::from(b));
+                0xa2 => params.salt = small_int(inner, "salt length")?,
+                0xa3 => params.trailer = small_int(inner, "trailer field")?,
+                t => bail!("unexpected RSA-PSS parameter {t:#04x}"),
             }
-            0xa3 => {
-                if inner.expect(asn1::INTEGER, "trailer")?.body != [1] {
-                    return Ok(cant("it uses an RSA-PSS trailer LimarePDF doesn't support"));
-                }
-            }
-            t => bail!("unexpected RSA-PSS parameter {t:#04x}"),
         }
+        Ok(params)
     }
-    if mgf_digest != digest {
+}
+
+/// A non-negative INTEGER of at most two bytes.
+fn small_int(t: Tlv, what: &str) -> Result<usize> {
+    let n = t.expect(asn1::INTEGER, what)?.body;
+    if n.is_empty() || n.len() > 2 || n[0] & 0x80 != 0 {
+        bail!("bad {what}");
+    }
+    Ok(n.iter().fold(0, |a, &b| (a << 8) | usize::from(b)))
+}
+
+/// The scheme and digest of a signature's RSASSA-PSS parameters: MGF1 with the same digest
+/// as the signature's, and trailer field 1.
+fn pss_params(p: Option<Tlv>) -> Result<Check<(Scheme, DigestAlg)>> {
+    let p = PssParams::parse(p)?;
+    let Some(mgf_digest) = p.mgf1_digest else {
+        return Ok(cant(
+            "it uses an RSA-PSS mask function LimarePDF doesn't support",
+        ));
+    };
+    if p.trailer != 1 {
+        return Ok(cant("it uses an RSA-PSS trailer LimarePDF doesn't support"));
+    }
+    if mgf_digest != p.digest {
         return Ok(cant(
             "its RSA-PSS mask uses a different digest, which LimarePDF doesn't support",
         ));
     }
-    Ok(DigestAlg::from_oid(digest).map(|d| (Scheme::RsaPss { salt }, d)))
+    Ok(DigestAlg::from_oid(p.digest).map(|d| (Scheme::RsaPss { salt: p.salt }, d)))
 }
 
 /// Checks `sig` over `signed` with `key`.
@@ -509,7 +645,7 @@ fn verify_value(
     let no_match =
         || Fail::Broken("the signature value doesn't match the signer's certificate".into());
     match (key, scheme) {
-        (PublicKey::Rsa(k), Scheme::RsaPkcs1 | Scheme::RsaPss { .. }) => {
+        (PublicKey::Rsa(k, _), Scheme::RsaPkcs1 | Scheme::RsaPss { .. }) => {
             use rsa::traits::PublicKeyParts;
             // Some signers drop leading zero bytes; put them back.
             let size = k.size();
@@ -809,6 +945,7 @@ pub(crate) fn check_signer(sd: &SignedData, message: &[&[u8]], content_type: Oid
     let key = PublicKey::from_cert(cert)?;
     let digest = DigestAlg::from_oid(si.digest.oid)?;
     let (scheme, sig_digest) = scheme(&si.sig_alg, digest)?;
+    key.allows(scheme, sig_digest, "signer's", "this signature")?;
     let mut claimed_time = None;
     match &si.signed_attrs {
         Some(attrs_tlv) => {
@@ -977,9 +1114,15 @@ pub(crate) fn check_rsa_sha1(contents: &[u8], cert: &Cert, data: &[&[u8]]) -> Ch
         .and_then(|t| t.octets())
         .map_err(malformed)?;
     let key = PublicKey::from_cert(cert)?;
-    if !matches!(key, PublicKey::Rsa(_)) {
+    if !matches!(key, PublicKey::Rsa(..)) {
         return broken("this signature type needs an RSA key");
     }
+    key.allows(
+        Scheme::RsaPkcs1,
+        DigestAlg::Sha1,
+        "signer's",
+        "this signature",
+    )?;
     for d in [
         DigestAlg::Sha1,
         DigestAlg::Sha256,
@@ -1027,6 +1170,7 @@ pub(crate) fn check_cert_signature(cert: &Cert, issuer: &Cert) -> Check<DigestAl
     }
     let key = PublicKey::from_cert(issuer)?;
     let (scheme, digest) = scheme(&alg, DigestAlg::Sha256)?;
+    key.allows(scheme, digest, "issuer's", "the certificate's signature")?;
     verify_value(&key, scheme, digest, &[tbs], &value).map_err(|_| {
         Fail::Broken("the issuer's signature on the certificate doesn't match".into())
     })?;
@@ -1036,20 +1180,21 @@ pub(crate) fn check_cert_signature(cert: &Cert, issuer: &Cert) -> Check<DigestAl
 /// The size in bits of a certificate's RSA key; `None` for other keys.
 pub(crate) fn rsa_bits(cert: &Cert) -> Option<usize> {
     match PublicKey::from_cert(cert) {
-        Ok(k @ PublicKey::Rsa(_)) => Some(k.bits()),
+        Ok(k @ PublicKey::Rsa(..)) => Some(k.bits()),
         _ => None,
     }
 }
 
 /// Whether `sig` is a signature over `data` by `cert`'s key, made the way LimarePDF signs: RSA
 /// PKCS#1 v1.5 or ECDSA (DER), with `digest`. Shows that a digital ID's key belongs to its
-/// certificate.
+/// certificate, whatever the certificate allows the key to make (an ID limited to RSA-PSS
+/// is refused apart, with its own reason).
 pub(crate) fn signed_by(cert: &Cert, digest: DigestAlg, data: &[u8], sig: &[u8]) -> bool {
     let Ok(key) = PublicKey::from_cert(cert) else {
         return false;
     };
     let scheme = match key {
-        PublicKey::Rsa(_) => Scheme::RsaPkcs1,
+        PublicKey::Rsa(..) => Scheme::RsaPkcs1,
         PublicKey::P256(_) | PublicKey::P384(_) => Scheme::Ecdsa,
     };
     verify_value(&key, scheme, digest, &[data], sig).is_ok()

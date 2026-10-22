@@ -169,6 +169,171 @@ fn removes_characters_of_a_shift_jis_font_whole() {
     assert_eq!(tj[2].as_str().unwrap(), b"B");
 }
 
+/// A page showing `content` with `/F2`, a Type 0 font with its own CMap: codespace lines
+/// `space`, and only the codes `chars` mapped, to Adobe-Japan1 CIDs (34 "A", 36 "C", 37 "D").
+/// CID 34 is 500 wide, every other 1000. No ToUnicode map and no font program.
+fn own_cmap(space: &str, chars: &str, content: &str) -> Pdf {
+    let mut p = make(&[content]);
+    let n = chars.split_whitespace().count() / 2;
+    let cmap = format!(
+        "/CIDInit /ProcSet findresource begin 12 dict begin begincmap \
+         /CIDSystemInfo << /Registry (Adobe) /Ordering (Japan1) /Supplement 2 >> def \
+         /CMapName /Sparse def /CMapType 1 def {space} {n} begincidchar {chars} endcidchar \
+         endcmap CMapName currentdict /CMap defineresource pop end end"
+    );
+    let cmap = p
+        .doc
+        .add_object(Stream::new(Dictionary::new(), cmap.into_bytes()));
+    let desc = p.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "CIDFontType0", "BaseFont" => "HeiseiMin-W3",
+        "CIDSystemInfo" => dictionary! {
+            "Registry" => Object::string_literal("Adobe"),
+            "Ordering" => Object::string_literal("Japan1"),
+            "Supplement" => 2,
+        },
+        "DW" => 1000, "W" => vec![34.into(), vec![500.into()].into()],
+    });
+    let font = p.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type0", "BaseFont" => "HeiseiMin-W3",
+        "Encoding" => cmap, "DescendantFonts" => vec![desc.into()],
+    });
+    let page = p.page_ids()[0];
+    p.doc.get_dictionary_mut(page).unwrap().set(
+        "Resources",
+        dictionary! { "Font" => dictionary! { "F2" => font } },
+    );
+    p
+}
+
+/// Every code is two bytes, but only "A", "C" and "D" are mapped. The middle string holds the
+/// unmapped code `<0042>` and then "A". At 20 pt, poppler reads C at x 10 to 30, the unmapped
+/// code to 50, A to 60 and D to 80.
+fn sparse_cmap() -> Pdf {
+    own_cmap(
+        "1 begincodespacerange <0000> <FFFF> endcodespacerange",
+        "<0041> 34 <0043> 36 <0044> 37",
+        "BT /F2 20 Tf 10 100 Td <0043> Tj <00420041> Tj <0044> Tj ET",
+    )
+}
+
+/// The left and right edges of where `p` reads `s` on page 1.
+fn xs(p: &Pdf, s: &str) -> Vec<[f32; 2]> {
+    let b = p.find_text_boxes(0, s).unwrap();
+    b.iter().map(|b| [b[0], b[2]]).collect()
+}
+
+/// Whether two bytes `pair` appear together in any string page 1's content shows.
+fn shows_pair(p: &Pdf, pair: [u8; 2]) -> bool {
+    let ops = Content::decode(&p.doc.get_page_content(p.page_ids()[0])).unwrap();
+    fn strings(o: &Object, out: &mut Vec<Vec<u8>>) {
+        match o {
+            Object::String(b, _) => out.push(b.clone()),
+            Object::Array(a) => a.iter().for_each(|x| strings(x, out)),
+            _ => {}
+        }
+    }
+    let mut all = Vec::new();
+    for o in &ops.operations {
+        o.operands.iter().for_each(|x| strings(x, &mut all));
+    }
+    all.iter().any(|s| s.windows(2).any(|w| w == pair))
+}
+
+#[test]
+fn reads_codes_of_its_own_cmap_by_the_codespace_as_other_readers_do() {
+    let p = sparse_cmap();
+    assert_eq!(xs(&p, "C"), [[10.0, 30.0]]);
+    assert_eq!(xs(&p, "A"), [[50.0, 60.0]]);
+    assert_eq!(xs(&p, "D"), [[60.0, 80.0]]);
+    // One-byte codes below 0x80, two-byte codes from 0x8140 to 0x9FFC (each byte in its
+    // range). 0x8150 and 0x42 aren't mapped; 0x8120 starts like a two-byte code, so poppler
+    // takes two bytes for it too.
+    let p = own_cmap(
+        "2 begincodespacerange <00> <7F> <8140> <9FFC> endcodespacerange",
+        "<41> 34 <8141> 36 <8142> 37",
+        "BT /F2 20 Tf 10 100 Td <41815042814181208142> Tj ET",
+    );
+    assert_eq!(xs(&p, "A"), [[10.0, 20.0]]);
+    assert_eq!(xs(&p, "C"), [[60.0, 80.0]]);
+    assert_eq!(xs(&p, "D"), [[100.0, 120.0]]);
+    // A one-byte code mapped though it starts like the three-byte codes (as pdf.js's issue
+    // 11768 has): one byte, as poppler and hayro read it.
+    let p = own_cmap(
+        "2 begincodespacerange <00> <7F> <E08080> <EFBFBF> endcodespacerange",
+        "<E0> 34 <43> 36 <44> 37",
+        "BT /F2 20 Tf 10 100 Td <E0E0E04344> Tj ET",
+    );
+    assert_eq!(p.page_text(0), "AAACD");
+    assert_eq!(xs(&p, "C"), [[40.0, 60.0]]);
+    assert_eq!(xs(&p, "D"), [[60.0, 80.0]]);
+}
+
+#[test]
+fn an_area_over_a_character_of_a_sparse_cmap_removes_it_where_other_readers_put_it() {
+    // Over A where poppler reads it.
+    let mut p = sparse_cmap();
+    let rep = p.redact(&[(0, [49.0, 80.0, 61.0, 108.0])]).unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    assert!(!shows_pair(&p, [0x00, 0x41]));
+    assert!(!p.page_text(0).contains('A'), "{}", p.page_text(0));
+    assert_eq!(xs(&p, "C"), [[10.0, 30.0]]);
+    assert_eq!(xs(&p, "D"), [[60.0, 80.0]]);
+    // A mark found by search does the same.
+    let mut p = sparse_cmap();
+    let marks = p.find_redaction_marks("a").unwrap();
+    assert_eq!(marks.len(), 1);
+    assert!(p.redact(&marks).unwrap().left.is_empty());
+    assert!(!shows_pair(&p, [0x00, 0x41]));
+    assert_eq!(xs(&p, "C"), [[10.0, 30.0]]);
+    assert_eq!(xs(&p, "D"), [[60.0, 80.0]]);
+}
+
+/// LimarePDF draws a code that its CMap doesn't map as one byte, as hayro does, so it can draw
+/// a string's later characters elsewhere than other readers put them. An area over where
+/// LimarePDF draws them removes them too.
+#[test]
+fn an_area_over_a_character_where_limarepdf_draws_it_removes_it() {
+    // Poppler: A at x 70 to 80. Drawn: four one-byte codes, then A at x 110 to 120.
+    let mut p = own_cmap(
+        "1 begincodespacerange <0000> <FFFF> endcodespacerange",
+        "<0041> 34 <0043> 36 <0044> 37",
+        "BT /F2 20 Tf 10 100 Td <0043> Tj <004200420041> Tj <0044> Tj ET",
+    );
+    assert_eq!(xs(&p, "A"), [[70.0, 80.0]]);
+    let rep = p.redact(&[(0, [109.0, 80.0, 121.0, 108.0])]).unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    assert!(!shows_pair(&p, [0x00, 0x41]));
+    assert_eq!(xs(&p, "C"), [[10.0, 30.0]]);
+    assert_eq!(xs(&p, "D"), [[80.0, 100.0]]);
+    // A CMap mapping a two-byte code outside its one-byte codespace: read by the codespace,
+    // but drawn as mapped, where poppler puts it too (A at x 10 to 20).
+    let mut p = own_cmap(
+        "1 begincodespacerange <00> <FF> endcodespacerange",
+        "<0041> 34 <43> 36 <44> 37",
+        "BT /F2 20 Tf 10 100 Td <00414344> Tj ET",
+    );
+    let rep = p.redact(&[(0, [9.0, 80.0, 21.0, 108.0])]).unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    assert!(!shows_pair(&p, [0x00, 0x41]));
+}
+
+#[test]
+fn characters_of_a_cmap_without_a_codespace_go_with_their_whole_string() {
+    // Where its codes start and end isn't certain, so a mark over A takes C with it. D, on
+    // the line below, stays.
+    let mut p = own_cmap(
+        "",
+        "<0041> 34 <0043> 36 <0044> 37",
+        "BT /F2 20 Tf 10 100 Td <00430041> Tj 0 -50 Td <0044> Tj ET",
+    );
+    assert_eq!(xs(&p, "A"), [[30.0, 40.0]]);
+    let rep = p.redact(&[(0, [29.0, 80.0, 41.0, 108.0])]).unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    assert!(!shows_pair(&p, [0x00, 0x41]));
+    assert!(!shows_pair(&p, [0x00, 0x43]));
+    assert_eq!(xs(&p, "D"), [[10.0, 30.0]]);
+}
+
 #[test]
 fn keeps_tj_spacing_and_later_strings_in_place() {
     let mut p = make(&["BT /F1 20 Tf 30 100 Td [(Sec) -200 (retX) 50 (Yzw)] TJ ET"]);
@@ -383,6 +548,107 @@ fn drops_a_picture_from_shared_resources_when_no_page_draws_it() {
     assert_eq!(pics.len(), 1);
     assert_eq!(pics[0].2, vec![0]);
     assert!(p.page_text(1).contains("Two"));
+}
+
+/// A picture page 2 still draws, from inside forms nested deeper than redaction redacts into,
+/// stays listed in the resources the pages share after page 1's use of it is blacked out.
+#[test]
+fn keeps_a_shared_picture_another_page_draws_from_deeply_nested_forms() {
+    let mut p = make(&["q 50 0 0 50 100 50 cm /Im1 Do Q", "q /Fm1 Do Q"]);
+    let img = p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Image", "Width" => 1, "Height" => 1,
+            "ColorSpace" => "DeviceGray", "BitsPerComponent" => 8,
+        },
+        vec![0x20],
+    ));
+    // Forms 1 to 12, each drawing the next, without resources of their own; the last draws
+    // the picture.
+    let mut xobjects = dictionary! { "Im1" => img };
+    for i in 1..=12 {
+        let content = if i == 12 {
+            "q 50 0 0 50 100 50 cm /Im1 Do Q".to_string()
+        } else {
+            format!("/Fm{} Do", i + 1)
+        };
+        let bbox: Vec<Object> = [0, 0, 300, 200].into_iter().map(Object::Integer).collect();
+        let fm = p.doc.add_object(Stream::new(
+            dictionary! { "Type" => "XObject", "Subtype" => "Form", "BBox" => bbox },
+            content.into_bytes(),
+        ));
+        xobjects.set(format!("Fm{i}"), fm);
+    }
+    let shared = p.doc.add_object(dictionary! { "XObject" => xobjects });
+    for page in p.page_ids() {
+        p.doc
+            .get_dictionary_mut(page)
+            .unwrap()
+            .set("Resources", shared);
+    }
+    let dark = |p: &mut Pdf| {
+        let doc = render::load(p.snapshot().unwrap(), None).unwrap();
+        let b = render::Renderer::new(&doc).render(1, 1.0).unwrap();
+        b.rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|px| px[0] < 100)
+            .count()
+    };
+    let before = dark(&mut p);
+    assert!(before > 2000, "{before}");
+    let rep = p.redact(&[(0, [110.0, 100.0, 120.0, 110.0])]).unwrap();
+    assert_eq!(rep.pages[0].images_cut, 1);
+    assert_eq!(dark(&mut p), before, "page 2's picture");
+}
+
+/// A form without resources of its own draws `/Pic`, which is a different picture on each
+/// page. Page 1's own use of page 2's picture is blacked out; page 2 still draws it through
+/// the form, so it stays in page 2's resources.
+#[test]
+fn keeps_a_picture_another_page_draws_through_a_form_using_that_page_s_names() {
+    let mut p = make(&["q 50 0 0 50 100 50 cm /Im1 Do Q q /Fm Do Q", "q /Fm Do Q"]);
+    let picture = |p: &mut Pdf, v: u8| {
+        p.doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Image", "Width" => 1, "Height" => 1,
+                "ColorSpace" => "DeviceGray", "BitsPerComponent" => 8,
+            },
+            vec![v],
+        ))
+    };
+    let (img, other) = (picture(&mut p, 0x20), picture(&mut p, 0x40));
+    let bbox: Vec<Object> = [0, 0, 300, 200].into_iter().map(Object::Integer).collect();
+    let fm = p.doc.add_object(Stream::new(
+        dictionary! { "Type" => "XObject", "Subtype" => "Form", "BBox" => bbox },
+        b"q 50 0 0 50 200 120 cm /Pic Do Q".to_vec(),
+    ));
+    let pages = p.page_ids();
+    let xobjects = [
+        dictionary! { "Im1" => img, "Fm" => fm, "Pic" => other },
+        dictionary! { "Fm" => fm, "Pic" => img },
+    ];
+    for (page, xo) in pages.into_iter().zip(xobjects) {
+        p.doc
+            .get_dictionary_mut(page)
+            .unwrap()
+            .set("Resources", dictionary! { "XObject" => xo });
+    }
+    let dark = |p: &mut Pdf| {
+        let doc = render::load(p.snapshot().unwrap(), None).unwrap();
+        let b = render::Renderer::new(&doc).render(1, 1.0).unwrap();
+        b.rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|px| px[0] < 100)
+            .count()
+    };
+    let before = dark(&mut p);
+    assert!(before > 2000, "{before}");
+    let rep = p.redact(&[(0, [110.0, 100.0, 120.0, 110.0])]).unwrap();
+    assert_eq!(rep.pages[0].images_cut, 1);
+    assert_eq!(dark(&mut p), before, "page 2's picture");
 }
 
 /// Two pages drawing the same form, which says "Secret Walrus".
@@ -606,6 +872,212 @@ fn the_saved_output_holds_nothing_of_the_marked_text_or_what_touches_it() {
     assert!(q.page_text(0).contains("Keep"));
 }
 
+/// A tagged page saying "Keep WALRUS-TEXT", the second word in a structure element with
+/// `ancestors` elements above it, the topmost with alternative text; `parent_tree` makes the
+/// page's entry in the parent tree out of the leaf holding it.
+fn tagged_deep(ancestors: usize, parent_tree: impl Fn(&mut Pdf, Object) -> Object) -> Pdf {
+    let content = "BT /F1 20 Tf 30 100 Td (Keep ) Tj ET \
+                   /Span <</MCID 0>> BDC BT /F1 20 Tf 90 100 Td (WALRUS-TEXT) Tj ET EMC";
+    let mut p = make(&[content]);
+    let page = p.page_ids()[0];
+    let root = p.doc.new_object_id();
+    let mut parent = root;
+    let mut top = None;
+    for i in 0..ancestors {
+        let mut d = dictionary! { "Type" => "StructElem", "S" => "Div", "P" => parent };
+        if i == 0 {
+            d.set("Alt", Object::string_literal("WALRUS-TOP-ALT"));
+        }
+        let id = p.doc.add_object(d);
+        if i > 0 {
+            p.doc
+                .get_dictionary_mut(parent)
+                .unwrap()
+                .set("K", vec![Object::Reference(id)]);
+        }
+        top.get_or_insert(id);
+        parent = id;
+    }
+    let elem = p.doc.add_object(dictionary! {
+        "Type" => "StructElem", "S" => "Span", "P" => parent, "Pg" => page, "K" => 0,
+    });
+    if parent != root {
+        p.doc
+            .get_dictionary_mut(parent)
+            .unwrap()
+            .set("K", vec![Object::Reference(elem)]);
+    }
+    let leaf =
+        dictionary! { "Nums" => vec![Object::Integer(0), vec![Object::Reference(elem)].into()] };
+    let leaf = parent_tree(&mut p, leaf.into());
+    p.doc.objects.insert(
+        root,
+        dictionary! {
+            "Type" => "StructTreeRoot", "K" => top.unwrap_or(elem), "ParentTree" => leaf,
+        }
+        .into(),
+    );
+    p.doc
+        .get_dictionary_mut(page)
+        .unwrap()
+        .set("StructParents", 0);
+    let c = p.doc.catalog_mut().unwrap();
+    c.set("StructTreeRoot", root);
+    c.set("MarkInfo", dictionary! { "Marked" => true });
+    p
+}
+
+/// The leaf `levels` kids down a number tree of its own objects.
+fn nested(levels: usize) -> impl Fn(&mut Pdf, Object) -> Object {
+    move |p: &mut Pdf, leaf: Object| {
+        let mut node = p.doc.add_object(leaf);
+        for _ in 0..levels {
+            node = p
+                .doc
+                .add_object(dictionary! { "Kids" => vec![Object::Reference(node)] });
+        }
+        Object::Reference(node)
+    }
+}
+
+/// The alternative text of every element above marked content goes, however many there
+/// are.
+#[test]
+fn alternative_text_far_up_the_structure_tree_goes() {
+    let mut p = tagged_deep(70, nested(0));
+    Saved::of(&mut p).assert_kept(&["WALRUS-TOP-ALT"]);
+    let marks = p.find_redaction_marks("walrus-text").unwrap();
+    let rep = p.redact(&marks).unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["WALRUS"]);
+    saved.assert_kept(&["Keep"]);
+}
+
+/// A parent tree nested too deep to look the page up in makes redaction refuse, with nothing
+/// changed, rather than leave the alternative text of what is under the marks; just inside the
+/// limit, and in a tree that lists itself as a kid, it is found and goes.
+#[test]
+fn a_parent_tree_nested_too_deep_is_refused_unchanged() {
+    let mut p = tagged_deep(1, nested(33));
+    let marks = p.find_redaction_marks("walrus-text").unwrap();
+    // Serialising moves lopdf's object counter on, so copies are compared.
+    let before = p.clone().snapshot().unwrap();
+    let err = format!("{:#}", p.redact(&marks).unwrap_err());
+    assert!(err.contains("nested more than 32 deep"), "{err}");
+    assert_eq!(p.clone().snapshot().unwrap(), before);
+
+    let looped = |p: &mut Pdf, leaf: Object| {
+        let leaf = p.doc.add_object(leaf);
+        let node = p.doc.new_object_id();
+        let kids = vec![Object::Reference(node), Object::Reference(leaf)];
+        p.doc
+            .objects
+            .insert(node, dictionary! { "Kids" => kids }.into());
+        Object::Reference(node)
+    };
+    for mut p in [tagged_deep(1, nested(32)), tagged_deep(1, looped)] {
+        let marks = p.find_redaction_marks("walrus-text").unwrap();
+        let rep = p.redact(&marks).unwrap();
+        assert!(rep.left.is_empty(), "{:?}", rep.left);
+        Saved::of(&mut p).assert_gone(&["WALRUS"]);
+    }
+}
+
+/// A page saying "Keep WALRUS-TEXT", with a widget over the second word `levels` fields below
+/// the form's top-level field, which holds a value.
+fn deep_widget(levels: usize) -> Pdf {
+    let mut p = make(&["BT /F1 20 Tf 30 100 Td (Keep WALRUS-TEXT) Tj ET"]);
+    let page = p.page_ids()[0];
+    let rect: Vec<Object> = [100, 98, 140, 112]
+        .into_iter()
+        .map(Object::Integer)
+        .collect();
+    let widget = p.doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Widget", "Rect" => rect, "P" => page, "F" => 4,
+    });
+    p.doc
+        .get_dictionary_mut(page)
+        .unwrap()
+        .set("Annots", vec![Object::Reference(widget)]);
+    let mut kid = widget;
+    for d in (0..levels).rev() {
+        let node = p.doc.add_object(dictionary! {
+            "T" => Object::string_literal(format!("level-{d}")),
+            "Kids" => vec![Object::Reference(kid)],
+        });
+        p.doc.get_dictionary_mut(kid).unwrap().set("Parent", node);
+        kid = node;
+    }
+    let top = p.doc.get_dictionary_mut(kid).unwrap();
+    top.set("FT", "Tx");
+    top.set("V", Object::string_literal("WALRUS-FIELD-VALUE"));
+    p.doc.catalog_mut().unwrap().set(
+        "AcroForm",
+        dictionary! { "Fields" => vec![Object::Reference(kid)] },
+    );
+    p
+}
+
+/// A parent tree too large to search for the page makes redaction refuse, with nothing changed,
+/// rather than read on and on (audit R05); the same leaf ahead of the rest is found and goes.
+#[test]
+fn a_parent_tree_too_large_to_search_is_refused_unchanged() {
+    let wide = |first: bool| {
+        move |p: &mut Pdf, leaf: Object| {
+            let mut kids: Vec<Object> = (0..100_000)
+                .map(|_| Object::Dictionary(dictionary! {}))
+                .collect();
+            let leaf = Object::Reference(p.doc.add_object(leaf));
+            if first {
+                kids.insert(0, leaf);
+            } else {
+                kids.push(leaf);
+            }
+            Object::Reference(p.doc.add_object(dictionary! { "Kids" => kids }))
+        }
+    };
+    let mut p = tagged_deep(1, wide(false));
+    let marks = p.find_redaction_marks("walrus-text").unwrap();
+    // Serialising moves lopdf's object counter on, so copies are compared.
+    let before = p.clone().snapshot().unwrap();
+    let err = format!("{:#}", p.redact(&marks).unwrap_err());
+    assert!(err.contains("too large to search"), "{err}");
+    assert_eq!(p.clone().snapshot().unwrap(), before);
+
+    let mut p = tagged_deep(1, wide(true));
+    let marks = p.find_redaction_marks("walrus-text").unwrap();
+    let rep = p.redact(&marks).unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    Saved::of(&mut p).assert_gone(&["WALRUS"]);
+}
+
+/// A widget under a mark whose field is nested too deep to follow makes redaction refuse,
+/// with nothing changed, rather than keep the field's value; just inside the limit the field
+/// goes, and a deep field away from the marks doesn't stop redaction.
+#[test]
+fn a_widget_under_a_mark_in_a_form_nested_too_deep_is_refused_unchanged() {
+    let mut p = deep_widget(34);
+    let marks = p.find_redaction_marks("walrus-text").unwrap();
+    // Serialising moves lopdf's object counter on, so copies are compared.
+    let before = p.clone().snapshot().unwrap();
+    let err = format!("{:#}", p.redact(&marks).unwrap_err());
+    assert!(err.contains("nested more than 32 deep"), "{err}");
+    assert_eq!(p.clone().snapshot().unwrap(), before);
+
+    let marks = p.find_redaction_marks("keep").unwrap();
+    p.redact(&marks).unwrap();
+    Saved::of(&mut p).assert_kept(&["WALRUS-TEXT", "WALRUS-FIELD-VALUE"]);
+
+    let mut p = deep_widget(32);
+    let marks = p.find_redaction_marks("walrus-text").unwrap();
+    let rep = p.redact(&marks).unwrap();
+    assert_eq!(rep.pages[0].annots, 1);
+    let saved = Saved::of(&mut p);
+    saved.assert_gone(&["WALRUS"]);
+    assert!(saved.fields().is_empty());
+}
+
 #[test]
 fn works_on_turned_pages() {
     let mut p = make(&["BT /F1 20 Tf 30 100 Td (Keep Zebra Keep) Tj ET"]);
@@ -755,6 +1227,41 @@ fn cross_check_redacted_output_with_poppler_and_ghostscript() {
         "{text}"
     );
     assert!(pages[1].contains("Secret Walrus"), "{text}");
+
+    // An area over a character of a sparse CMap, where poppler puts it: poppler then reads
+    // the characters around it where they were, and nothing under the area.
+    let words = |bytes: &[u8]| -> Vec<(String, f32, f32)> {
+        let html = tools::run("pdftotext", &["-bbox", "{}", "-"], bytes);
+        let attr = |w: &str, k: &str| -> f32 {
+            let v = &w[w.find(&format!("{k}=\"")).unwrap() + k.len() + 2..];
+            v[..v.find('"').unwrap()].parse().unwrap()
+        };
+        html.split("<word ")
+            .skip(1)
+            .map(|w| {
+                let text = &w[w.find('>').unwrap() + 1..w.find("</word>").unwrap()];
+                (text.to_string(), attr(w, "xMin"), attr(w, "xMax"))
+            })
+            .collect()
+    };
+    let mut p = sparse_cmap();
+    let before = words(&p.to_bytes().unwrap());
+    assert_eq!(
+        before,
+        [("C".into(), 10.0, 30.0), ("AD".into(), 50.0, 80.0)],
+        "poppler before"
+    );
+    assert!(p
+        .redact(&[(0, [49.0, 80.0, 61.0, 108.0])])
+        .unwrap()
+        .left
+        .is_empty());
+    let after = words(&p.to_bytes().unwrap());
+    assert_eq!(
+        after,
+        [("C".into(), 10.0, 30.0), ("D".into(), 60.0, 80.0)],
+        "poppler after"
+    );
 }
 
 /// A real public PDF: the Magick++ tutorial ImageMagick installs. Its page 14 has text, a
