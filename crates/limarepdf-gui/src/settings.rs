@@ -7,6 +7,7 @@
 //! `settings.txt` holds `key = value` lines; unknown keys and bad values are ignored. The
 //! files stay on this computer, and failing to read or write them is not an error.
 
+use crate::editor::Tool;
 use crate::signing::SignKit;
 use eframe::egui::ThemePreference;
 use limarepdf_core::page_colours::PageColours;
@@ -150,6 +151,17 @@ pub struct Settings {
     pub sign: SignKit,
     /// Keep recovery copies of documents with unsaved changes (on unless turned off).
     pub recovery: bool,
+    /// Whether the user wants the navigation panel and the inspector open (both on
+    /// unless closed). A narrow window may fold them away for now without changing this.
+    pub navigation_panel: bool,
+    pub inspector_panel: bool,
+    /// The selection's controls are in the inspector instead of a bar floating by the
+    /// selection.
+    pub controls_docked: bool,
+    /// The placing tools pinned to stay active after putting something down.
+    pub keep_tools: Vec<Tool>,
+    /// Form fields are tinted, and required ones outlined (on unless turned off).
+    pub fields_shown: bool,
     /// The window's size in points when it isn't maximized, and whether it was maximized,
     /// when the app last closed.
     pub window: [f32; 2],
@@ -204,6 +216,11 @@ impl Settings {
                     .map(|d| d.join("signatures.txt")),
             ),
             recovery: true,
+            navigation_panel: true,
+            inspector_panel: true,
+            controls_docked: false,
+            keep_tools: Vec::new(),
+            fields_shown: true,
             window: WINDOW_DEFAULT,
             window_maximized: false,
             file,
@@ -253,6 +270,18 @@ impl Settings {
                 "comment_name" => s.author = Some(value.to_string()),
                 "stamp_name_and_date" => s.stamp_name_date = value != "false",
                 "recovery_copies" => s.recovery = value != "false",
+                "navigation_panel" => s.navigation_panel = value != "closed",
+                "inspector_panel" => s.inspector_panel = value != "closed",
+                "selection_controls" => s.controls_docked = value == "docked",
+                "keep_tool_active" => {
+                    s.keep_tools.clear();
+                    for t in value.split(',').filter_map(|t| Tool::from_key(t.trim())) {
+                        if !s.keep_tools.contains(&t) {
+                            s.keep_tools.push(t);
+                        }
+                    }
+                }
+                "form_fields" => s.fields_shown = value != "plain",
                 "window" => {
                     let size = value.split_once('x').and_then(|(w, h)| {
                         window_size([w.trim().parse().ok()?, h.trim().parse().ok()?])
@@ -317,6 +346,27 @@ impl Settings {
         }
         text += &format!("stamp_name_and_date = {}\n", self.stamp_name_date);
         text += &format!("recovery_copies = {}\n", self.recovery);
+        let open = |o: bool| if o { "open" } else { "closed" };
+        text += &format!(
+            "navigation_panel = {}\ninspector_panel = {}\nselection_controls = {}\n",
+            open(self.navigation_panel),
+            open(self.inspector_panel),
+            if self.controls_docked {
+                "docked"
+            } else {
+                "floating"
+            }
+        );
+        let keep: Vec<&str> = self.keep_tools.iter().map(|t| t.key()).collect();
+        text += &format!(
+            "keep_tool_active = {}\nform_fields = {}\n",
+            keep.join(", "),
+            if self.fields_shown {
+                "highlighted"
+            } else {
+                "plain"
+            }
+        );
         text += &format!(
             "window = {} x {}\nwindow_maximized = {}\n",
             self.window[0], self.window[1], self.window_maximized
@@ -457,6 +507,41 @@ mod tests {
                 ("COPY".into(), StampColor::Blue)
             ]
         );
+    }
+
+    #[test]
+    fn panels_and_docking_are_remembered() {
+        let f = file("panels");
+        let s = Settings::from_file(Some(f.clone()));
+        assert!(s.navigation_panel && s.inspector_panel && !s.controls_docked);
+        let mut s = s;
+        (s.navigation_panel, s.controls_docked) = (false, true);
+        s.save();
+        let s = Settings::from_file(Some(f));
+        assert!(!s.navigation_panel && s.inspector_panel && s.controls_docked);
+    }
+
+    #[test]
+    fn pinned_tools_and_field_highlights_are_remembered() {
+        let f = file("pins");
+        let s = Settings::from_file(Some(f.clone()));
+        assert!(s.keep_tools.is_empty() && s.fields_shown);
+        let mut s = s;
+        s.keep_tools = vec![Tool::Stamp, Tool::Redact];
+        s.fields_shown = false;
+        s.save();
+        let s = Settings::from_file(Some(f.clone()));
+        assert_eq!(s.keep_tools, [Tool::Stamp, Tool::Redact]);
+        assert!(!s.fields_shown);
+        // Unknown names, tools that can't be pinned and repeats are left out.
+        std::fs::write(&f, "keep_tool_active = stamp, walrus, , stamp, pen, note\n").unwrap();
+        let s = Settings::from_file(Some(f.clone()));
+        assert_eq!(s.keep_tools, [Tool::Stamp, Tool::Note]);
+        assert!(s.fields_shown);
+        // Every placing tool has a name of its own.
+        for t in Tool::PLACING {
+            assert_eq!(Tool::from_key(t.key()), Some(t));
+        }
     }
 
     #[test]

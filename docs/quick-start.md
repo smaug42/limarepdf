@@ -10,7 +10,8 @@ limarepdf scan.tif photo.jpg        # images open as a new document, one page pe
 ```
 
 Click what you want to work on, and the panel on the right shows its options: the document when nothing is selected,
-pages when you select thumbnails, an object when you select one with the arrow tool. Right-click anything for a short
+pages when you select thumbnails, a picture, shape or comment when you click it, a line of text when you double-click
+it to edit it. Right-click anything for a short
 menu, or press Ctrl+K to search all commands.
 
 See [Using the desktop app](gui.md).

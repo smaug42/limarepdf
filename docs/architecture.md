@@ -133,7 +133,7 @@ appended when no object changed; otherwise every signature is checked before and
 (a signature gone, as flattening the form makes it, is refused), and `sig_sign::newly_disallowed`, shared with
 signing, names the signers whose signature now reports a disallowed change it didn't report before. The app's
 `save_signed` (and the CLI's `save_edited`) call it for a document that had signatures when opened, with the bytes
-kept for the Signatures tab as the base, and fall back to a full rewrite only after asking (encrypted, password
+kept for the Digital signatures view as the base, and fall back to a full rewrite only after asking (encrypted, password
 set, damaged, a read-back failure, or `Tab::scrubbed`: redactions applied or hidden information removed since the
 last save, tracked through undo and redo, since the signed version would keep what was removed). A signed
 document's fields are not drawn into it when it opens (`Tab::new`); the snapshots for display and printing draw

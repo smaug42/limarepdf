@@ -1,11 +1,12 @@
 use crate::about;
 use crate::actions::{self, menu_item, tooltip, Act, Action, Ctx, Group, ACTIONS};
 use crate::banners::Kind as BannerKind;
-use crate::dialogs::{self as dlg, Choice, Outcome};
+use crate::dialogs::{self as dlg, Ask, Btn, Choice, Outcome, Shell};
 use crate::digital::{self, IdsWindow, SignOut, SignWindow};
 use crate::editor::{Action as EdAction, Tool};
 use crate::inspector::{self, Apply, Section};
 use crate::markup;
+use crate::panels::Panel;
 use crate::recent::Recent;
 use crate::selection::Selection;
 use crate::settings::{Layout, Settings};
@@ -202,8 +203,8 @@ struct ImageExport {
 }
 
 /// The tab a question is about, as it was when asked. The answer acts on that tab only
-/// while it is open and unchanged ([`App::still`]): the dialogs don't stop the rest of the
-/// window being used, and a file can finish opening meanwhile.
+/// while it is open and unchanged ([`App::still`]): work in the background, such as a file
+/// finishing opening, goes on while a question is open.
 struct Asked {
     tab: u64,
     /// Boxed, to keep [`Dialog`] small.
@@ -244,7 +245,7 @@ enum Dialog {
     RemoveHidden(Asked, dlg::RemoveHidden),
     /// Save (`true`: as a new file) with this many marked areas not yet applied?
     ConfirmSaveMarks(Asked, bool, usize),
-    Print(Asked, dlg::Print),
+    Print(Asked, Box<dlg::Print>),
     /// Print with fields whose values won't show on paper?
     ConfirmPrintFields(Box<PrintFields>),
     SaveSelection(Asked, dlg::Layout),
@@ -261,6 +262,30 @@ enum Dialog {
     },
     /// Sign a recovered copy of a signed document, which writes the whole file?
     ConfirmSignRecovered(Asked),
+}
+
+impl Dialog {
+    /// The tab the dialog is about, if it is about one.
+    fn asked(&self) -> Option<&Asked> {
+        match self {
+            Dialog::ConfirmClose(a)
+            | Dialog::ConfirmReplace(a, ..)
+            | Dialog::ConfirmFlatten(a)
+            | Dialog::ConfirmFlattenAnnots(a)
+            | Dialog::ConfirmSaveSigned(a, ..)
+            | Dialog::ConfirmSaveRepaired(a)
+            | Dialog::ConfirmApplyRedactions(a, _)
+            | Dialog::ConfirmFinishSigning(a, _)
+            | Dialog::RemoveHidden(a, _)
+            | Dialog::ConfirmSaveMarks(a, ..)
+            | Dialog::Print(a, _)
+            | Dialog::SaveSelection(a, _)
+            | Dialog::ConfirmSignRecovered(a) => Some(a),
+            Dialog::ConfirmSaveDisallowed(s) => Some(&s.asked),
+            Dialog::ConfirmPrintFields(q) => Some(&q.asked),
+            _ => None,
+        }
+    }
 }
 
 /// Why a signed document with redactions applied or hidden information removed is saved
@@ -353,8 +378,92 @@ const OCR_JOB: &str = "Recognise text";
 /// Width of the inspector panel, and of its rail when collapsed.
 const INSPECTOR_WIDTH: f32 = 250.0;
 const RAIL_WIDTH: f32 = 36.0;
-/// Below this window width the inspector collapses to its rail by itself.
+/// Below this window width the inspector collapses to its strip by itself.
 const NARROW_WIDTH: f32 = 960.0;
+/// Below this window width the navigation panel folds away to its rail by itself.
+const SIDE_NARROW_WIDTH: f32 = 760.0;
+
+/// The navigation rail's views, top to bottom. The digital signatures view is opened
+/// from the menu only.
+const NAV_VIEWS: [(Side, Act); 4] = [
+    (Side::Pages, Act::PagesView),
+    (Side::Search, Act::SearchView),
+    (Side::Bookmarks, Act::Bookmarks),
+    (Side::Comments, Act::Comments),
+];
+
+/// A top-bar control that leaves the bar when it is short of room: a tool, into the Tools
+/// menu, or Export or Undo and Redo, which are in the menu (☰) anyway.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Fold {
+    /// The Comment button and its menu.
+    Commenting,
+    Tool(Tool),
+    Export,
+    /// Undo and Redo.
+    History,
+}
+
+impl Fold {
+    /// Its width on the bar, from a button's, a menu caret's and a separator's.
+    fn width(self, btn: f32, caret: f32, sep: f32) -> f32 {
+        match self {
+            Fold::Commenting => sep + btn + caret,
+            // Fill and sign has a menu beside it.
+            Fold::Tool(Tool::Sign) => btn + caret,
+            Fold::Tool(_) | Fold::Export => btn,
+            Fold::History => sep + 2.0 * btn,
+        }
+    }
+}
+
+/// The order controls leave the bar; they come back in reverse. The tools go first,
+/// and only in very narrow windows Export and then Undo and Redo. Read and select text,
+/// the Tools menu, Menu, Open, Save, Search and Print stay.
+const FOLDS: [Fold; 7] = [
+    Fold::Commenting,
+    Fold::Tool(Tool::Image),
+    Fold::Tool(Tool::Redact),
+    Fold::Tool(Tool::Text),
+    Fold::Tool(Tool::Sign),
+    Fold::Export,
+    Fold::History,
+];
+
+/// Widths of the top bar's parts as last drawn, in points; `None` until drawn once.
+#[derive(Clone, Copy, Default)]
+struct BarWidths {
+    /// The left end without the tools of [`FOLDS`].
+    fixed: Option<f32>,
+    /// Each of [`FOLDS`], in its order.
+    folds: [Option<f32>; FOLDS.len()],
+    /// The right end, with the search icon and with the search field.
+    right: [Option<f32>; 2],
+    /// The page layout and zoom controls at the right of the status bar.
+    view: Option<f32>,
+}
+
+/// Extra room a folded control needs before it comes back, so that a width at the
+/// boundary doesn't fold and unfold it by turns.
+const UNFOLD_MARGIN: f32 = 12.0;
+
+/// How many of [`FOLDS`] to fold, given last frame's count `prev`, the room for the left
+/// end of the bar and the width it needs with each count folded.
+fn fold_level(prev: usize, room: f32, need: impl Fn(usize) -> f32) -> usize {
+    let mut n = prev.min(FOLDS.len());
+    while n > 0 && need(n - 1) + UNFOLD_MARGIN <= room {
+        n -= 1;
+    }
+    while n < FOLDS.len() && need(n) > room {
+        n += 1;
+    }
+    n
+}
+
+/// An accessible name for a control showing only an icon.
+fn named(label: &str) -> egui::WidgetInfo {
+    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label)
+}
 
 /// How long the undo toast stays, in seconds.
 const TOAST_SECONDS: f64 = 6.0;
@@ -381,7 +490,8 @@ pub struct App {
     dialog: Dialog,
     tx: Sender<Loaded>,
     rx: Receiver<Loaded>,
-    show_side: bool,
+    /// The navigation panel at the left (its rail of icons is always shown).
+    side: Panel,
     status: String,
     last_title: String,
     quit_ok: bool,
@@ -390,12 +500,14 @@ pub struct App {
     /// Put the keyboard focus in the top bar's search field (Ctrl+F).
     focus_search: bool,
     palette: Option<Palette>,
-    /// The inspector is open (else collapsed to its rail).
-    show_inspector: bool,
-    /// Whether the user wants it open when the window is wide enough.
-    inspector_pref: bool,
-    /// The window was narrower than `NARROW_WIDTH` last frame.
-    narrow: bool,
+    /// The inspector at the right (else collapsed to its strip).
+    inspector: Panel,
+    /// The collapsed inspector's contents are shown in a pop-out over the pages.
+    popout: bool,
+    /// How many tool controls are folded into the Tools menu, from [`FOLDS`].
+    fold: usize,
+    /// The top bar's controls' widths as last drawn.
+    bar_widths: BarWidths,
     /// The window has been fitted to its monitor, at the first frame the monitor's size was known.
     fitted: bool,
     toast: Option<Toast>,
@@ -453,16 +565,17 @@ impl App {
             dialog: Dialog::None,
             tx,
             rx,
-            show_side: true,
+            side: Panel::new(settings.navigation_panel),
             status: String::new(),
             last_title: String::new(),
             quit_ok: false,
             busy: false,
             focus_search: false,
             palette: None,
-            show_inspector: true,
-            inspector_pref: true,
-            narrow: false,
+            inspector: Panel::new(settings.inspector_panel),
+            popout: false,
+            fold: 0,
+            bar_widths: BarWidths::default(),
             fitted: false,
             toast: None,
             recent,
@@ -540,6 +653,8 @@ impl App {
                 self.next_id += 1;
                 // A repaired file counts as changed until the repaired copy is saved.
                 t.dirty = dirty || t.pdf.repaired();
+                t.ed.form.highlight = self.settings.fields_shown;
+                t.ed.keep.clone_from(&self.settings.keep_tools);
                 // The document's own viewer preferences, else the app's defaults. A page
                 // asked for on the command line wins over the document's opening page.
                 let prefs = t.pdf.view_prefs();
@@ -552,7 +667,9 @@ impl App {
                         OpenPanel::Pages => Side::Pages,
                         OpenPanel::Bookmarks => Side::Bookmarks,
                     };
-                    self.show_side = true;
+                    // As the file asks; not saved as the user's choice unless they then
+                    // change a panel themselves.
+                    self.side.set_open(true);
                 }
                 if let Some(p) = page.map(|p| p.saturating_sub(1)).or(prefs.page) {
                     t.go_to(p);
@@ -832,7 +949,7 @@ impl App {
         if let Some(t) = self.tabs.get_mut(self.active) {
             t.ed.set_tool(Tool::DigitalSign);
             t.ed.digital_certify = certify;
-            self.show_inspector = true;
+            self.open_inspector();
         }
     }
 
@@ -860,8 +977,10 @@ impl App {
         ));
     }
 
-    /// The Digital IDs window and the signing window, while open.
+    /// The signing window and the Digital IDs window, while open. The IDs window, opened from
+    /// the signing window, is drawn after it, so it is the one that takes input.
     fn digital_windows(&mut self, ctx: &egui::Context) {
+        self.digital_sign_window(ctx);
         if let Some(mut w) = self.ids_window.take() {
             let out = w.ui(ctx, &self.settings.author());
             if out.changed {
@@ -873,6 +992,9 @@ impl App {
                 self.ids_window = Some(w);
             }
         }
+    }
+
+    fn digital_sign_window(&mut self, ctx: &egui::Context) {
         let Some(mut w) = self.sign_window.take() else {
             return;
         };
@@ -1538,17 +1660,19 @@ impl App {
             Act::ExportImages if has => self.reveal(Section::Export),
             Act::ExportText if has => self.export_text(),
             Act::Print | Act::PrintSelection if has && !self.busy => {
-                let selected = self.tabs[self.active].ed.selection.pages();
-                let pages = selected.map_or("all".into(), inspector::range_text);
+                let t = &self.tabs[self.active];
+                let selected = t.ed.selection.pages();
+                let file = t.title();
                 let selection = (a == Act::PrintSelection).then_some(dlg::Layout::Original);
                 self.dialog = match print::printers() {
                     Ok(list) => Dialog::Print(
                         self.asked(),
-                        dlg::Print {
-                            pages,
+                        Box::new(dlg::Print {
+                            all: selected.is_none(),
+                            pages: selected.map(inspector::range_text).unwrap_or_default(),
                             selection,
-                            ..dlg::Print::new(list)
-                        },
+                            ..dlg::Print::new(list, file)
+                        }),
                     ),
                     Err(e) => Dialog::Message("Print".into(), format!("{e:#}")),
                 }
@@ -1688,28 +1812,27 @@ impl App {
                 self.settings.pictures_too = !self.settings.pictures_too;
                 self.settings.save();
             }
-            Act::ToggleSide => self.show_side = !self.show_side,
-            Act::Bookmarks => {
-                self.show_side = true;
-                self.tabs[self.active].side = Side::Bookmarks;
-            }
-            Act::Comments => {
-                self.show_side = true;
-                self.tabs[self.active].side = Side::Comments;
+            Act::ToggleSide => {
+                self.side.toggle();
+                self.keep_panels();
             }
             Act::ToggleInspector => {
-                self.show_inspector = !self.show_inspector;
-                if !self.narrow {
-                    self.inspector_pref = self.show_inspector;
-                }
+                self.inspector.toggle();
+                self.keep_panels();
+            }
+            Act::ToggleDock => {
+                self.settings.controls_docked = !self.settings.controls_docked;
+                self.settings.save();
             }
             Act::Palette => self.palette = Some(Palette::default()),
             Act::TrustedCertificates => self.trusted = Some(TrustedWindow::load()),
             _ if !has => {}
-            Act::Signatures => {
-                self.show_side = true;
-                self.tabs[self.active].side = Side::Signatures;
-            }
+            Act::PageLabels => self.reveal_labels(),
+            Act::PagesView => self.show_view(Side::Pages),
+            Act::SearchView => self.show_view(Side::Search),
+            Act::Bookmarks => self.show_view(Side::Bookmarks),
+            Act::Comments => self.show_view(Side::Comments),
+            Act::Signatures => self.show_view(Side::Signatures),
             Act::SignatureDetails(i) => {
                 self.sig_details = Some((self.tabs[self.active].id, i));
             }
@@ -1718,9 +1841,14 @@ impl App {
                 let ed = &mut self.tabs[self.active].ed;
                 ed.show_hidden = !ed.show_hidden;
             }
+            // For every document, and remembered between runs.
             Act::ToggleFields => {
-                let form = &mut self.tabs[self.active].ed.form;
-                form.highlight = !form.highlight;
+                let s = &mut self.settings;
+                s.fields_shown = !s.fields_shown;
+                s.save();
+                for t in &mut self.tabs {
+                    t.ed.form.highlight = s.fields_shown;
+                }
             }
             Act::NextField => self.tabs[self.active].ed.form.step(true),
             Act::PrevField => self.tabs[self.active].ed.form.step(false),
@@ -1818,8 +1946,7 @@ impl App {
                 }
             }
             Act::Find => {
-                self.show_side = true;
-                self.tabs[self.active].side = Side::Search;
+                self.show_view(Side::Search);
                 self.focus_search = true;
             }
             Act::ZoomIn => {
@@ -1917,8 +2044,20 @@ impl App {
             Act::Props => self.reveal(Section::Properties),
             Act::Security => self.reveal(Section::Security),
             Act::EditObjectText => {
-                self.show_inspector = true;
+                self.open_inspector();
                 self.tabs[self.active].ed.focus_text_field();
+            }
+            Act::MoveText => self.tabs[self.active].ed.set_tool_keep_sel(Tool::Select),
+            Act::SignWith(pick) => {
+                let ed = &mut self.tabs[self.active].ed;
+                ed.set_tool(Tool::Sign);
+                ed.sign.pick = pick;
+            }
+            Act::CreateSign(role) => {
+                let ed = &mut self.tabs[self.active].ed;
+                ed.set_tool(Tool::Sign);
+                let author = self.settings.author();
+                ed.sign.start_create(role, &author, None);
             }
             Act::ReplaceImage => {
                 let t = &mut self.tabs[self.active];
@@ -1943,13 +2082,45 @@ impl App {
     /// or document sections, so an object or word selection is dropped and a tool that
     /// adds content gives way to the arrow; document-only sections also drop a page
     /// selection.
+    /// Open the inspector's page labels for the selected pages, or the current page.
+    fn reveal_labels(&mut self) {
+        self.reveal(Section::Labels);
+        let t = &mut self.tabs[self.active];
+        if t.ed.selection.pages().is_none() {
+            t.ed.selection = Selection::pages_from([t.current].into());
+        }
+    }
+
+    /// Show one of the navigation panel's views, opening the panel.
+    fn show_view(&mut self, side: Side) {
+        self.side.set_open(true);
+        self.keep_panels();
+        self.tabs[self.active].side = side;
+    }
+
+    /// Open the inspector, as the user's choice.
+    fn open_inspector(&mut self) {
+        self.inspector.set_open(true);
+        self.keep_panels();
+    }
+
+    /// Remember the user's choice of open or closed panels, when it changed.
+    fn keep_panels(&mut self) {
+        let s = &mut self.settings;
+        let now = (self.side.wanted(), self.inspector.wanted());
+        if (s.navigation_panel, s.inspector_panel) != now {
+            (s.navigation_panel, s.inspector_panel) = now;
+            s.save();
+        }
+    }
+
     fn reveal(&mut self, s: Section) {
-        self.show_inspector = true;
+        self.open_inspector();
         let ed = &mut self.tabs[self.active].ed;
         ed.selection.clear_object();
         ed.selection.clear_words();
         if ed.owns_panel() {
-            ed.set_tool(Tool::Select);
+            ed.set_tool(Tool::Read);
         }
         if s.document_only() {
             ed.selection = Selection::None;
@@ -2371,6 +2542,12 @@ impl App {
     fn dialogs(&mut self, ctx: &egui::Context) {
         let mut dialog = std::mem::replace(&mut self.dialog, Dialog::None);
         let mut done = false;
+        // The document a question is about, named under its title.
+        let file = dialog
+            .asked()
+            .and_then(|a| self.tabs.iter().find(|t| t.id == a.tab))
+            .map(Tab::title);
+        let file = file.as_deref();
         match &mut dialog {
             Dialog::None => done = true,
             Dialog::About(page) => done = about::show(ctx, page),
@@ -2386,12 +2563,14 @@ impl App {
             },
             Dialog::OpenLink(url) => match dlg::confirm(
                 ctx,
-                "Open link",
-                &format!(
-                    "This link goes to:\n\n{}\n\nOpen it in your browser or email program?",
-                    limarepdf_core::display_line(url, 300)
+                Ask::new(
+                    "Open link?",
+                    &format!(
+                        "This link goes to:\n\n{}\n\nOpen it in your browser or email program?",
+                        limarepdf_core::display_line(url, 300)
+                    ),
+                    Btn::primary("Open link"),
                 ),
-                "Open link",
             ) {
                 Outcome::Apply => {
                     ctx.open_url(egui::OpenUrl::new_tab(url.as_str()));
@@ -2402,9 +2581,12 @@ impl App {
             },
             Dialog::ConfirmClose(asked) => match dlg::confirm(
                 ctx,
-                "Unsaved changes",
-                "This document has unsaved changes. Close it anyway?",
-                "Discard changes",
+                Ask::new(
+                    "Close without saving?",
+                    "This document has changes that aren't saved. Closing it loses them.",
+                    Btn::danger("Discard changes"),
+                )
+                .file(file),
             ) {
                 Outcome::Apply => {
                     if self.still(asked) {
@@ -2417,9 +2599,11 @@ impl App {
             },
             Dialog::ConfirmQuit => match dlg::confirm(
                 ctx,
-                "Unsaved changes",
-                "Some documents have unsaved changes. Quit anyway?",
-                "Quit without saving",
+                Ask::new(
+                    "Quit without saving?",
+                    "Some documents have changes that aren't saved. Quitting loses them.",
+                    Btn::danger("Quit without saving"),
+                ),
             ) {
                 Outcome::Apply => {
                     self.quit_ok = true;
@@ -2438,7 +2622,8 @@ impl App {
                 Outcome::Open => {}
             },
             Dialog::RecoveryFile { title, text, file } => {
-                match dlg::choose(ctx, title, text, "OK", "Show file") {
+                let (ok, show) = (Btn::primary("OK"), Btn::plain("Show file"));
+                match dlg::choose(ctx, Shell::new(title), text, ok, show, false) {
                     Choice::Second => {
                         let file = file.clone();
                         self.show_file(&file);
@@ -2450,13 +2635,19 @@ impl App {
             _ if self.tabs.is_empty() => done = true,
             Dialog::ConfirmReplace(asked, e, n) => match dlg::confirm(
                 ctx,
-                "Replace files?",
-                &format!(
-                    "{n} file(s) in {} already have the names these images would get. \
-                     Replace them?",
-                    e.dir.display()
-                ),
-                "Replace",
+                Ask::new(
+                    "Replace files?",
+                    &format!(
+                        "{} in {} already {} the names these images would get. Replacing \
+                         {} can't be undone.",
+                        plural(*n, "A file", "{n} files"),
+                        e.dir.display(),
+                        if *n == 1 { "has" } else { "have" },
+                        if *n == 1 { "it" } else { "them" },
+                    ),
+                    Btn::danger("Replace"),
+                )
+                .file(file),
             ) {
                 Outcome::Apply => {
                     if self.still(asked) {
@@ -2469,11 +2660,14 @@ impl App {
             },
             Dialog::ConfirmFlatten(asked) => match dlg::confirm(
                 ctx,
-                "Flatten form?",
-                "The fields become part of the pages, as they look now, and can no longer be \
-                 filled in, here or in other readers. Undo brings them back until you close \
-                 the document.",
-                "Flatten",
+                Ask::new(
+                    "Flatten form?",
+                    "The fields become part of the pages, as they look now, and can no longer \
+                     be filled in, here or in other readers. Undo brings them back until you \
+                     close the document.",
+                    Btn::primary("Flatten form"),
+                )
+                .file(file),
             ) {
                 Outcome::Apply => {
                     if self.still(asked) {
@@ -2491,12 +2685,15 @@ impl App {
             },
             Dialog::ConfirmFlattenAnnots(asked) => match dlg::confirm(
                 ctx,
-                "Flatten annotations?",
-                "Comments, notes, highlights and drawings become part of the pages, as they \
-                 look now, and can no longer be changed or removed, here or in other readers. \
-                 Their comment text is dropped. Links and form fields stay. Undo brings them \
-                 back until you close the document.",
-                "Flatten",
+                Ask::new(
+                    "Flatten annotations?",
+                    "Comments, notes, highlights and drawings become part of the pages, as \
+                     they look now, and can no longer be changed or removed, here or in other \
+                     readers. Their comment text is dropped. Links and form fields stay. Undo \
+                     brings them back until you close the document.",
+                    Btn::primary("Flatten annotations"),
+                )
+                .file(file),
             ) {
                 Outcome::Apply => {
                     if self.still(asked) {
@@ -2512,16 +2709,20 @@ impl App {
             },
             Dialog::ConfirmApplyRedactions(asked, n) => match dlg::confirm(
                 ctx,
-                "Apply redactions?",
-                &format!(
-                    "Everything under {} is removed from the document for good: text (hidden \
-                     text too), the covered parts of pictures, drawings, and comments, links and \
-                     form fields. The areas are painted black, and the marks go. LimarePDF then checks \
-                     that nothing readable is left under them. Undo brings it all back until you \
-                     close the document; once saved, it is gone from the file.",
-                    plural(*n, "the marked area", "the {n} marked areas")
-                ),
-                "Apply",
+                Ask::new(
+                    &plural(*n, "Apply 1 redaction?", "Apply {n} redactions?"),
+                    &format!(
+                        "Everything under {} is removed from the document: text (hidden text \
+                         too), the covered parts of pictures, drawings, and comments, links \
+                         and form fields. The areas are painted black, and the marks go. \
+                         LimarePDF then checks that nothing readable is left under them. Undo \
+                         brings it all back until you close the document; once saved, it is \
+                         gone from the file.",
+                        plural(*n, "the marked area", "the {n} marked areas")
+                    ),
+                    Btn::danger("Apply redactions"),
+                )
+                .file(file),
             ) {
                 Outcome::Apply => {
                     if self.still(asked) {
@@ -2534,20 +2735,24 @@ impl App {
             },
             Dialog::ConfirmFinishSigning(asked, n) => match dlg::confirm(
                 ctx,
-                "Finish signing?",
-                &format!(
-                    "{} drawn into the pages, as {} now. After that {} can't be moved or \
-                     removed like a comment. Undo brings {} back until you close the document.",
-                    plural(
-                        *n,
-                        "The item you put down with the Sign tool is",
-                        "The {n} items you put down with the Sign tool are"
+                Ask::new(
+                    "Finish signing?",
+                    &format!(
+                        "{} drawn into the pages, as {} now. After that {} can't be moved or \
+                         removed like a comment. Undo brings {} back until you close the \
+                         document.",
+                        plural(
+                            *n,
+                            "The item you put down with the Sign tool is",
+                            "The {n} items you put down with the Sign tool are"
+                        ),
+                        if *n == 1 { "it looks" } else { "they look" },
+                        if *n == 1 { "it" } else { "they" },
+                        if *n == 1 { "it" } else { "them" },
                     ),
-                    if *n == 1 { "it looks" } else { "they look" },
-                    if *n == 1 { "it" } else { "they" },
-                    if *n == 1 { "it" } else { "them" },
-                ),
-                "Finish signing",
+                    Btn::primary("Finish signing"),
+                )
+                .file(file),
             ) {
                 Outcome::Apply => {
                     if self.still(asked) {
@@ -2559,7 +2764,7 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
-            Dialog::RemoveHidden(asked, s) => match dlg::remove_hidden(ctx, s) {
+            Dialog::RemoveHidden(asked, s) => match dlg::remove_hidden(ctx, file, s) {
                 Outcome::Apply => {
                     let what: Vec<limarepdf_core::Hidden> = s
                         .kinds
@@ -2579,15 +2784,18 @@ impl App {
                 let as_new = *as_new;
                 match dlg::confirm(
                     ctx,
-                    "Save without applying the redactions?",
-                    &format!(
-                        "This document has {} marked for redaction but not applied: nothing \
-                         under the marks has been removed, and anyone can still read it. Apply \
-                         them first with Document > Apply redactions, or save the marks to \
-                         finish or review later.",
-                        plural(*n, "an area", "{n} areas")
-                    ),
-                    "Save with marks",
+                    Ask::new(
+                        "Save without applying the redactions?",
+                        &format!(
+                            "This document has {} marked for redaction but not applied: \
+                             nothing under the marks has been removed, and anyone can still \
+                             read it. Apply them first with Document > Apply redactions, or \
+                             save the marks to finish or review later.",
+                            plural(*n, "an area", "{n} areas")
+                        ),
+                        Btn::danger("Save with marks"),
+                    )
+                    .file(file),
                 ) {
                     Outcome::Apply => {
                         if self.still(asked) {
@@ -2601,12 +2809,13 @@ impl App {
             }
             Dialog::ConfirmSaveRepaired(asked) => match dlg::choose(
                 ctx,
-                "Replace the damaged original?",
+                Shell::new("Replace the damaged original?").file(file),
                 "LimarePDF repaired this file to open it, and some of its content may be missing \
                  from the repair. Saving over it replaces the original for good. Save as a new \
                  file to keep the original as it is.",
-                "Save as…",
-                "Replace original",
+                Btn::primary("Save as…"),
+                Btn::danger("Replace original"),
+                true,
             ) {
                 Choice::First => {
                     if self.still(asked) {
@@ -2627,15 +2836,18 @@ impl App {
                 let as_new = *as_new;
                 match dlg::confirm(
                     ctx,
-                    "Break the signatures?",
-                    &format!(
-                        "This document is digitally signed, but LimarePDF can't add your changes after \
-                         what was signed: {}. Saving instead writes the whole file again, so the \
-                         saved copy's signatures will show as invalid in every reader. Save as a \
-                         new file to keep the signed original.",
+                    Ask::new(
+                        "Break the signatures?",
+                        "This document is digitally signed, and saving your changes writes the \
+                         whole file again, so the saved copy's signatures will show as invalid \
+                         in every reader. Save as a new file to keep the signed original.",
+                        Btn::danger("Save anyway"),
+                    )
+                    .file(file)
+                    .details(&format!(
+                        "LimarePDF can't add your changes after what was signed: {}.",
                         limarepdf_core::display_line(why, 300)
-                    ),
-                    "Save anyway",
+                    )),
                 ) {
                     Outcome::Apply => {
                         if self.still(asked) {
@@ -2650,15 +2862,19 @@ impl App {
             Dialog::ConfirmSaveDisallowed(s) => {
                 match dlg::confirm(
                     ctx,
-                    "Save changes the signers didn't allow?",
-                    &format!(
-                        "Your changes are ones this document's signatures don't allow. If you \
-                         save, anyone who checks them will be told:\n{}\n\nThe signatures stay \
-                         valid for what was signed. Save as a new file to keep the signed \
-                         original as it is.",
+                    Ask::new(
+                        "Save changes the signers didn't allow?",
+                        "Your changes are ones this document's signatures don't allow. The \
+                         signatures stay valid for what was signed, but anyone who checks them \
+                         will be told about these changes. Save as a new file to keep the \
+                         signed original as it is.",
+                        Btn::danger("Save anyway"),
+                    )
+                    .file(file)
+                    .details(&format!(
+                        "What checking the signatures will report:\n{}",
                         digital::disallowed_list(&s.disallowed)
-                    ),
-                    "Save anyway",
+                    )),
                 ) {
                     Outcome::Apply => {
                         let as_new = s.as_new;
@@ -2708,22 +2924,23 @@ impl App {
                         });
                         done = true;
                     } else {
-                        match parse_page_range(&s.pages, t.page_count()) {
+                        match parse_page_range(s.range(), t.page_count()) {
                             Ok(pages) => {
                                 let fields = t.pdf.unprintable_fields(&pages);
                                 if fields.is_empty() {
                                     self.start_print(ctx, pages, opts);
                                 } else {
-                                    self.dialog = Dialog::ConfirmPrintFields(Box::new(PrintFields {
-                                        asked: Asked::of(t),
-                                        fields,
-                                        pages,
-                                        opts,
-                                    }));
+                                    self.dialog =
+                                        Dialog::ConfirmPrintFields(Box::new(PrintFields {
+                                            asked: Asked::of(t),
+                                            fields,
+                                            pages,
+                                            opts,
+                                        }));
                                 }
                                 done = true;
                             }
-                            Err(e) => t.error = Some(e.to_string()),
+                            Err(e) => s.error = Some(e.to_string()),
                         }
                     }
                 }
@@ -2737,13 +2954,16 @@ impl App {
                 };
                 match dlg::confirm(
                     ctx,
-                    "Print without these fields?",
-                    &format!(
-                        "{these} won't show on paper, because LimarePDF can't draw {values}: \
-                         {}.\n\nPrint anyway?",
-                        limarepdf_core::quoted_list(&q.fields)
-                    ),
-                    "Print anyway",
+                    Ask::new(
+                        "Print without these fields?",
+                        &format!(
+                            "{these} won't show on paper, because LimarePDF can't draw \
+                             {values}: {}.",
+                            limarepdf_core::quoted_list(&q.fields)
+                        ),
+                        Btn::primary("Print anyway"),
+                    )
+                    .file(file),
                 ) {
                     Outcome::Apply => {
                         if self.still(&q.asked) {
@@ -2756,7 +2976,7 @@ impl App {
                     Outcome::Open => {}
                 }
             }
-            Dialog::SaveSelection(asked, layout) => match dlg::save_selection(ctx, layout) {
+            Dialog::SaveSelection(asked, layout) => match dlg::save_selection(ctx, file, layout) {
                 Outcome::Apply => {
                     let layout = *layout;
                     done = true;
@@ -2769,14 +2989,17 @@ impl App {
             },
             Dialog::ConfirmSignRecovered(asked) => match dlg::confirm(
                 ctx,
-                "Break the signatures?",
-                &format!(
-                    "This document is digitally signed, but LimarePDF can't add your signature \
-                     after what was signed: {RECOVERED}. Signing instead writes the whole file \
-                     again, so the earlier signatures will show as invalid in every reader. Open \
-                     the original to sign it with its signatures kept."
-                ),
-                "Sign anyway",
+                Ask::new(
+                    "Break the signatures?",
+                    "This document is digitally signed, and signing this copy writes the whole \
+                     file again, so the earlier signatures will show as invalid in every \
+                     reader. Open the original to sign it with its signatures kept.",
+                    Btn::danger("Sign anyway"),
+                )
+                .file(file)
+                .details(&format!(
+                    "LimarePDF can't add your signature after what was signed: {RECOVERED}."
+                )),
             ) {
                 Outcome::Apply => {
                     if self.still(asked) {
@@ -2808,8 +3031,9 @@ impl App {
     fn state(&self, ctx: &egui::Context) -> Ctx {
         let mut c = Ctx {
             busy: self.busy || self.sign_window.as_ref().is_some_and(SignWindow::busy),
-            side: self.show_side,
-            inspector: self.show_inspector,
+            side: self.side.shown(),
+            inspector: self.inspector.shown(),
+            docked: self.settings.controls_docked,
             theme: ctx.options(|o| o.theme_preference),
             page_look: self.settings.page_look,
             pictures_too: self.settings.pictures_too,
@@ -2938,17 +3162,34 @@ impl App {
     /// consumed, as before (Esc also closes menus). Nothing runs while the palette is
     /// open; it handles its own keys.
     fn shortcuts(&mut self, ctx: &egui::Context) {
-        if self.palette.is_some() {
+        // A dialog handles its own keys.
+        if self.palette.is_some() || dlg::any_open(ctx) {
+            return;
+        }
+        // Esc closes the inspector's pop-out first, keeping what was changed in it, and
+        // the keyboard goes back to the button that opened it.
+        if self.popout && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
+            self.popout = false;
+            if let Some(id) = ctx.data(|d| d.get_temp(egui::Id::new(POPOUT_OPENER))) {
+                ctx.memory_mut(|m| m.request_focus(id));
+            }
             return;
         }
         let c = self.state(ctx);
         let typing = ctx.egui_wants_keyboard_input();
+        // Undo and Redo while a line of page text is edited on the page take back typing
+        // in its box; Undo takes back the whole edit once it is kept.
+        let line = self
+            .tabs
+            .get(self.active)
+            .is_some_and(|t| t.ed.editing_line());
         let mut acts = Vec::new();
         ctx.input_mut(|i| {
             for (a, k) in actions::shortcuts() {
                 let page_only = matches!(a.act, Act::Copy | Act::SelectAllText);
                 let global = k.modifiers.command && !page_only;
-                if (typing && !global) || !(a.enabled)(&c) {
+                let in_box = line && typing && matches!(a.act, Act::Undo | Act::Redo);
+                if (typing && !global) || in_box || !(a.enabled)(&c) {
                     continue;
                 }
                 let hit = if a.act == Act::Copy {
@@ -2957,7 +3198,12 @@ impl App {
                 } else if global {
                     i.consume_shortcut(&k)
                 } else {
-                    i.modifiers.matches_logically(k.modifiers) && i.key_pressed(k.logical_key)
+                    // The key's own modifiers, not those held at the end of the frame: a
+                    // quick Ctrl+A can arrive with Ctrl already let go.
+                    i.events.iter().any(|e| {
+                        matches!(e, egui::Event::Key { key, pressed: true, modifiers, .. }
+                            if *key == k.logical_key && modifiers.matches_logically(k.modifiers))
+                    })
                 };
                 if hit {
                     acts.push(a.act);
@@ -2972,6 +3218,18 @@ impl App {
 
 /// A toolbar button for a command: (ui, command, shown as on, where clicks go).
 type BarButton<'a> = &'a dyn Fn(&mut egui::Ui, Act, bool, &mut Vec<Act>);
+
+/// The small menu beside the Fill and sign button: signatures and initials (saved ones
+/// and Create), the date, your name, text and marks.
+fn sign_button_menu(ui: &mut egui::Ui, menu: &crate::signing::SignMenu, acts: &mut Vec<Act>) {
+    ui.add_space(-ui.spacing().item_spacing.x);
+    ui.menu_button(theme::icon(icon::CARET_DOWN).size(10.0), |ui| {
+        crate::signing::menu_ui(ui, menu, acts);
+    })
+    .response
+    .on_hover_text("Signatures, initials, date, name, text and marks")
+    .widget_info(|| named("Fill and sign choices"));
+}
 
 /// The Annotate button: the annotation tool last used, and a small menu beside it for
 /// the others.
@@ -2998,54 +3256,237 @@ fn annotate_button(
         }
     })
     .response
-    .on_hover_text("Annotate");
+    .on_hover_text("Commenting tools")
+    .widget_info(|| named("Commenting tools"));
 }
 
-/// The tools as one menu button showing the current tool, for narrow windows.
+/// The Tools menu button: every tool, those folded off the bar among them. It shows
+/// `hidden`, the current tool when that one isn't on the bar, highlighted.
 fn tool_menu(
     ui: &mut egui::Ui,
     tools: Vec<&Action>,
+    hidden: Option<Tool>,
     is_on: &dyn Fn(&Action) -> bool,
     acts: &mut Vec<Act>,
 ) {
-    let on = tools.iter().find(|a| is_on(a));
-    let current = on.map_or(icon::HAND, |a| a.icon);
+    let current = tools
+        .iter()
+        .find(|a| hidden.is_some_and(|t| a.act == Act::Tool(t)))
+        .map_or(icon::TOOLBOX, |a| a.icon);
     let label = (
         theme::icon(current).size(18.0),
         theme::icon(icon::CARET_DOWN).size(10.0),
     );
-    ui.menu_button(label, |ui| {
-        for a in tools {
-            let b = egui::Button::new((theme::icon(a.icon).size(16.0), a.label)).selected(is_on(a));
-            if ui.add(b).clicked() {
-                acts.push(a.act);
-                ui.close();
+    let button = egui::Button::new(label)
+        .selected(hidden.is_some())
+        .frame_when_inactive(hidden.is_some());
+    egui::containers::menu::MenuButton::from_button(button)
+        .ui(ui, |ui| {
+            for a in tools {
+                let b =
+                    egui::Button::new((theme::icon(a.icon).size(16.0), a.label)).selected(is_on(a));
+                if ui.add(b).clicked() {
+                    acts.push(a.act);
+                    ui.close();
+                }
             }
-        }
-    })
-    .response
-    .on_hover_text("Tools");
+        })
+        .0
+        .on_hover_text("Tools: every tool, including those without room on the bar")
+        .widget_info(|| named("Tools"));
 }
 
-/// The collapsed inspector: a rail with an icon and an arrow, clickable as a whole, so
-/// it is clear that a panel slides out here. Returns true when clicked.
-fn inspector_rail(ui: &mut egui::Ui) -> bool {
-    let rect = ui.max_rect();
-    let id = egui::Id::new("inspector-rail-click");
-    let r = ui
-        .interact(rect, id, egui::Sense::click())
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text("Show the inspector: options for the selection or the document");
-    if r.hovered() {
-        let fill = ui.visuals().widgets.hovered.weak_bg_fill;
-        ui.painter().rect_filled(rect, 0, fill);
+/// A document tab: its title, and a close button inside its frame. Returns whether the
+/// title or the close button was clicked.
+fn tab_button(ui: &mut egui::Ui, title: &str, on: bool) -> (bool, bool) {
+    let v = ui.visuals();
+    let fill = if on {
+        v.selection.bg_fill.gamma_multiply(0.35)
+    } else {
+        v.faint_bg_color
+    };
+    let stroke = if on {
+        egui::Stroke::new(1.0, v.selection.stroke.color)
+    } else {
+        v.widgets.noninteractive.bg_stroke
+    };
+    egui::Frame::new()
+        .fill(fill)
+        .stroke(stroke)
+        .corner_radius(5)
+        .inner_margin(egui::Margin {
+            left: 8,
+            right: 2,
+            top: 1,
+            bottom: 1,
+        })
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            let text = egui::RichText::new(title);
+            let text = if on { text.strong() } else { text };
+            let pick = ui.add(egui::Button::new(text).frame(false)).clicked();
+            let x = egui::Button::new(theme::icon(icon::X).size(12.0))
+                .frame_when_inactive(false)
+                .min_size(egui::vec2(20.0, 20.0));
+            let x = ui.add(x);
+            x.widget_info(|| named(&format!("Close {title}")));
+            (pick, x.on_hover_text("Close tab").clicked())
+        })
+        .inner
+}
+
+/// An icon button with its name as tooltip and accessible name.
+fn icon_button(ui: &mut egui::Ui, glyph: &str, name: &str) -> egui::Response {
+    let b = egui::Button::new(theme::icon(glyph).size(16.0))
+        .frame_when_inactive(false)
+        .min_size(egui::vec2(26.0, 26.0));
+    let r = ui.add(b);
+    r.widget_info(|| named(name));
+    r.on_hover_text(name)
+}
+
+/// The button that takes docked selection buttons back to a bar by the selection.
+fn float_button(ui: &mut egui::Ui, acts: &mut Vec<Act>) {
+    let name = "Float controls near selection";
+    if icon_button(ui, icon::PICTURE_IN_PICTURE, name).clicked() {
+        acts.push(Act::ToggleDock);
     }
+}
+
+/// The collapsed inspector: a strip with a button to expand it at the top, the docked
+/// selection buttons (`groups`, empty when floating or nothing is selected) with the
+/// float button, and a button for the inspector's contents in a pop-out. Returns
+/// whether expand, and the pop-out button, were clicked.
+fn inspector_strip(
+    ui: &mut egui::Ui,
+    groups: &[Vec<&'static Action>],
+    c: &Ctx,
+    acts: &mut Vec<Act>,
+) -> (bool, bool) {
+    let mut clicked = (false, false);
     ui.vertical_centered(|ui| {
-        ui.add_space(6.0);
-        ui.label(theme::icon(icon::SLIDERS_HORIZONTAL).size(18.0));
-        ui.label(theme::icon(icon::CARET_DOUBLE_LEFT).size(12.0).weak());
+        ui.add_space(4.0);
+        clicked.0 = icon_button(ui, icon::CARET_DOUBLE_LEFT, "Expand the inspector").clicked();
+        ui.separator();
+        if !groups.is_empty() {
+            actions::context_buttons(ui, groups, c, acts);
+            ui.separator();
+            float_button(ui, acts);
+            ui.separator();
+        }
+        let options = "Options for the selection or the document";
+        let r = icon_button(ui, icon::SLIDERS_HORIZONTAL, options);
+        ui.data_mut(|d| d.insert_temp(egui::Id::new(POPOUT_OPENER), r.id));
+        clicked.1 = r.clicked();
     });
-    r.clicked()
+    clicked
+}
+
+/// The inspector's contents: the editor's section for a selected object or words or a
+/// tool that adds content; otherwise the selected pages or the document. Returns a
+/// panel command pressed.
+fn inspector_body(
+    s: &mut Settings,
+    t: &mut Tab,
+    ui: &mut egui::Ui,
+    c: &Ctx,
+) -> Option<inspector::Apply> {
+    let mut apply = None;
+    t.guarded(|t| {
+        if !t.ed.owns_panel() {
+            apply = inspector::show(ui, t, c);
+            return;
+        }
+        // Stamp choices and the author's name are app-wide: lent to the tab's inspector
+        // and saved when it changes them.
+        let author = s.author();
+        t.ed.author = author.clone();
+        t.ed.stamp_name_date = s.stamp_name_date;
+        t.ed.stamp_pictures = s.stamp_pictures.clone();
+        t.ed.stamp_wordings = s.stamp_wordings.clone();
+        t.ed.sign_kit = s.sign.clone();
+        t.ed.keep.clone_from(&s.keep_tools);
+        t.ed.inspector(ui);
+        if t.ed.keep != s.keep_tools {
+            s.keep_tools.clone_from(&t.ed.keep);
+            s.save();
+        }
+        if std::mem::take(&mut t.ed.apply_redactions) {
+            t.requested.push(Act::ApplyRedactions);
+        }
+        if std::mem::take(&mut t.ed.finish_signing) {
+            t.requested.push(Act::FinishSigning);
+        }
+        if std::mem::take(&mut t.ed.sign_digital) {
+            t.requested.push(Act::SignDigital);
+        }
+        if t.ed.sign_kit != s.sign {
+            s.sign = t.ed.sign_kit.clone();
+            s.sign.save();
+        }
+        if (
+            t.ed.stamp_name_date,
+            &t.ed.stamp_pictures,
+            &t.ed.stamp_wordings,
+            &t.ed.author,
+        ) != (
+            s.stamp_name_date,
+            &s.stamp_pictures,
+            &s.stamp_wordings,
+            &author,
+        ) {
+            s.stamp_name_date = t.ed.stamp_name_date;
+            s.stamp_pictures = t.ed.stamp_pictures.clone();
+            s.stamp_wordings = t.ed.stamp_wordings.clone();
+            if t.ed.author != author {
+                s.author = Some(t.ed.author.clone());
+            }
+            s.save();
+        }
+    });
+    apply
+}
+
+/// Where the inspector strip keeps the id of its button that opens the pop-out.
+const POPOUT_OPENER: &str = "inspector-popout-opener";
+
+/// The inspector's contents in a pop-out over the pages, left of its strip (`strip`),
+/// for windows too narrow for the panel. Changes made in it stay when it closes. Returns
+/// a panel command pressed, and whether it stays open: a click outside it (and outside
+/// the strip, whose button opens and closes it) closes it, as Esc does (see
+/// `App::shortcuts`).
+fn inspector_popout(
+    ctx: &egui::Context,
+    strip: egui::Rect,
+    s: &mut Settings,
+    t: &mut Tab,
+    c: &Ctx,
+) -> (Option<inspector::Apply>, bool) {
+    let mut apply = None;
+    let height = (strip.height() - 16.0).max(120.0);
+    let area = egui::Area::new(egui::Id::new("inspector-popout"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(egui::pos2(strip.left() - 4.0, strip.top() + 4.0))
+        .pivot(egui::Align2::RIGHT_TOP)
+        .constrain(true)
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_width(INSPECTOR_WIDTH);
+                ui.heading(inspector::title(t));
+                ui.add_space(4.0);
+                egui::ScrollArea::vertical()
+                    .max_height(height)
+                    .show(ui, |ui| apply = inspector_body(s, t, ui, c));
+            });
+        });
+    let clicked_outside = ctx.input(|i| {
+        let at = i.pointer.interact_pos();
+        i.pointer.any_click()
+            && at.is_some_and(|p| !area.response.rect.contains(p) && !strip.contains(p))
+    });
+    // A menu or colour picker opened from the pop-out is outside it, but part of it.
+    let child_open = egui::Popup::is_any_open(ctx);
+    (apply, !(clicked_outside && !child_open))
 }
 
 /// One row of the command palette: icon, label, then group and shortcut on the right.
@@ -3267,13 +3708,11 @@ impl eframe::App for App {
             }
         }
 
-        // Collapse the inspector when the window becomes narrow; when it becomes wide
-        // again, restore what the user last chose at full width.
-        let narrow = ctx.content_rect().width() < NARROW_WIDTH;
-        if narrow != self.narrow {
-            self.show_inspector = !narrow && self.inspector_pref;
-            self.narrow = narrow;
-        }
+        // Narrow windows fold the panels away for now; they come back with room, unless the
+        // user closed them (see `Panel`).
+        let width = ctx.content_rect().width();
+        self.side.set_narrow(width < SIDE_NARROW_WIDTH);
+        self.inspector.set_narrow(width < NARROW_WIDTH);
 
         self.shortcuts(&ctx);
 
@@ -3294,168 +3733,199 @@ impl eframe::App for App {
                 .frame_when_inactive(on)
                 .min_size(egui::vec2(28.0, 28.0));
             let tip = tooltip(ui.ctx(), a);
-            let r = ui.add_enabled((a.enabled)(&c), b);
+            let enabled = (a.enabled)(&c);
+            let r = ui.add_enabled(enabled, b);
+            let name = a.label.trim_end_matches('…');
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
             if r.on_hover_text(tip).clicked() {
                 acts.push(act);
             }
         };
         let menu_icon = |glyph: &str| theme::icon(glyph).size(18.0);
+        // The saved signatures for the Fill and sign button's menu.
+        let sign_menu = self
+            .tabs
+            .get_mut(self.active)
+            .map(|t| t.ed.sign.menu(&ctx, &self.settings.sign));
 
         let mut right_acts: Vec<Act> = Vec::new();
+        // A search was run from the top bar: its results show in the navigation panel.
+        let mut searched = false;
 
         egui::Panel::top("topbar")
             .frame(theme::bar_frame(ui.style()))
             .show(ui, |ui| {
                 // Width budget, so the two ends never overlap: on narrower windows the
-                // search field becomes an icon, and then the tools fold into one menu.
-                // (The file name is on the tab and in the window title.)
+                // search field becomes an icon, and then the tools fold one by one into
+                // the Tools menu, in the order of FOLDS; they come back as room returns.
+                // The widths are the controls' own, measured as they were last drawn
+                // (in points, so at any display scale), and estimated until then. (The
+                // file name is on the tab and in the window title.)
                 let sp = ui.spacing();
                 let btn = (18.0 + 2.0 * sp.button_padding.x).max(28.0) + sp.item_spacing.x;
+                let caret = 10.0 + 2.0 * sp.button_padding.x + sp.item_spacing.x;
                 let sep = 2.0 * sp.item_spacing.x;
-                // Search field with its icon, and the zoom percentage.
-                let (field, pct) = (180.0 + 18.0 + 2.0 * sp.item_spacing.x, 64.0);
-                // Theme, Export menu, Print, search, then fit, zoom in, zoom out and the
-                // page layout menu.
+                let gap = sp.item_spacing.x;
+                let widths = std::cell::RefCell::new(self.bar_widths);
+                let m = self.bar_widths;
+                // Print, then the search field (with its icon) or the search icon.
                 let right = |with_field: bool| {
-                    let search = if with_field { field } else { btn };
-                    3.0 * btn + search + sep + 3.0 * btn + pct + sep + btn
+                    let guess = btn + if with_field { 180.0 + 18.0 + 2.0 * gap } else { btn };
+                    m.right[usize::from(with_field)].unwrap_or(guess)
                 };
-                // Menu, Open, Save, Undo, Redo and three separators, then the tools.
-                let left = |tools: f32| 5.0 * btn + 3.0 * sep + tools;
-                // Eight tools (Sign among them), then the Annotate button with its menu.
-                let inline = 11.0 * btn;
-                let w = ui.available_width() - 16.0;
-                let search_field = w >= left(inline) + right(true);
-                let tools_inline = w >= left(inline) + right(search_field);
+                // Menu, Open, Save, Read, the Tools menu and two separators, then the
+                // controls not folded away.
+                let need = |folded: usize| {
+                    let tools: f32 = (folded..FOLDS.len())
+                        .map(|i| m.folds[i].unwrap_or(FOLDS[i].width(btn, caret, sep)))
+                        .sum();
+                    m.fixed.unwrap_or(4.0 * btn + caret + 2.0 * sep) + tools
+                };
+                // The room between the two sides, which `Sides` keeps apart.
+                let w = ui.available_width() - 2.0 * gap;
+                let search_field = w >= need(0) + right(true);
+                self.fold = fold_level(self.fold, w - right(search_field), need);
+                let (folded, shown) = FOLDS.split_at(self.fold);
+                // A tool control's width on the bar: what drawing it added.
+                let measure = |ui: &mut egui::Ui, f: Fold, draw: &mut dyn FnMut(&mut egui::Ui)| {
+                    let before = ui.min_rect().width();
+                    draw(ui);
+                    let i = FOLDS.iter().position(|g| *g == f).unwrap_or(0);
+                    widths.borrow_mut().folds[i] = Some(ui.min_rect().width() - before);
+                };
 
                 let left_side = |ui: &mut egui::Ui| {
                     ui.menu_button(menu_icon(icon::LIST), |ui| {
                         Self::menu(ui, &c, &recent, &mut acts);
                     })
                     .response
-                    .on_hover_text("Menu");
+                    .on_hover_text("Menu")
+                    .widget_info(|| named("Menu"));
                     bar(ui, Act::Open, false, &mut acts);
                     if !has {
                         return;
                     }
                     ui.separator();
                     bar(ui, Act::Save, false, &mut acts);
-                    ui.separator();
-                    bar(ui, Act::Undo, false, &mut acts);
-                    bar(ui, Act::Redo, false, &mut acts);
-                    ui.separator();
-                    let tools = ACTIONS.iter().filter(|a| a.group == Group::Tools);
-                    let is_on = |a: &Action| matches!(a.act, Act::Tool(t) if c.tool == Some(t));
-                    let annotate =
-                        |a: &&Action| matches!(a.act, Act::Tool(t) if Tool::ANNOTATE.contains(&t));
-                    if tools_inline {
-                        for a in tools.clone().filter(|a| !annotate(a)) {
-                            bar(ui, a.act, is_on(a), &mut acts);
-                        }
-                        ui.separator();
-                        let annot_tools = tools.filter(annotate).collect();
-                        annotate_button(ui, annot_tools, &c, &bar, &mut acts);
-                    } else {
-                        tool_menu(ui, tools.collect(), &is_on, &mut acts);
+                    if !folded.contains(&Fold::Export) {
+                        measure(ui, Fold::Export, &mut |ui| {
+                            let export = egui::Button::new(menu_icon(icon::EXPORT))
+                                .frame_when_inactive(false)
+                                .min_size(egui::vec2(28.0, 28.0));
+                            egui::containers::menu::MenuButton::from_button(export)
+                                .ui(ui, |ui| {
+                                    for act in [Act::ExportImages, Act::ExportText] {
+                                        menu_item(ui, actions::get(act), &c, &mut acts);
+                                    }
+                                })
+                                .0
+                                .on_hover_text("Export")
+                                .widget_info(|| named("Export"));
+                        });
                     }
+                    if !folded.contains(&Fold::History) {
+                        measure(ui, Fold::History, &mut |ui| {
+                            ui.separator();
+                            bar(ui, Act::Undo, false, &mut acts);
+                            bar(ui, Act::Redo, false, &mut acts);
+                        });
+                    }
+                    ui.separator();
+                    let is_on = |a: &Action| matches!(a.act, Act::Tool(t) if c.tool == Some(t));
+                    bar(ui, Act::Tool(Tool::Read), c.tool == Some(Tool::Read), &mut acts);
+                    for t in [Tool::Text, Tool::Image, Tool::Redact, Tool::Sign] {
+                        if !folded.contains(&Fold::Tool(t)) {
+                            measure(ui, Fold::Tool(t), &mut |ui| {
+                                bar(ui, Act::Tool(t), c.tool == Some(t), &mut acts);
+                                if let Some(menu) = sign_menu.as_ref().filter(|_| t == Tool::Sign) {
+                                    sign_button_menu(ui, menu, &mut acts);
+                                }
+                            });
+                        }
+                    }
+                    if !folded.contains(&Fold::Commenting) {
+                        measure(ui, Fold::Commenting, &mut |ui| {
+                            ui.separator();
+                            let commenting = ACTIONS
+                                .iter()
+                                .filter(|a| matches!(a.act, Act::Tool(t) if Tool::COMMENTING.contains(&t)))
+                                .collect();
+                            annotate_button(ui, commenting, &c, &bar, &mut acts);
+                        });
+                    }
+                    // Every tool, the folded ones among them; it shows the current tool
+                    // when that one isn't on the bar.
+                    let inline = |t: Tool| {
+                        t == Tool::Read
+                            || shown.iter().any(|f| match f {
+                                Fold::Tool(u) => *u == t,
+                                Fold::Commenting => Tool::COMMENTING.contains(&t),
+                                Fold::Export | Fold::History => false,
+                            })
+                    };
+                    let hidden = c.tool.filter(|t| !inline(*t));
+                    let tools = ACTIONS.iter().filter(|a| a.group == Group::Tools).collect();
+                    tool_menu(ui, tools, hidden, &is_on, &mut acts);
+                    // Plus the spacing before the next item, as the measured controls have.
+                    let mut w = widths.borrow_mut();
+                    let tools: f32 = (folded.len()..FOLDS.len()).filter_map(|i| w.folds[i]).sum();
+                    w.fixed = Some(ui.min_rect().width() + gap - tools);
                 };
                 let right_side = |ui: &mut egui::Ui| {
                     let acts = &mut right_acts;
-                    // The theme, at the far right, with or without a document.
-                    let glyph = match c.theme {
-                        egui::ThemePreference::Light => icon::SUN,
-                        egui::ThemePreference::Dark => icon::MOON,
-                        egui::ThemePreference::System => icon::CIRCLE_HALF,
-                    };
-                    ui.menu_button(menu_icon(glyph), |ui| {
-                        let themes = ACTIONS.iter().filter(|a| matches!(a.act, Act::Theme(_)));
-                        for a in themes {
-                            menu_item(ui, a, &c, acts);
-                        }
-                    })
-                    .response
-                    .on_hover_text("Theme: follow the system, light or dark");
                     if !has {
                         return;
                     }
-                    ui.menu_button(menu_icon(icon::EXPORT), |ui| {
-                        for act in [Act::ExportImages, Act::ExportText] {
-                            menu_item(ui, actions::get(act), &c, acts);
-                        }
-                    })
-                    .response
-                    .on_hover_text("Export");
-                    bar(ui, Act::Print, false, acts);
                     let t = &mut self.tabs[self.active];
-                    if search_field {
-                        let r = ui.add(
-                            egui::TextEdit::singleline(&mut t.query)
-                                .hint_text("Search")
-                                .desired_width(180.0),
-                        );
-                        // Laid out right to left, so this lands left of the field.
-                        ui.label(theme::icon(icon::MAGNIFYING_GLASS).weak());
-                        if std::mem::take(&mut self.focus_search) {
-                            r.request_focus();
-                        }
-                        if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                            t.run_search();
-                            t.side = Side::Search;
-                            self.show_side = true;
-                        }
-                    } else {
-                        bar(ui, Act::Find, false, acts);
-                    }
-                    ui.separator();
-                    // Highlighted while the zoom follows the width.
-                    bar(ui, Act::FitWidth, c.fit, acts);
-                    bar(ui, Act::ZoomIn, false, acts);
-                    // The zoom level; clicking it resets to actual size.
-                    let level = format!("{:.0}%", t.zoom * 100.0);
-                    let b = egui::Button::new(level).frame_when_inactive(false);
-                    let tip = tooltip(ui.ctx(), actions::get(Act::Actual));
-                    if ui.add(b).on_hover_text(tip).clicked() {
-                        acts.push(Act::Actual);
-                    }
-                    bar(ui, Act::ZoomOut, false, acts);
-                    ui.separator();
-                    // The page layout, its icon showing the current one.
-                    let glyph = actions::get(Act::Layout(c.layout)).icon;
-                    ui.menu_button(menu_icon(glyph), |ui| {
-                        let layouts = ACTIONS.iter().filter(|a| a.submenu == "Page layout");
-                        for a in layouts {
-                            if a.sep {
-                                ui.separator();
+                    let last = m.right[usize::from(search_field)].map(|w| w - gap);
+                    let used = dlg::reading_order(ui, last, |ui| {
+                        if search_field {
+                            ui.label(theme::icon(icon::MAGNIFYING_GLASS).weak());
+                            let r = ui.add(
+                                egui::TextEdit::singleline(&mut t.query)
+                                    .hint_text("Search")
+                                    .desired_width(180.0),
+                            );
+                            dlg::set_name(&r, "Search");
+                            if std::mem::take(&mut self.focus_search) {
+                                r.request_focus();
                             }
-                            menu_item(ui, a, &c, acts);
+                            if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                                t.run_search();
+                                searched = true;
+                            }
+                        } else {
+                            bar(ui, Act::Find, false, acts);
                         }
-                    })
-                    .response
-                    .on_hover_text("Page layout");
+                        bar(ui, Act::Print, false, acts);
+                    });
+                    widths.borrow_mut().right[usize::from(search_field)] = Some(used + gap);
                 };
-                // The right side is laid out first; the left gets what remains.
+                // The left side is laid out first, so Tab goes through the bar from left
+                // to right; the folding above keeps it out of the right side's room.
                 egui::Sides::new()
-                    .shrink_left()
+                    .shrink_right()
                     .height(28.0)
                     .show(ui, left_side, right_side);
+                self.bar_widths = widths.into_inner();
             });
         acts.append(&mut right_acts);
+        if searched {
+            self.show_view(Side::Search);
+        }
 
         if has {
             egui::Panel::top("tabs").show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     let mut close = None;
                     for i in 0..self.tabs.len() {
-                        if ui
-                            .selectable_label(i == self.active, self.tabs[i].title())
-                            .clicked()
-                        {
+                        let (pick, x) = tab_button(ui, &self.tabs[i].title(), i == self.active);
+                        if pick {
                             self.active = i;
                         }
-                        if ui.small_button("×").clicked() {
+                        if x {
                             close = Some(i);
                         }
-                        ui.add_space(6.0);
                     }
                     if let Some(i) = close {
                         self.active = i;
@@ -3465,17 +3935,18 @@ impl eframe::App for App {
             });
         }
 
+        // The status bar: the page and messages at the left; the page layout, Fit width
+        // and the zoom at the right.
         egui::Panel::bottom("status").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if let Some(t) = self.tabs.get(self.active) {
+            let t = self.tabs.get(self.active);
+            let status = |ui: &mut egui::Ui| {
+                if let Some(t) = t {
                     let (n, name) = (t.current + 1, t.page_name(t.current));
                     ui.label(if name == n.to_string() {
                         format!("Page {n} of {}", t.page_count())
                     } else {
                         format!("Page {name} ({n} of {})", t.page_count())
                     });
-                    ui.separator();
-                    ui.label(format!("{:.0}%", t.zoom * 100.0));
                     if t.encryption.is_some() {
                         ui.separator();
                         ui.label("will be encrypted on save");
@@ -3485,23 +3956,97 @@ impl eframe::App for App {
                     ui.separator();
                     ui.label(&self.status);
                 }
-            });
+            };
+            let last = &mut self.bar_widths.view;
+            let view = |ui: &mut egui::Ui| {
+                let Some(t) = t else { return };
+                *last = Some(dlg::reading_order(ui, *last, |ui| {
+                    // The page layout, its icon showing the current one.
+                    let glyph = actions::get(Act::Layout(c.layout)).icon;
+                    ui.menu_button(menu_icon(glyph), |ui| {
+                        let layouts = ACTIONS.iter().filter(|a| a.submenu == "Page layout");
+                        for a in layouts {
+                            if a.sep {
+                                ui.separator();
+                            }
+                            menu_item(ui, a, &c, &mut acts);
+                        }
+                    })
+                    .response
+                    .on_hover_text("Page layout")
+                    .widget_info(|| named("Page layout"));
+                    // Highlighted while the zoom follows the width.
+                    bar(ui, Act::FitWidth, c.fit, &mut acts);
+                    bar(ui, Act::ZoomOut, false, &mut acts);
+                    // The zoom level; clicking it resets to actual size.
+                    let level = format!("{:.0}%", t.zoom * 100.0);
+                    let b = egui::Button::new(level).frame_when_inactive(false);
+                    let tip = tooltip(ui.ctx(), actions::get(Act::Actual));
+                    if ui.add(b).on_hover_text(tip).clicked() {
+                        acts.push(Act::Actual);
+                    }
+                    bar(ui, Act::ZoomIn, false, &mut acts);
+                }));
+            };
+            egui::Sides::new()
+                .shrink_left()
+                .truncate()
+                .show(ui, status, view);
         });
 
-        if has && self.show_side {
+        // The navigation rail at the left edge: one icon per view. Clicking another view
+        // opens it; clicking the open one folds the panel away, and again brings it back.
+        if has {
+            let t = &self.tabs[self.active];
+            let open = self.side.shown();
+            let mut pick = None;
+            egui::Panel::left("nav-rail")
+                .resizable(false)
+                .exact_size(RAIL_WIDTH)
+                .show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(4.0);
+                        for (side, act) in NAV_VIEWS {
+                            let a = actions::get(act);
+                            let on = open && t.side == side;
+                            let b = egui::Button::new(theme::icon(a.icon).size(18.0))
+                                .selected(on)
+                                .frame_when_inactive(on)
+                                .min_size(egui::vec2(28.0, 28.0));
+                            let r = ui.add(b);
+                            r.widget_info(|| named(a.label));
+                            if r.on_hover_text(a.label).clicked() {
+                                pick = Some(side);
+                            }
+                        }
+                    });
+                });
+            if let Some(side) = pick {
+                if open && t.side == side {
+                    self.side.set_open(false);
+                    self.keep_panels();
+                } else {
+                    self.show_view(side);
+                }
+            }
+        }
+
+        if has && self.side.shown() {
             let active = self.active;
             egui::Panel::left("side")
                 .resizable(true)
                 .default_size(170.0)
                 .show(ui, |ui| {
                     let t = &mut self.tabs[active];
-                    ui.horizontal_wrapped(|ui| {
-                        ui.selectable_value(&mut t.side, Side::Pages, "Pages");
-                        ui.selectable_value(&mut t.side, Side::Search, "Search");
-                        ui.selectable_value(&mut t.side, Side::Bookmarks, "Bookmarks");
-                        ui.selectable_value(&mut t.side, Side::Comments, "Comments");
-                        ui.selectable_value(&mut t.side, Side::Signatures, "Signatures");
-                    });
+                    let heading = match t.side {
+                        Side::Pages => "Pages",
+                        Side::Search => "Search results",
+                        Side::Bookmarks => "Bookmarks",
+                        Side::Comments => "Comments",
+                        Side::Signatures => "Digital signatures",
+                    };
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(heading).family(theme::semibold()));
                     ui.separator();
                     t.guarded(|t| match t.side {
                         Side::Pages => t.show_thumbs(ui, &c),
@@ -3554,16 +4099,32 @@ impl eframe::App for App {
 
         // The inspector: the editor's section for a selected object or words or a tool
         // that adds content; otherwise the selected pages or the document.
-        // Collapsed, it is a thin rail at the right edge that slides the panel back out.
+        // Docked, the selection's buttons head the panel, with one to float them again.
+        // Collapsed, it is a strip at the right edge: a button that brings the panel back,
+        // the docked buttons, and one for the panel's contents in a pop-out over the pages.
         let mut panel_apply = None;
         if has {
-            let t = &mut self.tabs[self.active];
-            // "Reply…" in the Comments tab types in the inspector.
-            if t.ed.reply_focus {
-                self.show_inspector = true;
+            // "Reply…" in the Comments view types in the inspector.
+            if self.tabs[self.active].ed.reply_focus && !self.inspector.shown() {
+                self.open_inspector();
+                self.popout = false;
             }
-            let mut open = self.show_inspector;
-            let mut toggle = false;
+            let t = &mut self.tabs[self.active];
+            // As the floating bar: words, a comment or an object, not pages or nothing.
+            let selected = matches!(
+                t.ed.selection,
+                Selection::Words { .. } | Selection::Annot { .. } | Selection::Object { .. }
+            );
+            let groups = if self.settings.controls_docked && selected {
+                actions::toolbar_items(&t.ed.selection, &c)
+            } else {
+                Vec::new()
+            };
+            let mut open = self.inspector.shown();
+            let (mut toggle, mut pop) = (false, false);
+            let mut strip = None;
+            let mut panel_acts = Vec::new();
+            let s = &mut self.settings;
             let rail = egui::Panel::right("inspector-rail")
                 .resizable(false)
                 .exact_size(RAIL_WIDTH);
@@ -3572,7 +4133,8 @@ impl eframe::App for App {
                 .default_size(INSPECTOR_WIDTH);
             egui::Panel::show_switched(ui, &mut open, rail, full, |ui, expanded| {
                 if !expanded {
-                    toggle = inspector_rail(ui);
+                    (toggle, pop) = inspector_strip(ui, &groups, &c, &mut panel_acts);
+                    strip = Some(ui.max_rect());
                     return;
                 }
                 // The heading stays put above the scrolling content, with the
@@ -3584,76 +4146,47 @@ impl eframe::App for App {
                     |ui| {
                         let hide = egui::Button::new(theme::icon(icon::CARET_DOUBLE_RIGHT))
                             .frame_when_inactive(false);
-                        if ui.add(hide).on_hover_text("Hide the inspector").clicked() {
+                        let r = ui.add(hide);
+                        r.widget_info(|| named("Collapse the inspector"));
+                        if r.on_hover_text("Collapse the inspector").clicked() {
                             toggle = true;
                         }
                     },
                 );
+                if !groups.is_empty() {
+                    ui.horizontal_wrapped(|ui| {
+                        actions::context_buttons(ui, &groups, &c, &mut panel_acts);
+                        ui.separator();
+                        float_button(ui, &mut panel_acts);
+                    });
+                    ui.separator();
+                }
                 ui.add_space(4.0);
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        t.guarded(|t| {
-                            if t.ed.owns_panel() {
-                                // Stamp choices and the author's name are app-wide:
-                                // lent to the tab's inspector and saved when it
-                                // changes them.
-                                let s = &mut self.settings;
-                                let author = s.author();
-                                t.ed.author = author.clone();
-                                t.ed.stamp_name_date = s.stamp_name_date;
-                                t.ed.stamp_pictures = s.stamp_pictures.clone();
-                                t.ed.stamp_wordings = s.stamp_wordings.clone();
-                                t.ed.sign_kit = s.sign.clone();
-                                t.ed.inspector(ui);
-                                if std::mem::take(&mut t.ed.apply_redactions) {
-                                    t.requested.push(Act::ApplyRedactions);
-                                }
-                                if std::mem::take(&mut t.ed.finish_signing) {
-                                    t.requested.push(Act::FinishSigning);
-                                }
-                                if std::mem::take(&mut t.ed.sign_digital) {
-                                    t.requested.push(Act::SignDigital);
-                                }
-                                if t.ed.sign_kit != s.sign {
-                                    s.sign = t.ed.sign_kit.clone();
-                                    s.sign.save();
-                                }
-                                if (
-                                    t.ed.stamp_name_date,
-                                    &t.ed.stamp_pictures,
-                                    &t.ed.stamp_wordings,
-                                    &t.ed.author,
-                                ) != (
-                                    s.stamp_name_date,
-                                    &s.stamp_pictures,
-                                    &s.stamp_wordings,
-                                    &author,
-                                ) {
-                                    s.stamp_name_date = t.ed.stamp_name_date;
-                                    s.stamp_pictures = t.ed.stamp_pictures.clone();
-                                    s.stamp_wordings = t.ed.stamp_wordings.clone();
-                                    if t.ed.author != author {
-                                        s.author = Some(t.ed.author.clone());
-                                    }
-                                    s.save();
-                                }
-                            } else {
-                                panel_apply = inspector::show(ui, t, &c);
-                            }
-                        })
-                    });
+                    .show(ui, |ui| panel_apply = inspector_body(s, t, ui, &c));
             });
             if toggle {
                 open = !open;
             }
             // Also catches the panel being dragged closed or open.
-            if open != self.show_inspector {
-                self.show_inspector = open;
-                if !self.narrow {
-                    self.inspector_pref = open;
-                }
+            if open != self.inspector.shown() {
+                self.inspector.set_open(open);
+                self.keep_panels();
             }
+            if pop {
+                self.popout = !self.popout;
+            }
+            if self.inspector.shown() {
+                self.popout = false;
+            }
+            if let Some(strip) = strip.filter(|_| self.popout) {
+                let t = &mut self.tabs[self.active];
+                let (apply, keep) = inspector_popout(&ctx, strip, &mut self.settings, t, &c);
+                panel_apply = panel_apply.or(apply);
+                self.popout = keep;
+            }
+            acts.extend(panel_acts);
         }
         if let Some(apply) = panel_apply {
             let name = apply.name();
@@ -3664,9 +4197,13 @@ impl eframe::App for App {
             .fill(theme::canvas(ui.visuals().dark_mode))
             .inner_margin(0);
         let author = self.settings.author();
+        let (keep, fields) = (&self.settings.keep_tools, self.settings.fields_shown);
         egui::CentralPanel::default().frame(canvas).show(ui, |ui| {
             if let Some(t) = self.tabs.get_mut(self.active) {
+                // App-wide choices, lent to the tab.
                 t.ed.author = author;
+                t.ed.keep.clone_from(keep);
+                t.ed.form.highlight = fields;
                 t.guarded(|t| t.show_pages(ui, &c));
                 if let Some(why) = &t.broken {
                     broken_state(ui, why, &mut acts);
@@ -3675,6 +4212,17 @@ impl eframe::App for App {
                 empty_state(ui, &recent, &mut acts);
             }
         });
+
+        // The Create signature window, whether or not the inspector is showing; a
+        // signature made is saved with the others.
+        if let Some(t) = self.tabs.get_mut(self.active) {
+            t.ed.sign_kit.clone_from(&self.settings.sign);
+            t.ed.sign_window(ui.ctx());
+            if t.ed.sign_kit != self.settings.sign {
+                self.settings.sign = t.ed.sign_kit.clone();
+                self.settings.sign.save();
+            }
+        }
 
         // Surface errors raised by tab operations.
         if let Some(t) = self.tabs.get_mut(self.active) {
@@ -3717,10 +4265,12 @@ impl eframe::App for App {
         for a in acts {
             self.run_command(&ctx, actions::name(a), |app, ctx| app.act(ctx, a));
         }
-        self.dialogs(&ctx);
+        // The dialog drawn last takes input: messages and questions go last, as they can
+        // come from the windows before them.
         self.restore_window(&ctx);
         self.signature_windows(&ctx);
         self.digital_windows(&ctx);
+        self.dialogs(&ctx);
 
         let title = match self.tabs.get(self.active) {
             Some(t) => format!("{} - LimarePDF", t.title()),
@@ -3822,6 +4372,36 @@ mod tests {
 
     /// An app with `n` tabs of one blank page, each with an unsaved change (a second page),
     /// and the last one active. Nothing is read from or written to the user's settings.
+    /// A bar where each folded control saves 40 points: 400 with none folded.
+    fn need(folded: usize) -> f32 {
+        400.0 - 40.0 * folded as f32
+    }
+
+    #[test]
+    fn tools_fold_in_order_as_room_shrinks_and_return_as_it_grows() {
+        assert_eq!(fold_level(0, 400.0, need), 0);
+        assert_eq!(fold_level(0, 399.0, need), 1);
+        assert_eq!(fold_level(0, 300.0, need), 3);
+        // Read and select text never folds: the count stops at every control in FOLDS.
+        assert_eq!(fold_level(0, 10.0, need), FOLDS.len());
+        assert_eq!(fold_level(FOLDS.len(), 1000.0, need), 0);
+        assert_eq!(FOLDS[0], Fold::Commenting);
+        // The tools go before Export, and Undo and Redo last.
+        assert_eq!(FOLDS[4], Fold::Tool(Tool::Sign));
+        assert_eq!(FOLDS[FOLDS.len() - 1], Fold::History);
+    }
+
+    #[test]
+    fn a_width_at_the_boundary_does_not_fold_and_unfold_by_turns() {
+        // Folded one at 399; at 400 to 405 it stays folded, coming back with the margin.
+        let mut n = fold_level(0, 399.0, need);
+        for room in [400.0, 405.0, 399.5, 404.0] {
+            n = fold_level(n, room, need);
+            assert_eq!(n, 1, "at {room}");
+        }
+        assert_eq!(fold_level(n, 400.0 + UNFOLD_MARGIN, need), 0);
+    }
+
     fn app_with(ctx: &egui::Context, n: usize) -> App {
         let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
         for _ in 0..n {
@@ -3833,6 +4413,239 @@ mod tests {
         }
         app.active = n - 1;
         app
+    }
+
+    /// Draw the whole window `width` points wide with `events`, and return its AccessKit tree.
+    fn window(
+        app: &mut App,
+        ctx: &egui::Context,
+        width: f32,
+        events: Vec<egui::Event>,
+    ) -> egui::accesskit::TreeUpdate {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width, 800.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut out = ctx.run_ui(raw, |ui| eframe::App::ui(app, ui, &mut frame));
+        out.textures_delta.clear();
+        out.platform_output
+            .accesskit_update
+            .expect("the window's widgets")
+    }
+
+    /// The names of the controls Tab can reach, drawn `width` points wide once settled.
+    fn focusable(app: &mut App, ctx: &egui::Context, width: f32) -> Vec<Option<String>> {
+        for _ in 0..4 {
+            window(app, ctx, width, vec![]);
+        }
+        let tree = window(app, ctx, width, vec![]);
+        tree.nodes
+            .iter()
+            .filter(|(_, n)| n.supports_action(egui::accesskit::Action::Focus))
+            .map(|(_, n)| n.label().map(str::to_string))
+            .collect()
+    }
+
+    #[test]
+    fn every_control_has_a_name_at_every_width() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        for width in [1400.0, 1000.0, 760.0, 560.0, 400.0] {
+            let names = focusable(&mut app, &ctx, width);
+            // Besides egui's own panel resize handles, which have no name.
+            let unnamed = names.iter().filter(|n| n.is_none()).count();
+            let handles = usize::from(app.side.shown()) + usize::from(app.inspector.shown());
+            assert!(unnamed <= handles, "{unnamed} unnamed at {width}");
+            for name in [
+                "Menu",
+                "Open",
+                "Save",
+                "Read and select text",
+                "Tools",
+                "Print",
+            ] {
+                assert!(names.contains(&Some(name.into())), "no {name} at {width}");
+            }
+        }
+    }
+
+    #[test]
+    fn tab_goes_through_the_bars_in_reading_order() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let mut reached = tab_walk(&mut app, &ctx, 1400.0, 30);
+        // Not the zoom level, which depends on the window.
+        reached.retain(|name| !name.ends_with('%'));
+        let bars = [
+            "Menu",
+            "Open",
+            "Save",
+            "Export",
+            "Undo", // Redo is disabled: nothing was undone.
+            "Read and select text",
+            "Add text",
+            "Add image",
+            "Mark areas for redaction",
+            "Fill and sign",
+            "Fill and sign choices",
+            "Add a note",
+            "Commenting tools",
+            "Tools",
+            "Search",
+            "Print",
+            "Untitled *",
+            "Close Untitled *",
+            "Page layout",
+            "Fit width",
+            "Zoom out",
+            "Zoom in",
+            "Pages",
+            "Search results",
+            "Bookmarks",
+            "Comments",
+            "Page 1",
+        ];
+        assert_eq!(reached[..bars.len()], bars);
+    }
+
+    /// The names of the controls Tab reaches in turn, from the window's first one, `n`
+    /// presses.
+    fn tab_walk(app: &mut App, ctx: &egui::Context, width: f32, n: usize) -> Vec<String> {
+        focusable(app, ctx, width);
+        let tab = egui::Event::Key {
+            key: Key::Tab,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let mut reached = Vec::new();
+        for _ in 0..n {
+            let tree = window(app, ctx, width, vec![tab.clone()]);
+            let focus = tree.nodes.iter().find(|(id, _)| *id == tree.focus);
+            if let Some(name) = focus.and_then(|(_, n)| n.label()) {
+                reached.push(name.to_string());
+            }
+        }
+        reached
+    }
+
+    /// A dialog's fields are named, and Tab goes through them and then its buttons in the
+    /// order they are shown.
+    #[test]
+    fn tab_goes_through_dialogs_in_reading_order() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let footer = |action: &'static str| {
+            let pair = [action, "Cancel"];
+            if dlg::ACTION_FIRST {
+                pair
+            } else {
+                [pair[1], pair[0]]
+            }
+        };
+        let printer = print::Printer {
+            name: "limarepdf-test-no-such-printer".into(),
+            default: true,
+        };
+        let print = dlg::Print::new(vec![printer], "test.pdf".into());
+        app.dialog = Dialog::Print(app.asked(), Box::new(print));
+        let mut want = vec![
+            "Printer",
+            "All pages",
+            "Page range",
+            "Page range",
+            "Copies",
+            "One side",
+            "Both sides, flip on long edge",
+            "Both sides, flip on short edge",
+        ];
+        if !cfg!(windows) {
+            want.push("Advanced");
+        }
+        want.extend(footer("Print"));
+        assert_eq!(tab_walk(&mut app, &ctx, 1200.0, want.len()), want);
+
+        app.dialog = Dialog::None;
+        app.act(&ctx, Act::CreateSign(limarepdf_core::SignRole::Signature));
+        let mut want = vec![
+            "Draw",
+            "Type",
+            "Image",
+            "Drawing area: sign with the mouse or a pen",
+            "Black ink",
+            "Blue ink",
+            "Save for next time",
+        ];
+        want.extend(footer("Use signature"));
+        assert_eq!(tab_walk(&mut app, &ctx, 1200.0, want.len()), want);
+    }
+
+    #[test]
+    fn esc_closes_the_inspector_pop_out_and_focuses_its_button() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        // Narrow enough to fold the inspector into its strip.
+        focusable(&mut app, &ctx, 700.0);
+        app.popout = true;
+        focusable(&mut app, &ctx, 700.0);
+        assert!(app.popout);
+        let esc = egui::Event::Key {
+            key: Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        window(&mut app, &ctx, 700.0, vec![esc]);
+        assert!(!app.popout);
+        let tree = window(&mut app, &ctx, 700.0, vec![]);
+        let focus = tree.nodes.iter().find(|(id, _)| *id == tree.focus);
+        assert_eq!(
+            focus.and_then(|(_, n)| n.label()),
+            Some("Options for the selection or the document")
+        );
+    }
+
+    /// Docked selection controls take the floating bar's place and stay docked whatever
+    /// the width, in the panel or, when it folds away, in its strip.
+    #[test]
+    fn docked_controls_stay_docked_through_resizing() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        with_notes(&mut app, &ctx);
+        let id = app.tabs[0].pdf.annotations()[0].id;
+        app.tabs[0].ed.selection = Selection::Annot { page: 0, id };
+        let (dock, float) = (
+            Some("Dock controls on the right".to_string()),
+            Some("Float controls near selection".to_string()),
+        );
+        let names = focusable(&mut app, &ctx, 1400.0);
+        assert!(names.contains(&dock) && !names.contains(&float));
+        app.act(&ctx, Act::ToggleDock);
+        for width in [1400.0, 700.0, 1400.0] {
+            let names = focusable(&mut app, &ctx, width);
+            assert!(
+                names.contains(&float) && !names.contains(&dock),
+                "at {width}"
+            );
+        }
+        assert!(app.settings.controls_docked);
     }
 
     fn message(app: &App) -> (&str, &str) {
@@ -3904,6 +4717,8 @@ mod tests {
     /// `label`, as a user would.
     fn click(app: &mut App, ctx: &egui::Context, label: &str) {
         ctx.enable_accesskit();
+        // Dialogs use the app's fonts.
+        theme::install(ctx);
         let frame = |app: &mut App, events: Vec<egui::Event>| {
             let raw = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -3970,7 +4785,7 @@ mod tests {
         assert!(app.add_tab(&ctx, pdf, None, None, false));
         assert_eq!(app.active, 1);
         let opened = app.tabs[1].state();
-        click(&mut app, &ctx, "Flatten");
+        click(&mut app, &ctx, "Flatten annotations");
         assert!(app.tabs[1].state() == opened, "the new tab was flattened");
         assert_eq!(app.tabs[1].pdf.annotations().len(), 1);
         // The question's own document, unchanged, is flattened and comes to the front.
@@ -3986,7 +4801,7 @@ mod tests {
         app.act(&ctx, Act::FlattenAnnots);
         let other = app.tabs[0].state();
         app.close_tab(1);
-        click(&mut app, &ctx, "Flatten");
+        click(&mut app, &ctx, "Flatten annotations");
         assert!(app.tabs[0].state() == other, "another tab was flattened");
         assert!(
             matches!(&app.dialog, Dialog::Message(_, text) if text.contains("was closed")),
@@ -4024,7 +4839,8 @@ mod tests {
             name: "limarepdf-test-no-such-printer".into(),
             default: true,
         };
-        app.dialog = Dialog::Print(app.asked(), dlg::Print::new(vec![printer]));
+        let print = dlg::Print::new(vec![printer], "test.pdf".into());
+        app.dialog = Dialog::Print(app.asked(), Box::new(print));
 
         click(&mut app, &ctx, "Print");
         // Nothing sent yet: the question names the field.
@@ -4033,8 +4849,7 @@ mod tests {
             Dialog::ConfirmPrintFields(q) => assert_eq!(q.fields, ["Name"]),
             _ => panic!("no question asked"),
         }
-        // The question's own Cancel is its window's close button.
-        click(&mut app, &ctx, "Close window");
+        click(&mut app, &ctx, "Cancel");
         assert!(matches!(app.dialog, Dialog::None));
         assert!(!app.busy, "a print job started");
         assert!(app.tabs[0].state() == state);
@@ -4051,13 +4866,64 @@ mod tests {
         let t = &mut app.tabs[0];
         assert!(t.edit(&ctx, |p| p.insert_blank(0, 612.0, 792.0)));
         let state = t.state();
-        click(&mut app, &ctx, "Flatten");
+        click(&mut app, &ctx, "Flatten annotations");
         let t = &app.tabs[0];
         assert!(t.state() == state, "flattened after the document changed");
         assert_eq!(t.pdf.annotations().len(), 1);
         assert!(
             matches!(&app.dialog, Dialog::Message(_, text) if text.contains("changed while")),
             "no message saying why"
+        );
+    }
+
+    /// Esc answers a question as Cancel, and the app's shortcuts wait while it is open.
+    #[test]
+    fn esc_cancels_a_question_and_shortcuts_wait_for_it() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1000.0, 800.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |ui| {
+                app.shortcuts(ui.ctx());
+                app.dialogs(ui.ctx());
+            });
+            out.textures_delta.clear();
+        };
+        let key = |key, modifiers| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        app.act(&ctx, Act::CloseTab);
+        assert!(matches!(app.dialog, Dialog::ConfirmClose(..)));
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        frame(&mut app, vec![key(Key::K, egui::Modifiers::COMMAND)]);
+        assert!(
+            app.palette.is_none(),
+            "Ctrl+K opened the palette behind the question"
+        );
+        frame(&mut app, vec![key(Key::Escape, egui::Modifiers::NONE)]);
+        assert!(matches!(app.dialog, Dialog::None));
+        assert_eq!(app.tabs.len(), 1, "Esc closed the tab");
+        for _ in 0..2 {
+            frame(&mut app, vec![]);
+        }
+        frame(&mut app, vec![key(Key::K, egui::Modifiers::COMMAND)]);
+        assert!(
+            app.palette.is_some(),
+            "shortcuts stayed off after the question"
         );
     }
 

@@ -288,8 +288,12 @@ impl FormUi {
         for &(fi, wi, rect) in &here {
             let f = &self.fields()[fi];
             let hovered = active && over.is_some_and(|o| (o.0, o.1) == (fi, wi));
-            if self.highlight || (hovered && why_not(f).is_none()) {
+            // A light tint while fields are highlighted (on by default), stronger under the
+            // pointer.
+            if hovered && why_not(f).is_none() {
                 painter.rect_filled(rect, 0.0, accent.gamma_multiply(0.25));
+            } else if self.highlight {
+                painter.rect_filled(rect, 0.0, accent.gamma_multiply(0.15));
             }
             if self.highlight && f.required {
                 painter.rect_stroke(rect, 0.0, Stroke::new(1.0, REQUIRED), StrokeKind::Outside);

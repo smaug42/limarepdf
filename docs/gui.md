@@ -29,6 +29,14 @@ Closing a document or quitting asks first when there are unsaved changes, includ
 or text box on the page, a form field, the selected comment's changes in the inspector, or a reply not yet added.
 Saving keeps that text first, as clicking away would (Undo takes it back).
 
+Dialogs (questions, messages, Print, Create signature, the digital signature windows, About) open over a dimmed
+window, which takes no clicks or shortcuts until the dialog closes. Each names its task, and the document when it acts
+on one. The button that does the task is highlighted, or red when what it does can't be taken back with Undo, or
+breaks signatures; on Windows and Linux it comes before Cancel, on macOS after. Esc is Cancel, except in a window
+holding work you would lose (a signature drawn, typed or chosen; a digital ID form; a signing form with something
+typed), where only Cancel closes it. A message's Copy button copies what it says, to pass on an error. Reasons and
+technical lists in a question are under Details.
+
 A question about a document (Flatten, Apply redactions, Discard changes and the others) acts on the document it was
 asked about, even if another tab has come to the front meanwhile, and brings it back to the front. If that document
 changed or was closed while the question was open, nothing is done, and a message says so.
@@ -47,30 +55,46 @@ Save As to a new file keeps the signed original.
 
 ## The window
 
-- **Top bar:** the menu (☰), Open, Save, Undo and Redo, the tools (Sign among them), the page layout, zoom, search, Print, an Export menu (pages as
-  images, text), and the theme. On narrow windows the search field and the tools fold into single buttons.
-- **Left:** five tabs. Pages shows the thumbnails, Search the search results, and Bookmarks the document's
-  outline. Click a bookmark to go to its page; the arrow beside one shows or hides the bookmarks inside it, which
+- **Top bar:** the menu (☰), Open, Save and an Export menu (pages as images, text); Undo and Redo; the tools: Read
+  and select text, Add text, Add image, Redact and Fill and sign, then the Comment button with its menu (notes, text
+  boxes, shapes, the pen, stamps) and the Tools menu, which holds every tool; at the right, Search and Print. The
+  buttons are icons, each named by its tooltip. As the window narrows, the search field becomes an icon, and then
+  the tools fold one by one into the Tools menu: the Comment button first, then Add image, Redact, Add text and
+  Fill and sign, coming back in reverse as the window widens. In very narrow windows Export and then Undo and Redo
+  leave the bar too (they stay in ☰, and Undo and Redo on their keys). Read and select text stays. The Tools menu
+  shows the current tool when that one isn't on the bar.
+- **Tabs:** one per document, with a × inside it to close it. A * after the name means unsaved changes.
+- **Bottom:** the page you are on and messages at the left; at the right, the page layout, Fit width and the zoom.
+- **Left:** a column of icons for the navigation panel's views: Pages (the thumbnails), Search results, Bookmarks
+  (the document's outline) and Comments. Clicking a view opens it; clicking the open one folds the panel away, and
+  clicking it again brings it back. Documents open on Pages, unless the file asks to open on its bookmarks. Click a bookmark to go to its page; the arrow beside one shows or hides the bookmarks inside it, which
   start shown or hidden as the file asks. Bookmarks that go to another file or a web address are greyed out. Add
   bookmark bookmarks the page you are on, after the bookmark last clicked (or last, when none is), and opens its name
   for typing: Enter keeps it, Escape keeps "Page N". Double-click a bookmark to rename it; right-click it to rename
   it, add a bookmark under it, or delete it with the bookmarks inside it. Undo reverses each of these. Moving
-  bookmarks isn't possible yet. ☰ > View > Bookmarks, or "Bookmarks" in the command palette, opens this tab. Comments
-  lists the document's annotations; see [Comments and markup](#comments-and-markup). Signatures lists its digital
-  signatures and whether they are valid; see [Digital signatures](#digital-signatures).
+  bookmarks isn't possible yet. ☰ > View > Bookmarks, or "Bookmarks" in the command palette, opens this view.
+  Comments lists the document's annotations; see [Comments and markup](#comments-and-markup). The document's
+  digital signatures, and whether they are valid, are listed in the same panel from ☰ > Document > Digital
+  signatures > Signatures in this document; see [Digital signatures](#digital-signatures).
 - **Middle:** the pages, scrolling continuously. By default they fit the width between the side panels, and keep
   fitting as you resize the window or open and close the panels. Zooming in or out, actual size, Ctrl+scroll or a
   pinch turns fitting off, and your zoom then stays as it is; the Fit width button (highlighted while fitting is on)
   or Ctrl+0 turns it back on. Zoom goes from 10% to 6400%. At high zoom the part of the page in view is drawn in
-  tiles as you scroll, over a softer view of the whole page until they arrive. The page layout button left of the zoom buttons (its icon shows the current layout),
+  tiles as you scroll, over a softer view of the whole page until they arrive. The page layout button at the bottom right (its icon shows the current layout),
   or ☰ > View > Page layout, chooses how the document's pages are laid out: **Continuous pages** (one column, the default), **Facing pages** (two side by side, still scrolling;
   fitting fits both) or **Single page** (one at a time; a wheel step past the page's top or bottom turns the page).
   In facing pages, **Show cover page alone** (on by default) puts the first page on its own on the right, as in a
   book; off pairs pages 1 and 2. PageUp and PageDown move a pair at a time when facing. The choice changes the
   document you are viewing and is remembered for documents opened later. A document that sets its own opening
   view (see below) opens in its layout instead, and can also open the Pages or Bookmarks tab and go to a page.
-- **Right:** the inspector, which shows options for what is selected. On windows narrower than about 960 pixels it
-  collapses to a thin rail; click the rail to slide it out. ☰ > View > Inspector shows or hides it.
+- **Right:** the inspector, which shows options for what is selected. The » at its top collapses it to a strip;
+  the « at the top of the strip expands it again, and the strip's options button shows the inspector's contents
+  in a pop-out over the pages (a click elsewhere or Esc closes it; what you changed in it stays). ☰ > View >
+  Inspector does the same.
+- **Narrow windows:** below about 960 points wide the inspector collapses to its strip by itself, and below about
+  760 the navigation panel folds away to its icons. They come back when the window is wide enough again, unless
+  you closed them yourself; a panel you open in a narrow window stays open. Whether you closed or opened each
+  panel is remembered between runs.
 
 Ctrl+K opens the command palette, which lists every command. Type to filter, use Up and Down to choose, and press
 Enter to run.
@@ -125,8 +149,8 @@ A selection across pages gets one highlight on each page, all in one undo step. 
 annotations, so other readers show them and can change or remove them.
 
 Click a mark (or a comment) with the read tool to select it: it is outlined, and the inspector shows who made it
-and when, with its colour, opacity and comment, changed with Apply changes. Delete or Backspace removes it, and
-Esc lets it go. A drag that starts on a mark still selects the text under it. Hovering over a mark shows its
+and when, with its colour, opacity and comment. Changes are kept as you make them, each one a step to undo; a
+comment being typed is kept when you leave its box. Delete or Backspace removes it, and Esc lets it go. A drag that starts on a mark still selects the text under it. Hovering over a mark shows its
 comment.
 
 New marks are saved with your name, which is the computer's user name until you set it with ☰ > Edit > Your name
@@ -134,7 +158,7 @@ for comments…. Leave it empty to save no name.
 
 ### Notes and text boxes
 
-The **Annotate** button in the top bar holds the note and text box tools. It shows the one you used last; the small
+The **Comment** button in the top bar holds the note and text box tools (also in ☰ > Tools > Commenting). It shows the one you used last; the small
 arrow beside it picks the other. The inspector sets the note colour, or the text box's text size and colour,
 background (none at first) and border, before you start.
 
@@ -148,17 +172,19 @@ background (none at first) and border, before you start.
   outside Latin-1 come out as `?`. When you finish, the box grows downward to fit its text, keeping its width; it
   stops at the bottom of the page, and it never shrinks (resize it with the arrow).
 
-A new note or text box is selected with the arrow, so it can be moved straight away. Double-click a note or text
+When a note or text box is finished, the read tool comes back with it selected, so it can be moved straight away
+(see [Keep tool active](#keep-tool-active)). Double-click a note or text
 box (with the read tool or the arrow) to change its text. Ctrl+click selects an annotation while an annotate tool
-is on. The inspector for a selected text box also changes its text, size, colours, background and border, with Apply changes.
+is on. The inspector for a selected text box also changes its text, size, colours, background and border.
 
-With the arrow, click any annotation to select it, drag it to move it, and drag a handle to resize it. Arrow keys
+With the read tool or the arrow, click any annotation to select it, drag it to move it, and drag a handle to
+resize it. Arrow keys
 move it by 1 point, or 10 with Shift. Notes keep their size, and text markup stays on its text, so neither can be
 resized, and markup can't be moved. Locked annotations can't be moved.
 
 ### Shapes, lines and drawings
 
-The Annotate button's menu also holds the rectangle, ellipse, line and pen tools. What they draw are annotations:
+The Comment button's menu also holds the rectangle, ellipse, line and pen tools. What they draw are annotations:
 other readers list them as comments, and they can be selected, moved, resized, restyled, commented on and deleted
 like notes.
 
@@ -174,10 +200,10 @@ like notes.
   not as comments.
 
 Select a shape, line or drawing (click it with the read tool or the arrow, or Ctrl+click with an annotate tool)
-to change its colour, width, fill, arrowhead, opacity and comment in the inspector, then Apply changes. Lines and
-drawings are picked by clicking near their strokes, not anywhere in their box.
+to change its colour, width, fill, arrowhead, opacity and comment in the inspector. Lines and drawings are picked
+by clicking near their strokes, not anywhere in their box.
 
-With the arrow, a selected line has a round handle on each end instead of a box: drag either end to turn the line
+A selected line has a round handle on each end instead of a box: drag either end to turn the line
 or point an arrow somewhere else (Shift keeps it at a multiple of 45° from the other end). Drag the line itself to
 move it.
 
@@ -188,11 +214,11 @@ boxes can't be turned: PDF stores them as upright boxes.
 
 ### Stamps
 
-The stamp tool is in the Annotate button's menu ("Add a stamp" in the command palette). Its inspector lists the
+The stamp tool is in the Comment button's menu ("Add a stamp" in the command palette). Its inspector lists the
 ready-made stamps (Approved, Not approved, Draft, Final, Confidential, For comment and Void), each a coloured frame
 with the word in capitals, your own wordings, and the pictures used as stamps before. Pick one, then click on the page to put it down
-at its own size, centred on the click, or drag a box to size it (it keeps its shape inside the box). It is then
-selected with the arrow, to move or resize.
+at its own size, centred on the click, or drag a box to size it (it keeps its shape inside the box). The read tool
+then comes back with the stamp selected, to move or resize (see [Keep tool active](#keep-tool-active)).
 
 - **Add my name and the date:** on by default; adds a small line under the word with your name and today's
   date. The Name box under it is the same name as Edit > Your name for comments, so changing either changes both.
@@ -218,10 +244,11 @@ Redacting is done in two steps: mark what to remove, then apply the marks. Marks
 nothing by themselves, so they can be checked first, here or by someone else in another app (they are standard PDF
 redaction marks). See [Redaction](redaction.md) for exactly what applying removes.
 
-- **Mark areas:** Annotate > Mark areas for redaction, then drag a box over anything: text, pictures, drawings. The
-  tool stays on, so several areas can be marked in a row.
+- **Mark areas:** the Redact button in the top bar (☰ > Tools > Mark areas for redaction), then drag a box over anything: text, pictures, drawings. The
+  read tool then comes back; pin the Redact tool ([Keep tool active](#keep-tool-active)) to mark several areas in a
+  row.
 - **Mark text:** select it with the read tool, then right-click > Mark for redaction (or Edit > Mark for redaction).
-- **Mark search results:** search in the side panel's Search tab, then press Mark all for redaction (or Edit > Mark
+- **Mark search results:** search, then in the navigation panel's Search results press Mark all for redaction (or Edit > Mark
   all search results for redaction). Every match is marked.
 
 Marks are listed in the Comments tab as "Redaction mark". Select one (Ctrl+click it, or click it in the Comments
@@ -257,8 +284,9 @@ fills it in. With the editing tools, hold Ctrl (Cmd on macOS) and click.
 - **Tab and Shift+Tab** move to the next and previous field, top to bottom and page by page. On a checkbox or radio
   button, Space ticks it; on a list, Space or Enter opens it.
 
-Each value you change is one undo step. ☰ > View > Highlight fields tints every field and outlines the required ones
-in red. The inspector's Form section shows the field you are in (its name, description and whether it is required),
+Each value you change is one undo step. Fields are highlighted from the start: a light tint on every field, stronger
+under the pointer, and a red outline on required ones. ☰ > View > Highlight fields, or the switch on the form's
+banner, turns this off or on again for every document, and the choice is remembered between runs. The inspector's Form section shows the field you are in (its name, description and whether it is required),
 with Clear field, Highlight fields and Reset form, which puts every field back to its default. Flatten form… (also
 in the command palette) makes the fields part of the pages as they look now, so nobody can change the values,
 here or in other readers; it asks first, and Undo brings the fields back until you close the document. Read-only fields
@@ -275,20 +303,26 @@ empty on paper. See [Command line](cli.md#forms) for filling forms in scripts.
 
 ## Filling and signing
 
-The Sign button in the top bar (its icon is a signature; "Fill and sign" in the command palette) puts your
-signature, initials, the date, your name, other text or a tick, cross or dot on the page, for signing a document
-someone sent you. It is a picture of your signature, not a digital signature: it doesn't prove who signed, and
+The Fill and sign button in the top bar (its icon is a signature) puts your signature, initials, the date, your
+name, other text or a tick, cross or dot on the page, for signing a document someone sent you. The small arrow
+beside it opens a menu of all of these: Signature and Initials, each listing the saved ones and Create…, then Date,
+Your name, Text, Tick, Cross and Dot. Picking one turns the tool on with it; the button itself turns the tool on
+with the item picked last. It is a picture of your signature, not a digital signature: it doesn't prove who signed, and
 anyone can copy it. For digital signatures, see [Digital signatures](#digital-signatures).
 
-**Making a signature:** in the Sign pane, Create signature… (or New… beside Signatures) opens a window with three
-ways to make one:
+**Making a signature:** Signature > Create signature… in the button's menu, or in the Fill and sign pane Create
+signature… (or New… beside Signatures), opens a window with three ways to make one:
 
 - **Draw:** sign on the white pad with the mouse, touchpad or a pen; Clear starts again. The strokes are smoothed
   into curves and stay sharp at any zoom.
 - **Type:** type your name (it starts as your name for comments) and pick one of four handwriting styles (Caveat,
-  Cedarville Cursive, Homemade Apple and Zeyada), shown as they will look. Western European characters only; for other scripts, draw or use a picture.
-- **Picture:** choose a photo or scan of your signature on paper (PNG, JPEG or TIFF). "Make the paper transparent"
+  Cedarville Cursive, Homemade Apple and Zeyada), shown as they will look. Western European characters only; for other scripts, draw or use an image.
+- **Image:** choose a photo or scan of your signature on paper (PNG, JPEG or TIFF). "Make the paper transparent"
   (on by default) keeps only the ink and cuts off the empty margins, so the signature sits on the page like ink.
+
+The window also has the ink colour (the same choice as the pane's), and Use signature puts it in the list. Esc closes
+the window only while nothing is drawn, typed (beyond the name it starts with) or chosen; picking another tool
+closes it.
 
 Initials are made the same way, with New… beside Initials; typing starts with your name's initials. Each new one
 goes first in its list in the pane, up to five signatures and five sets of initials; right-click one to take it off
@@ -297,8 +331,9 @@ list to use until LimarePDF closes, marked "until LimarePDF closes", and is then
 `signatures` folder), on this computer only; taking a picture off the list deletes its copy.
 
 **Putting things down:** pick an item in the pane, then click on the page to put it down at its usual size, centred
-on the click, or drag a box to size it (it keeps its shape inside the box). The tool stays on, so you can sign
-several places in a row.
+on the click, or drag a box to size it (it keeps its shape inside the box). The read tool then comes back with the
+item selected, to move or resize it; pin the tool ([Keep tool active](#keep-tool-active)) to sign several places in a
+row.
 
 - **Signatures and initials:** a signature is up to 150 by 50 points, initials up to 50 by 30. With no signature
   saved yet, clicking the page opens the window first and puts the new signature where you clicked.
@@ -328,7 +363,8 @@ When a document with digital signatures opens, LimarePDF checks them in the back
 banner above the pages, coloured by the worst signature: green (valid, and you trust every signer), amber (nothing
 broken or changed against the signers' wishes, but LimarePDF can't confirm who signed, or there are warnings), grey (LimarePDF
 can't check a signature) or red (broken, changed in ways a signer didn't allow, or a trusted signer's certificate
-fails a check). Its Signatures button, or ☰ > View > Signatures, opens the Signatures tab of the side panel, which
+fails a check). Its Signatures button, or ☰ > Document > Digital signatures > Signatures in this document, opens the Digital
+signatures view of the navigation panel, which
 lists each signature with its result, the changes made after it, and Details… and Signed version buttons, then the
 signature fields nobody has signed yet. Click a signature's name to go to it; with the read tool, click a signed
 field on the page to see its details.
@@ -336,7 +372,7 @@ field on the page to see its details.
 Details shows who signed, who issued their certificate, when, the changes after signing, warnings and the
 certificates; Trust this signer… and Trust an authority… add to your trust list (after showing the SHA-256
 fingerprint to compare with the owner), and View signed version opens the document as it was when signed, in a new
-tab. ☰ > Edit > Trusted certificates… lists, removes and adds trusted certificates. Trust settings affect LimarePDF only.
+tab. ☰ > Document > Digital signatures > Trusted certificates… lists, removes and adds trusted certificates. Trust settings affect LimarePDF only.
 
 The check is of the file as opened or last saved; saving adds your changes after what was signed (see
 [Saving a signed document](signatures.md#saving-a-signed-document)), and LimarePDF checks the saved copy, listing your
@@ -344,7 +380,7 @@ changes under each signature. See [Digital signatures](signatures.md) for what e
 
 ### Signing with a digital ID
 
-☰ > Document > Sign with digital ID… (also a button in the Sign tool's pane), or Certify… for the author's
+☰ > Document > Digital signatures > Sign with digital ID… (also a button in the Sign tool's pane), or Certify… for the author's
 certification: click an empty signature field or drag a box on the page, then pick your digital ID, type its
 password, and optionally a reason and a location. Sign… asks where to save the signed copy (`NAME-signed.pdf` by
 default), signs in the background, and opens the signed copy in place of the document. Changes made since opening
@@ -353,7 +389,7 @@ document changes while it is being signed (an edit, a password set, text being t
 the signed copy opens in a new tab. A document set to get a password when saved (Document > Password security)
 isn't signed: LimarePDF can't sign password-protected documents, so the signed copy would be saved without it.
 
-☰ > Edit > Digital IDs… makes, imports, exports and removes your digital IDs, and chooses the default. See
+☰ > Document > Digital signatures > Digital IDs… makes, imports, exports and removes your digital IDs, and chooses the default. See
 [Signing](signatures.md#signing) and [Digital IDs](signatures.md#digital-ids).
 
 ## Notices about the document
@@ -417,7 +453,7 @@ lose it, or until you remove content from it or set a password (below). Files gi
 the list is closed.
 
 A restored copy of a digitally signed document is LimarePDF's working copy, not the signed file, so its signatures
-cover bytes that aren't in it. They aren't checked: the Signatures tab lists each one as "Not checked: recovered
+cover bytes that aren't in it. They aren't checked: the Digital signatures view lists each one as "Not checked: recovered
 copy". Open the original to check them. Saving or signing the copy writes the whole file, which makes them invalid,
 so LimarePDF asks first.
 
@@ -464,7 +500,7 @@ this tab; other tabs carry on.
 Page labels are the page numbers viewers show, such as i, ii, 1, 2 or A-1; they don't change what is printed on the
 pages. When a document has them, the status bar shows the label with the page's place, such as "Page i (3 of 477)",
 and the thumbnails show the labels. To set them, select the first page to number, open Page labels in the
-inspector, and pick a style, an optional prefix and the number to start at; the numbering runs to the next labelled
+inspector (or go to the page and choose ☰ > Pages > Page labels…), and pick a style, an optional prefix and the number to start at; the numbering runs to the next labelled
 range. Labels stay with their pages when pages are deleted or moved.
 
 Opening view, in the document's inspector, is how viewers that follow it show the document when it opens: its
@@ -493,7 +529,10 @@ it.
 
 Right-click a page, an object, selected words or a thumbnail for a short menu of what applies there. Right-clicking
 selects what is under the pointer first. A selected object or run of words also gets a small floating toolbar with
-the same commands.
+the same commands. Its last button, Dock controls on the right, moves these buttons to the top of the inspector (or
+its strip, when collapsed) instead; Float controls near selection there brings the floating toolbar back. ☰ > View >
+Selection controls on the right does either. The choice is remembered between runs; resizing the window doesn't
+change it.
 
 Drag thumbnails to put pages in a new order. A line shows where they will go. Dragging a selected thumbnail moves all
 the selected pages.
@@ -506,26 +545,53 @@ document whose pages are all blank is left alone.
 
 ## Editing page content
 
-Pick a tool in the top bar. Documents open with the read tool (the text cursor), which selects text, follows links
-and fills in forms but never changes page content. The arrow selects objects to edit.
+Documents open with the read tool (the text cursor), which selects text, follows links and fills in forms. It also
+edits:
 
-With the arrow:
+- **Page text:** double-click a line to edit it there. The word you double-clicked is selected, so typing replaces
+  it. Enter or a click elsewhere keeps the change; Esc drops it. While you type, Ctrl+Z and Ctrl+Y undo and redo
+  typing in the box; once the change is kept, Undo takes the whole edit back. Editing the same line again within
+  a few seconds, with nothing else changed in between, joins the same undo step. The inspector shows the line's
+  font, size and colour; each change there is kept at once as its own undo step.
+- **Pictures, shapes, comments and marks:** click one to select it, drag it to move it and drag a handle to resize
+  it (Shift keeps the proportions). Arrow keys move it by 1 point, or 10 with Shift. A picture or shape covering
+  most of the page, such as a scanned page or a background, isn't selected by a click, so that clicking a scan
+  doesn't pick it up; the arrow selects it. A drag that starts anywhere else still selects text.
+- **Moving page text:** select the line (double-click it, then Enter), then choose Move or resize text on its
+  floating toolbar, or ☰ > Tools > Select, move and resize objects (the arrow). Text you have just added can be moved straight away, until you select
+  something else.
+
+The arrow (☰ > Tools > Select, move and resize objects) selects any object, page text included:
 
 - Click an object to select it.
 - Drag to move it; drag a handle to resize it (Shift keeps the proportions).
 - Arrow keys move it by 1 point, or 10 with Shift.
-- The inspector shows its position and size, and for text the string, font, size and colour; for shapes the fill,
-  outline and width; for images "Replace image".
 
-The other tools add content:
+The inspector shows the selected object's position and size, and for text the string, font, size and colour; for
+shapes the fill, outline and width; for images "Replace image". Changes there are kept as you make them, without
+an Apply button: typed text when you press Enter or leave the box, a number when you stop dragging it or leave its
+box, a colour when its picker closes. Each is one undo step. The font size box shows the exact size, which isn't
+rounded to a listed one; type any size, or pick one from the list beside it.
+
+The other tools add content. Each puts one thing down and then gives way to the read tool, with the new item
+selected so you can adjust it (see [Keep tool active](#keep-tool-active)):
 
 - **Text:** click where the text starts, type, press Enter.
 - **Image:** choose a PNG, JPEG or TIFF, then drag a box.
-- **Annotate:** sticky notes, text boxes, rectangles, ellipses, lines and the pen, saved as annotations rather
+- **Comment:** sticky notes, text boxes, rectangles, ellipses, lines and the pen, saved as annotations rather
   than page content; see [Notes and text boxes](#notes-and-text-boxes) and
   [Shapes, lines and drawings](#shapes-lines-and-drawings). A rectangle, ellipse or line can still be drawn into
   the page content with "Draw on page (permanent)". Its menu also has the stamp tool (see [Stamps](#stamps)) and
   the tool that marks areas for redaction (see [Redaction](#redaction)).
+
+### Keep tool active
+
+The tools that put something down (Add text, Add image, the note, text box, rectangle, ellipse and line, stamps,
+Redact and Fill and sign) go back to the read tool once they have put one thing down. The pin at the top right of a
+tool's options, Keep tool active, keeps that tool on instead, so you can put down several in a row; Esc or another
+tool leaves it. Each tool's pin is its own (pinning Redact doesn't pin Fill and sign) and is remembered between
+runs. The pen always stays on until Esc or another tool, since a drawing takes several strokes. LimarePDF always
+starts with the read tool.
 
 Everything that changes the document can be undone with Ctrl+Z, up to 20 steps back. Each step keeps a whole copy
 of the document, and a document's steps are limited to 1 GB together, so undo goes back fewer steps on very large
@@ -536,8 +602,10 @@ documents (about 7 on a 139 MB scan); the latest change can always be undone. Se
 
 With the read tool, drag to select words in reading order. A drag can start anywhere on the page, such as in the
 margin: it starts at the nearest word. Dragging past the top or bottom of the view scrolls it, faster the further
-out the pointer is, so a selection can run across pages. Double-click selects one word, triple-click a line, and
-Shift+click extends the selection to where you click, on any page. Ctrl+A selects the whole page in view. Esc or
+out the pointer is, so a selection can run across pages. Double-clicking page text edits its line (see
+[Editing page content](#editing-page-content)); where there is no line to edit, such as recognised (OCR) text,
+double-click selects one word and triple-click a line. Shift+click extends the selection to where you click, on
+any page. Ctrl+A selects the whole page in view. Esc or
 a click clears the selection. Copy with Ctrl+C, ☰ > Edit > Copy text or the floating toolbar: words on a line are
 separated by spaces, and lines and pages by line breaks. Recognised (OCR) text can be selected like any other
 text.
@@ -577,13 +645,13 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Ctrl+Shift+H | Highlight the selected text |
 | Arrow keys (Shift for 10 points) | Move the selected object |
 | Ctrl+A, Ctrl+C | Select all text on the page, copy it (read tool) |
-| Esc | Cancel: clear the selection, or leave a drawing tool |
+| Esc | Cancel: drop the edit of a line being typed, clear the selection, or leave a tool for the read tool |
 | Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |
+| Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the top bar, tabs, bottom bar and panels left to right; inside a dialog, its fields and then its buttons. Space or Enter presses the button. In a form, Tab moves between its fields; Ctrl+K reaches every command |
 
 ## Look and feel
 
-The app follows the system's light or dark theme. The theme button at the right end of the top bar (a half circle,
-sun or moon, for the current choice) chooses System, Light or Dark; so does ☰ > View > Theme. The choice is
+The app follows the system's light or dark theme. ☰ > View > Theme chooses System, Light or Dark. The choice is
 remembered between runs, in `settings.txt` in the same folder as the recent-files list, along with the markup
 colours and your name for comments. The app uses the Inter font
 and Phosphor icons.

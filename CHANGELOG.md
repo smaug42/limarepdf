@@ -1,5 +1,72 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- The main window is rearranged. The top bar holds Open, Save and Export; Undo and Redo; the everyday tools (Read
+  and select text, Add text, Add image, Redact, Fill and sign); one Comment button for notes, text boxes, shapes,
+  the pen and stamps; and Search and Print. As the window narrows, the tools fold one by one into a Tools menu,
+  which holds every tool, and come back as it widens; in very narrow windows Export, then Undo and Redo, leave
+  the bar too (they stay in the menu). The page layout, Fit width and zoom moved to the bottom
+  right, and the theme to View > Theme.
+- The navigation panel has a column of icons for Pages, Search results, Bookmarks and Comments; clicking the open
+  view folds the panel away. A document's digital signatures are listed from Document > Digital signatures,
+  which also holds signing, certifying, digital IDs and trusted certificates (Digital IDs and Trusted
+  certificates were in Edit).
+- The menu has every command: new Tools and Pages menus (page commands moved there from Document), and entries
+  for editing a text object, replacing an image, moving the selected object, going to a page, moving between
+  form fields and page labels (Pages > Page labels…), which had only a button, a key, a right-click or the
+  inspector.
+- Tabs have their close button inside them.
+- The selection's buttons can be docked at the top of the inspector instead of floating by the selection (the
+  floating bar's Dock controls on the right, or View > Selection controls on the right); remembered between runs.
+- The collapsed inspector is a strip with a button to expand it, the docked selection buttons, and its contents in
+  a pop-out over the pages. A narrow window folds the navigation panel and the inspector away and brings them back
+  when there is room, unless you closed them; whether each panel is open is remembered between runs.
+- Double-click a line of page text with the read tool to edit it on the page, with the word under the pointer
+  selected; Enter or a click elsewhere keeps the change, Esc drops it. Editing the same line again within a few
+  seconds joins the same undo step. Double-click and triple-click still select a word and a line where there is
+  no line to edit, such as recognised text.
+- The read tool also selects pictures, shapes, comments and marks, with handles to move and resize them; not
+  pictures or shapes covering most of the page, such as a scanned page. Page text moves with Move or resize text
+  (on its floating toolbar) or the arrow.
+- Changes in the inspector apply as you make them, each one an undo step: the Apply text changes, Apply style and
+  Apply changes buttons are gone.
+- The font size is a box showing the exact size, with a list of the usual sizes beside it.
+- The tools that put something down (text, images, notes, text boxes, shapes, stamps, redaction marks, fill and
+  sign) go back to the read tool afterwards, with the new item selected. A pin in each tool's options, Keep tool
+  active, keeps that tool on for several in a row; each tool's pin is separate and remembered between runs. Esc
+  leaves any tool for the read tool. The pen stays on until Esc or another tool.
+- The Fill and sign button has a menu: Signature and Initials (the saved ones and Create…), Date, Your name, Text,
+  Tick, Cross and Dot. The Create signature window also opens with the inspector folded away.
+- Form fields are highlighted from the start, in a lighter tint; the form banner's Highlight fields is a switch, and
+  turning it off (there or in View) is remembered for every document.
+- Dialogs share one look: a title naming the task and the document, the settings, and the buttons at the bottom,
+  the action that does the task highlighted (red when Undo can't take it back or it breaks signatures) and before
+  Cancel (after it on macOS). The window behind is dimmed and takes no clicks or shortcuts while a dialog is open.
+  Esc cancels any dialog, except one holding work that would be lost. Messages have a Copy button; a signed
+  document's save and sign questions put the reason under Details.
+- Print: all pages or a page range, one side or both as a list of choices, and Print as image under Advanced; a page
+  range that can't be read is reported under it instead of in a separate message.
+- Create signature: Draw, Type and Image (was Picture), the ink colour in the window too, and Use signature (was
+  Done). Picking another tool closes it.
+- Go to field in Signature details closes the window, to show the field.
+- Tab goes through the top bar, the tabs, the bottom bar, the panels and each dialog's buttons in the order they
+  are shown, left to right. Screen readers can name every button and field: the search field, the pages and
+  their thumbnails, Print's printer, page range and copies, the signature drawing area and ink colours, and the
+  banners' Dismiss button. Closing the inspector's pop-out with Esc returns the keyboard to its button.
+- Creating a digital ID shows a problem beside the field it is about, and the keyboard starts in the Name field.
+
+### Fixed
+
+- Ctrl+A and other single-key shortcuts were missed when the key and Ctrl arrived together, as with a quick tap.
+- Selecting a coloured comment or mark could count as an unkept change (asking about it on closing), because the
+  colour button stored its colour back very slightly changed.
+- Esc didn't close the Create signature window, and keyboard shortcuts reached the document while a dialog was
+  open.
+- Tab couldn't leave the empty password field when importing a digital ID.
+
 ## [0.8.1] - 2026-10-21
 
 ### Changed

@@ -2,7 +2,7 @@ use crate::actions::{self, Act, Ctx};
 use crate::banners::{self, Banner};
 use crate::editor::{annot_tip, Action, Editor, StampPick, Tool};
 use crate::inspector::{Forms, Sec};
-use crate::markup::{self, Mark};
+use crate::markup::Mark;
 use crate::recovery::schedule::Schedule;
 use crate::recovery::TabId;
 use crate::selection::Selection;
@@ -29,6 +29,9 @@ const MAX_UNDO: usize = 20;
 /// The most memory one tab's undo steps may hold. Beyond it the oldest steps are dropped,
 /// though the latest is always kept, so undo is shorter on very large documents.
 const UNDO_BUDGET: usize = 1 << 30;
+/// Edits to the words of one line of page text this soon (seconds) after the last one,
+/// with nothing else in between, are one undo step, as typing is in a word processor.
+const MERGE_PAUSE: f64 = 5.0;
 /// egui points at zoom 1.0 per PDF point (96 dpi logical).
 const BASE: f32 = 96.0 / 72.0;
 /// Highest zoom: 6400%, as Acrobat.
@@ -154,6 +157,10 @@ pub struct Tab {
     redo: Vec<Step>,
     /// The last edit made by [`Tab::edit_stamp`]: its kind, and the revision and undo depth just after it.
     last_stamp: Option<(Stamp, u64, usize)>,
+    /// The line of page text whose words the last edit changed, the revision and undo depth
+    /// just after it, and when (`egui` time). Changing its words again before anything else
+    /// changes, within [`MERGE_PAUSE`], joins that undo step.
+    last_line: Option<((usize, usize), u64, usize, f64)>,
     pub side: Side,
     pub query: String,
     pub hits: Vec<SearchHit>,
@@ -294,6 +301,7 @@ impl Tab {
             undo: Vec::new(),
             redo: Vec::new(),
             last_stamp: None,
+            last_line: None,
             side: Side::Pages,
             query: String::new(),
             hits: Vec::new(),
@@ -460,7 +468,7 @@ impl Tab {
         ctx: &egui::Context,
         f: impl FnOnce(&mut Pdf) -> limarepdf_core::Result<()>,
     ) -> bool {
-        self.edit_inner(ctx, None, false, f)
+        self.edit_inner(ctx, None, false, false, f)
     }
 
     /// Like [`Tab::edit`], for a change that removes content for good (redaction, removing hidden
@@ -471,7 +479,7 @@ impl Tab {
         ctx: &egui::Context,
         f: impl FnOnce(&mut Pdf) -> limarepdf_core::Result<()>,
     ) -> bool {
-        self.edit_inner(ctx, None, true, f)
+        self.edit_inner(ctx, None, true, false, f)
     }
 
     /// Like [`Tab::edit`], but if the last change was the same kind of stamp, it is replaced rather than
@@ -523,15 +531,17 @@ impl Tab {
         pages: &[usize],
         f: impl FnOnce(&mut Pdf) -> limarepdf_core::Result<()>,
     ) -> bool {
-        self.edit_inner(ctx, Some(pages), false, f)
+        self.edit_inner(ctx, Some(pages), false, false, f)
     }
 
-    /// `scrub`: the change removes content for good; see [`Tab::edit_removing`].
+    /// `scrub`: the change removes content for good; see [`Tab::edit_removing`]. `merge`:
+    /// the change joins the last undo step instead of making one.
     fn edit_inner(
         &mut self,
         ctx: &egui::Context,
         soft: Option<&[usize]>,
         scrub: bool,
+        merge: bool,
         f: impl FnOnce(&mut Pdf) -> limarepdf_core::Result<()>,
     ) -> bool {
         let before = match crate::guard(|| self.pdf.snapshot()) {
@@ -570,7 +580,11 @@ impl Tab {
             self.error = Some(format!("{e:#}"));
             return false;
         }
-        self.push_undo(Some(before), scrub);
+        if merge && !self.undo.is_empty() {
+            self.dirty = true;
+        } else {
+            self.push_undo(Some(before), scrub);
+        }
         self.revision += 1;
         self.scrubbed |= scrub;
         true
@@ -663,19 +677,35 @@ impl Tab {
                 }
                 Action::EditText(p, id, te) => {
                     let want = te.text.clone();
-                    if self.edit_pages(ctx, &[p], |pdf| pdf.edit_text(p, id, &te)) {
-                        let same = self
-                            .ed
-                            .objects(&self.pdf, p)
-                            .get(id)
-                            .and_then(|o| o.text.clone())
-                            .as_deref()
-                            == Some(want.as_str());
-                        if same {
-                            self.ed.select_object(p, id);
+                    // Typing into the same line again soon joins the last undo step; each
+                    // change of font, size or colour is a step of its own.
+                    let words_only = te.font.is_none() && te.size.is_none() && te.color.is_none();
+                    let now = ctx.input(|i| i.time);
+                    let merge = words_only
+                        && self.last_line.is_some_and(|(line, rev, depth, at)| {
+                            line == (p, id)
+                                && rev == self.revision
+                                && depth == self.undo.len()
+                                && now - at < MERGE_PAUSE
+                        });
+                    let kept = self.ed.sel() == Some((p, id));
+                    let edit = |pdf: &mut Pdf| pdf.edit_text(p, id, &te);
+                    if self.edit_inner(ctx, Some(&[p]), false, merge, edit) {
+                        // The line keeps its place unless the edit had to move it to the
+                        // end of the page's content.
+                        let objs = self.ed.objects(&self.pdf, p);
+                        let same = objs.get(id).and_then(|o| o.text.as_deref()) == Some(&want);
+                        let at = if same {
+                            id
                         } else {
-                            self.ed.select_last(&self.pdf, p);
+                            objs.len().saturating_sub(1)
+                        };
+                        // Still selected unless something else was picked meanwhile.
+                        if kept {
+                            self.ed.select_object(p, at);
                         }
+                        self.last_line =
+                            words_only.then_some(((p, at), self.revision, self.undo.len(), now));
                     }
                 }
                 Action::PathStyle(p, id, st) => {
@@ -725,11 +755,16 @@ impl Tab {
                     }
                 }
                 Action::AddRedactMark(p, rect) => {
-                    // The tool stays, so several areas can be marked in a row.
+                    // Pinned, the tool stays, so several areas can be marked in a row.
                     let author = self.ed.author.clone();
-                    self.edit_pages(ctx, &[p], |pdf| {
-                        pdf.add_redaction_mark(p, &[rect], &author).map(drop)
-                    });
+                    let mut new = None;
+                    let add = |pdf: &mut Pdf| {
+                        new = Some(pdf.add_redaction_mark(p, &[rect], &author)?);
+                        Ok(())
+                    };
+                    if self.edit_pages(ctx, &[p], add) {
+                        self.after_annot(p, new);
+                    }
                 }
                 Action::AddStamp(p, place) => {
                     let pick = self.ed.stamp.clone();
@@ -974,17 +1009,18 @@ impl Tab {
         }
     }
 
-    /// A new note or text box is selected, with the arrow to move it, as new objects are.
+    /// A new annotation was put down: see [`Editor::placed`].
     fn after_annot(&mut self, page: usize, id: Option<(u32, u16)>) {
-        self.ed.set_tool(Tool::Select);
-        if let Some(id) = id {
-            self.ed.selection = Selection::Annot { page, id };
-        }
+        let new = id.map_or(Selection::None, |id| Selection::Annot { page, id });
+        self.ed.placed(new);
     }
 
+    /// New page content was put down, the last object on its page: see
+    /// [`Editor::placed`].
     fn after_insert(&mut self, page: usize) {
         self.ed.select_last(&self.pdf, page);
-        self.ed.set_tool_keep_sel(Tool::Select);
+        let new = self.ed.selection.clone();
+        self.ed.placed(new);
     }
 
     /// Ask for an image file and arm the image tool with it.
@@ -1704,7 +1740,8 @@ impl Tab {
         let annot = self.ed.selected_annot();
         c.annot = annot.is_some();
         c.annot_locked = annot.is_some_and(|a| a.locked());
-        c.annot_moves = self.ed.tool == Tool::Select && annot.is_some_and(crate::editor::movable);
+        c.annot_moves = self.ed.annot_moves();
+        c.object_moves = self.ed.object_moves();
     }
 
     /// A right-click menu for what is selected, its commands queued in `requested`. The
@@ -1730,8 +1767,9 @@ impl Tab {
         }
         let mut c = *base;
         self.fill_ctx(&mut c);
+        // Docked, the same buttons are at the top of the inspector instead.
         let groups = actions::toolbar_items(&self.ed.selection, &c);
-        if groups.is_empty() {
+        if groups.is_empty() || c.docked {
             return;
         }
         // Bar height plus a gap.
@@ -1751,31 +1789,22 @@ impl Tab {
                     .inner_margin(egui::Margin::same(4))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            for (n, group) in groups.iter().enumerate() {
-                                if n > 0 {
-                                    ui.separator();
-                                }
-                                for a in group {
-                                    let b = egui::Button::new(theme::icon(a.icon).size(16.0))
-                                        .frame_when_inactive(false)
-                                        .min_size(egui::vec2(26.0, 26.0));
-                                    let tip = actions::tooltip(ui.ctx(), a);
-                                    if ui.add(b).on_hover_text(tip).clicked() {
-                                        self.requested.push(a.act);
-                                    }
-                                    if a.act == Act::Mark(Mark::Highlight) {
-                                        let more = egui::Button::new(
-                                            theme::icon(icon::CARET_DOWN).size(12.0),
-                                        )
-                                        .frame_when_inactive(false)
-                                        .min_size(egui::vec2(16.0, 26.0));
-                                        let acts = &mut self.requested;
-                                        egui::containers::menu::MenuButton::from_button(more)
-                                            .ui(ui, |ui| markup::menu(ui, &c, acts))
-                                            .0
-                                            .on_hover_text("Underline, strike out, colours");
-                                    }
-                                }
+                            actions::context_buttons(ui, &groups, &c, &mut self.requested);
+                            ui.separator();
+                            let dock =
+                                egui::Button::new(theme::icon(icon::SIDEBAR_SIMPLE).size(16.0))
+                                    .frame_when_inactive(false)
+                                    .min_size(egui::vec2(26.0, 26.0));
+                            let r = ui.add(dock);
+                            r.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    true,
+                                    "Dock controls on the right",
+                                )
+                            });
+                            if r.on_hover_text("Dock controls on the right").clicked() {
+                                self.requested.push(Act::ToggleDock);
                             }
                         });
                     });
@@ -1814,15 +1843,33 @@ impl Tab {
                         ui.add(egui::Label::new(&b.text).wrap());
                     };
                     let buttons = |ui: &mut egui::Ui| {
-                        let x = egui::Button::new(theme::icon(icon::X)).frame_when_inactive(false);
-                        if ui.add(x).on_hover_text("Dismiss").clicked() {
-                            close = Some(i);
-                        }
-                        if let Some((label, act)) = b.action() {
-                            if ui.button(label).clicked() {
-                                self.requested.push(act);
+                        let id = ui.id().with("banner buttons");
+                        let last = ui.data(|d| d.get_temp(id));
+                        let width = crate::dialogs::reading_order(ui, last, |ui| {
+                            if let Some((label, act)) = b.action() {
+                                // Highlighting fields is a switch, as in View, showing
+                                // whether it is on.
+                                let clicked = if act == Act::ToggleFields {
+                                    let mut on = self.ed.form.highlight;
+                                    ui.checkbox(&mut on, label).clicked()
+                                } else {
+                                    ui.button(label).clicked()
+                                };
+                                if clicked {
+                                    self.requested.push(act);
+                                }
                             }
-                        }
+                            let x =
+                                egui::Button::new(theme::icon(icon::X)).frame_when_inactive(false);
+                            let r = ui.add(x);
+                            r.widget_info(|| {
+                                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Dismiss")
+                            });
+                            if r.on_hover_text("Dismiss").clicked() {
+                                close = Some(i);
+                            }
+                        });
+                        ui.data_mut(|d| d.insert_temp(id, width));
                     };
                     egui::Sides::new().shrink_left().show(ui, text, buttons);
                 });
@@ -2154,6 +2201,10 @@ impl Tab {
                         Vec2::new(ui.available_width(), th + 22.0),
                         Sense::click_and_drag(),
                     );
+                    let name = format!("Page {}", self.page_name(i));
+                    resp.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name)
+                    });
                     rects.push(rect);
                     // Dragging a thumbnail moves it, or the selected pages if it is one
                     // of them.
@@ -2608,6 +2659,115 @@ mod tests {
         assert!(!t.scrubbed && t.redo_removes());
         t.redo(&ctx);
         assert!(t.scrubbed && t.redo_removes());
+    }
+
+    #[test]
+    fn typing_into_a_line_again_soon_is_one_undo_step() {
+        use limarepdf_core::{FontChoice, TextEdit};
+        let ctx = egui::Context::default();
+        let mut pdf = Pdf::new();
+        pdf.insert_blank(0, 612.0, 792.0).unwrap();
+        for (y, text) in [(100.0, "Walrus"), (200.0, "Seal")] {
+            pdf.add_text(0, (100.0, y), text, FontChoice::default(), 12.0, [0.0; 3])
+                .unwrap();
+        }
+        let mut t = Tab::new(&ctx, 1, pdf, None, Colours::default()).unwrap();
+        let line = |t: &mut Tab, i: usize| {
+            let objs = t.ed.objects(&t.pdf, 0);
+            objs.iter()
+                .filter(|o| o.text.is_some())
+                .nth(i)
+                .map(|o| (o.id, o.text.clone().unwrap()))
+                .unwrap()
+        };
+        let edit = |t: &mut Tab, i: usize, text: &str, size: Option<f32>| {
+            let (id, _) = line(t, i);
+            t.ed.select_object(0, id);
+            let te = TextEdit {
+                text: text.into(),
+                font: None,
+                size,
+                color: None,
+            };
+            t.ed.actions.push(Action::EditText(0, id, te));
+            t.apply_actions(&ctx);
+        };
+        // Three edits of the first line's words: one step.
+        edit(&mut t, 0, "Walruses", None);
+        edit(&mut t, 0, "Walruses swim", None);
+        edit(&mut t, 0, "Walruses swim far", None);
+        assert_eq!(t.undo.len(), 1);
+        assert_eq!(line(&mut t, 0).1, "Walruses swim far");
+        // Another line, then the first again: a step each.
+        edit(&mut t, 1, "Seals", None);
+        edit(&mut t, 0, "Walruses swim", None);
+        assert_eq!(t.undo.len(), 3);
+        // A new size is a step of its own, and the words after it another.
+        edit(&mut t, 0, "Walruses swim", Some(18.0));
+        edit(&mut t, 0, "Walruses dive", None);
+        assert_eq!(t.undo.len(), 5);
+        // After a pause: a new step.
+        if let Some(l) = t.last_line.as_mut() {
+            l.3 -= MERGE_PAUSE + 1.0;
+        }
+        edit(&mut t, 0, "Walruses rest", None);
+        assert_eq!(t.undo.len(), 6);
+        // After an undo: a new step, not one joined to the step undone.
+        t.undo(&ctx);
+        edit(&mut t, 0, "Walruses nap", None);
+        assert_eq!(t.undo.len(), 6);
+        t.undo(&ctx);
+        assert_eq!(line(&mut t, 0).1, "Walruses dive");
+        // Undoing back to the merged edits; the last undo takes all three back together.
+        for _ in 0..4 {
+            t.undo(&ctx);
+        }
+        assert_eq!(line(&mut t, 0).1, "Walruses swim far");
+        t.undo(&ctx);
+        assert_eq!(line(&mut t, 0).1, "Walrus");
+        assert_eq!(line(&mut t, 1).1, "Seal");
+        assert!(t.undo.is_empty());
+    }
+
+    #[test]
+    fn placing_goes_back_to_reading_unless_the_tool_is_kept() {
+        let ctx = egui::Context::default();
+        let mut pdf = Pdf::new();
+        pdf.insert_blank(0, 612.0, 792.0).unwrap();
+        let mut t = Tab::new(&ctx, 1, pdf, None, Colours::default()).unwrap();
+        let rect = [100.0, 100.0, 200.0, 150.0];
+        // Once: the read tool comes back, with the new rectangle selected.
+        t.ed.set_tool(Tool::Rect);
+        t.ed.actions
+            .push(Action::AddShapeAnnot(0, Shape::Rect, rect));
+        t.apply_actions(&ctx);
+        assert_eq!(t.ed.tool, Tool::Read);
+        assert!(matches!(t.ed.selection, Selection::Annot { page: 0, .. }));
+        // Kept active: the tool stays, nothing selected, ready for the next one.
+        t.ed.keep = vec![Tool::Rect];
+        t.ed.set_tool(Tool::Rect);
+        t.ed.actions
+            .push(Action::AddShapeAnnot(0, Shape::Rect, rect));
+        t.apply_actions(&ctx);
+        assert_eq!(t.ed.tool, Tool::Rect);
+        assert_eq!(t.ed.selection, Selection::None);
+        // Pinning one tool doesn't pin another.
+        t.ed.set_tool(Tool::Redact);
+        t.ed.actions.push(Action::AddRedactMark(0, rect));
+        t.apply_actions(&ctx);
+        assert_eq!(t.ed.tool, Tool::Read);
+        // Esc leaves a kept tool for the read tool, and it stays kept.
+        t.ed.set_tool(Tool::Rect);
+        t.ed.escape();
+        assert_eq!(t.ed.tool, Tool::Read);
+        assert_eq!(t.ed.keep, [Tool::Rect]);
+        // New page text: selected, and movable with the read tool until something else is.
+        t.ed.set_tool(Tool::Text);
+        t.ed.actions
+            .push(Action::AddText(0, (72.0, 72.0), "Walrus".into()));
+        t.apply_actions(&ctx);
+        assert_eq!(t.ed.tool, Tool::Read);
+        assert!(t.ed.object_moves());
     }
 
     #[test]
