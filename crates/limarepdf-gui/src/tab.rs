@@ -3,6 +3,7 @@ use crate::banners::{self, Banner};
 use crate::editor::{annot_tip, Action, Editor, StampPick, Tool};
 use crate::inspector::{Forms, Sec};
 use crate::markup::Mark;
+use crate::page_text;
 use crate::recovery::schedule::Schedule;
 use crate::recovery::TabId;
 use crate::selection::Selection;
@@ -656,11 +657,18 @@ impl Tab {
                         self.after_insert(p);
                     }
                 }
-                Action::AddText(p, pos, text) => {
-                    let (font, size, color) = (self.ed.tfont, self.ed.tsize, self.ed.tcolor);
-                    if self.edit_pages(ctx, &[p], |pdf| {
-                        pdf.add_text(p, pos, &text, font, size, color)
-                    }) {
+                Action::AddText(p, pos, text, look) => {
+                    // Every line in one change, so Undo takes them back together.
+                    let add = |pdf: &mut Pdf| {
+                        for (dy, line) in page_text::lines(&text, look.size) {
+                            let at = (pos.0, pos.1 + dy);
+                            pdf.add_text(p, at, line, look.font, look.size, look.color)?;
+                        }
+                        Ok(())
+                    };
+                    // Finished by choosing another tool: that tool stays.
+                    let placing = matches!(self.ed.tool, Tool::Text | Tool::Read);
+                    if self.edit_pages(ctx, &[p], add) && placing {
                         self.after_insert(p);
                     }
                 }
@@ -1129,7 +1137,7 @@ impl Tab {
                 self.stale.clear();
                 self.ed.invalidate();
                 self.ed.selection.clear_object();
-                self.ed.new_text = None;
+                self.ed.adding = None;
                 self.hits.clear();
                 self.matches.clear();
                 let n = self.page_count();
@@ -2763,8 +2771,11 @@ mod tests {
         assert_eq!(t.ed.keep, [Tool::Rect]);
         // New page text: selected, and movable with the read tool until something else is.
         t.ed.set_tool(Tool::Text);
-        t.ed.actions
-            .push(Action::AddText(0, (72.0, 72.0), "Walrus".into()));
+        t.ed.adding = Some(page_text::PageText::new(0, (72.0, 72.0)));
+        if let Some(a) = t.ed.adding.as_mut() {
+            a.text = "Walrus".into();
+        }
+        t.ed.escape();
         t.apply_actions(&ctx);
         assert_eq!(t.ed.tool, Tool::Read);
         assert!(t.ed.object_moves());

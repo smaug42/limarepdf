@@ -12,7 +12,10 @@ per inline image.
 - **Editing text** rewrites the string in place when the font is a plain, non-subset, standard-encoded simple font
   and the new text is ASCII. Otherwise the old line is removed and the new text is added in one of the 12 standard
   fonts, at the same position, size and colour.
-- **Adding** text, shapes or images draws them on top of the page.
+- **Adding** text, shapes or images draws them on top of the page. New text of several lines is written as one
+  text line each, their baselines 1.2 times the size apart (Acrobat's spacing), in one of the 12 standard fonts
+  with the WinAnsi encoding; characters outside it can't be typed. While it is typed, the app draws it in the
+  bundled Liberation font with the same widths, so the caret and line length match the written result.
 - **Invisible text** from OCR is edited as invisible text and stays in place.
 - **Text after a changed line** stays where it was. Text on the same line can carry on from where the line ended
   (a show operator with no line move before it); when the line is deleted, edited or moved, its end is set again

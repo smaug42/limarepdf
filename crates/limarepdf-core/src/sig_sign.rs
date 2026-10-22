@@ -21,8 +21,8 @@ use crate::overlay::{escape, text_width};
 use crate::sig_verify::{Lexer, Tok};
 use crate::sign::{signature_art, typed_signature};
 use crate::{
-    verify_signatures, InkColor, LockAction, Pdf, Permissions, Result, SigKind, SigStatus, SignArt,
-    SignRole, SignStyle, SignatureReport, TrustList,
+    verify_signatures, winansi_byte, InkColor, LockAction, Pdf, Permissions, Result, SigKind,
+    SigStatus, SignArt, SignRole, SignStyle, SignatureReport, TrustList,
 };
 use anyhow::{anyhow, bail, Context};
 use chrono::{DateTime, FixedOffset, Utc};
@@ -613,14 +613,12 @@ fn zone(t: DateTime<FixedOffset>) -> String {
 }
 
 /// The signer's name as the appearance writes it, or `None` when it has characters the
-/// appearance's font (Helvetica, Latin-1) can't show: the line then leaves the name out
+/// appearance's font (Helvetica, WinAnsi) can't show: the line then leaves the name out
 /// rather than show it wrongly. Readers show the full name from the certificate.
 fn shown_name(cert: &CertInfo) -> Option<String> {
     let n = cert.display_name().trim();
-    let latin1 = n
-        .chars()
-        .all(|c| (' '..='~').contains(&c) || ('\u{a0}'..='\u{ff}').contains(&c));
-    (latin1 && !n.is_empty()).then(|| n.to_string())
+    let shows = n.chars().all(|c| winansi_byte(c).is_some());
+    (shows && !n.is_empty()).then(|| n.to_string())
 }
 
 // ---------------------------------------------------------------- appearance
@@ -1032,6 +1030,13 @@ mod tests {
             shown_name(&cert("Zoë Müller")).as_deref(),
             Some("Zoë Müller")
         );
+        // WinAnsi beyond Latin-1, as the appearance's font writes it.
+        assert_eq!(
+            shown_name(&cert("Šárka Dvořák")).as_deref(),
+            None,
+            "ř isn't WinAnsi"
+        );
+        assert_eq!(shown_name(&cert("Šárka Žák")).as_deref(), Some("Šárka Žák"));
         assert_eq!(shown_name(&cert("Ζωή")), None);
         assert_eq!(shown_name(&cert("Jo\u{7}e")), None);
     }

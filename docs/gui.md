@@ -580,10 +580,16 @@ the box and out again without typing changes nothing, and text that isn't a size
 The other tools add content. Each puts one thing down and then gives way to the read tool, with the new item
 selected so you can adjust it (see [Keep tool active](#keep-tool-active)):
 
-- **Text:** click where the text starts, type in the inspector's box, press Enter. For now the text is typed in
-  the inspector rather than on the page, and only Western European characters can be added: others come out as
-  `?`. The font is Helvetica, Times or Courier, with Bold and Italic (see
-  [What doesn't work yet](features.md#what-doesnt-work-yet)).
+- **Text:** click where the text starts and type. The text appears on the page as you type, in the font, size
+  and colour it will have, with a thin outline around it; the line sits on the point you clicked. Enter starts a
+  new line. Esc, a click elsewhere on the page, or choosing another tool finishes, and every line is added as one
+  undo step; nothing typed adds nothing. While you type, the inspector's font, Bold, Italic, size and colour
+  change the text (the keyboard comes back to it afterwards), Ctrl+B and Ctrl+I switch Bold and Italic, and
+  dragging the outline moves the text. A click on page text with this tool edits that line instead, with the
+  caret where you clicked. The font is Helvetica, Times or Courier, with Bold and Italic, and only Western
+  European characters can be added: others can't be typed or pasted, and a note at the caret says so (see
+  [What doesn't work yet](features.md#what-doesnt-work-yet)). Each line becomes its own line of page text, so
+  it moves and is edited line by line afterwards.
 - **Image:** choose a PNG, JPEG or TIFF, then drag a box.
 - **Comment:** sticky notes, text boxes, rectangles, ellipses, lines and the pen, saved as annotations rather
   than page content; see [Notes and text boxes](#notes-and-text-boxes) and
@@ -654,7 +660,8 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Ctrl+Shift+H | Highlight the selected text |
 | Arrow keys (Shift for 10 points) | Move the selected object |
 | Ctrl+A, Ctrl+C | Select all text on the page, copy it (read tool) |
-| Esc | Cancel: drop the edit of a line being typed, clear the selection, or leave a tool for the read tool |
+| Esc | Cancel: finish (and keep) new text being typed, drop the edit of a line being typed, clear the selection, or leave a tool for the read tool |
+| Ctrl+B, Ctrl+I | Bold, Italic for new text being typed (Add text) |
 | Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |
 | Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the top bar, tabs, bottom bar and panels left to right; inside a dialog, its fields and then its buttons. Space or Enter presses the button. In a form, Tab moves between its fields; Ctrl+K reaches every command |
 

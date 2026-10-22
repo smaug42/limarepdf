@@ -7,13 +7,6 @@
 //! core's installed fonts and loaded the first time it is needed), else in the Liberation
 //! face of its kind. Inter is the last resort, and every family falls back to Inter for
 //! characters its font lacks.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the on-page text editor (word-processor batch 2) uses it"
-    )
-)]
 
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
 use limarepdf_core::render::InstalledFonts;
@@ -119,6 +112,13 @@ pub enum Wanted<'a> {
     /// One of the 12 standard fonts: new text, and lines written anew.
     Standard(FontChoice),
     /// A line that keeps its own font, by the name the document gives it ("Arial,Bold").
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "editing existing text on the page (word-processor batch 3) uses it"
+        )
+    )]
     Kept(&'a str),
 }
 

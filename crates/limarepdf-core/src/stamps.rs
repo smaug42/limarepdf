@@ -4,6 +4,7 @@
 //! change `/Rect`. Opacity is set in an outer drawing around the artwork, so changing it
 //! leaves the artwork alone.
 
+use crate::fonts::winansi_byte;
 use crate::form_ap::nums;
 use crate::imgs::{decode_upright_size, orient_matrix};
 use crate::matrix as mx;
@@ -152,8 +153,7 @@ pub fn stamp_wording(text: &str) -> Result<String> {
     }
     let mut bad = String::new();
     for c in word.chars() {
-        let u = c as u32;
-        if !((0x20..=0x7E).contains(&u) || (0xA0..=0xFF).contains(&u)) && !bad.contains(c) {
+        if winansi_byte(c).is_none() && !bad.contains(c) {
             bad.push(c);
         }
     }
@@ -566,6 +566,8 @@ mod tests {
     fn own_wording_is_trimmed_in_capitals_and_western_european_only() {
         assert_eq!(stamp_wording("  paid in full ").unwrap(), "PAID IN FULL");
         assert_eq!(stamp_wording("reçu").unwrap(), "REÇU");
+        // WinAnsi beyond Latin-1: ÿ in capitals is Ÿ.
+        assert_eq!(stamp_wording("œuvre ÿ").unwrap(), "ŒUVRE Ÿ");
         assert!(stamp_wording("  ").is_err());
         let e = stamp_wording("Ωmega Ω 你").unwrap_err().to_string();
         assert!(e.contains("Ω你"), "{e}");

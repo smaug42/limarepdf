@@ -1152,3 +1152,37 @@ fn headers_and_footers_leave_a_page_font_of_the_same_name_alone() {
         }
     }
 }
+
+/// Every character of the standard fonts' WinAnsi set is written as itself, those of
+/// codes 128 to 159 included, and none outside it.
+#[test]
+fn added_text_keeps_the_whole_winansi_set() {
+    let high = "€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ";
+    assert_eq!(high.chars().count(), 27);
+    for c in high.chars() {
+        assert!(
+            limarepdf_core::winansi_byte(c).is_some_and(|b| b >= 128),
+            "{c}"
+        );
+    }
+    for c in ['\n', '\t', 'Ω', 'Ж', '中', '\u{81}'] {
+        assert_eq!(limarepdf_core::winansi_byte(c), None, "{c:?}");
+    }
+    let mut p = make("");
+    let text = format!("Šœ Ÿ ƒ {high} àÿ");
+    p.add_text(
+        0,
+        (20.0, 100.0),
+        &text,
+        FontChoice::default(),
+        12.0,
+        [0.0; 3],
+    )
+    .unwrap();
+    let o = p.page_objects(0).unwrap();
+    assert!(
+        o.iter().any(|x| x.text.as_deref() == Some(text.as_str())),
+        "{:?}",
+        o.iter().map(|x| x.text.clone()).collect::<Vec<_>>()
+    );
+}

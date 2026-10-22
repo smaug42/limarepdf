@@ -1,6 +1,7 @@
 //! Page overlays: watermarks, headers/footers, page numbers and Bates numbering.
-//! All text uses the PDF standard Helvetica font (WinAnsi, Latin-1 range).
+//! All text uses the PDF standard Helvetica font (WinAnsi).
 
+use crate::fonts::winansi_byte;
 use crate::imgs::orient_matrix;
 use crate::{std14, Pdf, Result};
 use anyhow::bail;
@@ -16,18 +17,19 @@ pub fn text_width(s: &str, size: f32) -> f32 {
         / 1000.0
 }
 
+/// `s` as the inside of a literal string for a WinAnsi font; characters it can't write
+/// become `?`.
 pub(crate) fn escape(s: &str) -> String {
     let mut o = String::new();
     for c in s.chars() {
-        let u = c as u32;
-        match c {
-            '(' | ')' | '\\' => {
+        match (c, winansi_byte(c)) {
+            ('(' | ')' | '\\', _) => {
                 o.push('\\');
                 o.push(c);
             }
-            _ if (32..=126).contains(&u) => o.push(c),
-            _ if (0xA0..=0xFF).contains(&u) => o.push_str(&format!("\\{:03o}", u)),
-            _ => o.push('?'),
+            (_, Some(b)) if b < 0x80 => o.push(c),
+            (_, Some(b)) => o.push_str(&format!("\\{b:03o}")),
+            (_, None) => o.push('?'),
         }
     }
     o
@@ -425,7 +427,22 @@ mod tests {
     fn widths_and_escape() {
         assert!((text_width("Hello", 10.0) - 22.78).abs() < 0.01);
         assert_eq!(escape("a(b)\\"), "a\\(b\\)\\\\");
-        assert_eq!(escape("é€"), "\\351?");
+        // WinAnsi, its codes 128 to 159 included; other characters can't be written.
+        assert_eq!(escape("é€Š“"), "\\351\\200\\212\\223");
+        assert_eq!(escape("Ω中"), "??");
+    }
+
+    #[test]
+    fn headers_write_the_whole_winansi_set() {
+        let mut p = Pdf::new();
+        p.insert_blank(0, 612.0, 792.0).unwrap();
+        let text = "“Šœ” € – Ž™ …";
+        let hf = HeaderFooter {
+            header: [text.into(), String::new(), String::new()],
+            ..Default::default()
+        };
+        p.add_header_footer(&[0], &hf).unwrap();
+        assert!(p.page_text(0).contains(text), "{}", p.page_text(0));
     }
 
     #[test]

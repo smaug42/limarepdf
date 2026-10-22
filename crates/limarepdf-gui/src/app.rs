@@ -3177,12 +3177,12 @@ impl App {
         }
         let c = self.state(ctx);
         let typing = ctx.egui_wants_keyboard_input();
-        // Undo and Redo while a line of page text is edited on the page take back typing
-        // in its box; Undo takes back the whole edit once it is kept.
+        // Undo and Redo while a line of page text is edited, or new text typed, on the page
+        // take back typing there; Undo takes back the whole edit once it is kept.
         let line = self
             .tabs
             .get(self.active)
-            .is_some_and(|t| t.ed.editing_line());
+            .is_some_and(|t| t.ed.typing_on_page());
         let mut acts = Vec::new();
         ctx.input_mut(|i| {
             for (a, k) in actions::shortcuts() {
@@ -4348,7 +4348,8 @@ fn report_text(r: &limarepdf_core::RedactReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use limarepdf_core::{Cipher, Encryption, Restrictions, SignPlace};
+    use crate::page_text;
+    use limarepdf_core::{Cipher, Encryption, FontChoice, Restrictions, SignPlace};
 
     #[test]
     fn window_size_is_known_without_its_position() {
@@ -4540,6 +4541,256 @@ mod tests {
             "Page 1",
         ];
         assert_eq!(reached[..bars.len()], bars);
+    }
+
+    /// The screen bounds of the node named `name` in `tree`, and whether it has the keyboard.
+    fn node(tree: &egui::accesskit::TreeUpdate, name: &str) -> Option<(egui::Rect, bool)> {
+        let (id, n) = tree.nodes.iter().find(|(_, n)| n.label() == Some(name))?;
+        let b = n.bounds()?;
+        let r = egui::Rect::from_min_max(
+            egui::pos2(b.x0 as f32, b.y0 as f32),
+            egui::pos2(b.x1 as f32, b.y1 as f32),
+        );
+        Some((r, tree.focus == *id))
+    }
+
+    #[test]
+    fn new_text_is_typed_on_the_page_and_added_in_one_step() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        app.act(&ctx, Act::Tool(Tool::Text));
+        app.tabs[0].ed.tsize = 14.0;
+        let mut tree = window(&mut app, &ctx, 1400.0, vec![]);
+        for _ in 0..4 {
+            tree = window(&mut app, &ctx, 1400.0, vec![]);
+        }
+        // The page's place on screen, and a point on it in page points.
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        let k = page.width() / 612.0;
+        let at = |x: f32, y: f32| page.min + egui::vec2(x, y) * k;
+        let click = |p: egui::Pos2| {
+            let press = |pressed| egui::Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            vec![egui::Event::PointerMoved(p), press(true), press(false)]
+        };
+        let key = |key, modifiers| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        window(&mut app, &ctx, 1400.0, click(at(100.0, 200.0)));
+        for _ in 0..2 {
+            tree = window(&mut app, &ctx, 1400.0, vec![]);
+        }
+        // The editor is on the page, named, with the keyboard, its first baseline on the
+        // click: the text's top is Liberation Sans's ascent (0.905 em) above it.
+        let (r, focused) = node(&tree, page_text::NAME).expect("the editor");
+        assert!(focused, "the editor doesn't have the keyboard");
+        let click_y = at(100.0, 200.0).y;
+        assert!((r.min.x - at(100.0, 200.0).x).abs() < 1.5, "{r:?}");
+        assert!(
+            (r.min.y - (click_y - 0.905 * 14.0 * k)).abs() < 1.5,
+            "{r:?}"
+        );
+        // Typing, Enter for a second line, a character that can't be written yet, and
+        // Ctrl+B. Nothing is in the document yet.
+        let none = egui::Modifiers::NONE;
+        let typed = vec![
+            egui::Event::Text("Walrus".into()),
+            key(Key::Enter, none),
+            egui::Event::Text("Seal Ω".into()),
+            key(Key::B, egui::Modifiers::COMMAND),
+        ];
+        window(&mut app, &ctx, 1400.0, typed);
+        let t = &app.tabs[0];
+        assert_eq!(
+            t.ed.adding.as_ref().map(|a| a.text.as_str()),
+            Some("Walrus\nSeal ")
+        );
+        assert!(t.ed.tfont.bold);
+        assert!(t.unsaved() && t.ed.pending());
+        let lines = |app: &App| -> Vec<(String, [f32; 4], Option<String>)> {
+            let objs = app.tabs[0].pdf.page_objects(0).unwrap();
+            objs.into_iter()
+                .filter_map(|o| Some((o.text?, o.bbox, o.font_name)))
+                .collect()
+        };
+        assert!(lines(&app).is_empty());
+        tree = window(&mut app, &ctx, 1400.0, vec![]);
+        assert!(
+            tree.nodes
+                .iter()
+                .any(|(_, n)| n.value() == Some(page_text::REFUSED)),
+            "no note about the refused character"
+        );
+        // Bold switched off in the inspector applies to the text being typed, which takes
+        // the keyboard back: Ctrl+B there switches it on again.
+        let (b, _) = node(&tree, "B").expect("the inspector's Bold");
+        window(&mut app, &ctx, 1400.0, click(b.center()));
+        assert!(!app.tabs[0].ed.tfont.bold);
+        for _ in 0..2 {
+            tree = window(&mut app, &ctx, 1400.0, vec![]);
+        }
+        assert!(
+            node(&tree, page_text::NAME).is_some_and(|(_, f)| f),
+            "no keyboard back"
+        );
+        window(
+            &mut app,
+            &ctx,
+            1400.0,
+            vec![key(Key::B, egui::Modifiers::COMMAND)],
+        );
+        assert!(app.tabs[0].ed.tfont.bold);
+        // Dragging the outline (just left of the text) moves the text being typed.
+        let (r, _) = node(&tree, page_text::NAME).expect("the editor");
+        let grip = egui::pos2(r.min.x - 4.5, r.center().y);
+        let button = |pressed| egui::Event::PointerButton {
+            pos: grip + egui::vec2(if pressed { 0.0 } else { 60.0 }, 0.0),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        window(
+            &mut app,
+            &ctx,
+            1400.0,
+            vec![egui::Event::PointerMoved(grip), button(true)],
+        );
+        for dx in [20.0, 40.0, 60.0] {
+            let to = grip + egui::vec2(dx, 0.0);
+            window(&mut app, &ctx, 1400.0, vec![egui::Event::PointerMoved(to)]);
+        }
+        window(&mut app, &ctx, 1400.0, vec![button(false)]);
+        let x = app.tabs[0].ed.adding.as_ref().map_or(0.0, |a| a.at.0);
+        assert!((x - (100.0 + 60.0 / k)).abs() < 0.01, "moved to {x}");
+        assert_eq!(app.tabs[0].ed.adding.as_ref().map(|a| a.at.1), Some(200.0));
+        // A click elsewhere on the page adds both lines, in bold, the second 1.2 times the
+        // size below; the read tool comes back.
+        window(&mut app, &ctx, 1400.0, click(at(300.0, 300.0)));
+        for _ in 0..2 {
+            window(&mut app, &ctx, 1400.0, vec![]);
+        }
+        let got = lines(&app);
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert_eq!((got[0].0.as_str(), got[1].0.as_str()), ("Walrus", "Seal"));
+        for (_, b, font) in &got {
+            assert!((b[0] - x).abs() < 1.0, "{b:?}");
+            assert!(
+                font.as_deref()
+                    .is_some_and(|f| f.contains("Helvetica-Bold")),
+                "{font:?}"
+            );
+        }
+        assert!(got[0].1[1] < 200.0 && got[0].1[3] > 200.0, "{:?}", got[0].1);
+        assert!(((got[1].1[1] - got[0].1[1]) - 16.8).abs() < 0.5);
+        let t = &app.tabs[0];
+        assert!(t.ed.adding.is_none() && !t.ed.pending());
+        assert_eq!(t.ed.tool, Tool::Read);
+        // One step: Undo takes both lines back.
+        app.act(&ctx, Act::Undo);
+        assert!(lines(&app).is_empty());
+    }
+
+    #[test]
+    fn esc_keeps_new_text_and_empty_text_adds_nothing() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, 1);
+        app.act(&ctx, Act::Tool(Tool::Text));
+        let ed = &mut app.tabs[0].ed;
+        // Nothing typed: Esc closes the editor, adding nothing; Esc again leaves the tool.
+        ed.adding = Some(page_text::PageText::new(0, (72.0, 72.0)));
+        ed.escape();
+        assert!(ed.adding.is_none() && ed.actions.is_empty());
+        assert_eq!(ed.tool, Tool::Text);
+        // Spaces and blank lines are nothing too.
+        ed.adding = Some(page_text::PageText::new(0, (72.0, 72.0)));
+        if let Some(a) = ed.adding.as_mut() {
+            a.text = " \n ".into();
+        }
+        assert!(!ed.pending());
+        ed.escape();
+        assert!(ed.actions.is_empty());
+        // Typed text: Esc keeps it, in the inspector's look at that moment.
+        ed.adding = Some(page_text::PageText::new(0, (72.0, 90.0)));
+        if let Some(a) = ed.adding.as_mut() {
+            a.text = "Walrus".into();
+        }
+        ed.tsize = 20.0;
+        ed.tcolor = [1.0, 0.0, 0.0];
+        ed.escape();
+        assert!(matches!(
+            ed.actions.as_slice(),
+            [EdAction::AddText(0, (72.0, 90.0), t, look)]
+                if t == "Walrus" && look.size == 20.0 && look.color == [1.0, 0.0, 0.0]
+        ));
+        app.tabs[0].apply_actions(&ctx);
+        let objs = app.tabs[0].pdf.page_objects(0).unwrap();
+        assert!(objs.iter().any(|o| o.text.as_deref() == Some("Walrus")
+            && o.font_size == Some(20.0)
+            && o.fill == Some([1.0, 0.0, 0.0])));
+        // Choosing another tool while typing keeps the text, and that tool.
+        let ed = &mut app.tabs[0].ed;
+        ed.set_tool(Tool::Text);
+        ed.adding = Some(page_text::PageText::new(0, (72.0, 400.0)));
+        if let Some(a) = ed.adding.as_mut() {
+            a.text = "Seal".into();
+        }
+        ed.set_tool(Tool::Rect);
+        app.tabs[0].apply_actions(&ctx);
+        assert_eq!(app.tabs[0].ed.tool, Tool::Rect);
+        let objs = app.tabs[0].pdf.page_objects(0).unwrap();
+        assert!(objs.iter().any(|o| o.text.as_deref() == Some("Seal")));
+    }
+
+    #[test]
+    fn a_click_on_page_text_with_the_text_tool_edits_its_line() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        assert!(app.tabs[0].edit(&ctx, |p| {
+            p.add_text(
+                0,
+                (100.0, 200.0),
+                "Walrus",
+                FontChoice::default(),
+                40.0,
+                [0.0; 3],
+            )
+        }));
+        app.act(&ctx, Act::Tool(Tool::Text));
+        let mut tree = window(&mut app, &ctx, 1400.0, vec![]);
+        for _ in 0..4 {
+            tree = window(&mut app, &ctx, 1400.0, vec![]);
+        }
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        let k = page.width() / 612.0;
+        // In the middle of the word, a little above the baseline.
+        let p = page.min + egui::vec2(100.0 + 3.0 * 40.0 * 0.5, 190.0) * k;
+        let press = |pressed| egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        window(
+            &mut app,
+            &ctx,
+            1400.0,
+            vec![egui::Event::PointerMoved(p), press(true), press(false)],
+        );
+        let ed = &app.tabs[0].ed;
+        assert!(ed.adding.is_none(), "new text started on page text");
+        assert!(ed.typing_on_page(), "the line isn't being edited");
     }
 
     /// The names of the controls Tab reaches in turn, from the window's first one, `n`

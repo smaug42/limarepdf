@@ -2,6 +2,7 @@
 //! and shapes, and the inspector panel.
 
 use crate::fields::FormUi;
+use crate::page_text::{self, PageText};
 use crate::selection::{ObjKind, Selection, WordAt};
 use crate::signing::{SignKit, SignPane, SignPick};
 use crate::theme;
@@ -190,7 +191,9 @@ pub enum Action {
     SetBox(usize, usize, [f32; 4]),
     Delete(usize, usize),
     AddShape(usize, Shape, [f32; 4]),
-    AddText(usize, (f32, f32), String),
+    /// New text, its lines separated by `\n`, from the first line's baseline at the point
+    /// given, set as typed.
+    AddText(usize, (f32, f32), String, page_text::Look),
     AddImage(usize, [f32; 4]),
     ReplaceImage(usize, usize, Vec<u8>),
     EditText(usize, usize, TextEdit),
@@ -534,8 +537,9 @@ pub struct Editor {
     unavailable: HashMap<usize, String>,
     drag: Option<Drag>,
     draw: Option<Draw>,
-    pub new_text: Option<(usize, (f32, f32))>,
-    text_buf: String,
+    /// New text being typed on the page (Add text).
+    pub adding: Option<PageText>,
+    /// Put the keyboard in the inspector's text box for the selected text object.
     focus_text: bool,
     pub tfont: FontChoice,
     pub tsize: f32,
@@ -640,8 +644,7 @@ impl Default for Editor {
             unavailable: HashMap::new(),
             drag: None,
             draw: None,
-            new_text: None,
-            text_buf: String::new(),
+            adding: None,
             focus_text: false,
             tfont: FontChoice::default(),
             tsize: 14.0,
@@ -921,12 +924,32 @@ impl Editor {
         });
     }
 
-    /// Whether something typed isn't in the document yet: a note or text box being typed
-    /// on the page, a form field being typed in, the selected comment's changes in the
-    /// inspector, or a reply to it not yet added. Saving keeps it first, and closing asks,
-    /// as for unsaved changes.
+    /// Keep the new text being typed, if any: added as one undo step.
+    pub fn finish_adding(&mut self) {
+        let Some(a) = self.adding.take().filter(PageText::has_text) else {
+            return;
+        };
+        let look = self.new_look();
+        self.actions
+            .push(Action::AddText(a.page, a.at, a.text, look));
+    }
+
+    /// How new text is set, from the inspector.
+    fn new_look(&self) -> page_text::Look {
+        page_text::Look {
+            font: self.tfont,
+            size: self.tsize,
+            color: self.tcolor,
+        }
+    }
+
+    /// Whether something typed isn't in the document yet: new text, a note or text box
+    /// being typed on the page, a form field being typed in, the selected comment's
+    /// changes in the inspector, or a reply to it not yet added. Saving keeps it first,
+    /// and closing asks, as for unsaved changes.
     pub fn pending(&self) -> bool {
-        self.writing.as_ref().is_some_and(Writing::changed)
+        self.adding.as_ref().is_some_and(PageText::has_text)
+            || self.writing.as_ref().is_some_and(Writing::changed)
             || self.form.typing()
             || self.annot_changes().is_some()
             || self.reply_to().is_some()
@@ -936,6 +959,7 @@ impl Editor {
     /// Queue the changes that keep what [`Self::pending`] finds, as clicking away and Add
     /// reply would.
     pub fn keep_pending(&mut self) {
+        self.finish_adding();
         self.finish_writing();
         self.commit_insp();
         self.form.commit_typing(&mut self.actions);
@@ -1037,16 +1061,43 @@ impl Editor {
         let under = on.iter().position(|w| p.x >= w.bbox[0] && p.x <= w.bbox[2]);
         match under.filter(|_| on.len() == spans.len()) {
             Some(j) => spans[j],
-            None => {
-                let at = ((p.x - b[0]) / (b[2] - b[0]).max(0.01)).clamp(0.0, 1.0);
-                word_around(text, (at * text.chars().count() as f32).round() as usize)
-            }
+            None => word_around(text, self.caret_pick(page, id, p)),
         }
     }
 
-    /// Whether a line of page text is being edited on the page.
-    pub fn editing_line(&self) -> bool {
-        self.line_edit.is_some()
+    /// The character of line `id`'s text nearest `p`, by where `p` falls along the line.
+    fn caret_pick(&self, page: usize, id: usize, p: Pos2) -> usize {
+        let Some(o) = self.objs.get(&page).and_then(|v| v.get(id)) else {
+            return 0;
+        };
+        let b = o.bbox;
+        let n = o.text.as_deref().unwrap_or("").chars().count();
+        let at = ((p.x - b[0]) / (b[2] - b[0]).max(0.01)).clamp(0.0, 1.0);
+        (at * n as f32).round() as usize
+    }
+
+    /// Whether a line of page text is being edited, or new text typed, on the page.
+    pub fn typing_on_page(&self) -> bool {
+        self.line_edit.is_some() || self.adding.is_some()
+    }
+
+    /// The new text being typed on `page` (drawn at `r`, `k` pixels per point). Esc, Tab
+    /// or scrolling it out of view keeps it. Returns true when the page should not take
+    /// the pointer this frame: it is over the text, or the editor just opened or closed.
+    fn adding_ui(&mut self, ui: &mut egui::Ui, page: usize, r: Rect, k: f32) -> bool {
+        let accent = ui.visuals().selection.stroke.color;
+        let settled = settled(ui.ctx());
+        let mut look = self.new_look();
+        let Some(a) = self.adding.as_mut().filter(|a| a.page == page) else {
+            return false;
+        };
+        let shown = a.ui(ui, r, k, &mut look, accent, settled);
+        // Ctrl+B and Ctrl+I change the inspector's choice, as its buttons do.
+        self.tfont = look.font;
+        if shown.done {
+            self.finish_adding();
+        }
+        shown.over
     }
 
     /// The line of page text being edited on `page` (drawn at `r`, `k` pixels per point),
@@ -1238,6 +1289,7 @@ impl Editor {
     }
 
     pub fn set_tool(&mut self, t: Tool) {
+        self.finish_adding();
         self.finish_writing();
         self.commit_insp();
         self.line_edit = None;
@@ -1260,9 +1312,6 @@ impl Editor {
             self.selection.clear_object();
             self.selection.clear_annot();
         }
-        if t != Tool::Text {
-            self.new_text = None;
-        }
         if t != Tool::DigitalSign {
             self.digital_place = None;
             self.digital_error = None;
@@ -1281,7 +1330,7 @@ impl Editor {
         self.draw = None;
         self.pen_stroke = None;
         self.text_drag = false;
-        self.new_text = None;
+        self.adding = None;
         self.writing = None;
         self.pending_image = None;
         self.insp = None;
@@ -1828,9 +1877,12 @@ impl Editor {
                 ed.selection.clear_object();
             }
         };
-        // Typing a note or text box, or a line of page text: its box takes the keyboard
-        // and the pointer.
-        if self.writing_ui(ui, page, r, k) || self.line_edit_ui(ui, page, r, k) {
+        // Typing new text, a note or text box, or a line of page text: it takes the
+        // keyboard and the pointer.
+        if self.adding_ui(ui, page, r, k)
+            || self.writing_ui(ui, page, r, k)
+            || self.line_edit_ui(ui, page, r, k)
+        {
             return resp;
         }
         let ctrl_annot = click_pt(&resp)
@@ -2054,11 +2106,18 @@ impl Editor {
             }
             Tool::Text => {
                 ui.ctx().set_cursor_icon(CursorIcon::Text);
-                if resp.clicked() {
-                    if let Some(p) = resp.interact_pointer_pos().map(to_pt) {
-                        self.new_text = Some((page, (p.x, p.y)));
-                        self.text_buf.clear();
-                        self.focus_text = true;
+                if let Some(p) = click_pt(&resp).filter(|_| resp.clicked()) {
+                    if self.adding.as_ref().is_some_and(PageText::has_text) {
+                        // A click elsewhere finishes the text being typed.
+                        self.finish_adding();
+                    } else if let Some(i) = self.text_hit(page, p, tol) {
+                        // On page text: edit its line, the caret where clicked.
+                        self.adding = None;
+                        let at = self.caret_pick(page, i, p);
+                        self.start_line_edit(page, i, (at, at));
+                    } else {
+                        // New text there; with nothing typed yet, it moves there.
+                        self.adding = Some(PageText::new(page, (p.x, p.y)));
                     }
                 }
             }
@@ -2437,19 +2496,6 @@ impl Editor {
                 }
             }
         }
-        if let Some((p, (x, y))) = self.new_text {
-            if p == page {
-                let c = to_screen(x, y);
-                painter.line_segment(
-                    [c - Vec2::new(0.0, 14.0), c + Vec2::new(0.0, 4.0)],
-                    Stroke::new(2.0, accent_strong),
-                );
-                painter.line_segment(
-                    [c - Vec2::new(8.0, 0.0), c + Vec2::new(24.0, 0.0)],
-                    Stroke::new(1.0, accent_strong),
-                );
-            }
-        }
         resp
     }
 
@@ -2726,10 +2772,16 @@ impl Editor {
         }
     }
 
-    /// Esc: drop what is being typed on the page, or clear a selected annotation, or the
-    /// word or object selection (read tool); otherwise drop unfinished text, leave a
-    /// drawing tool for the arrow, or with the arrow clear the selection.
+    /// Esc: keep the new text being typed, or drop a note, text box or line being typed on
+    /// the page, or clear a selected annotation, or the word or object selection (read
+    /// tool); otherwise leave a drawing tool for the arrow, or with the arrow clear the
+    /// selection.
     pub fn escape(&mut self) {
+        if self.adding.is_some() {
+            self.finish_adding();
+            self.adding = None;
+            return;
+        }
         if self.writing.take().is_some() {
             return;
         }
@@ -2749,14 +2801,10 @@ impl Editor {
             }
             // The arrow lets go of the selection first, then gives way to the read tool.
             Tool::Select if self.sel().is_some() => {
-                self.new_text = None;
                 self.selection.clear_object();
             }
             // Any other tool goes back to the read tool; a pinned one stays pinned.
-            _ => {
-                self.new_text = None;
-                self.set_tool(Tool::Read);
-            }
+            _ => self.set_tool(Tool::Read),
         }
     }
 
@@ -3172,6 +3220,7 @@ impl Editor {
         self.keep_ui(ui);
         match self.tool {
             Tool::Text => {
+                let was = self.new_look();
                 ui.strong("New text");
                 Self::font_ui(ui, &mut self.tfont);
                 ui.horizontal(|ui| {
@@ -3179,33 +3228,18 @@ impl Editor {
                     size_ui(ui, &mut self.tsize, 4.0..=200.0);
                     ui.color_edit_button_rgb(&mut self.tcolor);
                 });
-                if let Some((page, pos)) = self.new_text {
-                    let r = ui.add(
-                        egui::TextEdit::singleline(&mut self.text_buf)
-                            .hint_text("Type, then Enter"),
-                    );
-                    if self.focus_text {
-                        r.request_focus();
-                        self.focus_text = false;
+                // Changes apply to the text being typed, which then takes the keyboard back.
+                if self.new_look() != was {
+                    if let Some(a) = self.adding.as_mut() {
+                        a.refocus = true;
                     }
-                    let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    ui.horizontal(|ui| {
-                        if (ui.button("Add").clicked() || enter) && !self.text_buf.trim().is_empty()
-                        {
-                            self.actions.push(Action::AddText(
-                                page,
-                                pos,
-                                std::mem::take(&mut self.text_buf),
-                            ));
-                            self.new_text = None;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.new_text = None;
-                        }
-                    });
-                } else {
-                    ui.label("Click on the page where the text should start.");
                 }
+                ui.label(if self.adding.is_some() {
+                    "Type on the page. Enter starts a new line; Esc or a click elsewhere \
+                     finishes."
+                } else {
+                    "Click on the page where the text should start, and type."
+                });
                 ui.separator();
             }
             Tool::Image => {
@@ -3902,10 +3936,10 @@ mod tests {
     fn escape_drops_what_was_typed_on_the_page() {
         let (_, mut ed) = page_with_objects();
         ed.start_line_edit(0, 2, (0, 6));
-        assert!(ed.editing_line());
+        assert!(ed.typing_on_page());
         ed.insp.as_mut().unwrap().text = "Seal".into();
         ed.escape();
-        assert!(!ed.editing_line() && !ed.pending());
+        assert!(!ed.typing_on_page() && !ed.pending());
         // The line stays selected; Esc again clears it.
         assert_eq!(ed.sel(), Some((0, 2)));
         ed.escape();

@@ -75,29 +75,15 @@ impl FontChoice {
     }
 }
 
+/// The WinAnsi code of `c`, or `None` when a WinAnsi simple font can't write it (control
+/// characters included).
+pub fn winansi_byte(c: char) -> Option<u8> {
+    std14::code(c).map(|u| u as u8)
+}
+
 /// Encode text for a WinAnsi simple font. Unrepresentable characters become `?`.
 pub fn winansi_bytes(s: &str) -> Vec<u8> {
-    s.chars()
-        .map(|c| {
-            let u = c as u32;
-            match c {
-                '€' => 0x80,
-                '‚' => 0x82,
-                '„' => 0x84,
-                '…' => 0x85,
-                '‘' => 0x91,
-                '’' => 0x92,
-                '“' => 0x93,
-                '”' => 0x94,
-                '•' => 0x95,
-                '–' => 0x96,
-                '—' => 0x97,
-                '™' => 0x99,
-                _ if (0x20..=0x7E).contains(&u) || (0xA0..=0xFF).contains(&u) => u as u8,
-                _ => b'?',
-            }
-        })
-        .collect()
+    s.chars().map(|c| winansi_byte(c).unwrap_or(b'?')).collect()
 }
 
 /// The letters of a Latin ligature character (U+FB00..=U+FB06); other characters as

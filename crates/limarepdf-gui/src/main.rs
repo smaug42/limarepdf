@@ -11,6 +11,7 @@ mod editor;
 mod fields;
 mod inspector;
 mod markup;
+mod page_text;
 mod panels;
 mod recent;
 mod recovery;

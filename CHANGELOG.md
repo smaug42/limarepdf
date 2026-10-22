@@ -63,6 +63,12 @@
   Helvetica, Times and Courier, to show text in its own look while it is typed on the page. They are only drawn
   on screen: text is still written in Helvetica, Times or Courier, and the font list is unchanged. Release
   archives and packages include their licence as `FONT-LICENSE-Liberation.txt`.
+- Add text is typed on the page, where you click, in the font, size and colour it will have, instead of in a box
+  in the inspector with Add and Cancel. Enter starts a new line; Esc, a click elsewhere or another tool finishes,
+  and the lines are added as one undo step. The inspector's font, Bold, Italic, size and colour change the text
+  as you type, as do Ctrl+B and Ctrl+I; drag the text's outline to move it. Characters LimarePDF can't write yet
+  can't be typed or pasted there, and a note at the caret says so, instead of turning into `?`. With the Add
+  text tool, a click on page text edits that line, the caret where you clicked.
 
 ### Fixed
 
@@ -88,6 +94,11 @@
 - Esc didn't close the Create signature window, and keyboard shortcuts reached the document while a dialog was
   open.
 - Tab couldn't leave the empty password field when importing a digital ID.
+- Some Western European characters came out as `?` in text LimarePDF writes, although its fonts have them:
+  Š š Ž ž Œ œ Ÿ ƒ † ‡ ‰ ‹ › ˆ ˜ in new and edited text, form values and the OCR text layer; those and also
+  € ‚ „ … ‘ ’ “ ” • – — ™ in text boxes, headers, footers, Bates numbers, watermarks, stamps, Fill and sign's text
+  and the name on a digital signature. They are now written as typed, and stamps and form fields no longer
+  refuse them.
 
 ## [0.8.1] - 2026-10-21
 
