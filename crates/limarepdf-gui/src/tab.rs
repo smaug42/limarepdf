@@ -1843,23 +1843,33 @@ impl Tab {
                         ui.add(egui::Label::new(&b.text).wrap());
                     };
                     let buttons = |ui: &mut egui::Ui| {
-                        let x = egui::Button::new(theme::icon(icon::X)).frame_when_inactive(false);
-                        if ui.add(x).on_hover_text("Dismiss").clicked() {
-                            close = Some(i);
-                        }
-                        if let Some((label, act)) = b.action() {
-                            // Highlighting fields is a switch, as in View, showing whether
-                            // it is on.
-                            let clicked = if act == Act::ToggleFields {
-                                let mut on = self.ed.form.highlight;
-                                ui.checkbox(&mut on, label).clicked()
-                            } else {
-                                ui.button(label).clicked()
-                            };
-                            if clicked {
-                                self.requested.push(act);
+                        let id = ui.id().with("banner buttons");
+                        let last = ui.data(|d| d.get_temp(id));
+                        let width = crate::dialogs::reading_order(ui, last, |ui| {
+                            if let Some((label, act)) = b.action() {
+                                // Highlighting fields is a switch, as in View, showing
+                                // whether it is on.
+                                let clicked = if act == Act::ToggleFields {
+                                    let mut on = self.ed.form.highlight;
+                                    ui.checkbox(&mut on, label).clicked()
+                                } else {
+                                    ui.button(label).clicked()
+                                };
+                                if clicked {
+                                    self.requested.push(act);
+                                }
                             }
-                        }
+                            let x =
+                                egui::Button::new(theme::icon(icon::X)).frame_when_inactive(false);
+                            let r = ui.add(x);
+                            r.widget_info(|| {
+                                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Dismiss")
+                            });
+                            if r.on_hover_text("Dismiss").clicked() {
+                                close = Some(i);
+                            }
+                        });
+                        ui.data_mut(|d| d.insert_temp(id, width));
                     };
                     egui::Sides::new().shrink_left().show(ui, text, buttons);
                 });
@@ -2191,6 +2201,10 @@ impl Tab {
                         Vec2::new(ui.available_width(), th + 22.0),
                         Sense::click_and_drag(),
                     );
+                    let name = format!("Page {}", self.page_name(i));
+                    resp.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name)
+                    });
                     rects.push(rect);
                     // Dragging a thumbnail moves it, or the selected pages if it is one
                     // of them.

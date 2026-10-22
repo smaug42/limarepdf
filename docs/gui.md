@@ -453,7 +453,7 @@ lose it, or until you remove content from it or set a password (below). Files gi
 the list is closed.
 
 A restored copy of a digitally signed document is LimarePDF's working copy, not the signed file, so its signatures
-cover bytes that aren't in it. They aren't checked: the Signatures tab lists each one as "Not checked: recovered
+cover bytes that aren't in it. They aren't checked: the Digital signatures view lists each one as "Not checked: recovered
 copy". Open the original to check them. Saving or signing the copy writes the whole file, which makes them invalid,
 so LimarePDF asks first.
 
@@ -647,6 +647,7 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Ctrl+A, Ctrl+C | Select all text on the page, copy it (read tool) |
 | Esc | Cancel: drop the edit of a line being typed, clear the selection, or leave a tool for the read tool |
 | Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |
+| Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the top bar, tabs, bottom bar and panels left to right; inside a dialog, its fields and then its buttons. Space or Enter presses the button. In a form, Tab moves between its fields; Ctrl+K reaches every command |
 
 ## Look and feel
 

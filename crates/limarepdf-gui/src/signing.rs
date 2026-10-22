@@ -468,6 +468,7 @@ impl Create {
     /// The drawing pad: white, with a line to sign on.
     fn pad(&mut self, ui: &mut egui::Ui, color: InkColor) {
         let (rect, resp) = ui.allocate_exact_size(PAD, Sense::click_and_drag());
+        crate::dialogs::set_name(&resp, "Drawing area: sign with the mouse or a pen");
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 4.0, Color32::WHITE);
         let base = rect.top() + rect.height() * 0.72;
@@ -664,7 +665,8 @@ fn ink_ui(ui: &mut egui::Ui, color: &mut InkColor) {
             let fmt = |color| egui::TextFormat::simple(font.clone(), color);
             job.append("● ", 0.0, fmt(Color32::from_rgb(r, g, b)));
             job.append(&capital(c.name()), 0.0, fmt(fg));
-            ui.selectable_value(color, c, job);
+            let r = ui.selectable_value(color, c, job);
+            crate::dialogs::set_name(&r, &format!("{} ink", capital(c.name())));
         }
     });
 }

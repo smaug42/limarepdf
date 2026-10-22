@@ -51,7 +51,7 @@ can't confirm who Jane Doe is."; with several it sums them up. A certified docum
 certified it and what the certification allows. The banner's **Signatures** button opens the **Signatures** tab of
 the side panel (also Document > Digital signatures > Signatures in this document).
 
-The Signatures tab lists the signatures in the order they were made. For each: what it is and who made it (click to
+The Digital signatures view lists the signatures in the order they were made. For each: what it is and who made it (click to
 go to it on the page), its result in a sentence, the changes made after it (those the signer didn't allow in red;
 the first five, all of them in Details), any warnings, and the buttons **Details…** and **Signed version**.
 Signature fields nobody has signed yet are listed below the signatures; click one to go to it, and hover to see the
@@ -64,7 +64,7 @@ SHA-256 fingerprint, how much of the file the signature covers, every change aft
 certificates the signature carries. Its buttons trust the signer or an authority (see
 [Trusting signers](#trusting-signers)), open the signed version, and go to the field.
 
-The app checks the **file**: after you change the document, the Signatures tab says that your unsaved changes
+The app checks the **file**: after you change the document, the Digital signatures view says that your unsaved changes
 aren't checked. Saving adds your changes after what was signed, so the signatures stay (see
 [Saving a signed document](#saving-a-signed-document)); LimarePDF then checks the saved file, so the tab shows what other
 readers will see in the saved copy, your changes listed under each signature.
@@ -101,7 +101,7 @@ anything added later. Open it to see what the signer saw, or compare it with the
 "View signed version". LimarePDF refuses it for a broken signature, whose "signed version" isn't genuine, and warns when
 the signature couldn't be checked.
 
-In the app, **Signed version** in the Signatures tab (or **View signed version** in Details) opens it in a new tab
+In the app, **Signed version** in the Digital signatures view (or **View signed version** in Details) opens it in a new tab
 named after the document, "(signed version N)", where it is checked like any signed file. Save as to keep it.
 
 The signer's name, reason, location and contact come from the file and are claims by whoever made it; LimarePDF removes
@@ -134,7 +134,7 @@ signer's own Acrobat knows nothing about your list.
 **In the app:** in a valid signature's Details, **Trust this signer…** shows the signer's certificate with its
 SHA-256 fingerprint, asks for the name to keep it under in your list, and trusts it when you choose Trust. **Trust
 an authority…** does the same for an authority from the certificates the signature carries (choose one when there
-are several). **Document > Digital signatures > Trusted certificates…** (also at the bottom of the Signatures tab) shows your list, removes
+are several). **Document > Digital signatures > Trusted certificates…** (also at the bottom of the Digital signatures view) shows your list, removes
 an entry (Remove…, then Stop trusting), and adds a certificate from a file (Add certificate file…; as a signer
 unless you choose certificate authority, which only an authority's certificate allows). Every open document is
 judged again as soon as the list changes. A change made with `limarepdf-cli trust` while the app is open counts for documents
@@ -846,7 +846,7 @@ certificates a document carries never become trusted by being there.
 - **"has the same name as … which you trust, but is a different certificate"**: someone used the name of a
   person or authority you trust. Ask them whether they have a new digital ID before trusting it.
 - **"… can be changed by other users of this computer, so LimarePDF doesn't use it"** (shown by `limarepdf-cli verify`, and at
-  the top of the app's Signatures tab, Details and Trusted certificates): the trust list's permissions were
+  the top of the app's Digital signatures view, Details and Trusted certificates): the trust list's permissions were
   changed; until fixed, nobody is trusted and the app won't change the list. It is plain text: look through it for entries you didn't add, remove them, then `chmod 600` it.
 - **A trusted signer shows "NOT TRUSTED"** after their certificate expired: only signatures made while it was valid
   are trusted. Signatures they make with a new ID need that ID trusted too.

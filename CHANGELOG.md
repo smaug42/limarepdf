@@ -52,6 +52,11 @@
 - Create signature: Draw, Type and Image (was Picture), the ink colour in the window too, and Use signature (was
   Done). Picking another tool closes it.
 - Go to field in Signature details closes the window, to show the field.
+- Tab goes through the top bar, the tabs, the bottom bar, the panels and each dialog's buttons in the order they
+  are shown, left to right. Screen readers can name every button and field: the search field, the pages and
+  their thumbnails, Print's printer, page range and copies, the signature drawing area and ink colours, and the
+  banners' Dismiss button. Closing the inspector's pop-out with Esc returns the keyboard to its button.
+- Creating a digital ID shows a problem beside the field it is about, and the keyboard starts in the Name field.
 
 ### Fixed
 
@@ -60,6 +65,7 @@
   colour button stored its colour back very slightly changed.
 - Esc didn't close the Create signature window, and keyboard shortcuts reached the document while a dialog was
   open.
+- Tab couldn't leave the empty password field when importing a digital ID.
 
 ## [0.8.1] - 2026-10-21
 

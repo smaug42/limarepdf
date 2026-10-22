@@ -166,6 +166,26 @@ fn error(ui: &mut Ui, e: &Option<String>) {
     }
 }
 
+/// A row of a form's grid: `label`, then the field `add` draws, named by the label; and
+/// under it, `error` when it is about this `field`.
+fn form_row(
+    ui: &mut Ui,
+    label: &str,
+    field: Field,
+    error: &Option<(Field, String)>,
+    add: impl FnOnce(&mut Ui) -> egui::Response,
+) {
+    ui.label(label);
+    dialogs::set_name(&add(ui), label);
+    ui.end_row();
+    if let Some((_, e)) = error.as_ref().filter(|(f, _)| *f == field) {
+        ui.label("");
+        let text = RichText::new(e).color(ui.visuals().error_fg_color);
+        ui.add(egui::Label::new(text).wrap());
+        ui.end_row();
+    }
+}
+
 fn window<'a>(title: &'a str, id: &str) -> Shell<'a> {
     Shell::new(title).id(id).width(WIDTH + 40.0)
 }
@@ -181,19 +201,60 @@ fn busy_ui(ui: &mut Ui, what: &str) {
 
 // ------------------------------------------------------------------ Digital IDs window
 
+/// The field of a form an error is shown beside.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Field {
+    Name,
+    Organisation,
+    Email,
+    Password,
+    NewPassword,
+    Again,
+}
+
 struct CreateForm {
     name: String,
     organisation: String,
     email: String,
     password: Secret,
     again: Secret,
-    error: Option<String>,
+    error: Option<(Field, String)>,
+    /// Just opened: the keyboard goes to its first field.
+    opened: bool,
+}
+
+impl CreateForm {
+    /// What is wrong with the form, if anything: the first problem, by its field.
+    fn problem(&self) -> Option<(Field, String)> {
+        let opt = |s: &str| Some(s.trim().to_string()).filter(|s| !s.is_empty());
+        let new = |organisation, email| NewId {
+            name: self.name.trim().to_string(),
+            organisation,
+            email,
+        };
+        let wrong = |id: NewId| id.check().err().map(|e| format!("{e:#}"));
+        let organisation = opt(&self.organisation);
+        wrong(new(None, None))
+            .map(|e| (Field::Name, e))
+            .or_else(|| wrong(new(organisation.clone(), None)).map(|e| (Field::Organisation, e)))
+            .or_else(|| wrong(new(organisation, opt(&self.email))).map(|e| (Field::Email, e)))
+            .or_else(|| {
+                limarepdf_core::password_problem(&self.password.0).map(|e| (Field::Password, e))
+            })
+            .or_else(|| {
+                let same = self.password.0 == self.again.0;
+                (!same).then(|| (Field::Again, "The two passwords aren't the same.".into()))
+            })
+            .map(|(field, e)| (field, capital(&e)))
+    }
 }
 
 struct ImportForm {
     file: PathBuf,
     password: Secret,
     error: Option<String>,
+    /// Just opened: the keyboard goes to the password.
+    opened: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -210,7 +271,7 @@ struct ExportForm {
     fresh: bool,
     new_password: Secret,
     again: Secret,
-    error: Option<String>,
+    error: Option<(Field, String)>,
 }
 
 enum Page {
@@ -329,6 +390,7 @@ impl IdsWindow {
                     password: Secret::default(),
                     again: Secret::default(),
                     error: None,
+                    opened: true,
                 });
                 self.note = None;
             }
@@ -341,6 +403,7 @@ impl IdsWindow {
                         file,
                         password: Secret::default(),
                         error: None,
+                        opened: true,
                     });
                     self.note = None;
                 }
@@ -483,24 +546,28 @@ impl IdsWindow {
             );
             ui.add_space(6.0);
             egui::Grid::new("new id").num_columns(2).show(ui, |ui| {
-                ui.label("Name");
-                ui.text_edit_singleline(&mut f.name);
-                ui.end_row();
-                ui.label("Organisation");
-                ui.add(egui::TextEdit::singleline(&mut f.organisation).hint_text("Optional"));
-                ui.end_row();
-                ui.label("Email");
-                ui.add(egui::TextEdit::singleline(&mut f.email).hint_text("Optional"));
-                ui.end_row();
-                ui.label("Password");
-                f.password.edit(
-                    ui,
-                    &format!("At least {} characters", limarepdf_core::MIN_PASSWORD),
-                );
-                ui.end_row();
-                ui.label("Again");
-                f.again.edit(ui, "Type it again");
-                ui.end_row();
+                let e = &f.error;
+                form_row(ui, "Name", Field::Name, e, |ui| {
+                    let r = ui.text_edit_singleline(&mut f.name);
+                    // The keyboard starts in the form, as it opens from a button that is gone.
+                    if std::mem::take(&mut f.opened) {
+                        r.request_focus();
+                    }
+                    r
+                });
+                form_row(ui, "Organisation", Field::Organisation, e, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut f.organisation).hint_text("Optional"))
+                });
+                form_row(ui, "Email", Field::Email, e, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut f.email).hint_text("Optional"))
+                });
+                let at_least = format!("At least {} characters", limarepdf_core::MIN_PASSWORD);
+                form_row(ui, "Password", Field::Password, e, |ui| {
+                    f.password.edit(ui, &at_least)
+                });
+                form_row(ui, "Again", Field::Again, e, |ui| {
+                    f.again.edit(ui, "Type it again")
+                });
             });
             ui.add_space(4.0);
             ui.add(
@@ -511,7 +578,6 @@ impl IdsWindow {
                 )
                 .wrap(),
             );
-            error(ui, &f.error);
         });
         let hit = dialogs::footer(ui, None, &[Btn::primary("Create"), Btn::plain("Back")]);
         let (go, back) = (hit == Some(0), hit == Some(1));
@@ -519,24 +585,16 @@ impl IdsWindow {
             return;
         }
         if go {
-            let opt = |s: &str| Some(s.trim().to_string()).filter(|s| !s.is_empty());
-            let new = NewId {
-                name: f.name.trim().to_string(),
-                organisation: opt(&f.organisation),
-                email: opt(&f.email),
-            };
-            let problem = new
-                .check()
-                .err()
-                .map(|e| format!("{e:#}"))
-                .or_else(|| limarepdf_core::password_problem(&f.password.0))
-                .or_else(|| {
-                    (f.password.0 != f.again.0)
-                        .then(|| "The two passwords aren't the same.".to_string())
-                });
-            if let Some(why) = problem {
-                f.error = Some(capital(&why));
-            } else if let Ok(store) = self.store.clone() {
+            f.error = f.problem();
+        }
+        if go && f.error.is_none() {
+            if let Ok(store) = self.store.clone() {
+                let opt = |s: &str| Some(s.trim().to_string()).filter(|s| !s.is_empty());
+                let new = NewId {
+                    name: f.name.trim().to_string(),
+                    organisation: opt(&f.organisation),
+                    email: opt(&f.email),
+                };
                 let password = std::mem::take(&mut f.password);
                 let ctx = ui.ctx().clone();
                 self.task = Some((
@@ -563,7 +621,8 @@ impl IdsWindow {
             ui.horizontal(|ui| {
                 ui.label("Password");
                 let r = f.password.edit(ui, "The file's password");
-                if f.error.is_none() && !r.has_focus() && f.password.0.is_empty() {
+                dialogs::set_name(&r, "Password");
+                if std::mem::take(&mut f.opened) {
                     r.request_focus();
                 }
             });
@@ -642,23 +701,23 @@ impl IdsWindow {
                     ui.label(RichText::new(&f.id.cert.sha256).monospace().small());
                 }
                 ExportKind::Key => {
+                    let e = &f.error;
                     egui::Grid::new("export id").num_columns(2).show(ui, |ui| {
-                        ui.label("ID's password");
-                        f.password.edit(ui, "Password");
-                        ui.end_row();
+                        form_row(ui, "ID's password", Field::Password, e, |ui| {
+                            f.password.edit(ui, "Password")
+                        });
                     });
                     ui.checkbox(&mut f.fresh, "Protect the file with a new password");
                     if f.fresh {
                         egui::Grid::new("export new").num_columns(2).show(ui, |ui| {
-                            ui.label("New password");
-                            f.new_password.edit(
-                                ui,
-                                &format!("At least {} characters", limarepdf_core::MIN_PASSWORD),
-                            );
-                            ui.end_row();
-                            ui.label("Again");
-                            f.again.edit(ui, "Type it again");
-                            ui.end_row();
+                            let at_least =
+                                format!("At least {} characters", limarepdf_core::MIN_PASSWORD);
+                            form_row(ui, "New password", Field::NewPassword, e, |ui| {
+                                f.new_password.edit(ui, &at_least)
+                            });
+                            form_row(ui, "Again", Field::Again, e, |ui| {
+                                f.again.edit(ui, "Type it again")
+                            });
                         });
                     }
                     ui.add(
@@ -670,7 +729,6 @@ impl IdsWindow {
                     );
                 }
             }
-            error(ui, &f.error);
         });
         let hit = dialogs::footer(ui, None, &[Btn::primary("Export…"), Btn::plain("Back")]);
         let (go, back) = (hit == Some(0), hit == Some(1));
@@ -700,21 +758,26 @@ impl IdsWindow {
                 }
                 ExportKind::Key => {
                     let problem = if f.fresh {
-                        limarepdf_core::password_problem(&f.new_password.0).or_else(|| {
-                            (f.new_password.0 != f.again.0)
-                                .then(|| "The two new passwords aren't the same.".to_string())
-                        })
+                        limarepdf_core::password_problem(&f.new_password.0)
+                            .map(|e| (Field::NewPassword, e))
+                            .or_else(|| {
+                                (f.new_password.0 != f.again.0).then(|| {
+                                    let e = "The two new passwords aren't the same.";
+                                    (Field::Again, e.to_string())
+                                })
+                            })
                     } else if limarepdf_core::password_problem(&f.password.0).is_some() {
-                        Some(format!(
+                        let e = format!(
                             "The ID's password is shorter than {} characters: protect the \
                              file with a new password.",
                             limarepdf_core::MIN_PASSWORD
-                        ))
+                        );
+                        Some((Field::Password, e))
                     } else {
                         None
                     };
-                    if let Some(why) = problem {
-                        f.error = Some(capital(&why));
+                    if let Some((field, why)) = problem {
+                        f.error = Some((field, capital(&why)));
                     } else if let (Ok(store), Some(path)) = (
                         self.store.clone(),
                         save_path(&f.id.name, "p12", "Digital ID"),
@@ -1246,6 +1309,36 @@ mod tests {
         w.store = Ok(store);
         w.reload();
         (w, dir)
+    }
+
+    #[test]
+    fn a_new_id_s_problem_is_shown_beside_its_field() {
+        let form = |name: &str, organisation: &str, email: &str, again: &str| CreateForm {
+            name: name.into(),
+            organisation: organisation.into(),
+            email: email.into(),
+            password: Secret(PASSWORD.into()),
+            again: Secret(again.into()),
+            error: None,
+            opened: false,
+        };
+        let field = |f: CreateForm| f.problem().map(|(field, _)| field);
+        assert_eq!(field(form("Jane", "", "", PASSWORD)), None);
+        assert_eq!(field(form(" ", "", "", PASSWORD)), Some(Field::Name));
+        assert_eq!(
+            field(form("Jane", "A\nB", "", PASSWORD)),
+            Some(Field::Organisation)
+        );
+        assert_eq!(
+            field(form("Jane", "", "jane", PASSWORD)),
+            Some(Field::Email)
+        );
+        assert_eq!(field(form("Jane", "", "", "other")), Some(Field::Again));
+        let mut short = form("Jane", "", "", "abc");
+        short.password = Secret("abc".into());
+        let (field, text) = short.problem().unwrap();
+        assert_eq!(field, Field::Password);
+        assert!(text.starts_with(char::is_uppercase), "{text}");
     }
 
     /// Signs as the app does, waiting for the background work.

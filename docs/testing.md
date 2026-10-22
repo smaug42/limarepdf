@@ -101,8 +101,11 @@ of the test files needed about 10 GB of memory before pages were drawn in bands 
 
 ## The desktop app
 
-There are no automated tests of the desktop app's screens. Its commands, selection rules and page moves are
-unit-tested, and the operations behind it are covered by the core tests and the command line. The redesigned window
+Its commands, selection rules and page moves are unit-tested, and the operations behind it are covered by the core
+tests and the command line. A few app tests draw the whole window without a screen and read what a screen reader
+would see: every control has a name at five window widths, Tab reaches the bars and the Print and Create signature
+dialogs in the order shown, docked controls stay docked through resizing, Esc closes the inspector's pop-out and
+returns to its button, and dialog buttons are clicked as a user would (confirmations act on their own document). The redesigned window
 (top bar, inspector, command palette, right-click menus, floating toolbar, thumbnail dragging, collapsing inspector)
 has been used by hand on Linux. Later additions (recent files, document notices, fit width, the theme button, crop)
 were checked by screenshot under a virtual X server; not every one has been clicked through by hand. Of the newest:
@@ -120,7 +123,7 @@ app part (Redact tool, marking selected text and search results, the notice, App
 hand; removing hidden information was checked through its core tests and `limarepdf-cli sanitise` on real PDFs, its dialog not
 clicked through;
 checking digital signatures in the app was checked through unit tests on the pyHanko and node-signpdf samples
-and screenshots of the banner (unknown signer, broken, certified); the Signatures tab, Details, the trust windows,
+and screenshots of the banner (unknown signer, broken, certified); the signatures view, Details, the trust windows,
 View signed version and clicking a signed field were not clicked through;
 signing (`limarepdf-cli sign`) was checked through its core tests, `pdfsig` and OpenSSL, and by hand on a public PDF (the
 look rendered by poppler and by LimarePDF); not yet in Acrobat; signing in the app was checked through unit tests that
@@ -134,6 +137,15 @@ Ghostscript, including encrypted ones; not yet in Adobe Reader. Drawing pages in
 screenshot at 3200% and 6400% and used by hand on Linux, zooming and scrolling up to 6400%; not yet on a HiDPI
 screen. Drawing large pages in bands was used by hand on Linux, zooming PDFBox 5134 on a 4K screen at scale 1 with
 its memory recorded (performance.md).
+
+The 2026 window redesign (bars, panels, docking, editing in the read tool, placement pins, dialogs) was checked by
+screenshot on Linux under a virtual X server, driven with xdotool: at 1400, 1200, 1000, 800, 700 and 400 points
+wide, in the light and dark themes, at display scales 1, 1.5 and 2 (the X11 scale factor, not a real HiDPI
+screen); with the Pages, Bookmarks and Comments views; a comment selected with its controls floating, docked, and
+docked in a narrow window with the pop-out opened and closed by Esc; a form (fields highlighted) and a signed
+document (banner); and the Print (also in a 450-point-high window, where its settings scroll and the buttons stay),
+close confirmation and Digital IDs dialogs, the last filled in with the keyboard alone to show each kind of problem
+beside its field. Nothing was printed. Not tried: Windows and macOS, a real HiDPI screen, a screen reader.
 
 Each feature page says what was not tested, under "How this was tested".
 

@@ -1639,6 +1639,9 @@ impl Editor {
             |b: [f32; 4]| Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3]));
         let id = ui.id().with(("page-edit", tab_id, page));
         let mut resp = ui.interact(r, id, Sense::click_and_drag());
+        resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Other, true, format!("Page {}", page + 1))
+        });
         if resp.secondary_clicked() {
             let p = resp.interact_pointer_pos().map(to_pt);
             let area = (r.width() / k) * (r.height() / k);

@@ -439,6 +439,8 @@ struct BarWidths {
     folds: [Option<f32>; FOLDS.len()],
     /// The right end, with the search icon and with the search field.
     right: [Option<f32>; 2],
+    /// The page layout and zoom controls at the right of the status bar.
+    view: Option<f32>,
 }
 
 /// Extra room a folded control needs before it comes back, so that a width at the
@@ -3164,9 +3166,13 @@ impl App {
         if self.palette.is_some() || dlg::any_open(ctx) {
             return;
         }
-        // Esc closes the inspector's pop-out first, keeping what was changed in it.
+        // Esc closes the inspector's pop-out first, keeping what was changed in it, and
+        // the keyboard goes back to the button that opened it.
         if self.popout && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
             self.popout = false;
+            if let Some(id) = ctx.data(|d| d.get_temp(egui::Id::new(POPOUT_OPENER))) {
+                ctx.memory_mut(|m| m.request_focus(id));
+            }
             return;
         }
         let c = self.state(ctx);
@@ -3369,7 +3375,9 @@ fn inspector_strip(
             ui.separator();
         }
         let options = "Options for the selection or the document";
-        clicked.1 = icon_button(ui, icon::SLIDERS_HORIZONTAL, options).clicked();
+        let r = icon_button(ui, icon::SLIDERS_HORIZONTAL, options);
+        ui.data_mut(|d| d.insert_temp(egui::Id::new(POPOUT_OPENER), r.id));
+        clicked.1 = r.clicked();
     });
     clicked
 }
@@ -3438,6 +3446,9 @@ fn inspector_body(
     });
     apply
 }
+
+/// Where the inspector strip keeps the id of its button that opens the pop-out.
+const POPOUT_OPENER: &str = "inspector-popout-opener";
 
 /// The inspector's contents in a pop-out over the pages, left of its strip (`strip`),
 /// for windows too narrow for the panel. Changes made in it stay when it closes. Returns
@@ -3865,32 +3876,35 @@ impl eframe::App for App {
                     if !has {
                         return;
                     }
-                    bar(ui, Act::Print, false, acts);
                     let t = &mut self.tabs[self.active];
-                    if search_field {
-                        let r = ui.add(
-                            egui::TextEdit::singleline(&mut t.query)
-                                .hint_text("Search")
-                                .desired_width(180.0),
-                        );
-                        // Laid out right to left, so this lands left of the field.
-                        ui.label(theme::icon(icon::MAGNIFYING_GLASS).weak());
-                        if std::mem::take(&mut self.focus_search) {
-                            r.request_focus();
+                    let last = m.right[usize::from(search_field)].map(|w| w - gap);
+                    let used = dlg::reading_order(ui, last, |ui| {
+                        if search_field {
+                            ui.label(theme::icon(icon::MAGNIFYING_GLASS).weak());
+                            let r = ui.add(
+                                egui::TextEdit::singleline(&mut t.query)
+                                    .hint_text("Search")
+                                    .desired_width(180.0),
+                            );
+                            dlg::set_name(&r, "Search");
+                            if std::mem::take(&mut self.focus_search) {
+                                r.request_focus();
+                            }
+                            if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                                t.run_search();
+                                searched = true;
+                            }
+                        } else {
+                            bar(ui, Act::Find, false, acts);
                         }
-                        if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                            t.run_search();
-                            searched = true;
-                        }
-                    } else {
-                        bar(ui, Act::Find, false, acts);
-                    }
-                    let used = ui.min_rect().width() + gap;
-                    widths.borrow_mut().right[usize::from(search_field)] = Some(used);
+                        bar(ui, Act::Print, false, acts);
+                    });
+                    widths.borrow_mut().right[usize::from(search_field)] = Some(used + gap);
                 };
-                // The right side is laid out first; the left gets what remains.
+                // The left side is laid out first, so Tab goes through the bar from left
+                // to right; the folding above keeps it out of the right side's room.
                 egui::Sides::new()
-                    .shrink_left()
+                    .shrink_right()
                     .height(28.0)
                     .show(ui, left_side, right_side);
                 self.bar_widths = widths.into_inner();
@@ -3943,34 +3957,36 @@ impl eframe::App for App {
                     ui.label(&self.status);
                 }
             };
-            // Laid out right to left.
+            let last = &mut self.bar_widths.view;
             let view = |ui: &mut egui::Ui| {
                 let Some(t) = t else { return };
-                bar(ui, Act::ZoomIn, false, &mut acts);
-                // The zoom level; clicking it resets to actual size.
-                let level = format!("{:.0}%", t.zoom * 100.0);
-                let b = egui::Button::new(level).frame_when_inactive(false);
-                let tip = tooltip(ui.ctx(), actions::get(Act::Actual));
-                if ui.add(b).on_hover_text(tip).clicked() {
-                    acts.push(Act::Actual);
-                }
-                bar(ui, Act::ZoomOut, false, &mut acts);
-                // Highlighted while the zoom follows the width.
-                bar(ui, Act::FitWidth, c.fit, &mut acts);
-                // The page layout, its icon showing the current one.
-                let glyph = actions::get(Act::Layout(c.layout)).icon;
-                ui.menu_button(menu_icon(glyph), |ui| {
-                    let layouts = ACTIONS.iter().filter(|a| a.submenu == "Page layout");
-                    for a in layouts {
-                        if a.sep {
-                            ui.separator();
+                *last = Some(dlg::reading_order(ui, *last, |ui| {
+                    // The page layout, its icon showing the current one.
+                    let glyph = actions::get(Act::Layout(c.layout)).icon;
+                    ui.menu_button(menu_icon(glyph), |ui| {
+                        let layouts = ACTIONS.iter().filter(|a| a.submenu == "Page layout");
+                        for a in layouts {
+                            if a.sep {
+                                ui.separator();
+                            }
+                            menu_item(ui, a, &c, &mut acts);
                         }
-                        menu_item(ui, a, &c, &mut acts);
+                    })
+                    .response
+                    .on_hover_text("Page layout")
+                    .widget_info(|| named("Page layout"));
+                    // Highlighted while the zoom follows the width.
+                    bar(ui, Act::FitWidth, c.fit, &mut acts);
+                    bar(ui, Act::ZoomOut, false, &mut acts);
+                    // The zoom level; clicking it resets to actual size.
+                    let level = format!("{:.0}%", t.zoom * 100.0);
+                    let b = egui::Button::new(level).frame_when_inactive(false);
+                    let tip = tooltip(ui.ctx(), actions::get(Act::Actual));
+                    if ui.add(b).on_hover_text(tip).clicked() {
+                        acts.push(Act::Actual);
                     }
-                })
-                .response
-                .on_hover_text("Page layout")
-                .widget_info(|| named("Page layout"));
+                    bar(ui, Act::ZoomIn, false, &mut acts);
+                }));
             };
             egui::Sides::new()
                 .shrink_left()
@@ -4397,6 +4413,239 @@ mod tests {
         }
         app.active = n - 1;
         app
+    }
+
+    /// Draw the whole window `width` points wide with `events`, and return its AccessKit tree.
+    fn window(
+        app: &mut App,
+        ctx: &egui::Context,
+        width: f32,
+        events: Vec<egui::Event>,
+    ) -> egui::accesskit::TreeUpdate {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width, 800.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut out = ctx.run_ui(raw, |ui| eframe::App::ui(app, ui, &mut frame));
+        out.textures_delta.clear();
+        out.platform_output
+            .accesskit_update
+            .expect("the window's widgets")
+    }
+
+    /// The names of the controls Tab can reach, drawn `width` points wide once settled.
+    fn focusable(app: &mut App, ctx: &egui::Context, width: f32) -> Vec<Option<String>> {
+        for _ in 0..4 {
+            window(app, ctx, width, vec![]);
+        }
+        let tree = window(app, ctx, width, vec![]);
+        tree.nodes
+            .iter()
+            .filter(|(_, n)| n.supports_action(egui::accesskit::Action::Focus))
+            .map(|(_, n)| n.label().map(str::to_string))
+            .collect()
+    }
+
+    #[test]
+    fn every_control_has_a_name_at_every_width() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        for width in [1400.0, 1000.0, 760.0, 560.0, 400.0] {
+            let names = focusable(&mut app, &ctx, width);
+            // Besides egui's own panel resize handles, which have no name.
+            let unnamed = names.iter().filter(|n| n.is_none()).count();
+            let handles = usize::from(app.side.shown()) + usize::from(app.inspector.shown());
+            assert!(unnamed <= handles, "{unnamed} unnamed at {width}");
+            for name in [
+                "Menu",
+                "Open",
+                "Save",
+                "Read and select text",
+                "Tools",
+                "Print",
+            ] {
+                assert!(names.contains(&Some(name.into())), "no {name} at {width}");
+            }
+        }
+    }
+
+    #[test]
+    fn tab_goes_through_the_bars_in_reading_order() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let mut reached = tab_walk(&mut app, &ctx, 1400.0, 30);
+        // Not the zoom level, which depends on the window.
+        reached.retain(|name| !name.ends_with('%'));
+        let bars = [
+            "Menu",
+            "Open",
+            "Save",
+            "Export",
+            "Undo", // Redo is disabled: nothing was undone.
+            "Read and select text",
+            "Add text",
+            "Add image",
+            "Mark areas for redaction",
+            "Fill and sign",
+            "Fill and sign choices",
+            "Add a note",
+            "Commenting tools",
+            "Tools",
+            "Search",
+            "Print",
+            "Untitled *",
+            "Close Untitled *",
+            "Page layout",
+            "Fit width",
+            "Zoom out",
+            "Zoom in",
+            "Pages",
+            "Search results",
+            "Bookmarks",
+            "Comments",
+            "Page 1",
+        ];
+        assert_eq!(reached[..bars.len()], bars);
+    }
+
+    /// The names of the controls Tab reaches in turn, from the window's first one, `n`
+    /// presses.
+    fn tab_walk(app: &mut App, ctx: &egui::Context, width: f32, n: usize) -> Vec<String> {
+        focusable(app, ctx, width);
+        let tab = egui::Event::Key {
+            key: Key::Tab,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let mut reached = Vec::new();
+        for _ in 0..n {
+            let tree = window(app, ctx, width, vec![tab.clone()]);
+            let focus = tree.nodes.iter().find(|(id, _)| *id == tree.focus);
+            if let Some(name) = focus.and_then(|(_, n)| n.label()) {
+                reached.push(name.to_string());
+            }
+        }
+        reached
+    }
+
+    /// A dialog's fields are named, and Tab goes through them and then its buttons in the
+    /// order they are shown.
+    #[test]
+    fn tab_goes_through_dialogs_in_reading_order() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let footer = |action: &'static str| {
+            let pair = [action, "Cancel"];
+            if dlg::ACTION_FIRST {
+                pair
+            } else {
+                [pair[1], pair[0]]
+            }
+        };
+        let printer = print::Printer {
+            name: "limarepdf-test-no-such-printer".into(),
+            default: true,
+        };
+        let print = dlg::Print::new(vec![printer], "test.pdf".into());
+        app.dialog = Dialog::Print(app.asked(), Box::new(print));
+        let mut want = vec![
+            "Printer",
+            "All pages",
+            "Page range",
+            "Page range",
+            "Copies",
+            "One side",
+            "Both sides, flip on long edge",
+            "Both sides, flip on short edge",
+        ];
+        if !cfg!(windows) {
+            want.push("Advanced");
+        }
+        want.extend(footer("Print"));
+        assert_eq!(tab_walk(&mut app, &ctx, 1200.0, want.len()), want);
+
+        app.dialog = Dialog::None;
+        app.act(&ctx, Act::CreateSign(limarepdf_core::SignRole::Signature));
+        let mut want = vec![
+            "Draw",
+            "Type",
+            "Image",
+            "Drawing area: sign with the mouse or a pen",
+            "Black ink",
+            "Blue ink",
+            "Save for next time",
+        ];
+        want.extend(footer("Use signature"));
+        assert_eq!(tab_walk(&mut app, &ctx, 1200.0, want.len()), want);
+    }
+
+    #[test]
+    fn esc_closes_the_inspector_pop_out_and_focuses_its_button() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        // Narrow enough to fold the inspector into its strip.
+        focusable(&mut app, &ctx, 700.0);
+        app.popout = true;
+        focusable(&mut app, &ctx, 700.0);
+        assert!(app.popout);
+        let esc = egui::Event::Key {
+            key: Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        window(&mut app, &ctx, 700.0, vec![esc]);
+        assert!(!app.popout);
+        let tree = window(&mut app, &ctx, 700.0, vec![]);
+        let focus = tree.nodes.iter().find(|(id, _)| *id == tree.focus);
+        assert_eq!(
+            focus.and_then(|(_, n)| n.label()),
+            Some("Options for the selection or the document")
+        );
+    }
+
+    /// Docked selection controls take the floating bar's place and stay docked whatever
+    /// the width, in the panel or, when it folds away, in its strip.
+    #[test]
+    fn docked_controls_stay_docked_through_resizing() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        with_notes(&mut app, &ctx);
+        let id = app.tabs[0].pdf.annotations()[0].id;
+        app.tabs[0].ed.selection = Selection::Annot { page: 0, id };
+        let (dock, float) = (
+            Some("Dock controls on the right".to_string()),
+            Some("Float controls near selection".to_string()),
+        );
+        let names = focusable(&mut app, &ctx, 1400.0);
+        assert!(names.contains(&dock) && !names.contains(&float));
+        app.act(&ctx, Act::ToggleDock);
+        for width in [1400.0, 700.0, 1400.0] {
+            let names = focusable(&mut app, &ctx, width);
+            assert!(
+                names.contains(&float) && !names.contains(&dock),
+                "at {width}"
+            );
+        }
+        assert!(app.settings.controls_docked);
     }
 
     fn message(app: &App) -> (&str, &str) {

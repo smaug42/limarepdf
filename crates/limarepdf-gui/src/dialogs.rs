@@ -199,6 +199,29 @@ pub fn group<R>(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui) -> R) -> R 
     r
 }
 
+/// Names a field for screen readers, as the label beside it does on screen.
+pub fn set_name(r: &egui::Response, name: &str) {
+    r.ctx.accesskit_node_builder(r.id, |n| n.set_label(name));
+}
+
+/// Controls at the right end of a row (whose `ui` is laid out right to left) laid out
+/// left to right, so Tab reaches them in reading order: in a box as wide as they were
+/// when last drawn, `last`. Returns their width; when that changed, the frame is drawn
+/// again, so a misplaced box is never shown.
+pub fn reading_order(ui: &mut Ui, last: Option<f32>, add: impl FnOnce(&mut Ui)) -> f32 {
+    let size = egui::vec2(last.unwrap_or(0.0), ui.available_height());
+    let layout = egui::Layout::left_to_right(Align::Center);
+    let width = ui
+        .allocate_ui_with_layout(size, layout, add)
+        .response
+        .rect
+        .width();
+    if last != Some(width) {
+        ui.ctx().request_discard("controls measured");
+    }
+    width
+}
+
 /// A dialog's footer: `note` on the left (what is happening, or what is wrong), the buttons
 /// on the right in the platform's order ([`ordered`]). Returns the index in `buttons` of
 /// the one clicked.
@@ -209,16 +232,21 @@ pub fn footer(ui: &mut Ui, note: Option<RichText>, buttons: &[Btn]) -> Option<us
         .inner_margin(Margin::symmetric(20, 12))
         .show(ui, |ui| {
             ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                for i in ordered(buttons).into_iter().rev() {
-                    let b = &buttons[i];
-                    let mut r = ui.add_enabled(b.enabled, b.widget());
-                    if let Some(tip) = b.tip {
-                        r = r.on_hover_text(tip);
+                let id = ui.id().with("footer buttons");
+                let last = ui.data(|d| d.get_temp(id));
+                let width = reading_order(ui, last, |ui| {
+                    for i in ordered(buttons) {
+                        let b = &buttons[i];
+                        let mut r = ui.add_enabled(b.enabled, b.widget());
+                        if let Some(tip) = b.tip {
+                            r = r.on_hover_text(tip);
+                        }
+                        if r.clicked() {
+                            hit = Some(i);
+                        }
                     }
-                    if r.clicked() {
-                        hit = Some(i);
-                    }
-                }
+                });
+                ui.data_mut(|d| d.insert_temp(id, width));
                 if let Some(note) = note {
                     ui.with_layout(egui::Layout::left_to_right(Align::Center), |ui| {
                         ui.add(egui::Label::new(note).wrap());
@@ -411,7 +439,7 @@ fn print_body(ui: &mut Ui, s: &mut Print) -> bool {
                 p.name.clone()
             }
         };
-        egui::ComboBox::from_id_salt("printer")
+        let r = egui::ComboBox::from_id_salt("printer")
             .width(wide)
             .selected_text(name(&s.printers[s.printer]))
             .show_ui(ui, |ui| {
@@ -419,6 +447,7 @@ fn print_body(ui: &mut Ui, s: &mut Print) -> bool {
                     ui.selectable_value(&mut s.printer, i, name(p));
                 }
             });
+        set_name(&r.response, "Printer");
     });
     let mut enter = false;
     if s.selection.is_none() {
@@ -431,6 +460,7 @@ fn print_body(ui: &mut Ui, s: &mut Print) -> bool {
                         .hint_text("e.g. 1-3, 5, 8-")
                         .desired_width(160.0),
                 );
+                set_name(&r, "Page range");
                 if r.changed() {
                     s.all = false;
                     s.error = None;
@@ -445,7 +475,8 @@ fn print_body(ui: &mut Ui, s: &mut Print) -> bool {
     group(ui, "Copies and sides", |ui| {
         ui.horizontal(|ui| {
             ui.label("Copies");
-            ui.add(egui::DragValue::new(&mut s.copies).range(1..=999));
+            let r = ui.add(egui::DragValue::new(&mut s.copies).range(1..=999));
+            set_name(&r, "Copies");
         });
         ui.label("Print on");
         for (x, label) in [
