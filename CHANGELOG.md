@@ -65,6 +65,11 @@
 - Going into the font size box and out again, or pressing Enter in it, without typing rounded an unusual size such
   as 10.126 to 10.13; it now changes nothing, and the box shows the exact size. A change of size smaller than a
   hundredth of a point was also lost.
+- In a narrow window the Create signature window was wider than the screen, so part of the drawing pad was cut
+  off. The pad now shrinks to fit, also in a short window, as do the typed and image previews, and what was drawn
+  keeps its shape and size when the window is resized.
+- A dialog shown in a tall window stayed as tall when the window got shorter, pushing its buttons off screen; it
+  now fits again.
 - Ctrl+A and other single-key shortcuts were missed when the key and Ctrl arrived together, as with a quick tap.
 - Selecting a coloured comment or mark could count as an unkept change (asking about it on closing), because the
   colour button stored its colour back very slightly changed.

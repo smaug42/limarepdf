@@ -35,7 +35,8 @@ on one. The button that does the task is highlighted, or red when what it does c
 breaks signatures; on Windows and Linux it comes before Cancel, on macOS after. Esc is Cancel, except in a window
 holding work you would lose (a signature drawn, typed or chosen; a digital ID form; a signing form with something
 typed), where only Cancel closes it. A message's Copy button copies what it says, to pass on an error. Reasons and
-technical lists in a question are under Details.
+technical lists in a question are under Details. A dialog fits the window, also as it is resized: narrower in a
+narrow one, and in a short one its content scrolls while its buttons stay in view.
 
 A question about a document (Flatten, Apply redactions, Discard changes and the others) acts on the document it was
 asked about, even if another tab has come to the front meanwhile, and brings it back to the front. If that document
@@ -315,7 +316,8 @@ anyone can copy it. For digital signatures, see [Digital signatures](#digital-si
 signature… (or New… beside Signatures), opens a window with three ways to make one:
 
 - **Draw:** sign on the white pad with the mouse, touchpad or a pen; Clear starts again. The strokes are smoothed
-  into curves and stay sharp at any zoom.
+  into curves and stay sharp at any zoom. In a narrow or short window the pad is smaller, at the same shape; what
+  is drawn keeps its shape and comes out the same size on the page, also when the window is resized while drawing.
 - **Type:** type your name (it starts as your name for comments) and pick one of four handwriting styles (Caveat,
   Cedarville Cursive, Homemade Apple and Zeyada), shown as they will look. Western European characters only; for other scripts, draw or use an image.
 - **Image:** choose a photo or scan of your signature on paper (PNG, JPEG or TIFF). "Make the paper transparent"

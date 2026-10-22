@@ -18,7 +18,8 @@ use std::path::{Path, PathBuf};
 
 /// How many signatures, and how many sets of initials, are remembered.
 pub const SAVED: usize = 5;
-/// The drawing pad's size, and the pen's width on it, in points.
+/// The drawing pad's size, and the pen's width on it, in points. Strokes are kept in these
+/// points whatever size the pad is drawn at ([`pad_size`]).
 const PAD: Vec2 = Vec2::new(480.0, 160.0);
 const PEN: f32 = 2.5;
 /// The most a preview in the pane takes up, in points.
@@ -467,19 +468,21 @@ impl Create {
 
     /// The drawing pad: white, with a line to sign on.
     fn pad(&mut self, ui: &mut egui::Ui, color: InkColor) {
-        let (rect, resp) = ui.allocate_exact_size(PAD, Sense::click_and_drag());
+        let (rect, resp) = ui.allocate_exact_size(pad_size(ui), Sense::click_and_drag());
         crate::dialogs::set_name(&resp, "Drawing area: sign with the mouse or a pen");
+        // Points on screen per point of the full-size pad.
+        let k = rect.width() / PAD.x;
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 4.0, Color32::WHITE);
         let base = rect.top() + rect.height() * 0.72;
         painter.line_segment(
             [
-                Pos2::new(rect.left() + 24.0, base),
-                Pos2::new(rect.right() - 24.0, base),
+                Pos2::new(rect.left() + 24.0 * k, base),
+                Pos2::new(rect.right() - 24.0 * k, base),
             ],
             Stroke::new(1.0, Color32::from_gray(200)),
         );
-        let local = |p: Pos2| (p.x - rect.left(), p.y - rect.top());
+        let local = |p: Pos2| ((p.x - rect.left()) / k, (p.y - rect.top()) / k);
         if resp.drag_started() {
             if let Some(p) = ui.input(|i| i.pointer.press_origin()) {
                 self.stroke = Some(vec![local(p)]);
@@ -506,12 +509,12 @@ impl Create {
         for s in self.strokes.iter().chain(&self.stroke) {
             let pts: Vec<Pos2> = s
                 .iter()
-                .map(|&(x, y)| Pos2::new(rect.left() + x, rect.top() + y))
+                .map(|&(x, y)| Pos2::new(rect.left() + x * k, rect.top() + y * k))
                 .collect();
             if pts.len() == 1 {
-                painter.circle_filled(pts[0], PEN / 2.0, ink);
+                painter.circle_filled(pts[0], PEN * k / 2.0, ink);
             } else {
-                painter.add(egui::Shape::line(pts, Stroke::new(PEN, ink)));
+                painter.add(egui::Shape::line(pts, Stroke::new(PEN * k, ink)));
             }
         }
         if resp.hovered() {
@@ -536,9 +539,10 @@ impl Create {
                     SignRole::Signature => "Your name",
                     SignRole::Initials => "Your initials",
                 })
-                .desired_width(PAD.x),
+                .desired_width(ui.available_width()),
         );
         ui.add_space(4.0);
+        let room = ui.available_width() - 2.0 * ui.spacing().button_padding.x;
         for style in SignStyle::ALL {
             let saved = Saved::Typed {
                 text: self.text.clone(),
@@ -550,7 +554,7 @@ impl Create {
                 .flatten();
             let r = match tex {
                 Some(tex) => {
-                    let size = Previews::size(&tex, Vec2::new(PAD.x, 60.0));
+                    let size = Previews::size(&tex, Vec2::new(room, 60.0));
                     let img = egui::Image::new((tex.id(), size));
                     ui.add(egui::Button::image(img).selected(self.style == style))
                 }
@@ -595,7 +599,7 @@ impl Create {
             };
             match previews.get(ui.ctx(), &saved, self.role, color) {
                 Some(tex) => {
-                    let size = Previews::size(&tex, Vec2::new(PAD.x, PAD.y));
+                    let size = Previews::size(&tex, pad_size(ui));
                     ui.image((tex.id(), size));
                 }
                 None => {
@@ -649,6 +653,14 @@ impl Create {
             keep: self.keep,
         })
     }
+}
+
+/// The drawing pad's size on screen, and the most an image preview takes up: [`PAD`]'s
+/// shape, up to [`PAD`], as wide as there is room for and no taller than the part of the
+/// window's content that shows at once, so it can be scrolled wholly into view.
+fn pad_size(ui: &egui::Ui) -> Vec2 {
+    let k = (ui.available_width() / PAD.x).min(ui.clip_rect().height() / PAD.y);
+    PAD * k.min(1.0)
 }
 
 /// The ink colours to pick from, in the Fill and sign pane and the Create window.
@@ -1142,6 +1154,183 @@ mod tests {
         }
         assert_eq!(k.signatures.len(), SAVED);
         assert!(matches!(&k.signatures[0].saved, Saved::Typed { text, .. } if text == "Sam 6"));
+    }
+
+    const DRAWING: &str = "Drawing area: sign with the mouse or a pen";
+
+    /// The Create window on a screen `size` points big, at `scale` pixels per point.
+    struct Win {
+        ctx: egui::Context,
+        c: Create,
+        previews: Previews,
+        size: Vec2,
+        scale: f32,
+    }
+
+    impl Win {
+        fn new(c: Create, size: Vec2, scale: f32) -> Self {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            crate::theme::install(&ctx);
+            Win {
+                ctx,
+                c,
+                previews: Previews::default(),
+                size,
+                scale,
+            }
+        }
+
+        /// Draws the window with `events`, and returns its AccessKit tree.
+        fn frame(&mut self, events: Vec<egui::Event>) -> egui::accesskit::TreeUpdate {
+            let mut raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)),
+                events,
+                ..Default::default()
+            };
+            raw.viewports
+                .entry(egui::ViewportId::ROOT)
+                .or_default()
+                .native_pixels_per_point = Some(self.scale);
+            let Win {
+                ctx, c, previews, ..
+            } = self;
+            let mut out = ctx.run_ui(raw, |_| {
+                c.show(ctx, previews, &mut InkColor::Black);
+            });
+            out.textures_delta.clear();
+            out.platform_output
+                .accesskit_update
+                .expect("the window's widgets")
+        }
+
+        /// Draws the window until it has settled.
+        fn settled(&mut self) -> egui::accesskit::TreeUpdate {
+            for _ in 0..4 {
+                self.frame(vec![]);
+            }
+            self.frame(vec![])
+        }
+
+        /// Moves the pointer to `pos`, pressing or releasing the primary button there.
+        fn pointer(&mut self, pos: Pos2, pressed: Option<bool>) {
+            let mut events = vec![egui::Event::PointerMoved(pos)];
+            events.extend(pressed.map(|pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            }));
+            self.frame(events);
+        }
+    }
+
+    /// Where the control named `label` is, in points.
+    fn bounds(tree: &egui::accesskit::TreeUpdate, label: &str) -> Rect {
+        let b = tree
+            .nodes
+            .iter()
+            .find(|(_, n)| n.label() == Some(label))
+            .and_then(|(_, n)| n.bounds())
+            .unwrap_or_else(|| panic!("no {label}"));
+        Rect::from_min_max(
+            Pos2::new(b.x0 as f32, b.y0 as f32),
+            Pos2::new(b.x1 as f32, b.y1 as f32),
+        )
+    }
+
+    /// G02: drawn, typed or chosen, the Create window and its work area stay inside a narrow,
+    /// short or wide window at every scale, with Use signature on screen; and what it holds
+    /// is kept as the window is resized.
+    #[test]
+    fn create_fits_narrow_short_and_wide_windows() {
+        let picture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/images/icon.png");
+        let sizes = [
+            Vec2::new(400.0, 800.0),
+            Vec2::new(700.0, 300.0),
+            Vec2::new(1000.0, 450.0),
+        ];
+        for scale in [1.0, 1.5, 2.0] {
+            for way in [Way::Draw, Way::Type, Way::Picture] {
+                let mut c = Create::new(SignRole::Signature, "Sam Lee");
+                c.way = way;
+                c.strokes = vec![vec![(30.0, 120.0), (450.0, 40.0)], vec![(240.0, 80.0)]];
+                c.text = "Sam Q. Lee".into();
+                c.picture = Some(picture.clone());
+                let mut w = Win::new(c, sizes[0], scale);
+                for size in sizes {
+                    w.size = size;
+                    let tree = w.settled();
+                    let screen = Rect::from_min_size(Pos2::ZERO, size).expand(0.5);
+                    let id = egui::Id::new(("dialog", "Create signature"));
+                    let window = w.ctx.memory(|m| m.area_rect(id)).expect("the window");
+                    let at = format!("{way:?} at {size:?}, scale {scale}");
+                    assert!(screen.contains_rect(window), "{at}: window {window:?}");
+                    let done = bounds(&tree, "Use signature");
+                    assert!(screen.contains_rect(done), "{at}: Use signature {done:?}");
+                    if way == Way::Draw {
+                        // As wide as the window allows, and no taller than the content
+                        // that shows at once (dialogs::content), at the pad's shape.
+                        let pad = bounds(&tree, DRAWING);
+                        let wide = pad.left() >= window.left() - 0.5
+                            && pad.right() <= window.right() + 0.5;
+                        let tall = pad.height() <= (size.y - 200.0).max(120.0);
+                        assert!(wide && tall, "{at}: pad {pad:?}");
+                        let shape = pad.width() / pad.height();
+                        assert!((shape - 3.0).abs() < 0.05, "{at}: pad {pad:?}");
+                    }
+                }
+                let c = &w.c;
+                assert_eq!(c.strokes.len(), 2);
+                assert_eq!(c.strokes[0], [(30.0, 120.0), (450.0, 40.0)]);
+                assert_eq!(c.text, "Sam Q. Lee");
+                assert_eq!(c.picture.as_ref(), Some(&picture));
+            }
+        }
+    }
+
+    /// G02: strokes are kept in the full-size pad's points, so a stroke drawn wide stays as it
+    /// was when the window narrows, and one drawn on the narrower pad lands where it would on
+    /// the full-size one; the saved signature holds them unchanged.
+    #[test]
+    fn strokes_keep_their_place_as_the_pad_resizes() {
+        let c = Create::new(SignRole::Signature, "Sam Lee");
+        let mut w = Win::new(c, Vec2::new(1000.0, 450.0), 1.0);
+        let pad = bounds(&w.settled(), DRAWING);
+        assert_eq!(pad.size(), PAD);
+        let at = |t: f32| pad.lerp_inside(Vec2::new(t, 0.5));
+        w.pointer(at(0.25), Some(true));
+        for t in [0.4, 0.6, 0.75] {
+            w.pointer(at(t), None);
+        }
+        w.pointer(at(0.75), Some(false));
+        let drawn = w.c.strokes.clone();
+        assert_eq!(drawn.len(), 1, "{drawn:?}");
+        let near = |(x, y): (f32, f32), (u, v): (f32, f32)| (x - u).hypot(y - v) < 1.0;
+        assert!(near(drawn[0][0], (120.0, 80.0)), "{drawn:?}");
+        assert!(near(*drawn[0].last().unwrap(), (360.0, 80.0)), "{drawn:?}");
+
+        w.size = Vec2::new(400.0, 800.0);
+        let pad = bounds(&w.settled(), DRAWING);
+        assert!(pad.width() < PAD.x && pad.right() <= w.size.x, "{pad:?}");
+        assert_eq!(w.c.strokes, drawn);
+        let p = pad.lerp_inside(Vec2::new(0.75, 0.25));
+        w.pointer(p, Some(true));
+        w.pointer(p, Some(false));
+        let dot = w.c.strokes.last().cloned().unwrap();
+        assert_eq!(w.c.strokes.len(), 2, "{:?}", w.c.strokes);
+        assert!(near(dot[0], (360.0, 40.0)), "{dot:?}");
+
+        w.size = Vec2::new(1000.0, 450.0);
+        w.settled();
+        let Ok(Entry {
+            saved: Saved::Drawn { strokes, width },
+            ..
+        }) = w.c.entry()
+        else {
+            panic!("not a drawn signature");
+        };
+        assert_eq!((strokes, width), (vec![drawn[0].clone(), dot], PEN));
     }
 
     #[test]

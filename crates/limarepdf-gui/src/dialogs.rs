@@ -231,7 +231,12 @@ pub fn footer(ui: &mut Ui, note: Option<RichText>, buttons: &[Btn]) -> Option<us
     egui::Frame::NONE
         .inner_margin(Margin::symmetric(20, 12))
         .show(ui, |ui| {
-            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+            // A row only as tall as its controls: given the rest of the window, it would be
+            // centred in it, and keep the window as tall as it ever was when the screen gets
+            // shorter.
+            let row = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
+            let layout = egui::Layout::right_to_left(Align::Center);
+            ui.allocate_ui_with_layout(row, layout, |ui| {
                 let id = ui.id().with("footer buttons");
                 let last = ui.data(|d| d.get_temp(id));
                 let width = reading_order(ui, last, |ui| {
@@ -831,5 +836,63 @@ mod tests {
     fn other_page_ranges_are_edited_where_clicked() {
         // The click lands past the end of the text, so typing adds to it.
         assert_eq!(click_and_type("1-3", ",5"), "1-3,5");
+    }
+
+    /// G02: a dialog drawn on a tall screen fits again when the screen gets shorter (its
+    /// footer once kept it as tall as it had been), with its buttons on screen and a footer
+    /// note that wraps kept beside them, inside the window.
+    #[test]
+    fn a_dialog_fits_again_when_the_screen_gets_shorter() {
+        let ctx = Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let offers: Vec<Offer> = (1..=4)
+            .map(|i| Offer {
+                title: Some(format!("Report {i}.pdf")),
+                detail: "From /home/sam/Documents, 3 pages, kept until 1 December".into(),
+            })
+            .collect();
+        let id = egui::Id::new(("dialog", "Recover unsaved changes"));
+        for size in [
+            (400.0, 800.0),
+            (400.0, 300.0),
+            (1000.0, 800.0),
+            (700.0, 300.0),
+        ] {
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size.into());
+            let mut tree = None;
+            for _ in 0..5 {
+                let raw = egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(raw, |_| {
+                    restore(&ctx, &offers);
+                });
+                out.textures_delta.clear();
+                tree = out.platform_output.accesskit_update;
+            }
+            let tree = tree.expect("the dialog's widgets");
+            let at = |label: &str| {
+                let node = tree
+                    .nodes
+                    .iter()
+                    .find(|(_, n)| n.label() == Some(label) || n.value() == Some(label));
+                let b = node.and_then(|(_, n)| n.bounds()).expect(label);
+                egui::Rect::from_min_max(
+                    egui::pos2(b.x0 as f32, b.y0 as f32),
+                    egui::pos2(b.x1 as f32, b.y1 as f32),
+                )
+            };
+            let window = ctx.memory(|m| m.area_rect(id)).expect("the window");
+            let not_now = at("Not now");
+            let note = at("Not now keeps the copies until the date shown.");
+            let screen = screen.expand(0.5);
+            assert!(screen.contains_rect(window), "{size:?}: window {window:?}");
+            assert!(window.contains_rect(not_now), "{size:?}: {not_now:?}");
+            assert!(window.contains_rect(note), "{size:?}: note {note:?}");
+            let beside = note.y_range().intersects(not_now.y_range());
+            assert!(beside, "{size:?}: {note:?}, {not_now:?}");
+        }
     }
 }
