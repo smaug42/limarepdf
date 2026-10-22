@@ -219,8 +219,10 @@ fingerprint. **Create…** asks for the name signatures show, an optional organi
 password typed twice; **Import…** asks for a `.p12` or `.pfx` file and its password; **Export…** saves the
 certificate only (`.cer`) or the ID with its key (`.p12`, with the ID's password or a new one); **Make default**
 chooses the ID signing starts with; **Remove…** asks a second time (**Remove for good**). Making, importing and
-exporting run in the background and the window shows when they are done. The same rules apply as on the command
-line, described below.
+exporting run in the background and the window shows when they are done. If one fails, its form comes back with
+what you typed and the reason: a wrong password under the password, anything else (such as a file that can't be
+read or written) at the end of the form. The passwords are cleared, as they always are once used, so type them
+again to try again. The same rules apply as on the command line, described below.
 
 IDs are kept in the `ids` folder of LimarePDF's settings folder: `~/.config/limarepdf/ids/` on Linux,
 `~/Library/Application Support/limarepdf/ids/` on macOS, `%APPDATA%\limarepdf\ids\` on Windows. Each is one PKCS#12 file

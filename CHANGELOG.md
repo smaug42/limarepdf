@@ -70,6 +70,10 @@
   keeps its shape and size when the window is resized.
 - A dialog shown in a tall window stayed as tall when the window got shorter, pushing its buttons off screen; it
   now fits again.
+- When making, importing or exporting a digital ID failed, for example with a wrong password, the Digital IDs
+  window went back to its list with the error at the bottom, losing what was typed. The form now comes back with
+  its name, file or export choices kept and the error beside the password, or at the end of the form for other
+  failures; the passwords are typed again, as before.
 - Ctrl+A and other single-key shortcuts were missed when the key and Ctrl arrived together, as with a quick tap.
 - Selecting a coloured comment or mark could count as an unkept change (asking about it on closing), because the
   colour button stored its colour back very slightly changed.
