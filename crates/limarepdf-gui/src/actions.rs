@@ -143,6 +143,8 @@ pub enum Act {
     Ocr,
     Merge,
     Split,
+    /// Open the inspector's page labels for the selected pages, or the current page.
+    PageLabels,
     HeaderFooter,
     Watermark,
     Props,
@@ -1154,6 +1156,15 @@ pub static ACTIONS: &[Action] = &[
         act: Act::Split,
         group: Group::Pages,
         label: "Split into files…",
+        ..BASE
+    },
+    Action {
+        act: Act::PageLabels,
+        group: Group::Pages,
+        label: "Page labels…",
+        sep: true,
+        hint: "Number pages your own way, such as i, ii, iii then 1, 2, 3, from the selected \
+               pages or the current one.",
         ..BASE
     },
     Action {

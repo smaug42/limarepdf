@@ -34,6 +34,8 @@ pub enum Section {
     Scans,
     Export,
     Split,
+    /// Page labels, shown with selected pages.
+    Labels,
 }
 
 impl Section {
@@ -406,7 +408,7 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
             });
             let first = pages.first().copied().unwrap_or(0);
             let labelled = t.labels.is_some();
-            section(ui, reveal, None, "Page labels", |ui| {
+            section(ui, reveal, Some(Section::Labels), "Page labels", |ui| {
                 if let Some(a) = label_ui(ui, &mut f.label, first, labelled) {
                     apply = Some(a);
                 }

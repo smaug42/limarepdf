@@ -52,8 +52,9 @@ Save As to a new file keeps the signed original.
   boxes, shapes, the pen, stamps) and the Tools menu, which holds every tool; at the right, Search and Print. The
   buttons are icons, each named by its tooltip. As the window narrows, the search field becomes an icon, and then
   the tools fold one by one into the Tools menu: the Comment button first, then Add image, Redact, Add text and
-  Fill and sign, coming back in reverse as the window widens. Read and select text stays. The Tools menu shows the
-  current tool when that one isn't on the bar.
+  Fill and sign, coming back in reverse as the window widens. In very narrow windows Export and then Undo and Redo
+  leave the bar too (they stay in ☰, and Undo and Redo on their keys). Read and select text stays. The Tools menu
+  shows the current tool when that one isn't on the bar.
 - **Tabs:** one per document, with a × inside it to close it. A * after the name means unsaved changes.
 - **Bottom:** the page you are on and messages at the left; at the right, the page layout, Fit width and the zoom.
 - **Left:** a column of icons for the navigation panel's views: Pages (the thumbnails), Search results, Bookmarks
@@ -474,7 +475,7 @@ this tab; other tabs carry on.
 Page labels are the page numbers viewers show, such as i, ii, 1, 2 or A-1; they don't change what is printed on the
 pages. When a document has them, the status bar shows the label with the page's place, such as "Page i (3 of 477)",
 and the thumbnails show the labels. To set them, select the first page to number, open Page labels in the
-inspector, and pick a style, an optional prefix and the number to start at; the numbering runs to the next labelled
+inspector (or go to the page and choose ☰ > Pages > Page labels…), and pick a style, an optional prefix and the number to start at; the numbering runs to the next labelled
 range. Labels stay with their pages when pages are deleted or moved.
 
 Opening view, in the document's inspector, is how viewers that follow it show the document when it opens: its

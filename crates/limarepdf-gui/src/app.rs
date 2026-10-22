@@ -365,12 +365,16 @@ const NAV_VIEWS: [(Side, Act); 4] = [
     (Side::Comments, Act::Comments),
 ];
 
-/// A top-bar tool control that folds into the Tools menu when the bar is short of room.
+/// A top-bar control that leaves the bar when it is short of room: a tool, into the Tools
+/// menu, or Export or Undo and Redo, which are in the menu (☰) anyway.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Fold {
     /// The Comment button and its menu.
     Commenting,
     Tool(Tool),
+    Export,
+    /// Undo and Redo.
+    History,
 }
 
 impl Fold {
@@ -378,19 +382,23 @@ impl Fold {
     fn width(self, btn: f32, caret: f32, sep: f32) -> f32 {
         match self {
             Fold::Commenting => sep + btn + caret,
-            Fold::Tool(_) => btn,
+            Fold::Tool(_) | Fold::Export => btn,
+            Fold::History => sep + 2.0 * btn,
         }
     }
 }
 
-/// The order tool controls fold into the Tools menu; they come back in reverse. Read and
-/// select text stays on the bar.
-const FOLDS: [Fold; 5] = [
+/// The order controls leave the bar; they come back in reverse. The tools go first,
+/// and only in very narrow windows Export and then Undo and Redo. Read and select text,
+/// the Tools menu, Menu, Open, Save, Search and Print stay.
+const FOLDS: [Fold; 7] = [
     Fold::Commenting,
     Fold::Tool(Tool::Image),
     Fold::Tool(Tool::Redact),
     Fold::Tool(Tool::Text),
     Fold::Tool(Tool::Sign),
+    Fold::Export,
+    Fold::History,
 ];
 
 /// Widths of the top bar's parts as last drawn, in points; `None` until drawn once.
@@ -1765,6 +1773,7 @@ impl App {
                 self.settings.save();
             }
             Act::ToggleSide => self.show_side = !self.show_side,
+            Act::PageLabels => self.reveal_labels(),
             Act::PagesView => {
                 self.show_side = true;
                 self.tabs[self.active].side = Side::Pages;
@@ -2027,6 +2036,15 @@ impl App {
     /// or document sections, so an object or word selection is dropped and a tool that
     /// adds content gives way to the arrow; document-only sections also drop a page
     /// selection.
+    /// Open the inspector's page labels for the selected pages, or the current page.
+    fn reveal_labels(&mut self) {
+        self.reveal(Section::Labels);
+        let t = &mut self.tabs[self.active];
+        if t.ed.selection.pages().is_none() {
+            t.ed.selection = Selection::pages_from([t.current].into());
+        }
+    }
+
     fn reveal(&mut self, s: Section) {
         self.show_inspector = true;
         let ed = &mut self.tabs[self.active].ed;
@@ -3461,13 +3479,13 @@ impl eframe::App for App {
                     let guess = btn + if with_field { 180.0 + 18.0 + 2.0 * gap } else { btn };
                     m.right[usize::from(with_field)].unwrap_or(guess)
                 };
-                // Menu, Open, Save, Export, Undo, Redo, Read, the Tools menu and three
-                // separators, then the tools not folded away.
+                // Menu, Open, Save, Read, the Tools menu and two separators, then the
+                // controls not folded away.
                 let need = |folded: usize| {
                     let tools: f32 = (folded..FOLDS.len())
                         .map(|i| m.folds[i].unwrap_or(FOLDS[i].width(btn, caret, sep)))
                         .sum();
-                    m.fixed.unwrap_or(8.0 * btn + caret + 3.0 * sep) + tools
+                    m.fixed.unwrap_or(4.0 * btn + caret + 2.0 * sep) + tools
                 };
                 // The room between the two sides, which `Sides` keeps apart.
                 let w = ui.available_width() - 2.0 * gap;
@@ -3495,21 +3513,29 @@ impl eframe::App for App {
                     }
                     ui.separator();
                     bar(ui, Act::Save, false, &mut acts);
-                    let export = egui::Button::new(menu_icon(icon::EXPORT))
-                        .frame_when_inactive(false)
-                        .min_size(egui::vec2(28.0, 28.0));
-                    egui::containers::menu::MenuButton::from_button(export)
-                        .ui(ui, |ui| {
-                            for act in [Act::ExportImages, Act::ExportText] {
-                                menu_item(ui, actions::get(act), &c, &mut acts);
-                            }
-                        })
-                        .0
-                        .on_hover_text("Export")
-                    .widget_info(|| named("Export"));
-                    ui.separator();
-                    bar(ui, Act::Undo, false, &mut acts);
-                    bar(ui, Act::Redo, false, &mut acts);
+                    if !folded.contains(&Fold::Export) {
+                        measure(ui, Fold::Export, &mut |ui| {
+                            let export = egui::Button::new(menu_icon(icon::EXPORT))
+                                .frame_when_inactive(false)
+                                .min_size(egui::vec2(28.0, 28.0));
+                            egui::containers::menu::MenuButton::from_button(export)
+                                .ui(ui, |ui| {
+                                    for act in [Act::ExportImages, Act::ExportText] {
+                                        menu_item(ui, actions::get(act), &c, &mut acts);
+                                    }
+                                })
+                                .0
+                                .on_hover_text("Export")
+                                .widget_info(|| named("Export"));
+                        });
+                    }
+                    if !folded.contains(&Fold::History) {
+                        measure(ui, Fold::History, &mut |ui| {
+                            ui.separator();
+                            bar(ui, Act::Undo, false, &mut acts);
+                            bar(ui, Act::Redo, false, &mut acts);
+                        });
+                    }
                     ui.separator();
                     let is_on = |a: &Action| matches!(a.act, Act::Tool(t) if c.tool == Some(t));
                     bar(ui, Act::Tool(Tool::Read), c.tool == Some(Tool::Read), &mut acts);
@@ -3537,6 +3563,7 @@ impl eframe::App for App {
                             || shown.iter().any(|f| match f {
                                 Fold::Tool(u) => *u == t,
                                 Fold::Commenting => Tool::COMMENTING.contains(&t),
+                                Fold::Export | Fold::History => false,
                             })
                     };
                     let hidden = c.tool.filter(|t| !inline(*t));
@@ -4050,7 +4077,9 @@ mod tests {
         assert_eq!(fold_level(0, 10.0, need), FOLDS.len());
         assert_eq!(fold_level(FOLDS.len(), 1000.0, need), 0);
         assert_eq!(FOLDS[0], Fold::Commenting);
-        assert_eq!(FOLDS[FOLDS.len() - 1], Fold::Tool(Tool::Sign));
+        // The tools go before Export, and Undo and Redo last.
+        assert_eq!(FOLDS[4], Fold::Tool(Tool::Sign));
+        assert_eq!(FOLDS[FOLDS.len() - 1], Fold::History);
     }
 
     #[test]
