@@ -141,8 +141,8 @@ A selection across pages gets one highlight on each page, all in one undo step. 
 annotations, so other readers show them and can change or remove them.
 
 Click a mark (or a comment) with the read tool to select it: it is outlined, and the inspector shows who made it
-and when, with its colour, opacity and comment, changed with Apply changes. Delete or Backspace removes it, and
-Esc lets it go. A drag that starts on a mark still selects the text under it. Hovering over a mark shows its
+and when, with its colour, opacity and comment. Changes are kept as you make them, each one a step to undo; a
+comment being typed is kept when you leave its box. Delete or Backspace removes it, and Esc lets it go. A drag that starts on a mark still selects the text under it. Hovering over a mark shows its
 comment.
 
 New marks are saved with your name, which is the computer's user name until you set it with ☰ > Edit > Your name
@@ -164,11 +164,13 @@ background (none at first) and border, before you start.
   outside Latin-1 come out as `?`. When you finish, the box grows downward to fit its text, keeping its width; it
   stops at the bottom of the page, and it never shrinks (resize it with the arrow).
 
-A new note or text box is selected with the arrow, so it can be moved straight away. Double-click a note or text
+When a note or text box is finished, the read tool comes back with it selected, so it can be moved straight away
+(see [Keep tool active](#keep-tool-active)). Double-click a note or text
 box (with the read tool or the arrow) to change its text. Ctrl+click selects an annotation while an annotate tool
-is on. The inspector for a selected text box also changes its text, size, colours, background and border, with Apply changes.
+is on. The inspector for a selected text box also changes its text, size, colours, background and border.
 
-With the arrow, click any annotation to select it, drag it to move it, and drag a handle to resize it. Arrow keys
+With the read tool or the arrow, click any annotation to select it, drag it to move it, and drag a handle to
+resize it. Arrow keys
 move it by 1 point, or 10 with Shift. Notes keep their size, and text markup stays on its text, so neither can be
 resized, and markup can't be moved. Locked annotations can't be moved.
 
@@ -190,10 +192,10 @@ like notes.
   not as comments.
 
 Select a shape, line or drawing (click it with the read tool or the arrow, or Ctrl+click with an annotate tool)
-to change its colour, width, fill, arrowhead, opacity and comment in the inspector, then Apply changes. Lines and
-drawings are picked by clicking near their strokes, not anywhere in their box.
+to change its colour, width, fill, arrowhead, opacity and comment in the inspector. Lines and drawings are picked
+by clicking near their strokes, not anywhere in their box.
 
-With the arrow, a selected line has a round handle on each end instead of a box: drag either end to turn the line
+A selected line has a round handle on each end instead of a box: drag either end to turn the line
 or point an arrow somewhere else (Shift keeps it at a multiple of 45° from the other end). Drag the line itself to
 move it.
 
@@ -207,8 +209,8 @@ boxes can't be turned: PDF stores them as upright boxes.
 The stamp tool is in the Comment button's menu ("Add a stamp" in the command palette). Its inspector lists the
 ready-made stamps (Approved, Not approved, Draft, Final, Confidential, For comment and Void), each a coloured frame
 with the word in capitals, your own wordings, and the pictures used as stamps before. Pick one, then click on the page to put it down
-at its own size, centred on the click, or drag a box to size it (it keeps its shape inside the box). It is then
-selected with the arrow, to move or resize.
+at its own size, centred on the click, or drag a box to size it (it keeps its shape inside the box). The read tool
+then comes back with the stamp selected, to move or resize (see [Keep tool active](#keep-tool-active)).
 
 - **Add my name and the date:** on by default; adds a small line under the word with your name and today's
   date. The Name box under it is the same name as Edit > Your name for comments, so changing either changes both.
@@ -235,7 +237,8 @@ nothing by themselves, so they can be checked first, here or by someone else in 
 redaction marks). See [Redaction](redaction.md) for exactly what applying removes.
 
 - **Mark areas:** the Redact button in the top bar (☰ > Tools > Mark areas for redaction), then drag a box over anything: text, pictures, drawings. The
-  tool stays on, so several areas can be marked in a row.
+  read tool then comes back; pin the Redact tool ([Keep tool active](#keep-tool-active)) to mark several areas in a
+  row.
 - **Mark text:** select it with the read tool, then right-click > Mark for redaction (or Edit > Mark for redaction).
 - **Mark search results:** search, then in the navigation panel's Search results press Mark all for redaction (or Edit > Mark
   all search results for redaction). Every match is marked.
@@ -273,8 +276,9 @@ fills it in. With the editing tools, hold Ctrl (Cmd on macOS) and click.
 - **Tab and Shift+Tab** move to the next and previous field, top to bottom and page by page. On a checkbox or radio
   button, Space ticks it; on a list, Space or Enter opens it.
 
-Each value you change is one undo step. ☰ > View > Highlight fields tints every field and outlines the required ones
-in red. The inspector's Form section shows the field you are in (its name, description and whether it is required),
+Each value you change is one undo step. Fields are highlighted from the start: a light tint on every field, stronger
+under the pointer, and a red outline on required ones. ☰ > View > Highlight fields, or the switch on the form's
+banner, turns this off or on again for every document, and the choice is remembered between runs. The inspector's Form section shows the field you are in (its name, description and whether it is required),
 with Clear field, Highlight fields and Reset form, which puts every field back to its default. Flatten form… (also
 in the command palette) makes the fields part of the pages as they look now, so nobody can change the values,
 here or in other readers; it asks first, and Undo brings the fields back until you close the document. Read-only fields
@@ -291,13 +295,15 @@ empty on paper. See [Command line](cli.md#forms) for filling forms in scripts.
 
 ## Filling and signing
 
-The Sign button in the top bar (its icon is a signature; "Fill and sign" in the command palette) puts your
-signature, initials, the date, your name, other text or a tick, cross or dot on the page, for signing a document
-someone sent you. It is a picture of your signature, not a digital signature: it doesn't prove who signed, and
+The Fill and sign button in the top bar (its icon is a signature) puts your signature, initials, the date, your
+name, other text or a tick, cross or dot on the page, for signing a document someone sent you. The small arrow
+beside it opens a menu of all of these: Signature and Initials, each listing the saved ones and Create…, then Date,
+Your name, Text, Tick, Cross and Dot. Picking one turns the tool on with it; the button itself turns the tool on
+with the item picked last. It is a picture of your signature, not a digital signature: it doesn't prove who signed, and
 anyone can copy it. For digital signatures, see [Digital signatures](#digital-signatures).
 
-**Making a signature:** in the Sign pane, Create signature… (or New… beside Signatures) opens a window with three
-ways to make one:
+**Making a signature:** Signature > Create signature… in the button's menu, or in the Fill and sign pane Create
+signature… (or New… beside Signatures), opens a window with three ways to make one:
 
 - **Draw:** sign on the white pad with the mouse, touchpad or a pen; Clear starts again. The strokes are smoothed
   into curves and stay sharp at any zoom.
@@ -313,8 +319,9 @@ list to use until LimarePDF closes, marked "until LimarePDF closes", and is then
 `signatures` folder), on this computer only; taking a picture off the list deletes its copy.
 
 **Putting things down:** pick an item in the pane, then click on the page to put it down at its usual size, centred
-on the click, or drag a box to size it (it keeps its shape inside the box). The tool stays on, so you can sign
-several places in a row.
+on the click, or drag a box to size it (it keeps its shape inside the box). The read tool then comes back with the
+item selected, to move or resize it; pin the tool ([Keep tool active](#keep-tool-active)) to sign several places in a
+row.
 
 - **Signatures and initials:** a signature is up to 150 by 50 points, initials up to 50 by 30. With no signature
   saved yet, clicking the page opens the window first and puts the new signature where you clicked.
@@ -526,18 +533,36 @@ document whose pages are all blank is left alone.
 
 ## Editing page content
 
-Pick a tool in the top bar. Documents open with the read tool (the text cursor), which selects text, follows links
-and fills in forms but never changes page content. The arrow selects objects to edit.
+Documents open with the read tool (the text cursor), which selects text, follows links and fills in forms. It also
+edits:
 
-With the arrow:
+- **Page text:** double-click a line to edit it there. The word you double-clicked is selected, so typing replaces
+  it. Enter or a click elsewhere keeps the change; Esc drops it. While you type, Ctrl+Z and Ctrl+Y undo and redo
+  typing in the box; once the change is kept, Undo takes the whole edit back. Editing the same line again within
+  a few seconds, with nothing else changed in between, joins the same undo step. The inspector shows the line's
+  font, size and colour; each change there is kept at once as its own undo step.
+- **Pictures, shapes, comments and marks:** click one to select it, drag it to move it and drag a handle to resize
+  it (Shift keeps the proportions). Arrow keys move it by 1 point, or 10 with Shift. A picture or shape covering
+  most of the page, such as a scanned page or a background, isn't selected by a click, so that clicking a scan
+  doesn't pick it up; the arrow selects it. A drag that starts anywhere else still selects text.
+- **Moving page text:** select the line (double-click it, then Enter), then choose Move or resize text on its
+  floating toolbar, or ☰ > Tools > Select, move and resize objects (the arrow). Text you have just added can be moved straight away, until you select
+  something else.
+
+The arrow (☰ > Tools > Select, move and resize objects) selects any object, page text included:
 
 - Click an object to select it.
 - Drag to move it; drag a handle to resize it (Shift keeps the proportions).
 - Arrow keys move it by 1 point, or 10 with Shift.
-- The inspector shows its position and size, and for text the string, font, size and colour; for shapes the fill,
-  outline and width; for images "Replace image".
 
-The other tools add content:
+The inspector shows the selected object's position and size, and for text the string, font, size and colour; for
+shapes the fill, outline and width; for images "Replace image". Changes there are kept as you make them, without
+an Apply button: typed text when you press Enter or leave the box, a number when you stop dragging it or leave its
+box, a colour when its picker closes. Each is one undo step. The font size box shows the exact size, which isn't
+rounded to a listed one; type any size, or pick one from the list beside it.
+
+The other tools add content. Each puts one thing down and then gives way to the read tool, with the new item
+selected so you can adjust it (see [Keep tool active](#keep-tool-active)):
 
 - **Text:** click where the text starts, type, press Enter.
 - **Image:** choose a PNG, JPEG or TIFF, then drag a box.
@@ -546,6 +571,15 @@ The other tools add content:
   [Shapes, lines and drawings](#shapes-lines-and-drawings). A rectangle, ellipse or line can still be drawn into
   the page content with "Draw on page (permanent)". Its menu also has the stamp tool (see [Stamps](#stamps)) and
   the tool that marks areas for redaction (see [Redaction](#redaction)).
+
+### Keep tool active
+
+The tools that put something down (Add text, Add image, the note, text box, rectangle, ellipse and line, stamps,
+Redact and Fill and sign) go back to the read tool once they have put one thing down. The pin at the top right of a
+tool's options, Keep tool active, keeps that tool on instead, so you can put down several in a row; Esc or another
+tool leaves it. Each tool's pin is its own (pinning Redact doesn't pin Fill and sign) and is remembered between
+runs. The pen always stays on until Esc or another tool, since a drawing takes several strokes. LimarePDF always
+starts with the read tool.
 
 Everything that changes the document can be undone with Ctrl+Z, up to 20 steps back. Each step keeps a whole copy
 of the document, and a document's steps are limited to 1 GB together, so undo goes back fewer steps on very large
@@ -556,8 +590,10 @@ documents (about 7 on a 139 MB scan); the latest change can always be undone. Se
 
 With the read tool, drag to select words in reading order. A drag can start anywhere on the page, such as in the
 margin: it starts at the nearest word. Dragging past the top or bottom of the view scrolls it, faster the further
-out the pointer is, so a selection can run across pages. Double-click selects one word, triple-click a line, and
-Shift+click extends the selection to where you click, on any page. Ctrl+A selects the whole page in view. Esc or
+out the pointer is, so a selection can run across pages. Double-clicking page text edits its line (see
+[Editing page content](#editing-page-content)); where there is no line to edit, such as recognised (OCR) text,
+double-click selects one word and triple-click a line. Shift+click extends the selection to where you click, on
+any page. Ctrl+A selects the whole page in view. Esc or
 a click clears the selection. Copy with Ctrl+C, ☰ > Edit > Copy text or the floating toolbar: words on a line are
 separated by spaces, and lines and pages by line breaks. Recognised (OCR) text can be selected like any other
 text.
@@ -597,7 +633,7 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Ctrl+Shift+H | Highlight the selected text |
 | Arrow keys (Shift for 10 points) | Move the selected object |
 | Ctrl+A, Ctrl+C | Select all text on the page, copy it (read tool) |
-| Esc | Cancel: clear the selection, or leave a drawing tool |
+| Esc | Cancel: drop the edit of a line being typed, clear the selection, or leave a tool for the read tool |
 | Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |
 
 ## Look and feel

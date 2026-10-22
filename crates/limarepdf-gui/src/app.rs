@@ -385,6 +385,8 @@ impl Fold {
     fn width(self, btn: f32, caret: f32, sep: f32) -> f32 {
         match self {
             Fold::Commenting => sep + btn + caret,
+            // Fill and sign has a menu beside it.
+            Fold::Tool(Tool::Sign) => btn + caret,
             Fold::Tool(_) | Fold::Export => btn,
             Fold::History => sep + 2.0 * btn,
         }
@@ -625,6 +627,8 @@ impl App {
                 self.next_id += 1;
                 // A repaired file counts as changed until the repaired copy is saved.
                 t.dirty = dirty || t.pdf.repaired();
+                t.ed.form.highlight = self.settings.fields_shown;
+                t.ed.keep.clone_from(&self.settings.keep_tools);
                 // The document's own viewer preferences, else the app's defaults. A page
                 // asked for on the command line wins over the document's opening page.
                 let prefs = t.pdf.view_prefs();
@@ -1804,9 +1808,14 @@ impl App {
                 let ed = &mut self.tabs[self.active].ed;
                 ed.show_hidden = !ed.show_hidden;
             }
+            // For every document, and remembered between runs.
             Act::ToggleFields => {
-                let form = &mut self.tabs[self.active].ed.form;
-                form.highlight = !form.highlight;
+                let s = &mut self.settings;
+                s.fields_shown = !s.fields_shown;
+                s.save();
+                for t in &mut self.tabs {
+                    t.ed.form.highlight = s.fields_shown;
+                }
             }
             Act::NextField => self.tabs[self.active].ed.form.step(true),
             Act::PrevField => self.tabs[self.active].ed.form.step(false),
@@ -2005,6 +2014,18 @@ impl App {
                 self.open_inspector();
                 self.tabs[self.active].ed.focus_text_field();
             }
+            Act::MoveText => self.tabs[self.active].ed.set_tool_keep_sel(Tool::Select),
+            Act::SignWith(pick) => {
+                let ed = &mut self.tabs[self.active].ed;
+                ed.set_tool(Tool::Sign);
+                ed.sign.pick = pick;
+            }
+            Act::CreateSign(role) => {
+                let ed = &mut self.tabs[self.active].ed;
+                ed.set_tool(Tool::Sign);
+                let author = self.settings.author();
+                ed.sign.start_create(role, &author, None);
+            }
             Act::ReplaceImage => {
                 let t = &mut self.tabs[self.active];
                 let Some((page, id)) = t.ed.sel() else {
@@ -2066,7 +2087,7 @@ impl App {
         ed.selection.clear_object();
         ed.selection.clear_words();
         if ed.owns_panel() {
-            ed.set_tool(Tool::Select);
+            ed.set_tool(Tool::Read);
         }
         if s.document_only() {
             ed.selection = Selection::None;
@@ -3066,12 +3087,19 @@ impl App {
         }
         let c = self.state(ctx);
         let typing = ctx.egui_wants_keyboard_input();
+        // Undo and Redo while a line of page text is edited on the page take back typing
+        // in its box; Undo takes back the whole edit once it is kept.
+        let line = self
+            .tabs
+            .get(self.active)
+            .is_some_and(|t| t.ed.editing_line());
         let mut acts = Vec::new();
         ctx.input_mut(|i| {
             for (a, k) in actions::shortcuts() {
                 let page_only = matches!(a.act, Act::Copy | Act::SelectAllText);
                 let global = k.modifiers.command && !page_only;
-                if (typing && !global) || !(a.enabled)(&c) {
+                let in_box = line && typing && matches!(a.act, Act::Undo | Act::Redo);
+                if (typing && !global) || in_box || !(a.enabled)(&c) {
                     continue;
                 }
                 let hit = if a.act == Act::Copy {
@@ -3080,7 +3108,12 @@ impl App {
                 } else if global {
                     i.consume_shortcut(&k)
                 } else {
-                    i.modifiers.matches_logically(k.modifiers) && i.key_pressed(k.logical_key)
+                    // The key's own modifiers, not those held at the end of the frame: a
+                    // quick Ctrl+A can arrive with Ctrl already let go.
+                    i.events.iter().any(|e| {
+                        matches!(e, egui::Event::Key { key, pressed: true, modifiers, .. }
+                            if *key == k.logical_key && modifiers.matches_logically(k.modifiers))
+                    })
                 };
                 if hit {
                     acts.push(a.act);
@@ -3095,6 +3128,18 @@ impl App {
 
 /// A toolbar button for a command: (ui, command, shown as on, where clicks go).
 type BarButton<'a> = &'a dyn Fn(&mut egui::Ui, Act, bool, &mut Vec<Act>);
+
+/// The small menu beside the Fill and sign button: signatures and initials (saved ones
+/// and Create), the date, your name, text and marks.
+fn sign_button_menu(ui: &mut egui::Ui, menu: &crate::signing::SignMenu, acts: &mut Vec<Act>) {
+    ui.add_space(-ui.spacing().item_spacing.x);
+    ui.menu_button(theme::icon(icon::CARET_DOWN).size(10.0), |ui| {
+        crate::signing::menu_ui(ui, menu, acts);
+    })
+    .response
+    .on_hover_text("Signatures, initials, date, name, text and marks")
+    .widget_info(|| named("Fill and sign choices"));
+}
 
 /// The Annotate button: the annotation tool last used, and a small menu beside it for
 /// the others.
@@ -3268,7 +3313,12 @@ fn inspector_body(
         t.ed.stamp_pictures = s.stamp_pictures.clone();
         t.ed.stamp_wordings = s.stamp_wordings.clone();
         t.ed.sign_kit = s.sign.clone();
+        t.ed.keep.clone_from(&s.keep_tools);
         t.ed.inspector(ui);
+        if t.ed.keep != s.keep_tools {
+            s.keep_tools.clone_from(&t.ed.keep);
+            s.save();
+        }
         if std::mem::take(&mut t.ed.apply_redactions) {
             t.requested.push(Act::ApplyRedactions);
         }
@@ -3597,6 +3647,11 @@ impl eframe::App for App {
             }
         };
         let menu_icon = |glyph: &str| theme::icon(glyph).size(18.0);
+        // The saved signatures for the Fill and sign button's menu.
+        let sign_menu = self
+            .tabs
+            .get_mut(self.active)
+            .map(|t| t.ed.sign.menu(&ctx, &self.settings.sign));
 
         let mut right_acts: Vec<Act> = Vec::new();
         // A search was run from the top bar: its results show in the navigation panel.
@@ -3686,7 +3741,10 @@ impl eframe::App for App {
                     for t in [Tool::Text, Tool::Image, Tool::Redact, Tool::Sign] {
                         if !folded.contains(&Fold::Tool(t)) {
                             measure(ui, Fold::Tool(t), &mut |ui| {
-                                bar(ui, Act::Tool(t), c.tool == Some(t), &mut acts)
+                                bar(ui, Act::Tool(t), c.tool == Some(t), &mut acts);
+                                if let Some(menu) = sign_menu.as_ref().filter(|_| t == Tool::Sign) {
+                                    sign_button_menu(ui, menu, &mut acts);
+                                }
                             });
                         }
                     }
@@ -4039,9 +4097,13 @@ impl eframe::App for App {
             .fill(theme::canvas(ui.visuals().dark_mode))
             .inner_margin(0);
         let author = self.settings.author();
+        let (keep, fields) = (&self.settings.keep_tools, self.settings.fields_shown);
         egui::CentralPanel::default().frame(canvas).show(ui, |ui| {
             if let Some(t) = self.tabs.get_mut(self.active) {
+                // App-wide choices, lent to the tab.
                 t.ed.author = author;
+                t.ed.keep.clone_from(keep);
+                t.ed.form.highlight = fields;
                 t.guarded(|t| t.show_pages(ui, &c));
                 if let Some(why) = &t.broken {
                     broken_state(ui, why, &mut acts);
@@ -4050,6 +4112,17 @@ impl eframe::App for App {
                 empty_state(ui, &recent, &mut acts);
             }
         });
+
+        // The Create signature window, whether or not the inspector is showing; a
+        // signature made is saved with the others.
+        if let Some(t) = self.tabs.get_mut(self.active) {
+            t.ed.sign_kit.clone_from(&self.settings.sign);
+            t.ed.sign_window(ui.ctx());
+            if t.ed.sign_kit != self.settings.sign {
+                self.settings.sign = t.ed.sign_kit.clone();
+                self.settings.sign.save();
+            }
+        }
 
         // Surface errors raised by tab operations.
         if let Some(t) = self.tabs.get_mut(self.active) {

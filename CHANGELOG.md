@@ -24,6 +24,30 @@
 - The collapsed inspector is a strip with a button to expand it, the docked selection buttons, and its contents in
   a pop-out over the pages. A narrow window folds the navigation panel and the inspector away and brings them back
   when there is room, unless you closed them; whether each panel is open is remembered between runs.
+- Double-click a line of page text with the read tool to edit it on the page, with the word under the pointer
+  selected; Enter or a click elsewhere keeps the change, Esc drops it. Editing the same line again within a few
+  seconds joins the same undo step. Double-click and triple-click still select a word and a line where there is
+  no line to edit, such as recognised text.
+- The read tool also selects pictures, shapes, comments and marks, with handles to move and resize them; not
+  pictures or shapes covering most of the page, such as a scanned page. Page text moves with Move or resize text
+  (on its floating toolbar) or the arrow.
+- Changes in the inspector apply as you make them, each one an undo step: the Apply text changes, Apply style and
+  Apply changes buttons are gone.
+- The font size is a box showing the exact size, with a list of the usual sizes beside it.
+- The tools that put something down (text, images, notes, text boxes, shapes, stamps, redaction marks, fill and
+  sign) go back to the read tool afterwards, with the new item selected. A pin in each tool's options, Keep tool
+  active, keeps that tool on for several in a row; each tool's pin is separate and remembered between runs. Esc
+  leaves any tool for the read tool. The pen stays on until Esc or another tool.
+- The Fill and sign button has a menu: Signature and Initials (the saved ones and Create…), Date, Your name, Text,
+  Tick, Cross and Dot. The Create signature window also opens with the inspector folded away.
+- Form fields are highlighted from the start, in a lighter tint; the form banner's Highlight fields is a switch, and
+  turning it off (there or in View) is remembered for every document.
+
+### Fixed
+
+- Ctrl+A and other single-key shortcuts were missed when the key and Ctrl arrived together, as with a quick tap.
+- Selecting a coloured comment or mark could count as an unkept change (asking about it on closing), because the
+  colour button stored its colour back very slightly changed.
 
 ## [0.8.1] - 2026-10-21
 

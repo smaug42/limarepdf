@@ -67,6 +67,44 @@ impl Tool {
         Tool::Stamp,
         Tool::Redact,
     ];
+
+    /// The tools that put one thing down and go back to the read tool, unless kept active
+    /// (see [`Editor::keep`]). The pen stays in hand until Esc or another tool, as a
+    /// drawing takes several strokes.
+    pub const PLACING: [Tool; 10] = [
+        Tool::Text,
+        Tool::Image,
+        Tool::Rect,
+        Tool::Ellipse,
+        Tool::Line,
+        Tool::Note,
+        Tool::TextBox,
+        Tool::Stamp,
+        Tool::Redact,
+        Tool::Sign,
+    ];
+
+    /// The tool's name in the settings file, for those in [`Tool::PLACING`].
+    pub fn key(self) -> &'static str {
+        match self {
+            Tool::Text => "text",
+            Tool::Image => "image",
+            Tool::Rect => "rectangle",
+            Tool::Ellipse => "ellipse",
+            Tool::Line => "line",
+            Tool::Note => "note",
+            Tool::TextBox => "text_box",
+            Tool::Stamp => "stamp",
+            Tool::Redact => "redact",
+            Tool::Sign => "fill_and_sign",
+            Tool::Read | Tool::Select | Tool::Pen | Tool::DigitalSign => "",
+        }
+    }
+
+    /// The placing tool named `key` in the settings file.
+    pub fn from_key(key: &str) -> Option<Tool> {
+        Tool::PLACING.into_iter().find(|t| t.key() == key)
+    }
 }
 
 /// The stamp the stamp tool puts down.
@@ -218,6 +256,31 @@ impl AnnotEdit {
             shape: a.shape,
         }
     }
+
+    /// Whether it changes nothing in `was`, colours compared as [`same_color`] does.
+    fn same_as(&self, was: &AnnotEdit) -> bool {
+        let col = |a: Option<[f32; 3]>, b: Option<[f32; 3]>| match (a, b) {
+            (Some(a), Some(b)) => same_color(a, b),
+            (a, b) => a.is_none() && b.is_none(),
+        };
+        let text = match (self.text, was.text) {
+            (Some(a), Some(b)) => {
+                same_color(a.color, b.color)
+                    && col(a.fill, b.fill)
+                    && (a.size, a.border) == (b.size, b.border)
+            }
+            (a, b) => a.is_none() && b.is_none(),
+        };
+        let shape = match (self.shape, was.shape) {
+            (Some(a), Some(b)) => col(a.fill, b.fill) && (a.width, a.arrow) == (b.width, b.arrow),
+            (a, b) => a.is_none() && b.is_none(),
+        };
+        col(self.color, was.color)
+            && self.opacity == was.opacity
+            && self.contents == was.contents
+            && text
+            && shape
+    }
 }
 
 /// Whether the annotation can be moved with the arrow tool: not locked, and not text
@@ -307,6 +370,158 @@ struct Insp {
     orig_color: [f32; 3],
 }
 
+impl Insp {
+    /// The properties of object `o`, at `key`, as they are.
+    fn of(key: (usize, usize), o: &PageObject) -> Self {
+        let font = FontChoice::from_name(o.font_name.as_deref().unwrap_or(""));
+        let size = o.font_size.unwrap_or(12.0);
+        let color = if o.kind == ObjectKind::Text {
+            o.fill.unwrap_or([0.0; 3])
+        } else {
+            [0.0; 3]
+        };
+        Insp {
+            key,
+            text: o.text.clone().unwrap_or_default(),
+            font,
+            size,
+            color,
+            fill_on: o.has_fill,
+            fill: o.fill.unwrap_or([0.8, 0.8, 0.8]),
+            stroke_on: o.has_stroke,
+            stroke: o.stroke.unwrap_or([0.0; 3]),
+            width: o.line_width.unwrap_or(1.0),
+            geom: o.bbox,
+            orig_font: font,
+            orig_size: size,
+            orig_color: color,
+        }
+    }
+}
+
+/// The font sizes offered in the size list, as word processors offer them.
+const SIZES: [f32; 16] = [
+    6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 14.0, 16.0, 18.0, 20.0, 24.0, 28.0, 36.0, 48.0, 72.0,
+];
+
+/// A size as the size box shows it: the exact value to two places, without trailing zeros.
+fn size_text(v: f32) -> String {
+    let s = format!("{v:.2}");
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/// A size typed in the size box, kept within `range`; `None` if it isn't a number.
+fn parse_size(s: &str, range: &std::ops::RangeInclusive<f32>) -> Option<f32> {
+    let v: f32 = s.trim().trim_end_matches("pt").trim().parse().ok()?;
+    v.is_finite().then(|| v.clamp(*range.start(), *range.end()))
+}
+
+/// The font size: a box showing the exact size, which can be typed in (Enter or leaving it
+/// keeps it), and a list of the usual sizes beside it. Returns true when a size was chosen.
+fn size_ui(ui: &mut egui::Ui, size: &mut f32, range: std::ops::RangeInclusive<f32>) -> bool {
+    let id = ui.id().with("size-box");
+    let mut text = ui
+        .data(|d| d.get_temp::<String>(id))
+        .unwrap_or_else(|| size_text(*size));
+    let r = ui.add(
+        egui::TextEdit::singleline(&mut text)
+            .id(id)
+            .desired_width(44.0),
+    );
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Font size"));
+    let mut chosen = false;
+    if r.lost_focus() {
+        if let Some(v) = parse_size(&text, &range) {
+            chosen = (v - *size).abs() > 0.005;
+            *size = v;
+        }
+    }
+    // While typing, the box keeps what is typed; otherwise it shows the size.
+    if r.has_focus() {
+        ui.data_mut(|d| d.insert_temp(id, text));
+    } else {
+        ui.data_mut(|d| d.remove::<String>(id));
+    }
+    let list =
+        egui::Button::new(theme::icon(icon::CARET_DOWN).size(10.0)).frame_when_inactive(false);
+    egui::containers::menu::MenuButton::from_button(list)
+        .ui(ui, |ui| {
+            for v in SIZES.into_iter().filter(|v| range.contains(v)) {
+                let on = (v - *size).abs() < 0.005;
+                if ui.selectable_label(on, size_text(v)).clicked() {
+                    chosen |= !on;
+                    *size = v;
+                    ui.close();
+                }
+            }
+        })
+        .0
+        .on_hover_text("Font sizes");
+    ui.label("pt");
+    chosen
+}
+
+/// Whether two colours are the same to the eye. The colour buttons store a colour back
+/// slightly changed by converting it, so exact comparison would see a change never made.
+fn same_color(a: [f32; 3], b: [f32; 3]) -> bool {
+    a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 1.0 / 512.0)
+}
+
+/// Whether a change made in the inspector is finished: no list or colour picker is open,
+/// no button is held and nothing is being typed. Changes are kept then, one undo step each.
+fn settled(ctx: &egui::Context) -> bool {
+    !egui::Popup::is_any_open(ctx)
+        && !ctx.input(|i| i.pointer.any_down())
+        && !ctx.egui_wants_keyboard_input()
+}
+
+/// A line of page text being edited in place: its page and object index. The text being
+/// typed is the inspector's working copy.
+struct LineEdit {
+    page: usize,
+    id: usize,
+    /// The characters (from, to) selected when the box opens: the word double-clicked.
+    pick: (usize, usize),
+    /// Takes the keyboard on the next frame.
+    fresh: bool,
+}
+
+/// The characters (from, to) of the word at character `i` of `s`; empty between words.
+fn word_around(s: &str, i: usize) -> (usize, usize) {
+    let chars: Vec<char> = s.chars().collect();
+    let i = i.min(chars.len());
+    let word = |c: &char| !c.is_whitespace();
+    let mut a = i;
+    while a > 0 && word(&chars[a - 1]) {
+        a -= 1;
+    }
+    let mut b = i;
+    while b < chars.len() && word(&chars[b]) {
+        b += 1;
+    }
+    (a, b)
+}
+
+/// The characters (from, to) of each word of `s`, in order.
+fn word_spans(s: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut start = None;
+    for (i, c) in s.chars().enumerate() {
+        match (c.is_whitespace(), start) {
+            (false, None) => start = Some(i),
+            (true, Some(a)) => {
+                out.push((a, i));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(a) = start {
+        out.push((a, s.chars().count()));
+    }
+    out
+}
+
 pub struct Editor {
     pub tool: Tool,
     /// Pages, an object or words; see [`Selection`].
@@ -328,6 +543,14 @@ pub struct Editor {
     pub width: f32,
     pub pending_image: Option<(Vec<u8>, f32)>,
     insp: Option<Insp>,
+    /// A line of page text being edited on the page (read tool).
+    line_edit: Option<LineEdit>,
+    /// Page text just added, which the read tool lets move and resize until something
+    /// else is selected; other page text moves only with the arrow.
+    pub loose: Option<(usize, usize)>,
+    /// The placing tools kept active after putting something down, each pinned on its own
+    /// (from the settings).
+    pub keep: Vec<Tool>,
     pub actions: Vec<Action>,
     /// Outline invisible (OCR) text and let it be selected and corrected.
     pub show_hidden: bool,
@@ -428,6 +651,9 @@ impl Default for Editor {
             width: 1.5,
             pending_image: None,
             insp: None,
+            line_edit: None,
+            loose: None,
+            keep: Vec::new(),
             actions: Vec::new(),
             show_hidden: false,
             words: HashMap::new(),
@@ -613,6 +839,7 @@ impl Editor {
         self.drag = None;
         self.draw = None;
         self.insp = None;
+        self.line_edit = None;
         self.words.clear();
         self.selection.clear_words();
         self.text_drag = false;
@@ -702,12 +929,14 @@ impl Editor {
             || self.form.typing()
             || self.annot_changes().is_some()
             || self.reply_to().is_some()
+            || self.insp_change().is_some()
     }
 
-    /// Queue the changes that keep what [`Self::pending`] finds, as clicking away, Apply
-    /// changes and Add reply would.
+    /// Queue the changes that keep what [`Self::pending`] finds, as clicking away and Add
+    /// reply would.
     pub fn keep_pending(&mut self) {
         self.finish_writing();
+        self.commit_insp();
         self.form.commit_typing(&mut self.actions);
         if let Some(a) = self.annot_changes() {
             self.actions.push(a);
@@ -724,7 +953,176 @@ impl Editor {
         let a = self
             .selected_annot()
             .filter(|a| a.id == *id && !a.locked())?;
-        (*e != AnnotEdit::of(a)).then(|| Action::SetAnnot(a.page, a.id, e.clone()))
+        (!e.same_as(&AnnotEdit::of(a))).then(|| Action::SetAnnot(a.page, a.id, e.clone()))
+    }
+
+    /// The selected object's changes in the inspector, or typed over its line on the page,
+    /// that aren't in the document yet, as the change that makes them.
+    fn insp_change(&self) -> Option<Action> {
+        let insp = self.insp.as_ref()?;
+        let (page, id) = insp.key;
+        let obj = self.objs.get(&page)?.get(id)?;
+        match obj.kind {
+            ObjectKind::Text => {
+                let te = TextEdit {
+                    text: insp.text.replace(['\n', '\r'], " "),
+                    font: (insp.font != insp.orig_font).then_some(insp.font),
+                    size: ((insp.size - insp.orig_size).abs() > 0.005).then_some(insp.size),
+                    color: (!same_color(insp.color, insp.orig_color)).then_some(insp.color),
+                };
+                let same = obj.text.as_deref() == Some(te.text.as_str())
+                    && te.font.is_none()
+                    && te.size.is_none()
+                    && te.color.is_none();
+                (!same).then_some(Action::EditText(page, id, te))
+            }
+            ObjectKind::Path => {
+                let was = Insp::of(insp.key, obj);
+                let same = (insp.fill_on, insp.stroke_on) == (was.fill_on, was.stroke_on)
+                    && same_color(insp.fill, was.fill)
+                    && same_color(insp.stroke, was.stroke)
+                    && (insp.width - was.width).abs() < 0.005;
+                let st = PathStyle {
+                    fill: insp.fill_on.then_some(insp.fill),
+                    stroke: insp.stroke_on.then_some(insp.stroke),
+                    line_width: insp.width,
+                };
+                (!same).then_some(Action::PathStyle(page, id, st))
+            }
+            _ => None,
+        }
+    }
+
+    /// Keep the selected object's changes (see [`Self::insp_change`]) as one undo step. The
+    /// working copy starts again from the object.
+    fn commit_insp(&mut self) {
+        if let Some(a) = self.insp_change() {
+            self.actions.push(a);
+            self.insp = None;
+            self.line_edit = None;
+        }
+    }
+
+    /// Edit a line of page text on the page, with the characters `pick` selected.
+    fn start_line_edit(&mut self, page: usize, id: usize, pick: (usize, usize)) {
+        self.select_object(page, id);
+        self.sync_insp();
+        self.line_edit = Some(LineEdit {
+            page,
+            id,
+            pick,
+            fresh: true,
+        });
+    }
+
+    /// The characters of line `id`'s text to select when it is double-clicked at `p`: the
+    /// word there, found among the page's `words` on the line, or by where `p` falls along
+    /// the line when they don't match its text.
+    fn word_pick(&self, page: usize, id: usize, p: Pos2, words: &[PageWord]) -> (usize, usize) {
+        let Some(o) = self.objs.get(&page).and_then(|v| v.get(id)) else {
+            return (0, 0);
+        };
+        let text = o.text.as_deref().unwrap_or("");
+        let b = o.bbox;
+        let mut on: Vec<&PageWord> = words
+            .iter()
+            .filter(|w| {
+                let (x, y) = ((w.bbox[0] + w.bbox[2]) / 2.0, (w.bbox[1] + w.bbox[3]) / 2.0);
+                x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3]
+            })
+            .collect();
+        on.sort_by(|v, w| v.bbox[0].total_cmp(&w.bbox[0]));
+        let spans = word_spans(text);
+        let under = on.iter().position(|w| p.x >= w.bbox[0] && p.x <= w.bbox[2]);
+        match under.filter(|_| on.len() == spans.len()) {
+            Some(j) => spans[j],
+            None => {
+                let at = ((p.x - b[0]) / (b[2] - b[0]).max(0.01)).clamp(0.0, 1.0);
+                word_around(text, (at * text.chars().count() as f32).round() as usize)
+            }
+        }
+    }
+
+    /// Whether a line of page text is being edited on the page.
+    pub fn editing_line(&self) -> bool {
+        self.line_edit.is_some()
+    }
+
+    /// The line of page text being edited on `page` (drawn at `r`, `k` pixels per point),
+    /// in a box over the line. Enter or clicking away keeps the change, Esc drops it.
+    /// Returns true when the page should not take the pointer this frame: it is over the
+    /// box, or the box just opened or was dropped.
+    fn line_edit_ui(&mut self, ui: &mut egui::Ui, page: usize, r: Rect, k: f32) -> bool {
+        let Some(le) = self.line_edit.as_ref().filter(|l| l.page == page) else {
+            return false;
+        };
+        let (key, pick, fresh) = ((le.page, le.id), le.pick, le.fresh);
+        self.sync_insp();
+        let b = self
+            .objs
+            .get(&page)
+            .and_then(|v| v.get(key.1))
+            .map(|o| o.bbox);
+        let selected = self.sel() == Some(key);
+        let insp = self.insp.as_mut().filter(|i| i.key == key);
+        let (Some(b), Some(insp), true) = (b, insp, selected) else {
+            self.line_edit = None;
+            return false;
+        };
+        let to_screen = |x: f32, y: f32| Pos2::new(r.min.x + x * k, r.min.y + y * k);
+        let area = Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3])).expand(2.0);
+        let id = egui::Id::new(("line-edit", page));
+        // Light colours in either theme, as for text boxes: the text sits on the paper.
+        let font = egui::FontId::proportional((area.height() * 0.75).clamp(6.0, 96.0));
+        let out = egui::Area::new(id.with("area"))
+            .fixed_pos(area.min)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                *ui.visuals_mut() = egui::Visuals::light();
+                ui.add(
+                    egui::TextEdit::singleline(&mut insp.text)
+                        .id(id)
+                        .font(font)
+                        .min_size(area.size())
+                        .desired_width(area.width())
+                        .clip_text(false)
+                        .margin(egui::Margin::same(2)),
+                )
+            })
+            .inner;
+        if fresh {
+            // The word double-clicked is selected, as in a word processor.
+            let (from, to) = pick;
+            if let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), id) {
+                let range = egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(from),
+                    egui::text::CCursor::new(to),
+                );
+                st.cursor.set_char_range(Some(range));
+                st.clear_undoer();
+                st.store(ui.ctx(), id);
+            }
+            out.request_focus();
+            if let Some(l) = self.line_edit.as_mut() {
+                l.fresh = false;
+            }
+            return true;
+        }
+        let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        if esc && (out.lost_focus() || out.has_focus()) {
+            // What was typed goes; the working copy starts again from the line.
+            self.line_edit = None;
+            self.insp = None;
+            return true;
+        }
+        // Scrolled out of view, or the keyboard went elsewhere: keep what was typed. A click
+        // that ended it still selects what it was on.
+        if !out.has_focus() || !ui.clip_rect().intersects(area) {
+            self.line_edit = None;
+            self.commit_insp();
+            return false;
+        }
+        out.hovered()
     }
 
     /// The reply typed to the selected comment, as the change that adds it.
@@ -840,6 +1238,8 @@ impl Editor {
 
     pub fn set_tool(&mut self, t: Tool) {
         self.finish_writing();
+        self.commit_insp();
+        self.line_edit = None;
         if Tool::COMMENTING.contains(&t) {
             self.annot_tool = t;
         }
@@ -853,6 +1253,11 @@ impl Editor {
         } else {
             self.selection.clear_words();
             self.text_drag = false;
+        }
+        // A tool that puts things down starts with nothing selected, so its options show.
+        if !matches!(t, Tool::Read | Tool::Select) {
+            self.selection.clear_object();
+            self.selection.clear_annot();
         }
         if t != Tool::Text {
             self.new_text = None;
@@ -876,6 +1281,8 @@ impl Editor {
         self.writing = None;
         self.pending_image = None;
         self.insp = None;
+        self.line_edit = None;
+        self.loose = None;
         self.annot_insp = None;
         self.digital_place = None;
         self.digital_error = None;
@@ -1035,11 +1442,63 @@ impl Editor {
     }
 
     fn hit(&self, page: usize, p: Pos2, tol: f32) -> Option<usize> {
+        self.hit_where(page, p, tol, |_| true)
+    }
+
+    /// The visible line of page text under `p`, for editing it.
+    fn text_hit(&self, page: usize, p: Pos2, tol: f32) -> Option<usize> {
+        self.hit_where(page, p, tol, |o| o.kind == ObjectKind::Text && !o.hidden)
+    }
+
+    /// The picture or shape under `p` that a click with the read tool selects: not page
+    /// text or a group, and nothing covering most of the page (`area`, square points),
+    /// such as a scanned page or a background, which the arrow still selects.
+    fn read_hit(&self, page: usize, p: Pos2, tol: f32, area: f32) -> Option<usize> {
+        self.hit_where(page, p, tol, |o| {
+            let b = o.bbox;
+            matches!(o.kind, ObjectKind::Image | ObjectKind::Path)
+                && (b[2] - b[0]) * (b[3] - b[1]) < 0.8 * area
+        })
+    }
+
+    /// Whether the tool moves and resizes what is selected: the arrow, and the read tool
+    /// for all but page text (see [`Self::arrangeable`]).
+    fn arranging(&self) -> bool {
+        matches!(self.tool, Tool::Select | Tool::Read)
+    }
+
+    /// Whether the selected object `key` can be moved and resized now: anything with the
+    /// arrow; with the read tool, all but page text, except text just added.
+    fn arrangeable(&self, key: (usize, usize)) -> bool {
+        let text = matches!(
+            self.selection,
+            Selection::Object {
+                kind: ObjKind::Text | ObjKind::HiddenText,
+                ..
+            }
+        );
+        match self.tool {
+            Tool::Select => true,
+            Tool::Read => !text || self.loose == Some(key),
+            _ => false,
+        }
+    }
+
+    /// The smallest object under `p` (within `tol`) that `keep` accepts; invisible text
+    /// only while it is shown.
+    fn hit_where(
+        &self,
+        page: usize,
+        p: Pos2,
+        tol: f32,
+        keep: impl Fn(&PageObject) -> bool,
+    ) -> Option<usize> {
         let objs = self.objs.get(&page)?;
         objs.iter()
             .enumerate()
             .filter(|(_, o)| {
-                (self.show_hidden || !o.hidden)
+                keep(o)
+                    && (self.show_hidden || !o.hidden)
                     && p.x >= o.bbox[0] - tol
                     && p.x <= o.bbox[2] + tol
                     && p.y >= o.bbox[1] - tol
@@ -1161,13 +1620,26 @@ impl Editor {
         let to_pt = |p: Pos2| Pos2::new((p.x - r.min.x) / k, (p.y - r.min.y) / k);
         let click_pt = |resp: &egui::Response| resp.interact_pointer_pos().map(to_pt);
         self.zoom = k;
+        // Another object or nothing selected: the last one's changes are kept, even with
+        // the inspector folded away.
+        if self
+            .insp
+            .as_ref()
+            .is_some_and(|i| Some(i.key) != self.sel())
+        {
+            self.sync_insp();
+        }
+        if self.loose.is_some() && self.loose != self.sel() {
+            self.loose = None;
+        }
         let screen_rect =
             |b: [f32; 4]| Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3]));
         let id = ui.id().with(("page-edit", tab_id, page));
         let mut resp = ui.interact(r, id, Sense::click_and_drag());
         if resp.secondary_clicked() {
             let p = resp.interact_pointer_pos().map(to_pt);
-            self.select_for_menu(pdf, page, p, 3.0 / k);
+            let area = (r.width() / k) * (r.height() / k);
+            self.select_for_menu(pdf, page, p, 3.0 / k, area);
         }
         // Links are followed with a click in the read tool, and with Ctrl+click in the
         // editing tools, so they don't get in the way of editing. A drag that starts on a
@@ -1230,12 +1702,12 @@ impl Editor {
         let sel_here = self.sel().filter(|s| s.0 == page);
         let sel_annot = self
             .selected_annot()
-            .filter(|a| a.page == page && self.tool == Tool::Select && movable(a))
+            .filter(|a| a.page == page && self.arranging() && movable(a))
             .map(|a| (a.id, a.bbox, resizable(a)));
         // A selected line's two ends, which have handles instead of its box.
         let sel_line = self
             .selected_annot()
-            .filter(|a| a.page == page && self.tool == Tool::Select && movable(a))
+            .filter(|a| a.page == page && self.arranging() && movable(a))
             .filter(|a| a.kind == AnnotKind::Line)
             .and_then(|a| match a.paths.first()?.as_slice() {
                 [p, q, ..] => Some((a.id, [p.0, p.1, q.0, q.1])),
@@ -1248,7 +1720,7 @@ impl Editor {
         // A selected drawing's box and strokes; it has a rotate handle above its box.
         let sel_ink = self
             .selected_annot()
-            .filter(|a| a.page == page && self.tool == Tool::Select && movable(a))
+            .filter(|a| a.page == page && self.arranging() && movable(a))
             .filter(|a| a.kind == AnnotKind::Ink)
             .map(|a| (a.id, a.bbox, a.paths.clone()));
         let rotate_at = |b: [f32; 4]| Pos2::new((b[0] + b[2]) / 2.0, b[1] - ROTATE_GAP / k);
@@ -1275,8 +1747,23 @@ impl Editor {
                 let d = d.filter(|d| !matches!(d.mode, Mode::Rotate));
                 Some(shown_box(sel_note, d.map_or(b, |d| d.cur), k))
             });
-        // The box that has handles: not a note's.
-        let sized_box = sel_box.filter(|_| sel_annot.is_none_or(|(_, _, r)| r));
+        // The box that has handles: not a note's, nor page text's with the read tool.
+        let sized_box = sel_box.filter(|_| match sel_annot {
+            Some((_, _, r)) => r,
+            None => sel_here.is_some_and(|s| self.arrangeable(s)),
+        });
+        // With the read tool, a press on the selected item (or its handles) moves it.
+        let grabs = |ed: &mut Self, p: Pos2| {
+            let on_handle = sized_box.is_some_and(|b| ed.handle_hit(b, p, htol).is_some());
+            let on_annot = sel_annot
+                .is_some_and(|(id, _, _)| ed.annot_at(pdf, page, p).is_some_and(|a| a.id == id));
+            let on_object = sel_here.filter(|&s| ed.arrangeable(s)).is_some_and(|_| {
+                sel_box.is_some_and(|b| {
+                    p.x >= b[0] - tol && p.x <= b[2] + tol && p.y >= b[1] - tol && p.y <= b[3] + tol
+                })
+            });
+            on_handle || on_annot || on_object || rotate_hit(p) || end_hit(p).is_some()
+        };
         let annot_drag = |a: &Annot, mode: Mode, start: Pos2| Drag {
             page,
             id: 0,
@@ -1286,8 +1773,57 @@ impl Editor {
             orig: a.bbox,
             cur: a.bbox,
         };
-        // Typing a note or text box: its box takes the keyboard and the pointer.
-        if self.writing_ui(ui, page, r, k) {
+        // A press at `p` starts moving, resizing or turning: by the selected item's
+        // handles; else with the arrow whatever is under it, which is selected, and with
+        // the read tool the selected item itself (see `grabs`).
+        let start_arrange = |ed: &mut Self, p: Pos2, read: bool| {
+            let h = sized_box.and_then(|b| ed.handle_hit(b, p, htol));
+            let selected = ed.selected_annot().filter(|_| sel_annot.is_some()).cloned();
+            if let Some((id, b, _)) = sel_ink.as_ref().filter(|_| rotate_hit(p)) {
+                ed.drag = Some(Drag {
+                    page,
+                    id: 0,
+                    annot: Some(*id),
+                    mode: Mode::Rotate,
+                    start: p,
+                    orig: *b,
+                    cur: [0.0; 4],
+                });
+            } else if let (Some(i), Some((id, ends))) = (end_hit(p), sel_line) {
+                ed.drag = Some(Drag {
+                    page,
+                    id: 0,
+                    annot: Some(id),
+                    mode: Mode::End(i),
+                    start: p,
+                    orig: ends,
+                    cur: ends,
+                });
+            } else if let (Some(h), Some(a)) = (h, &selected) {
+                ed.drag = Some(annot_drag(a, Mode::Handle(h), p));
+            } else if let (Some(h), Some((_, id))) = (h, sel_here) {
+                ed.start_drag(page, id, Mode::Handle(h), p);
+            } else if read {
+                match (&selected, sel_here) {
+                    (Some(a), _) => ed.drag = Some(annot_drag(a, Mode::Move, p)),
+                    (None, Some((_, id))) => ed.start_drag(page, id, Mode::Move, p),
+                    (None, None) => {}
+                }
+            } else if let Some(a) = ed.annot_at(pdf, page, p).cloned() {
+                ed.selection = Selection::Annot { page, id: a.id };
+                if movable(&a) {
+                    ed.drag = Some(annot_drag(&a, Mode::Move, p));
+                }
+            } else if let Some(i) = ed.hit(page, p, tol) {
+                ed.select_object(page, i);
+                ed.start_drag(page, i, Mode::Move, p);
+            } else {
+                ed.selection.clear_object();
+            }
+        };
+        // Typing a note or text box, or a line of page text: its box takes the keyboard
+        // and the pointer.
+        if self.writing_ui(ui, page, r, k) || self.line_edit_ui(ui, page, r, k) {
             return resp;
         }
         let ctrl_annot = click_pt(&resp)
@@ -1335,113 +1871,17 @@ impl Editor {
                     }
                 }
                 if resp.drag_started() {
-                    let p = ui.input(|i| i.pointer.press_origin()).map(to_pt);
-                    if let Some(p) = p {
-                        let h = sized_box.and_then(|b| self.handle_hit(b, p, htol));
-                        let selected = self.selected_annot().filter(|_| sel_annot.is_some());
-                        if let Some((id, b, _)) = sel_ink.as_ref().filter(|_| rotate_hit(p)) {
-                            self.drag = Some(Drag {
-                                page,
-                                id: 0,
-                                annot: Some(*id),
-                                mode: Mode::Rotate,
-                                start: p,
-                                orig: *b,
-                                cur: [0.0; 4],
-                            });
-                        } else if let (Some(i), Some((id, ends))) = (end_hit(p), sel_line) {
-                            self.drag = Some(Drag {
-                                page,
-                                id: 0,
-                                annot: Some(id),
-                                mode: Mode::End(i),
-                                start: p,
-                                orig: ends,
-                                cur: ends,
-                            });
-                        } else if let (Some(h), Some(a)) = (h, selected) {
-                            self.drag = Some(annot_drag(a, Mode::Handle(h), p));
-                        } else if let (Some(h), Some((_, id))) = (h, sel_here) {
-                            self.start_drag(page, id, Mode::Handle(h), p);
-                        } else if let Some(a) = self.annot_at(pdf, page, p).cloned() {
-                            self.selection = Selection::Annot { page, id: a.id };
-                            if movable(&a) {
-                                self.drag = Some(annot_drag(&a, Mode::Move, p));
-                            }
-                        } else if let Some(i) = self.hit(page, p, tol) {
-                            self.select_object(page, i);
-                            self.start_drag(page, i, Mode::Move, p);
-                        } else {
-                            self.selection.clear_object();
-                        }
+                    if let Some(p) = ui.input(|i| i.pointer.press_origin()).map(to_pt) {
+                        start_arrange(self, p, false);
                     }
                 }
                 if resp.dragged() {
-                    if let (Some(d), Some(pos)) = (self.drag.as_mut(), resp.interact_pointer_pos())
-                    {
-                        if d.page == page {
-                            let p = to_pt(pos);
-                            let (dx, dy) = (p.x - d.start.x, p.y - d.start.y);
-                            d.cur = match d.mode {
-                                Mode::Move => [
-                                    d.orig[0] + dx,
-                                    d.orig[1] + dy,
-                                    d.orig[2] + dx,
-                                    d.orig[3] + dy,
-                                ],
-                                Mode::Handle(h) => resize(d.orig, h, dx, dy, shift),
-                                // Shift keeps the line at a multiple of 45° from its
-                                // other end.
-                                Mode::End(i) => {
-                                    let o = 1 - i;
-                                    let other = Pos2::new(d.orig[2 * o], d.orig[2 * o + 1]);
-                                    let q = if shift {
-                                        constrain(Tool::Line, other, p)
-                                    } else {
-                                        p
-                                    };
-                                    let mut e = d.orig;
-                                    (e[2 * i], e[2 * i + 1]) = (q.x, q.y);
-                                    e
-                                }
-                                // The angle swept about the box's middle since the press;
-                                // Shift keeps to steps of 15°.
-                                Mode::Rotate => {
-                                    let o = d.orig;
-                                    let c = Pos2::new((o[0] + o[2]) / 2.0, (o[1] + o[3]) / 2.0);
-                                    let angle = |q: Pos2| (q.y - c.y).atan2(q.x - c.x);
-                                    let mut deg = (angle(p) - angle(d.start)).to_degrees();
-                                    deg = (deg + 180.0).rem_euclid(360.0) - 180.0;
-                                    if shift {
-                                        deg = (deg / 15.0).round() * 15.0;
-                                    }
-                                    [deg, 0.0, 0.0, 0.0]
-                                }
-                            };
-                            match d.mode {
-                                Mode::Move => ui.ctx().set_cursor_icon(CursorIcon::Grabbing),
-                                Mode::Handle(h) => ui.ctx().set_cursor_icon(handle_cursor(h)),
-                                Mode::End(_) => ui.ctx().set_cursor_icon(CursorIcon::Crosshair),
-                                Mode::Rotate => rotate_cursor(ui.ctx()),
-                            }
-                        }
+                    if let Some(pos) = resp.interact_pointer_pos() {
+                        self.drag_to(ui.ctx(), page, to_pt(pos), shift);
                     }
                 }
                 if resp.drag_stopped() {
-                    if let Some(d) = self.drag.take() {
-                        let moved = match d.mode {
-                            Mode::Rotate => d.cur[0].abs() > 0.1,
-                            _ => d.cur.iter().zip(&d.orig).any(|(a, b)| (a - b).abs() > 0.5),
-                        };
-                        if d.page == page && moved {
-                            self.actions.push(match (d.annot, d.mode) {
-                                (Some(id), Mode::End(_)) => Action::LineEnds(d.page, id, d.cur),
-                                (Some(id), Mode::Rotate) => Action::RotateInk(d.page, id, d.cur[0]),
-                                (Some(id), _) => Action::MoveAnnot(d.page, id, d.cur),
-                                (None, _) => Action::SetBox(d.page, d.id, d.cur),
-                            });
-                        }
-                    }
+                    self.drag_done(page);
                 }
                 if resp.clicked() {
                     if let Some(p) = resp.interact_pointer_pos().map(to_pt) {
@@ -1474,20 +1914,64 @@ impl Editor {
                 let inside =
                     |p: Pos2, b: [f32; 4]| p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3];
                 let lines = Self::line_boxes(&words);
-                if !over_link && hover_pt.is_some_and(|p| lines.iter().any(|&b| inside(p, b))) {
-                    ui.ctx().set_cursor_icon(CursorIcon::Text);
+                let on_text = |p: Pos2| lines.iter().any(|&b| inside(p, b));
+                // Pictures and shapes a click selects; not ones covering most of the page.
+                let area = (r.width() / k) * (r.height() / k);
+                let object_at = |ed: &Self, p: Pos2| {
+                    let i = ed.read_hit(page, p, tol, area)?;
+                    (!on_text(p)).then_some(i)
+                };
+                if let Some(p) = hover_pt.filter(|_| !over_link && !self.text_drag) {
+                    let handle = sized_box.and_then(|b| self.handle_hit(b, p, htol));
+                    if rotate_hit(p) && !self.dragging() {
+                        rotate_cursor(ui.ctx());
+                    } else if end_hit(p).is_some() {
+                        ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
+                    } else if let Some(h) = handle {
+                        ui.ctx().set_cursor_icon(handle_cursor(h));
+                    } else if grabs(self, p) {
+                        ui.ctx().set_cursor_icon(CursorIcon::Grab);
+                    } else if on_text(p) {
+                        ui.ctx().set_cursor_icon(CursorIcon::Text);
+                    } else if let Some(i) =
+                        object_at(self, p).filter(|&i| sel_here.map(|s| s.1) != Some(i))
+                    {
+                        // What a click would select is outlined.
+                        if let Some(o) = self.objs.get(&page).and_then(|v| v.get(i)) {
+                            painter.rect_stroke(
+                                screen_rect(o.bbox),
+                                0.0,
+                                Stroke::new(1.0, accent_strong.gamma_multiply(0.7)),
+                                StrokeKind::Outside,
+                            );
+                        }
+                    }
                 }
                 let nearest = |p: Option<Pos2>| p.and_then(|p| Self::nearest_word(&words, p));
                 // A drag selects the words between the press and the pointer, in reading
                 // order, across pages: whichever visible page the pointer is over (held
-                // inside the view, which scrolls at its edges) moves the end. A click
-                // clears, Shift+click extends, a double-click selects a word and a
-                // triple-click its line.
+                // inside the view, which scrolls at its edges) moves the end. A drag that
+                // starts on the selected picture, shape or comment moves it instead. A
+                // click clears or selects a picture, shape or comment, Shift+click
+                // extends, a double-click edits a line of page text (or selects a word
+                // where there is none) and a triple-click selects a line.
                 if resp.drag_started() {
                     let p = ui.input(|i| i.pointer.press_origin()).map(to_pt);
-                    if let Some(i) = nearest(p) {
+                    if let Some(p) = p.filter(|&p| grabs(self, p)) {
+                        start_arrange(self, p, true);
+                    } else if let Some(i) = nearest(p) {
                         self.selection = Selection::word((page, i));
                         self.text_drag = true;
+                    }
+                }
+                if self.drag.is_some() {
+                    if resp.dragged() {
+                        if let Some(pos) = resp.interact_pointer_pos() {
+                            self.drag_to(ui.ctx(), page, to_pt(pos), shift);
+                        }
+                    }
+                    if resp.drag_stopped() {
+                        self.drag_done(page);
                     }
                 }
                 if self.text_drag {
@@ -1510,29 +1994,39 @@ impl Editor {
                         };
                     }
                 } else if resp.double_clicked() {
-                    // On a note or text box, open it for typing; else select a word.
+                    // On a note or text box, open it for typing; on page text, edit its
+                    // line there; else select a word.
+                    let line = click_at().and_then(|p| Some((p, self.text_hit(page, p, tol)?)));
                     let annot = click_at().and_then(|p| self.annot_at(pdf, page, p));
                     if let Some(id) = annot.filter(|a| writable(a)).map(|a| a.id) {
                         self.selection = Selection::Annot { page, id };
                         self.write_selected();
+                    } else if let Some((p, i)) = line {
+                        let pick = self.word_pick(page, i, p, &words);
+                        self.start_line_edit(page, i, pick);
                     } else if let Some(i) = nearest(click_at()) {
                         self.selection = Selection::word((page, i));
                     }
                 } else if resp.clicked() {
-                    // A click on a comment or markup selects it; a drag still selects
-                    // the text under it.
+                    // A click on a comment or markup selects it, as one off the text on a
+                    // picture or shape does; a drag still selects the text under them.
                     let annot = click_at()
                         .filter(|_| !shift)
                         .and_then(|p| self.annot_at(pdf, page, p))
                         .map(|a| a.id);
-                    match (annot, nearest(click_at())) {
-                        (Some(id), _) => self.selection = Selection::Annot { page, id },
-                        (None, Some(i)) if shift && self.selection.words().is_some() => {
+                    let object = click_at()
+                        .filter(|_| !shift)
+                        .and_then(|p| object_at(self, p));
+                    match (annot, object, nearest(click_at())) {
+                        (Some(id), _, _) => self.selection = Selection::Annot { page, id },
+                        (None, Some(i), _) => self.select_object(page, i),
+                        (None, None, Some(i)) if shift && self.selection.words().is_some() => {
                             self.extend_words(pdf, (page, i));
                         }
                         _ => {
                             self.selection.clear_words();
                             self.selection.clear_annot();
+                            self.selection.clear_object();
                         }
                     }
                 }
@@ -1830,7 +2324,7 @@ impl Editor {
                 egui::FontId::proportional(13.0),
                 accent_strong,
             );
-        } else if self.tool == Tool::Select {
+        } else if self.arranging() {
             if let Some((_, b, _)) = &sel_ink {
                 let (top, knob) = (
                     to_screen((b[0] + b[2]) / 2.0, b[1]),
@@ -1962,6 +2456,7 @@ impl Editor {
         page: usize,
         p: Option<Pos2>,
         tol: f32,
+        area: f32,
     ) {
         let annotating =
             matches!(self.tool, Tool::Select | Tool::Sign) || Tool::ANNOTATE.contains(&self.tool);
@@ -2001,6 +2496,14 @@ impl Editor {
                     self.selection = Selection::word((page, i));
                     return;
                 }
+                // A picture or shape, as a click selects them.
+                self.objects(pdf, page);
+                if let Some(i) = self.read_hit(page, p, tol, area) {
+                    if self.sel() != Some((page, i)) {
+                        self.select_object(page, i);
+                    }
+                    return;
+                }
             }
             _ => {}
         }
@@ -2019,6 +2522,74 @@ impl Editor {
                 start,
                 orig: o.bbox,
                 cur: o.bbox,
+            });
+        }
+    }
+
+    /// Follow the pointer, at `p` (page points) on `page`, with the move, resize or turn
+    /// being dragged. Shift keeps proportions, lines at 45° and turns to steps of 15°.
+    fn drag_to(&mut self, ctx: &egui::Context, page: usize, p: Pos2, shift: bool) {
+        let Some(d) = self.drag.as_mut().filter(|d| d.page == page) else {
+            return;
+        };
+        let (dx, dy) = (p.x - d.start.x, p.y - d.start.y);
+        d.cur = match d.mode {
+            Mode::Move => [
+                d.orig[0] + dx,
+                d.orig[1] + dy,
+                d.orig[2] + dx,
+                d.orig[3] + dy,
+            ],
+            Mode::Handle(h) => resize(d.orig, h, dx, dy, shift),
+            // Shift keeps the line at a multiple of 45° from its other end.
+            Mode::End(i) => {
+                let o = 1 - i;
+                let other = Pos2::new(d.orig[2 * o], d.orig[2 * o + 1]);
+                let q = if shift {
+                    constrain(Tool::Line, other, p)
+                } else {
+                    p
+                };
+                let mut e = d.orig;
+                (e[2 * i], e[2 * i + 1]) = (q.x, q.y);
+                e
+            }
+            // The angle swept about the box's middle since the press.
+            Mode::Rotate => {
+                let o = d.orig;
+                let c = Pos2::new((o[0] + o[2]) / 2.0, (o[1] + o[3]) / 2.0);
+                let angle = |q: Pos2| (q.y - c.y).atan2(q.x - c.x);
+                let mut deg = (angle(p) - angle(d.start)).to_degrees();
+                deg = (deg + 180.0).rem_euclid(360.0) - 180.0;
+                if shift {
+                    deg = (deg / 15.0).round() * 15.0;
+                }
+                [deg, 0.0, 0.0, 0.0]
+            }
+        };
+        match d.mode {
+            Mode::Move => ctx.set_cursor_icon(CursorIcon::Grabbing),
+            Mode::Handle(h) => ctx.set_cursor_icon(handle_cursor(h)),
+            Mode::End(_) => ctx.set_cursor_icon(CursorIcon::Crosshair),
+            Mode::Rotate => rotate_cursor(ctx),
+        }
+    }
+
+    /// The drag on `page` ended: queue the move, resize or turn it made, if any.
+    fn drag_done(&mut self, page: usize) {
+        let Some(d) = self.drag.take() else {
+            return;
+        };
+        let moved = match d.mode {
+            Mode::Rotate => d.cur[0].abs() > 0.1,
+            _ => d.cur.iter().zip(&d.orig).any(|(a, b)| (a - b).abs() > 0.5),
+        };
+        if d.page == page && moved {
+            self.actions.push(match (d.annot, d.mode) {
+                (Some(id), Mode::End(_)) => Action::LineEnds(d.page, id, d.cur),
+                (Some(id), Mode::Rotate) => Action::RotateInk(d.page, id, d.cur[0]),
+                (Some(id), _) => Action::MoveAnnot(d.page, id, d.cur),
+                (None, _) => Action::SetBox(d.page, d.id, d.cur),
             });
         }
     }
@@ -2068,7 +2639,7 @@ impl Editor {
         }
         if let Some(a) = self.selected_annot() {
             let mut b = a.bbox;
-            if a.kind == AnnotKind::Ink && self.tool == Tool::Select && movable(a) {
+            if a.kind == AnnotKind::Ink && self.arranging() && movable(a) {
                 b[1] -= (ROTATE_GAP + 8.0) / self.zoom.max(0.01);
             }
             return Some((a.page, b));
@@ -2101,9 +2672,19 @@ impl Editor {
         self.focus_text = true;
     }
 
-    /// Whether an object is selected and can be deleted or moved.
+    /// Whether an object is selected, which can be deleted.
     pub fn has_object(&self) -> bool {
-        self.sel().is_some() && self.tool != Tool::Read
+        self.sel().is_some()
+    }
+
+    /// Whether the selected object can be moved now (see [`Self::arrangeable`]).
+    pub fn object_moves(&self) -> bool {
+        self.sel().is_some_and(|s| self.arrangeable(s))
+    }
+
+    /// Whether the selected annotation can be moved now.
+    pub fn annot_moves(&self) -> bool {
+        self.arranging() && self.selected_annot().is_some_and(movable)
     }
 
     /// Delete the selected object, or the selected annotation unless it is locked.
@@ -2117,15 +2698,17 @@ impl Editor {
 
     /// Move the selected object, or annotation (arrow tool), by (dx, dy) points.
     pub fn nudge(&mut self, dx: f32, dy: f32) {
-        if self.tool == Tool::Select {
-            if let Some(a) = self.selected_annot().filter(|a| movable(a)) {
+        if self.annot_moves() {
+            if let Some(a) = self.selected_annot() {
                 let b = a.bbox;
                 let to = [b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy];
                 self.actions.push(Action::MoveAnnot(a.page, a.id, to));
                 return;
             }
         }
-        let Some((p, id)) = self.sel() else { return };
+        let Some((p, id)) = self.sel().filter(|_| self.object_moves()) else {
+            return;
+        };
         if let Some(o) = self.objs.get(&p).and_then(|v| v.get(id)) {
             let b = o.bbox;
             self.actions.push(Action::SetBox(
@@ -2136,11 +2719,16 @@ impl Editor {
         }
     }
 
-    /// Esc: clear a selected annotation, or the word selection (read tool); otherwise drop
-    /// unfinished text, leave a drawing tool for the arrow, or with the arrow clear the
-    /// selection.
+    /// Esc: drop what is being typed on the page, or clear a selected annotation, or the
+    /// word or object selection (read tool); otherwise drop unfinished text, leave a
+    /// drawing tool for the arrow, or with the arrow clear the selection.
     pub fn escape(&mut self) {
         if self.writing.take().is_some() {
+            return;
+        }
+        if self.line_edit.take().is_some() {
+            // The working copy starts again from the line.
+            self.insp = None;
             return;
         }
         if self.selection.annot().is_some() {
@@ -2148,16 +2736,70 @@ impl Editor {
             return;
         }
         match self.tool {
-            Tool::Read => self.selection.clear_words(),
-            Tool::Select => {
+            Tool::Read => {
+                self.selection.clear_words();
+                self.selection.clear_object();
+            }
+            // The arrow lets go of the selection first, then gives way to the read tool.
+            Tool::Select if self.sel().is_some() => {
                 self.new_text = None;
                 self.selection.clear_object();
             }
+            // Any other tool goes back to the read tool; a pinned one stays pinned.
             _ => {
                 self.new_text = None;
-                self.tool = Tool::Select;
+                self.set_tool(Tool::Read);
             }
         }
+    }
+
+    /// Something was put down with the current tool; `new` selects it. A tool kept
+    /// active stays for the next one; otherwise the read tool comes back with the new item
+    /// selected, to adjust (page text just added can be moved with it).
+    pub fn placed(&mut self, new: Selection) {
+        if self.keep.contains(&self.tool) {
+            self.selection.clear_object();
+            self.selection.clear_annot();
+            return;
+        }
+        self.set_tool(Tool::Read);
+        if let Selection::Object { page, id, .. } = new {
+            self.loose = Some((page, id));
+        }
+        self.selection = new;
+    }
+
+    /// The pin at the top of a placing tool's options: on, the tool stays active after
+    /// putting something down, until Esc or another tool.
+    fn keep_ui(&mut self, ui: &mut egui::Ui) {
+        let tool = self.tool;
+        if !Tool::PLACING.contains(&tool) {
+            return;
+        }
+        let on = self.keep.contains(&tool);
+        // One row, the pin at its right.
+        let row = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
+        let right = egui::Layout::right_to_left(egui::Align::Center);
+        ui.allocate_ui_with_layout(row, right, |ui| {
+            let r = ui
+                .add(egui::Button::new(theme::icon(icon::PUSH_PIN).size(16.0)).selected(on))
+                .on_hover_text(if on {
+                    "Keep tool active: on. It stays after putting something down, until Esc \
+                     or another tool."
+                } else {
+                    "Keep tool active"
+                });
+            r.widget_info(|| {
+                egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, "Keep tool active")
+            });
+            if r.clicked() {
+                if on {
+                    self.keep.retain(|t| *t != tool);
+                } else {
+                    self.keep.push(tool);
+                }
+            }
+        });
     }
 
     // ------------------------------------------------------------ inspector
@@ -2180,45 +2822,21 @@ impl Editor {
         });
     }
 
+    /// Keep the working copy on the selected object. When another object (or none) is
+    /// selected, the last one's changes are kept first, as clicking away keeps them.
     fn sync_insp(&mut self) {
-        let Some(key) = self.sel() else {
-            self.insp = None;
-            return;
-        };
-        if self.insp.as_ref().map(|i| i.key) == Some(key) {
+        let key = self.sel();
+        if key.is_some() && self.insp.as_ref().map(|i| i.key) == key {
             return;
         }
-        let Some(o) = self.objs.get(&key.0).and_then(|v| v.get(key.1)) else {
-            self.insp = None;
-            return;
-        };
-        let font = FontChoice::from_name(o.font_name.as_deref().unwrap_or(""));
-        let size = o.font_size.unwrap_or(12.0);
-        let color = if o.kind == ObjectKind::Text {
-            o.fill.unwrap_or([0.0; 3])
-        } else {
-            [0.0; 3]
-        };
-        self.insp = Some(Insp {
-            key,
-            text: o.text.clone().unwrap_or_default(),
-            font,
-            size,
-            color,
-            fill_on: o.has_fill,
-            fill: o.fill.unwrap_or([0.8, 0.8, 0.8]),
-            stroke_on: o.has_stroke,
-            stroke: o.stroke.unwrap_or([0.0; 3]),
-            width: o.line_width.unwrap_or(1.0),
-            geom: o.bbox,
-            orig_font: font,
-            orig_size: size,
-            orig_color: color,
-        });
+        self.commit_insp();
+        self.line_edit = None;
+        let o = key.and_then(|key| Some((key, self.objs.get(&key.0)?.get(key.1)?)));
+        self.insp = o.map(|(key, o)| Insp::of(key, o));
     }
 
     /// The selected annotation: what and whose it is, and its colour, opacity and comment,
-    /// changed with Apply as one undo step.
+    /// each finished change kept at once as one undo step.
     fn annot_inspector(&mut self, ui: &mut egui::Ui) {
         let Some(a) = self.selected_annot().cloned() else {
             ui.weak("Nothing selected.");
@@ -2259,6 +2877,7 @@ impl Editor {
             ui.weak("Locked in this document: it can't be changed or deleted here.");
         }
         ui.separator();
+        let mut done = false;
         ui.add_enabled_ui(!a.locked(), |ui| {
             match e.text.as_mut() {
                 // A text box's colour is its fill, set with its text.
@@ -2328,18 +2947,20 @@ impl Editor {
             if writable(&a) {
                 ui.weak("Double-click it on the page to type there.");
             }
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(*e != now, egui::Button::new("Apply changes"))
-                    .clicked()
-                {
-                    self.actions.push(Action::SetAnnot(a.page, a.id, e.clone()));
-                }
-                if ui.button((theme::icon(icon::TRASH), "Delete")).clicked() {
-                    self.actions.push(Action::DeleteAnnot(a.page, a.id));
-                }
-            });
+            // Changes are kept as they are made, each finished one a step to undo; the
+            // comment when it is left.
+            if ui.button((theme::icon(icon::TRASH), "Delete")).clicked() {
+                self.actions.push(Action::DeleteAnnot(a.page, a.id));
+                done = true;
+            } else if !e.same_as(&now) && settled(ui.ctx()) {
+                self.actions.push(Action::SetAnnot(a.page, a.id, e.clone()));
+                done = true;
+            }
         });
+        // Read again from the annotation once the change is made.
+        if done {
+            self.annot_insp = None;
+        }
         // Replies, then a box to add one. Answering doesn't change the annotation, so
         // locked ones can be answered too.
         ui.separator();
@@ -2517,15 +3138,18 @@ impl Editor {
         );
     }
 
-    pub fn inspector(&mut self, ui: &mut egui::Ui) {
-        // The Create signature window, opened from the Sign tool's pane or a click.
-        let ctx = ui.ctx().clone();
+    /// The Create signature window, while open (from the Fill and sign menu or pane, or a
+    /// click with nothing saved yet); what it makes is put down where that click was.
+    pub fn sign_window(&mut self, ctx: &egui::Context) {
         if let Some((page, place)) =
             self.sign
-                .create_ui(&ctx, &mut self.sign_kit, &mut self.sign_error)
+                .create_ui(ctx, &mut self.sign_kit, &mut self.sign_error)
         {
             self.actions.push(Action::AddSign(page, place));
         }
+    }
+
+    pub fn inspector(&mut self, ui: &mut egui::Ui) {
         if self.selection.annot().is_some() {
             self.annot_inspector(ui);
             return;
@@ -2538,17 +3162,14 @@ impl Editor {
                 format!("Editing is unavailable on this page: {e}"),
             );
         }
+        self.keep_ui(ui);
         match self.tool {
             Tool::Text => {
                 ui.strong("New text");
                 Self::font_ui(ui, &mut self.tfont);
                 ui.horizontal(|ui| {
                     ui.label("Size");
-                    ui.add(
-                        egui::DragValue::new(&mut self.tsize)
-                            .range(4.0..=200.0)
-                            .suffix(" pt"),
-                    );
+                    size_ui(ui, &mut self.tsize, 4.0..=200.0);
                     ui.color_edit_button_rgb(&mut self.tcolor);
                 });
                 if let Some((page, pos)) = self.new_text {
@@ -2746,13 +3367,16 @@ impl Editor {
                 );
                 return;
             }
+            // A selected object shows its properties below.
+            Tool::Select | Tool::Read if self.sel().is_some() => {}
             Tool::Select => {}
             Tool::Read => {
                 ui.strong("Selected text");
                 ui.label(
-                    "Drag over words to select them, across pages if you like, double-click a \
-                     word, triple-click a line, Shift+click to extend, or press Ctrl+A for the \
-                     whole page. Ctrl+C copies; right-click to print or save the selection.",
+                    "Drag over words to select them, across pages if you like, Shift+click to \
+                     extend, or press Ctrl+A for the whole page. Ctrl+C copies; right-click to \
+                     print or save the selection. Double-click a line of page text to edit it, \
+                     and click a picture, shape or comment to select, move or resize it.",
                 );
                 ui.separator();
                 match self.selected_text() {
@@ -2827,17 +3451,23 @@ impl Editor {
             self.actions.push(Action::SetBox(page, id, insp.geom));
         }
 
+        // Changes are kept as they are made: each finished one is a step to undo.
         match obj.kind {
             ObjectKind::Text => {
                 ui.add_space(4.0);
-                let r = ui.add(
-                    egui::TextEdit::multiline(&mut insp.text)
-                        .desired_rows(2)
-                        .desired_width(f32::INFINITY),
-                );
-                if self.focus_text {
-                    r.request_focus();
-                    self.focus_text = false;
+                if self.line_edit.is_some() {
+                    ui.weak("Editing on the page: Enter or click away keeps it, Esc cancels.");
+                } else {
+                    let r = ui.add(
+                        egui::TextEdit::singleline(&mut insp.text).desired_width(f32::INFINITY),
+                    );
+                    r.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Text")
+                    });
+                    if self.focus_text {
+                        r.request_focus();
+                        self.focus_text = false;
+                    }
                 }
                 if obj.hidden {
                     ui.weak(
@@ -2849,11 +3479,7 @@ impl Editor {
                     Self::font_ui(ui, &mut insp.font);
                     ui.horizontal(|ui| {
                         ui.label("Size");
-                        ui.add(
-                            egui::DragValue::new(&mut insp.size)
-                                .range(1.0..=400.0)
-                                .suffix(" pt"),
-                        );
+                        size_ui(ui, &mut insp.size, 1.0..=400.0);
                         ui.color_edit_button_rgb(&mut insp.color);
                     });
                 }
@@ -2862,29 +3488,6 @@ impl Editor {
                         "Font \"{}\" is embedded or non-standard. Edited text is set in the nearest standard font.",
                         obj.font_name.as_deref().unwrap_or("?")
                     ));
-                }
-                if insp.text.contains('\n') {
-                    ui.weak("Only one line per text object; line breaks are removed.");
-                }
-                if ui.button("Apply text changes").clicked() {
-                    let text = insp.text.replace(['\n', '\r'], " ");
-                    let unchanged = Some(text.as_str()) == obj.text.as_deref()
-                        && insp.font == insp.orig_font
-                        && (insp.size - insp.orig_size).abs() <= 0.01
-                        && insp.color == insp.orig_color;
-                    if !unchanged {
-                        self.actions.push(Action::EditText(
-                            page,
-                            id,
-                            TextEdit {
-                                text,
-                                font: (insp.font != insp.orig_font).then_some(insp.font),
-                                size: ((insp.size - insp.orig_size).abs() > 0.01)
-                                    .then_some(insp.size),
-                                color: (insp.color != insp.orig_color).then_some(insp.color),
-                            },
-                        ));
-                    }
                 }
             }
             ObjectKind::Path => {
@@ -2903,17 +3506,6 @@ impl Editor {
                             .suffix(" pt"),
                     );
                 });
-                if ui.button("Apply style").clicked() {
-                    self.actions.push(Action::PathStyle(
-                        page,
-                        id,
-                        PathStyle {
-                            fill: insp.fill_on.then_some(insp.fill),
-                            stroke: insp.stroke_on.then_some(insp.stroke),
-                            line_width: insp.width,
-                        },
-                    ));
-                }
             }
             ObjectKind::Image => {
                 ui.add_space(4.0);
@@ -2936,7 +3528,11 @@ impl Editor {
         }
         ui.add_space(6.0);
         if ui.button((theme::icon(icon::TRASH), "Delete")).clicked() {
+            // What was changed goes with it.
+            self.insp = None;
             self.actions.push(Action::Delete(page, id));
+        } else if settled(ui.ctx()) {
+            self.commit_insp();
         }
     }
 }
@@ -2945,11 +3541,7 @@ impl Editor {
 fn text_style_ui(ui: &mut egui::Ui, s: &mut TextStyle) {
     ui.horizontal(|ui| {
         ui.label("Text");
-        ui.add(
-            egui::DragValue::new(&mut s.size)
-                .range(4.0..=200.0)
-                .suffix(" pt"),
-        );
+        size_ui(ui, &mut s.size, 4.0..=200.0);
         ui.color_edit_button_rgb(&mut s.color);
     });
     ui.horizontal(|ui| {
@@ -2997,8 +3589,13 @@ mod tests {
         let mut ed = Editor::default();
         let a = ed.annots(&pdf, 0)[0].clone();
         ed.selection = Selection::Annot { page: 0, id };
-        // Selected and shown in the inspector, unchanged: nothing to keep.
+        // Selected and shown in the inspector, unchanged: nothing to keep, even with its
+        // colour stored back a hair off by the colour button.
         ed.annot_insp = Some((id, AnnotEdit::of(&a)));
+        assert!(!ed.pending());
+        if let Some((_, e)) = ed.annot_insp.as_mut() {
+            e.color = e.color.map(|c| c.map(|v| v - 1e-6));
+        }
         assert!(!ed.pending());
         // A changed comment, and a reply typed.
         if let Some((_, e)) = ed.annot_insp.as_mut() {
@@ -3051,6 +3648,164 @@ mod tests {
         assert_eq!(Editor::line_of(&words, 3), Some((2, 4)));
         assert_eq!(Editor::line_of(&words, 9), None);
         assert!(Editor::line_boxes(&[]).is_empty());
+    }
+
+    #[test]
+    fn sizes_show_exactly_and_typed_ones_stay_in_range() {
+        assert_eq!(size_text(12.0), "12");
+        assert_eq!(size_text(10.98), "10.98");
+        assert_eq!(size_text(10.5), "10.5");
+        // Not rounded to a listed size.
+        assert_eq!(size_text(11.333), "11.33");
+        let range = 1.0..=400.0;
+        assert_eq!(parse_size(" 13.5 ", &range), Some(13.5));
+        assert_eq!(parse_size("9pt", &range), Some(9.0));
+        assert_eq!(parse_size("9 pt", &range), Some(9.0));
+        assert_eq!(parse_size("1000", &range), Some(400.0));
+        assert_eq!(parse_size("0", &range), Some(1.0));
+        assert_eq!(parse_size("big", &range), None);
+        assert_eq!(parse_size("NaN", &range), None);
+    }
+
+    #[test]
+    fn a_double_click_picks_the_word_under_it() {
+        let s = "Walrus ate the fish";
+        assert_eq!(word_around(s, 0), (0, 6));
+        assert_eq!(word_around(s, 3), (0, 6));
+        assert_eq!(word_around(s, 8), (7, 10));
+        // At the end, and past it.
+        assert_eq!(word_around(s, 19), (15, 19));
+        assert_eq!(word_around(s, 99), (15, 19));
+        // Between two spaces: no word.
+        assert_eq!(word_around("a  b", 2), (2, 2));
+        assert_eq!(word_around("", 0), (0, 0));
+        assert_eq!(word_spans(" Walrus  ate "), [(1, 7), (9, 12)]);
+        assert!(word_spans("  ").is_empty());
+    }
+
+    /// A page with a background over the whole page, a small rectangle and a line of text.
+    fn page_with_objects() -> (limarepdf_core::Pdf, Editor) {
+        let mut pdf = limarepdf_core::Pdf::new();
+        pdf.insert_blank(0, 612.0, 792.0).unwrap();
+        let st = PathStyle {
+            fill: Some([0.9, 0.9, 0.9]),
+            stroke: None,
+            line_width: 1.0,
+        };
+        pdf.add_shape(0, Shape::Rect, [0.0, 0.0, 612.0, 792.0], &st)
+            .unwrap();
+        pdf.add_shape(0, Shape::Rect, [100.0, 100.0, 200.0, 150.0], &st)
+            .unwrap();
+        let text = "Walrus like cold water";
+        pdf.add_text(
+            0,
+            (100.0, 300.0),
+            text,
+            FontChoice::default(),
+            12.0,
+            [0.0; 3],
+        )
+        .unwrap();
+        let mut ed = Editor::default();
+        assert_eq!(ed.objects(&pdf, 0).len(), 3);
+        (pdf, ed)
+    }
+
+    #[test]
+    fn reading_selects_pictures_and_shapes_but_not_backgrounds_or_text() {
+        let (pdf, mut ed) = page_with_objects();
+        let area = 612.0 * 792.0;
+        let text = ed.objs[&0][2].bbox;
+        let in_text = Pos2::new((text[0] + text[2]) / 2.0, (text[1] + text[3]) / 2.0);
+        // The small rectangle, over the background.
+        assert_eq!(ed.read_hit(0, Pos2::new(150.0, 120.0), 1.0, area), Some(1));
+        // Only the background is there: the arrow takes it, reading doesn't.
+        assert_eq!(ed.read_hit(0, Pos2::new(500.0, 700.0), 1.0, area), None);
+        assert_eq!(ed.hit(0, Pos2::new(500.0, 700.0), 1.0), Some(0));
+        // Page text isn't selected by a click, but a double-click edits it.
+        assert_eq!(ed.read_hit(0, in_text, 1.0, area), None);
+        assert_eq!(ed.text_hit(0, in_text, 1.0), Some(2));
+        // The word double-clicked is found by the page's words: "cold".
+        let words = ed.words(&pdf, 0).to_vec();
+        let cold = words.iter().find(|w| w.text == "cold").unwrap().bbox;
+        let at = Pos2::new(cold[2] - 1.0, (cold[1] + cold[3]) / 2.0);
+        assert_eq!(ed.word_pick(0, 2, at, &words), (12, 16));
+        // Without the words: by where the click falls along the line.
+        assert_eq!(
+            ed.word_pick(0, 2, at, &[]),
+            word_around("Walrus like cold water", 14)
+        );
+    }
+
+    #[test]
+    fn reading_moves_all_but_page_text_unless_just_added() {
+        let (_, mut ed) = page_with_objects();
+        ed.select_object(0, 1);
+        assert!(ed.object_moves());
+        ed.select_object(0, 2);
+        assert!(!ed.object_moves() && ed.has_object());
+        ed.loose = Some((0, 2));
+        assert!(ed.object_moves());
+        ed.loose = None;
+        ed.set_tool_keep_sel(Tool::Select);
+        assert!(ed.object_moves());
+    }
+
+    #[test]
+    fn inspector_changes_are_kept_on_clicking_away() {
+        let (_, mut ed) = page_with_objects();
+        ed.select_object(0, 2);
+        ed.sync_insp();
+        assert!(!ed.pending());
+        // A colour stored back a hair off by the colour button isn't a change.
+        ed.insp.as_mut().unwrap().color[0] += 1e-6;
+        assert!(!ed.pending());
+        // Typed words: kept as one edit of the line when another object is selected.
+        ed.insp.as_mut().unwrap().text = "Walruses".into();
+        assert!(ed.pending());
+        ed.select_object(0, 1);
+        ed.sync_insp();
+        assert!(matches!(
+            ed.actions.as_slice(),
+            [Action::EditText(0, 2, te)]
+                if te.text == "Walruses" && te.font.is_none() && te.size.is_none()
+        ));
+        // A shape's new outline, kept when nothing is selected any more.
+        ed.actions.clear();
+        ed.insp.as_mut().unwrap().stroke_on = true;
+        ed.selection = Selection::None;
+        ed.sync_insp();
+        assert!(matches!(
+            ed.actions.as_slice(),
+            [Action::PathStyle(0, 1, st)] if st.stroke.is_some()
+        ));
+        assert!(ed.insp.is_none() && !ed.pending());
+        // A size picked for the line: a change of size only.
+        ed.actions.clear();
+        ed.select_object(0, 2);
+        ed.sync_insp();
+        ed.insp.as_mut().unwrap().size = 18.0;
+        ed.keep_pending();
+        assert!(matches!(
+            ed.actions.as_slice(),
+            [Action::EditText(0, 2, te)]
+                if te.text == "Walrus like cold water" && te.size == Some(18.0) && te.color.is_none()
+        ));
+    }
+
+    #[test]
+    fn escape_drops_what_was_typed_on_the_page() {
+        let (_, mut ed) = page_with_objects();
+        ed.start_line_edit(0, 2, (0, 6));
+        assert!(ed.editing_line());
+        ed.insp.as_mut().unwrap().text = "Seal".into();
+        ed.escape();
+        assert!(!ed.editing_line() && !ed.pending());
+        // The line stays selected; Esc again clears it.
+        assert_eq!(ed.sel(), Some((0, 2)));
+        ed.escape();
+        assert_eq!(ed.sel(), None);
+        assert!(ed.actions.is_empty());
     }
 
     #[test]

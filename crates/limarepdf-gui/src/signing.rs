@@ -6,6 +6,7 @@
 //! Like the other settings they stay on this computer, unencrypted, and failing to read
 //! or write them is not an error.
 
+use crate::actions::Act;
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Vec2};
 use limarepdf_core::{
     typed_signature, DateStyle, InkColor, Mark, SignArt, SignRole, SignStyle, Stamp, StampPlace,
@@ -671,6 +672,73 @@ impl Default for SignPane {
     }
 }
 
+/// The saved signatures and initials as the Fill and sign button's menu shows them: each
+/// one's picture, or `None` when it can't be drawn (a picture file gone).
+pub struct SignMenu {
+    signatures: Vec<Option<TextureHandle>>,
+    initials: Vec<Option<TextureHandle>>,
+}
+
+/// The Fill and sign button's menu: Signature and Initials, each with the saved ones and
+/// Create, then the date, your name, text and the marks. A choice turns the Fill and sign
+/// tool on with it.
+pub fn menu_ui(ui: &mut egui::Ui, menu: &SignMenu, acts: &mut Vec<Act>) {
+    for (role, label, create) in [
+        (SignRole::Signature, "Signature", "Create signature…"),
+        (SignRole::Initials, "Initials", "Create initials…"),
+    ] {
+        let list = match role {
+            SignRole::Signature => &menu.signatures,
+            SignRole::Initials => &menu.initials,
+        };
+        ui.menu_button(label, |ui| {
+            for (i, tex) in list.iter().enumerate() {
+                let r = match tex {
+                    Some(tex) => {
+                        let img = egui::Image::new((tex.id(), Previews::size(tex, PREVIEW)));
+                        ui.add(egui::Button::image(img))
+                    }
+                    None => ui.button("Picture not found"),
+                };
+                let name = format!("{label} {}", i + 1);
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
+                if r.clicked() {
+                    acts.push(Act::SignWith(SignPick::Saved(role, i)));
+                    ui.close();
+                }
+            }
+            if !list.is_empty() {
+                ui.separator();
+            }
+            if ui.button(create).clicked() {
+                acts.push(Act::CreateSign(role));
+                ui.close();
+            }
+        });
+    }
+    ui.separator();
+    for (pick, label) in [
+        (SignPick::Date, "Date"),
+        (SignPick::Name, "Your name"),
+        (SignPick::Text, "Text"),
+    ] {
+        if ui.button(label).clicked() {
+            acts.push(Act::SignWith(pick));
+            ui.close();
+        }
+    }
+    ui.separator();
+    for (m, glyph) in [(Mark::Tick, "✔"), (Mark::Cross, "✖"), (Mark::Dot, "●")] {
+        if ui
+            .button(format!("{glyph}  {}", capital(m.label())))
+            .clicked()
+        {
+            acts.push(Act::SignWith(SignPick::Mark(m)));
+            ui.close();
+        }
+    }
+}
+
 /// What the pane asks of the app.
 #[derive(Default)]
 pub struct PaneOut {
@@ -688,6 +756,20 @@ impl SignPane {
             SignPick::Saved(role, i) => i < kit.list(role).len(),
             SignPick::Text => !self.text.trim().is_empty(),
             _ => true,
+        }
+    }
+
+    /// The saved signatures and initials in `kit`, for the Fill and sign button's menu.
+    pub fn menu(&mut self, ctx: &egui::Context, kit: &SignKit) -> SignMenu {
+        let mut list = |role| {
+            kit.list(role)
+                .iter()
+                .map(|e| self.previews.get(ctx, &e.saved, role, kit.color))
+                .collect()
+        };
+        SignMenu {
+            signatures: list(SignRole::Signature),
+            initials: list(SignRole::Initials),
         }
     }
 

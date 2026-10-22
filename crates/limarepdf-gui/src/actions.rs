@@ -6,9 +6,11 @@ use crate::editor::Tool;
 use crate::markup::{self, Mark};
 use crate::selection::{ObjKind, Selection};
 use crate::settings::{Layout, PageLook};
+use crate::signing::SignPick;
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, ThemePreference};
 use egui_phosphor::regular as icon;
 use limarepdf_core::page_colours::PageColours;
+use limarepdf_core::SignRole;
 
 /// A command. Running one goes through `App::act`.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -67,6 +69,13 @@ pub enum Act {
     CopyObjectText,
     /// Put the keyboard in the inspector's text box for the selected text object.
     EditObjectText,
+    /// Move or resize the selected line of page text: the arrow tool, keeping it selected.
+    MoveText,
+    /// The Fill and sign tool, putting this down next (its button's menu).
+    SignWith(SignPick),
+    /// The Fill and sign tool, with the Create window open for a new signature or
+    /// initials (its button's menu).
+    CreateSign(SignRole),
     /// Replace the selected image with one from a file.
     ReplaceImage,
     DeleteObject,
@@ -201,8 +210,11 @@ pub struct Ctx {
     pub can_redo: bool,
     /// Words are selected with the read tool.
     pub words: bool,
-    /// An object is selected with the arrow tool.
+    /// An object is selected.
     pub object: bool,
+    /// The selected object can be moved with the current tool: page text only with the
+    /// arrow, or just after it was added.
+    pub object_moves: bool,
     /// What the selected object is.
     pub obj_kind: Option<ObjKind>,
     /// Pages are selected in the thumbnails.
@@ -233,7 +245,7 @@ pub struct Ctx {
     /// An annotation is selected, and whether it may be changed.
     pub annot: bool,
     pub annot_locked: bool,
-    /// The arrow tool can move the selected annotation.
+    /// The selected annotation can be moved with the current tool.
     pub annot_moves: bool,
     /// The markup colours last chosen; see [`Act::MarkColor`].
     pub highlight: usize,
@@ -290,9 +302,13 @@ fn doc_idle(c: &Ctx) -> bool {
 fn object(c: &Ctx) -> bool {
     c.object
 }
-/// An object, or an annotation the arrow can move.
+/// An object or annotation that can be moved with the current tool.
 fn nudgeable(c: &Ctx) -> bool {
-    c.object || c.annot_moves
+    c.object_moves || c.annot_moves
+}
+/// Page text selected with the read tool, which moves only with the arrow.
+fn fixed_text(c: &Ctx) -> bool {
+    text_object(c) && !c.object_moves
 }
 fn text_object(c: &Ctx) -> bool {
     c.object && matches!(c.obj_kind, Some(ObjKind::Text | ObjKind::HiddenText))
@@ -551,6 +567,16 @@ pub static ACTIONS: &[Action] = &[
         enabled: text_object,
         sep: true,
         hint: "Change the words of the selected line of page text.",
+        ..BASE
+    },
+    Action {
+        act: Act::MoveText,
+        group: Group::Edit,
+        label: "Move or resize text",
+        icon: icon::ARROWS_OUT_CARDINAL,
+        enabled: fixed_text,
+        hint: "Move or resize the selected line of page text with the arrow tool. \
+               Choose Read and select text when done.",
         ..BASE
     },
     Action {
@@ -982,7 +1008,8 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Tools,
         label: "Read and select text",
         icon: icon::CURSOR_TEXT,
-        hint: "Select and copy text, fill in forms and follow links.",
+        hint: "Select and copy text, fill in forms and follow links; double-click page text to \
+               edit it, and click pictures, shapes and comments to move or resize them.",
         ..BASE
     },
     Action {
@@ -1378,7 +1405,12 @@ pub fn context_items(sel: &Selection) -> &'static [&'static [Act]] {
         ],
         Selection::Annot { .. } => &[&[Act::DeleteSelection]],
         Selection::Object { .. } => &[
-            &[Act::EditObjectText, Act::ReplaceImage, Act::CopyObjectText],
+            &[
+                Act::EditObjectText,
+                Act::MoveText,
+                Act::ReplaceImage,
+                Act::CopyObjectText,
+            ],
             &[Act::DeleteObject],
         ],
         Selection::None | Selection::Pages(_) => &[
