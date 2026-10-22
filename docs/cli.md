@@ -4,9 +4,10 @@
 options with `limarepdf-cli <command> --help`.
 
 Commands that change a document take the input file first and write the result to `-o out.pdf`; the input is
-never changed, unless `-o` names the input itself (or a symbolic link to it), which replaces it with the result.
-The result is written whole or not at all: it goes to a new file that is then put in place in one step, so a
-name that is a hard link to another file gets a file of its own, and the other file keeps its bytes. Add `--password` to open a protected input. A damaged input is repaired to read it, as in the app,
+never changed: an `-o` that names the input, by any path or link to it, is refused with nothing written (on
+Windows a hard link to the input isn't recognised, and gets a file of its own instead). The result is written
+whole or not at all: it goes to a new file that is then put in place in one step, so a name that is a hard link
+to another file gets a file of its own, and the other file keeps its bytes. Add `--password` to open a protected input. A damaged input is repaired to read it, as in the app,
 and a note on stderr says so; some of its content may be missing ([details](rendering.md#damaged-files)). An input
 other PDF apps may show differently gets a note on stderr too
 ([details](rendering.md#files-other-apps-may-show-differently)).
@@ -196,7 +197,7 @@ See [Removing hidden information](redaction.md#removing-hidden-information).
 | --- | --- |
 | `limarepdf-cli verify in.pdf` | Check every digital signature: whether the signed part is unchanged, who signed by their certificate, when, and warnings; what changed after each signature and whether the signer allowed it; also lists signature fields not signed yet |
 | `limarepdf-cli verify in.pdf --json` | The same as JSON, for scripts |
-| `limarepdf-cli verify in.pdf --signed-version 1 -o signed.pdf` | Save the version signature 1 (numbered as `limarepdf-cli verify` lists them) signed: the file as it was when signed, without later changes. Refused for a broken signature, and when `-o` is the input itself or a link to it (on Windows, a hard link to the input instead gets a file of its own) |
+| `limarepdf-cli verify in.pdf --signed-version 1 -o signed.pdf` | Save the version signature 1 (numbered as `limarepdf-cli verify` lists them) signed: the file as it was when signed, without later changes. Refused for a broken signature |
 | `limarepdf-cli verify in.pdf --require-trusted` | Also exit with status 1 unless the file has signatures and every signer is trusted |
 | `limarepdf-cli verify in.pdf --trust-file team.txt` | Judge trust by this trust list instead of your own |
 | `limarepdf-cli trust list` | The certificates you trust, with their fingerprints (`--json` for scripts) |

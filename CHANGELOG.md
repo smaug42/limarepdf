@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `limarepdf-cli` refuses, with nothing written, an output (`-o`) that is the command's input, by any path or a
+  link to it. It used to replace the input with the result, so a redaction or removed information left no
+  original to go back to.
+
 ### Fixed
 
 - Flattening a form lost a filled field's value when the field had no drawing of its own and LimarePDF can't draw

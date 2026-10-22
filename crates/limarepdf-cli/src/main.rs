@@ -1361,6 +1361,7 @@ fn run_edit(io: &Io, f: impl FnOnce(&mut Pdf) -> Result<()>) -> Result<()> {
 
 /// Opens `io.input`, with its bytes for [`save_edited`].
 fn open_io(io: &Io) -> Result<(Pdf, Vec<u8>)> {
+    not_an_input(&[&io.input], &io.output)?;
     let bytes =
         std::fs::read(&io.input).with_context(|| format!("reading {}", io.input.display()))?;
     let pdf = Pdf::from_bytes(&bytes, io.password.as_deref())?;
@@ -2423,6 +2424,20 @@ fn same_file(a: &Path, b: &Path) -> bool {
     false
 }
 
+/// Refuses an `output` that is one of the `inputs`, by any path or link to it, so the input is
+/// never changed.
+fn not_an_input(inputs: &[impl AsRef<Path>], output: &Path) -> Result<()> {
+    if let Some(input) = inputs.iter().find(|i| same_file(i.as_ref(), output)) {
+        bail!(
+            "{} is the input {}; the result must be saved to another file, as the input is never \
+             changed. Nothing was written",
+            display_line(&output.display().to_string(), 300),
+            display_line(&input.as_ref().display().to_string(), 300)
+        );
+    }
+    Ok(())
+}
+
 fn trust_for_checking(explicit: &Option<PathBuf>) -> Result<TrustList> {
     let list = match (explicit, TrustList::default_path()) {
         (Some(p), _) if !p.exists() => bail!("there is no trust list at {}", p.display()),
@@ -2747,6 +2762,7 @@ fn run(cmd: Cmd) -> Result<()> {
             })
         })?,
         Cmd::Merge { inputs, output } => {
+            not_an_input(&inputs, &output)?;
             let docs = inputs
                 .par_iter()
                 .map(|p| open(p, &None))
@@ -2810,6 +2826,7 @@ fn run(cmd: Cmd) -> Result<()> {
             output,
             size,
         } => {
+            not_an_input(&inputs, &output)?;
             let mut p = Pdf::from_images(&read_all(&inputs)?, &size.opts())?;
             saved(p.save(&output))?;
             out!("wrote {} ({} pages)", output.display(), p.page_count());
@@ -2986,6 +3003,9 @@ fn run(cmd: Cmd) -> Result<()> {
             list,
             break_signatures,
         } => {
+            if let Some(output) = output.as_ref().filter(|_| !list) {
+                not_an_input(&[&input], output)?;
+            }
             let mut pdf = open(&input, &password)?;
             let signed = pdf.signature_count() > 0;
             if !list && !break_signatures && signed {
@@ -3244,9 +3264,7 @@ fn run(cmd: Cmd) -> Result<()> {
                 let len = s.signed_len.with_context(|| {
                     format!("LimarePDF can't tell which version signature {n} signed")
                 })?;
-                if same_file(&input, &output) {
-                    bail!("the signed version must be saved to another file");
-                }
+                not_an_input(&[&input], &output)?;
                 // A new file renamed into place, so a name that is a link to the input (or to
                 // anything else) never has its bytes cut short (audit R16).
                 saved(limarepdf_core::write_file(&output, &bytes[..len]))
@@ -3318,6 +3336,7 @@ fn run(cmd: Cmd) -> Result<()> {
                 _ => bail!("say where to sign: --field NAME, or --page N with --rect X,Y,W,H"),
             };
             let style = SignStyle::from_number(style).context("--style is 1, 2, 3 or 4")?;
+            not_an_input(&[&input], &output)?;
             let picture = match &image {
                 Some(path) => Some(
                     std::fs::read(path).with_context(|| format!("reading {}", path.display()))?,
