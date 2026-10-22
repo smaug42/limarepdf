@@ -250,6 +250,15 @@ pub fn primary_button(text: &str) -> egui::Button<'static> {
     egui::Button::new(label).fill(LIGHT.accent)
 }
 
+/// A button for a main action that loses work or breaks signatures: white text on red in
+/// both themes.
+pub fn danger_button(text: &str) -> egui::Button<'static> {
+    let label = RichText::new(text.to_owned())
+        .color(Color32::WHITE)
+        .family(semibold());
+    egui::Button::new(label).fill(Color32::from_rgb(185, 28, 28))
+}
+
 /// Background behind the pages.
 pub fn canvas(dark: bool) -> Color32 {
     palette(dark).canvas

@@ -7,9 +7,9 @@
 //! there once used; they are never saved or logged. A wrong password, or any failure,
 //! means the password has to be typed again.
 
+use crate::dialogs::{self, Btn, Shell};
 use crate::signing::Saved;
-use crate::theme;
-use eframe::egui::{self, Align2, Context, RichText, Ui};
+use eframe::egui::{self, Context, RichText, Ui};
 use limarepdf_core::{
     display_line, DigitalId, DisallowedChanges, IdList, IdStore, NewId, Pdf, Permissions,
     SignPlace, SignRequest,
@@ -166,19 +166,16 @@ fn error(ui: &mut Ui, e: &Option<String>) {
     }
 }
 
-fn window(title: &str, id: &str) -> egui::Window<'static> {
-    egui::Window::new(title.to_string())
-        .id(egui::Id::new(id.to_string()))
-        .collapsible(false)
-        .resizable(false)
-        .default_width(WIDTH)
-        .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+fn window<'a>(title: &'a str, id: &str) -> Shell<'a> {
+    Shell::new(title).id(id).width(WIDTH + 40.0)
 }
 
 fn busy_ui(ui: &mut Ui, what: &str) {
-    ui.horizontal(|ui| {
-        ui.spinner();
-        ui.label(what);
+    dialogs::content(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(what);
+        });
     });
 }
 
@@ -283,11 +280,11 @@ impl IdsWindow {
                 });
             }
         }
-        let mut open = true;
-        window("Digital IDs", "digital ids")
-            .open(&mut open)
+        // Esc closes the list, not a form being filled in.
+        let listed = matches!(self.page, Page::List) && self.task.is_none();
+        let (_, esc) = window("Digital IDs", "digital ids")
+            .esc(listed)
             .show(ctx, |ui| {
-                ui.set_max_width(WIDTH);
                 if let Some((what, _)) = &self.task {
                     busy_ui(ui, what);
                     return;
@@ -300,11 +297,61 @@ impl IdsWindow {
                 }
             });
         // Stays open while work runs, so its result is seen.
-        out.close = (out.close || !open) && self.task.is_none();
+        out.close = (out.close || esc) && self.task.is_none();
         out
     }
 
     fn list_ui(&mut self, ui: &mut Ui, author: &str, out: &mut IdsOut) {
+        dialogs::content(ui, |ui| self.list_body(ui, out));
+        let ok = self.store.is_ok();
+        let hit = dialogs::footer(
+            ui,
+            None,
+            &[
+                Btn::plain("Create…")
+                    .tip("Make a new self-signed digital ID")
+                    .enabled(ok),
+                Btn::plain("Import…")
+                    .tip(
+                        "Add an ID from a .p12 or .pfx file (from Acrobat, Windows or a \
+                         certificate authority)",
+                    )
+                    .enabled(ok),
+                Btn::plain("Close"),
+            ],
+        );
+        match hit {
+            Some(0) => {
+                self.page = Page::Create(CreateForm {
+                    name: author.to_string(),
+                    organisation: String::new(),
+                    email: String::new(),
+                    password: Secret::default(),
+                    again: Secret::default(),
+                    error: None,
+                });
+                self.note = None;
+            }
+            Some(1) => {
+                if let Some(file) = rfd::FileDialog::new()
+                    .add_filter("Digital IDs", &["p12", "pfx"])
+                    .pick_file()
+                {
+                    self.page = Page::Import(ImportForm {
+                        file,
+                        password: Secret::default(),
+                        error: None,
+                    });
+                    self.note = None;
+                }
+            }
+            Some(_) => out.close = true,
+            None => {}
+        }
+    }
+
+    /// The IDs, the chosen one's details and buttons, and the last thing done.
+    fn list_body(&mut self, ui: &mut Ui, out: &mut IdsOut) {
         let store = match &self.store {
             Ok(s) => s.clone(),
             Err(e) => {
@@ -421,98 +468,53 @@ impl IdsWindow {
             };
             ui.add(egui::Label::new(text).wrap());
         }
-        ui.add_space(8.0);
-        ui.separator();
-        ui.horizontal(|ui| {
-            if ui
-                .button("Create…")
-                .on_hover_text("Make a new self-signed digital ID")
-                .clicked()
-            {
-                self.page = Page::Create(CreateForm {
-                    name: author.to_string(),
-                    organisation: String::new(),
-                    email: String::new(),
-                    password: Secret::default(),
-                    again: Secret::default(),
-                    error: None,
-                });
-                self.note = None;
-            }
-            if ui
-                .button("Import…")
-                .on_hover_text(
-                    "Add an ID from a .p12 or .pfx file (from Acrobat, Windows or a certificate \
-                     authority)",
-                )
-                .clicked()
-            {
-                if let Some(file) = rfd::FileDialog::new()
-                    .add_filter("Digital IDs", &["p12", "pfx"])
-                    .pick_file()
-                {
-                    self.page = Page::Import(ImportForm {
-                        file,
-                        password: Secret::default(),
-                        error: None,
-                    });
-                    self.note = None;
-                }
-            }
-            if ui.button("Close").clicked() {
-                out.close = true;
-            }
-        });
     }
 
     fn create_ui(&mut self, ui: &mut Ui, mut f: CreateForm) {
-        ui.strong("Create a digital ID");
-        ui.add(
-            egui::Label::new(
-                "LimarePDF makes a self-signed ID (RSA 3072-bit, valid for five years). The name is \
-                 what signatures show. Others see you as an unknown signer until they trust \
-                 your certificate.",
-            )
-            .wrap(),
-        );
-        ui.add_space(6.0);
-        egui::Grid::new("new id").num_columns(2).show(ui, |ui| {
-            ui.label("Name");
-            ui.text_edit_singleline(&mut f.name);
-            ui.end_row();
-            ui.label("Organisation");
-            ui.add(egui::TextEdit::singleline(&mut f.organisation).hint_text("Optional"));
-            ui.end_row();
-            ui.label("Email");
-            ui.add(egui::TextEdit::singleline(&mut f.email).hint_text("Optional"));
-            ui.end_row();
-            ui.label("Password");
-            f.password.edit(
-                ui,
-                &format!("At least {} characters", limarepdf_core::MIN_PASSWORD),
+        dialogs::content(ui, |ui| {
+            ui.strong("Create a digital ID");
+            ui.add(
+                egui::Label::new(
+                    "LimarePDF makes a self-signed ID (RSA 3072-bit, valid for five years). The \
+                     name is what signatures show. Others see you as an unknown signer until \
+                     they trust your certificate.",
+                )
+                .wrap(),
             );
-            ui.end_row();
-            ui.label("Again");
-            f.again.edit(ui, "Type it again");
-            ui.end_row();
+            ui.add_space(6.0);
+            egui::Grid::new("new id").num_columns(2).show(ui, |ui| {
+                ui.label("Name");
+                ui.text_edit_singleline(&mut f.name);
+                ui.end_row();
+                ui.label("Organisation");
+                ui.add(egui::TextEdit::singleline(&mut f.organisation).hint_text("Optional"));
+                ui.end_row();
+                ui.label("Email");
+                ui.add(egui::TextEdit::singleline(&mut f.email).hint_text("Optional"));
+                ui.end_row();
+                ui.label("Password");
+                f.password.edit(
+                    ui,
+                    &format!("At least {} characters", limarepdf_core::MIN_PASSWORD),
+                );
+                ui.end_row();
+                ui.label("Again");
+                f.again.edit(ui, "Type it again");
+                ui.end_row();
+            });
+            ui.add_space(4.0);
+            ui.add(
+                egui::Label::new(
+                    "Keep the password safe: LimarePDF can't recover it, and without it the ID \
+                     can't sign. Keep a copy of the ID too (Export, with its key): if this \
+                     computer is lost, so is the ID.",
+                )
+                .wrap(),
+            );
+            error(ui, &f.error);
         });
-        ui.add_space(4.0);
-        ui.add(
-            egui::Label::new(
-                "Keep the password safe: LimarePDF can't recover it, and without it the ID can't \
-                 sign. Keep a copy of the ID too (Export, with its key): if this computer is \
-                 lost, so is the ID.",
-            )
-            .wrap(),
-        );
-        error(ui, &f.error);
-        ui.add_space(8.0);
-        ui.separator();
-        let (mut go, mut back) = (false, false);
-        ui.horizontal(|ui| {
-            go = ui.add(theme::primary_button("Create")).clicked();
-            back = ui.button("Back").clicked();
-        });
+        let hit = dialogs::footer(ui, None, &[Btn::primary("Create"), Btn::plain("Back")]);
+        let (go, back) = (hit == Some(0), hit == Some(1));
         if back {
             return;
         }
@@ -555,31 +557,28 @@ impl IdsWindow {
     }
 
     fn import_ui(&mut self, ui: &mut Ui, mut f: ImportForm) {
-        ui.strong("Import a digital ID");
-        row(ui, "File", f.file.display().to_string());
-        ui.horizontal(|ui| {
-            ui.label("Password");
-            let r = f.password.edit(ui, "The file's password");
-            if f.error.is_none() && !r.has_focus() && f.password.0.is_empty() {
-                r.request_focus();
-            }
+        dialogs::content(ui, |ui| {
+            ui.strong("Import a digital ID");
+            row(ui, "File", f.file.display().to_string());
+            ui.horizontal(|ui| {
+                ui.label("Password");
+                let r = f.password.edit(ui, "The file's password");
+                if f.error.is_none() && !r.has_focus() && f.password.0.is_empty() {
+                    r.request_focus();
+                }
+            });
+            ui.add(
+                egui::Label::new(
+                    "LimarePDF keeps its own copy, protected by the same password. The key must \
+                     be RSA (2048 to 4096 bits) or ECDSA P-256 or P-384, and the certificate \
+                     usable for signing.",
+                )
+                .wrap(),
+            );
+            error(ui, &f.error);
         });
-        ui.add(
-            egui::Label::new(
-                "LimarePDF keeps its own copy, protected by the same password. The key must be RSA \
-                 (2048 to 4096 bits) or ECDSA P-256 or P-384, and the certificate usable for \
-                 signing.",
-            )
-            .wrap(),
-        );
-        error(ui, &f.error);
-        ui.add_space(8.0);
-        ui.separator();
-        let (mut go, mut back) = (false, false);
-        ui.horizontal(|ui| {
-            go = ui.add(theme::primary_button("Import")).clicked();
-            back = ui.button("Back").clicked();
-        });
+        let hit = dialogs::footer(ui, None, &[Btn::primary("Import"), Btn::plain("Back")]);
+        let (mut go, back) = (hit == Some(0), hit == Some(1));
         go |= ui.input(|i| i.key_pressed(egui::Key::Enter));
         if back {
             return;
@@ -617,66 +616,64 @@ impl IdsWindow {
     }
 
     fn export_ui(&mut self, ui: &mut Ui, mut f: Box<ExportForm>) {
-        ui.strong(format!("Export \"{}\"", label(&f.id)));
-        ui.radio_value(
-            &mut f.kind,
-            ExportKind::Certificate,
-            "Certificate only (.cer): for others to trust your signatures",
-        );
-        ui.radio_value(
-            &mut f.kind,
-            ExportKind::Key,
-            "With its key (.p12): a backup, or to sign in other apps",
-        );
-        ui.add_space(4.0);
-        match f.kind {
-            ExportKind::Certificate => {
-                ui.add(
-                    egui::Label::new(
-                        "The certificate holds no key, so it is safe to share. Tell recipients \
-                         its SHA-256 fingerprint another way, such as by phone, so they can \
-                         check it is yours:",
-                    )
-                    .wrap(),
-                );
-                ui.label(RichText::new(&f.id.cert.sha256).monospace().small());
-            }
-            ExportKind::Key => {
-                egui::Grid::new("export id").num_columns(2).show(ui, |ui| {
-                    ui.label("ID's password");
-                    f.password.edit(ui, "Password");
-                    ui.end_row();
-                });
-                ui.checkbox(&mut f.fresh, "Protect the file with a new password");
-                if f.fresh {
-                    egui::Grid::new("export new").num_columns(2).show(ui, |ui| {
-                        ui.label("New password");
-                        f.new_password.edit(
-                            ui,
-                            &format!("At least {} characters", limarepdf_core::MIN_PASSWORD),
-                        );
-                        ui.end_row();
-                        ui.label("Again");
-                        f.again.edit(ui, "Type it again");
+        dialogs::content(ui, |ui| {
+            ui.strong(format!("Export \"{}\"", label(&f.id)));
+            ui.radio_value(
+                &mut f.kind,
+                ExportKind::Certificate,
+                "Certificate only (.cer): for others to trust your signatures",
+            );
+            ui.radio_value(
+                &mut f.kind,
+                ExportKind::Key,
+                "With its key (.p12): a backup, or to sign in other apps",
+            );
+            ui.add_space(4.0);
+            match f.kind {
+                ExportKind::Certificate => {
+                    ui.add(
+                        egui::Label::new(
+                            "The certificate holds no key, so it is safe to share. Tell \
+                             recipients its SHA-256 fingerprint another way, such as by phone, \
+                             so they can check it is yours:",
+                        )
+                        .wrap(),
+                    );
+                    ui.label(RichText::new(&f.id.cert.sha256).monospace().small());
+                }
+                ExportKind::Key => {
+                    egui::Grid::new("export id").num_columns(2).show(ui, |ui| {
+                        ui.label("ID's password");
+                        f.password.edit(ui, "Password");
                         ui.end_row();
                     });
+                    ui.checkbox(&mut f.fresh, "Protect the file with a new password");
+                    if f.fresh {
+                        egui::Grid::new("export new").num_columns(2).show(ui, |ui| {
+                            ui.label("New password");
+                            f.new_password.edit(
+                                ui,
+                                &format!("At least {} characters", limarepdf_core::MIN_PASSWORD),
+                            );
+                            ui.end_row();
+                            ui.label("Again");
+                            f.again.edit(ui, "Type it again");
+                            ui.end_row();
+                        });
+                    }
+                    ui.add(
+                        egui::Label::new(
+                            "Anyone with this file and its password can sign as you: keep it \
+                             safe.",
+                        )
+                        .wrap(),
+                    );
                 }
-                ui.add(
-                    egui::Label::new(
-                        "Anyone with this file and its password can sign as you: keep it safe.",
-                    )
-                    .wrap(),
-                );
             }
-        }
-        error(ui, &f.error);
-        ui.add_space(8.0);
-        ui.separator();
-        let (mut go, mut back) = (false, false);
-        ui.horizontal(|ui| {
-            go = ui.add(theme::primary_button("Export…")).clicked();
-            back = ui.button("Back").clicked();
+            error(ui, &f.error);
         });
+        let hit = dialogs::footer(ui, None, &[Btn::primary("Export…"), Btn::plain("Back")]);
+        let (go, back) = (hit == Some(0), hit == Some(1));
         if back {
             return;
         }
@@ -973,16 +970,17 @@ impl SignWindow {
             }
         }
         let mut out = SignOut::Open;
-        let mut open = true;
         let title = if self.certify {
             "Certify with digital ID"
         } else {
             "Sign with digital ID"
         };
-        window(title, "digital sign")
-            .open(&mut open)
+        // Esc closes it until something is typed into it.
+        let empty =
+            self.password.0.is_empty() && self.reason.is_empty() && self.location.is_empty();
+        let (_, esc) = window(title, "digital sign")
+            .esc(empty && self.task.is_none())
             .show(ctx, |ui| {
-                ui.set_max_width(WIDTH);
                 if self.task.is_some() {
                     busy_ui(
                         ui,
@@ -994,26 +992,23 @@ impl SignWindow {
                     );
                     return;
                 }
-                if let Some(q) = &self.disallowed {
-                    ui.add(egui::Label::new(q.as_str()).wrap());
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        if ui.add(theme::primary_button("Sign anyway")).clicked() {
+                if let Some(q) = self.disallowed.clone() {
+                    dialogs::content(ui, |ui| ui.add(egui::Label::new(q).wrap()));
+                    match dialogs::footer(ui, None, &[Btn::danger("Sign anyway"), Btn::cancel()]) {
+                        Some(0) => {
                             self.accept_disallowed = true;
                             self.disallowed = None;
                             self.error = Some("Type the ID's password again to sign.".into());
                             self.focus = true;
                         }
-                        if ui.button("Cancel").clicked() {
-                            out = SignOut::Cancel;
-                        }
-                    });
+                        Some(_) => out = SignOut::Cancel,
+                        None => {}
+                    }
                     return;
                 }
                 out = self.form_ui(ui);
             });
-        if !open && self.task.is_none() {
+        if esc {
             out = SignOut::Cancel;
         }
         out
@@ -1021,6 +1016,46 @@ impl SignWindow {
 
     fn form_ui(&mut self, ui: &mut Ui) -> SignOut {
         let mut out = SignOut::Open;
+        dialogs::content(ui, |ui| self.form_body(ui, &mut out));
+        let can = self
+            .list
+            .ids
+            .get(self.pick)
+            .is_some_and(|i| unusable(i).is_none());
+        let go = if self.certify {
+            "Certify…"
+        } else {
+            "Sign…"
+        };
+        let buttons = [
+            Btn::primary(go)
+                .enabled(can)
+                .tip("Choose where to save the signed document, then sign"),
+            Btn::plain("Digital IDs…"),
+            Btn::cancel(),
+        ];
+        match dialogs::footer(ui, None, &buttons) {
+            Some(0) => out = SignOut::Go,
+            Some(1) => out = SignOut::ManageIds,
+            Some(_) => out = SignOut::Cancel,
+            None => {}
+        }
+        if matches!(out, SignOut::Go) {
+            if !can {
+                return SignOut::Open;
+            }
+            if self.password.0.is_empty() {
+                self.error = Some("Type the ID's password.".into());
+                self.focus = true;
+                return SignOut::Open;
+            }
+        }
+        out
+    }
+
+    /// The signing form: where, the ID, its password, and the options; `out` becomes Go
+    /// on Enter in the password.
+    fn form_body(&mut self, ui: &mut Ui, out: &mut SignOut) {
         row(ui, "Where", self.where_text.clone());
         ui.add_space(6.0);
         if let Err(e) = &self.store {
@@ -1079,7 +1114,7 @@ impl SignWindow {
                     r.request_focus();
                 }
                 if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    out = SignOut::Go;
+                    *out = SignOut::Go;
                 }
                 ui.end_row();
                 ui.label("Reason");
@@ -1133,44 +1168,6 @@ impl SignWindow {
             .wrap(),
         );
         error(ui, &self.error);
-        ui.add_space(8.0);
-        ui.separator();
-        let can = self
-            .list
-            .ids
-            .get(self.pick)
-            .is_some_and(|i| unusable(i).is_none());
-        ui.horizontal(|ui| {
-            let go = if self.certify {
-                "Certify…"
-            } else {
-                "Sign…"
-            };
-            if ui
-                .add_enabled(can, theme::primary_button(go))
-                .on_hover_text("Choose where to save the signed document, then sign")
-                .clicked()
-            {
-                out = SignOut::Go;
-            }
-            if ui.button("Cancel").clicked() {
-                out = SignOut::Cancel;
-            }
-            if ui.button("Digital IDs…").clicked() {
-                out = SignOut::ManageIds;
-            }
-        });
-        if matches!(out, SignOut::Go) {
-            if !can {
-                return SignOut::Open;
-            }
-            if self.password.0.is_empty() {
-                self.error = Some("Type the ID's password.".into());
-                self.focus = true;
-                return SignOut::Open;
-            }
-        }
-        out
     }
 }
 
@@ -1275,7 +1272,7 @@ mod tests {
         tx.send(r).unwrap();
         w.task = Some(again);
         let mut out = SignOut::Open;
-        theme::install(&ctx);
+        crate::theme::install(&ctx);
         let mut frame = ctx.run_ui(egui::RawInput::default(), |ui| out = w.ui(ui.ctx()));
         // Nothing draws the frame: its font atlas upload is dropped on purpose.
         frame.textures_delta.clear();

@@ -1,7 +1,8 @@
 //! The About window: version, "Made in Canada", links, contributors and credits.
 
+use crate::dialogs::{self, Btn, Shell};
 use crate::theme;
-use eframe::egui::{self, Align, Align2, Context, Layout, TextureHandle, TextureOptions, Ui};
+use eframe::egui::{self, Align, Context, Layout, TextureHandle, TextureOptions, Ui};
 use egui_phosphor::regular as icon;
 
 const WEBSITE: &str = "https://github.com/smaug42/limarepdf";
@@ -107,31 +108,28 @@ pub fn made_in_canada(ui: &mut Ui, id: &str, weak: bool) {
 
 /// Show the About window; true once it is closed.
 pub fn show(ctx: &Context, page: &mut Page) -> bool {
-    let mut open = true;
-    let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
-    egui::Window::new("About LimarePDF")
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
-        .fixed_size([380.0, 0.0])
-        .open(&mut open)
-        .show(ctx, |ui| {
+    let shell = Shell::new("About LimarePDF").width(380.0);
+    let (close, esc) = shell.show(ctx, |ui| {
+        dialogs::content(ui, |ui| {
             ui.with_layout(Layout::top_down(Align::Center), |ui| match page {
                 Page::Main => main_page(ui, page),
                 Page::Contributors => contributors_page(ui),
             });
-            ui.add_space(8.0);
-            ui.separator();
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.button("Close").clicked() {
-                    close = true;
-                }
-                if *page == Page::Contributors && ui.button("Back").clicked() {
-                    *page = Page::Main;
-                }
-            });
         });
-    close || !open
+        let mut buttons = vec![Btn::primary("Close")];
+        if *page == Page::Contributors {
+            buttons.push(Btn::plain("Back"));
+        }
+        match dialogs::footer(ui, None, &buttons) {
+            Some(0) => true,
+            Some(_) => {
+                *page = Page::Main;
+                false
+            }
+            None => false,
+        }
+    });
+    close || esc
 }
 
 fn main_page(ui: &mut Ui, page: &mut Page) {

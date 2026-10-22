@@ -1266,6 +1266,9 @@ impl Editor {
             self.digital_place = None;
             self.digital_error = None;
         }
+        if t != Tool::Sign {
+            self.sign.create = None;
+        }
     }
 
     /// After a command failed part way: the Read tool, with nothing selected, dragged, being

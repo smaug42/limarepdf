@@ -7,9 +7,9 @@
 //! cleaned for display first.
 
 use crate::banners::{self, Banner};
-use crate::dialogs::Outcome;
+use crate::dialogs::{self, Btn, Outcome, Shell};
 use crate::theme::{self, Tone};
-use eframe::egui::{self, Align2, Context, RichText, Ui};
+use eframe::egui::{self, Context, RichText, Ui};
 use egui_phosphor::regular as icon;
 use limarepdf_core::{
     display_line, CertInfo, DigitalSignature, FieldLock, LockAction, SigKind, SigStatus,
@@ -663,32 +663,22 @@ pub fn details(ctx: &Context, doc: &str, c: &Checked, i: usize) -> DetailsOut {
         out.close = true;
         return out;
     };
-    let mut open = true;
     let n = c.report.signatures.len();
-    egui::Window::new("Signature details")
-        .id(egui::Id::new("signature details"))
-        .collapsible(false)
-        .resizable(true)
-        .default_width(540.0)
-        .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
-        .open(&mut open)
-        .show(ctx, |ui| {
-            ui.label(
-                RichText::new(format!("{doc}: signature {} of {n}", i + 1))
-                    .small()
-                    .weak(),
-            );
+    let which = format!("{doc}: signature {} of {n}", i + 1);
+    let shell = Shell::new("Signature details")
+        .id("signature details")
+        .file(Some(&which))
+        .width(540.0);
+    let (_, esc) = shell.show(ctx, |ui| {
+        dialogs::content(ui, |ui| {
             let lv = level(s);
             ui.horizontal_top(|ui| {
                 ui.label(tone_icon(ui, lv.icon(), lv.tone()));
                 ui.add(egui::Label::new(RichText::new(summary(s)).strong()).wrap());
             });
             ui.add_space(6.0);
-            egui::ScrollArea::vertical()
-                .max_height(ctx.content_rect().height() * 0.6)
-                .show(ui, |ui| details_body(ui, c, s));
+            details_body(ui, c, s);
             ui.add_space(8.0);
-            ui.separator();
             ui.horizontal_wrapped(|ui| {
                 let valid = s.status == SigStatus::Valid;
                 let trusted_alone = matches!(s.trust, Some(Trust::Signer { .. }));
@@ -738,16 +728,19 @@ pub fn details(ctx: &Context, doc: &str, c: &Checked, i: usize) -> DetailsOut {
                     }
                 }
                 if let (Some(p), Some(b)) = (s.page, s.bbox) {
+                    // Closes the window, which would hide the field.
                     if ui.button("Go to field").clicked() {
                         out.go_to = Some((p, b[1]));
+                        out.close = true;
                     }
-                }
-                if ui.button("Close").clicked() {
-                    out.close = true;
                 }
             });
         });
-    if !open {
+        if dialogs::footer(ui, None, &[Btn::plain("Close")]).is_some() {
+            out.close = true;
+        }
+    });
+    if esc {
         out.close = true;
     }
     out
@@ -1025,111 +1018,105 @@ impl TrustAsk {
 
     /// The window; `Apply` means trust [`TrustAsk::cert`] as [`TrustAsk::role`].
     pub fn ui(&mut self, ctx: &Context) -> Outcome {
-        let mut out = Outcome::Open;
-        let mut open = true;
         let title = match self.role {
             TrustRole::Signer => "Trust a signer",
             TrustRole::Authority => "Trust a certificate authority",
         };
-        egui::Window::new(title)
-            .id(egui::Id::new("trust ask"))
-            .collapsible(false)
-            .resizable(false)
-            .default_width(480.0)
-            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
-            .open(&mut open)
-            .show(ctx, |ui| {
-                ui.set_max_width(480.0);
-                if self.choose_role {
-                    let ca = self.cert().is_some_and(limarepdf_core::is_authority);
-                    ui.radio_value(
-                        &mut self.role,
-                        TrustRole::Signer,
-                        "As a signer: signatures made with this certificate",
-                    );
-                    ui.add_enabled_ui(ca, |ui| {
-                        ui.radio_value(
-                            &mut self.role,
-                            TrustRole::Authority,
-                            "As a certificate authority: also everyone it issued certificates to",
-                        )
-                        .on_disabled_hover_text("This certificate isn't a certificate authority.");
-                    });
-                    if !ca {
-                        self.role = TrustRole::Signer;
-                    }
-                    ui.add_space(6.0);
-                }
-                if self.choices.len() > 1 {
-                    ui.label("Choose the certificate:");
-                    let before = self.pick;
-                    for (k, c) in self.choices.iter().enumerate() {
-                        ui.radio_value(&mut self.pick, k, clean(&c.subject));
-                    }
-                    if self.pick != before && !self.label_edited {
-                        self.label = self
-                            .cert()
-                            .map(|c| clean(c.display_name()))
-                            .unwrap_or_default();
-                    }
-                    ui.add_space(6.0);
-                }
-                if let Some(c) = self.cert() {
-                    cert_ui(ui, c);
-                }
-                ui.add_space(6.0);
-                ui.add(
-                    egui::Label::new(
-                        "Anyone can make a certificate with any name. Before trusting it, check \
-                         this SHA-256 fingerprint with its owner in a way you trust, such as in \
-                         person or by phone.",
-                    )
-                    .wrap(),
-                );
-                if self.role == TrustRole::Authority {
-                    ui.add(
-                        egui::Label::new(
-                            "Everyone this authority issued a certificate to, directly or \
-                             through authorities it allowed to, will show as trusted.",
-                        )
-                        .wrap(),
-                    );
-                }
-                if self.cert().is_some_and(|c| !c.valid_now()) {
-                    ui.add(
-                        egui::Label::new(
-                            "The certificate isn't valid today: only signatures made while it \
-                             was valid will be trusted.",
-                        )
-                        .wrap(),
-                    );
-                }
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label("Name in your list:");
-                    if ui.text_edit_singleline(&mut self.label).changed() {
-                        self.label_edited = true;
-                    }
-                });
-                ui.label(RichText::new(TRUST_NOTE).small().weak());
-                if let Some(e) = &self.error {
-                    ui.colored_label(ui.visuals().error_fg_color, e);
-                }
-                ui.add_space(8.0);
-                ui.separator();
-                ui.horizontal(|ui| {
-                    if ui.add(theme::primary_button("Trust")).clicked() {
-                        out = Outcome::Apply;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        out = Outcome::Cancel;
-                    }
-                });
-            });
-        if !open {
-            out = Outcome::Cancel;
+        let shell = Shell::new(title)
+            .id("trust ask")
+            .width(480.0)
+            .esc(!self.label_edited);
+        let (out, esc) = shell.show(ctx, |ui| {
+            dialogs::content(ui, |ui| self.body(ui));
+            match dialogs::footer(ui, None, &[Btn::primary("Trust"), Btn::cancel()]) {
+                Some(0) => Outcome::Apply,
+                Some(_) => Outcome::Cancel,
+                None => Outcome::Open,
+            }
+        });
+        if esc {
+            return Outcome::Cancel;
         }
         out
+    }
+
+    /// What is trusted and how, the certificate, and the name it gets in the list.
+    fn body(&mut self, ui: &mut Ui) {
+        if self.choose_role {
+            let ca = self.cert().is_some_and(limarepdf_core::is_authority);
+            ui.radio_value(
+                &mut self.role,
+                TrustRole::Signer,
+                "As a signer: signatures made with this certificate",
+            );
+            ui.add_enabled_ui(ca, |ui| {
+                ui.radio_value(
+                    &mut self.role,
+                    TrustRole::Authority,
+                    "As a certificate authority: also everyone it issued certificates to",
+                )
+                .on_disabled_hover_text("This certificate isn't a certificate authority.");
+            });
+            if !ca {
+                self.role = TrustRole::Signer;
+            }
+            ui.add_space(6.0);
+        }
+        if self.choices.len() > 1 {
+            ui.label("Choose the certificate:");
+            let before = self.pick;
+            for (k, c) in self.choices.iter().enumerate() {
+                ui.radio_value(&mut self.pick, k, clean(&c.subject));
+            }
+            if self.pick != before && !self.label_edited {
+                self.label = self
+                    .cert()
+                    .map(|c| clean(c.display_name()))
+                    .unwrap_or_default();
+            }
+            ui.add_space(6.0);
+        }
+        if let Some(c) = self.cert() {
+            cert_ui(ui, c);
+        }
+        ui.add_space(6.0);
+        ui.add(
+            egui::Label::new(
+                "Anyone can make a certificate with any name. Before trusting it, check this \
+                 SHA-256 fingerprint with its owner in a way you trust, such as in person or by \
+                 phone.",
+            )
+            .wrap(),
+        );
+        if self.role == TrustRole::Authority {
+            ui.add(
+                egui::Label::new(
+                    "Everyone this authority issued a certificate to, directly or through \
+                     authorities it allowed to, will show as trusted.",
+                )
+                .wrap(),
+            );
+        }
+        if self.cert().is_some_and(|c| !c.valid_now()) {
+            ui.add(
+                egui::Label::new(
+                    "The certificate isn't valid today: only signatures made while it was valid \
+                     will be trusted.",
+                )
+                .wrap(),
+            );
+        }
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.label("Name in your list:");
+            if ui.text_edit_singleline(&mut self.label).changed() {
+                self.label_edited = true;
+            }
+        });
+        ui.label(RichText::new(TRUST_NOTE).small().weak());
+        if let Some(e) = &self.error {
+            ui.colored_label(ui.visuals().error_fg_color, e);
+        }
     }
 }
 
@@ -1163,105 +1150,93 @@ impl TrustedWindow {
 
     pub fn ui(&mut self, ctx: &Context) -> TrustedOut {
         let mut out = TrustedOut::Open;
-        let mut open = true;
-        egui::Window::new("Trusted certificates")
-            .id(egui::Id::new("trusted certificates"))
-            .collapsible(false)
-            .resizable(true)
-            .default_width(520.0)
-            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
-            .open(&mut open)
-            .show(ctx, |ui| {
-                ui.add(
-                    egui::Label::new(
-                        "LimarePDF shows a signature as trusted when its signer is in this list, or \
-                         when an authority in this list issued the signer's certificate.",
-                    )
-                    .wrap(),
-                );
-                ui.add_space(6.0);
-                trust_status_ui(ui, &self.status);
-                let usable = self.status.error.is_none();
-                egui::ScrollArea::vertical()
-                    .max_height(ctx.content_rect().height() * 0.5)
-                    .show(ui, |ui| {
-                        if self.list.entries.is_empty() {
-                            ui.weak("You don't trust any certificates in LimarePDF yet.");
-                        }
-                        for (i, e) in self.list.entries.iter().enumerate() {
-                            ui.add_space(4.0);
-                            ui.horizontal_top(|ui| {
-                                ui.vertical(|ui| {
-                                    let role = match e.role {
-                                        TrustRole::Signer => "Signer",
-                                        TrustRole::Authority => "Certificate authority",
-                                    };
-                                    ui.label(RichText::new(clean(&e.label)).strong());
-                                    let added = e
-                                        .added
-                                        .map(|d| format!(", trusted {d}"))
-                                        .unwrap_or_default();
-                                    ui.label(RichText::new(format!("{role}{added}")).small());
-                                    ui.add(
-                                        egui::Label::new(
-                                            RichText::new(clean(&e.cert.subject)).small().weak(),
-                                        )
-                                        .wrap(),
-                                    );
-                                    ui.add(
-                                        egui::Label::new(
-                                            RichText::new(format!("SHA-256 {}", e.cert.sha256))
-                                                .small()
-                                                .weak(),
-                                        )
-                                        .wrap(),
-                                    );
-                                });
-                                if self.removing == Some(i) {
-                                    if ui.button("Stop trusting").clicked() {
-                                        out = TrustedOut::Remove(i);
-                                    }
-                                    if ui.button("Keep").clicked() {
-                                        self.removing = None;
-                                    }
-                                } else if ui
-                                    .add_enabled(usable, egui::Button::new("Remove…"))
-                                    .clicked()
-                                {
-                                    self.removing = Some(i);
-                                }
-                            });
-                        }
-                    });
-                ui.add_space(8.0);
-                if let Some(p) = &self.path {
-                    ui.label(
-                        RichText::new(format!("{TRUST_NOTE} Kept in {}.", p.display()))
-                            .small()
-                            .weak(),
-                    );
-                }
-                ui.separator();
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(usable, egui::Button::new("Add certificate file…"))
-                        .on_hover_text(
-                            "Trust a certificate from a file (.cer, .crt, .pem, .der, .p7c, \
-                             .p7b), such as one a signer or an authority sent you.",
-                        )
-                        .clicked()
-                    {
-                        out = TrustedOut::Add;
-                    }
-                    if ui.button("Close").clicked() {
-                        out = TrustedOut::Close;
-                    }
-                });
-            });
-        if !open {
+        let shell = Shell::new("Trusted certificates")
+            .id("trusted certificates")
+            .width(520.0);
+        let (_, esc) = shell.show(ctx, |ui| {
+            dialogs::content(ui, |ui| self.body(ui, &mut out));
+            let usable = self.status.error.is_none();
+            let add = Btn::plain("Add certificate file…").enabled(usable).tip(
+                "Trust a certificate from a file (.cer, .crt, .pem, .der, .p7c, .p7b), such as \
+                 one a signer or an authority sent you.",
+            );
+            match dialogs::footer(ui, None, &[add, Btn::plain("Close")]) {
+                Some(0) => out = TrustedOut::Add,
+                Some(_) => out = TrustedOut::Close,
+                None => {}
+            }
+        });
+        if esc {
             out = TrustedOut::Close;
         }
         out
+    }
+
+    /// The list, each entry with Remove (Stop trusting once clicked), and where it is kept.
+    fn body(&mut self, ui: &mut Ui, out: &mut TrustedOut) {
+        ui.add(
+            egui::Label::new(
+                "LimarePDF shows a signature as trusted when its signer is in this list, or when \
+                 an authority in this list issued the signer's certificate.",
+            )
+            .wrap(),
+        );
+        ui.add_space(6.0);
+        trust_status_ui(ui, &self.status);
+        let usable = self.status.error.is_none();
+        if self.list.entries.is_empty() {
+            ui.weak("You don't trust any certificates in LimarePDF yet.");
+        }
+        for (i, e) in self.list.entries.iter().enumerate() {
+            ui.add_space(4.0);
+            ui.horizontal_top(|ui| {
+                ui.vertical(|ui| {
+                    let role = match e.role {
+                        TrustRole::Signer => "Signer",
+                        TrustRole::Authority => "Certificate authority",
+                    };
+                    ui.label(RichText::new(clean(&e.label)).strong());
+                    let added = e
+                        .added
+                        .map(|d| format!(", trusted {d}"))
+                        .unwrap_or_default();
+                    ui.label(RichText::new(format!("{role}{added}")).small());
+                    ui.add(
+                        egui::Label::new(RichText::new(clean(&e.cert.subject)).small().weak())
+                            .wrap(),
+                    );
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!("SHA-256 {}", e.cert.sha256))
+                                .small()
+                                .weak(),
+                        )
+                        .wrap(),
+                    );
+                });
+                if self.removing == Some(i) {
+                    if ui.button("Stop trusting").clicked() {
+                        *out = TrustedOut::Remove(i);
+                    }
+                    if ui.button("Keep").clicked() {
+                        self.removing = None;
+                    }
+                } else if ui
+                    .add_enabled(usable, egui::Button::new("Remove…"))
+                    .clicked()
+                {
+                    self.removing = Some(i);
+                }
+            });
+        }
+        ui.add_space(8.0);
+        if let Some(p) = &self.path {
+            ui.label(
+                RichText::new(format!("{TRUST_NOTE} Kept in {}.", p.display()))
+                    .small()
+                    .weak(),
+            );
+        }
     }
 }
 

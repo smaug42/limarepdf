@@ -42,12 +42,24 @@
   Tick, Cross and Dot. The Create signature window also opens with the inspector folded away.
 - Form fields are highlighted from the start, in a lighter tint; the form banner's Highlight fields is a switch, and
   turning it off (there or in View) is remembered for every document.
+- Dialogs share one look: a title naming the task and the document, the settings, and the buttons at the bottom,
+  the action that does the task highlighted (red when Undo can't take it back or it breaks signatures) and before
+  Cancel (after it on macOS). The window behind is dimmed and takes no clicks or shortcuts while a dialog is open.
+  Esc cancels any dialog, except one holding work that would be lost. Messages have a Copy button; a signed
+  document's save and sign questions put the reason under Details.
+- Print: all pages or a page range, one side or both as a list of choices, and Print as image under Advanced; a page
+  range that can't be read is reported under it instead of in a separate message.
+- Create signature: Draw, Type and Image (was Picture), the ink colour in the window too, and Use signature (was
+  Done). Picking another tool closes it.
+- Go to field in Signature details closes the window, to show the field.
 
 ### Fixed
 
 - Ctrl+A and other single-key shortcuts were missed when the key and Ctrl arrived together, as with a quick tap.
 - Selecting a coloured comment or mark could count as an unkept change (asking about it on closing), because the
   colour button stored its colour back very slightly changed.
+- Esc didn't close the Create signature window, and keyboard shortcuts reached the document while a dialog was
+  open.
 
 ## [0.8.1] - 2026-10-21
 

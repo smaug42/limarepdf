@@ -1,7 +1,7 @@
 use crate::about;
 use crate::actions::{self, menu_item, tooltip, Act, Action, Ctx, Group, ACTIONS};
 use crate::banners::Kind as BannerKind;
-use crate::dialogs::{self as dlg, Choice, Outcome};
+use crate::dialogs::{self as dlg, Ask, Btn, Choice, Outcome, Shell};
 use crate::digital::{self, IdsWindow, SignOut, SignWindow};
 use crate::editor::{Action as EdAction, Tool};
 use crate::inspector::{self, Apply, Section};
@@ -203,8 +203,8 @@ struct ImageExport {
 }
 
 /// The tab a question is about, as it was when asked. The answer acts on that tab only
-/// while it is open and unchanged ([`App::still`]): the dialogs don't stop the rest of the
-/// window being used, and a file can finish opening meanwhile.
+/// while it is open and unchanged ([`App::still`]): work in the background, such as a file
+/// finishing opening, goes on while a question is open.
 struct Asked {
     tab: u64,
     /// Boxed, to keep [`Dialog`] small.
@@ -245,7 +245,7 @@ enum Dialog {
     RemoveHidden(Asked, dlg::RemoveHidden),
     /// Save (`true`: as a new file) with this many marked areas not yet applied?
     ConfirmSaveMarks(Asked, bool, usize),
-    Print(Asked, dlg::Print),
+    Print(Asked, Box<dlg::Print>),
     /// Print with fields whose values won't show on paper?
     ConfirmPrintFields(Box<PrintFields>),
     SaveSelection(Asked, dlg::Layout),
@@ -262,6 +262,30 @@ enum Dialog {
     },
     /// Sign a recovered copy of a signed document, which writes the whole file?
     ConfirmSignRecovered(Asked),
+}
+
+impl Dialog {
+    /// The tab the dialog is about, if it is about one.
+    fn asked(&self) -> Option<&Asked> {
+        match self {
+            Dialog::ConfirmClose(a)
+            | Dialog::ConfirmReplace(a, ..)
+            | Dialog::ConfirmFlatten(a)
+            | Dialog::ConfirmFlattenAnnots(a)
+            | Dialog::ConfirmSaveSigned(a, ..)
+            | Dialog::ConfirmSaveRepaired(a)
+            | Dialog::ConfirmApplyRedactions(a, _)
+            | Dialog::ConfirmFinishSigning(a, _)
+            | Dialog::RemoveHidden(a, _)
+            | Dialog::ConfirmSaveMarks(a, ..)
+            | Dialog::Print(a, _)
+            | Dialog::SaveSelection(a, _)
+            | Dialog::ConfirmSignRecovered(a) => Some(a),
+            Dialog::ConfirmSaveDisallowed(s) => Some(&s.asked),
+            Dialog::ConfirmPrintFields(q) => Some(&q.asked),
+            _ => None,
+        }
+    }
 }
 
 /// Why a signed document with redactions applied or hidden information removed is saved
@@ -951,8 +975,10 @@ impl App {
         ));
     }
 
-    /// The Digital IDs window and the signing window, while open.
+    /// The signing window and the Digital IDs window, while open. The IDs window, opened from
+    /// the signing window, is drawn after it, so it is the one that takes input.
     fn digital_windows(&mut self, ctx: &egui::Context) {
+        self.digital_sign_window(ctx);
         if let Some(mut w) = self.ids_window.take() {
             let out = w.ui(ctx, &self.settings.author());
             if out.changed {
@@ -964,6 +990,9 @@ impl App {
                 self.ids_window = Some(w);
             }
         }
+    }
+
+    fn digital_sign_window(&mut self, ctx: &egui::Context) {
         let Some(mut w) = self.sign_window.take() else {
             return;
         };
@@ -1629,17 +1658,19 @@ impl App {
             Act::ExportImages if has => self.reveal(Section::Export),
             Act::ExportText if has => self.export_text(),
             Act::Print | Act::PrintSelection if has && !self.busy => {
-                let selected = self.tabs[self.active].ed.selection.pages();
-                let pages = selected.map_or("all".into(), inspector::range_text);
+                let t = &self.tabs[self.active];
+                let selected = t.ed.selection.pages();
+                let file = t.title();
                 let selection = (a == Act::PrintSelection).then_some(dlg::Layout::Original);
                 self.dialog = match print::printers() {
                     Ok(list) => Dialog::Print(
                         self.asked(),
-                        dlg::Print {
-                            pages,
+                        Box::new(dlg::Print {
+                            all: selected.is_none(),
+                            pages: selected.map(inspector::range_text).unwrap_or_default(),
                             selection,
-                            ..dlg::Print::new(list)
-                        },
+                            ..dlg::Print::new(list, file)
+                        }),
                     ),
                     Err(e) => Dialog::Message("Print".into(), format!("{e:#}")),
                 }
@@ -2509,6 +2540,12 @@ impl App {
     fn dialogs(&mut self, ctx: &egui::Context) {
         let mut dialog = std::mem::replace(&mut self.dialog, Dialog::None);
         let mut done = false;
+        // The document a question is about, named under its title.
+        let file = dialog
+            .asked()
+            .and_then(|a| self.tabs.iter().find(|t| t.id == a.tab))
+            .map(Tab::title);
+        let file = file.as_deref();
         match &mut dialog {
             Dialog::None => done = true,
             Dialog::About(page) => done = about::show(ctx, page),
@@ -2524,12 +2561,14 @@ impl App {
             },
             Dialog::OpenLink(url) => match dlg::confirm(
                 ctx,
-                "Open link",
-                &format!(
-                    "This link goes to:\n\n{}\n\nOpen it in your browser or email program?",
-                    limarepdf_core::display_line(url, 300)
+                Ask::new(
+                    "Open link?",
+                    &format!(
+                        "This link goes to:\n\n{}\n\nOpen it in your browser or email program?",
+                        limarepdf_core::display_line(url, 300)
+                    ),
+                    Btn::primary("Open link"),
                 ),
-                "Open link",
             ) {
                 Outcome::Apply => {
                     ctx.open_url(egui::OpenUrl::new_tab(url.as_str()));
@@ -2540,9 +2579,12 @@ impl App {
             },
             Dialog::ConfirmClose(asked) => match dlg::confirm(
                 ctx,
-                "Unsaved changes",
-                "This document has unsaved changes. Close it anyway?",
-                "Discard changes",
+                Ask::new(
+                    "Close without saving?",
+                    "This document has changes that aren't saved. Closing it loses them.",
+                    Btn::danger("Discard changes"),
+                )
+                .file(file),
             ) {
                 Outcome::Apply => {
                     if self.still(asked) {
@@ -2555,9 +2597,11 @@ impl App {
             },
             Dialog::ConfirmQuit => match dlg::confirm(
                 ctx,
-                "Unsaved changes",
-                "Some documents have unsaved changes. Quit anyway?",
-                "Quit without saving",
+                Ask::new(
+                    "Quit without saving?",
+                    "Some documents have changes that aren't saved. Quitting loses them.",
+                    Btn::danger("Quit without saving"),
+                ),
             ) {
                 Outcome::Apply => {
                     self.quit_ok = true;
@@ -2576,7 +2620,8 @@ impl App {
                 Outcome::Open => {}
             },
             Dialog::RecoveryFile { title, text, file } => {
-                match dlg::choose(ctx, title, text, "OK", "Show file") {
+                let (ok, show) = (Btn::primary("OK"), Btn::plain("Show file"));
+                match dlg::choose(ctx, Shell::new(title), text, ok, show, false) {
                     Choice::Second => {
                         let file = file.clone();
                         self.show_file(&file);
@@ -2588,13 +2633,19 @@ impl App {
             _ if self.tabs.is_empty() => done = true,
             Dialog::ConfirmReplace(asked, e, n) => match dlg::confirm(
                 ctx,
-                "Replace files?",
-                &format!(
-                    "{n} file(s) in {} already have the names these images would get. \
-                     Replace them?",
-                    e.dir.display()
-                ),
-                "Replace",
+                Ask::new(
+                    "Replace files?",
+                    &format!(
+                        "{} in {} already {} the names these images would get. Replacing \
+                         {} can't be undone.",
+                        plural(*n, "A file", "{n} files"),
+                        e.dir.display(),
+                        if *n == 1 { "has" } else { "have" },
+                        if *n == 1 { "it" } else { "them" },
+                    ),
+                    Btn::danger("Replace"),
+                )
+                .file(file),
             ) {
                 Outcome::Apply => {
                     if self.still(asked) {
@@ -2607,11 +2658,14 @@ impl App {
             },
             Dialog::ConfirmFlatten(asked) => match dlg::confirm(
                 ctx,
-                "Flatten form?",
-                "The fields become part of the pages, as they look now, and can no longer be \
-                 filled in, here or in other readers. Undo brings them back until you close \
-                 the document.",
-                "Flatten",
+                Ask::new(
+                    "Flatten form?",
+                    "The fields become part of the pages, as they look now, and can no longer \
+                     be filled in, here or in other readers. Undo brings them back until you \
+                     close the document.",
+                    Btn::primary("Flatten form"),
+                )
+                .file(file),
             ) {
                 Outcome::Apply => {
                     if self.still(asked) {
@@ -2629,12 +2683,15 @@ impl App {
             },
             Dialog::ConfirmFlattenAnnots(asked) => match dlg::confirm(
                 ctx,
-                "Flatten annotations?",
-                "Comments, notes, highlights and drawings become part of the pages, as they \
-                 look now, and can no longer be changed or removed, here or in other readers. \
-                 Their comment text is dropped. Links and form fields stay. Undo brings them \
-                 back until you close the document.",
-                "Flatten",
+                Ask::new(
+                    "Flatten annotations?",
+                    "Comments, notes, highlights and drawings become part of the pages, as \
+                     they look now, and can no longer be changed or removed, here or in other \
+                     readers. Their comment text is dropped. Links and form fields stay. Undo \
+                     brings them back until you close the document.",
+                    Btn::primary("Flatten annotations"),
+                )
+                .file(file),
             ) {
                 Outcome::Apply => {
                     if self.still(asked) {
@@ -2650,16 +2707,20 @@ impl App {
             },
             Dialog::ConfirmApplyRedactions(asked, n) => match dlg::confirm(
                 ctx,
-                "Apply redactions?",
-                &format!(
-                    "Everything under {} is removed from the document for good: text (hidden \
-                     text too), the covered parts of pictures, drawings, and comments, links and \
-                     form fields. The areas are painted black, and the marks go. LimarePDF then checks \
-                     that nothing readable is left under them. Undo brings it all back until you \
-                     close the document; once saved, it is gone from the file.",
-                    plural(*n, "the marked area", "the {n} marked areas")
-                ),
-                "Apply",
+                Ask::new(
+                    &plural(*n, "Apply 1 redaction?", "Apply {n} redactions?"),
+                    &format!(
+                        "Everything under {} is removed from the document: text (hidden text \
+                         too), the covered parts of pictures, drawings, and comments, links \
+                         and form fields. The areas are painted black, and the marks go. \
+                         LimarePDF then checks that nothing readable is left under them. Undo \
+                         brings it all back until you close the document; once saved, it is \
+                         gone from the file.",
+                        plural(*n, "the marked area", "the {n} marked areas")
+                    ),
+                    Btn::danger("Apply redactions"),
+                )
+                .file(file),
             ) {
                 Outcome::Apply => {
                     if self.still(asked) {
@@ -2672,20 +2733,24 @@ impl App {
             },
             Dialog::ConfirmFinishSigning(asked, n) => match dlg::confirm(
                 ctx,
-                "Finish signing?",
-                &format!(
-                    "{} drawn into the pages, as {} now. After that {} can't be moved or \
-                     removed like a comment. Undo brings {} back until you close the document.",
-                    plural(
-                        *n,
-                        "The item you put down with the Sign tool is",
-                        "The {n} items you put down with the Sign tool are"
+                Ask::new(
+                    "Finish signing?",
+                    &format!(
+                        "{} drawn into the pages, as {} now. After that {} can't be moved or \
+                         removed like a comment. Undo brings {} back until you close the \
+                         document.",
+                        plural(
+                            *n,
+                            "The item you put down with the Sign tool is",
+                            "The {n} items you put down with the Sign tool are"
+                        ),
+                        if *n == 1 { "it looks" } else { "they look" },
+                        if *n == 1 { "it" } else { "they" },
+                        if *n == 1 { "it" } else { "them" },
                     ),
-                    if *n == 1 { "it looks" } else { "they look" },
-                    if *n == 1 { "it" } else { "they" },
-                    if *n == 1 { "it" } else { "them" },
-                ),
-                "Finish signing",
+                    Btn::primary("Finish signing"),
+                )
+                .file(file),
             ) {
                 Outcome::Apply => {
                     if self.still(asked) {
@@ -2697,7 +2762,7 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
-            Dialog::RemoveHidden(asked, s) => match dlg::remove_hidden(ctx, s) {
+            Dialog::RemoveHidden(asked, s) => match dlg::remove_hidden(ctx, file, s) {
                 Outcome::Apply => {
                     let what: Vec<limarepdf_core::Hidden> = s
                         .kinds
@@ -2717,15 +2782,18 @@ impl App {
                 let as_new = *as_new;
                 match dlg::confirm(
                     ctx,
-                    "Save without applying the redactions?",
-                    &format!(
-                        "This document has {} marked for redaction but not applied: nothing \
-                         under the marks has been removed, and anyone can still read it. Apply \
-                         them first with Document > Apply redactions, or save the marks to \
-                         finish or review later.",
-                        plural(*n, "an area", "{n} areas")
-                    ),
-                    "Save with marks",
+                    Ask::new(
+                        "Save without applying the redactions?",
+                        &format!(
+                            "This document has {} marked for redaction but not applied: \
+                             nothing under the marks has been removed, and anyone can still \
+                             read it. Apply them first with Document > Apply redactions, or \
+                             save the marks to finish or review later.",
+                            plural(*n, "an area", "{n} areas")
+                        ),
+                        Btn::danger("Save with marks"),
+                    )
+                    .file(file),
                 ) {
                     Outcome::Apply => {
                         if self.still(asked) {
@@ -2739,12 +2807,13 @@ impl App {
             }
             Dialog::ConfirmSaveRepaired(asked) => match dlg::choose(
                 ctx,
-                "Replace the damaged original?",
+                Shell::new("Replace the damaged original?").file(file),
                 "LimarePDF repaired this file to open it, and some of its content may be missing \
                  from the repair. Saving over it replaces the original for good. Save as a new \
                  file to keep the original as it is.",
-                "Save as…",
-                "Replace original",
+                Btn::primary("Save as…"),
+                Btn::danger("Replace original"),
+                true,
             ) {
                 Choice::First => {
                     if self.still(asked) {
@@ -2765,15 +2834,18 @@ impl App {
                 let as_new = *as_new;
                 match dlg::confirm(
                     ctx,
-                    "Break the signatures?",
-                    &format!(
-                        "This document is digitally signed, but LimarePDF can't add your changes after \
-                         what was signed: {}. Saving instead writes the whole file again, so the \
-                         saved copy's signatures will show as invalid in every reader. Save as a \
-                         new file to keep the signed original.",
+                    Ask::new(
+                        "Break the signatures?",
+                        "This document is digitally signed, and saving your changes writes the \
+                         whole file again, so the saved copy's signatures will show as invalid \
+                         in every reader. Save as a new file to keep the signed original.",
+                        Btn::danger("Save anyway"),
+                    )
+                    .file(file)
+                    .details(&format!(
+                        "LimarePDF can't add your changes after what was signed: {}.",
                         limarepdf_core::display_line(why, 300)
-                    ),
-                    "Save anyway",
+                    )),
                 ) {
                     Outcome::Apply => {
                         if self.still(asked) {
@@ -2788,15 +2860,19 @@ impl App {
             Dialog::ConfirmSaveDisallowed(s) => {
                 match dlg::confirm(
                     ctx,
-                    "Save changes the signers didn't allow?",
-                    &format!(
-                        "Your changes are ones this document's signatures don't allow. If you \
-                         save, anyone who checks them will be told:\n{}\n\nThe signatures stay \
-                         valid for what was signed. Save as a new file to keep the signed \
-                         original as it is.",
+                    Ask::new(
+                        "Save changes the signers didn't allow?",
+                        "Your changes are ones this document's signatures don't allow. The \
+                         signatures stay valid for what was signed, but anyone who checks them \
+                         will be told about these changes. Save as a new file to keep the \
+                         signed original as it is.",
+                        Btn::danger("Save anyway"),
+                    )
+                    .file(file)
+                    .details(&format!(
+                        "What checking the signatures will report:\n{}",
                         digital::disallowed_list(&s.disallowed)
-                    ),
-                    "Save anyway",
+                    )),
                 ) {
                     Outcome::Apply => {
                         let as_new = s.as_new;
@@ -2846,22 +2922,23 @@ impl App {
                         });
                         done = true;
                     } else {
-                        match parse_page_range(&s.pages, t.page_count()) {
+                        match parse_page_range(s.range(), t.page_count()) {
                             Ok(pages) => {
                                 let fields = t.pdf.unprintable_fields(&pages);
                                 if fields.is_empty() {
                                     self.start_print(ctx, pages, opts);
                                 } else {
-                                    self.dialog = Dialog::ConfirmPrintFields(Box::new(PrintFields {
-                                        asked: Asked::of(t),
-                                        fields,
-                                        pages,
-                                        opts,
-                                    }));
+                                    self.dialog =
+                                        Dialog::ConfirmPrintFields(Box::new(PrintFields {
+                                            asked: Asked::of(t),
+                                            fields,
+                                            pages,
+                                            opts,
+                                        }));
                                 }
                                 done = true;
                             }
-                            Err(e) => t.error = Some(e.to_string()),
+                            Err(e) => s.error = Some(e.to_string()),
                         }
                     }
                 }
@@ -2875,13 +2952,16 @@ impl App {
                 };
                 match dlg::confirm(
                     ctx,
-                    "Print without these fields?",
-                    &format!(
-                        "{these} won't show on paper, because LimarePDF can't draw {values}: \
-                         {}.\n\nPrint anyway?",
-                        limarepdf_core::quoted_list(&q.fields)
-                    ),
-                    "Print anyway",
+                    Ask::new(
+                        "Print without these fields?",
+                        &format!(
+                            "{these} won't show on paper, because LimarePDF can't draw \
+                             {values}: {}.",
+                            limarepdf_core::quoted_list(&q.fields)
+                        ),
+                        Btn::primary("Print anyway"),
+                    )
+                    .file(file),
                 ) {
                     Outcome::Apply => {
                         if self.still(&q.asked) {
@@ -2894,7 +2974,7 @@ impl App {
                     Outcome::Open => {}
                 }
             }
-            Dialog::SaveSelection(asked, layout) => match dlg::save_selection(ctx, layout) {
+            Dialog::SaveSelection(asked, layout) => match dlg::save_selection(ctx, file, layout) {
                 Outcome::Apply => {
                     let layout = *layout;
                     done = true;
@@ -2907,14 +2987,17 @@ impl App {
             },
             Dialog::ConfirmSignRecovered(asked) => match dlg::confirm(
                 ctx,
-                "Break the signatures?",
-                &format!(
-                    "This document is digitally signed, but LimarePDF can't add your signature \
-                     after what was signed: {RECOVERED}. Signing instead writes the whole file \
-                     again, so the earlier signatures will show as invalid in every reader. Open \
-                     the original to sign it with its signatures kept."
-                ),
-                "Sign anyway",
+                Ask::new(
+                    "Break the signatures?",
+                    "This document is digitally signed, and signing this copy writes the whole \
+                     file again, so the earlier signatures will show as invalid in every \
+                     reader. Open the original to sign it with its signatures kept.",
+                    Btn::danger("Sign anyway"),
+                )
+                .file(file)
+                .details(&format!(
+                    "LimarePDF can't add your signature after what was signed: {RECOVERED}."
+                )),
             ) {
                 Outcome::Apply => {
                     if self.still(asked) {
@@ -3077,7 +3160,8 @@ impl App {
     /// consumed, as before (Esc also closes menus). Nothing runs while the palette is
     /// open; it handles its own keys.
     fn shortcuts(&mut self, ctx: &egui::Context) {
-        if self.palette.is_some() {
+        // A dialog handles its own keys.
+        if self.palette.is_some() || dlg::any_open(ctx) {
             return;
         }
         // Esc closes the inspector's pop-out first, keeping what was changed in it.
@@ -4165,10 +4249,12 @@ impl eframe::App for App {
         for a in acts {
             self.run_command(&ctx, actions::name(a), |app, ctx| app.act(ctx, a));
         }
-        self.dialogs(&ctx);
+        // The dialog drawn last takes input: messages and questions go last, as they can
+        // come from the windows before them.
         self.restore_window(&ctx);
         self.signature_windows(&ctx);
         self.digital_windows(&ctx);
+        self.dialogs(&ctx);
 
         let title = match self.tabs.get(self.active) {
             Some(t) => format!("{} - LimarePDF", t.title()),
@@ -4382,6 +4468,8 @@ mod tests {
     /// `label`, as a user would.
     fn click(app: &mut App, ctx: &egui::Context, label: &str) {
         ctx.enable_accesskit();
+        // Dialogs use the app's fonts.
+        theme::install(ctx);
         let frame = |app: &mut App, events: Vec<egui::Event>| {
             let raw = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -4448,7 +4536,7 @@ mod tests {
         assert!(app.add_tab(&ctx, pdf, None, None, false));
         assert_eq!(app.active, 1);
         let opened = app.tabs[1].state();
-        click(&mut app, &ctx, "Flatten");
+        click(&mut app, &ctx, "Flatten annotations");
         assert!(app.tabs[1].state() == opened, "the new tab was flattened");
         assert_eq!(app.tabs[1].pdf.annotations().len(), 1);
         // The question's own document, unchanged, is flattened and comes to the front.
@@ -4464,7 +4552,7 @@ mod tests {
         app.act(&ctx, Act::FlattenAnnots);
         let other = app.tabs[0].state();
         app.close_tab(1);
-        click(&mut app, &ctx, "Flatten");
+        click(&mut app, &ctx, "Flatten annotations");
         assert!(app.tabs[0].state() == other, "another tab was flattened");
         assert!(
             matches!(&app.dialog, Dialog::Message(_, text) if text.contains("was closed")),
@@ -4502,7 +4590,8 @@ mod tests {
             name: "limarepdf-test-no-such-printer".into(),
             default: true,
         };
-        app.dialog = Dialog::Print(app.asked(), dlg::Print::new(vec![printer]));
+        let print = dlg::Print::new(vec![printer], "test.pdf".into());
+        app.dialog = Dialog::Print(app.asked(), Box::new(print));
 
         click(&mut app, &ctx, "Print");
         // Nothing sent yet: the question names the field.
@@ -4511,8 +4600,7 @@ mod tests {
             Dialog::ConfirmPrintFields(q) => assert_eq!(q.fields, ["Name"]),
             _ => panic!("no question asked"),
         }
-        // The question's own Cancel is its window's close button.
-        click(&mut app, &ctx, "Close window");
+        click(&mut app, &ctx, "Cancel");
         assert!(matches!(app.dialog, Dialog::None));
         assert!(!app.busy, "a print job started");
         assert!(app.tabs[0].state() == state);
@@ -4529,13 +4617,64 @@ mod tests {
         let t = &mut app.tabs[0];
         assert!(t.edit(&ctx, |p| p.insert_blank(0, 612.0, 792.0)));
         let state = t.state();
-        click(&mut app, &ctx, "Flatten");
+        click(&mut app, &ctx, "Flatten annotations");
         let t = &app.tabs[0];
         assert!(t.state() == state, "flattened after the document changed");
         assert_eq!(t.pdf.annotations().len(), 1);
         assert!(
             matches!(&app.dialog, Dialog::Message(_, text) if text.contains("changed while")),
             "no message saying why"
+        );
+    }
+
+    /// Esc answers a question as Cancel, and the app's shortcuts wait while it is open.
+    #[test]
+    fn esc_cancels_a_question_and_shortcuts_wait_for_it() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1000.0, 800.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |ui| {
+                app.shortcuts(ui.ctx());
+                app.dialogs(ui.ctx());
+            });
+            out.textures_delta.clear();
+        };
+        let key = |key, modifiers| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        app.act(&ctx, Act::CloseTab);
+        assert!(matches!(app.dialog, Dialog::ConfirmClose(..)));
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        frame(&mut app, vec![key(Key::K, egui::Modifiers::COMMAND)]);
+        assert!(
+            app.palette.is_none(),
+            "Ctrl+K opened the palette behind the question"
+        );
+        frame(&mut app, vec![key(Key::Escape, egui::Modifiers::NONE)]);
+        assert!(matches!(app.dialog, Dialog::None));
+        assert_eq!(app.tabs.len(), 1, "Esc closed the tab");
+        for _ in 0..2 {
+            frame(&mut app, vec![]);
+        }
+        frame(&mut app, vec![key(Key::K, egui::Modifiers::COMMAND)]);
+        assert!(
+            app.palette.is_some(),
+            "shortcuts stayed off after the question"
         );
     }
 

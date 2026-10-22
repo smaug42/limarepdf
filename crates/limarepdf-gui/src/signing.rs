@@ -7,6 +7,7 @@
 //! or write them is not an error.
 
 use crate::actions::Act;
+use crate::dialogs::{self, Btn, Shell};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Vec2};
 use limarepdf_core::{
     typed_signature, DateStyle, InkColor, Mark, SignArt, SignRole, SignStyle, Stamp, StampPlace,
@@ -346,6 +347,8 @@ pub struct Create {
     way: Way,
     strokes: Vec<Vec<(f32, f32)>>,
     stroke: Option<Vec<(f32, f32)>>,
+    /// The Type tab's text as the window opened.
+    prefill: String,
     text: String,
     style: SignStyle,
     picture: Option<PathBuf>,
@@ -380,6 +383,7 @@ impl Create {
             way: Way::Draw,
             strokes: Vec::new(),
             stroke: None,
+            prefill: text.clone(),
             text,
             style: SignStyle::Caveat,
             picture: None,
@@ -393,65 +397,72 @@ impl Create {
         &mut self,
         ctx: &egui::Context,
         previews: &mut Previews,
-        color: InkColor,
+        color: &mut InkColor,
     ) -> Outcome {
-        let title = match self.role {
-            SignRole::Signature => "Create signature",
-            SignRole::Initials => "Create initials",
+        let (title, done) = match self.role {
+            SignRole::Signature => ("Create signature", "Use signature"),
+            SignRole::Initials => ("Create initials", "Use initials"),
         };
-        let mut open = true;
         let mut out = Outcome::Open;
-        egui::Window::new(title)
-            .collapsible(false)
-            .resizable(false)
-            .min_width(PAD.x)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .open(&mut open)
-            .show(ctx, |ui| {
+        let shell = Shell::new(title).width(PAD.x + 40.0).esc(!self.staged());
+        let (_, esc) = shell.show(ctx, |ui| {
+            dialogs::content(ui, |ui| {
                 ui.horizontal(|ui| {
-                    for (w, label) in [
+                    let ways = [
                         (Way::Draw, "Draw"),
                         (Way::Type, "Type"),
-                        (Way::Picture, "Picture"),
-                    ] {
-                        if ui.selectable_label(self.way == w, label).clicked() {
-                            self.way = w;
+                        (Way::Picture, "Image"),
+                    ];
+                    let gap = ui.spacing().item_spacing.x;
+                    let w = (ui.available_width() - 2.0 * gap) / 3.0;
+                    for (way, label) in ways {
+                        let b = egui::Button::new(label).selected(self.way == way);
+                        if ui.add_sized([w, 28.0], b).clicked() {
+                            self.way = way;
                             self.error = None;
                         }
                     }
                 });
-                ui.add_space(6.0);
+                ui.add_space(8.0);
                 match self.way {
-                    Way::Draw => self.pad(ui, color),
-                    Way::Type => self.typed(ui, previews, color),
-                    Way::Picture => self.picture(ui, previews, color),
+                    Way::Draw => self.pad(ui, *color),
+                    Way::Type => self.typed(ui, previews, *color),
+                    Way::Picture => self.picture(ui, previews, *color),
                 }
-                ui.add_space(6.0);
-                ui.checkbox(&mut self.keep, "Save for next time")
-                    .on_hover_text(
-                        "Keep it in LimarePDF's settings folder on this computer, so it is there the \
-                     next time LimarePDF starts. Unticked, it stays in the list only until LimarePDF closes.",
-                    );
                 if let Some(e) = &self.error {
                     ui.colored_label(ui.visuals().error_fg_color, e);
                 }
-                ui.separator();
-                ui.horizontal(|ui| {
-                    if ui.button("Done").clicked() {
-                        match self.entry() {
-                            Ok(e) => out = Outcome::Done(e),
-                            Err(e) => self.error = Some(e),
-                        }
-                    }
-                    if ui.button("Cancel").clicked() {
-                        out = Outcome::Cancel;
-                    }
-                });
+                ui.add_space(8.0);
+                ink_ui(ui, color);
+                ui.checkbox(&mut self.keep, "Save for next time")
+                    .on_hover_text(
+                        "Keep it in LimarePDF's settings folder on this computer, so it is there \
+                         the next time LimarePDF starts. Unticked, it stays in the list only \
+                         until LimarePDF closes.",
+                    );
             });
-        if !open {
+            match dialogs::footer(ui, None, &[Btn::primary(done), Btn::cancel()]) {
+                Some(0) => match self.entry() {
+                    Ok(e) => out = Outcome::Done(e),
+                    Err(e) => self.error = Some(e),
+                },
+                Some(_) => out = Outcome::Cancel,
+                None => {}
+            }
+        });
+        if esc {
             return Outcome::Cancel;
         }
         out
+    }
+
+    /// Whether the window holds work that closing it would lose: something drawn, typed
+    /// (beyond the name it was filled in with) or chosen.
+    fn staged(&self) -> bool {
+        !self.strokes.is_empty()
+            || self.stroke.is_some()
+            || self.picture.is_some()
+            || self.text != self.prefill
     }
 
     /// The drawing pad: white, with a line to sign on.
@@ -555,12 +566,12 @@ impl Create {
         }
     }
 
-    /// Choosing a picture of a signature on paper.
+    /// Choosing an image of a signature on paper.
     fn picture(&mut self, ui: &mut egui::Ui, previews: &mut Previews, color: InkColor) {
         ui.horizontal(|ui| {
-            if ui.button("Choose a picture…").clicked() {
+            if ui.button("Choose an image…").clicked() {
                 if let Some(p) = rfd::FileDialog::new()
-                    .add_filter("Pictures", &["png", "jpg", "jpeg", "tif", "tiff"])
+                    .add_filter("Images", &["png", "jpg", "jpeg", "tif", "tiff"])
                     .pick_file()
                 {
                     self.picture = Some(p);
@@ -619,7 +630,7 @@ impl Create {
                 style: self.style,
             },
             Way::Picture => {
-                let path = self.picture.clone().ok_or("Choose a picture first")?;
+                let path = self.picture.clone().ok_or("Choose an image first")?;
                 let saved = Saved::Picture {
                     path,
                     clear_paper: self.clear_paper,
@@ -637,6 +648,25 @@ impl Create {
             keep: self.keep,
         })
     }
+}
+
+/// The ink colours to pick from, in the Fill and sign pane and the Create window.
+fn ink_ui(ui: &mut egui::Ui, color: &mut InkColor) {
+    ui.horizontal(|ui| {
+        ui.label("Ink");
+        // A dot in the ink's colour, then its name in the usual text colour, which
+        // stays readable when picked.
+        let font = egui::TextStyle::Button.resolve(ui.style());
+        let fg = ui.visuals().text_color();
+        for c in InkColor::ALL {
+            let [r, g, b] = c.rgb().map(|v| (v * 255.0) as u8);
+            let mut job = egui::text::LayoutJob::default();
+            let fmt = |color| egui::TextFormat::simple(font.clone(), color);
+            job.append("● ", 0.0, fmt(Color32::from_rgb(r, g, b)));
+            job.append(&capital(c.name()), 0.0, fmt(fg));
+            ui.selectable_value(color, c, job);
+        }
+    });
 }
 
 fn capital(s: &str) -> String {
@@ -886,21 +916,7 @@ impl SignPane {
                     .on_hover_text(m.label());
             }
         });
-        ui.horizontal(|ui| {
-            ui.label("Ink");
-            // A dot in the ink's colour, then its name in the usual text colour, which
-            // stays readable when picked.
-            let font = egui::TextStyle::Button.resolve(ui.style());
-            let fg = ui.visuals().text_color();
-            for c in InkColor::ALL {
-                let [r, g, b] = c.rgb().map(|v| (v * 255.0) as u8);
-                let mut job = egui::text::LayoutJob::default();
-                let fmt = |color| egui::TextFormat::simple(font.clone(), color);
-                job.append("● ", 0.0, fmt(Color32::from_rgb(r, g, b)));
-                job.append(&capital(c.name()), 0.0, fmt(fg));
-                ui.selectable_value(&mut kit.color, c, job);
-            }
-        });
+        ink_ui(ui, &mut kit.color);
         ui.add_space(6.0);
         ui.label(
             "Click on the page to put the picked item down, or drag a box to size it. Click \
@@ -948,7 +964,7 @@ impl SignPane {
         error: &mut Option<String>,
     ) -> Option<(usize, StampPlace)> {
         let (c, place) = self.create.as_mut()?;
-        match c.show(ctx, &mut self.previews, kit.color) {
+        match c.show(ctx, &mut self.previews, &mut kit.color) {
             Outcome::Open => None,
             Outcome::Cancel => {
                 self.create = None;
@@ -989,6 +1005,34 @@ mod tests {
             std::env::temp_dir().join(format!("limarepdf-sign-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir.join("signatures.txt")
+    }
+
+    /// Esc closes the Create window only while closing it loses nothing: the name it was
+    /// filled in with doesn't count, a stroke, other text or an image does.
+    #[test]
+    fn create_holds_work_once_drawn_typed_or_chosen() {
+        let fresh = Create::new(SignRole::Signature, "Sam Lee");
+        assert!(!fresh.staged());
+        let mut c = Create::new(SignRole::Signature, "Sam Lee");
+        c.strokes.push(vec![(1.0, 1.0)]);
+        assert!(c.staged());
+        let mut c = Create::new(SignRole::Initials, "Sam Lee");
+        c.text.push('X');
+        assert!(c.staged());
+        let mut c = Create::new(SignRole::Signature, "");
+        c.picture = Some(PathBuf::from("sig.png"));
+        assert!(c.staged());
+    }
+
+    /// Picking another tool closes the Create window.
+    #[test]
+    fn another_tool_closes_create() {
+        let mut ed = crate::editor::Editor::default();
+        ed.set_tool(crate::editor::Tool::Sign);
+        ed.sign.start_create(SignRole::Signature, "Sam Lee", None);
+        assert!(ed.sign.create.is_some());
+        ed.set_tool(crate::editor::Tool::Read);
+        assert!(ed.sign.create.is_none());
     }
 
     /// Saved through the safe writer (R04): the file is replaced in one step, not written

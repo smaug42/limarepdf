@@ -29,6 +29,14 @@ Closing a document or quitting asks first when there are unsaved changes, includ
 or text box on the page, a form field, the selected comment's changes in the inspector, or a reply not yet added.
 Saving keeps that text first, as clicking away would (Undo takes it back).
 
+Dialogs (questions, messages, Print, Create signature, the digital signature windows, About) open over a dimmed
+window, which takes no clicks or shortcuts until the dialog closes. Each names its task, and the document when it acts
+on one. The button that does the task is highlighted, or red when what it does can't be taken back with Undo, or
+breaks signatures; on Windows and Linux it comes before Cancel, on macOS after. Esc is Cancel, except in a window
+holding work you would lose (a signature drawn, typed or chosen; a digital ID form; a signing form with something
+typed), where only Cancel closes it. A message's Copy button copies what it says, to pass on an error. Reasons and
+technical lists in a question are under Details.
+
 A question about a document (Flatten, Apply redactions, Discard changes and the others) acts on the document it was
 asked about, even if another tab has come to the front meanwhile, and brings it back to the front. If that document
 changed or was closed while the question was open, nothing is done, and a message says so.
@@ -308,9 +316,13 @@ signature… (or New… beside Signatures), opens a window with three ways to ma
 - **Draw:** sign on the white pad with the mouse, touchpad or a pen; Clear starts again. The strokes are smoothed
   into curves and stay sharp at any zoom.
 - **Type:** type your name (it starts as your name for comments) and pick one of four handwriting styles (Caveat,
-  Cedarville Cursive, Homemade Apple and Zeyada), shown as they will look. Western European characters only; for other scripts, draw or use a picture.
-- **Picture:** choose a photo or scan of your signature on paper (PNG, JPEG or TIFF). "Make the paper transparent"
+  Cedarville Cursive, Homemade Apple and Zeyada), shown as they will look. Western European characters only; for other scripts, draw or use an image.
+- **Image:** choose a photo or scan of your signature on paper (PNG, JPEG or TIFF). "Make the paper transparent"
   (on by default) keeps only the ink and cuts off the empty margins, so the signature sits on the page like ink.
+
+The window also has the ink colour (the same choice as the pane's), and Use signature puts it in the list. Esc closes
+the window only while nothing is drawn, typed (beyond the name it starts with) or chosen; picking another tool
+closes it.
 
 Initials are made the same way, with New… beside Initials; typing starts with your name's initials. Each new one
 goes first in its list in the pane, up to five signatures and five sets of initials; right-click one to take it off
