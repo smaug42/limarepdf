@@ -604,6 +604,85 @@ fn crafted_certificates() {
 }
 
 #[test]
+fn rsa_pss_only_authority_keys() {
+    // An authority whose RSA-2048 key is limited by `key_alg` (RFC 4055), issued by the
+    // test CA.
+    let authority = |key_alg: &[u8]| {
+        make_cert_with(
+            &id_with_cert("ca", "ca"),
+            &CertSpec {
+                key_of: &cert_der("rsa2048"),
+                cn: "PSS Authority",
+                not_before: "260101000000Z",
+                not_after: "360101000000Z",
+                extensions: vec![
+                    ext("2.5.29.19", true, &seq(&[&[0x01, 0x01, 0xff]])),
+                    // keyCertSign and cRLSign.
+                    ext("2.5.29.15", true, &[0x03, 0x02, 0x01, 0x06]),
+                ],
+                inner_alg: None,
+            },
+            Some(key_alg),
+            false,
+        )
+    };
+    // Signed with a P-256 certificate the authority issued, signing it with RSA-PSS or
+    // PKCS#1 v1.5.
+    let signed_under = |authority: &[u8], pss: bool| {
+        let issuer = Id {
+            key: id("rsa2048").key,
+            cert: authority.to_vec(),
+        };
+        let leaf = make_cert_with(
+            &issuer,
+            &CertSpec {
+                key_of: &cert_der("p256"),
+                cn: "PSS Authority Signer",
+                not_before: "260101000000Z",
+                not_after: "360101000000Z",
+                extensions: vec![ext_signing_key_usage()],
+                inner_alg: None,
+            },
+            None,
+            pss,
+        );
+        sign(
+            &base_pdf(),
+            &Id {
+                key: id("p256").key,
+                cert: leaf,
+            },
+            &Field::default(),
+            &Cms {
+                extra_certs: vec![authority.to_vec()],
+                ..Cms::default()
+            },
+        )
+    };
+    let any_pss = authority(&pss_alg(None));
+    assert!(trust(&signed_under(&any_pss, true), &ca()).is_trusted());
+    let t = trust(&signed_under(&any_pss, false), &ca());
+    assert!(!t.is_trusted(), "{t:?}");
+    let sha384 = authority(&pss_alg(Some(&pss_params(
+        Some(Hash::Sha384),
+        Some(Hash::Sha384),
+        Some(48),
+        None,
+    ))));
+    let t = trust(&signed_under(&sha384, true), &ca());
+    assert!(!t.is_trusted(), "{t:?}");
+
+    // Trusted itself, the authority's limit is named.
+    let mut direct = TrustList::default();
+    direct.add(&any_pss, TrustRole::Authority, None).unwrap();
+    assert!(trust(&signed_under(&any_pss, true), &direct).is_trusted());
+    failed(
+        &trust(&signed_under(&any_pss, false), &direct),
+        "allows its key only for RSA-PSS signatures",
+    );
+}
+
+#[test]
 fn many_candidate_issuers_stay_bounded() {
     // 250 authorities all named like the signer's issuer, carrying the issuer's key, so
     // each one's signature on the signer checks out; none leads anywhere trusted.

@@ -185,7 +185,8 @@ A trusted signer's own certificate must be usable for signing at the signing tim
 - an RSA key of at least 2048 bits, no repeated extensions, and no critical extension LimarePDF doesn't know.
 
 For a chain to a trusted authority, each certificate on the way must also be signed by the next one's key (checked
-over the certificate exactly as written, with matching signature algorithms), and each issuer must:
+over the certificate exactly as written, with matching signature algorithms, and as that key's certificate allows:
+see the RSA-PSS rules under [What each result means](#what-each-result-means)), and each issuer must:
 
 - say it is a certificate authority and, if it limits its key's uses, allow signing certificates;
 - be valid at the signing time;
@@ -265,6 +266,8 @@ LimarePDF refuses a file it couldn't sign with, and says why:
 
 - a key LimarePDF can't sign with: RSA shorter than 2048 bits (not safe) or longer than 4096 bits (Acrobat can't check
   it), elliptic curves other than P-256 and P-384, or other kinds of key;
+- an RSA key that the key file or the certificate allows only for RSA-PSS signatures: LimarePDF signs RSA in the
+  older PKCS#1 v1.5 way, which such a key mustn't be used for;
 - a certificate whose key isn't allowed to sign, or that is meant for other uses than signing documents (the same
   rules as [trusting a signer](#what-limarepdf-checks-before-trusting));
 - a file without an integrity check, or protected by a public key instead of a password;
@@ -476,11 +479,18 @@ document as you see it may not be what was signed: look at the signed version (a
 - *the signature's dictionary was added after the version it claims to sign (a copied signature)*, *the signature
   value isn't inside this signature's dictionary*: a signature copied from another field or moved, a known
   spoofing attack;
-- *the timestamp is for different data* (document timestamps).
+- *the timestamp is for different data* (document timestamps);
+- *the signer's certificate allows its key only for RSA-PSS …*: the certificate limits its RSA key to RSA-PSS
+  signatures (RFC 4055), and this signature is of another kind, or the certificate also names the digest, the mask
+  function or the shortest salt such signatures must use, and this one uses another digest or mask or a shorter
+  salt (a longer salt is allowed). The same rules apply to a timestamp authority's certificate, and to each
+  issuer's certificate in a chain, where a link that breaks them isn't a link (*the issuer's certificate allows its
+  key only for RSA-PSS …*).
 
 **Can't check: reason.** LimarePDF can't tell either way: an algorithm it doesn't support (MD5, RIPEMD-160, Brainpool
 and P-521 curves), a missing or unreadable certificate, more than one signer in one signature (the PDF rules allow
-exactly one), or data it can't read. Don't rely on such a signature without checking it elsewhere.
+exactly one), limits on an RSA-PSS key that it can't read (including a trailer field other than 1, the only one
+RFC 4055 defines), or data it can't read. Don't rely on such a signature without checking it elsewhere.
 
 ### Warnings
 
@@ -594,7 +604,11 @@ Checked against third-party signed files with known results: the pyHanko and nod
 and the EU DSS project's validation samples (signatures from Adobe products, Italian, Spanish and German signers,
 PAdES with timestamps, and published attacks). Each file's expected result and why is recorded in
 `crates/limarepdf-core/tests/signatures.rs`. LimarePDF's own test signatures are also checked with poppler's `pdfsig` and
-OpenSSL, which agree.
+OpenSSL, which agree. Signatures by RSA keys whose certificates allow them only for RSA-PSS were checked with
+`openssl cms -verify` (without judging trust): OpenSSL and LimarePDF agree on all 12 cases, among them PKCS#1 v1.5
+signatures by such keys, a different digest or mask, a salt shorter, equal and longer than the key's minimum,
+limits given as defaults or left out, and limits that can't be read. On a 13th, a limit to an undefined trailer
+field, LimarePDF is stricter (see [Limitations](#limitations)).
 
 Where LimarePDF and `pdfsig` differ, LimarePDF follows the PDF rules: it refuses byte ranges with gaps or uncovered parts that
 `pdfsig` accepts, refuses two signers in one signature, and accepts signers named by key identifier, which `pdfsig`
@@ -677,7 +691,9 @@ the limitations) is to be confirmed in those tests. The checks still to run are 
   authorities; LimarePDF makes no network connections.
 - Algorithms: RSA (PKCS#1 v1.5 and PSS, up to 8192 bits), ECDSA on P-256 and P-384, with SHA-1, SHA-224, SHA-256,
   SHA-384 and SHA-512. Brainpool curves (used by some European ID cards), P-521, MD5 and RIPEMD-160 can't be
-  checked.
+  checked. RSA-PSS signatures must use MGF1 with the signature's own digest.
+- RSA-PSS key limits are checked as OpenSSL checks them, except for one: a certificate that limits its key to a
+  trailer field other than 1 gives *can't check*, where OpenSSL 3.6 ignores that limit.
 - Certificates must be properly DER-encoded; a few old signers wrote them otherwise, and those can't be checked.
 - Adobe's Reader-enabling signatures (usage rights, which let the free Reader save forms) aren't listed, as in
   Acrobat.
@@ -717,7 +733,8 @@ the limitations) is to be confirmed in those tests. The checks still to run are 
 - Digital IDs on smart cards and USB tokens, and those kept in the Windows certificate store or the macOS Keychain,
   can't be used directly: export them as a `.p12` or `.pfx` file (if the card or store allows it) and import that.
 - LimarePDF signs with RSA keys of 2048 to 4096 bits and P-256 and P-384 keys; IDs with other keys (Ed25519, P-521,
-  Brainpool, DSA) can't be imported.
+  Brainpool, DSA) can't be imported. It signs RSA with PKCS#1 v1.5 only, so an ID whose key is allowed only RSA-PSS
+  signatures can't be imported either.
 - Exported `.p12` files use AES-256 with strong password stretching, which current Windows, macOS and OpenSSL read.
   Some older software only reads the older 3DES encryption, and some may not accept that much stretching; whether
   Acrobat imports LimarePDF's exported files is still to be tested.

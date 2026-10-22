@@ -7,6 +7,9 @@
 - `limarepdf-cli` refuses, with nothing written, an output (`-o`) that is the command's input, by any path or a
   link to it. It used to replace the input with the result, so a redaction or removed information left no
   original to go back to.
+- A digital ID whose certificate or key allows only RSA-PSS signatures can't be imported or signed with, and the
+  reason is given. LimarePDF signs RSA with PKCS#1 v1.5, which such an ID mustn't make. Certificate details show
+  such a key as "RSA-PSS" with its size.
 
 ### Fixed
 
@@ -59,6 +62,10 @@
 - `limarepdf-cli` said nothing and exited with status 0 when it couldn't write what it prints, a full disk for
   example. It now stops with a plain error and status 1, and says whether it had already saved its file. A reader
   that stops early (`… | head`) still stops it quietly.
+- A signature by an RSA key whose certificate allows it only for RSA-PSS signatures was called valid (and could
+  be trusted) when it broke those limits: a PKCS#1 v1.5 signature, or an RSA-PSS one with another digest or mask
+  than the certificate names or a shorter salt. Such a signature is now broken, and limits that can't be read
+  give "can't check". The same goes for timestamps, and for the certificates of a chain to a trusted authority.
 
 ## [0.8.0] - 2026-10-20
 

@@ -21,6 +21,7 @@ mod oid {
     use der::asn1::ObjectIdentifier as Oid;
 
     pub const RSA: Oid = Oid::new_unwrap("1.2.840.113549.1.1.1");
+    pub const RSA_PSS: Oid = Oid::new_unwrap("1.2.840.113549.1.1.10");
     pub const EC_PUBLIC_KEY: Oid = Oid::new_unwrap("1.2.840.10045.2.1");
     pub const P256: Oid = Oid::new_unwrap("1.2.840.10045.3.1.7");
     pub const P384: Oid = Oid::new_unwrap("1.3.132.0.34");
@@ -216,6 +217,9 @@ impl Key {
                 }
                 Ok(Self::Rsa(Box::new(k)))
             }
+            oid::RSA_PSS => bail!(
+                "the ID's key allows only RSA-PSS signatures, which LimarePDF can't make yet"
+            ),
             oid::EC_PUBLIC_KEY => {
                 use p256::pkcs8::DecodePrivateKey;
                 match alg.get(1).and_then(|c| c.oid().ok()) {
@@ -506,9 +510,15 @@ fn read_id(file: &[u8], password: &str) -> Result<Opened> {
     })
 }
 
-/// Why LimarePDF can't sign with the certificate `c`, if it can't.
+/// Why LimarePDF can't sign with the certificate `c`, if it can't. LimarePDF signs RSA with
+/// PKCS#1 v1.5, which a key limited to RSA-PSS mustn't make.
 fn signing_problem(c: &CertInfo) -> Option<String> {
     match Cert::parse(&c.der) {
+        Ok(cert) if cert.rsa_pss_only() => Some(
+            "its certificate allows only RSA-PSS signatures with its key, which LimarePDF \
+             can't make yet"
+                .into(),
+        ),
         Ok(cert) => crate::trust::id_problem(&cert),
         Err(e) => Some(format!("{e:#}")),
     }
@@ -903,6 +913,64 @@ mod tests {
         let cn = n.iter().last().unwrap();
         assert_eq!(cn.oid, oid::COMMON_NAME);
         assert_eq!(cn.value.value(), b"Doe, Jane=CN=Evil");
+    }
+
+    /// LimarePDF signs RSA with PKCS#1 v1.5 only, so an ID limited to RSA-PSS (RFC 4055)
+    /// is refused, whether only its certificate says so or its key too (as OpenSSL writes
+    /// them).
+    #[test]
+    fn rsa_pss_only_ids_are_refused() {
+        use rsa::pkcs8::DecodePrivateKey;
+        use x509_cert::builder::{Builder, CertificateBuilder};
+        let keys = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/signatures/keys");
+        let der = std::fs::read(keys.join("rsa2048.key.der")).unwrap();
+        let rsa = rsa::RsaPrivateKey::from_pkcs8_der(&der).unwrap();
+        let key = Key::Rsa(Box::new(rsa.clone()));
+        let mut spki = key.public_key_info().unwrap();
+        spki.algorithm = spki::AlgorithmIdentifierOwned {
+            oid: Oid::new_unwrap("1.2.840.113549.1.1.10"),
+            parameters: None,
+        };
+        let profile = SelfSigned {
+            subject: subject_name("PSS Only", None, None).unwrap(),
+            email: None,
+        };
+        let validity =
+            x509_cert::time::Validity::from_now(std::time::Duration::from_secs(86_400)).unwrap();
+        let serial = x509_cert::serial_number::SerialNumber::generate(&mut rng());
+        let signer = rsa::pkcs1v15::SigningKey::<sha2::Sha256>::new(rsa);
+        let cert = CertificateBuilder::new(profile, serial, validity, spki)
+            .unwrap()
+            .build::<_, rsa::pkcs1v15::Signature>(&signer)
+            .unwrap();
+        let cert = der::Encode::to_der(&cert).unwrap();
+        let password = "pss-test-password";
+        let file = pkcs12::write(
+            &key.to_pkcs8().unwrap(),
+            &cert,
+            &[],
+            "PSS Only",
+            password,
+            false,
+        )
+        .unwrap();
+        let dir = std::env::temp_dir().join(format!("limarepdf-pss-id-{}", std::process::id()));
+        let err = IdStore::new(&dir)
+            .import(&file, password, None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("allows only RSA-PSS signatures"), "{err}");
+        assert!(!dir.exists(), "nothing is written for a refused ID");
+
+        // The key itself marked RSA-PSS-only.
+        let rsa_oid = [
+            0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01,
+        ];
+        let mut pss_key = der.clone();
+        let at = pss_key.windows(11).position(|w| w == rsa_oid).unwrap();
+        pss_key[at + 10] = 0x0a;
+        let err = Key::from_pkcs8(&pss_key).err().unwrap().to_string();
+        assert!(err.contains("allows only RSA-PSS signatures"), "{err}");
     }
 
     #[test]
