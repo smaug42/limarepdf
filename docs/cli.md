@@ -62,7 +62,7 @@ with the status it would have had otherwise.
 
 Filling checks every value first: an unknown field name, a read-only field, text too long for the field, a line
 break in a single-line field, or an option the field doesn't have stops it before anything is written. LimarePDF draws
-each filled field itself, so the values show in every reader. Field text must be Latin-1 (Western European) for
+each filled field itself, so the values show in every reader. Field text must be Western European for
 now; other characters are refused rather than written wrongly. When the field's own font can't show the text, LimarePDF
 uses the closest standard font (Helvetica, Times or Courier). Password fields are drawn as `*` and their value is
 not kept in the file, as the PDF standard asks. Forms that need JavaScript to calculate or check values are filled,

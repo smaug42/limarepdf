@@ -171,7 +171,7 @@ background (none at first) and border, before you start.
   or Note for any other; printed, they keep their own drawing, or LimarePDF's, 20 points across.
 - **Text box:** drag a box, or click for a default size, then type straight onto the page. Enter starts a new
   line. Click outside the box or press Ctrl+Enter to finish; Esc drops it. Text boxes use Helvetica, so characters
-  outside Latin-1 come out as `?`. When you finish, the box grows downward to fit its text, keeping its width; it
+  beyond Western European (Greek, Cyrillic, Chinese and so on) come out as `?`. When you finish, the box grows downward to fit its text, keeping its width; it
   stops at the bottom of the page, and it never shrinks (resize it with the arrow).
 
 When a note or text box is finished, the read tool comes back with it selected, so it can be moved straight away
@@ -237,8 +237,8 @@ then comes back with the stamp selected, to move or resize (see [Keep tool activ
   stay transparent.
 
 Stamps are annotations: other readers list them as comments. Select one to change its opacity and comment;
-its colours are part of the stamp. A stamp reads upright on a turned page. The text is Helvetica Bold, Latin-1
-only, so a name in other scripts shows as `?`.
+its colours are part of the stamp. A stamp reads upright on a turned page. The text is Helvetica Bold, Western
+European characters only, so a name in other scripts shows as `?`.
 
 ## Redaction
 
@@ -296,8 +296,8 @@ and buttons (they run scripts, which LimarePDF doesn't) can't be filled in; hove
 field puts your signature in it (see [Filling and signing](#filling-and-signing)); clicking a digitally signed one
 shows its signature's details (see [Digital signatures](#digital-signatures)).
 
-LimarePDF draws the filled fields itself, so the values show the same in other readers. Text must be Latin-1 (Western
-European) for now; anything else is refused with a message rather than saved wrongly. Fields that have a value but
+LimarePDF draws the filled fields itself, so the values show the same in other readers. Text must be Western European for
+now; anything else is refused with a message rather than saved wrongly. Fields that have a value but
 no drawing of their own are drawn when the file opens. A value filled in by another app in other characters (Japanese,
 for example) shows only if that app drew it: if it didn't, LimarePDF can't either, so Flatten form… stops and names
 the fields rather than lose their values, and Print asks whether to print without them, since they would come out

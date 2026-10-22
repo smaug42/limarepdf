@@ -49,6 +49,12 @@ fonts' character maps, and Adobe's tables from character numbers to Unicode, are
 (`hayro_cmap`, reached through hayro, which carries the predefined maps); the predefined ones are read once per
 process (`fonts::predefined`).
 
+Text LimarePDF writes in the standard fonts (new and edited text, headers, footers, stamps, text boxes, form values)
+is WinAnsi-encoded through `fonts::winansi_byte`, which also tells the app which characters can be typed. In the
+app, new text is typed on the page in `crates/limarepdf-gui/src/page_text.rs`, drawn while typing in the bundled
+Liberation fonts that `typing_fonts.rs` picks (same widths as Helvetica, Times and Courier), then written line by
+line with `Pdf::add_text` as one undo step.
+
 Redaction (`crates/limarepdf-core/src/redact.rs`) has its own pass over the page content rather than editing the
 parser's objects: it rewrites each text-showing operator character by character, keeping the rest in place with
 spacing numbers, cuts drawings into sub-paths, and redacts inside form XObjects as copies. Pictures are decoded,
