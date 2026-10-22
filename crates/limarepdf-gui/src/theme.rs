@@ -106,7 +106,8 @@ pub fn install(ctx: &egui::Context) {
 }
 
 /// Inter for text, then egui's own fonts as fallbacks (symbols, emoji), with the
-/// Phosphor icons after Inter.
+/// Phosphor icons after Inter; and the Liberation fonts for text being typed on the page
+/// (`typing_fonts`).
 fn fonts() -> FontDefinitions {
     let mut f = FontDefinitions::default();
     let regular = include_bytes!("../assets/fonts/Inter-Regular.ttf");
@@ -134,6 +135,7 @@ fn fonts() -> FontDefinitions {
     );
     icons_list[0] = "phosphor-fill".into();
     f.families.insert(icons_fill(), icons_list);
+    crate::typing_fonts::add_bundled(&mut f);
     f
 }
 

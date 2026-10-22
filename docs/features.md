@@ -43,8 +43,9 @@ this list once it works. The feature table below has the details.
 - Only Western European characters can be added: in new or edited text, text boxes, headers, footers, Bates
   numbers, watermarks, stamps, form values and typed signatures. Others (Greek, Cyrillic, Chinese, Japanese,
   Korean and so on) come out as `?`.
-- New text uses Helvetica, Times or Courier only. Editing a line keeps its font only when the file's font allows
-  it (not for most embedded fonts); otherwise the line becomes Helvetica, Times or Courier
+- New text uses Helvetica, Times or Courier only (with Bold and Italic): other fonts, installed or bundled, can't
+  be chosen yet, as using them means embedding them in the PDF. Editing a line keeps its font only when the
+  file's font allows it (not for most embedded fonts); otherwise the line becomes Helvetica, Times or Courier
   ([details](content-editing.md#limits)).
 - Text is edited one line at a time: a paragraph doesn't rewrap as you type, so a longer line can run into
   whatever is beside it.

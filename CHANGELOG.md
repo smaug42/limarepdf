@@ -59,6 +59,10 @@
 - Creating a digital ID shows a problem beside the field it is about, and the keyboard starts in the Name field.
 - The Fill and sign pane no longer has a Sign with digital ID button: digital signing and certifying are in
   Document > Digital signatures.
+- limarepdf includes the Liberation fonts (SIL Open Font License 1.1, about 4.4 MB), which have the widths of
+  Helvetica, Times and Courier, to show text in its own look while it is typed on the page. They are only drawn
+  on screen: text is still written in Helvetica, Times or Courier, and the font list is unchanged. Release
+  archives and packages include their licence as `FONT-LICENSE-Liberation.txt`.
 
 ### Fixed
 

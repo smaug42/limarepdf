@@ -20,6 +20,7 @@ mod signatures;
 mod signing;
 mod tab;
 mod theme;
+mod typing_fonts;
 mod worker;
 
 /// Run document work that a malformed file could make panic, turning a panic into an error so the app stays
