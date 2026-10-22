@@ -1,7 +1,46 @@
-//! Runs the built `limarepdf-cli` on a file that makes the renderer panic.
+//! Runs the built `limarepdf-cli` on a file that makes the renderer panic, and on numbers that
+//! once did.
 
 use std::path::Path;
 use std::process::Command;
+
+/// Bates numbers past the largest LimarePDF can count to, and a rotation of almost the largest
+/// number, get plain answers rather than an internal error.
+#[test]
+fn extreme_numbers_get_plain_answers() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("panics-numbers");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut p = limarepdf_core::Pdf::new();
+    for i in 0..2 {
+        p.insert_blank(i, 200.0, 200.0).unwrap();
+    }
+    std::fs::write(dir.join("in.pdf"), p.to_bytes().unwrap()).unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_limarepdf-cli"))
+            .current_dir(&dir)
+            .args(args)
+            .env_remove("RUST_BACKTRACE")
+            .output()
+            .unwrap()
+    };
+    let max = u64::MAX.to_string();
+    let bates = run(&["bates", "in.pdf", "-o", "bates.pdf", "--start", &max]);
+    let err = String::from_utf8_lossy(&bates.stderr);
+    assert_eq!(bates.status.code(), Some(1), "stderr: {err}");
+    assert!(
+        err.contains("the Bates numbers would go past 18446744073709551615"),
+        "stderr: {err}"
+    );
+    assert!(!err.contains("internal error"), "stderr: {err}");
+    assert!(!dir.join("bates.pdf").exists());
+
+    let degrees = "9223372036854775800";
+    let turn = ["rotate", "in.pdf", "-o", "turned.pdf", "--degrees", degrees];
+    let rotate = run(&turn);
+    let err = String::from_utf8_lossy(&rotate.stderr);
+    assert_eq!(rotate.status.code(), Some(0), "stderr: {err}");
+}
 
 /// PDFBox 2363 makes hayro's renderer (vello_common) panic at 150 dpi. Opt-in: the corpus is fetched by
 /// `crates/limarepdf-core/tools/fetch-render-samples.sh` and isn't in the repository.

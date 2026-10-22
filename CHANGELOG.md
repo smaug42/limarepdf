@@ -77,6 +77,15 @@
   keeps the document marked unsaved, and `limarepdf-cli` says so and exits with status 1. Settings, the recent
   files list and saved signatures, which were written into the old file in place (a crash part way lost them), are
   now saved the same way.
+- Headers, footers, Bates numbers and the text layer OCR adds could change the font of text already on the page,
+  so its words came out wider or narrower, when the page's own font had the name LimarePDF gives its Helvetica.
+  They now take a name the page doesn't use.
+- Bates numbers that would go past 18446744073709551615 stopped part way, with the first pages stamped and the
+  command line reporting an internal error. They are now refused before any page changes, with a plain message.
+  A rotation by a number of degrees close to the largest LimarePDF can take did the same; it now turns the pages
+  by what is left after whole turns.
+- Straightening a dark scanned page took up to two and a half times the memory of optimising it without
+  straightening (211 MB against 86 MB on a black 4000 × 4000 page). It now takes about the same.
 
 ## [0.8.0] - 2026-10-20
 

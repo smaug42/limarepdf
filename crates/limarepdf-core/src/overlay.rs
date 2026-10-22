@@ -139,7 +139,9 @@ impl Default for HeaderFooter {
     }
 }
 
-pub(crate) const FONT_NAME: &str = "LimareF1";
+/// Prefix of the page resource name given to the Helvetica of headers, footers and OCR text
+/// (`LimareF1`, or the next number free on the page).
+pub(crate) const FONT_PREFIX: &str = "LimareF";
 
 impl Pdf {
     pub(crate) fn make_font(&mut self) -> ObjectId {
@@ -187,24 +189,6 @@ impl Pdf {
             .and_then(|(_, o)| o.as_dict().ok())
             .cloned()
             .unwrap_or_default()
-    }
-
-    /// Wrap the page's existing content in q/Q, add `below` and `above` streams,
-    /// and register the font in the page resources as [`FONT_NAME`].
-    pub(crate) fn add_layers(
-        &mut self,
-        page: ObjectId,
-        below: Option<Vec<u8>>,
-        above: Option<Vec<u8>>,
-        font: ObjectId,
-    ) -> Result<()> {
-        self.wrap_contents(page, below, above)?;
-        let mut res = self.resolved_dict(self.inherited(page, b"Resources").as_ref());
-        let mut fonts = self.resolved_dict(res.get(b"Font").ok());
-        fonts.set(FONT_NAME, Object::Reference(font));
-        res.set("Font", fonts);
-        self.doc.get_dictionary_mut(page)?.set("Resources", res);
-        Ok(())
     }
 
     /// Wrap the page's existing content in q/Q, so that it leaves the graphics state as
@@ -331,6 +315,12 @@ impl Pdf {
         if let Some(&bad) = idx.iter().find(|&&i| i >= total) {
             bail!("page {} does not exist", bad + 1);
         }
+        if let Some(b) = &hf.bates {
+            let after_first = idx.len().saturating_sub(1) as u64;
+            if b.start.checked_add(after_first).is_none() {
+                bail!("the Bates numbers would go past {}", u64::MAX);
+            }
+        }
         let font = self.make_font();
         let date = today_iso();
         for (seq, &i) in idx.iter().enumerate() {
@@ -351,8 +341,9 @@ impl Pdf {
                     .replace("{date}", &date)
                     .replace("{bates}", bates.as_deref().unwrap_or(""))
             };
+            let font_nm = self.add_resource(page, "Font", FONT_PREFIX, font.into())?;
             let mut s = format!(
-                "q\n{:.5} {:.5} {:.5} {:.5} {:.3} {:.3} cm\n{:.3} {:.3} {:.3} rg\nBT /{FONT_NAME} {:.2} Tf\n",
+                "q\n{:.5} {:.5} {:.5} {:.5} {:.3} {:.3} cm\n{:.3} {:.3} {:.3} rg\nBT /{font_nm} {:.2} Tf\n",
                 m[0], m[1], m[2], m[3], m[4], m[5], hf.color.0, hf.color.1, hf.color.2, hf.font_size
             );
             let mut put = |text: &str, slot: usize, y: f32| {
@@ -389,12 +380,12 @@ impl Pdf {
                 let t = bates.clone().unwrap_or_default();
                 let tw = text_width(&t, hf.font_size);
                 s.push_str(&format!(
-                    "q\n{:.5} {:.5} {:.5} {:.5} {:.3} {:.3} cm\n{:.3} {:.3} {:.3} rg\nBT /{FONT_NAME} {:.2} Tf 1 0 0 1 {:.3} {:.3} Tm ({}) Tj ET\nQ\n",
+                    "q\n{:.5} {:.5} {:.5} {:.5} {:.3} {:.3} cm\n{:.3} {:.3} {:.3} rg\nBT /{font_nm} {:.2} Tf 1 0 0 1 {:.3} {:.3} Tm ({}) Tj ET\nQ\n",
                     m[0], m[1], m[2], m[3], m[4], m[5], hf.color.0, hf.color.1, hf.color.2, hf.font_size,
                     vw - hf.margin - tw, hf.margin / 2.0, escape(&t)
                 ));
             }
-            self.add_layers(page, None, Some(s.into_bytes()), font)?;
+            self.wrap_contents(page, None, Some(s.into_bytes()))?;
         }
         Ok(())
     }

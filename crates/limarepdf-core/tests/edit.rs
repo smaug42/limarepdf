@@ -1088,3 +1088,67 @@ fn watermarks_keep_their_own_opacity_and_inherited_resources() {
     let gs = res.unwrap().as_dict().unwrap().get(b"ExtGState").unwrap();
     assert_eq!(gs.as_dict().unwrap().len(), 2);
 }
+
+#[test]
+fn headers_and_footers_leave_a_page_font_of_the_same_name_alone() {
+    // The page's own font is Courier, named as LimarePDF names its Helvetica: "iiii" at
+    // 20 pt is 4 * 12 = 48 wide in Courier, 17.76 in Helvetica.
+    let width = |p: &Pdf, text: &str| -> Vec<f32> {
+        let w = p.page_words(0).unwrap();
+        w.iter()
+            .filter(|w| w.text == text)
+            .map(|w| w.bbox[2] - w.bbox[0])
+            .collect()
+    };
+    for place in ["direct", "indirect", "inherited"] {
+        let mut p = Pdf::new();
+        p.insert_blank(0, W as f32, H as f32).unwrap();
+        let page = p.page_ids()[0];
+        let content = "BT /LimareF1 20 Tf 10 150 Td (iiii) Tj ET";
+        let font = p.doc.add_object(dictionary! { "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Courier", "Encoding" => "WinAnsiEncoding" });
+        let s = p
+            .doc
+            .add_object(Stream::new(Dictionary::new(), content.as_bytes().to_vec()));
+        let fonts = dictionary! { "LimareF1" => font };
+        let res = match place {
+            "direct" => Object::Dictionary(dictionary! { "Font" => fonts }),
+            _ => {
+                let f = p.doc.add_object(fonts);
+                p.doc.add_object(dictionary! { "Font" => f }).into()
+            }
+        };
+        let d = p.doc.get_dictionary_mut(page).unwrap();
+        d.set("Contents", Object::Reference(s));
+        if place == "inherited" {
+            d.remove(b"Resources");
+            let parent = d.get(b"Parent").unwrap().as_reference().unwrap();
+            p.doc
+                .get_dictionary_mut(parent)
+                .unwrap()
+                .set("Resources", res);
+        } else {
+            d.set("Resources", res);
+        }
+        let w = width(&p, "iiii");
+        assert!(w.len() == 1 && (w[0] - 48.0).abs() < 0.5, "{place}: {w:?}");
+        for n in 1..=2 {
+            p.add_header_footer(&[0], &Default::default()).unwrap();
+            if n == 1 {
+                // (After two, the footers lie on top of each other.)
+                assert!(p.page_text(0).contains("Page 1 of 1"), "{place}");
+            }
+            let w = width(&p, "iiii");
+            assert!(
+                w.len() == 1 && (w[0] - 48.0).abs() < 0.5,
+                "{place} {n}: {w:?}"
+            );
+            // The footer itself is still Helvetica: "Page" at 10 pt is 23.35 wide.
+            let w = width(&p, "Page");
+            assert_eq!(w.len(), n, "{place} {n}");
+            assert!(
+                w.iter().all(|w| (w - 23.35).abs() < 0.5),
+                "{place} {n}: {w:?}"
+            );
+        }
+    }
+}

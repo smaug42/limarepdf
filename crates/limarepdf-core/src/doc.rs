@@ -614,7 +614,7 @@ impl Pdf {
             let cur = self.page_rotation(ids[i]);
             self.doc
                 .get_dictionary_mut(ids[i])?
-                .set("Rotate", (cur + degrees).rem_euclid(360));
+                .set("Rotate", (cur + degrees.rem_euclid(360)).rem_euclid(360));
         }
         Ok(())
     }

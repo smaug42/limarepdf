@@ -127,6 +127,19 @@ now the size comes from the file's header. Peak memory includes the file itself,
 
 The command-line program is 28.04 MB after these changes, 30 KB (0.1%) larger than before.
 
+### Straightening scans
+
+Measured on 21 October 2026 on the same machine: before at commit c611c9b, after with the change below, two runs
+each in a process of their own, Optimise scans on one generated 4000 × 4000 page with despeckling off. To find a
+scan's tilt, LimarePDF kept the position of every dark pixel before taking a sample of at most about 200,000 of
+them. It now counts them first, stops there when there are too few or more than half the page, and keeps only the
+sample: the same points, so the same angle.
+
+| Page | Before, straightening on | After, straightening on | Straightening off |
+| --- | --- | --- | --- |
+| All black | 0.23 s, 211 MB | 0.18 s, 86 MB | 0.18 s, 86 MB |
+| Two black rows in five (40% dark) | 0.26 s, 138 MB | 0.24 s, 86 MB | 0.17 s, 86 MB |
+
 ## Memory in the desktop app
 
 Measured by hand on the same machine and commit, each in a newly started app, reading the app's peak and current

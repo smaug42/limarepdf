@@ -7,7 +7,7 @@
 //! stated.
 
 use crate::fonts::winansi_bytes;
-use crate::overlay::FONT_NAME;
+use crate::overlay::FONT_PREFIX;
 use crate::scan::binarise;
 use crate::{render, text_width, Pdf, Result};
 use anyhow::{anyhow, bail};
@@ -185,8 +185,9 @@ impl Pdf {
                 Ok((lines, scale)) => {
                     let page = self.page_id_at(p)?;
                     let font = *font.get_or_insert_with(|| self.make_font());
-                    let layer = self.text_layer(page, &lines, scale);
-                    self.add_layers(page, None, Some(layer), font)?;
+                    let font_nm = self.add_resource(page, "Font", FONT_PREFIX, font.into())?;
+                    let layer = self.text_layer(page, &lines, scale, &font_nm);
+                    self.wrap_contents(page, None, Some(layer))?;
                     OcrResult::Added {
                         lines: lines.len(),
                         words: lines.iter().map(|l| l.words.len()).sum(),
@@ -200,8 +201,14 @@ impl Pdf {
     }
 
     /// Content stream drawing `lines` as invisible text. Word boxes are in pixels of
-    /// the displayed page rendered at `scale`.
-    fn text_layer(&self, page: lopdf::ObjectId, lines: &[OcrLine], scale: f32) -> Vec<u8> {
+    /// the displayed page rendered at `scale`; `font` is the page's name for Helvetica.
+    fn text_layer(
+        &self,
+        page: lopdf::ObjectId,
+        lines: &[OcrLine],
+        scale: f32,
+        font: &str,
+    ) -> Vec<u8> {
         let (m, _, vh) = self.visual_matrix(page);
         let mut s = format!(
             "q {} {} {} {} {} {} cm\n",
@@ -221,7 +228,7 @@ impl Pdf {
             // The line box runs from ascender to descender: about 1.15 em in Helvetica.
             let size = ((bottom - top) / scale / 1.15).max(1.0);
             let baseline = vh - bottom / scale + 0.21 * size;
-            let _ = writeln!(s, "BT 3 Tr /{FONT_NAME} {size:.2} Tf");
+            let _ = writeln!(s, "BT 3 Tr /{font} {size:.2} Tf");
             for (i, w) in line.words.iter().enumerate() {
                 let x = w.bbox[0] / scale;
                 let width = (w.bbox[2] - w.bbox[0]) / scale;

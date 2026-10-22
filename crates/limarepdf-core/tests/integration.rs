@@ -262,6 +262,64 @@ fn crop_margins_follow_rotation() {
 }
 
 #[test]
+fn huge_rotations_turn_by_what_is_left_over() {
+    // 9223372036854775800 is 102481911520608620 turns of 90; left over after whole turns: 0
+    // or 180 degrees, whichever it is, added to the page's 90 without overflowing.
+    let big = 9_223_372_036_854_775_800i64;
+    for degrees in [big, -big, 450, -450] {
+        let mut p = Pdf::new();
+        p.insert_blank(0, 300.0, 200.0).unwrap();
+        p.rotate_pages(&[0], 90).unwrap();
+        p.rotate_pages(&[0], degrees).unwrap();
+        let page = p.page_ids()[0];
+        let rotate = p.doc.get_dictionary(page).unwrap().get(b"Rotate");
+        let want = (90 + degrees.rem_euclid(360)).rem_euclid(360);
+        assert_eq!(rotate.unwrap().as_i64().unwrap(), want, "{degrees}");
+    }
+}
+
+#[test]
+fn bates_numbers_that_would_overflow_are_refused_before_any_change() {
+    let blank = |n: usize| {
+        let mut p = Pdf::new();
+        for i in 0..n {
+            p.insert_blank(i, 300.0, 200.0).unwrap();
+        }
+        p
+    };
+    let hf = |start| HeaderFooter {
+        bates: Some(Bates {
+            start,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    // The last number there is fits on one page, and ends three pages from its start.
+    let mut p = blank(1);
+    p.add_header_footer(&[0], &hf(u64::MAX)).unwrap();
+    assert!(p.page_text(0).contains("18446744073709551615"));
+    let mut p = blank(3);
+    p.add_header_footer(&[0, 1, 2], &hf(u64::MAX - 2)).unwrap();
+    assert!(p.page_text(2).contains("18446744073709551615"));
+    // One page more is refused, with nothing stamped.
+    for (pages, start) in [(2, u64::MAX), (3, u64::MAX - 1)] {
+        let mut p = blank(pages);
+        let before = p.doc.max_id;
+        let idx: Vec<usize> = (0..pages).collect();
+        let err = p.add_header_footer(&idx, &hf(start)).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("the Bates numbers would go past 18446744073709551615"),
+            "{err}"
+        );
+        assert_eq!(p.doc.max_id, before, "{pages} pages: objects added");
+        assert!(idx.iter().all(|&i| p.page_text(i).trim().is_empty()));
+    }
+    // No pages, no numbers.
+    blank(1).add_header_footer(&[], &hf(u64::MAX)).unwrap();
+}
+
+#[test]
 fn search_finds_text() {
     let p = doc_with_text();
     let hits = p.search("NEEDLE").unwrap();

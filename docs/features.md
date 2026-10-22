@@ -56,7 +56,7 @@ available.
 | Page operations: insert, delete, rotate, extract, reorder, crop, remove blank pages | Done | Crop by margins; no dragging a crop box on the page. Blank means one even colour, give or take specks or a lone page number. Deleted and extracted-away pages leave nothing in the saved file: bookmarks, named destinations, links, form fields and tags no longer refer to them, and the tags' alternative text for their content goes. A form nested more than 32 deep is refused, changing nothing ([details](gui.md#selecting-and-the-inspector)) |
 | Merge and split | Done | Split by page count or at bookmarks, files named after them. Bookmarks, forms and named destinations of appended files are not carried over. Split parts, like extracted pages, keep the bookmarks to their own pages and nothing of the other pages; each is written as soon as it is made, so memory stays near the document's own size. Split by file size: No |
 | Undo and redo | Done | 20 levels, including password settings; fewer on very large documents (up to 1 GB per document) |
-| Headers, footers, page numbers, dates, Bates numbers | Done | Helvetica and Latin-1 characters only |
+| Headers, footers, page numbers, dates, Bates numbers | Done | Helvetica and Latin-1 characters only; Bates numbers up to 18446744073709551615 (more is refused, changing nothing) |
 | Watermarks | Done | Text or a PNG, JPEG or TIFF picture; centred, with size, opacity, rotation, above or behind |
 | Document properties | Done | Title, author, subject, keywords, creator, producer |
 | Password security | Done | All four ciphers and permission flags. [Things to know](security.md) |
