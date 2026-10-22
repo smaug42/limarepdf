@@ -86,7 +86,7 @@ Save As to a new file keeps the signed original.
   In facing pages, **Show cover page alone** (on by default) puts the first page on its own on the right, as in a
   book; off pairs pages 1 and 2. PageUp and PageDown move a pair at a time when facing. The choice changes the
   document you are viewing and is remembered for documents opened later. A document that sets its own opening
-  view (see below) opens in its layout instead, and can also open the Pages or Bookmarks tab and go to a page.
+  view (see below) opens in its layout instead, and can also open the Pages or Bookmarks view and go to a page.
 - **Right:** the inspector, which shows options for what is selected. The » at its top collapses it to a strip;
   the « at the top of the strip expands it again, and the strip's options button shows the inspector's contents
   in a pop-out over the pages (a click elsewhere or Esc closes it; what you changed in it stays). ☰ > View >
@@ -114,7 +114,7 @@ links don't get in the way of editing.
 ## Comments and markup
 
 Annotations (comments, sticky notes, highlights, text boxes, shapes and drawings that other programs added) are
-shown on the pages. ☰ > View > Comments, or "Comments" in the command palette, opens the Comments tab, which lists
+shown on the pages. ☰ > View > Comments, or "Comments" in the command palette, opens the Comments view, which lists
 them page by page, with replies indented under the comment they answer. Each row shows the author and the first
 line of the comment; hover over it for the type, date and the whole comment.
 
@@ -158,8 +158,9 @@ for comments…. Leave it empty to save no name.
 
 ### Notes and text boxes
 
-The **Comment** button in the top bar holds the note and text box tools (also in ☰ > Tools > Commenting). It shows the one you used last; the small
-arrow beside it picks the other. The inspector sets the note colour, or the text box's text size and colour,
+The **Comment** button in the top bar holds the commenting tools: notes, text boxes, rectangles, ellipses, lines,
+the pen and stamps (also in ☰ > Tools > Commenting). It shows the one you used last; the small arrow beside it
+lists them all. The inspector sets the note colour, or the text box's text size and colour,
 background (none at first) and border, before you start.
 
 - **Note:** click on the page. A comment box opens beside the note; type, then click Done (or press Ctrl+Enter).
@@ -251,8 +252,8 @@ redaction marks). See [Redaction](redaction.md) for exactly what applying remove
 - **Mark search results:** search, then in the navigation panel's Search results press Mark all for redaction (or Edit > Mark
   all search results for redaction). Every match is marked.
 
-Marks are listed in the Comments tab as "Redaction mark". Select one (Ctrl+click it, or click it in the Comments
-tab) to delete it or add a comment; like highlights, marks can't be moved or resized, so to change one, delete it
+Marks are listed in the Comments view as "Redaction mark". Select one (click it with the read tool, Ctrl+click it
+with another tool, or click it in the Comments view) to delete it or add a comment; like highlights, marks can't be moved or resized, so to change one, delete it
 and mark again.
 
 **Apply:** Document > Apply redactions… asks first, then removes everything under the marks, paints the areas black
@@ -350,12 +351,12 @@ the picked signature (or initials) inside its box. The field itself stays digita
 report a broken signature.
 
 **Moving and finishing:** what you put down is added as annotations, so it can still be moved, resized or deleted:
-Ctrl+click an item (or use the arrow) to select it. While there are such items, a notice above the pages says how
+click an item with the read tool (or Ctrl+click it with another tool) to select it. While there are such items, a notice above the pages says how
 many and has a Finish signing… button; the Sign pane has the same button. Finish signing (also in the Document menu)
 draws them into the pages as they look, after asking, so they can no longer be moved or removed as comments; Undo
 brings them back until you close the document. Saving without finishing keeps them movable, and the notice comes
 back when the document is opened again. Other comments and stamps are left alone. Signatures are listed in the
-Comments tab as "Signature", "Initials", "Tick" and so on.
+Comments view as "Signature", "Initials", "Tick" and so on.
 
 ## Digital signatures
 
@@ -539,7 +540,7 @@ the selected pages.
 
 Delete removes the selected object or pages. Deleting shows a notice with an Undo button.
 
-Remove blank pages (☰ > Document, or the command palette) deletes every page that is one even colour, give or take
+Remove blank pages (☰ > Pages, or the command palette) deletes every page that is one even colour, give or take
 scanner specks, faint show-through or a lone page number, and lists the pages it removed. Undo brings them back. A
 document whose pages are all blank is left alone.
 
@@ -581,8 +582,10 @@ selected so you can adjust it (see [Keep tool active](#keep-tool-active)):
 - **Comment:** sticky notes, text boxes, rectangles, ellipses, lines and the pen, saved as annotations rather
   than page content; see [Notes and text boxes](#notes-and-text-boxes) and
   [Shapes, lines and drawings](#shapes-lines-and-drawings). A rectangle, ellipse or line can still be drawn into
-  the page content with "Draw on page (permanent)". Its menu also has the stamp tool (see [Stamps](#stamps)) and
-  the tool that marks areas for redaction (see [Redaction](#redaction)).
+  the page content with "Draw on page (permanent)". Its menu also has the stamp tool (see [Stamps](#stamps)).
+- **Redact:** drag a box to mark an area for redaction (see [Redaction](#redaction)).
+- **Fill and sign:** your signature, initials, the date and other items (see
+  [Filling and signing](#filling-and-signing)).
 
 ### Keep tool active
 

@@ -48,8 +48,8 @@ digital signatures…" meanwhile, and then gives the result, coloured by the wor
 
 With one signature the banner gives its result in a sentence, such as "Not changed since Jane Doe signed it. LimarePDF
 can't confirm who Jane Doe is."; with several it sums them up. A certified document's banner starts with who
-certified it and what the certification allows. The banner's **Signatures** button opens the **Signatures** tab of
-the side panel (also Document > Digital signatures > Signatures in this document).
+certified it and what the certification allows. The banner's **Signatures** button opens the **Digital signatures** view of
+the navigation panel (also Document > Digital signatures > Signatures in this document).
 
 The Digital signatures view lists the signatures in the order they were made. For each: what it is and who made it (click to
 go to it on the page), its result in a sentence, the changes made after it (those the signer didn't allow in red;
