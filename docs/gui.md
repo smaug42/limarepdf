@@ -47,22 +47,31 @@ Save As to a new file keeps the signed original.
 
 ## The window
 
-- **Top bar:** the menu (☰), Open, Save, Undo and Redo, the tools (Sign among them), the page layout, zoom, search, Print, an Export menu (pages as
-  images, text), and the theme. On narrow windows the search field and the tools fold into single buttons.
-- **Left:** five tabs. Pages shows the thumbnails, Search the search results, and Bookmarks the document's
-  outline. Click a bookmark to go to its page; the arrow beside one shows or hides the bookmarks inside it, which
+- **Top bar:** the menu (☰), Open, Save and an Export menu (pages as images, text); Undo and Redo; the tools: Read
+  and select text, Add text, Add image, Redact and Fill and sign, then the Comment button with its menu (notes, text
+  boxes, shapes, the pen, stamps) and the Tools menu, which holds every tool; at the right, Search and Print. The
+  buttons are icons, each named by its tooltip. As the window narrows, the search field becomes an icon, and then
+  the tools fold one by one into the Tools menu: the Comment button first, then Add image, Redact, Add text and
+  Fill and sign, coming back in reverse as the window widens. Read and select text stays. The Tools menu shows the
+  current tool when that one isn't on the bar.
+- **Tabs:** one per document, with a × inside it to close it. A * after the name means unsaved changes.
+- **Bottom:** the page you are on and messages at the left; at the right, the page layout, Fit width and the zoom.
+- **Left:** a column of icons for the navigation panel's views: Pages (the thumbnails), Search results, Bookmarks
+  (the document's outline) and Comments. Clicking a view opens it; clicking the open one folds the panel away, and
+  clicking it again brings it back. Documents open on Pages, unless the file asks to open on its bookmarks. Click a bookmark to go to its page; the arrow beside one shows or hides the bookmarks inside it, which
   start shown or hidden as the file asks. Bookmarks that go to another file or a web address are greyed out. Add
   bookmark bookmarks the page you are on, after the bookmark last clicked (or last, when none is), and opens its name
   for typing: Enter keeps it, Escape keeps "Page N". Double-click a bookmark to rename it; right-click it to rename
   it, add a bookmark under it, or delete it with the bookmarks inside it. Undo reverses each of these. Moving
-  bookmarks isn't possible yet. ☰ > View > Bookmarks, or "Bookmarks" in the command palette, opens this tab. Comments
-  lists the document's annotations; see [Comments and markup](#comments-and-markup). Signatures lists its digital
-  signatures and whether they are valid; see [Digital signatures](#digital-signatures).
+  bookmarks isn't possible yet. ☰ > View > Bookmarks, or "Bookmarks" in the command palette, opens this view.
+  Comments lists the document's annotations; see [Comments and markup](#comments-and-markup). The document's
+  digital signatures, and whether they are valid, are listed in the same panel from ☰ > Document > Digital
+  signatures > Signatures in this document; see [Digital signatures](#digital-signatures).
 - **Middle:** the pages, scrolling continuously. By default they fit the width between the side panels, and keep
   fitting as you resize the window or open and close the panels. Zooming in or out, actual size, Ctrl+scroll or a
   pinch turns fitting off, and your zoom then stays as it is; the Fit width button (highlighted while fitting is on)
   or Ctrl+0 turns it back on. Zoom goes from 10% to 6400%. At high zoom the part of the page in view is drawn in
-  tiles as you scroll, over a softer view of the whole page until they arrive. The page layout button left of the zoom buttons (its icon shows the current layout),
+  tiles as you scroll, over a softer view of the whole page until they arrive. The page layout button at the bottom right (its icon shows the current layout),
   or ☰ > View > Page layout, chooses how the document's pages are laid out: **Continuous pages** (one column, the default), **Facing pages** (two side by side, still scrolling;
   fitting fits both) or **Single page** (one at a time; a wheel step past the page's top or bottom turns the page).
   In facing pages, **Show cover page alone** (on by default) puts the first page on its own on the right, as in a
@@ -134,7 +143,7 @@ for comments…. Leave it empty to save no name.
 
 ### Notes and text boxes
 
-The **Annotate** button in the top bar holds the note and text box tools. It shows the one you used last; the small
+The **Comment** button in the top bar holds the note and text box tools (also in ☰ > Tools > Commenting). It shows the one you used last; the small
 arrow beside it picks the other. The inspector sets the note colour, or the text box's text size and colour,
 background (none at first) and border, before you start.
 
@@ -158,7 +167,7 @@ resized, and markup can't be moved. Locked annotations can't be moved.
 
 ### Shapes, lines and drawings
 
-The Annotate button's menu also holds the rectangle, ellipse, line and pen tools. What they draw are annotations:
+The Comment button's menu also holds the rectangle, ellipse, line and pen tools. What they draw are annotations:
 other readers list them as comments, and they can be selected, moved, resized, restyled, commented on and deleted
 like notes.
 
@@ -188,7 +197,7 @@ boxes can't be turned: PDF stores them as upright boxes.
 
 ### Stamps
 
-The stamp tool is in the Annotate button's menu ("Add a stamp" in the command palette). Its inspector lists the
+The stamp tool is in the Comment button's menu ("Add a stamp" in the command palette). Its inspector lists the
 ready-made stamps (Approved, Not approved, Draft, Final, Confidential, For comment and Void), each a coloured frame
 with the word in capitals, your own wordings, and the pictures used as stamps before. Pick one, then click on the page to put it down
 at its own size, centred on the click, or drag a box to size it (it keeps its shape inside the box). It is then
@@ -218,10 +227,10 @@ Redacting is done in two steps: mark what to remove, then apply the marks. Marks
 nothing by themselves, so they can be checked first, here or by someone else in another app (they are standard PDF
 redaction marks). See [Redaction](redaction.md) for exactly what applying removes.
 
-- **Mark areas:** Annotate > Mark areas for redaction, then drag a box over anything: text, pictures, drawings. The
+- **Mark areas:** the Redact button in the top bar (☰ > Tools > Mark areas for redaction), then drag a box over anything: text, pictures, drawings. The
   tool stays on, so several areas can be marked in a row.
 - **Mark text:** select it with the read tool, then right-click > Mark for redaction (or Edit > Mark for redaction).
-- **Mark search results:** search in the side panel's Search tab, then press Mark all for redaction (or Edit > Mark
+- **Mark search results:** search, then in the navigation panel's Search results press Mark all for redaction (or Edit > Mark
   all search results for redaction). Every match is marked.
 
 Marks are listed in the Comments tab as "Redaction mark". Select one (Ctrl+click it, or click it in the Comments
@@ -328,7 +337,8 @@ When a document with digital signatures opens, LimarePDF checks them in the back
 banner above the pages, coloured by the worst signature: green (valid, and you trust every signer), amber (nothing
 broken or changed against the signers' wishes, but LimarePDF can't confirm who signed, or there are warnings), grey (LimarePDF
 can't check a signature) or red (broken, changed in ways a signer didn't allow, or a trusted signer's certificate
-fails a check). Its Signatures button, or ☰ > View > Signatures, opens the Signatures tab of the side panel, which
+fails a check). Its Signatures button, or ☰ > Document > Digital signatures > Signatures in this document, opens the Digital
+signatures view of the navigation panel, which
 lists each signature with its result, the changes made after it, and Details… and Signed version buttons, then the
 signature fields nobody has signed yet. Click a signature's name to go to it; with the read tool, click a signed
 field on the page to see its details.
@@ -336,7 +346,7 @@ field on the page to see its details.
 Details shows who signed, who issued their certificate, when, the changes after signing, warnings and the
 certificates; Trust this signer… and Trust an authority… add to your trust list (after showing the SHA-256
 fingerprint to compare with the owner), and View signed version opens the document as it was when signed, in a new
-tab. ☰ > Edit > Trusted certificates… lists, removes and adds trusted certificates. Trust settings affect LimarePDF only.
+tab. ☰ > Document > Digital signatures > Trusted certificates… lists, removes and adds trusted certificates. Trust settings affect LimarePDF only.
 
 The check is of the file as opened or last saved; saving adds your changes after what was signed (see
 [Saving a signed document](signatures.md#saving-a-signed-document)), and LimarePDF checks the saved copy, listing your
@@ -344,7 +354,7 @@ changes under each signature. See [Digital signatures](signatures.md) for what e
 
 ### Signing with a digital ID
 
-☰ > Document > Sign with digital ID… (also a button in the Sign tool's pane), or Certify… for the author's
+☰ > Document > Digital signatures > Sign with digital ID… (also a button in the Sign tool's pane), or Certify… for the author's
 certification: click an empty signature field or drag a box on the page, then pick your digital ID, type its
 password, and optionally a reason and a location. Sign… asks where to save the signed copy (`NAME-signed.pdf` by
 default), signs in the background, and opens the signed copy in place of the document. Changes made since opening
@@ -353,7 +363,7 @@ document changes while it is being signed (an edit, a password set, text being t
 the signed copy opens in a new tab. A document set to get a password when saved (Document > Password security)
 isn't signed: LimarePDF can't sign password-protected documents, so the signed copy would be saved without it.
 
-☰ > Edit > Digital IDs… makes, imports, exports and removes your digital IDs, and chooses the default. See
+☰ > Document > Digital signatures > Digital IDs… makes, imports, exports and removes your digital IDs, and chooses the default. See
 [Signing](signatures.md#signing) and [Digital IDs](signatures.md#digital-ids).
 
 ## Notices about the document
@@ -521,7 +531,7 @@ The other tools add content:
 
 - **Text:** click where the text starts, type, press Enter.
 - **Image:** choose a PNG, JPEG or TIFF, then drag a box.
-- **Annotate:** sticky notes, text boxes, rectangles, ellipses, lines and the pen, saved as annotations rather
+- **Comment:** sticky notes, text boxes, rectangles, ellipses, lines and the pen, saved as annotations rather
   than page content; see [Notes and text boxes](#notes-and-text-boxes) and
   [Shapes, lines and drawings](#shapes-lines-and-drawings). A rectangle, ellipse or line can still be drawn into
   the page content with "Draw on page (permanent)". Its menu also has the stamp tool (see [Stamps](#stamps)) and
@@ -582,8 +592,7 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 
 ## Look and feel
 
-The app follows the system's light or dark theme. The theme button at the right end of the top bar (a half circle,
-sun or moon, for the current choice) chooses System, Light or Dark; so does ☰ > View > Theme. The choice is
+The app follows the system's light or dark theme. ☰ > View > Theme chooses System, Light or Dark. The choice is
 remembered between runs, in `settings.txt` in the same folder as the recent-files list, along with the markup
 colours and your name for comments. The app uses the Inter font
 and Phosphor icons.

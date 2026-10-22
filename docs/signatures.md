@@ -49,7 +49,7 @@ digital signatures…" meanwhile, and then gives the result, coloured by the wor
 With one signature the banner gives its result in a sentence, such as "Not changed since Jane Doe signed it. LimarePDF
 can't confirm who Jane Doe is."; with several it sums them up. A certified document's banner starts with who
 certified it and what the certification allows. The banner's **Signatures** button opens the **Signatures** tab of
-the side panel (also View > Signatures).
+the side panel (also Document > Digital signatures > Signatures in this document).
 
 The Signatures tab lists the signatures in the order they were made. For each: what it is and who made it (click to
 go to it on the page), its result in a sentence, the changes made after it (those the signer didn't allow in red;
@@ -134,7 +134,7 @@ signer's own Acrobat knows nothing about your list.
 **In the app:** in a valid signature's Details, **Trust this signer…** shows the signer's certificate with its
 SHA-256 fingerprint, asks for the name to keep it under in your list, and trusts it when you choose Trust. **Trust
 an authority…** does the same for an authority from the certificates the signature carries (choose one when there
-are several). **Edit > Trusted certificates…** (also at the bottom of the Signatures tab) shows your list, removes
+are several). **Document > Digital signatures > Trusted certificates…** (also at the bottom of the Signatures tab) shows your list, removes
 an entry (Remove…, then Stop trusting), and adds a certificate from a file (Add certificate file…; as a signer
 unless you choose certificate authority, which only an authority's certificate allows). Every open document is
 judged again as soon as the list changes. A change made with `limarepdf-cli trust` while the app is open counts for documents
@@ -211,7 +211,7 @@ line.
 
 A digital ID is what you sign with: a private key, which stays secret, and a certificate naming you, which goes
 into every signature you make. LimarePDF keeps your IDs, each protected by its own password. You make, import, export,
-list and remove them in the app's **Digital IDs** window (☰ > Edit > Digital IDs…) or with `limarepdf-cli id`, and
+list and remove them in the app's **Digital IDs** window (☰ > Document > Digital signatures > Digital IDs…) or with `limarepdf-cli id`, and
 [sign](#signing) with them.
 
 **In the app**, the Digital IDs window lists your IDs; pick one to see its certificate, key, validity and SHA-256

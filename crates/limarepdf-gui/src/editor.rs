@@ -45,7 +45,18 @@ pub enum Tool {
 }
 
 impl Tool {
-    /// The tools behind the toolbar's Annotate button.
+    /// The tools behind the toolbar's Comment button.
+    pub const COMMENTING: [Tool; 7] = [
+        Tool::Note,
+        Tool::TextBox,
+        Tool::Rect,
+        Tool::Ellipse,
+        Tool::Line,
+        Tool::Pen,
+        Tool::Stamp,
+    ];
+
+    /// The tools that add annotations: the commenting tools and redaction marks.
     pub const ANNOTATE: [Tool; 8] = [
         Tool::Note,
         Tool::TextBox,
@@ -829,7 +840,7 @@ impl Editor {
 
     pub fn set_tool(&mut self, t: Tool) {
         self.finish_writing();
-        if Tool::ANNOTATE.contains(&t) {
+        if Tool::COMMENTING.contains(&t) {
             self.annot_tool = t;
         }
         self.tool = t;

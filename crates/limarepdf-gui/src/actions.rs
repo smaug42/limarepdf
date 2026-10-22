@@ -87,7 +87,11 @@ pub enum Act {
     /// In the facing layout, show the first page alone, or pair it with the second.
     ToggleCover,
     ToggleSide,
-    /// Show the side panel's Bookmarks tab.
+    /// Show the side panel's page thumbnails.
+    PagesView,
+    /// Show the side panel's search results.
+    SearchView,
+    /// Show the side panel's Bookmarks view.
     Bookmarks,
     Comments,
     /// Show the side panel's Signatures tab.
@@ -153,15 +157,18 @@ pub enum Group {
     Edit,
     View,
     Tools,
+    Pages,
     Document,
     Help,
 }
 
 impl Group {
-    pub const MENUS: [Group; 5] = [
+    pub const MENUS: [Group; 7] = [
         Group::File,
         Group::Edit,
         Group::View,
+        Group::Tools,
+        Group::Pages,
         Group::Document,
         Group::Help,
     ];
@@ -172,6 +179,7 @@ impl Group {
             Group::Edit => "Edit",
             Group::View => "View",
             Group::Tools => "Tools",
+            Group::Pages => "Pages",
             Group::Document => "Document",
             Group::Help => "Help",
         }
@@ -530,31 +538,13 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
-        act: Act::TrustedCertificates,
-        group: Group::Edit,
-        label: "Trusted certificates…",
-        icon: icon::CERTIFICATE,
-        enabled: always,
-        hint: "The signers and certificate authorities you trust when LimarePDF checks digital \
-               signatures.",
-        ..BASE
-    },
-    Action {
-        act: Act::DigitalIds,
-        group: Group::Edit,
-        label: "Digital IDs…",
-        icon: icon::IDENTIFICATION_CARD,
-        enabled: always,
-        hint: "Create, import, export or remove the digital IDs you sign documents with.",
-        ..BASE
-    },
-    Action {
         act: Act::EditObjectText,
         group: Group::Edit,
         label: "Edit text",
         icon: icon::PENCIL_SIMPLE,
         enabled: text_object,
-        menu: false,
+        sep: true,
+        hint: "Change the words of the selected line of page text.",
         ..BASE
     },
     Action {
@@ -563,7 +553,6 @@ pub static ACTIONS: &[Action] = &[
         label: "Replace image…",
         icon: icon::IMAGE,
         enabled: image_object,
-        menu: false,
         ..BASE
     },
     Action {
@@ -572,7 +561,6 @@ pub static ACTIONS: &[Action] = &[
         label: "Copy the object's text",
         icon: icon::COPY,
         enabled: text_object,
-        menu: false,
         ..BASE
     },
     Action {
@@ -611,48 +599,51 @@ pub static ACTIONS: &[Action] = &[
         label: "Cancel or deselect",
         keys: &[k(N, Key::Escape)],
         enabled: any_tool,
-        menu: false,
         palette: false,
         ..BASE
     },
     Action {
         act: Act::Nudge(-1, 0),
         group: Group::Edit,
-        label: "Move the selected object left",
+        label: "Move left",
         keys: &[k(N, Key::ArrowLeft)],
         enabled: nudgeable,
-        menu: false,
         palette: false,
+        hint: "One point; with Shift, ten.",
+        submenu: "Move selected object",
         ..BASE
     },
     Action {
         act: Act::Nudge(1, 0),
         group: Group::Edit,
-        label: "Move the selected object right",
+        label: "Move right",
         keys: &[k(N, Key::ArrowRight)],
         enabled: nudgeable,
-        menu: false,
         palette: false,
+        hint: "One point; with Shift, ten.",
+        submenu: "Move selected object",
         ..BASE
     },
     Action {
         act: Act::Nudge(0, -1),
         group: Group::Edit,
-        label: "Move the selected object up",
+        label: "Move up",
         keys: &[k(N, Key::ArrowUp)],
         enabled: nudgeable,
-        menu: false,
         palette: false,
+        hint: "One point; with Shift, ten.",
+        submenu: "Move selected object",
         ..BASE
     },
     Action {
         act: Act::Nudge(0, 1),
         group: Group::Edit,
-        label: "Move the selected object down",
+        label: "Move down",
         keys: &[k(N, Key::ArrowDown)],
         enabled: nudgeable,
-        menu: false,
         palette: false,
+        hint: "One point; with Shift, ten.",
+        submenu: "Move selected object",
         ..BASE
     },
     // ---------------------------------------------------------------- View
@@ -695,7 +686,8 @@ pub static ACTIONS: &[Action] = &[
         group: Group::View,
         label: "Next page",
         keys: &[k(N, Key::PageDown)],
-        menu: false,
+        sep: true,
+        submenu: "Go to page",
         ..BASE
     },
     Action {
@@ -703,7 +695,7 @@ pub static ACTIONS: &[Action] = &[
         group: Group::View,
         label: "Previous page",
         keys: &[k(N, Key::PageUp)],
-        menu: false,
+        submenu: "Go to page",
         ..BASE
     },
     Action {
@@ -711,7 +703,7 @@ pub static ACTIONS: &[Action] = &[
         group: Group::View,
         label: "First page",
         keys: &[k(N, Key::Home)],
-        menu: false,
+        submenu: "Go to page",
         ..BASE
     },
     Action {
@@ -719,7 +711,7 @@ pub static ACTIONS: &[Action] = &[
         group: Group::View,
         label: "Last page",
         keys: &[k(N, Key::End)],
-        menu: false,
+        submenu: "Go to page",
         ..BASE
     },
     Action {
@@ -770,11 +762,28 @@ pub static ACTIONS: &[Action] = &[
     Action {
         act: Act::ToggleSide,
         group: Group::View,
-        label: "Side panel",
+        label: "Navigation panel",
         icon: icon::SIDEBAR_SIMPLE,
         enabled: always,
         checked: Some(|c| c.side),
         sep: true,
+        hint: "The panel on the left: pages, search results, bookmarks and comments.",
+        ..BASE
+    },
+    Action {
+        act: Act::PagesView,
+        group: Group::View,
+        label: "Pages",
+        icon: icon::FILES,
+        hint: "Show the page thumbnails in the navigation panel.",
+        ..BASE
+    },
+    Action {
+        act: Act::SearchView,
+        group: Group::View,
+        label: "Search results",
+        icon: icon::LIST_MAGNIFYING_GLASS,
+        hint: "Show the results of the last search in the navigation panel.",
         ..BASE
     },
     Action {
@@ -782,7 +791,7 @@ pub static ACTIONS: &[Action] = &[
         group: Group::View,
         label: "Bookmarks",
         icon: icon::BOOKMARK_SIMPLE,
-        hint: "Show the document's outline in the side panel.",
+        hint: "Show the document's outline in the navigation panel.",
         ..BASE
     },
     Action {
@@ -790,16 +799,7 @@ pub static ACTIONS: &[Action] = &[
         group: Group::View,
         label: "Comments",
         icon: icon::CHAT_TEXT,
-        hint: "List the document's comments, notes and markup in the side panel.",
-        ..BASE
-    },
-    Action {
-        act: Act::Signatures,
-        group: Group::View,
-        label: "Signatures",
-        icon: icon::SEAL_CHECK,
-        hint: "List the document's digital signatures and whether they are valid, in the \
-               side panel.",
+        hint: "List the document's comments, notes and markup in the navigation panel.",
         ..BASE
     },
     Action {
@@ -837,7 +837,7 @@ pub static ACTIONS: &[Action] = &[
         label: "Next field",
         enabled: |c| c.form,
         hint: "Tab also moves to the next field.",
-        menu: false,
+        submenu: "Form fields",
         ..BASE
     },
     Action {
@@ -846,7 +846,7 @@ pub static ACTIONS: &[Action] = &[
         label: "Previous field",
         enabled: |c| c.form,
         hint: "Shift+Tab also moves to the previous field.",
-        menu: false,
+        submenu: "Form fields",
         ..BASE
     },
     Action {
@@ -854,7 +854,8 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Edit,
         label: "Clear field",
         enabled: |c| c.field,
-        menu: false,
+        sep: true,
+        hint: "Empty the form field being filled in.",
         ..BASE
     },
     Action {
@@ -964,7 +965,7 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Tools,
         label: "Read and select text",
         icon: icon::CURSOR_TEXT,
-        menu: false,
+        hint: "Select and copy text, fill in forms and follow links.",
         ..BASE
     },
     Action {
@@ -972,7 +973,6 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Tools,
         label: "Select, move and resize objects",
         icon: icon::CURSOR,
-        menu: false,
         ..BASE
     },
     Action {
@@ -980,7 +980,7 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Tools,
         label: "Add text",
         icon: icon::TEXT_T,
-        menu: false,
+        sep: true,
         ..BASE
     },
     Action {
@@ -988,63 +988,6 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Tools,
         label: "Add image…",
         icon: icon::IMAGE,
-        menu: false,
-        ..BASE
-    },
-    Action {
-        act: Act::Tool(Tool::Note),
-        group: Group::Tools,
-        label: "Add a note",
-        icon: icon::NOTE,
-        menu: false,
-        ..BASE
-    },
-    Action {
-        act: Act::Tool(Tool::TextBox),
-        group: Group::Tools,
-        label: "Add a text box",
-        icon: icon::TEXTBOX,
-        menu: false,
-        ..BASE
-    },
-    Action {
-        act: Act::Tool(Tool::Rect),
-        group: Group::Tools,
-        label: "Add a rectangle",
-        icon: icon::SQUARE,
-        menu: false,
-        ..BASE
-    },
-    Action {
-        act: Act::Tool(Tool::Ellipse),
-        group: Group::Tools,
-        label: "Add an ellipse",
-        icon: icon::CIRCLE,
-        menu: false,
-        ..BASE
-    },
-    Action {
-        act: Act::Tool(Tool::Line),
-        group: Group::Tools,
-        label: "Add a line or arrow",
-        icon: icon::LINE_SEGMENT,
-        menu: false,
-        ..BASE
-    },
-    Action {
-        act: Act::Tool(Tool::Pen),
-        group: Group::Tools,
-        label: "Draw with the pen",
-        icon: icon::SCRIBBLE,
-        menu: false,
-        ..BASE
-    },
-    Action {
-        act: Act::Tool(Tool::Stamp),
-        group: Group::Tools,
-        label: "Add a stamp",
-        icon: icon::STAMP,
-        menu: false,
         ..BASE
     },
     Action {
@@ -1052,7 +995,6 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Tools,
         label: "Mark areas for redaction",
         icon: icon::EYE_SLASH,
-        menu: false,
         ..BASE
     },
     Action {
@@ -1060,29 +1002,85 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Tools,
         label: "Fill and sign",
         icon: icon::SIGNATURE,
-        menu: false,
         hint: "Put your signature, initials, the date or a tick on the page. Not a digital \
                signature.",
+        ..BASE
+    },
+    Action {
+        act: Act::Tool(Tool::Note),
+        group: Group::Tools,
+        label: "Add a note",
+        icon: icon::NOTE,
+        sep: true,
+        submenu: "Commenting",
+        ..BASE
+    },
+    Action {
+        act: Act::Tool(Tool::TextBox),
+        group: Group::Tools,
+        label: "Add a text box",
+        icon: icon::TEXTBOX,
+        submenu: "Commenting",
+        ..BASE
+    },
+    Action {
+        act: Act::Tool(Tool::Rect),
+        group: Group::Tools,
+        label: "Add a rectangle",
+        icon: icon::SQUARE,
+        submenu: "Commenting",
+        ..BASE
+    },
+    Action {
+        act: Act::Tool(Tool::Ellipse),
+        group: Group::Tools,
+        label: "Add an ellipse",
+        icon: icon::CIRCLE,
+        submenu: "Commenting",
+        ..BASE
+    },
+    Action {
+        act: Act::Tool(Tool::Line),
+        group: Group::Tools,
+        label: "Add a line or arrow",
+        icon: icon::LINE_SEGMENT,
+        submenu: "Commenting",
+        ..BASE
+    },
+    Action {
+        act: Act::Tool(Tool::Pen),
+        group: Group::Tools,
+        label: "Draw with the pen",
+        icon: icon::SCRIBBLE,
+        submenu: "Commenting",
+        ..BASE
+    },
+    Action {
+        act: Act::Tool(Tool::Stamp),
+        group: Group::Tools,
+        label: "Add a stamp",
+        icon: icon::STAMP,
+        submenu: "Commenting",
         ..BASE
     },
     // ------------------------------------------------------------ Document
     Action {
         act: Act::RotR,
-        group: Group::Document,
+        group: Group::Pages,
         label: "Rotate clockwise",
         icon: icon::ARROW_CLOCKWISE,
         ..BASE
     },
     Action {
         act: Act::RotL,
-        group: Group::Document,
+        group: Group::Pages,
         label: "Rotate counter-clockwise",
         icon: icon::ARROW_COUNTER_CLOCKWISE,
         ..BASE
     },
     Action {
         act: Act::Crop,
-        group: Group::Document,
+        group: Group::Pages,
         label: "Crop pages…",
         icon: icon::CROP,
         hint: "Trim the margins of the selected pages, or all pages.",
@@ -1090,7 +1088,7 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Delete,
-        group: Group::Document,
+        group: Group::Pages,
         label: "Delete pages",
         icon: icon::TRASH,
         hint: "The selected pages, or the current page. Undo brings them back.",
@@ -1098,7 +1096,7 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::RemoveBlank,
-        group: Group::Document,
+        group: Group::Pages,
         label: "Remove blank pages",
         icon: icon::BROOM,
         hint: "Pages of one even colour, give or take specks or a lone page number. Undo brings them back.",
@@ -1107,7 +1105,7 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Extract,
-        group: Group::Document,
+        group: Group::Pages,
         label: "Extract pages to a new tab",
         icon: icon::ARROW_SQUARE_OUT,
         hint: "The selected pages, or the current page.",
@@ -1115,7 +1113,8 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Blank,
-        group: Group::Document,
+        group: Group::Pages,
+        sep: true,
         label: "Insert blank page",
         icon: icon::FILE_PLUS,
         hint: "After the selected pages, or the current page, at its size.",
@@ -1123,7 +1122,7 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::InsertImages,
-        group: Group::Document,
+        group: Group::Pages,
         label: "Insert images…",
         icon: icon::IMAGES,
         hint: "After the selected pages, or the current page.",
@@ -1145,14 +1144,15 @@ pub static ACTIONS: &[Action] = &[
     },
     Action {
         act: Act::Merge,
-        group: Group::Document,
+        group: Group::Pages,
+        sep: true,
         label: "Append PDFs…",
         icon: icon::STACK_PLUS,
         ..BASE
     },
     Action {
         act: Act::Split,
-        group: Group::Document,
+        group: Group::Pages,
         label: "Split into files…",
         ..BASE
     },
@@ -1223,13 +1223,42 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::RemoveHidden,
+        group: Group::Document,
+        label: "Remove hidden information…",
+        icon: icon::BROOM,
+        enabled: doc_idle,
+        sep: true,
+        hint: "Remove metadata, scripts, attachments, hidden layers and other information that \
+               travels with the file but isn't on its pages.",
+        ..BASE
+    },
+    Action {
+        act: Act::Security,
+        group: Group::Document,
+        label: "Password security…",
+        ..BASE
+    },
+    Action {
+        act: Act::Signatures,
+        group: Group::Document,
+        label: "Signatures in this document",
+        icon: icon::SEAL_CHECK,
+        sep: true,
+        hint: "List the document's digital signatures and whether they are valid.",
+        submenu: "Digital signatures",
+        ..BASE
+    },
+    Action {
         act: Act::SignDigital,
         group: Group::Document,
         label: "Sign with digital ID…",
         icon: icon::SEAL_CHECK,
         enabled: doc_idle,
+        sep: true,
         hint: "Sign so that others can check who signed and whether anything changed \
                afterwards. The signed document is saved as a new file.",
+        submenu: "Digital signatures",
         ..BASE
     },
     Action {
@@ -1240,22 +1269,29 @@ pub static ACTIONS: &[Action] = &[
         enabled: doc_idle,
         hint: "Sign as the document's author, choosing what others may change afterwards. \
                Only before anyone has signed it.",
+        submenu: "Digital signatures",
         ..BASE
     },
     Action {
-        act: Act::RemoveHidden,
+        act: Act::DigitalIds,
         group: Group::Document,
-        label: "Remove hidden information…",
-        icon: icon::BROOM,
-        enabled: doc_idle,
-        hint: "Remove metadata, scripts, attachments, hidden layers and other information that \
-               travels with the file but isn't on its pages.",
+        label: "Digital IDs…",
+        icon: icon::IDENTIFICATION_CARD,
+        enabled: always,
+        sep: true,
+        hint: "Create, import, export or remove the digital IDs you sign documents with.",
+        submenu: "Digital signatures",
         ..BASE
     },
     Action {
-        act: Act::Security,
+        act: Act::TrustedCertificates,
         group: Group::Document,
-        label: "Password security…",
+        label: "Trusted certificates…",
+        icon: icon::CERTIFICATE,
+        enabled: always,
+        hint: "The signers and certificate authorities you trust when LimarePDF checks digital \
+               signatures.",
+        submenu: "Digital signatures",
         ..BASE
     },
     // ---------------------------------------------------------------- Help
@@ -1448,6 +1484,39 @@ mod tests {
             for group in context_items(&sel) {
                 for &a in *group {
                     get(a);
+                }
+            }
+        }
+    }
+
+    /// Every command has a route in the menu, so nothing is reachable only by an icon, a
+    /// key or a right-click. Delete the object is Delete the selection, for objects.
+    #[test]
+    fn every_command_is_in_the_menu() {
+        for a in ACTIONS {
+            if a.act != Act::DeleteObject {
+                assert!(a.menu, "{:?} is not in the menu", a.act);
+                assert!(
+                    Group::MENUS.contains(&a.group),
+                    "{:?}'s menu isn't shown",
+                    a.act
+                );
+            }
+        }
+    }
+
+    /// A submenu is one run of entries, or its later entries would make a second
+    /// submenu of the same name.
+    #[test]
+    fn submenus_are_unbroken() {
+        for g in Group::MENUS {
+            let items: Vec<_> = ACTIONS.iter().filter(|a| a.group == g && a.menu).collect();
+            let mut seen: Vec<&str> = Vec::new();
+            for (i, a) in items.iter().enumerate() {
+                let starts = i == 0 || items[i - 1].submenu != a.submenu;
+                if !a.submenu.is_empty() && starts {
+                    assert!(!seen.contains(&a.submenu), "{} is split", a.submenu);
+                    seen.push(a.submenu);
                 }
             }
         }

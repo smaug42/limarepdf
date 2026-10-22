@@ -1,5 +1,23 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- The main window is rearranged. The top bar holds Open, Save and Export; Undo and Redo; the everyday tools (Read
+  and select text, Add text, Add image, Redact, Fill and sign); one Comment button for notes, text boxes, shapes,
+  the pen and stamps; and Search and Print. As the window narrows, the tools fold one by one into a Tools menu,
+  which holds every tool, and come back as it widens. The page layout, Fit width and zoom moved to the bottom
+  right, and the theme to View > Theme.
+- The navigation panel has a column of icons for Pages, Search results, Bookmarks and Comments; clicking the open
+  view folds the panel away. A document's digital signatures are listed from Document > Digital signatures,
+  which also holds signing, certifying, digital IDs and trusted certificates (Digital IDs and Trusted
+  certificates were in Edit).
+- The menu has every command: new Tools and Pages menus (page commands moved there from Document), and entries
+  for editing a text object, replacing an image, moving the selected object, going to a page and moving between
+  form fields, which had only a button, a key or a right-click.
+- Tabs have their close button inside them.
+
 ## [0.8.1] - 2026-10-21
 
 ### Changed

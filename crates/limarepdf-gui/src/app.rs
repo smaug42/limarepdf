@@ -356,6 +356,76 @@ const RAIL_WIDTH: f32 = 36.0;
 /// Below this window width the inspector collapses to its rail by itself.
 const NARROW_WIDTH: f32 = 960.0;
 
+/// The navigation rail's views, top to bottom. The digital signatures view is opened
+/// from the menu only.
+const NAV_VIEWS: [(Side, Act); 4] = [
+    (Side::Pages, Act::PagesView),
+    (Side::Search, Act::SearchView),
+    (Side::Bookmarks, Act::Bookmarks),
+    (Side::Comments, Act::Comments),
+];
+
+/// A top-bar tool control that folds into the Tools menu when the bar is short of room.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Fold {
+    /// The Comment button and its menu.
+    Commenting,
+    Tool(Tool),
+}
+
+impl Fold {
+    /// Its width on the bar, from a button's, a menu caret's and a separator's.
+    fn width(self, btn: f32, caret: f32, sep: f32) -> f32 {
+        match self {
+            Fold::Commenting => sep + btn + caret,
+            Fold::Tool(_) => btn,
+        }
+    }
+}
+
+/// The order tool controls fold into the Tools menu; they come back in reverse. Read and
+/// select text stays on the bar.
+const FOLDS: [Fold; 5] = [
+    Fold::Commenting,
+    Fold::Tool(Tool::Image),
+    Fold::Tool(Tool::Redact),
+    Fold::Tool(Tool::Text),
+    Fold::Tool(Tool::Sign),
+];
+
+/// Widths of the top bar's parts as last drawn, in points; `None` until drawn once.
+#[derive(Clone, Copy, Default)]
+struct BarWidths {
+    /// The left end without the tools of [`FOLDS`].
+    fixed: Option<f32>,
+    /// Each of [`FOLDS`], in its order.
+    folds: [Option<f32>; FOLDS.len()],
+    /// The right end, with the search icon and with the search field.
+    right: [Option<f32>; 2],
+}
+
+/// Extra room a folded control needs before it comes back, so that a width at the
+/// boundary doesn't fold and unfold it by turns.
+const UNFOLD_MARGIN: f32 = 12.0;
+
+/// How many of [`FOLDS`] to fold, given last frame's count `prev`, the room for the left
+/// end of the bar and the width it needs with each count folded.
+fn fold_level(prev: usize, room: f32, need: impl Fn(usize) -> f32) -> usize {
+    let mut n = prev.min(FOLDS.len());
+    while n > 0 && need(n - 1) + UNFOLD_MARGIN <= room {
+        n -= 1;
+    }
+    while n < FOLDS.len() && need(n) > room {
+        n += 1;
+    }
+    n
+}
+
+/// An accessible name for a control showing only an icon.
+fn named(label: &str) -> egui::WidgetInfo {
+    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label)
+}
+
 /// How long the undo toast stays, in seconds.
 const TOAST_SECONDS: f64 = 6.0;
 
@@ -396,6 +466,10 @@ pub struct App {
     inspector_pref: bool,
     /// The window was narrower than `NARROW_WIDTH` last frame.
     narrow: bool,
+    /// How many tool controls are folded into the Tools menu, from [`FOLDS`].
+    fold: usize,
+    /// The top bar's controls' widths as last drawn.
+    bar_widths: BarWidths,
     /// The window has been fitted to its monitor, at the first frame the monitor's size was known.
     fitted: bool,
     toast: Option<Toast>,
@@ -462,6 +536,8 @@ impl App {
             palette: None,
             show_inspector: true,
             inspector_pref: true,
+            fold: 0,
+            bar_widths: BarWidths::default(),
             narrow: false,
             fitted: false,
             toast: None,
@@ -1689,6 +1765,14 @@ impl App {
                 self.settings.save();
             }
             Act::ToggleSide => self.show_side = !self.show_side,
+            Act::PagesView => {
+                self.show_side = true;
+                self.tabs[self.active].side = Side::Pages;
+            }
+            Act::SearchView => {
+                self.show_side = true;
+                self.tabs[self.active].side = Side::Search;
+            }
             Act::Bookmarks => {
                 self.show_side = true;
                 self.tabs[self.active].side = Side::Bookmarks;
@@ -2998,33 +3082,83 @@ fn annotate_button(
         }
     })
     .response
-    .on_hover_text("Annotate");
+    .on_hover_text("Commenting tools")
+    .widget_info(|| named("Commenting tools"));
 }
 
-/// The tools as one menu button showing the current tool, for narrow windows.
+/// The Tools menu button: every tool, those folded off the bar among them. It shows
+/// `hidden`, the current tool when that one isn't on the bar, highlighted.
 fn tool_menu(
     ui: &mut egui::Ui,
     tools: Vec<&Action>,
+    hidden: Option<Tool>,
     is_on: &dyn Fn(&Action) -> bool,
     acts: &mut Vec<Act>,
 ) {
-    let on = tools.iter().find(|a| is_on(a));
-    let current = on.map_or(icon::HAND, |a| a.icon);
+    let current = tools
+        .iter()
+        .find(|a| hidden.is_some_and(|t| a.act == Act::Tool(t)))
+        .map_or(icon::TOOLBOX, |a| a.icon);
     let label = (
         theme::icon(current).size(18.0),
         theme::icon(icon::CARET_DOWN).size(10.0),
     );
-    ui.menu_button(label, |ui| {
-        for a in tools {
-            let b = egui::Button::new((theme::icon(a.icon).size(16.0), a.label)).selected(is_on(a));
-            if ui.add(b).clicked() {
-                acts.push(a.act);
-                ui.close();
+    let button = egui::Button::new(label)
+        .selected(hidden.is_some())
+        .frame_when_inactive(hidden.is_some());
+    egui::containers::menu::MenuButton::from_button(button)
+        .ui(ui, |ui| {
+            for a in tools {
+                let b =
+                    egui::Button::new((theme::icon(a.icon).size(16.0), a.label)).selected(is_on(a));
+                if ui.add(b).clicked() {
+                    acts.push(a.act);
+                    ui.close();
+                }
             }
-        }
-    })
-    .response
-    .on_hover_text("Tools");
+        })
+        .0
+        .on_hover_text("Tools: every tool, including those without room on the bar")
+        .widget_info(|| named("Tools"));
+}
+
+/// A document tab: its title, and a close button inside its frame. Returns whether the
+/// title or the close button was clicked.
+fn tab_button(ui: &mut egui::Ui, title: &str, on: bool) -> (bool, bool) {
+    let v = ui.visuals();
+    let fill = if on {
+        v.selection.bg_fill.gamma_multiply(0.35)
+    } else {
+        v.faint_bg_color
+    };
+    let stroke = if on {
+        egui::Stroke::new(1.0, v.selection.stroke.color)
+    } else {
+        v.widgets.noninteractive.bg_stroke
+    };
+    egui::Frame::new()
+        .fill(fill)
+        .stroke(stroke)
+        .corner_radius(5)
+        .inner_margin(egui::Margin {
+            left: 8,
+            right: 2,
+            top: 1,
+            bottom: 1,
+        })
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            let text = egui::RichText::new(title);
+            let text = if on { text.strong() } else { text };
+            let pick = ui.add(egui::Button::new(text).frame(false)).clicked();
+            let x = egui::Button::new(theme::icon(icon::X).size(12.0))
+                .frame_when_inactive(false)
+                .min_size(egui::vec2(20.0, 20.0));
+            let x = ui.add(x);
+            x.widget_info(|| named(&format!("Close {title}")));
+            (pick, x.on_hover_text("Close tab").clicked())
+        })
+        .inner
 }
 
 /// The collapsed inspector: a rail with an icon and an arrow, clickable as a whole, so
@@ -3294,7 +3428,10 @@ impl eframe::App for App {
                 .frame_when_inactive(on)
                 .min_size(egui::vec2(28.0, 28.0));
             let tip = tooltip(ui.ctx(), a);
-            let r = ui.add_enabled((a.enabled)(&c), b);
+            let enabled = (a.enabled)(&c);
+            let r = ui.add_enabled(enabled, b);
+            let name = a.label.trim_end_matches('…');
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
             if r.on_hover_text(tip).clicked() {
                 acts.push(act);
             }
@@ -3307,84 +3444,114 @@ impl eframe::App for App {
             .frame(theme::bar_frame(ui.style()))
             .show(ui, |ui| {
                 // Width budget, so the two ends never overlap: on narrower windows the
-                // search field becomes an icon, and then the tools fold into one menu.
-                // (The file name is on the tab and in the window title.)
+                // search field becomes an icon, and then the tools fold one by one into
+                // the Tools menu, in the order of FOLDS; they come back as room returns.
+                // The widths are the controls' own, measured as they were last drawn
+                // (in points, so at any display scale), and estimated until then. (The
+                // file name is on the tab and in the window title.)
                 let sp = ui.spacing();
                 let btn = (18.0 + 2.0 * sp.button_padding.x).max(28.0) + sp.item_spacing.x;
+                let caret = 10.0 + 2.0 * sp.button_padding.x + sp.item_spacing.x;
                 let sep = 2.0 * sp.item_spacing.x;
-                // Search field with its icon, and the zoom percentage.
-                let (field, pct) = (180.0 + 18.0 + 2.0 * sp.item_spacing.x, 64.0);
-                // Theme, Export menu, Print, search, then fit, zoom in, zoom out and the
-                // page layout menu.
+                let gap = sp.item_spacing.x;
+                let widths = std::cell::RefCell::new(self.bar_widths);
+                let m = self.bar_widths;
+                // Print, then the search field (with its icon) or the search icon.
                 let right = |with_field: bool| {
-                    let search = if with_field { field } else { btn };
-                    3.0 * btn + search + sep + 3.0 * btn + pct + sep + btn
+                    let guess = btn + if with_field { 180.0 + 18.0 + 2.0 * gap } else { btn };
+                    m.right[usize::from(with_field)].unwrap_or(guess)
                 };
-                // Menu, Open, Save, Undo, Redo and three separators, then the tools.
-                let left = |tools: f32| 5.0 * btn + 3.0 * sep + tools;
-                // Eight tools (Sign among them), then the Annotate button with its menu.
-                let inline = 11.0 * btn;
-                let w = ui.available_width() - 16.0;
-                let search_field = w >= left(inline) + right(true);
-                let tools_inline = w >= left(inline) + right(search_field);
+                // Menu, Open, Save, Export, Undo, Redo, Read, the Tools menu and three
+                // separators, then the tools not folded away.
+                let need = |folded: usize| {
+                    let tools: f32 = (folded..FOLDS.len())
+                        .map(|i| m.folds[i].unwrap_or(FOLDS[i].width(btn, caret, sep)))
+                        .sum();
+                    m.fixed.unwrap_or(8.0 * btn + caret + 3.0 * sep) + tools
+                };
+                // The room between the two sides, which `Sides` keeps apart.
+                let w = ui.available_width() - 2.0 * gap;
+                let search_field = w >= need(0) + right(true);
+                self.fold = fold_level(self.fold, w - right(search_field), need);
+                let (folded, shown) = FOLDS.split_at(self.fold);
+                // A tool control's width on the bar: what drawing it added.
+                let measure = |ui: &mut egui::Ui, f: Fold, draw: &mut dyn FnMut(&mut egui::Ui)| {
+                    let before = ui.min_rect().width();
+                    draw(ui);
+                    let i = FOLDS.iter().position(|g| *g == f).unwrap_or(0);
+                    widths.borrow_mut().folds[i] = Some(ui.min_rect().width() - before);
+                };
 
                 let left_side = |ui: &mut egui::Ui| {
                     ui.menu_button(menu_icon(icon::LIST), |ui| {
                         Self::menu(ui, &c, &recent, &mut acts);
                     })
                     .response
-                    .on_hover_text("Menu");
+                    .on_hover_text("Menu")
+                    .widget_info(|| named("Menu"));
                     bar(ui, Act::Open, false, &mut acts);
                     if !has {
                         return;
                     }
                     ui.separator();
                     bar(ui, Act::Save, false, &mut acts);
+                    let export = egui::Button::new(menu_icon(icon::EXPORT))
+                        .frame_when_inactive(false)
+                        .min_size(egui::vec2(28.0, 28.0));
+                    egui::containers::menu::MenuButton::from_button(export)
+                        .ui(ui, |ui| {
+                            for act in [Act::ExportImages, Act::ExportText] {
+                                menu_item(ui, actions::get(act), &c, &mut acts);
+                            }
+                        })
+                        .0
+                        .on_hover_text("Export")
+                    .widget_info(|| named("Export"));
                     ui.separator();
                     bar(ui, Act::Undo, false, &mut acts);
                     bar(ui, Act::Redo, false, &mut acts);
                     ui.separator();
-                    let tools = ACTIONS.iter().filter(|a| a.group == Group::Tools);
                     let is_on = |a: &Action| matches!(a.act, Act::Tool(t) if c.tool == Some(t));
-                    let annotate =
-                        |a: &&Action| matches!(a.act, Act::Tool(t) if Tool::ANNOTATE.contains(&t));
-                    if tools_inline {
-                        for a in tools.clone().filter(|a| !annotate(a)) {
-                            bar(ui, a.act, is_on(a), &mut acts);
+                    bar(ui, Act::Tool(Tool::Read), c.tool == Some(Tool::Read), &mut acts);
+                    for t in [Tool::Text, Tool::Image, Tool::Redact, Tool::Sign] {
+                        if !folded.contains(&Fold::Tool(t)) {
+                            measure(ui, Fold::Tool(t), &mut |ui| {
+                                bar(ui, Act::Tool(t), c.tool == Some(t), &mut acts)
+                            });
                         }
-                        ui.separator();
-                        let annot_tools = tools.filter(annotate).collect();
-                        annotate_button(ui, annot_tools, &c, &bar, &mut acts);
-                    } else {
-                        tool_menu(ui, tools.collect(), &is_on, &mut acts);
                     }
+                    if !folded.contains(&Fold::Commenting) {
+                        measure(ui, Fold::Commenting, &mut |ui| {
+                            ui.separator();
+                            let commenting = ACTIONS
+                                .iter()
+                                .filter(|a| matches!(a.act, Act::Tool(t) if Tool::COMMENTING.contains(&t)))
+                                .collect();
+                            annotate_button(ui, commenting, &c, &bar, &mut acts);
+                        });
+                    }
+                    // Every tool, the folded ones among them; it shows the current tool
+                    // when that one isn't on the bar.
+                    let inline = |t: Tool| {
+                        t == Tool::Read
+                            || shown.iter().any(|f| match f {
+                                Fold::Tool(u) => *u == t,
+                                Fold::Commenting => Tool::COMMENTING.contains(&t),
+                            })
+                    };
+                    let hidden = c.tool.filter(|t| !inline(*t));
+                    let tools = ACTIONS.iter().filter(|a| a.group == Group::Tools).collect();
+                    tool_menu(ui, tools, hidden, &is_on, &mut acts);
+                    // Plus the spacing before the next item, as the measured controls have.
+                    let mut w = widths.borrow_mut();
+                    let tools: f32 = (folded.len()..FOLDS.len()).filter_map(|i| w.folds[i]).sum();
+                    w.fixed = Some(ui.min_rect().width() + gap - tools);
                 };
                 let right_side = |ui: &mut egui::Ui| {
                     let acts = &mut right_acts;
-                    // The theme, at the far right, with or without a document.
-                    let glyph = match c.theme {
-                        egui::ThemePreference::Light => icon::SUN,
-                        egui::ThemePreference::Dark => icon::MOON,
-                        egui::ThemePreference::System => icon::CIRCLE_HALF,
-                    };
-                    ui.menu_button(menu_icon(glyph), |ui| {
-                        let themes = ACTIONS.iter().filter(|a| matches!(a.act, Act::Theme(_)));
-                        for a in themes {
-                            menu_item(ui, a, &c, acts);
-                        }
-                    })
-                    .response
-                    .on_hover_text("Theme: follow the system, light or dark");
                     if !has {
                         return;
                     }
-                    ui.menu_button(menu_icon(icon::EXPORT), |ui| {
-                        for act in [Act::ExportImages, Act::ExportText] {
-                            menu_item(ui, actions::get(act), &c, acts);
-                        }
-                    })
-                    .response
-                    .on_hover_text("Export");
                     bar(ui, Act::Print, false, acts);
                     let t = &mut self.tabs[self.active];
                     if search_field {
@@ -3406,38 +3573,15 @@ impl eframe::App for App {
                     } else {
                         bar(ui, Act::Find, false, acts);
                     }
-                    ui.separator();
-                    // Highlighted while the zoom follows the width.
-                    bar(ui, Act::FitWidth, c.fit, acts);
-                    bar(ui, Act::ZoomIn, false, acts);
-                    // The zoom level; clicking it resets to actual size.
-                    let level = format!("{:.0}%", t.zoom * 100.0);
-                    let b = egui::Button::new(level).frame_when_inactive(false);
-                    let tip = tooltip(ui.ctx(), actions::get(Act::Actual));
-                    if ui.add(b).on_hover_text(tip).clicked() {
-                        acts.push(Act::Actual);
-                    }
-                    bar(ui, Act::ZoomOut, false, acts);
-                    ui.separator();
-                    // The page layout, its icon showing the current one.
-                    let glyph = actions::get(Act::Layout(c.layout)).icon;
-                    ui.menu_button(menu_icon(glyph), |ui| {
-                        let layouts = ACTIONS.iter().filter(|a| a.submenu == "Page layout");
-                        for a in layouts {
-                            if a.sep {
-                                ui.separator();
-                            }
-                            menu_item(ui, a, &c, acts);
-                        }
-                    })
-                    .response
-                    .on_hover_text("Page layout");
+                    let used = ui.min_rect().width() + gap;
+                    widths.borrow_mut().right[usize::from(search_field)] = Some(used);
                 };
                 // The right side is laid out first; the left gets what remains.
                 egui::Sides::new()
                     .shrink_left()
                     .height(28.0)
                     .show(ui, left_side, right_side);
+                self.bar_widths = widths.into_inner();
             });
         acts.append(&mut right_acts);
 
@@ -3446,16 +3590,13 @@ impl eframe::App for App {
                 ui.horizontal_wrapped(|ui| {
                     let mut close = None;
                     for i in 0..self.tabs.len() {
-                        if ui
-                            .selectable_label(i == self.active, self.tabs[i].title())
-                            .clicked()
-                        {
+                        let (pick, x) = tab_button(ui, &self.tabs[i].title(), i == self.active);
+                        if pick {
                             self.active = i;
                         }
-                        if ui.small_button("×").clicked() {
+                        if x {
                             close = Some(i);
                         }
-                        ui.add_space(6.0);
                     }
                     if let Some(i) = close {
                         self.active = i;
@@ -3465,17 +3606,18 @@ impl eframe::App for App {
             });
         }
 
+        // The status bar: the page and messages at the left; the page layout, Fit width
+        // and the zoom at the right.
         egui::Panel::bottom("status").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if let Some(t) = self.tabs.get(self.active) {
+            let t = self.tabs.get(self.active);
+            let status = |ui: &mut egui::Ui| {
+                if let Some(t) = t {
                     let (n, name) = (t.current + 1, t.page_name(t.current));
                     ui.label(if name == n.to_string() {
                         format!("Page {n} of {}", t.page_count())
                     } else {
                         format!("Page {name} ({n} of {})", t.page_count())
                     });
-                    ui.separator();
-                    ui.label(format!("{:.0}%", t.zoom * 100.0));
                     if t.encryption.is_some() {
                         ui.separator();
                         ui.label("will be encrypted on save");
@@ -3485,8 +3627,78 @@ impl eframe::App for App {
                     ui.separator();
                     ui.label(&self.status);
                 }
-            });
+            };
+            // Laid out right to left.
+            let view = |ui: &mut egui::Ui| {
+                let Some(t) = t else { return };
+                bar(ui, Act::ZoomIn, false, &mut acts);
+                // The zoom level; clicking it resets to actual size.
+                let level = format!("{:.0}%", t.zoom * 100.0);
+                let b = egui::Button::new(level).frame_when_inactive(false);
+                let tip = tooltip(ui.ctx(), actions::get(Act::Actual));
+                if ui.add(b).on_hover_text(tip).clicked() {
+                    acts.push(Act::Actual);
+                }
+                bar(ui, Act::ZoomOut, false, &mut acts);
+                // Highlighted while the zoom follows the width.
+                bar(ui, Act::FitWidth, c.fit, &mut acts);
+                // The page layout, its icon showing the current one.
+                let glyph = actions::get(Act::Layout(c.layout)).icon;
+                ui.menu_button(menu_icon(glyph), |ui| {
+                    let layouts = ACTIONS.iter().filter(|a| a.submenu == "Page layout");
+                    for a in layouts {
+                        if a.sep {
+                            ui.separator();
+                        }
+                        menu_item(ui, a, &c, &mut acts);
+                    }
+                })
+                .response
+                .on_hover_text("Page layout")
+                .widget_info(|| named("Page layout"));
+            };
+            egui::Sides::new()
+                .shrink_left()
+                .truncate()
+                .show(ui, status, view);
         });
+
+        // The navigation rail at the left edge: one icon per view. Clicking another view
+        // opens it; clicking the open one folds the panel away, and again brings it back.
+        if has {
+            let t = &mut self.tabs[self.active];
+            let open = self.show_side;
+            let mut pick = None;
+            egui::Panel::left("nav-rail")
+                .resizable(false)
+                .exact_size(RAIL_WIDTH)
+                .show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(4.0);
+                        for (side, act) in NAV_VIEWS {
+                            let a = actions::get(act);
+                            let on = open && t.side == side;
+                            let b = egui::Button::new(theme::icon(a.icon).size(18.0))
+                                .selected(on)
+                                .frame_when_inactive(on)
+                                .min_size(egui::vec2(28.0, 28.0));
+                            let r = ui.add(b);
+                            r.widget_info(|| named(a.label));
+                            if r.on_hover_text(a.label).clicked() {
+                                pick = Some(side);
+                            }
+                        }
+                    });
+                });
+            if let Some(side) = pick {
+                if open && t.side == side {
+                    self.show_side = false;
+                } else {
+                    t.side = side;
+                    self.show_side = true;
+                }
+            }
+        }
 
         if has && self.show_side {
             let active = self.active;
@@ -3495,13 +3707,15 @@ impl eframe::App for App {
                 .default_size(170.0)
                 .show(ui, |ui| {
                     let t = &mut self.tabs[active];
-                    ui.horizontal_wrapped(|ui| {
-                        ui.selectable_value(&mut t.side, Side::Pages, "Pages");
-                        ui.selectable_value(&mut t.side, Side::Search, "Search");
-                        ui.selectable_value(&mut t.side, Side::Bookmarks, "Bookmarks");
-                        ui.selectable_value(&mut t.side, Side::Comments, "Comments");
-                        ui.selectable_value(&mut t.side, Side::Signatures, "Signatures");
-                    });
+                    let heading = match t.side {
+                        Side::Pages => "Pages",
+                        Side::Search => "Search results",
+                        Side::Bookmarks => "Bookmarks",
+                        Side::Comments => "Comments",
+                        Side::Signatures => "Digital signatures",
+                    };
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(heading).family(theme::semibold()));
                     ui.separator();
                     t.guarded(|t| match t.side {
                         Side::Pages => t.show_thumbs(ui, &c),
@@ -3822,6 +4036,34 @@ mod tests {
 
     /// An app with `n` tabs of one blank page, each with an unsaved change (a second page),
     /// and the last one active. Nothing is read from or written to the user's settings.
+    /// A bar where each folded control saves 40 points: 400 with none folded.
+    fn need(folded: usize) -> f32 {
+        400.0 - 40.0 * folded as f32
+    }
+
+    #[test]
+    fn tools_fold_in_order_as_room_shrinks_and_return_as_it_grows() {
+        assert_eq!(fold_level(0, 400.0, need), 0);
+        assert_eq!(fold_level(0, 399.0, need), 1);
+        assert_eq!(fold_level(0, 300.0, need), 3);
+        // Read and select text never folds: the count stops at every control in FOLDS.
+        assert_eq!(fold_level(0, 10.0, need), FOLDS.len());
+        assert_eq!(fold_level(FOLDS.len(), 1000.0, need), 0);
+        assert_eq!(FOLDS[0], Fold::Commenting);
+        assert_eq!(FOLDS[FOLDS.len() - 1], Fold::Tool(Tool::Sign));
+    }
+
+    #[test]
+    fn a_width_at_the_boundary_does_not_fold_and_unfold_by_turns() {
+        // Folded one at 399; at 400 to 405 it stays folded, coming back with the margin.
+        let mut n = fold_level(0, 399.0, need);
+        for room in [400.0, 405.0, 399.5, 404.0] {
+            n = fold_level(n, room, need);
+            assert_eq!(n, 1, "at {room}");
+        }
+        assert_eq!(fold_level(n, 400.0 + UNFOLD_MARGIN, need), 0);
+    }
+
     fn app_with(ctx: &egui::Context, n: usize) -> App {
         let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
         for _ in 0..n {
