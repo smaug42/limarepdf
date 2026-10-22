@@ -150,6 +150,13 @@ pub struct Settings {
     pub sign: SignKit,
     /// Keep recovery copies of documents with unsaved changes (on unless turned off).
     pub recovery: bool,
+    /// Whether the user wants the navigation panel and the inspector open (both on
+    /// unless closed). A narrow window may fold them away for now without changing this.
+    pub navigation_panel: bool,
+    pub inspector_panel: bool,
+    /// The selection's controls are in the inspector instead of a bar floating by the
+    /// selection.
+    pub controls_docked: bool,
     /// The window's size in points when it isn't maximized, and whether it was maximized,
     /// when the app last closed.
     pub window: [f32; 2],
@@ -204,6 +211,9 @@ impl Settings {
                     .map(|d| d.join("signatures.txt")),
             ),
             recovery: true,
+            navigation_panel: true,
+            inspector_panel: true,
+            controls_docked: false,
             window: WINDOW_DEFAULT,
             window_maximized: false,
             file,
@@ -253,6 +263,9 @@ impl Settings {
                 "comment_name" => s.author = Some(value.to_string()),
                 "stamp_name_and_date" => s.stamp_name_date = value != "false",
                 "recovery_copies" => s.recovery = value != "false",
+                "navigation_panel" => s.navigation_panel = value != "closed",
+                "inspector_panel" => s.inspector_panel = value != "closed",
+                "selection_controls" => s.controls_docked = value == "docked",
                 "window" => {
                     let size = value.split_once('x').and_then(|(w, h)| {
                         window_size([w.trim().parse().ok()?, h.trim().parse().ok()?])
@@ -317,6 +330,17 @@ impl Settings {
         }
         text += &format!("stamp_name_and_date = {}\n", self.stamp_name_date);
         text += &format!("recovery_copies = {}\n", self.recovery);
+        let open = |o: bool| if o { "open" } else { "closed" };
+        text += &format!(
+            "navigation_panel = {}\ninspector_panel = {}\nselection_controls = {}\n",
+            open(self.navigation_panel),
+            open(self.inspector_panel),
+            if self.controls_docked {
+                "docked"
+            } else {
+                "floating"
+            }
+        );
         text += &format!(
             "window = {} x {}\nwindow_maximized = {}\n",
             self.window[0], self.window[1], self.window_maximized
@@ -457,6 +481,18 @@ mod tests {
                 ("COPY".into(), StampColor::Blue)
             ]
         );
+    }
+
+    #[test]
+    fn panels_and_docking_are_remembered() {
+        let f = file("panels");
+        let s = Settings::from_file(Some(f.clone()));
+        assert!(s.navigation_panel && s.inspector_panel && !s.controls_docked);
+        let mut s = s;
+        (s.navigation_panel, s.controls_docked) = (false, true);
+        s.save();
+        let s = Settings::from_file(Some(f));
+        assert!(!s.navigation_panel && s.inspector_panel && s.controls_docked);
     }
 
     #[test]

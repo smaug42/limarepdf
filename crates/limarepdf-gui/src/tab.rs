@@ -2,7 +2,7 @@ use crate::actions::{self, Act, Ctx};
 use crate::banners::{self, Banner};
 use crate::editor::{annot_tip, Action, Editor, StampPick, Tool};
 use crate::inspector::{Forms, Sec};
-use crate::markup::{self, Mark};
+use crate::markup::Mark;
 use crate::recovery::schedule::Schedule;
 use crate::recovery::TabId;
 use crate::selection::Selection;
@@ -1730,8 +1730,9 @@ impl Tab {
         }
         let mut c = *base;
         self.fill_ctx(&mut c);
+        // Docked, the same buttons are at the top of the inspector instead.
         let groups = actions::toolbar_items(&self.ed.selection, &c);
-        if groups.is_empty() {
+        if groups.is_empty() || c.docked {
             return;
         }
         // Bar height plus a gap.
@@ -1751,31 +1752,22 @@ impl Tab {
                     .inner_margin(egui::Margin::same(4))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            for (n, group) in groups.iter().enumerate() {
-                                if n > 0 {
-                                    ui.separator();
-                                }
-                                for a in group {
-                                    let b = egui::Button::new(theme::icon(a.icon).size(16.0))
-                                        .frame_when_inactive(false)
-                                        .min_size(egui::vec2(26.0, 26.0));
-                                    let tip = actions::tooltip(ui.ctx(), a);
-                                    if ui.add(b).on_hover_text(tip).clicked() {
-                                        self.requested.push(a.act);
-                                    }
-                                    if a.act == Act::Mark(Mark::Highlight) {
-                                        let more = egui::Button::new(
-                                            theme::icon(icon::CARET_DOWN).size(12.0),
-                                        )
-                                        .frame_when_inactive(false)
-                                        .min_size(egui::vec2(16.0, 26.0));
-                                        let acts = &mut self.requested;
-                                        egui::containers::menu::MenuButton::from_button(more)
-                                            .ui(ui, |ui| markup::menu(ui, &c, acts))
-                                            .0
-                                            .on_hover_text("Underline, strike out, colours");
-                                    }
-                                }
+                            actions::context_buttons(ui, &groups, &c, &mut self.requested);
+                            ui.separator();
+                            let dock =
+                                egui::Button::new(theme::icon(icon::SIDEBAR_SIMPLE).size(16.0))
+                                    .frame_when_inactive(false)
+                                    .min_size(egui::vec2(26.0, 26.0));
+                            let r = ui.add(dock);
+                            r.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    true,
+                                    "Dock controls on the right",
+                                )
+                            });
+                            if r.on_hover_text("Dock controls on the right").clicked() {
+                                self.requested.push(Act::ToggleDock);
                             }
                         });
                     });

@@ -6,6 +6,7 @@ use crate::digital::{self, IdsWindow, SignOut, SignWindow};
 use crate::editor::{Action as EdAction, Tool};
 use crate::inspector::{self, Apply, Section};
 use crate::markup;
+use crate::panels::Panel;
 use crate::recent::Recent;
 use crate::selection::Selection;
 use crate::settings::{Layout, Settings};
@@ -353,8 +354,10 @@ const OCR_JOB: &str = "Recognise text";
 /// Width of the inspector panel, and of its rail when collapsed.
 const INSPECTOR_WIDTH: f32 = 250.0;
 const RAIL_WIDTH: f32 = 36.0;
-/// Below this window width the inspector collapses to its rail by itself.
+/// Below this window width the inspector collapses to its strip by itself.
 const NARROW_WIDTH: f32 = 960.0;
+/// Below this window width the navigation panel folds away to its rail by itself.
+const SIDE_NARROW_WIDTH: f32 = 760.0;
 
 /// The navigation rail's views, top to bottom. The digital signatures view is opened
 /// from the menu only.
@@ -459,7 +462,8 @@ pub struct App {
     dialog: Dialog,
     tx: Sender<Loaded>,
     rx: Receiver<Loaded>,
-    show_side: bool,
+    /// The navigation panel at the left (its rail of icons is always shown).
+    side: Panel,
     status: String,
     last_title: String,
     quit_ok: bool,
@@ -468,12 +472,10 @@ pub struct App {
     /// Put the keyboard focus in the top bar's search field (Ctrl+F).
     focus_search: bool,
     palette: Option<Palette>,
-    /// The inspector is open (else collapsed to its rail).
-    show_inspector: bool,
-    /// Whether the user wants it open when the window is wide enough.
-    inspector_pref: bool,
-    /// The window was narrower than `NARROW_WIDTH` last frame.
-    narrow: bool,
+    /// The inspector at the right (else collapsed to its strip).
+    inspector: Panel,
+    /// The collapsed inspector's contents are shown in a pop-out over the pages.
+    popout: bool,
     /// How many tool controls are folded into the Tools menu, from [`FOLDS`].
     fold: usize,
     /// The top bar's controls' widths as last drawn.
@@ -535,18 +537,17 @@ impl App {
             dialog: Dialog::None,
             tx,
             rx,
-            show_side: true,
+            side: Panel::new(settings.navigation_panel),
             status: String::new(),
             last_title: String::new(),
             quit_ok: false,
             busy: false,
             focus_search: false,
             palette: None,
-            show_inspector: true,
-            inspector_pref: true,
+            inspector: Panel::new(settings.inspector_panel),
+            popout: false,
             fold: 0,
             bar_widths: BarWidths::default(),
-            narrow: false,
             fitted: false,
             toast: None,
             recent,
@@ -636,7 +637,9 @@ impl App {
                         OpenPanel::Pages => Side::Pages,
                         OpenPanel::Bookmarks => Side::Bookmarks,
                     };
-                    self.show_side = true;
+                    // As the file asks; not saved as the user's choice unless they then
+                    // change a panel themselves.
+                    self.side.set_open(true);
                 }
                 if let Some(p) = page.map(|p| p.saturating_sub(1)).or(prefs.page) {
                     t.go_to(p);
@@ -916,7 +919,7 @@ impl App {
         if let Some(t) = self.tabs.get_mut(self.active) {
             t.ed.set_tool(Tool::DigitalSign);
             t.ed.digital_certify = certify;
-            self.show_inspector = true;
+            self.open_inspector();
         }
     }
 
@@ -1772,37 +1775,27 @@ impl App {
                 self.settings.pictures_too = !self.settings.pictures_too;
                 self.settings.save();
             }
-            Act::ToggleSide => self.show_side = !self.show_side,
-            Act::PageLabels => self.reveal_labels(),
-            Act::PagesView => {
-                self.show_side = true;
-                self.tabs[self.active].side = Side::Pages;
-            }
-            Act::SearchView => {
-                self.show_side = true;
-                self.tabs[self.active].side = Side::Search;
-            }
-            Act::Bookmarks => {
-                self.show_side = true;
-                self.tabs[self.active].side = Side::Bookmarks;
-            }
-            Act::Comments => {
-                self.show_side = true;
-                self.tabs[self.active].side = Side::Comments;
+            Act::ToggleSide => {
+                self.side.toggle();
+                self.keep_panels();
             }
             Act::ToggleInspector => {
-                self.show_inspector = !self.show_inspector;
-                if !self.narrow {
-                    self.inspector_pref = self.show_inspector;
-                }
+                self.inspector.toggle();
+                self.keep_panels();
+            }
+            Act::ToggleDock => {
+                self.settings.controls_docked = !self.settings.controls_docked;
+                self.settings.save();
             }
             Act::Palette => self.palette = Some(Palette::default()),
             Act::TrustedCertificates => self.trusted = Some(TrustedWindow::load()),
             _ if !has => {}
-            Act::Signatures => {
-                self.show_side = true;
-                self.tabs[self.active].side = Side::Signatures;
-            }
+            Act::PageLabels => self.reveal_labels(),
+            Act::PagesView => self.show_view(Side::Pages),
+            Act::SearchView => self.show_view(Side::Search),
+            Act::Bookmarks => self.show_view(Side::Bookmarks),
+            Act::Comments => self.show_view(Side::Comments),
+            Act::Signatures => self.show_view(Side::Signatures),
             Act::SignatureDetails(i) => {
                 self.sig_details = Some((self.tabs[self.active].id, i));
             }
@@ -1911,8 +1904,7 @@ impl App {
                 }
             }
             Act::Find => {
-                self.show_side = true;
-                self.tabs[self.active].side = Side::Search;
+                self.show_view(Side::Search);
                 self.focus_search = true;
             }
             Act::ZoomIn => {
@@ -2010,7 +2002,7 @@ impl App {
             Act::Props => self.reveal(Section::Properties),
             Act::Security => self.reveal(Section::Security),
             Act::EditObjectText => {
-                self.show_inspector = true;
+                self.open_inspector();
                 self.tabs[self.active].ed.focus_text_field();
             }
             Act::ReplaceImage => {
@@ -2045,8 +2037,31 @@ impl App {
         }
     }
 
+    /// Show one of the navigation panel's views, opening the panel.
+    fn show_view(&mut self, side: Side) {
+        self.side.set_open(true);
+        self.keep_panels();
+        self.tabs[self.active].side = side;
+    }
+
+    /// Open the inspector, as the user's choice.
+    fn open_inspector(&mut self) {
+        self.inspector.set_open(true);
+        self.keep_panels();
+    }
+
+    /// Remember the user's choice of open or closed panels, when it changed.
+    fn keep_panels(&mut self) {
+        let s = &mut self.settings;
+        let now = (self.side.wanted(), self.inspector.wanted());
+        if (s.navigation_panel, s.inspector_panel) != now {
+            (s.navigation_panel, s.inspector_panel) = now;
+            s.save();
+        }
+    }
+
     fn reveal(&mut self, s: Section) {
-        self.show_inspector = true;
+        self.open_inspector();
         let ed = &mut self.tabs[self.active].ed;
         ed.selection.clear_object();
         ed.selection.clear_words();
@@ -2910,8 +2925,9 @@ impl App {
     fn state(&self, ctx: &egui::Context) -> Ctx {
         let mut c = Ctx {
             busy: self.busy || self.sign_window.as_ref().is_some_and(SignWindow::busy),
-            side: self.show_side,
-            inspector: self.show_inspector,
+            side: self.side.shown(),
+            inspector: self.inspector.shown(),
+            docked: self.settings.controls_docked,
             theme: ctx.options(|o| o.theme_preference),
             page_look: self.settings.page_look,
             pictures_too: self.settings.pictures_too,
@@ -3041,6 +3057,11 @@ impl App {
     /// open; it handles its own keys.
     fn shortcuts(&mut self, ctx: &egui::Context) {
         if self.palette.is_some() {
+            return;
+        }
+        // Esc closes the inspector's pop-out first, keeping what was changed in it.
+        if self.popout && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
+            self.popout = false;
             return;
         }
         let c = self.state(ctx);
@@ -3179,25 +3200,148 @@ fn tab_button(ui: &mut egui::Ui, title: &str, on: bool) -> (bool, bool) {
         .inner
 }
 
-/// The collapsed inspector: a rail with an icon and an arrow, clickable as a whole, so
-/// it is clear that a panel slides out here. Returns true when clicked.
-fn inspector_rail(ui: &mut egui::Ui) -> bool {
-    let rect = ui.max_rect();
-    let id = egui::Id::new("inspector-rail-click");
-    let r = ui
-        .interact(rect, id, egui::Sense::click())
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text("Show the inspector: options for the selection or the document");
-    if r.hovered() {
-        let fill = ui.visuals().widgets.hovered.weak_bg_fill;
-        ui.painter().rect_filled(rect, 0, fill);
+/// An icon button with its name as tooltip and accessible name.
+fn icon_button(ui: &mut egui::Ui, glyph: &str, name: &str) -> egui::Response {
+    let b = egui::Button::new(theme::icon(glyph).size(16.0))
+        .frame_when_inactive(false)
+        .min_size(egui::vec2(26.0, 26.0));
+    let r = ui.add(b);
+    r.widget_info(|| named(name));
+    r.on_hover_text(name)
+}
+
+/// The button that takes docked selection buttons back to a bar by the selection.
+fn float_button(ui: &mut egui::Ui, acts: &mut Vec<Act>) {
+    let name = "Float controls near selection";
+    if icon_button(ui, icon::PICTURE_IN_PICTURE, name).clicked() {
+        acts.push(Act::ToggleDock);
     }
+}
+
+/// The collapsed inspector: a strip with a button to expand it at the top, the docked
+/// selection buttons (`groups`, empty when floating or nothing is selected) with the
+/// float button, and a button for the inspector's contents in a pop-out. Returns
+/// whether expand, and the pop-out button, were clicked.
+fn inspector_strip(
+    ui: &mut egui::Ui,
+    groups: &[Vec<&'static Action>],
+    c: &Ctx,
+    acts: &mut Vec<Act>,
+) -> (bool, bool) {
+    let mut clicked = (false, false);
     ui.vertical_centered(|ui| {
-        ui.add_space(6.0);
-        ui.label(theme::icon(icon::SLIDERS_HORIZONTAL).size(18.0));
-        ui.label(theme::icon(icon::CARET_DOUBLE_LEFT).size(12.0).weak());
+        ui.add_space(4.0);
+        clicked.0 = icon_button(ui, icon::CARET_DOUBLE_LEFT, "Expand the inspector").clicked();
+        ui.separator();
+        if !groups.is_empty() {
+            actions::context_buttons(ui, groups, c, acts);
+            ui.separator();
+            float_button(ui, acts);
+            ui.separator();
+        }
+        let options = "Options for the selection or the document";
+        clicked.1 = icon_button(ui, icon::SLIDERS_HORIZONTAL, options).clicked();
     });
-    r.clicked()
+    clicked
+}
+
+/// The inspector's contents: the editor's section for a selected object or words or a
+/// tool that adds content; otherwise the selected pages or the document. Returns a
+/// panel command pressed.
+fn inspector_body(
+    s: &mut Settings,
+    t: &mut Tab,
+    ui: &mut egui::Ui,
+    c: &Ctx,
+) -> Option<inspector::Apply> {
+    let mut apply = None;
+    t.guarded(|t| {
+        if !t.ed.owns_panel() {
+            apply = inspector::show(ui, t, c);
+            return;
+        }
+        // Stamp choices and the author's name are app-wide: lent to the tab's inspector
+        // and saved when it changes them.
+        let author = s.author();
+        t.ed.author = author.clone();
+        t.ed.stamp_name_date = s.stamp_name_date;
+        t.ed.stamp_pictures = s.stamp_pictures.clone();
+        t.ed.stamp_wordings = s.stamp_wordings.clone();
+        t.ed.sign_kit = s.sign.clone();
+        t.ed.inspector(ui);
+        if std::mem::take(&mut t.ed.apply_redactions) {
+            t.requested.push(Act::ApplyRedactions);
+        }
+        if std::mem::take(&mut t.ed.finish_signing) {
+            t.requested.push(Act::FinishSigning);
+        }
+        if std::mem::take(&mut t.ed.sign_digital) {
+            t.requested.push(Act::SignDigital);
+        }
+        if t.ed.sign_kit != s.sign {
+            s.sign = t.ed.sign_kit.clone();
+            s.sign.save();
+        }
+        if (
+            t.ed.stamp_name_date,
+            &t.ed.stamp_pictures,
+            &t.ed.stamp_wordings,
+            &t.ed.author,
+        ) != (
+            s.stamp_name_date,
+            &s.stamp_pictures,
+            &s.stamp_wordings,
+            &author,
+        ) {
+            s.stamp_name_date = t.ed.stamp_name_date;
+            s.stamp_pictures = t.ed.stamp_pictures.clone();
+            s.stamp_wordings = t.ed.stamp_wordings.clone();
+            if t.ed.author != author {
+                s.author = Some(t.ed.author.clone());
+            }
+            s.save();
+        }
+    });
+    apply
+}
+
+/// The inspector's contents in a pop-out over the pages, left of its strip (`strip`),
+/// for windows too narrow for the panel. Changes made in it stay when it closes. Returns
+/// a panel command pressed, and whether it stays open: a click outside it (and outside
+/// the strip, whose button opens and closes it) closes it, as Esc does (see
+/// `App::shortcuts`).
+fn inspector_popout(
+    ctx: &egui::Context,
+    strip: egui::Rect,
+    s: &mut Settings,
+    t: &mut Tab,
+    c: &Ctx,
+) -> (Option<inspector::Apply>, bool) {
+    let mut apply = None;
+    let height = (strip.height() - 16.0).max(120.0);
+    let area = egui::Area::new(egui::Id::new("inspector-popout"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(egui::pos2(strip.left() - 4.0, strip.top() + 4.0))
+        .pivot(egui::Align2::RIGHT_TOP)
+        .constrain(true)
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_width(INSPECTOR_WIDTH);
+                ui.heading(inspector::title(t));
+                ui.add_space(4.0);
+                egui::ScrollArea::vertical()
+                    .max_height(height)
+                    .show(ui, |ui| apply = inspector_body(s, t, ui, c));
+            });
+        });
+    let clicked_outside = ctx.input(|i| {
+        let at = i.pointer.interact_pos();
+        i.pointer.any_click()
+            && at.is_some_and(|p| !area.response.rect.contains(p) && !strip.contains(p))
+    });
+    // A menu or colour picker opened from the pop-out is outside it, but part of it.
+    let child_open = egui::Popup::is_any_open(ctx);
+    (apply, !(clicked_outside && !child_open))
 }
 
 /// One row of the command palette: icon, label, then group and shortcut on the right.
@@ -3419,13 +3563,11 @@ impl eframe::App for App {
             }
         }
 
-        // Collapse the inspector when the window becomes narrow; when it becomes wide
-        // again, restore what the user last chose at full width.
-        let narrow = ctx.content_rect().width() < NARROW_WIDTH;
-        if narrow != self.narrow {
-            self.show_inspector = !narrow && self.inspector_pref;
-            self.narrow = narrow;
-        }
+        // Narrow windows fold the panels away for now; they come back with room, unless the
+        // user closed them (see `Panel`).
+        let width = ctx.content_rect().width();
+        self.side.set_narrow(width < SIDE_NARROW_WIDTH);
+        self.inspector.set_narrow(width < NARROW_WIDTH);
 
         self.shortcuts(&ctx);
 
@@ -3457,6 +3599,8 @@ impl eframe::App for App {
         let menu_icon = |glyph: &str| theme::icon(glyph).size(18.0);
 
         let mut right_acts: Vec<Act> = Vec::new();
+        // A search was run from the top bar: its results show in the navigation panel.
+        let mut searched = false;
 
         egui::Panel::top("topbar")
             .frame(theme::bar_frame(ui.style()))
@@ -3594,8 +3738,7 @@ impl eframe::App for App {
                         }
                         if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                             t.run_search();
-                            t.side = Side::Search;
-                            self.show_side = true;
+                            searched = true;
                         }
                     } else {
                         bar(ui, Act::Find, false, acts);
@@ -3611,6 +3754,9 @@ impl eframe::App for App {
                 self.bar_widths = widths.into_inner();
             });
         acts.append(&mut right_acts);
+        if searched {
+            self.show_view(Side::Search);
+        }
 
         if has {
             egui::Panel::top("tabs").show(ui, |ui| {
@@ -3693,8 +3839,8 @@ impl eframe::App for App {
         // The navigation rail at the left edge: one icon per view. Clicking another view
         // opens it; clicking the open one folds the panel away, and again brings it back.
         if has {
-            let t = &mut self.tabs[self.active];
-            let open = self.show_side;
+            let t = &self.tabs[self.active];
+            let open = self.side.shown();
             let mut pick = None;
             egui::Panel::left("nav-rail")
                 .resizable(false)
@@ -3719,15 +3865,15 @@ impl eframe::App for App {
                 });
             if let Some(side) = pick {
                 if open && t.side == side {
-                    self.show_side = false;
+                    self.side.set_open(false);
+                    self.keep_panels();
                 } else {
-                    t.side = side;
-                    self.show_side = true;
+                    self.show_view(side);
                 }
             }
         }
 
-        if has && self.show_side {
+        if has && self.side.shown() {
             let active = self.active;
             egui::Panel::left("side")
                 .resizable(true)
@@ -3795,16 +3941,32 @@ impl eframe::App for App {
 
         // The inspector: the editor's section for a selected object or words or a tool
         // that adds content; otherwise the selected pages or the document.
-        // Collapsed, it is a thin rail at the right edge that slides the panel back out.
+        // Docked, the selection's buttons head the panel, with one to float them again.
+        // Collapsed, it is a strip at the right edge: a button that brings the panel back,
+        // the docked buttons, and one for the panel's contents in a pop-out over the pages.
         let mut panel_apply = None;
         if has {
-            let t = &mut self.tabs[self.active];
-            // "Reply…" in the Comments tab types in the inspector.
-            if t.ed.reply_focus {
-                self.show_inspector = true;
+            // "Reply…" in the Comments view types in the inspector.
+            if self.tabs[self.active].ed.reply_focus && !self.inspector.shown() {
+                self.open_inspector();
+                self.popout = false;
             }
-            let mut open = self.show_inspector;
-            let mut toggle = false;
+            let t = &mut self.tabs[self.active];
+            // As the floating bar: words, a comment or an object, not pages or nothing.
+            let selected = matches!(
+                t.ed.selection,
+                Selection::Words { .. } | Selection::Annot { .. } | Selection::Object { .. }
+            );
+            let groups = if self.settings.controls_docked && selected {
+                actions::toolbar_items(&t.ed.selection, &c)
+            } else {
+                Vec::new()
+            };
+            let mut open = self.inspector.shown();
+            let (mut toggle, mut pop) = (false, false);
+            let mut strip = None;
+            let mut panel_acts = Vec::new();
+            let s = &mut self.settings;
             let rail = egui::Panel::right("inspector-rail")
                 .resizable(false)
                 .exact_size(RAIL_WIDTH);
@@ -3813,7 +3975,8 @@ impl eframe::App for App {
                 .default_size(INSPECTOR_WIDTH);
             egui::Panel::show_switched(ui, &mut open, rail, full, |ui, expanded| {
                 if !expanded {
-                    toggle = inspector_rail(ui);
+                    (toggle, pop) = inspector_strip(ui, &groups, &c, &mut panel_acts);
+                    strip = Some(ui.max_rect());
                     return;
                 }
                 // The heading stays put above the scrolling content, with the
@@ -3825,76 +3988,47 @@ impl eframe::App for App {
                     |ui| {
                         let hide = egui::Button::new(theme::icon(icon::CARET_DOUBLE_RIGHT))
                             .frame_when_inactive(false);
-                        if ui.add(hide).on_hover_text("Hide the inspector").clicked() {
+                        let r = ui.add(hide);
+                        r.widget_info(|| named("Collapse the inspector"));
+                        if r.on_hover_text("Collapse the inspector").clicked() {
                             toggle = true;
                         }
                     },
                 );
+                if !groups.is_empty() {
+                    ui.horizontal_wrapped(|ui| {
+                        actions::context_buttons(ui, &groups, &c, &mut panel_acts);
+                        ui.separator();
+                        float_button(ui, &mut panel_acts);
+                    });
+                    ui.separator();
+                }
                 ui.add_space(4.0);
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        t.guarded(|t| {
-                            if t.ed.owns_panel() {
-                                // Stamp choices and the author's name are app-wide:
-                                // lent to the tab's inspector and saved when it
-                                // changes them.
-                                let s = &mut self.settings;
-                                let author = s.author();
-                                t.ed.author = author.clone();
-                                t.ed.stamp_name_date = s.stamp_name_date;
-                                t.ed.stamp_pictures = s.stamp_pictures.clone();
-                                t.ed.stamp_wordings = s.stamp_wordings.clone();
-                                t.ed.sign_kit = s.sign.clone();
-                                t.ed.inspector(ui);
-                                if std::mem::take(&mut t.ed.apply_redactions) {
-                                    t.requested.push(Act::ApplyRedactions);
-                                }
-                                if std::mem::take(&mut t.ed.finish_signing) {
-                                    t.requested.push(Act::FinishSigning);
-                                }
-                                if std::mem::take(&mut t.ed.sign_digital) {
-                                    t.requested.push(Act::SignDigital);
-                                }
-                                if t.ed.sign_kit != s.sign {
-                                    s.sign = t.ed.sign_kit.clone();
-                                    s.sign.save();
-                                }
-                                if (
-                                    t.ed.stamp_name_date,
-                                    &t.ed.stamp_pictures,
-                                    &t.ed.stamp_wordings,
-                                    &t.ed.author,
-                                ) != (
-                                    s.stamp_name_date,
-                                    &s.stamp_pictures,
-                                    &s.stamp_wordings,
-                                    &author,
-                                ) {
-                                    s.stamp_name_date = t.ed.stamp_name_date;
-                                    s.stamp_pictures = t.ed.stamp_pictures.clone();
-                                    s.stamp_wordings = t.ed.stamp_wordings.clone();
-                                    if t.ed.author != author {
-                                        s.author = Some(t.ed.author.clone());
-                                    }
-                                    s.save();
-                                }
-                            } else {
-                                panel_apply = inspector::show(ui, t, &c);
-                            }
-                        })
-                    });
+                    .show(ui, |ui| panel_apply = inspector_body(s, t, ui, &c));
             });
             if toggle {
                 open = !open;
             }
             // Also catches the panel being dragged closed or open.
-            if open != self.show_inspector {
-                self.show_inspector = open;
-                if !self.narrow {
-                    self.inspector_pref = open;
-                }
+            if open != self.inspector.shown() {
+                self.inspector.set_open(open);
+                self.keep_panels();
             }
+            if pop {
+                self.popout = !self.popout;
+            }
+            if self.inspector.shown() {
+                self.popout = false;
+            }
+            if let Some(strip) = strip.filter(|_| self.popout) {
+                let t = &mut self.tabs[self.active];
+                let (apply, keep) = inspector_popout(&ctx, strip, &mut self.settings, t, &c);
+                panel_apply = panel_apply.or(apply);
+                self.popout = keep;
+            }
+            acts.extend(panel_acts);
         }
         if let Some(apply) = panel_apply {
             let name = apply.name();

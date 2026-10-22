@@ -19,6 +19,11 @@
   form fields and page labels (Pages > Page labels…), which had only a button, a key, a right-click or the
   inspector.
 - Tabs have their close button inside them.
+- The selection's buttons can be docked at the top of the inspector instead of floating by the selection (the
+  floating bar's Dock controls on the right, or View > Selection controls on the right); remembered between runs.
+- The collapsed inspector is a strip with a button to expand it, the docked selection buttons, and its contents in
+  a pop-out over the pages. A narrow window folds the navigation panel and the inspector away and brings them back
+  when there is room, unless you closed them; whether each panel is open is remembered between runs.
 
 ## [0.8.1] - 2026-10-21
 

@@ -11,6 +11,7 @@ mod editor;
 mod fields;
 mod inspector;
 mod markup;
+mod panels;
 mod recent;
 mod recovery;
 mod selection;

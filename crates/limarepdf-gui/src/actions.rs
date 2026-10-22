@@ -115,6 +115,8 @@ pub enum Act {
     DigitalPlaced,
     FlattenAnnots,
     ToggleInspector,
+    /// Put the selection's controls in the inspector, or back in a bar by the selection.
+    ToggleDock,
     ToggleHidden,
     /// Tint every form field, and outline the required ones.
     ToggleFields,
@@ -210,6 +212,8 @@ pub struct Ctx {
     pub annot_tool: Option<Tool>,
     pub side: bool,
     pub inspector: bool,
+    /// The selection's controls are docked in the inspector.
+    pub docked: bool,
     /// The active tab's zoom follows the width of the view.
     pub fit: bool,
     pub layout: Layout,
@@ -816,6 +820,17 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::ToggleDock,
+        group: Group::View,
+        label: "Selection controls on the right",
+        icon: icon::SIDEBAR_SIMPLE,
+        enabled: always,
+        checked: Some(|c| c.docked),
+        hint: "Show the buttons for selected text or objects at the top of the inspector \
+               (or its strip) instead of in a bar by the selection.",
+        ..BASE
+    },
+    Action {
         act: Act::ToggleHidden,
         group: Group::View,
         label: "Show recognised text",
@@ -1419,6 +1434,42 @@ pub fn toolbar_items(sel: &Selection, c: &Ctx) -> Vec<Vec<&'static Action>> {
         })
         .filter(|g| !g.is_empty())
         .collect()
+}
+
+/// The selection's buttons from [`toolbar_items`], in the ui's direction, groups apart:
+/// for the floating bar, the inspector's top and its strip. Highlight has a menu beside
+/// it for the other marks and the colours.
+pub fn context_buttons(
+    ui: &mut egui::Ui,
+    groups: &[Vec<&'static Action>],
+    c: &Ctx,
+    acts: &mut Vec<Act>,
+) {
+    for (n, group) in groups.iter().enumerate() {
+        if n > 0 {
+            ui.separator();
+        }
+        for a in group {
+            let b = egui::Button::new(crate::theme::icon(a.icon).size(16.0))
+                .frame_when_inactive(false)
+                .min_size(egui::vec2(26.0, 26.0));
+            let r = ui.add(b);
+            let name = a.label.trim_end_matches('…');
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+            if r.on_hover_text(tooltip(ui.ctx(), a)).clicked() {
+                acts.push(a.act);
+            }
+            if a.act == Act::Mark(Mark::Highlight) {
+                let more = egui::Button::new(crate::theme::icon(icon::CARET_DOWN).size(12.0))
+                    .frame_when_inactive(false)
+                    .min_size(egui::vec2(16.0, 26.0));
+                egui::containers::menu::MenuButton::from_button(more)
+                    .ui(ui, |ui| markup::menu(ui, c, acts))
+                    .0
+                    .on_hover_text("Underline, strike out, colours");
+            }
+        }
+    }
 }
 
 /// One menu entry: a checkbox for on/off commands, else a button with its shortcut.

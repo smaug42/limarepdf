@@ -79,8 +79,14 @@ Save As to a new file keeps the signed original.
   book; off pairs pages 1 and 2. PageUp and PageDown move a pair at a time when facing. The choice changes the
   document you are viewing and is remembered for documents opened later. A document that sets its own opening
   view (see below) opens in its layout instead, and can also open the Pages or Bookmarks tab and go to a page.
-- **Right:** the inspector, which shows options for what is selected. On windows narrower than about 960 pixels it
-  collapses to a thin rail; click the rail to slide it out. ☰ > View > Inspector shows or hides it.
+- **Right:** the inspector, which shows options for what is selected. The » at its top collapses it to a strip;
+  the « at the top of the strip expands it again, and the strip's options button shows the inspector's contents
+  in a pop-out over the pages (a click elsewhere or Esc closes it; what you changed in it stays). ☰ > View >
+  Inspector does the same.
+- **Narrow windows:** below about 960 points wide the inspector collapses to its strip by itself, and below about
+  760 the navigation panel folds away to its icons. They come back when the window is wide enough again, unless
+  you closed them yourself; a panel you open in a narrow window stays open. Whether you closed or opened each
+  panel is remembered between runs.
 
 Ctrl+K opens the command palette, which lists every command. Type to filter, use Up and Down to choose, and press
 Enter to run.
@@ -504,7 +510,10 @@ it.
 
 Right-click a page, an object, selected words or a thumbnail for a short menu of what applies there. Right-clicking
 selects what is under the pointer first. A selected object or run of words also gets a small floating toolbar with
-the same commands.
+the same commands. Its last button, Dock controls on the right, moves these buttons to the top of the inspector (or
+its strip, when collapsed) instead; Float controls near selection there brings the floating toolbar back. ☰ > View >
+Selection controls on the right does either. The choice is remembered between runs; resizing the window doesn't
+change it.
 
 Drag thumbnails to put pages in a new order. A line shows where they will go. Dragging a selected thumbnail moves all
 the selected pages.
