@@ -302,8 +302,8 @@ have an exported copy. Signatures already made with it stay valid.
 
 ### In the app
 
-1. Choose ☰ > Document > **Sign with digital ID…** (or the button of that name in the Sign tool's pane), or
-   **Certify…** to [certify](#what-signing-does) the document (only before anyone has signed it).
+1. Choose ☰ > Document > Digital signatures > **Sign with digital ID…**, or **Certify…** to
+   [certify](#what-signing-does) the document (only before anyone has signed it).
 2. Click an empty signature field on the page, or drag a box where the signature goes (at least 12 points each
    way). The pane also lists the document's empty signature fields to pick from. Cancel there, or Esc, to stop.
 3. In the window, pick the digital ID (the default is picked; expired IDs can't sign), type its password, and
@@ -313,7 +313,9 @@ have an exported copy. Signatures already made with it stay valid.
    import one.
 4. **Sign…** (or **Certify…**) asks where to save the signed document, suggesting `NAME-signed.pdf` beside the
    original, then signs in the background. The signed document opens in place of the one you signed, and is checked
-   as any signed document is.
+   as any signed document is. A missing or wrong password is said under the password, where the keyboard goes;
+   any other problem is said at the end of the window. The password is cleared once used, so after a failure you
+   type it again; the reason, location and other choices stay.
 
 What you sign is the document as it is in LimarePDF, with every change made since you opened it. Those changes go into
 the same new revision as your signature, so earlier signatures judge them (and fill-and-sign items are drawn in or

@@ -74,6 +74,10 @@
   window went back to its list with the error at the bottom, losing what was typed. The form now comes back with
   its name, file or export choices kept and the error beside the password, or at the end of the form for other
   failures; the passwords are typed again, as before.
+- When signing or certifying with a digital ID, a missing or wrong password was reported at the bottom of the
+  window, below the other options, where it could be out of sight in a short window. It is now said under the
+  password, where the keyboard goes; other problems stay at the bottom. Screen readers now also name the
+  Digital ID, Reason and Location fields.
 - Ctrl+A and other single-key shortcuts were missed when the key and Ctrl arrived together, as with a quick tap.
 - Selecting a coloured comment or mark could count as an unkept change (asking about it on closing), because the
   colour button stored its colour back very slightly changed.

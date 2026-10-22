@@ -232,8 +232,16 @@ enum Field {
     Password,
     NewPassword,
     Again,
+    Reason,
+    Location,
     /// No one field (the work failed): shown at the form's end.
     Form,
+}
+
+/// Whether `e` says the password was wrong (or the ID's file damaged: PKCS#12 can't
+/// tell which).
+fn wrong_password(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.is::<WrongPassword>())
 }
 
 struct CreateForm {
@@ -314,7 +322,7 @@ impl Page {
     /// password, which has to be typed again.
     fn failed(mut self, e: &anyhow::Error) -> Page {
         let text = sentence(e);
-        let wrong = e.chain().any(|c| c.is::<WrongPassword>());
+        let wrong = wrong_password(e);
         let general = |again: &str| {
             let text = format!("{text} Type the {again} again to try again.");
             (Field::Form, text)
@@ -992,9 +1000,13 @@ pub struct SignWindow {
     accept_disallowed: bool,
     /// Signing was refused for that reason: the question shown.
     disallowed: Option<String>,
+    /// A problem with the password, shown under it: missing, wrong, or to be typed again.
+    field_error: Option<(Field, String)>,
+    /// A problem with signing itself, shown at the form's end (the app sets some too).
     pub error: Option<String>,
     task: Option<Receiver<limarepdf_core::Result<Signed>>>,
-    focus: bool,
+    /// The field the keyboard goes to when next drawn: the password.
+    focus: Option<Field>,
 }
 
 impl SignWindow {
@@ -1025,9 +1037,10 @@ impl SignWindow {
             use_saved: has_saved,
             accept_disallowed: false,
             disallowed: None,
+            field_error: None,
             error: None,
             task: None,
-            focus: true,
+            focus: Some(Field::Password),
         };
         w.pick_default();
         w
@@ -1057,6 +1070,38 @@ impl SignWindow {
         self.task.is_some()
     }
 
+    /// The chosen ID can sign.
+    fn can_sign(&self) -> bool {
+        self.list
+            .ids
+            .get(self.pick)
+            .is_some_and(|i| unusable(i).is_none())
+    }
+
+    /// Whether signing can go ahead: an ID that can sign, and its password, which is asked
+    /// for beside it when missing.
+    fn ready(&mut self) -> bool {
+        if !self.can_sign() {
+            return false;
+        }
+        if self.password.0.is_empty() {
+            self.field_error = Some((Field::Password, "Type the ID's password.".into()));
+            self.focus = Some(Field::Password);
+            return false;
+        }
+        true
+    }
+
+    /// The signer agreed to sign although earlier signatures will report disallowed
+    /// changes: the password, used up by the refused try, is typed again.
+    fn sign_anyway(&mut self) {
+        self.accept_disallowed = true;
+        self.disallowed = None;
+        let again = "Type the ID's password again to sign.";
+        self.field_error = Some((Field::Password, again.into()));
+        self.focus = Some(Field::Password);
+    }
+
     /// Signs in the background with what the window holds. The password is used up:
     /// after a failure it is typed again.
     pub fn start(&mut self, ctx: &Context, input: Input) {
@@ -1072,6 +1117,7 @@ impl SignWindow {
         let accept_disallowed = self.accept_disallowed;
         let art = if self.use_saved { input.art } else { None };
         self.error = None;
+        self.field_error = None;
         self.task = Some(spawn(ctx, move || {
             let unlocked = store.unlock(&id, &password.0)?;
             drop(password);
@@ -1119,10 +1165,16 @@ impl SignWindow {
                     Ok(s) => return SignOut::Done(Box::new(s)),
                     Err(e) => match e.downcast_ref::<DisallowedChanges>() {
                         Some(d) => self.disallowed = Some(disallowed_text(d)),
-                        None => self.error = Some(capital(&format!("{e:#}"))),
+                        None if wrong_password(&e) => {
+                            self.field_error = Some((Field::Password, sentence(&e)));
+                        }
+                        None => {
+                            let again = "Type the ID's password again to try again.";
+                            self.error = Some(format!("{} {again}", sentence(&e)));
+                        }
                     },
                 }
-                self.focus = true;
+                self.focus = Some(Field::Password);
             }
         }
         let mut out = SignOut::Open;
@@ -1151,12 +1203,7 @@ impl SignWindow {
                 if let Some(q) = self.disallowed.clone() {
                     dialogs::content(ui, |ui| ui.add(egui::Label::new(q).wrap()));
                     match dialogs::footer(ui, None, &[Btn::danger("Sign anyway"), Btn::cancel()]) {
-                        Some(0) => {
-                            self.accept_disallowed = true;
-                            self.disallowed = None;
-                            self.error = Some("Type the ID's password again to sign.".into());
-                            self.focus = true;
-                        }
+                        Some(0) => self.sign_anyway(),
                         Some(_) => out = SignOut::Cancel,
                         None => {}
                     }
@@ -1173,11 +1220,7 @@ impl SignWindow {
     fn form_ui(&mut self, ui: &mut Ui) -> SignOut {
         let mut out = SignOut::Open;
         dialogs::content(ui, |ui| self.form_body(ui, &mut out));
-        let can = self
-            .list
-            .ids
-            .get(self.pick)
-            .is_some_and(|i| unusable(i).is_none());
+        let can = self.can_sign();
         let go = if self.certify {
             "Certify…"
         } else {
@@ -1196,15 +1239,8 @@ impl SignWindow {
             Some(_) => out = SignOut::Cancel,
             None => {}
         }
-        if matches!(out, SignOut::Go) {
-            if !can {
-                return SignOut::Open;
-            }
-            if self.password.0.is_empty() {
-                self.error = Some("Type the ID's password.".into());
-                self.focus = true;
-                return SignOut::Open;
-            }
+        if matches!(out, SignOut::Go) && !self.ready() {
+            return SignOut::Open;
         }
         out
     }
@@ -1229,7 +1265,7 @@ impl SignWindow {
             let shown = ids.get(self.pick).map(label).unwrap_or_default();
             ui.horizontal(|ui| {
                 ui.label("Digital ID");
-                egui::ComboBox::from_id_salt("sign id")
+                let r = egui::ComboBox::from_id_salt("sign id")
                     .selected_text(shown)
                     .width(260.0)
                     .show_ui(ui, |ui| {
@@ -1241,6 +1277,7 @@ impl SignWindow {
                             ui.selectable_value(&mut self.pick, i, text);
                         }
                     });
+                dialogs::set_name(&r.response, "Digital ID");
             });
             if let Some(id) = ids.get(self.pick) {
                 egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -1264,21 +1301,20 @@ impl SignWindow {
             }
             ui.add_space(4.0);
             egui::Grid::new("sign form").num_columns(2).show(ui, |ui| {
-                ui.label("Password");
-                let r = self.password.edit(ui, "The ID's password");
-                if std::mem::take(&mut self.focus) {
-                    r.request_focus();
-                }
-                if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    *out = SignOut::Go;
-                }
-                ui.end_row();
-                ui.label("Reason");
-                ui.add(egui::TextEdit::singleline(&mut self.reason).hint_text("Optional"));
-                ui.end_row();
-                ui.label("Location");
-                ui.add(egui::TextEdit::singleline(&mut self.location).hint_text("Optional"));
-                ui.end_row();
+                let (e, focus) = (&self.field_error, &mut self.focus);
+                form_row(ui, "Password", Field::Password, e, focus, |ui| {
+                    let r = self.password.edit(ui, "The ID's password");
+                    if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        *out = SignOut::Go;
+                    }
+                    r
+                });
+                form_row(ui, "Reason", Field::Reason, e, focus, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.reason).hint_text("Optional"))
+                });
+                form_row(ui, "Location", Field::Location, e, focus, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.location).hint_text("Optional"))
+                });
             });
         }
         if self.certify {
@@ -1450,19 +1486,87 @@ mod tests {
             w.password.0.is_empty(),
             "the password is handed over, not kept"
         );
-        let rx = w.task.take().unwrap();
-        let r = rx
-            .recv_timeout(std::time::Duration::from_secs(120))
-            .unwrap();
-        let (tx, again) = channel();
-        tx.send(r).unwrap();
-        w.task = Some(again);
-        let mut out = SignOut::Open;
+        drawn(w).0
+    }
+
+    /// Draws the signing window as the app does, once its work (if any) is done; returns
+    /// what it did and its widgets.
+    fn drawn(w: &mut SignWindow) -> (SignOut, egui::accesskit::TreeUpdate) {
+        if let Some(rx) = w.task.take() {
+            let r = rx
+                .recv_timeout(std::time::Duration::from_secs(120))
+                .unwrap();
+            let (tx, again) = channel();
+            tx.send(r).unwrap();
+            w.task = Some(again);
+        }
+        let ctx = Context::default();
+        ctx.enable_accesskit();
         crate::theme::install(&ctx);
+        let mut out = SignOut::Open;
         let mut frame = ctx.run_ui(egui::RawInput::default(), |ui| out = w.ui(ui.ctx()));
         // Nothing draws the frame: its font atlas upload is dropped on purpose.
         frame.textures_delta.clear();
-        out
+        assert!(!w.busy());
+        (out, frame.platform_output.accesskit_update.unwrap())
+    }
+
+    #[test]
+    fn password_problems_are_said_at_the_password() {
+        let (mut w, dir) = window("password");
+        let mut doc = Pdf::from_text("Hello", (612.0, 792.0)).unwrap();
+        let base = doc.to_bytes().unwrap();
+        let input = |out: &Path| Input {
+            base: Arc::from(base.as_slice()),
+            edited: None,
+            art: None,
+            out: out.to_path_buf(),
+        };
+        let ctx = Context::default();
+        let out = dir.join("signed.pdf");
+        w.reason = "Approved".into();
+        for certify in [false, true] {
+            w.certify = certify;
+            // None typed: asked for beside it, with the keyboard there.
+            assert!(!w.ready());
+            let (_, tree) = drawn(&mut w);
+            said_at(&tree, "Password", "Type the ID's password.");
+            assert!(w.error.is_none());
+
+            // A wrong one: said there too; it is typed again.
+            w.password = Secret("not the password".into());
+            assert!(w.ready());
+            w.start(&ctx, input(&out));
+            let (_, tree) = drawn(&mut w);
+            let wrong = "The password is wrong, or the file is damaged.";
+            said_at(&tree, "Password", wrong);
+            assert!(w.password.0.is_empty() && w.error.is_none() && !out.exists());
+            assert_eq!(w.reason, "Approved");
+        }
+
+        // A failure that isn't the password's: at the form's end, and the keyboard is in
+        // Password, as the password is typed again.
+        std::fs::write(dir.join("blocker"), "a file, not a folder").unwrap();
+        w.password = Secret(PASSWORD.into());
+        w.start(&ctx, input(&dir.join("blocker").join("signed.pdf")));
+        let (_, tree) = drawn(&mut w);
+        let e = w.error.clone().unwrap();
+        assert!(
+            e.ends_with("Type the ID's password again to try again."),
+            "{e}"
+        );
+        assert!(w.field_error.is_none());
+        let field = |name: &str| {
+            tree.nodes
+                .iter()
+                .find(|(_, n)| n.label() == Some(name) && n.role() != egui::accesskit::Role::Label)
+                .map(|(id, n)| (*id, n.description().is_none()))
+        };
+        assert_eq!(field("Password"), Some((tree.focus, true)));
+        for name in ["Digital ID", "Reason", "Location"] {
+            assert!(field(name).is_some(), "{name} isn't named");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1529,8 +1633,10 @@ mod tests {
         let q = w.disallowed.clone().expect("the question");
         assert!(q.contains("\"Jane Example\""), "{q}");
         assert!(!out.exists());
-        w.disallowed = None;
-        w.accept_disallowed = true;
+        // Sign anyway: the password is asked for again, beside it.
+        w.sign_anyway();
+        let (_, tree) = drawn(&mut w);
+        said_at(&tree, "Password", "Type the ID's password again to sign.");
         let SignOut::Done(s2) = sign(&mut w, &s.bytes, Some(turned), &out) else {
             panic!("not signed: {:?}", w.error);
         };
