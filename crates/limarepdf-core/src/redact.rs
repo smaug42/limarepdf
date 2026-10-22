@@ -21,6 +21,7 @@ use crate::fonts::FontCtx;
 use crate::matrix::{self as mx, apply, mul, M};
 use crate::objects::span_boxes;
 use crate::redact_img::{black_out, inline_stream, is_clear};
+use crate::trees::{self, Lookup};
 use crate::{Pdf, Result};
 use anyhow::{anyhow, bail};
 use lopdf::content::{Content, Operation};
@@ -1243,8 +1244,19 @@ impl Pdf {
         let (Some(key), Some(tree)) = (key, tree) else {
             return Ok(Vec::new());
         };
-        let Some(list) = self.number_tree_get(tree, key, 0, &mut HashSet::new())? else {
-            return Ok(Vec::new());
+        let list = match trees::number(&self.doc, tree, key) {
+            Lookup::Found(list) => list,
+            Lookup::Missing => return Ok(Vec::new()),
+            Lookup::TooDeep => bail!(
+                "the document's accessibility tags are nested more than {} deep, so LimarePDF \
+                 can't find all the descriptions of what is under the marks. Nothing was changed",
+                trees::MAX_DEPTH
+            ),
+            Lookup::TooLarge => bail!(
+                "the index of the document's accessibility tags is too large to search, so \
+                 LimarePDF can't find all the descriptions of what is under the marks. Nothing \
+                 was changed"
+            ),
         };
         Ok(self
             .doc
@@ -1278,69 +1290,6 @@ impl Pdf {
                 cur = d.get(b"P").and_then(|o| o.as_reference()).ok();
             }
         }
-    }
-
-    /// The value of `key` in the number tree `node`, looking at each node once. Fails when the
-    /// node to look in is nested more than 32 deep.
-    fn number_tree_get(
-        &self,
-        node: &Object,
-        key: i64,
-        depth: usize,
-        seen: &mut HashSet<ObjectId>,
-    ) -> Result<Option<Object>> {
-        let Ok((id, d)) = self.doc.dereference(node) else {
-            return Ok(None);
-        };
-        let Ok(d) = d.as_dict() else {
-            return Ok(None);
-        };
-        if id.is_some_and(|id| !seen.insert(id)) {
-            return Ok(None);
-        }
-        if depth > 32 {
-            bail!(
-                "the document's accessibility tags are nested more than 32 deep, so LimarePDF \
-                 can't find all the descriptions of what is under the marks. Nothing was changed"
-            );
-        }
-        if let Ok(nums) = d.get(b"Nums").and_then(|o| o.as_array()) {
-            for [k, v] in nums.as_chunks::<2>().0 {
-                if k.as_i64().ok() == Some(key) {
-                    return Ok(Some(v.clone()));
-                }
-            }
-        }
-        let Some(kids) = d
-            .get(b"Kids")
-            .ok()
-            .and_then(|k| self.doc.dereference(k).ok())
-            .and_then(|(_, k)| k.as_array().ok())
-        else {
-            return Ok(None);
-        };
-        for kid in kids {
-            let Some(kd) = self
-                .doc
-                .dereference(kid)
-                .ok()
-                .and_then(|(_, k)| k.as_dict().ok())
-            else {
-                continue;
-            };
-            let inside = kd
-                .get(b"Limits")
-                .and_then(|o| o.as_array())
-                .ok()
-                .and_then(|l| Some((l.first()?.as_i64().ok()?, l.get(1)?.as_i64().ok()?)))
-                .is_none_or(|(lo, hi)| lo <= key && key <= hi);
-            if inside {
-                if let Some(v) = self.number_tree_get(kid, key, depth + 1, seen)? {
-                    return Ok(Some(v));
-                }
-            }
-        }
-        Ok(None)
     }
 
     /// Of the pictures and forms `dropped`, take those no page draws any more out of the

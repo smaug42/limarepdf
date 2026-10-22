@@ -1,7 +1,7 @@
 //! The document outline (bookmarks) and the destinations it points to.
 
 use crate::doc::{decode_text, encode_text};
-use crate::{Pdf, Result};
+use crate::{trees, Pdf, Result};
 use anyhow::{bail, Context};
 use lopdf::{dictionary, Dictionary, Object, ObjectId, StringFormat};
 use std::collections::{HashMap, HashSet};
@@ -393,53 +393,8 @@ impl Pdf {
         }
         let (_, names) = self.doc.dereference(catalog.get(b"Names").ok()?).ok()?;
         let tree = names.as_dict().ok()?.get(b"Dests").ok()?;
-        let (_, tree) = self.doc.dereference(tree).ok()?;
-        self.name_tree_find(tree.as_dict().ok()?, name, 0)
-    }
-
-    fn name_tree_find(&self, node: &Dictionary, key: &[u8], depth: usize) -> Option<Object> {
-        if depth > 32 {
-            return None;
-        }
-        let array = |k: &[u8]| -> Option<&Vec<Object>> {
-            let (_, o) = self.doc.dereference(node.get(k).ok()?).ok()?;
-            o.as_array().ok()
-        };
-        if let Some(names) = array(b"Names") {
-            for pair in names.chunks(2) {
-                if let [k, v] = pair {
-                    let k = self.doc.dereference(k).ok();
-                    if k.and_then(|(_, o)| o.as_str().ok()) == Some(key) {
-                        return Some(v.clone());
-                    }
-                }
-            }
-        }
-        for kid in array(b"Kids")? {
-            let Some(kid) = self
-                .doc
-                .dereference(kid)
-                .ok()
-                .and_then(|(_, o)| o.as_dict().ok())
-            else {
-                continue;
-            };
-            // Skip kids whose key range can't hold the name.
-            let limits = kid
-                .get(b"Limits")
-                .ok()
-                .and_then(|o| o.as_array().ok())
-                .and_then(|l| Some((l.first()?.as_str().ok()?, l.get(1)?.as_str().ok()?)));
-            if let Some((lo, hi)) = limits {
-                if key < lo || key > hi {
-                    continue;
-                }
-            }
-            if let Some(v) = self.name_tree_find(kid, key, depth + 1) {
-                return Some(v);
-            }
-        }
-        None
+        // A tree too deep or too large to look through is a destination that can't be followed.
+        trees::name(&self.doc, tree, name).found()
     }
 
     /// Each page object's zero-based index.

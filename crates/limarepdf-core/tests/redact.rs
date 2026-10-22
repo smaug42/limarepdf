@@ -1019,6 +1019,39 @@ fn deep_widget(levels: usize) -> Pdf {
     p
 }
 
+/// A parent tree too large to search for the page makes redaction refuse, with nothing changed,
+/// rather than read on and on (audit R05); the same leaf ahead of the rest is found and goes.
+#[test]
+fn a_parent_tree_too_large_to_search_is_refused_unchanged() {
+    let wide = |first: bool| {
+        move |p: &mut Pdf, leaf: Object| {
+            let mut kids: Vec<Object> = (0..100_000)
+                .map(|_| Object::Dictionary(dictionary! {}))
+                .collect();
+            let leaf = Object::Reference(p.doc.add_object(leaf));
+            if first {
+                kids.insert(0, leaf);
+            } else {
+                kids.push(leaf);
+            }
+            Object::Reference(p.doc.add_object(dictionary! { "Kids" => kids }))
+        }
+    };
+    let mut p = tagged_deep(1, wide(false));
+    let marks = p.find_redaction_marks("walrus-text").unwrap();
+    // Serialising moves lopdf's object counter on, so copies are compared.
+    let before = p.clone().snapshot().unwrap();
+    let err = format!("{:#}", p.redact(&marks).unwrap_err());
+    assert!(err.contains("too large to search"), "{err}");
+    assert_eq!(p.clone().snapshot().unwrap(), before);
+
+    let mut p = tagged_deep(1, wide(true));
+    let marks = p.find_redaction_marks("walrus-text").unwrap();
+    let rep = p.redact(&marks).unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    Saved::of(&mut p).assert_gone(&["WALRUS"]);
+}
+
 /// A widget under a mark whose field is nested too deep to follow makes redaction refuse,
 /// with nothing changed, rather than keep the field's value; just inside the limit the field
 /// goes, and a deep field away from the marks doesn't stop redaction.

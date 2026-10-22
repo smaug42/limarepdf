@@ -37,7 +37,8 @@ Pictures and drawings that no page uses any more are left out of the saved file.
 
 Redaction stops with a message, and changes nothing, when it can't follow everything it would have to remove: when
 a form field touching an area belongs to a form nested more than 32 deep (fields inside fields), or when the index
-that leads from a page to its tags is nested more than 32 deep.
+that leads from a page to its tags is nested more than 32 deep or too large to search (more than 100,000 parts
+looked at).
 
 ## The check afterwards
 

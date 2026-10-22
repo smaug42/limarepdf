@@ -43,6 +43,16 @@
   map's code ranges say, as other readers take them. LimarePDF draws such codes differently, so a piece of text
   it draws elsewhere than it reads is removed whole when the area covers it in either place; so is text in a font
   whose code ranges can't be read.
+- A small crafted file could keep the app busy for hours on opening or in the Bookmarks tab, with no way to stop it,
+  when its list of named destinations listed the same part many times over. Each part is now read once, and a
+  lookup gives up after 100,000 parts; a bookmark, link or opening page whose name it gave up on goes nowhere.
+  Redaction refuses, with nothing changed, when the index from a page to its tags is too large to search that way.
+- `limarepdf-cli verify --signed-version` wrote into the output file in place, so an output that was a hard link
+  to the input cut the input short. It now writes a new file and puts it in place, as every other command does,
+  and refuses an output that is the input itself or a link to it.
+- `limarepdf-cli` said nothing and exited with status 0 when it couldn't write what it prints, a full disk for
+  example. It now stops with a plain error and status 1, and says whether it had already saved its file. A reader
+  that stops early (`… | head`) still stops it quietly.
 
 ## [0.8.0] - 2026-10-20
 
