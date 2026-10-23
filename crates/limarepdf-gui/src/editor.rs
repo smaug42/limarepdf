@@ -509,6 +509,8 @@ struct LineEdit {
     pick: Pick,
     /// Takes the keyboard on the next frame.
     fresh: bool,
+    /// Takes the keyboard back once a change in the inspector is finished.
+    refocus: bool,
     refused: page_text::Refused,
 }
 
@@ -612,6 +614,8 @@ pub struct Editor {
     focus_text: bool,
     /// The note about a character that box refused.
     text_refused: page_text::Refused,
+    /// Where the inspector was drawn last: a click there doesn't end a line being edited.
+    insp_rect: Rect,
     pub tfont: FontChoice,
     pub tsize: f32,
     pub tcolor: [f32; 3],
@@ -726,6 +730,7 @@ impl Default for Editor {
             adding: None,
             focus_text: false,
             text_refused: page_text::Refused::default(),
+            insp_rect: Rect::NOTHING,
             tfont: FontChoice::default(),
             tsize: 14.0,
             tcolor: [0.0; 3],
@@ -1116,6 +1121,7 @@ impl Editor {
             id,
             pick,
             fresh: true,
+            refocus: false,
             refused: page_text::Refused::default(),
         });
     }
@@ -1311,6 +1317,24 @@ impl Editor {
             self.line_edit = None;
             self.commit_insp();
             return true;
+        }
+        // The inspector's font list, size, colour and buttons change the line being edited,
+        // which takes the keyboard back once the change is finished, as new text does.
+        let in_inspector = ctx.input(|i| {
+            let clicked = i.pointer.any_pressed() || i.pointer.any_released();
+            let at = i.pointer.press_origin().or(i.pointer.latest_pos());
+            clicked && at.is_some_and(|p| self.insp_rect.contains(p))
+        });
+        let picking = egui::Popup::is_any_open(&ctx);
+        if !edit.has_focus() && (le.refocus || in_inspector || picking) {
+            // Not in the click's own frames: a list it opens shows from the next one.
+            if settled(&ctx) && !picking && !in_inspector {
+                edit.request_focus();
+                le.refocus = false;
+            } else {
+                le.refocus = true;
+            }
+            return edit.hovered();
         }
         // Scrolled out of view, or the keyboard went elsewhere: keep what was typed. A click
         // that ended it still selects what it was on.
@@ -3445,6 +3469,7 @@ impl Editor {
     }
 
     pub fn inspector(&mut self, ui: &mut egui::Ui) {
+        self.insp_rect = ui.clip_rect();
         if self.selection.annot().is_some() {
             self.annot_inspector(ui);
             return;
@@ -3750,7 +3775,9 @@ impl Editor {
             // What was changed goes with it.
             self.insp = None;
             self.actions.push(Action::Delete(page, id));
-        } else if settled(ui.ctx()) {
+        } else if settled(ui.ctx()) && self.line_edit.is_none() {
+            // A line being edited on the page shows the change as it is made, and keeps
+            // it with the typing when the editing finishes.
             self.commit_insp();
         }
     }

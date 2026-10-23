@@ -153,6 +153,9 @@
 
 ### Fixed
 
+- Choosing a font, Bold, Italic, a size or a colour in the inspector while editing a line on the page ended the
+  editing and showed a text box of the line's text above the font list, moving it down. The line now stays in
+  editing, shows the change, and takes the keyboard back.
 - Going into the font size box and out again, or pressing Enter in it, without typing rounded an unusual size such
   as 10.126 to 10.13; it now changes nothing, and the box shows the exact size. A change of size smaller than a
   hundredth of a point was also lost.

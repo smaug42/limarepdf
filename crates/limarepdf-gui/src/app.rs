@@ -5316,6 +5316,122 @@ mod tests {
         assert_eq!((text.as_str(), font.as_str()), ("Walrus", "Courier"));
     }
 
+    /// The inspector's font list and Bold change a line being edited on the page, which
+    /// stays open and takes the keyboard back; the inspector's own text box doesn't
+    /// appear above the list (reported 2026-10-23). Both are kept with the typing.
+    #[test]
+    fn the_inspector_changes_a_line_being_edited_without_ending_it() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let courier = FontChoice::from_name("Courier");
+        assert!(app.tabs[0].edit(&ctx, |p| {
+            p.add_text(0, (100.0, 200.0), "Walrus", courier, 40.0, [0.0; 3])
+        }));
+        // Frames a twentieth of a second apart, as double-clicks and lists need.
+        let time = std::cell::Cell::new(10.0);
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            time.set(time.get() + 0.05);
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 800.0),
+                )),
+                time: Some(time.get()),
+                events,
+                ..Default::default()
+            };
+            let mut f = eframe::Frame::_new_kittest();
+            let mut out = ctx.run_ui(raw, |ui| eframe::App::ui(app, ui, &mut f));
+            out.textures_delta.clear();
+            out.platform_output.accesskit_update.expect("the window")
+        };
+        let mut tree = frame(&mut app, vec![]);
+        for _ in 0..4 {
+            tree = frame(&mut app, vec![]);
+        }
+        let name = "Editing text: Walrus";
+        let editing = |tree: &egui::accesskit::TreeUpdate| node(tree, name).map(|(_, f)| f);
+        let text_box = |tree: &egui::accesskit::TreeUpdate| {
+            tree.nodes
+                .iter()
+                .any(|(_, n)| n.label() == Some("Text") && n.value().is_some())
+        };
+        // A click as the system sends it: a move, a press and a release, a frame each. While
+        // the line is edited, each frame keeps it open, without the inspector's text box.
+        let tap = |app: &mut App, p: egui::Pos2, editing_line: bool| {
+            for e in [
+                egui::Event::PointerMoved(p),
+                press(p, true),
+                press(p, false),
+            ] {
+                let t = frame(app, vec![e]);
+                if editing_line {
+                    assert!(editing(&t).is_some(), "the line stopped being edited");
+                    assert!(!text_box(&t), "the inspector's text box appeared");
+                }
+            }
+        };
+        // A double-click on the line with the read tool edits it; type over the word.
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        let k = page.width() / 612.0;
+        let p = page.min + egui::vec2(160.0, 190.0) * k;
+        frame(&mut app, vec![egui::Event::PointerMoved(p)]);
+        for _ in 0..2 {
+            frame(&mut app, vec![press(p, true)]);
+            frame(&mut app, vec![press(p, false)]);
+        }
+        for _ in 0..3 {
+            tree = frame(&mut app, vec![]);
+        }
+        assert_eq!(
+            editing(&tree),
+            Some(true),
+            "the line editor doesn't have the keyboard"
+        );
+        frame(&mut app, vec![egui::Event::Text("Seal".into())]);
+        tree = frame(&mut app, vec![]);
+        // Bold, then Times from the font list.
+        let (bold, _) = node(&tree, "Bold").expect("the inspector's Bold");
+        tap(&mut app, bold.center(), true);
+        for _ in 0..3 {
+            tree = frame(&mut app, vec![]);
+        }
+        assert_eq!(editing(&tree), Some(true), "the keyboard didn't come back");
+        let (font, _) = node(&tree, "Font").expect("the inspector's font list");
+        tap(&mut app, font.center(), true);
+        tree = frame(&mut app, vec![]);
+        assert!(egui::Popup::is_any_open(&ctx), "the font list isn't open");
+        assert!(editing(&tree).is_some() && !text_box(&tree));
+        let (times, _) = node(&tree, "Times").expect("Times in the font list");
+        tap(&mut app, times.center(), true);
+        for _ in 0..3 {
+            tree = frame(&mut app, vec![]);
+            assert!(!text_box(&tree), "the inspector's text box appeared");
+        }
+        assert_eq!(editing(&tree), Some(true), "the keyboard didn't come back");
+        // Typing goes on; Esc keeps the text and the style together.
+        frame(&mut app, vec![egui::Event::Text("s".into())]);
+        let esc = egui::Event::Key {
+            key: Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut app, vec![esc]);
+        for _ in 0..2 {
+            frame(&mut app, vec![]);
+        }
+        let objs = app.tabs[0].pdf.page_objects(0).unwrap();
+        let line = objs
+            .into_iter()
+            .find_map(|o| Some((o.text?, o.font_name?)))
+            .expect("the line");
+        assert_eq!((line.0.as_str(), line.1.as_str()), ("Seals", "Times-Bold"));
+    }
+
     #[test]
     fn a_double_click_with_the_read_tool_edits_its_line() {
         let ctx = egui::Context::default();

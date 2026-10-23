@@ -597,8 +597,10 @@ edits:
   colour around it. Enter, Esc, Tab or a click elsewhere keeps the change. While you type, Ctrl+Z and Ctrl+Y undo
   and redo typing in the line, and Ctrl+B and Ctrl+I switch the whole line to Bold or Italic; once the change is
   kept, Undo takes the whole edit back. Editing the same line again within a few seconds, with nothing else
-  changed in between, joins the same undo step. The inspector shows the line's font, size and colour; each change
-  there is kept at once as its own undo step. A line turned on the page (not running left to right on screen)
+  changed in between, joins the same undo step. The inspector shows the line's font, size and colour; while the
+  line is edited on the page, a change there shows on it at once, the line stays in editing and the keyboard
+  comes back to it, and the change is kept with the typing; otherwise each change is kept at once as its own undo
+  step. A line turned on the page (not running left to right on screen)
   and invisible recognised (OCR) text are edited in a plain box over the line instead.
 - **Pictures, shapes, comments and marks:** click one to select it, drag it to move it and drag a handle to resize
   it (Shift keeps the proportions). Arrow keys move it by 1 point, or 10 with Shift. A picture or shape covering
