@@ -15,7 +15,7 @@ Run them with `cargo test --workspace`.
 | Tests | What they cover |
 | --- | --- |
 | `crates/limarepdf-core/tests/integration.rs` | Overlays, encryption round trips with all four ciphers, RC4 files with an empty password and a 16-byte `/U` (revisions 3 and 4), whether a file needed a password to open, encrypted files reading as other apps read them, search, crop margins on turned pages |
-| `crates/limarepdf-core/tests/edit.rs` | Content editing: objects and text edits (moving one object leaves the next one's colour, place and stacking as they were); edited, added and invisible (OCR) text upright and in place on a page that flips and scales itself without restoring the state afterwards, as pages printed from web browsers do, and repeated edits not nesting the old content deeper; the text after a deleted, edited (in place, in a new font, invisible) or moved line kept where it was, drawn and as objects, and left as it was after vertical writing; inline images written back only where they were, not into text that reads like their placeholder or an operator spelled like one. Reading text: words, search boxes placed by glyph widths, ToUnicode maps, predefined Chinese, Japanese and Korean character maps without one (UCS-2, UTF-16 and Shift-JIS; text and widths by character number), word gaps, text inside form XObjects, phrases across lines |
+| `crates/limarepdf-core/tests/edit.rs` | Content editing: objects and text edits (moving one object leaves the next one's colour, place and stacking as they were); edited, added and invisible (OCR) text upright and in place on a page that flips and scales itself without restoring the state afterwards, as pages printed from web browsers do, and repeated edits not nesting the old content deeper; the text after a deleted, edited (in place, in a new font, invisible) or moved line kept where it was, drawn and as objects, and left as it was after vertical writing; inline images written back only where they were, not into text that reads like their placeholder or an operator spelled like one. Reading text: words, search boxes placed by glyph widths, ToUnicode maps, predefined Chinese, Japanese and Korean character maps without one (UCS-2, UTF-16 and Shift-JIS; text and widths by character number), word gaps, text inside form XObjects, phrases across lines. Added text keeps every WinAnsi character, those of codes 128 to 159 included. Each text line's baseline and whether it runs upright (scaled, turned, upside down, mirrored, on a turned page, with a rise); whether an edit keeps the line's font, as the app predicts it, matching the font written |
 | `crates/limarepdf-core/tests/repair.rs` | Damaged files built by hand open with their page drawn and are marked repaired: wrong offsets, no table or trailer, a cross-reference stream that doesn't decode, a missing `endobj`, a later copy of an object winning, a trailer naming the wrong catalog, object stream members starting with comments, and an encrypted file (a wrong password is still reported as one); a page list holding a page itself (also with the content's offset wrong), and a page whose number a second object takes (as two public test files do), mended and saved clean; intact files aren't repaired; files with no pages to find (an empty page list, one naming a missing page, a document made with none) are refused, not opened empty; a repaired document saves as a clean file. Crafted files: `endstream` in a content stream's comment followed by a fake page, an uncompressed attached PDF reusing the outer file's object numbers (its length given directly, or in an object before or after it, or before it with a spoofed copy of that object inside the attachment), `stream` and a line break inside a string, a stream cut off by the end of the file, a `/Length` too short, an object freed by a later revision (not on the page, not saved), and a number reused at a higher generation. Unit tests in `repair.rs` (dictionary ends, object headers, stream data skipped by `/Length`, direct or in an object of its own (not a copy inside the data), or to `endstream`, trailers inside stream data ignored, trailer values written back) |
 | `crates/limarepdf-core/tests/render_coverage.rs` | Rendering, pixel by pixel; see [Rendering](rendering.md) |
 | `crates/limarepdf-core/tests/render_compare.rs` | Opt-in: LimarePDF's rendering compared with poppler's `pdftoppm` over about 1,100 public test PDFs; see below |
@@ -53,7 +53,7 @@ Run them with `cargo test --workspace`.
 | `crates/limarepdf-cli/tests/output.rs` | Output that can't be written: `info`, `text` and `form list --json` to a full disk (`/dev/full`, Linux only) exit 1 with a plain message; `set-info` says its file was saved, and `remove-blank`, whose report comes first, saves nothing; a reader that went away stops quietly, with status 0, or 1 for `verify --require-trusted` on a file with no signatures; ordinary output as before |
 | `crates/limarepdf-cli/tests/notes.rs` | The command line's note on stderr for a file other PDF apps may show differently (data after its end), and none for a plain file |
 | `crates/limarepdf-cli/tests/print.rs` | `print` refusing, naming the field, when a filled field would print empty; stand-ins for `lp` and `lpoptions` come first on the path, so no printer is ever used, and no job reaches them (Unix only) |
-| Unit tests in `crates/limarepdf-gui/src` | The command list (unique entries and shortcuts, menus), selection rules, page ranges, moving pages, fitting the zoom, document notices, recent files, settings and saved signatures (each replaced in one step, so a hard link to the old file keeps it), the security form, form fields (Tab order, what a click does, keeping typed text), digital signature results (colour, sentence and banner for valid, unknown, trusted, warned, broken, changed and certified samples; names from the file cleaned), signing from the signing window (a valid signed copy written, a wrong password, earlier signers named before disallowed changes, signing after consent), the signed copy taking an unchanged tab's place but opening in a new tab when a password was set or text typed meanwhile, and one written but not confirmed on disk taking it too, with the message saying so and the document left marked unsaved, signing refused while a password waits to be saved, passwords overwritten, Print asking first (and sending nothing on Cancel) when a field would print empty, the notice on a page with more annotations than are shown |
+| Unit tests in `crates/limarepdf-gui/src` | The command list (unique entries and shortcuts, menus), selection rules, page ranges, moving pages, fitting the zoom, document notices, recent files, settings and saved signatures (each replaced in one step, so a hard link to the old file keeps it), the security form, form fields (Tab order, what a click does, keeping typed text), digital signature results (colour, sentence and banner for valid, unknown, trusted, warned, broken, changed and certified samples; names from the file cleaned), signing from the signing window (a valid signed copy written, a wrong password, earlier signers named before disallowed changes, signing after consent), the signed copy taking an unchanged tab's place but opening in a new tab when a password was set or text typed meanwhile, and one written but not confirmed on disk taking it too, with the message saying so and the document left marked unsaved, signing refused while a password waits to be saved, passwords overwritten, Print asking first (and sending nothing on Cancel) when a field would print empty, the notice on a page with more annotations than are shown; Add text typed on the page (driven through the window's AccessKit tree: the editor's name, keyboard and baseline on the click, typing and Enter, a refused character and its note, Ctrl+B, the inspector's Bold giving the keyboard back, dragging the outline, a click away adding every line as one undo step, Esc keeping it, nothing typed adding nothing, another tool kept, a click on page text editing that line), a line edited on the page (opened by a double-click with the word selected, or a click with the Text tool; the editor's name, keyboard and place on the baseline, the caret placed by the line as drawn, the line hidden in the colour around it, a refused character, Ctrl+B for the whole line, Esc keeping the change on the same baseline, one Undo taking it back; the font it is drawn in, as core will write it; turned and invisible lines in a plain box), a drag with the Text tool selecting text, the colour around a box found by the page worker (the most common in the ring, in the page colours), typed text in the page colours, the fonts for text being typed (each standard font's Liberation face, the order fonts are tried, installed fonts loaded, Liberation Sans as wide as Helvetica) |
 
 The rendering tests assert what the PDF standard says should appear. The cases hayro gets wrong are marked
 `#[ignore]` with the reason; after a hayro upgrade, run
@@ -103,9 +103,16 @@ of the test files needed about 10 GB of memory before pages were drawn in bands 
 
 Its commands, selection rules and page moves are unit-tested, and the operations behind it are covered by the core
 tests and the command line. A few app tests draw the whole window without a screen and read what a screen reader
-would see: every control has a name at five window widths, Tab reaches the bars and the Print and Create signature
+would see: every control has a name at five window widths, and a name that says what it is (not an icon or a
+symbol alone) in each tool's inspector, the inspector's sections, the side views, Fill and sign, Create signature,
+the digital ID windows and open lists and menus, with Bold, Italic and picked choices saying whether they are on
+(not yet tried with a real screen reader); Tab reaches the bars and the Print and Create signature
 dialogs in the order shown, docked controls stay docked through resizing, Esc closes the inspector's pop-out and
-returns to its button, and dialog buttons are clicked as a user would (confirmations act on their own document). The redesigned window
+returns to its button, and dialog buttons are clicked as a user would (confirmations act on their own document).
+The dialogs' layout is checked from where their parts are drawn: labels above their fields (Password, Your name
+for comments, the digital ID forms, Sign and Certify, the Trust question), headed groups (Remove hidden
+information, Signature details), rows with their buttons beside them or under them when narrow (Recover unsaved
+changes), Reason beside Location when there is room, and the command palette's field, rows and insets. The redesigned window
 (top bar, inspector, command palette, right-click menus, floating toolbar, thumbnail dragging, collapsing inspector)
 has been used by hand on Linux. Later additions (recent files, document notices, fit width, the theme button, crop)
 were checked by screenshot under a virtual X server; not every one has been clicked through by hand. Of the newest:
@@ -146,6 +153,34 @@ docked in a narrow window with the pop-out opened and closed by Esc; a form (fie
 document (banner); and the Print (also in a 450-point-high window, where its settings scroll and the buttons stay),
 close confirmation and Digital IDs dialogs, the last filled in with the keyboard alone to show each kind of problem
 beside its field. Nothing was printed. Not tried: Windows and macOS, a real HiDPI screen, a screen reader.
+
+Add text typed on the page (2026-10-22) was checked the same way: two lines typed at 1200, 800 and 400 points wide
+and in a 420-point-high window, in the light, dark and system themes, at scales 1, 1.5 and 2, with the note for a
+refused character; the text written after a click elsewhere lands where it was typed, within a pixel or two. Not
+tried: Windows and macOS, a real HiDPI screen, a screen reader, input methods for other languages.
+
+Editing a line on the page (2026-10-22) was checked the same way, on a made-up page with white Helvetica Bold on a
+blue bar, black Times and red Arial (not embedded): a word double-clicked with the read tool and typed over, and a
+click with the Text tool and typing, at 1200, 1000, 800 and 400 points wide and in a 420-point-high window, in the
+light, dark and system themes, with the page colours Normal, Dark and Sepia, at scales 1, 1.5 and 2. Each line was
+drawn in its look-alike font, size and colour (the page colours applied), over the old line hidden in the colour
+around it (the bar's blue, the paper), with a caret that shows on dark paper. Not tried: Windows and macOS, a real
+HiDPI screen, a screen reader, an installed font being picked up for a kept line, turned lines.
+
+Notes and form lists without Done (2026-10-22) were checked the same way, on a made-up form with a list allowing
+several choices: the list opened, a second choice clicked with the list staying open, Enter and Esc closing it with
+both choices kept; a note typed and kept by a click outside it and by Esc, the read tool coming back with it
+selected; at 1200 and 400 points wide, in the light, dark and system themes, at scales 1, 1.5 and 2. Not tried:
+Windows and macOS, a real HiDPI screen, a screen reader.
+
+The inspector's page and document settings applying as they are set (2026-10-22) were checked the same way, on a
+made-up two-page document: the Watermark, Headers, footers, Bates, Crop and Properties sections at 1200, 800 and
+400 points wide, in the light, dark and system themes, at scales 1, 1.5 and 2. The watermark and footer previews
+showed on the pages; after Add to pages the written watermark covered its preview to within 1.5 pixels at a
+110-pixel size (the difference is the renderer's stand-in Helvetica against Liberation Sans); the crop box was
+dragged down 87 points, the cut-off part dimmed as it moved, and Esc showed the pages cropped. Not tried: Windows
+and macOS, a real HiDPI screen, a screen reader, a picture watermark's preview by screenshot (its decoding and
+placement are tested), a turned page's previews by screenshot (their layout is tested).
 
 Each feature page says what was not tested, under "How this was tested".
 

@@ -237,6 +237,14 @@ fn key(name: &str) -> String {
         .collect()
 }
 
+/// A question for a font known only by its name.
+fn query(name: &str) -> FallbackFontQuery {
+    FallbackFontQuery {
+        post_script_name: Some(name.to_string()),
+        ..Default::default()
+    }
+}
+
 /// The PDF's names for the font: "MSMincho", "MSGothic,Bold", "KozMinPr6N-Regular".
 fn names(q: &FallbackFontQuery) -> Vec<&str> {
     [&q.post_script_name, &q.font_name]
@@ -302,6 +310,21 @@ impl InstalledFonts {
     /// installed font fits, or none has the characters of the font's language.
     pub fn find(&self, q: &FallbackFontQuery) -> Option<Found> {
         let (id, stand_in) = self.find_id(q)?;
+        self.found(id, stand_in)
+    }
+
+    /// The installed font a PDF's font name ("Arial", "Arial,Bold", "TimesNewRomanPS-BoldMT")
+    /// stands for: that font, or one with its widths (Liberation Sans for Arial). `None`
+    /// when only a stand-in is installed. For drawing text being typed in the look a line
+    /// will keep.
+    pub fn named(&self, name: &str) -> Option<Found> {
+        match self.find_id(&query(name))? {
+            (id, false) => self.found(id, false),
+            (_, true) => None,
+        }
+    }
+
+    fn found(&self, id: ID, stand_in: bool) -> Option<Found> {
         let face = self.db.face(id)?;
         Some(Found {
             data: self.data(id)?,
@@ -471,13 +494,6 @@ mod tests {
         InstalledFonts::from_files(&[&caveat, &zeyada])
     }
 
-    fn query(name: &str) -> FallbackFontQuery {
-        FallbackFontQuery {
-            post_script_name: Some(name.to_string()),
-            ..Default::default()
-        }
-    }
-
     fn japanese(name: &str) -> FallbackFontQuery {
         FallbackFontQuery {
             character_collection: Some(CharacterCollection {
@@ -505,6 +521,36 @@ mod tests {
         };
         assert!(!data.as_ref().as_ref().is_empty());
         assert_eq!(index, 0);
+    }
+
+    #[test]
+    fn named_is_the_font_or_its_widths() {
+        // The app's bundled Liberation fonts stand in for installed ones here.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../limarepdf-gui/assets/fonts");
+        let regular = dir.join("LiberationSans-Regular.ttf");
+        let bold = dir.join("LiberationSans-Bold.ttf");
+        let fonts = InstalledFonts::from_files(&[&regular, &bold]);
+        let name = |n: &str| {
+            fonts.named(n)?;
+            fonts.find_name(&query(n))
+        };
+        assert_eq!(
+            name("LiberationSans-Bold").as_deref(),
+            Some("LiberationSans-Bold")
+        );
+        assert_eq!(name("Liberation Sans").as_deref(), Some("LiberationSans"));
+        // The same widths count as the font.
+        assert_eq!(name("Arial").as_deref(), Some("LiberationSans"));
+        assert_eq!(name("Arial,Bold").as_deref(), Some("LiberationSans-Bold"));
+        assert_eq!(name("ArialMT").as_deref(), Some("LiberationSans"));
+        // Only stand-ins: not the font.
+        assert!(fonts.find(&query("Tahoma")).is_some());
+        assert_eq!(name("Tahoma"), None);
+        assert_eq!(name("Times New Roman"), None);
+        assert!(InstalledFonts::none().named("Arial").is_none());
+        let found = fonts.named("Arial").unwrap();
+        assert!(!found.data.as_ref().as_ref().is_empty());
+        assert_eq!(found.stand_in, None);
     }
 
     #[test]

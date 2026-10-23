@@ -365,6 +365,45 @@ fn lists_objects_in_visual_coordinates() {
 }
 
 #[test]
+fn text_lines_give_their_baseline_and_whether_they_are_upright() {
+    let near = |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).abs() < 0.01 && (a.1 - b.1).abs() < 0.01;
+    // User (60, 150) on a 200 high page is (60, 50) with y down; a rise moves it up.
+    let p = make("BT /F1 24 Tf 60 150 Td (Hello) Tj ET\nBT /F1 10 Tf 4 Ts 20 30 Td (Up) Tj ET");
+    let o = p.page_objects(0).unwrap();
+    assert!(
+        near(o[0].baseline.unwrap(), (60.0, 50.0)),
+        "{:?}",
+        o[0].baseline
+    );
+    assert!(
+        near(o[1].baseline.unwrap(), (20.0, 166.0)),
+        "{:?}",
+        o[1].baseline
+    );
+    assert!(o[0].upright && o[1].upright);
+    // Scaled is still upright; turned, upside down or mirrored isn't.
+    for (tm, upright) in [
+        ("2 0 0 2 60 150", true),
+        ("0 1 -1 0 60 150", false),
+        ("-1 0 0 -1 60 150", false),
+        ("1 0 0 -1 60 150", false),
+        ("-1 0 0 1 60 150", false),
+    ] {
+        let p = make(&format!("BT /F1 12 Tf {tm} Tm (Hello) Tj ET"));
+        let o = p.page_objects(0).unwrap();
+        assert_eq!(o[0].upright, upright, "{tm}");
+        assert!(near(o[0].baseline.unwrap(), (60.0, 50.0)), "{tm}");
+    }
+    // On a turned page, upright text is turned on screen; a picture has neither.
+    let mut p = make("BT /F1 24 Tf 60 150 Td (Hello) Tj ET");
+    p.rotate_pages(&[0], 90).unwrap();
+    assert!(!p.page_objects(0).unwrap()[0].upright);
+    let p = make(BASE);
+    let o = p.page_objects(0).unwrap();
+    assert!(o[0].baseline.is_none() && !o[0].upright);
+}
+
+#[test]
 fn move_resize_and_delete_path() {
     let mut p = make(BASE);
     p.set_object_bbox(0, 0, [150.0, 110.0, 250.0, 150.0])
@@ -586,6 +625,35 @@ fn edit_text_in_place_and_with_new_font() {
     let bytes = p.to_bytes().unwrap();
     let q = Pdf::from_bytes(&bytes, None).unwrap();
     assert_eq!(q.page_objects(0).unwrap().len(), o.len());
+}
+
+/// What `keeps_font` says is what `edit_text` writes: the line's own font, or a standard
+/// one in its place.
+#[test]
+fn keeps_font_says_which_font_an_edit_writes() {
+    let edit = |text: &str, size: Option<f32>| TextEdit {
+        text: text.into(),
+        font: None,
+        size,
+        color: None,
+    };
+    for (base, e, kept) in [
+        ("Arial", edit("Walrus 42", None), true),
+        ("Arial", edit("Café", None), false),
+        ("Arial", edit("Walrus", Some(13.0)), false),
+        ("ABCDEF+Arial", edit("Walrus", None), false),
+    ] {
+        let mut p = Pdf::new();
+        p.insert_blank(0, W as f32, H as f32).unwrap();
+        set_content_in(&mut p, base, "BT /F1 12 Tf 20 150 Td (Seal) Tj ET");
+        let o = &p.page_objects(0).unwrap()[0];
+        assert_eq!(e.keeps_font(o.font_reusable), kept, "{base} {:?}", e.text);
+        p.edit_text(0, 0, &e).unwrap();
+        let o = &p.page_objects(0).unwrap()[0];
+        assert_eq!(o.text.as_deref(), Some(e.text.as_str()));
+        let want = if kept { base } else { "Helvetica" };
+        assert_eq!(o.font_name.as_deref(), Some(want), "{base} {:?}", e.text);
+    }
 }
 
 #[test]
@@ -1151,4 +1219,38 @@ fn headers_and_footers_leave_a_page_font_of_the_same_name_alone() {
             );
         }
     }
+}
+
+/// Every character of the standard fonts' WinAnsi set is written as itself, those of
+/// codes 128 to 159 included, and none outside it.
+#[test]
+fn added_text_keeps_the_whole_winansi_set() {
+    let high = "€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ";
+    assert_eq!(high.chars().count(), 27);
+    for c in high.chars() {
+        assert!(
+            limarepdf_core::winansi_byte(c).is_some_and(|b| b >= 128),
+            "{c}"
+        );
+    }
+    for c in ['\n', '\t', 'Ω', 'Ж', '中', '\u{81}'] {
+        assert_eq!(limarepdf_core::winansi_byte(c), None, "{c:?}");
+    }
+    let mut p = make("");
+    let text = format!("Šœ Ÿ ƒ {high} àÿ");
+    p.add_text(
+        0,
+        (20.0, 100.0),
+        &text,
+        FontChoice::default(),
+        12.0,
+        [0.0; 3],
+    )
+    .unwrap();
+    let o = p.page_objects(0).unwrap();
+    assert!(
+        o.iter().any(|x| x.text.as_deref() == Some(text.as_str())),
+        "{:?}",
+        o.iter().map(|x| x.text.clone()).collect::<Vec<_>>()
+    );
 }

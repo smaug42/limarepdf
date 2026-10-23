@@ -9,6 +9,10 @@ LimarePDF is dual-licensed under MIT or Apache-2.0, at your option. See [LICENSE
   Phosphor's file-pdf icon, drawn by `crates/limarepdf-gui/tools/make_icon.py`.
 - **Interface font:** Inter 4.1 by The Inter Project Authors, SIL Open Font License 1.1, included unmodified; see
   `crates/limarepdf-gui/assets/fonts/`. Release archives include the licence as `FONT-LICENSE-Inter.txt`.
+- **Fonts for text being typed on the page:** the Liberation fonts 2.1.5 (Sans, Serif and Mono, in four styles
+  each) by Red Hat, Inc., with digitized data by Google Corporation, SIL Open Font License 1.1 with the Reserved
+  Font Name "Liberation", included unmodified; see `crates/limarepdf-gui/assets/fonts/`. They are only drawn on
+  screen, never embedded in PDFs. Release archives include the licence as `FONT-LICENSE-Liberation.txt`.
 - **Handwriting fonts** for typed signatures, included unmodified; see `crates/limarepdf-core/assets/fonts/`: Caveat by
   The Caveat Project Authors, Cedarville Cursive and Zeyada by Kimberly Geswein (SIL Open Font License 1.1), and
   Homemade Apple by Font Diner (Apache License 2.0). They are drawn as shapes and never embedded in PDFs. Release

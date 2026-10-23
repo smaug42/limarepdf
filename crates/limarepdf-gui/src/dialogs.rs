@@ -80,7 +80,7 @@ impl<'a> Btn<'a> {
             Look::Danger => theme::danger_button(self.text),
             Look::Plain => egui::Button::new(self.text.to_owned()),
         };
-        b.min_size(egui::vec2(72.0, 28.0))
+        b.min_size(egui::vec2(80.0, theme::DIALOG_CONTROL))
     }
 }
 
@@ -94,9 +94,43 @@ pub fn ordered(buttons: &[Btn]) -> Vec<usize> {
     order
 }
 
+/// The space at each side of a dialog's content, in a window wide enough: a dialog sized
+/// to fit its content is that much wider on each side.
+pub const SIDE: f32 = 24.0;
+
+/// Below this window width, dialogs have less space around their parts.
+const NARROW: f32 = 600.0;
+
+/// The space around a dialog's parts, in points: at its sides, above its title, above and
+/// below its content, and above and below its buttons.
+struct Insets {
+    side: i8,
+    top: i8,
+    content: i8,
+    footer: i8,
+}
+
+fn insets(ctx: &Context) -> Insets {
+    if ctx.content_rect().width() < NARROW {
+        Insets {
+            side: 16,
+            top: 18,
+            content: 20,
+            footer: 14,
+        }
+    } else {
+        Insets {
+            side: SIDE as i8,
+            top: 22,
+            content: 22,
+            footer: 16,
+        }
+    }
+}
+
 /// A dialog: a window over a dimmed app, which takes no input while it is open, with the
 /// task as its title and, when that needs saying, the file it acts on. What goes in it is
-/// drawn with [`content`] and [`footer`].
+/// drawn with [`content`] and [`footer`], in the dialogs' look ([`theme::dialog_style`]).
 pub struct Shell<'a> {
     id: egui::Id,
     title: &'a str,
@@ -111,7 +145,7 @@ impl<'a> Shell<'a> {
             id: egui::Id::new(("dialog", title)),
             title,
             file: None,
-            width: 420.0,
+            width: 470.0,
             esc: true,
         }
     }
@@ -140,19 +174,21 @@ impl<'a> Shell<'a> {
         let room = ctx.content_rect().width() - 32.0;
         let width = self.width.min(room).max(240.0);
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(0);
+        let at = insets(ctx);
         let r = egui::Modal::new(self.id).frame(frame).show(ctx, |ui| {
             ui.set_width(width);
+            theme::dialog_style(ui.style_mut());
             egui::Frame::NONE
                 .inner_margin(Margin {
-                    left: 20,
-                    right: 20,
-                    top: 16,
+                    left: at.side,
+                    right: at.side,
+                    top: at.top,
                     bottom: 0,
                 })
                 .show(ui, |ui| {
                     let title = RichText::new(self.title)
-                        .size(18.0)
-                        .family(theme::semibold())
+                        .size(20.0)
+                        .family(theme::medium())
                         .strong();
                     ui.add(egui::Label::new(title).wrap());
                     if let Some(f) = self.file {
@@ -174,34 +210,332 @@ pub fn any_open(ctx: &Context) -> bool {
     !ctx.memory(|m| m.is_above_modal_layer(egui::LayerId::background()))
 }
 
-/// A dialog's content, padded, and scrolling when the window is too short for it.
+/// A dialog's content, padded, and scrolling when the window is too short for it: drawn
+/// under the dialog's title, with a [`footer`] to come.
 pub fn content<R>(ui: &mut Ui, body: impl FnOnce(&mut Ui) -> R) -> R {
-    let max = (ui.ctx().content_rect().height() - 200.0).max(120.0);
+    let at = insets(ui.ctx());
+    let above = ui.cursor().min.y - ui.max_rect().min.y;
+    let footer = 2.0 * f32::from(at.footer) + theme::DIALOG_CONTROL + 1.0;
+    // And some of the screen left above and below the window.
+    let around = 2.0 * f32::from(at.content) + 16.0;
+    let max = (ui.ctx().content_rect().height() - above - footer - around).max(60.0);
     egui::Frame::NONE
-        .inner_margin(Margin::symmetric(20, 14))
+        .inner_margin(Margin::symmetric(at.side, at.content))
         .show(ui, |ui| {
             egui::ScrollArea::vertical()
                 .max_height(max)
                 .auto_shrink([false, true])
-                .show(ui, body)
+                .show(ui, |ui| {
+                    theme::dialog_choices(ui.style_mut());
+                    body(ui)
+                })
                 .inner
         })
         .inner
 }
 
-/// A titled group of settings in a dialog's content.
+/// Space between the groups of a dialog's content.
+const GAP: f32 = 20.0;
+
+/// Space between the fields of a group, one under the other.
+pub const FIELD_GAP: f32 = 12.0;
+
+/// `space`, unless nothing is above in `ui`.
+pub fn space_above(ui: &mut Ui, space: f32) {
+    if ui.cursor().min.y > ui.max_rect().min.y + 1.0 {
+        ui.add_space(space);
+    }
+}
+
+/// [`GAP`], unless nothing is above in `ui`.
+fn gap(ui: &mut Ui) {
+    space_above(ui, GAP);
+}
+
+/// A titled group of settings in a dialog's content. `body` is drawn in a column of its
+/// own, so [`space_above`] in it adds no space under the title.
 pub fn group<R>(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui) -> R) -> R {
+    gap(ui);
+    ui.label(RichText::new(title).family(theme::medium()).strong());
     ui.add_space(4.0);
-    ui.label(RichText::new(title).family(theme::semibold()).strong());
+    ui.vertical(body).inner
+}
+
+/// A field in a dialog's content with its label above it, which also names it for screen
+/// readers. `add` adds the field and returns it.
+pub fn field(
+    ui: &mut Ui,
+    label: &str,
+    add: impl FnOnce(&mut Ui) -> egui::Response,
+) -> egui::Response {
+    ui.label(label);
     ui.add_space(2.0);
-    let r = body(ui);
-    ui.add_space(10.0);
+    let r = add(ui);
+    set_name(&r, label);
     r
+}
+
+/// Space between columns.
+pub const COLUMN_GAP: f32 = 16.0;
+
+/// Two parts of a dialog's content side by side, `a` `left` points wide and `b` the
+/// rest, when the rest is at least `need`; otherwise one under the other, each the full
+/// width. Each is given `state` and its width.
+pub fn columns<T>(
+    ui: &mut Ui,
+    state: &mut T,
+    left: f32,
+    need: f32,
+    a: impl FnOnce(&mut Ui, &mut T, f32),
+    b: impl FnOnce(&mut Ui, &mut T, f32),
+) {
+    let width = ui.available_width();
+    let rest = width - left - COLUMN_GAP;
+    if rest < need {
+        a(ui, state, width);
+        ui.add_space(FIELD_GAP);
+        b(ui, state, width);
+        return;
+    }
+    let spacing = ui.spacing().item_spacing;
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = COLUMN_GAP;
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing = spacing;
+            ui.set_width(left);
+            a(ui, state, left);
+        });
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing = spacing;
+            ui.set_width(rest);
+            b(ui, state, rest);
+        });
+    });
+}
+
+/// A list in a dialog's content: an outlined box as wide as the content, holding
+/// [`list_row`]s or [`list_pick`]s.
+pub fn list_box<R>(ui: &mut Ui, body: impl FnOnce(&mut Ui) -> R) -> R {
+    let edge = ui.visuals().widgets.inactive.bg_stroke;
+    egui::Frame::NONE
+        .stroke(edge)
+        .corner_radius(theme::RADIUS)
+        .inner_margin(4)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            body(ui)
+        })
+        .inner
+}
+
+/// A [`list_box`] of `n` rows with a rule between them, `row` drawing each; nothing when
+/// there are none.
+pub fn list_rows(ui: &mut Ui, n: usize, mut row: impl FnMut(&mut Ui, usize)) {
+    if n == 0 {
+        return;
+    }
+    list_box(ui, |ui| {
+        for i in 0..n {
+            if i > 0 {
+                ui.add(egui::Separator::default().spacing(0.0));
+            }
+            row(ui, i);
+        }
+    });
+}
+
+/// Below this width, a [`list_row`]'s buttons go under its text.
+const ROW_BESIDE: f32 = 360.0;
+
+/// A row of a [`list_rows`] box: `text`, what the row is, on the left, and `buttons` on
+/// the right, in reading order; under the text when the box is narrow.
+pub fn list_row(ui: &mut Ui, text: impl FnOnce(&mut Ui), buttons: impl FnOnce(&mut Ui)) {
+    egui::Frame::NONE
+        .inner_margin(Margin::same(8))
+        .show(ui, |ui| {
+            if ui.available_width() < ROW_BESIDE {
+                ui.vertical(text);
+                ui.add_space(6.0);
+                ui.horizontal_wrapped(buttons);
+                return;
+            }
+            // The buttons in a box at the right as wide as they were when last drawn; when
+            // that changed, the frame is drawn again.
+            let id = ui.id().with("row buttons");
+            let last: Option<f32> = ui.data(|d| d.get_temp(id));
+            ui.horizontal_top(|ui| {
+                let room = ui.available_width() - ui.spacing().item_spacing.x;
+                ui.vertical(|ui| {
+                    ui.set_width((room - last.unwrap_or(0.0)).max(0.0));
+                    text(ui);
+                });
+                let size = egui::vec2(last.unwrap_or(0.0), theme::DIALOG_CONTROL);
+                let layout = egui::Layout::left_to_right(Align::Center);
+                let width = ui
+                    .allocate_ui_with_layout(size, layout, buttons)
+                    .response
+                    .rect
+                    .width();
+                if last != Some(width) {
+                    ui.data_mut(|d| d.insert_temp(id, width));
+                    ui.ctx().request_discard("row buttons measured");
+                }
+            });
+        });
+}
+
+/// A row of a [`list_box`] that is picked by clicking it: as wide as the box and as tall
+/// as the dialog's other controls.
+pub fn list_pick(ui: &mut Ui, on: bool, text: impl Into<egui::WidgetText>) -> egui::Response {
+    let b = egui::Button::selectable(on, text)
+        .min_size(egui::vec2(ui.available_width(), theme::DIALOG_CONTROL));
+    ui.add(b)
+}
+
+/// The width of the names of [`fact`]s.
+const FACT_NAME: f32 = 104.0;
+
+/// A fact in a dialog's content, to read rather than change: its name, weak, in a column
+/// on the left, and its value beside it, wrapping; the name above it when the dialog is
+/// narrow.
+pub fn fact(ui: &mut Ui, name: &str, value: impl Into<egui::WidgetText>) {
+    let name = RichText::new(name).weak();
+    if ui.available_width() < 3.0 * FACT_NAME {
+        ui.add(egui::Label::new(name).wrap());
+        ui.add(egui::Label::new(value).wrap());
+        ui.add_space(4.0);
+        return;
+    }
+    ui.horizontal_top(|ui| {
+        ui.vertical(|ui| {
+            ui.set_width(FACT_NAME - ui.spacing().item_spacing.x);
+            ui.add(egui::Label::new(name).wrap());
+        });
+        ui.add(egui::Label::new(value).wrap());
+    });
 }
 
 /// Names a field for screen readers, as the label beside it does on screen.
 pub fn set_name(r: &egui::Response, name: &str) {
     r.ctx.accesskit_node_builder(r.id, |n| n.set_label(name));
+}
+
+/// A slider with the number it is set to beside it, to type in, both named `name` for
+/// screen readers. egui's own number box beside a slider can't be named, so the slider is
+/// drawn without it and this one added.
+pub fn slider<N: egui::emath::Numeric>(
+    ui: &mut Ui,
+    value: &mut N,
+    range: std::ops::RangeInclusive<N>,
+    suffix: &str,
+    name: &str,
+) -> egui::Response {
+    let span = range.end().to_f64() - range.start().to_f64();
+    let r = ui.add(egui::Slider::new(value, range.clone()).show_value(false));
+    set_name(&r, name);
+    let number = egui::DragValue::new(value)
+        .range(range)
+        .suffix(suffix)
+        .speed(span / 200.0);
+    let n = ui.add(number);
+    set_name(&n, name);
+    r | n
+}
+
+/// Names each open menu or list after the control that opened it, once everything is
+/// drawn. egui makes a popup's background a control Tab can reach, with no name: its id
+/// is the opener's with "popup" (menus, lists and right-click menus alike), the
+/// background's that with "move". The naming tests fail if egui changes that.
+pub fn name_popups(ctx: &egui::Context) {
+    let open: Vec<(egui::Id, egui::Id)> = ctx.viewport(|v| {
+        let pass = &v.this_pass;
+        let mut out = Vec::new();
+        for (layer, state) in &pass.layers {
+            for &popup in &state.open_popups {
+                let back = popup.with("move");
+                let opener = pass
+                    .widgets
+                    .get_layer(*layer)
+                    .find(|w| w.id.with("popup") == popup);
+                if let (true, Some(w)) = (pass.widgets.contains(back), opener) {
+                    out.push((back, w.id));
+                }
+            }
+        }
+        out
+    });
+    for (back, opener) in open {
+        let name = ctx.accesskit_node_builder(opener, |n| n.label().map(str::to_string));
+        if let Some(name) = name.flatten() {
+            ctx.accesskit_node_builder(back, |n| {
+                n.set_role(egui::accesskit::Role::Menu);
+                n.set_label(name);
+            });
+        }
+    }
+}
+
+/// The controls in `tree` that Tab can reach whose names don't say what they are: no
+/// name, a name without a letter (a glyph such as ◀), or one holding an icon (the icon
+/// font's private-use characters). Each is given as its role and name.
+#[cfg(test)]
+pub fn unclear_names(tree: &egui::accesskit::TreeUpdate) -> Vec<String> {
+    tree.nodes
+        .iter()
+        .filter(|(_, n)| n.supports_action(egui::accesskit::Action::Focus))
+        .filter_map(|(_, n)| {
+            let name = n.label().unwrap_or_default();
+            let icon = name.chars().any(|c| ('\u{e000}'..='\u{f8ff}').contains(&c));
+            let clear = name.chars().any(char::is_alphabetic) && !icon;
+            (!clear).then(|| format!("{:?} {name:?}", n.role()))
+        })
+        .collect()
+}
+
+/// The widgets of what `show` draws on a screen `size` points big, once settled.
+#[cfg(test)]
+pub fn drawn(size: egui::Vec2, mut show: impl FnMut(&Context)) -> egui::accesskit::TreeUpdate {
+    let ctx = Context::default();
+    ctx.enable_accesskit();
+    theme::install(&ctx);
+    let mut tree = None;
+    for _ in 0..5 {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(raw, |ui| show(ui.ctx()));
+        out.textures_delta.clear();
+        tree = out.platform_output.accesskit_update;
+    }
+    tree.expect("the widgets")
+}
+
+/// Whether the text `label` is shown above the control it names, at its left edge, as
+/// [`field`] draws them; if not, what is wrong.
+#[cfg(test)]
+pub fn label_above(tree: &egui::accesskit::TreeUpdate, label: &str) -> Result<(), String> {
+    let rect = |n: &egui::accesskit::Node| {
+        n.bounds().map(|b| {
+            egui::Rect::from_min_max(
+                egui::pos2(b.x0 as f32, b.y0 as f32),
+                egui::pos2(b.x1 as f32, b.y1 as f32),
+            )
+        })
+    };
+    let find = |f: &dyn Fn(&egui::accesskit::Node) -> bool| {
+        let (_, n) = tree.nodes.iter().find(|(_, n)| f(n))?;
+        rect(n)
+    };
+    let text = find(&|n| n.value() == Some(label)).ok_or(format!("no text {label:?}"))?;
+    let focusable = |n: &egui::accesskit::Node| n.supports_action(egui::accesskit::Action::Focus);
+    let control = find(&|n| n.label() == Some(label) && focusable(n))
+        .ok_or(format!("no control named {label:?}"))?;
+    let above = text.bottom() <= control.top() + 0.5;
+    if !above || (text.left() - control.left()).abs() > 1.0 {
+        return Err(format!("{label:?}: text {text:?}, control {control:?}"));
+    }
+    Ok(())
 }
 
 /// Controls at the right end of a row (whose `ui` is laid out right to left) laid out
@@ -228,10 +562,16 @@ pub fn reading_order(ui: &mut Ui, last: Option<f32>, add: impl FnOnce(&mut Ui)) 
 pub fn footer(ui: &mut Ui, note: Option<RichText>, buttons: &[Btn]) -> Option<usize> {
     ui.add(egui::Separator::default().spacing(0.0));
     let mut hit = None;
+    let at = insets(ui.ctx());
     egui::Frame::NONE
-        .inner_margin(Margin::symmetric(20, 12))
+        .inner_margin(Margin::symmetric(at.side, at.footer))
         .show(ui, |ui| {
-            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+            // A row only as tall as its controls: given the rest of the window, it would be
+            // centred in it, and keep the window as tall as it ever was when the screen gets
+            // shorter.
+            let row = egui::vec2(ui.available_width(), theme::DIALOG_CONTROL);
+            let layout = egui::Layout::right_to_left(Align::Center);
+            ui.allocate_ui_with_layout(row, layout, |ui| {
                 let id = ui.id().with("footer buttons");
                 let last = ui.data(|d| d.get_temp(id));
                 let width = reading_order(ui, last, |ui| {
@@ -428,10 +768,18 @@ pub fn print(ctx: &Context, s: &mut Print) -> Outcome {
     out
 }
 
-/// The Print dialog's settings; true when Enter was pressed in the page range.
+/// The choices for printing on one side or both.
+const SIDES: [(Sides, &str); 3] = [
+    (Sides::One, "One side"),
+    (Sides::LongEdge, "Both sides, flip on long edge"),
+    (Sides::ShortEdge, "Both sides, flip on short edge"),
+];
+
+/// The Print dialog's settings, as in the dialog mockup; true when Enter was pressed in
+/// the page range.
 fn print_body(ui: &mut Ui, s: &mut Print) -> bool {
     let wide = ui.available_width();
-    group(ui, "Printer", |ui| {
+    field(ui, "Printer", |ui| {
         let name = |p: &Printer| {
             if p.default {
                 format!("{} (default)", p.name)
@@ -439,59 +787,57 @@ fn print_body(ui: &mut Ui, s: &mut Print) -> bool {
                 p.name.clone()
             }
         };
-        let r = egui::ComboBox::from_id_salt("printer")
+        egui::ComboBox::from_id_salt("printer")
             .width(wide)
             .selected_text(name(&s.printers[s.printer]))
             .show_ui(ui, |ui| {
                 for (i, p) in s.printers.iter().enumerate() {
                     ui.selectable_value(&mut s.printer, i, name(p));
                 }
-            });
-        set_name(&r.response, "Printer");
+            })
+            .response
     });
     let mut enter = false;
     if s.selection.is_none() {
         group(ui, "Pages", |ui| {
-            ui.radio_value(&mut s.all, true, "All pages");
-            ui.horizontal(|ui| {
-                ui.radio_value(&mut s.all, false, "Page range");
-                let r = ui.add(
-                    egui::TextEdit::singleline(&mut s.pages)
-                        .hint_text("e.g. 1-3, 5, 8-")
-                        .desired_width(160.0),
-                );
-                set_name(&r, "Page range");
-                if r.changed() {
-                    s.all = false;
-                    s.error = None;
-                }
-                enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+            let mut range = None;
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 18.0;
+                ui.radio_value(&mut s.all, true, "All pages");
+                range = Some(ui.radio_value(&mut s.all, false, "Page range"));
             });
+            if s.all {
+                return;
+            }
+            // Shown once Page range is chosen, taking the keyboard when chosen.
+            ui.add_space(8.0);
+            let r = field(ui, "Pages to print", |ui| {
+                let edit = egui::TextEdit::singleline(&mut s.pages)
+                    .hint_text("e.g. 1-3, 5, 8-")
+                    .desired_width(f32::INFINITY);
+                ui.add(theme::field(edit))
+            });
+            if range.is_some_and(|c| c.clicked()) {
+                r.request_focus();
+            }
+            if r.changed() {
+                s.error = None;
+            }
+            enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
             if let Some(e) = &s.error {
                 ui.colored_label(ui.visuals().error_fg_color, e);
             }
         });
     }
-    group(ui, "Copies and sides", |ui| {
-        ui.horizontal(|ui| {
-            ui.label("Copies");
-            let r = ui.add(egui::DragValue::new(&mut s.copies).range(1..=999));
-            set_name(&r, "Copies");
-        });
-        ui.label("Print on");
-        for (x, label) in [
-            (Sides::One, "One side"),
-            (Sides::LongEdge, "Both sides, flip on long edge"),
-            (Sides::ShortEdge, "Both sides, flip on short edge"),
-        ] {
-            ui.radio_value(&mut s.sides, x, label);
-        }
-    });
+    group(ui, "Copies and sides", |ui| copies_and_sides(ui, s));
     if let Some(layout) = &mut s.selection {
         layout_choice(ui, layout, &[Layout::Original, Layout::Plain]);
     }
     // Windows always prints pages drawn by LimarePDF.
     if !cfg!(windows) {
+        ui.add_space(GAP);
+        ui.add(egui::Separator::default().spacing(0.0));
+        ui.add_space(8.0);
         egui::CollapsingHeader::new("Advanced")
             .default_open(s.as_image)
             .show(ui, |ui| {
@@ -504,6 +850,49 @@ fn print_body(ui: &mut Ui, s: &mut Print) -> bool {
             });
     }
     enter
+}
+
+/// Copies beside Print on, as two columns when the longest choice fits beside Copies;
+/// one under the other otherwise.
+fn copies_and_sides(ui: &mut Ui, s: &mut Print) {
+    let width = ui.available_width();
+    let copies_width = ((width - COLUMN_GAP) / 2.6).clamp(80.0, 95.0);
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let longest = SIDES
+        .iter()
+        .map(|(_, l)| {
+            let g = ui.painter().layout_no_wrap(
+                l.to_string(),
+                font.clone(),
+                egui::Color32::PLACEHOLDER,
+            );
+            g.size().x
+        })
+        .fold(0.0, f32::max);
+    // The list's padding and arrow.
+    let sp = ui.spacing();
+    let need = longest + 2.0 * sp.button_padding.x + sp.icon_width + sp.icon_spacing;
+    let copies = |ui: &mut Ui, s: &mut Print, _| {
+        field(ui, "Copies", |ui| {
+            ui.spacing_mut().interact_size.x = copies_width;
+            ui.add(egui::DragValue::new(&mut s.copies).range(1..=999))
+        });
+    };
+    let sides = |ui: &mut Ui, s: &mut Print, width: f32| {
+        let shown = SIDES.iter().find(|(x, _)| *x == s.sides).map(|(_, l)| *l);
+        field(ui, "Print on", |ui| {
+            egui::ComboBox::from_id_salt("sides")
+                .width(width)
+                .selected_text(shown.unwrap_or_default())
+                .show_ui(ui, |ui| {
+                    for (x, label) in SIDES {
+                        ui.selectable_value(&mut s.sides, x, label);
+                    }
+                })
+                .response
+        });
+    };
+    columns(ui, s, copies_width, need, copies, sides);
 }
 
 /// Save the selected text: choose the layout; the file dialog follows.
@@ -527,29 +916,42 @@ pub fn remove_hidden(ctx: &Context, file: Option<&str>, s: &mut RemoveHidden) ->
     let remove = Btn::danger("Remove").enabled(any);
     let shell = Shell::new("Remove hidden information").file(file);
     modal(ctx, shell, remove, true, |ui| {
-        ui.label(
-            "Information that travels with the file but isn't on its pages. What is ticked is \
-             removed; once saved, it is gone from the file. Undo brings it back until you close \
-             the document.",
+        ui.add(
+            egui::Label::new(
+                "Information that travels with the file but isn't on its pages. What is ticked \
+                 is removed; once saved, it is gone from the file. Undo brings it back until \
+                 you close the document.",
+            )
+            .wrap(),
         );
-        ui.add_space(6.0);
-        for (h, n, on) in &mut s.kinds {
-            if *h == limarepdf_core::Hidden::Comments {
-                ui.add_space(4.0);
-                ui.label("Often wanted, so not ticked at first:");
-            }
-            let found = if *n == 0 {
-                "none".to_string()
-            } else {
-                format!("{n} found")
-            };
-            ui.add_enabled(
-                *n > 0,
-                egui::Checkbox::new(on, format!("{} ({found})", h.label())),
-            );
+        // Comments and what follows are often wanted, so not ticked at first.
+        let kept = s
+            .kinds
+            .iter()
+            .position(|(h, ..)| *h == limarepdf_core::Hidden::Comments)
+            .unwrap_or(s.kinds.len());
+        let (removed, kept) = s.kinds.split_at_mut(kept);
+        group(ui, "Removed by default", |ui| hidden_kinds(ui, removed));
+        if !kept.is_empty() {
+            group(ui, "Kept by default", |ui| hidden_kinds(ui, kept));
         }
         false
     })
+}
+
+/// A checkbox for each kind of hidden information, saying how many the document has.
+fn hidden_kinds(ui: &mut Ui, kinds: &mut [(limarepdf_core::Hidden, usize, bool)]) {
+    for (h, n, on) in kinds {
+        let found = if *n == 0 {
+            "none".to_string()
+        } else {
+            format!("{n} found")
+        };
+        ui.add_enabled(
+            *n > 0,
+            egui::Checkbox::new(on, format!("{} ({found})", h.label())),
+        );
+    }
 }
 
 pub struct Password {
@@ -561,14 +963,18 @@ pub fn password(ctx: &Context, s: &mut Password) -> Outcome {
     let name = s.path.file_name().map(|n| n.to_string_lossy().into_owned());
     let shell = Shell::new("Password required").file(name.as_deref());
     modal(ctx, shell, Btn::primary("Open"), true, |ui| {
-        ui.label("This document is protected. Type its password to open it.");
-        let r = ui.add(
-            egui::TextEdit::singleline(&mut s.input)
-                .password(true)
-                .hint_text("Password"),
+        ui.add(
+            egui::Label::new("This document is protected. Type its password to open it.").wrap(),
         );
+        ui.add_space(GAP);
+        let r = field(ui, "Password", |ui| {
+            let edit = egui::TextEdit::singleline(&mut s.input)
+                .password(true)
+                .desired_width(f32::INFINITY);
+            ui.add(theme::field(edit))
+        });
         if let Some(e) = &s.error {
-            ui.colored_label(ui.visuals().error_fg_color, e);
+            ui.add(egui::Label::new(RichText::new(e).color(ui.visuals().error_fg_color)).wrap());
         }
         entered(ui, &r)
     })
@@ -578,11 +984,20 @@ pub fn password(ctx: &Context, s: &mut Password) -> Outcome {
 pub fn comment_name(ctx: &Context, name: &mut String) -> Outcome {
     let shell = Shell::new("Your name for comments");
     modal(ctx, shell, Btn::primary("Save"), true, |ui| {
-        ui.label(
-            "Comments and markup you add are saved with this name, so others see who made \
-             them. Leave it empty to save no name.",
+        ui.add(
+            egui::Label::new(
+                "Comments and markup you add are saved with this name, so others see who made \
+                 them. Leave it empty to save no name.",
+            )
+            .wrap(),
         );
-        let r = ui.add(egui::TextEdit::singleline(name).hint_text("No name"));
+        ui.add_space(GAP);
+        let r = field(ui, "Name", |ui| {
+            let edit = egui::TextEdit::singleline(name)
+                .hint_text("No name")
+                .desired_width(f32::INFINITY);
+            ui.add(theme::field(edit))
+        });
         entered(ui, &r)
     })
 }
@@ -691,29 +1106,28 @@ pub fn restore(ctx: &Context, offers: &[Offer]) -> RestoreOut {
                 )
                 .wrap(),
             );
-            for (i, o) in offers.iter().enumerate() {
-                ui.add_space(6.0);
-                egui::Frame::group(ui.style()).show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    match &o.title {
-                        Some(t) => ui.strong(t),
-                        None => ui.strong("A copy that can't be restored"),
-                    };
+            ui.add_space(GAP);
+            list_rows(ui, offers.len(), |ui, i| {
+                let o = &offers[i];
+                let text = |ui: &mut Ui| {
+                    let title = o.title.as_deref();
+                    let title = title.unwrap_or("A copy that can't be restored");
+                    ui.add(egui::Label::new(RichText::new(title).strong()).wrap());
                     ui.add(egui::Label::new(RichText::new(&o.detail).weak()).wrap());
-                    ui.horizontal(|ui| {
-                        if o.title.is_some() {
-                            if ui.add(theme::primary_button("Restore")).clicked() {
-                                out = RestoreOut::Restore(i);
-                            }
-                        } else if ui.button("Show file").clicked() {
-                            out = RestoreOut::ShowFile(i);
+                };
+                list_row(ui, text, |ui| {
+                    if o.title.is_some() {
+                        if ui.add(theme::primary_button("Restore")).clicked() {
+                            out = RestoreOut::Restore(i);
                         }
-                        if ui.button("Discard").clicked() {
-                            out = RestoreOut::Discard(i);
-                        }
-                    });
+                    } else if ui.button("Show file").clicked() {
+                        out = RestoreOut::ShowFile(i);
+                    }
+                    if ui.button("Discard").clicked() {
+                        out = RestoreOut::Discard(i);
+                    }
                 });
-            }
+            });
         });
         let note = RichText::new("Not now keeps the copies until the date shown.").weak();
         footer(ui, Some(note), &[Btn::plain("Not now")]).is_some()
@@ -831,5 +1245,363 @@ mod tests {
     fn other_page_ranges_are_edited_where_clicked() {
         // The click lands past the end of the text, so typing adds to it.
         assert_eq!(click_and_type("1-3", ",5"), "1-3,5");
+    }
+
+    /// The Print dialog on a screen `size` points big, at `scale` pixels per point.
+    struct PrintWin {
+        ctx: Context,
+        s: Print,
+        size: egui::Vec2,
+        scale: f32,
+        /// What the last frame returned.
+        out: Outcome,
+    }
+
+    impl PrintWin {
+        fn new(size: (f32, f32), scale: f32) -> Self {
+            let ctx = Context::default();
+            ctx.enable_accesskit();
+            theme::install(&ctx);
+            let printers = vec![
+                Printer {
+                    name: "Office laser".into(),
+                    default: true,
+                },
+                Printer {
+                    name: "Hall inkjet".into(),
+                    default: false,
+                },
+            ];
+            PrintWin {
+                ctx,
+                s: Print::new(printers, "walrus.pdf".into()),
+                size: size.into(),
+                scale,
+                out: Outcome::Open,
+            }
+        }
+
+        /// Draws the dialog with `events`, and returns its AccessKit tree.
+        fn frame(&mut self, events: Vec<egui::Event>) -> egui::accesskit::TreeUpdate {
+            let mut raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.size)),
+                events,
+                ..Default::default()
+            };
+            raw.viewports
+                .entry(egui::ViewportId::ROOT)
+                .or_default()
+                .native_pixels_per_point = Some(self.scale);
+            let PrintWin { ctx, s, out, .. } = self;
+            let mut o = ctx.run_ui(raw, |_| *out = print(ctx, s));
+            o.textures_delta.clear();
+            o.platform_output.accesskit_update.expect("the dialog")
+        }
+
+        fn settled(&mut self) -> egui::accesskit::TreeUpdate {
+            for _ in 0..4 {
+                self.frame(vec![]);
+            }
+            self.frame(vec![])
+        }
+
+        /// Clicks the control named `label`; returns the tree once settled.
+        fn click(&mut self, label: &str) -> egui::accesskit::TreeUpdate {
+            let tree = self.settled();
+            let p = named(&tree, label).expect(label).center();
+            let press = |pressed| egui::Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            self.frame(vec![egui::Event::PointerMoved(p), press(true)]);
+            self.frame(vec![press(false)]);
+            self.settled()
+        }
+
+        fn window(&self) -> egui::Rect {
+            let id = egui::Id::new(("dialog", "Print"));
+            self.ctx.memory(|m| m.area_rect(id)).expect("the window")
+        }
+    }
+
+    fn rect(b: egui::accesskit::Rect) -> egui::Rect {
+        egui::Rect::from_min_max(
+            egui::pos2(b.x0 as f32, b.y0 as f32),
+            egui::pos2(b.x1 as f32, b.y1 as f32),
+        )
+    }
+
+    /// Where the control named `label` is, if shown.
+    fn named(tree: &egui::accesskit::TreeUpdate, label: &str) -> Option<egui::Rect> {
+        let (_, n) = tree.nodes.iter().find(|(_, n)| n.label() == Some(label))?;
+        n.bounds().map(rect)
+    }
+
+    /// Where the text `value` is, if shown.
+    fn text(tree: &egui::accesskit::TreeUpdate, value: &str) -> Option<egui::Rect> {
+        let (_, n) = tree.nodes.iter().find(|(_, n)| n.value() == Some(value))?;
+        n.bounds().map(rect)
+    }
+
+    /// Whether the control named `label` has the keyboard.
+    fn focused(tree: &egui::accesskit::TreeUpdate, label: &str) -> bool {
+        tree.nodes
+            .iter()
+            .any(|(id, n)| n.label() == Some(label) && *id == tree.focus)
+    }
+
+    /// V01/V02: Print as in the dialog mockup, wide, at half width and at 400 points, at
+    /// each scale: All pages and Page range on one row, the pages to print below them only
+    /// once Page range is chosen (taking the keyboard, and keeping what was typed), Copies
+    /// beside Print on unless the window is too narrow, and the dialogs' insets and button
+    /// height.
+    #[test]
+    fn print_follows_the_mockup_at_every_size() {
+        for size in [(1200.0, 800.0), (800.0, 800.0), (400.0, 800.0)] {
+            for scale in [1.0, 1.5, 2.0] {
+                let at = format!("{size:?} at {scale}");
+                let mut w = PrintWin::new(size, scale);
+                let tree = w.settled();
+                let get = |label: &str| named(&tree, label).expect(label);
+                let (all, range) = (get("All pages"), get("Page range"));
+                assert!((all.center().y - range.center().y).abs() < 1.0, "{at}");
+                assert!(range.left() > all.right(), "{at}");
+                assert!(named(&tree, "Pages to print").is_none(), "{at}");
+                let (copies, sides) = (get("Copies"), get("Print on"));
+                if size.0 >= 800.0 {
+                    assert!((copies.top() - sides.top()).abs() < 1.0, "{at}");
+                    assert!(sides.left() > copies.right(), "{at}");
+                } else {
+                    assert!(sides.top() > copies.bottom(), "{at}");
+                }
+                // The insets and the footer's buttons.
+                let window = w.window();
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size.into());
+                assert!(screen.expand(0.5).contains_rect(window), "{at}: {window:?}");
+                // Inside the window's outline.
+                let edge = w.ctx.global_style().visuals.window_stroke.width;
+                let side = edge + if size.0 < NARROW { 16.0 } else { SIDE };
+                let title = text(&tree, "Print").expect("the title");
+                assert!(
+                    (title.left() - window.left() - side).abs() < 1.0,
+                    "{at}: {title:?} in {window:?}"
+                );
+                assert!((get("Printer").left() - window.left() - side).abs() < 1.0);
+                let cancel = get("Cancel");
+                assert!(cancel.height() >= theme::DIALOG_CONTROL - 0.5, "{at}");
+                assert!(window.contains_rect(cancel), "{at}");
+
+                let tree = w.click("Page range");
+                assert!(!w.s.all, "{at}");
+                let field = named(&tree, "Pages to print").expect("the pages to print");
+                let row = named(&tree, "Page range").unwrap();
+                assert!(field.top() > row.bottom(), "{at}");
+                assert!(
+                    field.bottom() < named(&tree, "Copies").unwrap().top(),
+                    "{at}"
+                );
+                assert!(focused(&tree, "Pages to print"), "{at}");
+                assert!(field.height() >= theme::DIALOG_CONTROL - 0.5, "{at}");
+                w.frame(vec![egui::Event::Text("2-3".into())]);
+                assert_eq!(w.s.pages, "2-3", "{at}");
+
+                let tree = w.click("All pages");
+                assert!(w.s.all && named(&tree, "Pages to print").is_none(), "{at}");
+                let tree = w.click("Page range");
+                assert!(text(&tree, "2-3").is_some(), "{at}: typing lost");
+                assert_eq!(w.s.range(), "2-3");
+                let enter = egui::Event::Key {
+                    key: Key::Enter,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                };
+                w.frame(vec![enter]);
+                assert!(w.out == Outcome::Apply, "{at}: Enter didn't print");
+            }
+        }
+    }
+
+    /// Print fits a short screen, its buttons in view, with the pages to print shown.
+    #[test]
+    fn print_fits_a_short_screen() {
+        for size in [(1200.0, 300.0), (400.0, 300.0)] {
+            let mut w = PrintWin::new(size, 1.0);
+            w.s.all = false;
+            w.s.pages = "1-3".into();
+            let tree = w.settled();
+            let window = w.window();
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size.into());
+            assert!(
+                screen.expand(0.5).contains_rect(window),
+                "{size:?}: {window:?}"
+            );
+            for b in ["Print", "Cancel"] {
+                let r = named(&tree, b).expect(b);
+                assert!(window.contains_rect(r), "{size:?}: {b} {r:?}");
+            }
+        }
+    }
+
+    /// Print on is a list, as in the mockup, and picking from it sets the sides.
+    #[test]
+    fn print_on_is_picked_from_a_list() {
+        let mut w = PrintWin::new((1200.0, 800.0), 1.0);
+        w.click("Print on");
+        w.click("Both sides, flip on long edge");
+        assert_eq!(w.s.sides, Sides::LongEdge);
+        let tree = w.settled();
+        assert!(named(&tree, "Both sides, flip on short edge").is_none());
+    }
+
+    /// A page range that can't be printed is reported under it, above Copies.
+    #[test]
+    fn a_wrong_page_range_is_reported_under_it() {
+        let mut w = PrintWin::new((1200.0, 800.0), 1.0);
+        w.s.all = false;
+        w.s.pages = "9".into();
+        w.s.error = Some("There is no page 9.".into());
+        let tree = w.settled();
+        let e = text(&tree, "There is no page 9.").expect("the error");
+        assert!(e.top() > named(&tree, "Pages to print").unwrap().bottom());
+        assert!(e.bottom() < named(&tree, "Copies").unwrap().top());
+    }
+
+    /// G02: a dialog drawn on a tall screen fits again when the screen gets shorter (its
+    /// footer once kept it as tall as it had been), with its buttons on screen and a footer
+    /// note that wraps kept beside them, inside the window.
+    #[test]
+    fn a_dialog_fits_again_when_the_screen_gets_shorter() {
+        let ctx = Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let offers: Vec<Offer> = (1..=4)
+            .map(|i| Offer {
+                title: Some(format!("Report {i}.pdf")),
+                detail: "From /home/sam/Documents, 3 pages, kept until 1 December".into(),
+            })
+            .collect();
+        let id = egui::Id::new(("dialog", "Recover unsaved changes"));
+        for size in [
+            (400.0, 800.0),
+            (400.0, 300.0),
+            (1000.0, 800.0),
+            (700.0, 300.0),
+        ] {
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size.into());
+            let mut tree = None;
+            for _ in 0..5 {
+                let raw = egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(raw, |_| {
+                    restore(&ctx, &offers);
+                });
+                out.textures_delta.clear();
+                tree = out.platform_output.accesskit_update;
+            }
+            let tree = tree.expect("the dialog's widgets");
+            let at = |label: &str| {
+                let node = tree
+                    .nodes
+                    .iter()
+                    .find(|(_, n)| n.label() == Some(label) || n.value() == Some(label));
+                let b = node.and_then(|(_, n)| n.bounds()).expect(label);
+                egui::Rect::from_min_max(
+                    egui::pos2(b.x0 as f32, b.y0 as f32),
+                    egui::pos2(b.x1 as f32, b.y1 as f32),
+                )
+            };
+            let window = ctx.memory(|m| m.area_rect(id)).expect("the window");
+            let not_now = at("Not now");
+            let note = at("Not now keeps the copies until the date shown.");
+            let screen = screen.expand(0.5);
+            assert!(screen.contains_rect(window), "{size:?}: window {window:?}");
+            assert!(window.contains_rect(not_now), "{size:?}: {not_now:?}");
+            assert!(window.contains_rect(note), "{size:?}: note {note:?}");
+            let beside = note.y_range().intersects(not_now.y_range());
+            assert!(beside, "{size:?}: {note:?}, {not_now:?}");
+        }
+    }
+
+    /// Batch 7b: Password required and Your name for comments label their fields above
+    /// them, as Print does, wide and narrow.
+    #[test]
+    fn password_and_name_have_labels_above_their_fields() {
+        for size in [egui::vec2(1200.0, 800.0), egui::vec2(400.0, 800.0)] {
+            let mut s = Password {
+                path: PathBuf::from("walrus.pdf"),
+                input: String::new(),
+                error: Some("That isn't the password.".into()),
+            };
+            let tree = drawn(size, |ctx| {
+                password(ctx, &mut s);
+            });
+            label_above(&tree, "Password").unwrap();
+            let field = named(&tree, "Password").unwrap();
+            let e = text(&tree, "That isn't the password.").expect("the error");
+            assert!(e.top() >= field.bottom(), "{size:?}: not under it");
+            let mut name = "Sam".to_string();
+            let tree = drawn(size, |ctx| {
+                comment_name(ctx, &mut name);
+            });
+            label_above(&tree, "Name").unwrap();
+        }
+    }
+
+    /// Batch 7b: Remove hidden information in two headed groups, what is ticked at first
+    /// and what isn't, each heading above its kinds.
+    #[test]
+    fn hidden_information_is_in_two_groups() {
+        use limarepdf_core::Hidden;
+        let mut s = RemoveHidden {
+            kinds: Hidden::ALL
+                .iter()
+                .map(|&h| (h, 1, (h as usize) < Hidden::Comments as usize))
+                .collect(),
+        };
+        let tree = drawn(egui::vec2(1200.0, 800.0), |ctx| {
+            remove_hidden(ctx, Some("walrus.pdf"), &mut s);
+        });
+        let kind = |h: Hidden| {
+            let name = format!("{} (1 found)", h.label());
+            named(&tree, &name).unwrap_or_else(|| panic!("no {name}"))
+        };
+        let removed = text(&tree, "Removed by default").expect("the first heading");
+        let kept = text(&tree, "Kept by default").expect("the second heading");
+        assert!(removed.bottom() <= kind(Hidden::Metadata).top());
+        assert!(kind(Hidden::PrivateData).bottom() <= kept.top());
+        assert!(kept.bottom() <= kind(Hidden::Comments).top());
+    }
+
+    /// Batch 7b: recovered documents are rows of one list, each with its buttons beside
+    /// it, or under it when the window is narrow.
+    #[test]
+    fn recovered_documents_are_rows_with_their_buttons() {
+        let offers = [Offer {
+            title: Some("Report.pdf".into()),
+            detail: "From /home/sam/Documents, 3 pages".into(),
+        }];
+        for (width, beside) in [(1000.0, true), (400.0, false)] {
+            let tree = drawn(egui::vec2(width, 800.0), |ctx| {
+                restore(ctx, &offers);
+            });
+            let title = text(&tree, "Report.pdf").expect("the title");
+            let detail = text(&tree, "From /home/sam/Documents, 3 pages").unwrap();
+            let (restore, discard) = (named(&tree, "Restore"), named(&tree, "Discard"));
+            let (restore, discard) = (restore.unwrap(), discard.unwrap());
+            if beside {
+                let text = title.right().max(detail.right());
+                assert!(restore.left() > text, "{width}");
+                assert!(restore.y_range().intersects(title.y_range()), "{width}");
+            } else {
+                assert!(restore.top() >= detail.bottom(), "{width}");
+            }
+            assert!(discard.left() > restore.right(), "{width}: Tab order");
+        }
     }
 }

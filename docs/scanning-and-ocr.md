@@ -13,7 +13,7 @@ The usual order is: import the images, optimise the pages, then recognise the te
 - **Orientation:** pages are turned upright from the EXIF or TIFF orientation.
 - **Quality:** JPEGs are embedded as they are, without recompression.
 
-Where: ☰ > File > Make a PDF from images (also on the start screen); Insert images in the inspector, the right-click menu or ☰ > Document; or drop
+Where: ☰ > File > Make a PDF from images (also on the start screen); Insert images in the inspector, the right-click menu or ☰ > Pages; or drop
 images on the window. On the command line: `limarepdf-cli images` and `limarepdf-cli insert-images`.
 
 ## Optimising scanned pages

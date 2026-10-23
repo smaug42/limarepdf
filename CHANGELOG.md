@@ -25,19 +25,20 @@
   a pop-out over the pages. A narrow window folds the navigation panel and the inspector away and brings them back
   when there is room, unless you closed them; whether each panel is open is remembered between runs.
 - Double-click a line of page text with the read tool to edit it on the page, with the word under the pointer
-  selected; Enter or a click elsewhere keeps the change, Esc drops it. Editing the same line again within a few
+  selected; Enter, Esc, Tab or a click elsewhere keeps the change. Editing the same line again within a few
   seconds joins the same undo step. Double-click and triple-click still select a word and a line where there is
   no line to edit, such as recognised text.
 - The read tool also selects pictures, shapes, comments and marks, with handles to move and resize them; not
   pictures or shapes covering most of the page, such as a scanned page. Page text moves with Move or resize text
-  (on its floating toolbar) or the arrow.
+  (on its floating toolbar), which keeps the read tool on until you click away, or with the arrow.
 - Changes in the inspector apply as you make them, each one an undo step: the Apply text changes, Apply style and
   Apply changes buttons are gone.
 - The font size is a box showing the exact size, with a list of the usual sizes beside it.
 - The tools that put something down (text, images, notes, text boxes, shapes, stamps, redaction marks, fill and
   sign) go back to the read tool afterwards, with the new item selected. A pin in each tool's options, Keep tool
-  active, keeps that tool on for several in a row; each tool's pin is separate and remembered between runs. Esc
-  leaves any tool for the read tool. The pen stays on until Esc or another tool.
+  active, keeps that tool on for several in a row (all but the Note tool, where every click would put down a note
+  and existing ones couldn't be opened); each tool's pin is separate and remembered between runs. Esc leaves any
+  tool for the read tool. The pen stays on until Esc or another tool.
 - The Fill and sign button has a menu: Signature and Initials (the saved ones and Create…), Date, Your name, Text,
   Tick, Cross and Dot. The Create signature window also opens with the inspector folded away.
 - Form fields are highlighted from the start, in a lighter tint; the form banner's Highlight fields is a switch, and
@@ -46,26 +47,125 @@
   the action that does the task highlighted (red when Undo can't take it back or it breaks signatures) and before
   Cancel (after it on macOS). The window behind is dimmed and takes no clicks or shortcuts while a dialog is open.
   Esc cancels any dialog, except one holding work that would be lost. Messages have a Copy button; a signed
-  document's save and sign questions put the reason under Details.
-- Print: all pages or a page range, one side or both as a list of choices, and Print as image under Advanced; a page
+  document's save and sign questions put the reason under Details. The title is larger, in Inter Medium (now
+  included), with more room around the title, the settings and the buttons; fields, lists and buttons are
+  outlined and taller; and in a window under 600 points wide the margins are smaller.
+- Print: the printer above a list of printers; All pages and Page range on one row, with the pages to print
+  below them once Page range is chosen (which puts the keyboard there); Copies beside a Print on list of one
+  side or both (one under the other in a narrow window); and Print as image under Advanced, below a rule. A page
   range that can't be read is reported under it instead of in a separate message.
+- Create signature's Type has a "Your name" label above an outlined field, and the drawing area an outline.
+- Every dialog now has Print's look: text at 14 points, settings in headed groups, labels above the fields, and
+  radio buttons and checkboxes outlined on the dialog's background. Password required and Your name for comments
+  have a labelled field. Remove hidden information lists what is removed by default and what is kept by default
+  in two groups. The digital ID windows are titled with the task (Create a digital ID, Import a digital ID,
+  Export), their forms are grouped (About you, Password), "Again" is now "Confirm password", and the Digital IDs
+  window lists the IDs in a box above the selected one's details. Sign and Certify show where the signature goes
+  under the title, the digital ID as a full-width list, Reason beside Location when there is room, and what others
+  may change under its own heading. Signature details groups its facts (Signature, Signer, Time, the signer's own
+  words, changes, warnings) with its buttons after a rule; the Trust question groups the choice and the
+  certificate, with "Name in your list" above its field. Trusted certificates and Recover unsaved changes list
+  their entries in one box, each with its buttons beside it. Create signature puts "Ink" above its colours.
+- The command palette (Ctrl+K) takes the dialogs' look without a title or buttons: an outlined search field with a
+  search icon, a rule, and the commands with their category and shortcut in aligned columns.
 - Create signature: Draw, Type and Image (was Picture), the ink colour in the window too, and Use signature (was
   Done). Picking another tool closes it.
 - Go to field in Signature details closes the window, to show the field.
 - Tab goes through the top bar, the tabs, the bottom bar, the panels and each dialog's buttons in the order they
-  are shown, left to right. Screen readers can name every button and field: the search field, the pages and
-  their thumbnails, Print's printer, page range and copies, the signature drawing area and ink colours, and the
-  banners' Dismiss button. Closing the inspector's pop-out with Esc returns the keyboard to its button.
+  are shown, left to right. Closing the inspector's pop-out with Esc returns the keyboard to its button.
+- Screen readers can name the buttons, fields, lists and menus in the window, the inspector, the side views and
+  the dialogs, checked by the app's tests (not yet with a screen reader). Names added: the search field, the
+  pages and their thumbnails, Print's printer, pages to print, copies and Print on, the signature drawing area and ink
+  colours, the banners' Dismiss button; the font list, Bold and Italic (with whether they are on), the font
+  sizes, every colour button, line widths, opacity and the inspector's fields (each named by its label);
+  Search results' field and ◀ ▶ (Previous match, Next match, now also as tooltips); the Fill and sign pane's
+  saved signatures, date format, name, text and marks (with which is picked); Create signature's name field
+  and handwriting styles; the bookmark arrows (Expand or Collapse and the title); the command search field;
+  the zoom level; the edges of the side panel and inspector (Side panel width, Inspector width; mouse only);
+  and an open list or menu, after the button that opened it. Buttons with an icon are named by their words
+  alone, without the icon's character.
 - Creating a digital ID shows a problem beside the field it is about, and the keyboard starts in the Name field.
+- The Fill and sign pane no longer has a Sign with digital ID button: digital signing and certifying are in
+  Document > Digital signatures.
+- limarepdf includes the Liberation fonts (SIL Open Font License 1.1, about 4.4 MB), which have the widths of
+  Helvetica, Times and Courier, to show text in its own look while it is typed on the page. They are only drawn
+  on screen: text is still written in Helvetica, Times or Courier, and the font list is unchanged. Release
+  archives and packages include their licence as `FONT-LICENSE-Liberation.txt`.
+- Add text is typed on the page, where you click, in the font, size and colour it will have, instead of in a box
+  in the inspector with Add and Cancel. Enter starts a new line; Esc, a click elsewhere or another tool finishes,
+  and the lines are added as one undo step. The inspector's font, Bold, Italic, size and colour change the text
+  as you type, as do Ctrl+B and Ctrl+I; drag the text's outline to move it. Characters LimarePDF can't write yet
+  can't be typed or pasted there, and a note at the caret says so, instead of turning into `?`. With the Add
+  text tool, a click on page text edits that line, the caret where you clicked, and a drag selects text.
+- A line of page text being edited is drawn as it will be written, in the font it will have (its own when it can
+  be kept, else the Helvetica, Times or Courier replacing it, switching as you type), its size and its colour,
+  over the line, which is hidden underneath in the colour around it. Ctrl+B and Ctrl+I switch the whole line to
+  Bold or Italic. Characters LimarePDF can't write yet can't be typed there or in the inspector's text box, and a
+  note says so. Turned lines and invisible recognised text are still edited in a plain box.
+- Text being typed on the page matches the page colours: in Dark, Sepia and High contrast, new text and edited
+  lines show in the colours the page will give them, with a caret that shows on dark paper.
+- Esc keeps what you typed instead of throwing it away, in a text box, a note and a form's text field, as it
+  already did for new text and edited lines; Ctrl+Z takes it back. A note's comment box has no Done or Cancel
+  button: a click on the page outside it, Esc or Ctrl+Enter closes it, keeping the comment (a note with nothing
+  typed isn't added), and that click doesn't put down another note. While a new note is typed, the colour picked in
+  the inspector colours it, and the note stays open and gets the keyboard back. A list that allows several choices
+  has no Done button: each click applies, and a click outside it, Esc or Enter closes it.
+- Esc with a list, menu or colour picker open closes only that, instead of also leaving the tool or finishing what
+  is being typed.
+- Finishing a note or text box by choosing another tool keeps that tool, as Add text does, instead of going back
+  to the read tool. While typing in a note or text box, Ctrl+Z and Ctrl+Y undo and redo the typing, not the
+  document.
+- Document properties, Opening view and Page labels apply as you set them, one undo step per change, instead of
+  with Apply or Number from page N: a property or the label prefix when you press Enter or leave the field, a
+  choice at once, a number when you let go of it. Page labels show the numbering the first selected page has,
+  and a change starts numbering there. Use current view sets the opening view at once. Saving or closing keeps
+  a field still being typed in.
+- Crop is set on the pages: while the Crop section is open the pages are shown whole, the part outside each crop
+  box dimmed, and the crop box's edges and corners can be dragged on the pages being cropped. Each drag or
+  margin typed crops at once, one undo step; Esc or closing the section shows the pages cropped. The Crop button
+  is gone; Remove crop stays.
+- Watermarks and headers, footers and Bates numbers are shown on the pages as you set them, without being added
+  to the document, until Add to pages (was Apply). After that, each change updates the one just added, as its own
+  undo step, replacing the Update button; Undo steps back through the changes with the settings following. Add
+  another stays.
+- Selecting words no longer fills the inspector with instructions, a copy of the selected text and a Copy button;
+  it stays on the document or pages. Copy and the other commands for the selection are on its floating toolbar
+  (or docked buttons), the right-click menu and Ctrl+C.
+- The inspector no longer explains how to use each tool in paragraphs: the tools' panels show their options, and
+  how to use a tool is in its tooltip, which now follows its name in the top bar. Other long notes in the
+  inspector are cut to a short line or a tooltip (Bates numbering's), or removed where the panel shows it already
+  (page labels, crop, opening view, form fields). Signing with a digital ID loses its Cancel button: Esc or
+  another tool stops it, as for every tool. A selected group of content is called "Group".
 
 ### Fixed
 
+- Going into the font size box and out again, or pressing Enter in it, without typing rounded an unusual size such
+  as 10.126 to 10.13; it now changes nothing, and the box shows the exact size. A change of size smaller than a
+  hundredth of a point was also lost.
+- In a narrow window the Create signature window was wider than the screen, so part of the drawing pad was cut
+  off. The pad now shrinks to fit, also in a short window, as do the typed and image previews, and what was drawn
+  keeps its shape and size when the window is resized.
+- A dialog shown in a tall window stayed as tall when the window got shorter, pushing its buttons off screen; it
+  now fits again.
+- When making, importing or exporting a digital ID failed, for example with a wrong password, the Digital IDs
+  window went back to its list with the error at the bottom, losing what was typed. The form now comes back with
+  its name, file or export choices kept and the error beside the password, or at the end of the form for other
+  failures; the passwords are typed again, as before.
+- When signing or certifying with a digital ID, a missing or wrong password was reported at the bottom of the
+  window, below the other options, where it could be out of sight in a short window. It is now said under the
+  password, where the keyboard goes; other problems stay at the bottom. Screen readers now also name the
+  Digital ID, Reason and Location fields.
 - Ctrl+A and other single-key shortcuts were missed when the key and Ctrl arrived together, as with a quick tap.
 - Selecting a coloured comment or mark could count as an unkept change (asking about it on closing), because the
   colour button stored its colour back very slightly changed.
 - Esc didn't close the Create signature window, and keyboard shortcuts reached the document while a dialog was
   open.
 - Tab couldn't leave the empty password field when importing a digital ID.
+- Some Western European characters came out as `?` in text LimarePDF writes, although its fonts have them:
+  Š š Ž ž Œ œ Ÿ ƒ † ‡ ‰ ‹ › ˆ ˜ in new and edited text, form values and the OCR text layer; those and also
+  € ‚ „ … ‘ ’ “ ” • – — ™ in text boxes, headers, footers, Bates numbers, watermarks, stamps, Fill and sign's text
+  and the name on a digital signature. They are now written as typed, and stamps and form fields no longer
+  refuse them.
 
 ## [0.8.1] - 2026-10-21
 

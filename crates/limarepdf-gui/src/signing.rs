@@ -8,6 +8,7 @@
 
 use crate::actions::Act;
 use crate::dialogs::{self, Btn, Shell};
+use crate::theme;
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Vec2};
 use limarepdf_core::{
     typed_signature, DateStyle, InkColor, Mark, SignArt, SignRole, SignStyle, Stamp, StampPlace,
@@ -18,7 +19,8 @@ use std::path::{Path, PathBuf};
 
 /// How many signatures, and how many sets of initials, are remembered.
 pub const SAVED: usize = 5;
-/// The drawing pad's size, and the pen's width on it, in points.
+/// The drawing pad's size, and the pen's width on it, in points. Strokes are kept in these
+/// points whatever size the pad is drawn at ([`pad_size`]).
 const PAD: Vec2 = Vec2::new(480.0, 160.0);
 const PEN: f32 = 2.5;
 /// The most a preview in the pane takes up, in points.
@@ -404,7 +406,9 @@ impl Create {
             SignRole::Initials => ("Create initials", "Use initials"),
         };
         let mut out = Outcome::Open;
-        let shell = Shell::new(title).width(PAD.x + 40.0).esc(!self.staged());
+        let shell = Shell::new(title)
+            .width(PAD.x + 2.0 * dialogs::SIDE)
+            .esc(!self.staged());
         let (_, esc) = shell.show(ctx, |ui| {
             dialogs::content(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -417,7 +421,7 @@ impl Create {
                     let w = (ui.available_width() - 2.0 * gap) / 3.0;
                     for (way, label) in ways {
                         let b = egui::Button::new(label).selected(self.way == way);
-                        if ui.add_sized([w, 28.0], b).clicked() {
+                        if ui.add_sized([w, theme::DIALOG_CONTROL], b).clicked() {
                             self.way = way;
                             self.error = None;
                         }
@@ -432,8 +436,9 @@ impl Create {
                 if let Some(e) = &self.error {
                     ui.colored_label(ui.visuals().error_fg_color, e);
                 }
-                ui.add_space(8.0);
-                ink_ui(ui, color);
+                ui.add_space(dialogs::FIELD_GAP);
+                ink_field(ui, color);
+                ui.add_space(dialogs::FIELD_GAP);
                 ui.checkbox(&mut self.keep, "Save for next time")
                     .on_hover_text(
                         "Keep it in LimarePDF's settings folder on this computer, so it is there \
@@ -467,19 +472,24 @@ impl Create {
 
     /// The drawing pad: white, with a line to sign on.
     fn pad(&mut self, ui: &mut egui::Ui, color: InkColor) {
-        let (rect, resp) = ui.allocate_exact_size(PAD, Sense::click_and_drag());
+        let (rect, resp) = ui.allocate_exact_size(pad_size(ui), Sense::click_and_drag());
         crate::dialogs::set_name(&resp, "Drawing area: sign with the mouse or a pen");
+        // Points on screen per point of the full-size pad.
+        let k = rect.width() / PAD.x;
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 4.0, Color32::WHITE);
+        // Outlined as the dialog's fields are, to show on a white dialog.
+        let edge = ui.visuals().widgets.inactive.bg_stroke;
+        painter.rect_stroke(rect, 4.0, edge, egui::StrokeKind::Inside);
         let base = rect.top() + rect.height() * 0.72;
         painter.line_segment(
             [
-                Pos2::new(rect.left() + 24.0, base),
-                Pos2::new(rect.right() - 24.0, base),
+                Pos2::new(rect.left() + 24.0 * k, base),
+                Pos2::new(rect.right() - 24.0 * k, base),
             ],
             Stroke::new(1.0, Color32::from_gray(200)),
         );
-        let local = |p: Pos2| (p.x - rect.left(), p.y - rect.top());
+        let local = |p: Pos2| ((p.x - rect.left()) / k, (p.y - rect.top()) / k);
         if resp.drag_started() {
             if let Some(p) = ui.input(|i| i.pointer.press_origin()) {
                 self.stroke = Some(vec![local(p)]);
@@ -506,12 +516,12 @@ impl Create {
         for s in self.strokes.iter().chain(&self.stroke) {
             let pts: Vec<Pos2> = s
                 .iter()
-                .map(|&(x, y)| Pos2::new(rect.left() + x, rect.top() + y))
+                .map(|&(x, y)| Pos2::new(rect.left() + x * k, rect.top() + y * k))
                 .collect();
             if pts.len() == 1 {
-                painter.circle_filled(pts[0], PEN / 2.0, ink);
+                painter.circle_filled(pts[0], PEN * k / 2.0, ink);
             } else {
-                painter.add(egui::Shape::line(pts, Stroke::new(PEN, ink)));
+                painter.add(egui::Shape::line(pts, Stroke::new(PEN * k, ink)));
             }
         }
         if resp.hovered() {
@@ -530,15 +540,16 @@ impl Create {
 
     /// Typing a name, and picking one of the handwriting styles, shown as they will look.
     fn typed(&mut self, ui: &mut egui::Ui, previews: &mut Previews, color: InkColor) {
-        ui.add(
-            egui::TextEdit::singleline(&mut self.text)
-                .hint_text(match self.role {
-                    SignRole::Signature => "Your name",
-                    SignRole::Initials => "Your initials",
-                })
-                .desired_width(PAD.x),
-        );
+        let name = match self.role {
+            SignRole::Signature => "Your name",
+            SignRole::Initials => "Your initials",
+        };
+        dialogs::field(ui, name, |ui| {
+            let edit = egui::TextEdit::singleline(&mut self.text).desired_width(f32::INFINITY);
+            ui.add(theme::field(edit))
+        });
         ui.add_space(4.0);
+        let room = ui.available_width() - 2.0 * ui.spacing().button_padding.x;
         for style in SignStyle::ALL {
             let saved = Saved::Typed {
                 text: self.text.clone(),
@@ -550,9 +561,11 @@ impl Create {
                 .flatten();
             let r = match tex {
                 Some(tex) => {
-                    let size = Previews::size(&tex, Vec2::new(PAD.x, 60.0));
+                    let size = Previews::size(&tex, Vec2::new(room, 60.0));
                     let img = egui::Image::new((tex.id(), size));
-                    ui.add(egui::Button::image(img).selected(self.style == style))
+                    let r = ui.add(egui::Button::image(img).selected(self.style == style));
+                    dialogs::set_name(&r, style.label());
+                    r
                 }
                 None => ui.selectable_label(self.style == style, style.label()),
             };
@@ -595,7 +608,7 @@ impl Create {
             };
             match previews.get(ui.ctx(), &saved, self.role, color) {
                 Some(tex) => {
-                    let size = Previews::size(&tex, Vec2::new(PAD.x, PAD.y));
+                    let size = Previews::size(&tex, pad_size(ui));
                     ui.image((tex.id(), size));
                 }
                 None => {
@@ -651,24 +664,44 @@ impl Create {
     }
 }
 
+/// The drawing pad's size on screen, and the most an image preview takes up: [`PAD`]'s
+/// shape, up to [`PAD`], as wide as there is room for and no taller than the part of the
+/// window's content that shows at once, so it can be scrolled wholly into view.
+fn pad_size(ui: &egui::Ui) -> Vec2 {
+    let k = (ui.available_width() / PAD.x).min(ui.clip_rect().height() / PAD.y);
+    PAD * k.min(1.0)
+}
+
 /// The ink colours to pick from, in the Fill and sign pane and the Create window.
+/// The ink colours, with "Ink" beside them, as in the Fill and sign panel.
 fn ink_ui(ui: &mut egui::Ui, color: &mut InkColor) {
     ui.horizontal(|ui| {
         ui.label("Ink");
-        // A dot in the ink's colour, then its name in the usual text colour, which
-        // stays readable when picked.
-        let font = egui::TextStyle::Button.resolve(ui.style());
-        let fg = ui.visuals().text_color();
-        for c in InkColor::ALL {
-            let [r, g, b] = c.rgb().map(|v| (v * 255.0) as u8);
-            let mut job = egui::text::LayoutJob::default();
-            let fmt = |color| egui::TextFormat::simple(font.clone(), color);
-            job.append("● ", 0.0, fmt(Color32::from_rgb(r, g, b)));
-            job.append(&capital(c.name()), 0.0, fmt(fg));
-            let r = ui.selectable_value(color, c, job);
-            crate::dialogs::set_name(&r, &format!("{} ink", capital(c.name())));
-        }
+        ink_choices(ui, color);
     });
+}
+
+/// The ink colours, with "Ink" above them, as dialogs label their fields.
+fn ink_field(ui: &mut egui::Ui, color: &mut InkColor) {
+    ui.label("Ink");
+    ui.add_space(2.0);
+    ui.horizontal(|ui| ink_choices(ui, color));
+}
+
+fn ink_choices(ui: &mut egui::Ui, color: &mut InkColor) {
+    // A dot in the ink's colour, then its name in the usual text colour, which stays
+    // readable when picked.
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let fg = ui.visuals().text_color();
+    for c in InkColor::ALL {
+        let [r, g, b] = c.rgb().map(|v| (v * 255.0) as u8);
+        let mut job = egui::text::LayoutJob::default();
+        let fmt = |color| egui::TextFormat::simple(font.clone(), color);
+        job.append("● ", 0.0, fmt(Color32::from_rgb(r, g, b)));
+        job.append(&capital(c.name()), 0.0, fmt(fg));
+        let r = ui.selectable_value(color, c, job);
+        crate::dialogs::set_name(&r, &format!("{} ink", capital(c.name())));
+    }
 }
 
 fn capital(s: &str) -> String {
@@ -761,10 +794,9 @@ pub fn menu_ui(ui: &mut egui::Ui, menu: &SignMenu, acts: &mut Vec<Act>) {
     }
     ui.separator();
     for (m, glyph) in [(Mark::Tick, "✔"), (Mark::Cross, "✖"), (Mark::Dot, "●")] {
-        if ui
-            .button(format!("{glyph}  {}", capital(m.label())))
-            .clicked()
-        {
+        let r = ui.button(format!("{glyph}  {}", capital(m.label())));
+        dialogs::set_name(&r, &capital(m.label()));
+        if r.clicked() {
             acts.push(Act::SignWith(SignPick::Mark(m)));
             ui.close();
         }
@@ -776,8 +808,6 @@ pub fn menu_ui(ui: &mut egui::Ui, menu: &SignMenu, acts: &mut Vec<Act>) {
 pub struct PaneOut {
     /// The Finish signing command.
     pub finish: bool,
-    /// The Sign with digital ID command.
-    pub digital: bool,
 }
 
 impl SignPane {
@@ -858,7 +888,14 @@ impl SignPane {
                             Some(tex) => {
                                 let size = Previews::size(&tex, PREVIEW);
                                 let img = egui::Image::new((tex.id(), size));
-                                ui.add(egui::Button::image(img).selected(picked))
+                                let r = ui.add(egui::Button::image(img).selected(picked));
+                                // Named as in the toolbar's list.
+                                let name = match role {
+                                    SignRole::Signature => "Signature",
+                                    SignRole::Initials => "Initials",
+                                };
+                                dialogs::set_name(&r, &format!("{name} {}", i + 1));
+                                r
                             }
                             None => ui.selectable_label(picked, "Picture not found"),
                         };
@@ -890,23 +927,27 @@ impl SignPane {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.pick, SignPick::Date, "Date");
-            egui::ComboBox::from_id_salt("sign-date")
+            let r = egui::ComboBox::from_id_salt("sign-date")
                 .selected_text(kit.date.today())
                 .show_ui(ui, |ui| {
                     for d in DateStyle::ALL {
                         ui.selectable_value(&mut kit.date, d, d.today());
                     }
                 });
+            dialogs::set_name(&r.response, "Date format");
         });
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.pick, SignPick::Name, "Name");
-            ui.add(egui::TextEdit::singleline(author).hint_text("Your name"))
+            let r = ui
+                .add(egui::TextEdit::singleline(author).hint_text("Your name"))
                 .on_hover_text("Also signs your comments (Edit > Your name for comments)");
+            dialogs::set_name(&r, "Your name");
         });
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.pick, SignPick::Text, "Text");
             let r =
                 ui.add(egui::TextEdit::singleline(&mut self.text).hint_text("Type, then click"));
+            dialogs::set_name(&r, "Text to place");
             if r.changed() {
                 self.pick = SignPick::Text;
             }
@@ -914,33 +955,14 @@ impl SignPane {
         ui.horizontal(|ui| {
             ui.label("Marks");
             for (m, glyph) in [(Mark::Tick, "✔"), (Mark::Cross, "✖"), (Mark::Dot, "●")] {
-                ui.selectable_value(&mut self.pick, SignPick::Mark(m), glyph)
-                    .on_hover_text(m.label());
+                let r = ui.selectable_value(&mut self.pick, SignPick::Mark(m), glyph);
+                dialogs::set_name(&r, &capital(m.label()));
+                r.on_hover_text(m.label());
             }
         });
         ink_ui(ui, &mut kit.color);
         ui.add_space(6.0);
-        ui.label(
-            "Click on the page to put the picked item down, or drag a box to size it. Click \
-             an empty signature field to sign in it. Ctrl+click an item to select it, then \
-             move or resize it.",
-        );
-        ui.label(
-            egui::RichText::new(
-                "This is a picture of your signature, not a digital signature: it doesn't \
-                 prove who signed.",
-            )
-            .weak(),
-        );
-        if ui
-            .button("Sign with digital ID…")
-            .on_hover_text(
-                "A signature that proves who signed and shows any change made afterwards",
-            )
-            .clicked()
-        {
-            out.digital = true;
-        }
+        ui.weak("A picture, not a digital signature.");
         ui.add_space(6.0);
         ui.label(match items {
             0 => "Nothing placed yet.".to_string(),
@@ -1153,6 +1175,215 @@ mod tests {
         }
         assert_eq!(k.signatures.len(), SAVED);
         assert!(matches!(&k.signatures[0].saved, Saved::Typed { text, .. } if text == "Sam 6"));
+    }
+
+    const DRAWING: &str = "Drawing area: sign with the mouse or a pen";
+
+    /// The Create window on a screen `size` points big, at `scale` pixels per point.
+    struct Win {
+        ctx: egui::Context,
+        c: Create,
+        previews: Previews,
+        size: Vec2,
+        scale: f32,
+    }
+
+    impl Win {
+        fn new(c: Create, size: Vec2, scale: f32) -> Self {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            crate::theme::install(&ctx);
+            Win {
+                ctx,
+                c,
+                previews: Previews::default(),
+                size,
+                scale,
+            }
+        }
+
+        /// Draws the window with `events`, and returns its AccessKit tree.
+        fn frame(&mut self, events: Vec<egui::Event>) -> egui::accesskit::TreeUpdate {
+            let mut raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)),
+                events,
+                ..Default::default()
+            };
+            raw.viewports
+                .entry(egui::ViewportId::ROOT)
+                .or_default()
+                .native_pixels_per_point = Some(self.scale);
+            let Win {
+                ctx, c, previews, ..
+            } = self;
+            let mut out = ctx.run_ui(raw, |_| {
+                c.show(ctx, previews, &mut InkColor::Black);
+            });
+            out.textures_delta.clear();
+            out.platform_output
+                .accesskit_update
+                .expect("the window's widgets")
+        }
+
+        /// Draws the window until it has settled.
+        fn settled(&mut self) -> egui::accesskit::TreeUpdate {
+            for _ in 0..4 {
+                self.frame(vec![]);
+            }
+            self.frame(vec![])
+        }
+
+        /// Moves the pointer to `pos`, pressing or releasing the primary button there.
+        fn pointer(&mut self, pos: Pos2, pressed: Option<bool>) {
+            let mut events = vec![egui::Event::PointerMoved(pos)];
+            events.extend(pressed.map(|pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            }));
+            self.frame(events);
+        }
+    }
+
+    /// Where the control named `label` is, in points.
+    fn bounds(tree: &egui::accesskit::TreeUpdate, label: &str) -> Rect {
+        let b = tree
+            .nodes
+            .iter()
+            .find(|(_, n)| n.label() == Some(label))
+            .and_then(|(_, n)| n.bounds())
+            .unwrap_or_else(|| panic!("no {label}"));
+        Rect::from_min_max(
+            Pos2::new(b.x0 as f32, b.y0 as f32),
+            Pos2::new(b.x1 as f32, b.y1 as f32),
+        )
+    }
+
+    /// G02: drawn, typed or chosen, the Create window and its work area stay inside a narrow,
+    /// short or wide window at every scale, with Use signature on screen; and what it holds
+    /// is kept as the window is resized.
+    #[test]
+    fn create_fits_narrow_short_and_wide_windows() {
+        let picture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/images/icon.png");
+        let sizes = [
+            Vec2::new(400.0, 800.0),
+            Vec2::new(700.0, 300.0),
+            Vec2::new(1000.0, 450.0),
+        ];
+        for scale in [1.0, 1.5, 2.0] {
+            for way in [Way::Draw, Way::Type, Way::Picture] {
+                let mut c = Create::new(SignRole::Signature, "Sam Lee");
+                c.way = way;
+                c.strokes = vec![vec![(30.0, 120.0), (450.0, 40.0)], vec![(240.0, 80.0)]];
+                c.text = "Sam Q. Lee".into();
+                c.picture = Some(picture.clone());
+                let mut w = Win::new(c, sizes[0], scale);
+                for size in sizes {
+                    w.size = size;
+                    let tree = w.settled();
+                    let screen = Rect::from_min_size(Pos2::ZERO, size).expand(0.5);
+                    let id = egui::Id::new(("dialog", "Create signature"));
+                    let window = w.ctx.memory(|m| m.area_rect(id)).expect("the window");
+                    let at = format!("{way:?} at {size:?}, scale {scale}");
+                    assert!(screen.contains_rect(window), "{at}: window {window:?}");
+                    let done = bounds(&tree, "Use signature");
+                    assert!(screen.contains_rect(done), "{at}: Use signature {done:?}");
+                    if way == Way::Draw {
+                        // As wide as the window allows, and no taller than the content
+                        // that shows at once (dialogs::content): whole, above the
+                        // buttons, at the pad's shape.
+                        let pad = bounds(&tree, DRAWING);
+                        let wide = pad.left() >= window.left() - 0.5
+                            && pad.right() <= window.right() + 0.5;
+                        let tall = pad.top() >= window.top() && pad.bottom() <= done.top();
+                        assert!(wide && tall, "{at}: pad {pad:?}");
+                        let shape = pad.width() / pad.height();
+                        assert!((shape - 3.0).abs() < 0.05, "{at}: pad {pad:?}");
+                    }
+                }
+                let c = &w.c;
+                assert_eq!(c.strokes.len(), 2);
+                assert_eq!(c.strokes[0], [(30.0, 120.0), (450.0, 40.0)]);
+                assert_eq!(c.text, "Sam Q. Lee");
+                assert_eq!(c.picture.as_ref(), Some(&picture));
+            }
+        }
+    }
+
+    /// G06: drawn, typed or chosen, for a signature or initials, every control in the Create
+    /// window says what it is, and the handwriting styles say which one is picked.
+    #[test]
+    fn create_controls_are_named() {
+        use egui::accesskit::Toggled;
+        let picture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/images/icon.png");
+        for role in [SignRole::Signature, SignRole::Initials] {
+            for way in [Way::Draw, Way::Type, Way::Picture] {
+                let mut c = Create::new(role, "Sam Lee");
+                c.way = way;
+                c.picture = Some(picture.clone());
+                let tree = Win::new(c, Vec2::new(1000.0, 800.0), 1.0).settled();
+                let unclear = crate::dialogs::unclear_names(&tree);
+                assert_eq!(unclear, [""; 0], "{role:?}, {way:?}");
+            }
+        }
+        let mut c = Create::new(SignRole::Signature, "Sam Lee");
+        c.way = Way::Type;
+        c.style = SignStyle::ALL[1];
+        let tree = Win::new(c, Vec2::new(1000.0, 800.0), 1.0).settled();
+        let toggled = |name: &str| {
+            let n = tree.nodes.iter().find(|(_, n)| n.label() == Some(name));
+            n.and_then(|(_, n)| n.toggled())
+        };
+        for (i, style) in SignStyle::ALL.into_iter().enumerate() {
+            let on = [Toggled::False, Toggled::True][usize::from(i == 1)];
+            assert_eq!(toggled(style.label()), Some(on), "{style:?}");
+        }
+    }
+
+    /// G02: strokes are kept in the full-size pad's points, so a stroke drawn wide stays as it
+    /// was when the window narrows, and one drawn on the narrower pad lands where it would on
+    /// the full-size one; the saved signature holds them unchanged.
+    #[test]
+    fn strokes_keep_their_place_as_the_pad_resizes() {
+        let c = Create::new(SignRole::Signature, "Sam Lee");
+        // Tall enough not to scroll: a scroll bar takes some of the pad's width.
+        let mut w = Win::new(c, Vec2::new(1000.0, 600.0), 1.0);
+        let pad = bounds(&w.settled(), DRAWING);
+        assert_eq!(pad.size(), PAD);
+        let at = |t: f32| pad.lerp_inside(Vec2::new(t, 0.5));
+        w.pointer(at(0.25), Some(true));
+        for t in [0.4, 0.6, 0.75] {
+            w.pointer(at(t), None);
+        }
+        w.pointer(at(0.75), Some(false));
+        let drawn = w.c.strokes.clone();
+        assert_eq!(drawn.len(), 1, "{drawn:?}");
+        let near = |(x, y): (f32, f32), (u, v): (f32, f32)| (x - u).hypot(y - v) < 1.0;
+        assert!(near(drawn[0][0], (120.0, 80.0)), "{drawn:?}");
+        assert!(near(*drawn[0].last().unwrap(), (360.0, 80.0)), "{drawn:?}");
+
+        w.size = Vec2::new(400.0, 800.0);
+        let pad = bounds(&w.settled(), DRAWING);
+        assert!(pad.width() < PAD.x && pad.right() <= w.size.x, "{pad:?}");
+        assert_eq!(w.c.strokes, drawn);
+        let p = pad.lerp_inside(Vec2::new(0.75, 0.25));
+        w.pointer(p, Some(true));
+        w.pointer(p, Some(false));
+        let dot = w.c.strokes.last().cloned().unwrap();
+        assert_eq!(w.c.strokes.len(), 2, "{:?}", w.c.strokes);
+        assert!(near(dot[0], (360.0, 40.0)), "{dot:?}");
+
+        w.size = Vec2::new(1000.0, 600.0);
+        w.settled();
+        let Ok(Entry {
+            saved: Saved::Drawn { strokes, width },
+            ..
+        }) = w.c.entry()
+        else {
+            panic!("not a drawn signature");
+        };
+        assert_eq!((strokes, width), (vec![drawn[0].clone(), dot], PEN));
     }
 
     #[test]

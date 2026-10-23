@@ -48,8 +48,8 @@ digital signatures…" meanwhile, and then gives the result, coloured by the wor
 
 With one signature the banner gives its result in a sentence, such as "Not changed since Jane Doe signed it. LimarePDF
 can't confirm who Jane Doe is."; with several it sums them up. A certified document's banner starts with who
-certified it and what the certification allows. The banner's **Signatures** button opens the **Signatures** tab of
-the side panel (also Document > Digital signatures > Signatures in this document).
+certified it and what the certification allows. The banner's **Signatures** button opens the **Digital signatures** view of
+the navigation panel (also Document > Digital signatures > Signatures in this document).
 
 The Digital signatures view lists the signatures in the order they were made. For each: what it is and who made it (click to
 go to it on the page), its result in a sentence, the changes made after it (those the signer didn't allow in red;
@@ -219,8 +219,10 @@ fingerprint. **Create…** asks for the name signatures show, an optional organi
 password typed twice; **Import…** asks for a `.p12` or `.pfx` file and its password; **Export…** saves the
 certificate only (`.cer`) or the ID with its key (`.p12`, with the ID's password or a new one); **Make default**
 chooses the ID signing starts with; **Remove…** asks a second time (**Remove for good**). Making, importing and
-exporting run in the background and the window shows when they are done. The same rules apply as on the command
-line, described below.
+exporting run in the background and the window shows when they are done. If one fails, its form comes back with
+what you typed and the reason: a wrong password under the password, anything else (such as a file that can't be
+read or written) at the end of the form. The passwords are cleared, as they always are once used, so type them
+again to try again. The same rules apply as on the command line, described below.
 
 IDs are kept in the `ids` folder of LimarePDF's settings folder: `~/.config/limarepdf/ids/` on Linux,
 `~/Library/Application Support/limarepdf/ids/` on macOS, `%APPDATA%\limarepdf\ids\` on Windows. Each is one PKCS#12 file
@@ -300,10 +302,10 @@ have an exported copy. Signatures already made with it stay valid.
 
 ### In the app
 
-1. Choose ☰ > Document > **Sign with digital ID…** (or the button of that name in the Sign tool's pane), or
-   **Certify…** to [certify](#what-signing-does) the document (only before anyone has signed it).
+1. Choose ☰ > Document > Digital signatures > **Sign with digital ID…**, or **Certify…** to
+   [certify](#what-signing-does) the document (only before anyone has signed it).
 2. Click an empty signature field on the page, or drag a box where the signature goes (at least 12 points each
-   way). The pane also lists the document's empty signature fields to pick from. Cancel there, or Esc, to stop.
+   way). The pane also lists the document's empty signature fields to pick from. Esc, or another tool, stops.
 3. In the window, pick the digital ID (the default is picked; expired IDs can't sign), type its password, and
    optionally a reason and a location. **Show my saved signature beside the text** uses the first signature in
    your fill-and-sign list for the left part of the look; without one, your name is written in handwriting. For a
@@ -311,7 +313,9 @@ have an exported copy. Signatures already made with it stay valid.
    import one.
 4. **Sign…** (or **Certify…**) asks where to save the signed document, suggesting `NAME-signed.pdf` beside the
    original, then signs in the background. The signed document opens in place of the one you signed, and is checked
-   as any signed document is.
+   as any signed document is. A missing or wrong password is said under the password, where the keyboard goes;
+   any other problem is said at the end of the window. The password is cleared once used, so after a failure you
+   type it again; the reason, location and other choices stay.
 
 What you sign is the document as it is in LimarePDF, with every change made since you opened it. Those changes go into
 the same new revision as your signature, so earlier signatures judge them (and fill-and-sign items are drawn in or

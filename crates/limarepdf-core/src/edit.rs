@@ -18,6 +18,17 @@ pub struct TextEdit {
     pub color: Option<[f32; 3]>,
 }
 
+impl TextEdit {
+    /// Whether [`Pdf::edit_text`] keeps the line's own font for this change: the font can
+    /// be reused ([`crate::PageObject::font_reusable`]), the new text is plain ASCII and no
+    /// style changes. Otherwise the line is written anew in a standard font.
+    pub fn keeps_font(&self, reusable: bool) -> bool {
+        let ascii = self.text.chars().all(|c| (' '..='~').contains(&c));
+        let keep_style = self.font.is_none() && self.size.is_none() && self.color.is_none();
+        reusable && ascii && keep_style
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PathStyle {
     pub fill: Option<[f32; 3]>,
@@ -453,9 +464,7 @@ impl Pdf {
             }
             return self.commit(page, out, 0, &parsed.inline);
         }
-        let ascii = e.text.chars().all(|c| (' '..='~').contains(&c));
-        let keep_style = e.font.is_none() && e.size.is_none() && e.color.is_none();
-        if keep_style && t.reuse && ascii {
+        if e.keeps_font(t.reuse) {
             let first_run = t.runs[0].op;
             for (i, o) in parsed.ops.iter().enumerate() {
                 out.extend(following.before(i));

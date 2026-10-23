@@ -287,6 +287,30 @@ impl Pdf {
         self.snapshot_hiding(|flags, sub| flags & 32 != 0 || sub == b"Text", false)
     }
 
+    /// Like [`Pdf::app_snapshot`], with every page shown whole: each page's crop box is
+    /// its full (media) box in the copy, so the app can show what cropping leaves out
+    /// while the crop is being set. The document itself is not changed.
+    pub fn uncropped_app_snapshot(&mut self) -> Result<Vec<u8>> {
+        let mut own = Vec::new();
+        for id in self.page_ids() {
+            let full: Vec<Object> = self.media_box(id).iter().map(|&v| v.into()).collect();
+            let d = self.doc.get_dictionary_mut(id)?;
+            own.push((id, d.get(b"CropBox").ok().cloned()));
+            d.set("CropBox", full);
+        }
+        let bytes = self.app_snapshot();
+        for (id, crop) in own {
+            let d = self.doc.get_dictionary_mut(id)?;
+            match crop {
+                Some(c) => d.set("CropBox", c),
+                None => {
+                    d.remove(b"CropBox");
+                }
+            }
+        }
+        bytes
+    }
+
     /// Like [`Pdf::render_snapshot`], for printing: annotations without the Print flag
     /// (bit 3) are marked Hidden instead, and form fields are drawn as
     /// [`Pdf::refresh_appearances`] would draw them in every document, since the command
@@ -455,6 +479,21 @@ impl Pdf {
             .get(index)
             .ok_or_else(|| anyhow!("no page {}", index + 1))?;
         let [x0, y0, x1, y1] = self.page_box(id);
+        let (w, h) = (x1 - x0, y1 - y0);
+        Ok(if matches!(self.page_rotation(id), 90 | 270) {
+            (h, w)
+        } else {
+            (w, h)
+        })
+    }
+
+    /// Like [`Pdf::page_size`], for the whole (media) box, as if the page weren't cropped.
+    pub fn full_page_size(&self, index: usize) -> Result<(f32, f32)> {
+        let id = *self
+            .page_ids()
+            .get(index)
+            .ok_or_else(|| anyhow!("no page {}", index + 1))?;
+        let [x0, y0, x1, y1] = self.media_box(id);
         let (w, h) = (x1 - x0, y1 - y0);
         Ok(if matches!(self.page_rotation(id), 90 | 270) {
             (h, w)

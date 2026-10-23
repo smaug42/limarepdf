@@ -31,6 +31,52 @@ with Acrobat are still to be tested.
 - **Command line:** everything above, for scripts and batches.
 - **Private:** no network connections, accounts or licence checks.
 
+## What doesn't work yet
+
+Things you would expect an everyday PDF editor to do that LimarePDF doesn't yet, as of 0.8. Each is removed from
+this list once it works. The feature table below has the details.
+
+**Typing and editing text**
+
+- Only Western European characters can be added: in new or edited text, text boxes, headers, footers, Bates
+  numbers, watermarks, stamps, form values and typed signatures. Others (Greek, Cyrillic, Chinese, Japanese,
+  Korean and so on) can't be typed when adding text or editing a line, where a note at the caret says so, and
+  elsewhere come out as `?`.
+- New text uses Helvetica, Times or Courier only (with Bold and Italic): other fonts, installed or bundled, can't
+  be chosen yet, as using them means embedding them in the PDF. Editing a line keeps its font only when the
+  file's font allows it (not for most embedded fonts); otherwise the line becomes Helvetica, Times or Courier
+  ([details](content-editing.md#limits)).
+- Text is edited one line at a time: a paragraph doesn't rewrap as you type, so a longer line can run into
+  whatever is beside it.
+- A line turned on the page, and invisible recognised (OCR) text, are edited in a plain box rather than drawn as
+  they look. Over a picture or a shaded background, the line being edited is hidden under one flat colour, the
+  one most common around it, until you finish.
+- No spell checking.
+
+**Selecting and arranging**
+
+- One object at a time: several pictures, shapes or lines of text can't be selected to move or delete together.
+- Bookmarks can't be moved or reordered, and links can't be added or edited.
+- Merging doesn't carry over the bookmarks and form fields of the files added.
+
+**Forms, signatures and printing**
+
+- Forms made only for Adobe Reader (XFA) can't be shown or filled; form data files (FDF, XFDF) and form
+  JavaScript aren't supported.
+- Digital signatures carry your computer's time, not a timestamp from a timestamp server; encrypted documents
+  can't be signed; digital IDs on smart cards and USB tokens can't be used.
+- Printing has no paper size or scaling options.
+
+**Other**
+
+- No export to Word or Excel, no comparing documents, no PDF/A.
+- Text recognition (OCR) reads Latin script only.
+- No autosave or custom shortcuts, and English only (unsaved work is kept in recovery copies).
+- Tested mostly on Linux: Windows only partly, macOS not at all; printing on paper only on Linux. Dropping files
+  onto the window doesn't work in Linux Wayland sessions yet.
+- The side panel and the inspector can be made wider or narrower only by dragging their edge with the mouse, not
+  from the keyboard. Screen readers haven't been tried yet (Orca, Narrator, VoiceOver).
+
 ## Feature status
 
 **Done:** works, and is covered by tests or has been run. **Partial:** works within the limits noted. **No:** not
@@ -41,13 +87,14 @@ available.
 | Tabs, thumbnails, opening by drag and drop | Done | Dropping files doesn't work in Linux Wayland sessions yet ([workaround](gui.md#opening-files)) |
 | Recent files | Done | Start screen and ☰ > File > Open recent; 10 files, kept on your computer only |
 | Notices about the document | Done | Password-protected, scanned pages, form fields, large files. [Details](gui.md#notices-about-the-document) |
-| Zoom, fit width, continuous scrolling, page navigation | Done | Pages fit the window's width by default and follow resizing; zooming turns that off. Zoom from 10% to 6400%, drawn in tiles at high zoom so pages stay sharp. Single-page and facing-page layouts (top-bar button or View > Page layout; cover page alone or paired), per document, following the document's own preference when it has one |
+| Zoom, fit width, continuous scrolling, page navigation | Done | Pages fit the window's width by default and follow resizing; zooming turns that off. Zoom from 10% to 6400%, drawn in tiles at high zoom so pages stay sharp. Single-page and facing-page layouts (the layout button at the bottom right or View > Page layout; cover page alone or paired), per document, following the document's own preference when it has one |
 | Open at a page from the command line | Done | `limarepdf file.pdf --page N` |
-| Command palette, right-click menus, floating toolbar | Done | Toolbar customisation: No |
+| Command palette, right-click menus, floating toolbar | Done | A tool's tooltip says how to use it; the inspector shows controls, not instructions. Toolbar customisation: No |
 | Pages boxes | Done | Numbers and ranges (`1-3,7`, `5-`, `all`) in printing and the inspector's tools; going into one that says `all` selects it, so typing replaces it. [Details](gui.md#selecting-and-the-inspector) |
 | App icon | Done | Window, taskbar and Windows `.exe`. Wayland needs the desktop entry installed. [Details](install.md#menu-entry-and-icon-on-linux) |
 | About window | Done | Version (copyable for bug reports), links, contributors, credits; "Made in Canada". [Details](gui.md#look-and-feel) |
-| Dialogs | Done | One look for every dialog: task and document in the title, the action button highlighted (red when Undo can't take it back) in the platform's order, the window behind blocked, Esc as Cancel unless work would be lost, Copy on messages, reasons under Details, problems beside their fields; Tab goes through fields and buttons in the order shown, and screen readers can name each one. Checked on Linux only |
+| Dialogs | Done | One look for every dialog and the command palette, as in the design's mockups (settings in headed groups, labels above fields, outlined fields and buttons, short fields side by side when there is room, smaller margins in narrow windows): task and document in the title, the action button highlighted (red when Undo can't take it back) in the platform's order, the window behind blocked, Esc as Cancel unless work would be lost, Copy on messages, reasons under Details, problems beside their fields (a missing or wrong password under the password, when signing too), and a digital ID form whose work fails comes back with what was typed (passwords aside); Tab goes through fields and buttons in the order shown, and screen readers can name each one. Checked on Linux only |
+| Names for screen readers | Partial | Every button, field, list and menu in the window, the inspector, the side views and the dialogs has a name a screen reader can say: icons and symbols such as ◀ in words, Bold, Italic and the picked signature or mark with whether they are on. Checked by the app's tests on Linux; not yet tried with a screen reader. The panels' edges are named but can't be moved from the keyboard. [Details](gui.md#screen-readers) |
 | Window size | Done | Remembered between runs, and whether it was maximized; position: No. [Details](gui.md#look-and-feel) |
 | Light and dark themes | Done | Follows the system, or chosen in View > Theme; remembered between runs |
 | Page colour modes | Done | View > Page colours: Normal, Automatic (dark pages with the dark theme), Dark, High contrast, Sepia. Pictures keep their colours unless "Recolour pictures too" is on. On screen only: the file, printing and exports keep their colours. See [Rendering](rendering.md#page-colour-modes) |
@@ -55,15 +102,15 @@ available.
 | Search | Done | Phrases across line breaks, and words hyphenated at a line end, are found and highlighted. Chinese, Japanese and Korean text in fonts without a ToUnicode map is read through the font's character map. [Details](search-and-text.md) |
 | Select and copy text | Done | With the default read tool; across pages, scrolling while you drag; in the order on the page, not the file's drawing order; includes recognised text |
 | Print or save selected text | Done | As the pages look, full width, cut down to the selected lines, or as plain text in Helvetica (Western European characters only); also saves a .txt file |
-| Page operations: insert, delete, rotate, extract, reorder, crop, remove blank pages | Done | Crop by margins; no dragging a crop box on the page. Blank means one even colour, give or take specks or a lone page number. Deleted and extracted-away pages leave nothing in the saved file: bookmarks, named destinations, links, form fields and tags no longer refer to them, and the tags' alternative text for their content goes. A form nested more than 32 deep is refused, changing nothing ([details](gui.md#selecting-and-the-inspector)) |
+| Page operations: insert, delete, rotate, extract, reorder, crop, remove blank pages | Done | Crop by dragging the crop box on the pages, shown whole while it is set, or by typing margins. Blank means one even colour, give or take specks or a lone page number. Deleted and extracted-away pages leave nothing in the saved file: bookmarks, named destinations, links, form fields and tags no longer refer to them, and the tags' alternative text for their content goes. A form nested more than 32 deep is refused, changing nothing ([details](gui.md#selecting-and-the-inspector)) |
 | Merge and split | Done | Split by page count or at bookmarks, files named after them. Bookmarks, forms and named destinations of appended files are not carried over. Split parts, like extracted pages, keep the bookmarks to their own pages and nothing of the other pages; each is written as soon as it is made, so memory stays near the document's own size. Split by file size: No |
 | Undo and redo | Done | 20 levels, including password settings; fewer on very large documents (up to 1 GB per document) |
-| Headers, footers, page numbers, dates, Bates numbers | Done | Helvetica and Latin-1 characters only; Bates numbers up to 18446744073709551615 (more is refused, changing nothing) |
-| Watermarks | Done | Text or a PNG, JPEG or TIFF picture; centred, with size, opacity, rotation, above or behind |
-| Document properties | Done | Title, author, subject, keywords, creator, producer |
+| Headers, footers, page numbers, dates, Bates numbers | Done | Shown on the pages as you set them, added with Add to pages, then updated in place as you change them. Helvetica and Western European characters only; Bates numbers up to 18446744073709551615 (more is refused, changing nothing) |
+| Watermarks | Done | Text or a PNG, JPEG or TIFF picture; centred, with size, opacity, rotation, above or behind. Shown on the pages as you set them, added with Add to pages, then updated in place |
+| Document properties | Done | Title, author, subject, keywords, creator, producer; each kept as you type it (Enter or leaving the field), one undo step each |
 | Password security | Done | All four ciphers and permission flags. [Things to know](security.md) |
 | Opening protected files | Done | With the open (user) password; files with an empty one (only a permissions password) open without asking, including RC4 files with a shortened password entry that other readers accept, and their notice says so |
-| Content editing | Partial | Double-click a line with the read tool to edit it on the page; pictures, shapes and comments are selected, moved and resized with the read tool too, page text with the arrow. Changes in the inspector apply at once, each an undo step; typing into one line again soon joins one step. Works on lines, not paragraphs; some fonts are replaced when edited; the text after a deleted, edited or moved line stays where it was (except in vertical writing). [Details](content-editing.md) |
+| Content editing | Partial | New text is typed on the page where you click, in the font, size and colour it will have, several lines added as one undo step. Double-click a line with the read tool, or click it with the Text tool, to edit it on the page, drawn in the font, size and colour it will have over the line; pictures, shapes and comments are selected, moved and resized with the read tool too, page text after Move or resize text on its toolbar (the read tool stays on) or with the arrow. Changes in the inspector apply at once, each an undo step; typing into one line again soon joins one step. Works on lines, not paragraphs; some fonts are replaced when edited; the text after a deleted, edited or moved line stays where it was (except in vertical writing). [Details](content-editing.md) |
 | Importing images as pages | Done | PNG, JPEG, TIFF. [Details](scanning-and-ocr.md#importing-images) |
 | Optimising scanned pages | Partial | Pages that are one image; only the pages chosen change, also when they share a picture with others. [Details](scanning-and-ocr.md#optimising-scanned-pages) |
 | OCR | Partial | Latin script; built-in recognition model. [Details](scanning-and-ocr.md#recognising-text-ocr) |
@@ -71,16 +118,16 @@ available.
 | Printing | Partial | No paper size or scaling options. Form values that would come out empty (no drawing, and text LimarePDF can't draw): the app asks first, the command line refuses and names the fields. Tried on paper on Linux (HP LaserJet, CUPS): pages, mixed sizes, a turned page, comments and form values print correctly. On Windows only the print dialog has been tried, and nothing has been printed on macOS. [Details](export-and-printing.md#printing) |
 | Driving scanners | No | Not planned: scan with your system's tool and import the images |
 | Export to Word, Excel, CSV | No | |
-| Annotations and comments | Partial | Shown (LimarePDF draws the common types when the file has no drawing; up to 10,000 per page, with a notice on a page that has more, whose others are still removed by Remove comments and redaction), listed in the Comments tab with replies, deleted, flattened; `limarepdf-cli annot list\|remove\|flatten`. Highlight, underline, strike out and squiggly-underline selected text; add sticky notes and text boxes (Helvetica, Latin-1 only), rectangles, ellipses, lines with an optional arrowhead, freehand pen drawings and stamps; reply to any annotation; select any annotation to change its colour, opacity and comment (and a shape's width, fill and arrowhead), and move or resize it with the arrow; drag a line's ends to turn it, and turn freehand drawings with their rotate handle. Not yet: turning rectangles, ellipses and text boxes (see below), polygons, measuring, attachments, XFDF. [Details](gui.md#shapes-lines-and-drawings) |
+| Annotations and comments | Partial | Shown (LimarePDF draws the common types when the file has no drawing; up to 10,000 per page, with a notice on a page that has more, whose others are still removed by Remove comments and redaction), listed in the Comments view with replies, deleted, flattened; `limarepdf-cli annot list\|remove\|flatten`. Highlight, underline, strike out and squiggly-underline selected text; add sticky notes and text boxes (Helvetica, Western European characters only), rectangles, ellipses, lines with an optional arrowhead, freehand pen drawings and stamps; reply to any annotation; select any annotation to change its colour, opacity and comment (and a shape's width, fill and arrowhead), and move or resize it with the read tool or the arrow; drag a line's ends to turn it, and turn freehand drawings with their rotate handle. Not yet: turning rectangles, ellipses and text boxes (see below), polygons, measuring, attachments, XFDF. [Details](gui.md#shapes-lines-and-drawings) |
 | Stamps | Done | Approved, Not approved, Draft, Final, Confidential, For comment and Void, or your own wording in green, red or blue (Western European characters only), optionally with the author's name and the date, or a PNG or JPEG picture; click to place or drag to size, then move and resize; `limarepdf-cli stamp`. Not yet: stamps made from selected content, or wording in other scripts. [Details](gui.md#stamps) |
-| Fill and sign | Done | A signature or initials drawn, typed in one of four handwriting styles or from an image (paper made transparent), up to five of each saved for next time; the date in three styles, your name, text and tick, cross and dot marks, in black or blue ink, picked from the Fill and sign button's menu or pane; placed anywhere or in an empty signature field (one at a time, or several with the tool kept active), movable until Finish signing draws them into the pages. Typed signatures from the command line: `limarepdf-cli stamp --signature`. Not a digital signature; typed signatures and text are Latin-1 only; the date is in UTC. [Details](gui.md#filling-and-signing) |
+| Fill and sign | Done | A signature or initials drawn, typed in one of four handwriting styles or from an image (paper made transparent), up to five of each saved for next time; the date in three styles, your name, text and tick, cross and dot marks, in black or blue ink, picked from the Fill and sign button's menu or pane; placed anywhere or in an empty signature field (one at a time, or several with the tool kept active), movable until Finish signing draws them into the pages. Typed signatures from the command line: `limarepdf-cli stamp --signature`. Not a digital signature; typed signatures and text are Western European only; the date is in UTC. [Details](gui.md#filling-and-signing) |
 | Measuring | No | |
-| Forms | Partial | Fill in text fields, checkboxes, radio buttons and lists in the app (Tab between fields, fields highlighted unless turned off, reset, flatten) and from the command line (`limarepdf-cli form`, values as JSON, flatten all or some pages). Latin-1 text only, so a value filled in elsewhere in other characters shows only if that app drew it; flattening refuses, naming the fields, rather than lose one it can't draw; JavaScript doesn't run; creating fields: No; signature fields take a fill-and-sign signature, or a digital signature (Document > Sign with digital ID, or `limarepdf-cli sign --field`). [Details](gui.md#filling-in-forms) |
+| Forms | Partial | Fill in text fields, checkboxes, radio buttons and lists in the app (Tab between fields, fields highlighted unless turned off, reset, flatten) and from the command line (`limarepdf-cli form`, values as JSON, flatten all or some pages). Western European text only, so a value filled in elsewhere in other characters shows only if that app drew it; flattening refuses, naming the fields, rather than lose one it can't draw; JavaScript doesn't run; creating fields: No; signature fields take a fill-and-sign signature, or a digital signature (Document > Digital signatures > Sign with digital ID, or `limarepdf-cli sign --field`). [Details](gui.md#filling-in-forms) |
 | XFA-only forms (made for Adobe Reader) | No | Recognised and explained in a notice and by `limarepdf-cli form`; showing or filling them is not planned (see below). Hybrid forms are filled through their ordinary fields |
 | Form data import/export (FDF, XFDF), barcodes, JavaScript | No | |
-| Viewer preferences | Done | The layout, side panel (Pages or Bookmarks) and page a document opens with: followed when opening, set in the inspector's Opening view or with `limarepdf-cli view-prefs`. Full screen and hiding the toolbar or menu: No. [Details](cli.md#viewer-preferences) |
-| Page labels | Done | Numbering such as i, ii, 1, 2 or A-1: shown in the status bar, thumbnails and bookmark tips; set from the selected pages in the inspector or with `limarepdf-cli labels`; kept with their pages when pages move. Going to a page by its label: No. [Details](cli.md#page-labels) |
-| Bookmarks | Partial | Shown in the Bookmarks tab (also from the command palette) and followed; added, renamed and deleted in that tab or with `limarepdf-cli bookmarks`. Moving or reordering them, styles and colours: No. [Details](gui.md#the-window), [CLI](cli.md#bookmarks) |
+| Viewer preferences | Done | The layout, side panel (Pages or Bookmarks) and page a document opens with: followed when opening, set in the inspector's Opening view (each choice applies as you make it) or with `limarepdf-cli view-prefs`. Full screen and hiding the toolbar or menu: No. [Details](cli.md#viewer-preferences) |
+| Page labels | Done | Numbering such as i, ii, 1, 2 or A-1: shown in the status bar, thumbnails and bookmark tips; set from the selected pages in the inspector, applying as you set them, or with `limarepdf-cli labels`; kept with their pages when pages move. Going to a page by its label: No. [Details](cli.md#page-labels) |
+| Bookmarks | Partial | Shown in the Bookmarks view (also from the command palette) and followed; added, renamed and deleted in that view or with `limarepdf-cli bookmarks`. Moving or reordering them, styles and colours: No. [Details](gui.md#the-window), [CLI](cli.md#bookmarks) |
 | Links | Partial | Followed: to pages, and to web and email addresses after asking. Links to other PDF files, and adding or editing links: No. [Details](gui.md#links) |
 | Layers, attachments | No | |
 | Installers and packages | Done | `.deb` and `.rpm` packages with apt and dnf repositories, a macOS `.dmg`, a Windows MSI, and archives; GPG-signed. [Install](install.md); more package managers planned, see below |
@@ -96,11 +143,15 @@ available.
 
 ## Known limits
 
-- Header, footer, Bates and watermark text uses Helvetica and Latin-1 only; other characters print as `?`.
+- Header, footer, Bates and watermark text uses Helvetica and Western European characters only; other
+  characters print as `?`.
 - `limarepdf-cli render` leaves a filled form field empty when the field has no drawing of its own; the app's
   exports and all printing draw it. To be fixed ([details](export-and-printing.md#pages-as-images)).
 - Headers, footers and watermarks are added to the page content. They are not annotations and cannot be removed one
-  by one later; use Undo before saving.
+  by one later; use Undo before saving. The one just added can be changed until anything else changes.
+- While a watermark or headers and footers are being set, the pages show them drawn over the content, also when
+  they are set to go behind it, and in Liberation Sans, which has Helvetica's widths; once added, the pages show
+  them as written.
 - Saving rewrites the whole file, except for digitally signed documents, whose changes are added after what was
   signed so the signatures stay valid ([details](signatures.md#saving-a-signed-document)). It writes a temporary file
   beside the document, readable only by you (on Linux and macOS) when it replaces a file, then puts it in the

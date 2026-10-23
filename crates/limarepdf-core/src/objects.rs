@@ -40,6 +40,11 @@ pub struct PageObject {
     /// Invisible text (render mode 3 or 7), such as an OCR layer. It is not drawn, but it
     /// is searched and can be selected and copied in viewers.
     pub hidden: bool,
+    /// For text: the left end of the line's baseline, where an edited line is written.
+    pub baseline: Option<(f32, f32)>,
+    /// For text: the line runs left to right across the displayed page, letters upright,
+    /// and is not in vertical writing.
+    pub upright: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -699,6 +704,8 @@ impl Pdf {
                     inline: o.inline,
                     font_reusable: false,
                     hidden: false,
+                    baseline: None,
+                    upright: false,
                 };
                 if let Some(t) = &o.text {
                     po.hidden = t.hidden;
@@ -707,6 +714,12 @@ impl Pdf {
                     po.font_size = Some(t.size);
                     po.fill = t.fill;
                     po.font_reusable = t.reuse;
+                    po.baseline = Some(apply(to_vis, t.origin.0, t.origin.1));
+                    // The text's own across and up directions, on the displayed page (y down).
+                    let m = mul(mul(t.runs[0].tm, o.ctm), to_vis);
+                    let (across, up) = ((m[0], m[1]), (m[2], m[3]));
+                    let level = across.0 > 0.0 && across.1.abs() <= 1e-3 * across.0;
+                    po.upright = level && up.1 < 0.0 && !t.vertical;
                 }
                 if let Some(p) = &o.path {
                     po.fill = p.fill_c;

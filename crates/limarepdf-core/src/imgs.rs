@@ -62,6 +62,78 @@ pub fn image_dimensions(bytes: &[u8]) -> Result<(u32, u32)> {
     Ok((w, h))
 }
 
+/// A PNG, JPEG or TIFF file (its first image) decoded for showing on screen: width,
+/// height and RGBA pixels, upright as it is meant to be seen and at most `max` pixels on
+/// its longer side.
+pub fn picture_preview(bytes: &[u8], max: u32) -> Result<(u32, u32, Vec<u8>)> {
+    let r = first(decode(bytes)?)?;
+    let (w, h) = (r.w, r.h);
+    let rgba = match r.pixels {
+        Pixels::Jpeg { data, .. } => {
+            image::load_from_memory_with_format(&data, image::ImageFormat::Jpeg)
+                .map_err(|e| anyhow!("cannot decode the image: {e}"))?
+                .to_rgba8()
+                .into_raw()
+        }
+        Pixels::Raw {
+            color_space,
+            bpc,
+            data,
+            alpha,
+        } => raw_rgba(w, h, color_space, bpc, &data, alpha.as_deref()),
+    };
+    let img = image::RgbaImage::from_raw(w, h, rgba)
+        .ok_or_else(|| anyhow!("the image's samples are cut short"))?;
+    let mut img = image::DynamicImage::ImageRgba8(img);
+    img.apply_orientation(r.orientation);
+    let img = if img.width().max(img.height()) > max {
+        img.thumbnail(max, max)
+    } else {
+        img
+    };
+    Ok((img.width(), img.height(), img.to_rgba8().into_raw()))
+}
+
+/// Raw samples as RGBA. One-bit samples are grey, 0 black, with rows padded to whole bytes.
+fn raw_rgba(w: u32, h: u32, space: &str, bpc: u8, data: &[u8], alpha: Option<&[u8]>) -> Vec<u8> {
+    let (w, h) = (w as usize, h as usize);
+    let n = match space {
+        "DeviceGray" => 1,
+        "DeviceRGB" => 3,
+        _ => 4,
+    };
+    let row = (w * n * bpc as usize).div_ceil(8);
+    let sample = |x: usize, y: usize, c: usize| -> u8 {
+        if bpc == 1 {
+            let bit = x * n + c;
+            let byte = data.get(y * row + bit / 8).copied().unwrap_or(0);
+            if byte >> (7 - bit % 8) & 1 == 1 {
+                255
+            } else {
+                0
+            }
+        } else {
+            data.get(y * row + x * n + c).copied().unwrap_or(0)
+        }
+    };
+    let mut out = Vec::with_capacity(w * h * 4);
+    for y in 0..h {
+        for x in 0..w {
+            let px = match n {
+                1 => [sample(x, y, 0); 3],
+                3 => [sample(x, y, 0), sample(x, y, 1), sample(x, y, 2)],
+                _ => {
+                    let k = 255 - sample(x, y, 3) as u16;
+                    [0, 1, 2].map(|c| ((255 - sample(x, y, c) as u16) * k / 255) as u8)
+                }
+            };
+            let a = alpha.and_then(|a| a.get(y * w + x).copied()).unwrap_or(255);
+            out.extend_from_slice(&[px[0], px[1], px[2], a]);
+        }
+    }
+    out
+}
+
 /// A picture's width and height in pixels as it is meant to be seen, after its EXIF
 /// orientation.
 pub(crate) fn decode_upright_size(bytes: &[u8]) -> Result<(f32, f32)> {

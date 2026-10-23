@@ -35,7 +35,14 @@ on one. The button that does the task is highlighted, or red when what it does c
 breaks signatures; on Windows and Linux it comes before Cancel, on macOS after. Esc is Cancel, except in a window
 holding work you would lose (a signature drawn, typed or chosen; a digital ID form; a signing form with something
 typed), where only Cancel closes it. A message's Copy button copies what it says, to pass on an error. Reasons and
-technical lists in a question are under Details.
+technical lists in a question are under Details. A dialog fits the window, also as it is resized: narrower in a
+narrow one, with smaller margins under 600 points wide, and in a short one its content scrolls while its buttons
+stay in view. Every dialog has the same look: text at 14 points, settings in headed groups, labels above the
+fields, fields, lists and buttons outlined, and radio buttons and checkboxes outlined on the dialog's background.
+Two short fields share a row when there is room (Copies and Print on, a signature's Reason and Location) and go
+one under the other when not. Lists of documents or certificates are an outlined box with each row's buttons on
+its right (under it in a narrow window); facts to read, such as a certificate's, have their names in a column on
+the left.
 
 A question about a document (Flatten, Apply redactions, Discard changes and the others) acts on the document it was
 asked about, even if another tab has come to the front meanwhile, and brings it back to the front. If that document
@@ -58,8 +65,8 @@ Save As to a new file keeps the signed original.
 - **Top bar:** the menu (☰), Open, Save and an Export menu (pages as images, text); Undo and Redo; the tools: Read
   and select text, Add text, Add image, Redact and Fill and sign, then the Comment button with its menu (notes, text
   boxes, shapes, the pen, stamps) and the Tools menu, which holds every tool; at the right, Search and Print. The
-  buttons are icons, each named by its tooltip. As the window narrows, the search field becomes an icon, and then
-  the tools fold one by one into the Tools menu: the Comment button first, then Add image, Redact, Add text and
+  buttons are icons, each named by its tooltip; a tool's tooltip also says how to use it. As the window narrows,
+  the search field becomes an icon, and then the tools fold one by one into the Tools menu: the Comment button first, then Add image, Redact, Add text and
   Fill and sign, coming back in reverse as the window widens. In very narrow windows Export and then Undo and Redo
   leave the bar too (they stay in ☰, and Undo and Redo on their keys). Read and select text stays. The Tools menu
   shows the current tool when that one isn't on the bar.
@@ -86,7 +93,7 @@ Save As to a new file keeps the signed original.
   In facing pages, **Show cover page alone** (on by default) puts the first page on its own on the right, as in a
   book; off pairs pages 1 and 2. PageUp and PageDown move a pair at a time when facing. The choice changes the
   document you are viewing and is remembered for documents opened later. A document that sets its own opening
-  view (see below) opens in its layout instead, and can also open the Pages or Bookmarks tab and go to a page.
+  view (see below) opens in its layout instead, and can also open the Pages or Bookmarks view and go to a page.
 - **Right:** the inspector, which shows options for what is selected. The » at its top collapses it to a strip;
   the « at the top of the strip expands it again, and the strip's options button shows the inspector's contents
   in a pop-out over the pages (a click elsewhere or Esc closes it; what you changed in it stays). ☰ > View >
@@ -97,7 +104,8 @@ Save As to a new file keeps the signed original.
   panel is remembered between runs.
 
 Ctrl+K opens the command palette, which lists every command. Type to filter, use Up and Down to choose, and press
-Enter to run.
+Enter to run; Esc closes it. It looks like the dialogs, without a title or buttons: a search field, then each
+command with its category and shortcut in columns.
 
 ## Links
 
@@ -114,7 +122,7 @@ links don't get in the way of editing.
 ## Comments and markup
 
 Annotations (comments, sticky notes, highlights, text boxes, shapes and drawings that other programs added) are
-shown on the pages. ☰ > View > Comments, or "Comments" in the command palette, opens the Comments tab, which lists
+shown on the pages. ☰ > View > Comments, or "Comments" in the command palette, opens the Comments view, which lists
 them page by page, with replies indented under the comment they answer. Each row shows the author and the first
 line of the comment; hover over it for the type, date and the whole comment.
 
@@ -158,22 +166,29 @@ for comments…. Leave it empty to save no name.
 
 ### Notes and text boxes
 
-The **Comment** button in the top bar holds the note and text box tools (also in ☰ > Tools > Commenting). It shows the one you used last; the small
-arrow beside it picks the other. The inspector sets the note colour, or the text box's text size and colour,
+The **Comment** button in the top bar holds the commenting tools: notes, text boxes, rectangles, ellipses, lines,
+the pen and stamps (also in ☰ > Tools > Commenting). It shows the one you used last; the small arrow beside it
+lists them all. The inspector sets the note colour, or the text box's text size and colour,
 background (none at first) and border, before you start.
 
-- **Note:** click on the page. A comment box opens beside the note; type, then click Done (or press Ctrl+Enter).
-  Cancel or Esc drops it, and so does Done with nothing typed. Hovering over a note shows its comment. Notes
+- **Note:** click on the page. A comment box opens beside the note; type, then click on the page outside it or
+  press Esc or Ctrl+Enter to keep the comment (that click doesn't put down another note). With nothing typed, no
+  note is added. While you type, the colour in the inspector changes the note's colour: clicks in the inspector and
+  its colour picker leave the note open, Esc or a click that closes the picker closes only the picker, and you
+  carry on typing. Ctrl+Z takes a note back. Hovering over a note shows its comment. Notes
   show at the same size on screen whatever the zoom, in the note's colour and shaped like its icon: one of the
   seven standard ones (Comment, which LimarePDF's notes use, Key, Note, Help, New paragraph, Paragraph and Insert),
   or Note for any other; printed, they keep their own drawing, or LimarePDF's, 20 points across.
 - **Text box:** drag a box, or click for a default size, then type straight onto the page. Enter starts a new
-  line. Click outside the box or press Ctrl+Enter to finish; Esc drops it. Text boxes use Helvetica, so characters
-  outside Latin-1 come out as `?`. When you finish, the box grows downward to fit its text, keeping its width; it
+  line. Click outside the box or press Esc or Ctrl+Enter to finish; with nothing typed, no box is added. While you
+  type in a note or text box, Ctrl+Z and Ctrl+Y undo and redo the typing. Finishing either by choosing another
+  tool keeps that tool. Text boxes use Helvetica, so characters
+  beyond Western European (Greek, Cyrillic, Chinese and so on) come out as `?`. When you finish, the box grows downward to fit its text, keeping its width; it
   stops at the bottom of the page, and it never shrinks (resize it with the arrow).
 
-When a note or text box is finished, the read tool comes back with it selected, so it can be moved straight away
-(see [Keep tool active](#keep-tool-active)). Double-click a note or text
+When a note or text box is finished, the read tool comes back with it selected, so it can be moved straight away.
+The Text box tool can be kept on (see [Keep tool active](#keep-tool-active)); the Note tool can't, so after each
+note the read tool is back to select, move or open notes. Double-click a note or text
 box (with the read tool or the arrow) to change its text. Ctrl+click selects an annotation while an annotate tool
 is on. The inspector for a selected text box also changes its text, size, colours, background and border.
 
@@ -235,8 +250,8 @@ then comes back with the stamp selected, to move or resize (see [Keep tool activ
   stay transparent.
 
 Stamps are annotations: other readers list them as comments. Select one to change its opacity and comment;
-its colours are part of the stamp. A stamp reads upright on a turned page. The text is Helvetica Bold, Latin-1
-only, so a name in other scripts shows as `?`.
+its colours are part of the stamp. A stamp reads upright on a turned page. The text is Helvetica Bold, Western
+European characters only, so a name in other scripts shows as `?`.
 
 ## Redaction
 
@@ -251,8 +266,8 @@ redaction marks). See [Redaction](redaction.md) for exactly what applying remove
 - **Mark search results:** search, then in the navigation panel's Search results press Mark all for redaction (or Edit > Mark
   all search results for redaction). Every match is marked.
 
-Marks are listed in the Comments tab as "Redaction mark". Select one (Ctrl+click it, or click it in the Comments
-tab) to delete it or add a comment; like highlights, marks can't be moved or resized, so to change one, delete it
+Marks are listed in the Comments view as "Redaction mark". Select one (click it with the read tool, Ctrl+click it
+with another tool, or click it in the Comments view) to delete it or add a comment; like highlights, marks can't be moved or resized, so to change one, delete it
 and mark again.
 
 **Apply:** Document > Apply redactions… asks first, then removes everything under the marks, paints the areas black
@@ -268,19 +283,21 @@ nothing under them has been removed.
 
 **Remove hidden information:** Document > Remove hidden information… lists what the document carries besides its
 pages (metadata, scripts, attachments, hidden layers, private data, and comments, form values, bookmarks and content
-outside the crop box), with how many of each it has. Tick what to remove and press Remove; a summary follows. Undo
-brings it back. See [Removing hidden information](redaction.md#removing-hidden-information).
+outside the crop box), with how many of each it has, in two groups: what is removed by default (ticked), and
+what is kept by default (often wanted, so not ticked). Tick what to remove and press Remove; a summary follows.
+Undo brings it back. See [Removing hidden information](redaction.md#removing-hidden-information).
 
 ## Filling in forms
 
 Form fields work with the read tool, like links: hovering tints a field and shows its description, and a click
 fills it in. With the editing tools, hold Ctrl (Cmd on macOS) and click.
 
-- **Text fields:** a click opens a text box over the field. Enter (in a one-line field) or clicking elsewhere keeps
-  what you typed; Esc drops it. Password fields show dots, and their value is not kept in the file.
+- **Text fields:** a click opens a text box over the field. Enter (in a one-line field), Esc or clicking elsewhere
+  keeps what you typed; Ctrl+Z takes it back. Password fields show dots, and their value is not kept in the file.
 - **Checkboxes and radio buttons:** a click ticks or chooses.
 - **Drop-downs and lists:** a click opens the options. In a list that allows several choices, each click adds or
-  removes one; Done closes it. A drop-down you can type in has a text box at the top; Enter keeps the text.
+  removes one at once; a click outside the list, Esc or Enter closes it. A drop-down you can type in has a text box
+  at the top; Enter keeps the text.
 - **Tab and Shift+Tab** move to the next and previous field, top to bottom and page by page. On a checkbox or radio
   button, Space ticks it; on a list, Space or Enter opens it.
 
@@ -294,8 +311,8 @@ and buttons (they run scripts, which LimarePDF doesn't) can't be filled in; hove
 field puts your signature in it (see [Filling and signing](#filling-and-signing)); clicking a digitally signed one
 shows its signature's details (see [Digital signatures](#digital-signatures)).
 
-LimarePDF draws the filled fields itself, so the values show the same in other readers. Text must be Latin-1 (Western
-European) for now; anything else is refused with a message rather than saved wrongly. Fields that have a value but
+LimarePDF draws the filled fields itself, so the values show the same in other readers. Text must be Western European for
+now; anything else is refused with a message rather than saved wrongly. Fields that have a value but
 no drawing of their own are drawn when the file opens. A value filled in by another app in other characters (Japanese,
 for example) shows only if that app drew it: if it didn't, LimarePDF can't either, so Flatten form… stops and names
 the fields rather than lose their values, and Print asks whether to print without them, since they would come out
@@ -314,7 +331,8 @@ anyone can copy it. For digital signatures, see [Digital signatures](#digital-si
 signature… (or New… beside Signatures), opens a window with three ways to make one:
 
 - **Draw:** sign on the white pad with the mouse, touchpad or a pen; Clear starts again. The strokes are smoothed
-  into curves and stay sharp at any zoom.
+  into curves and stay sharp at any zoom. In a narrow or short window the pad is smaller, at the same shape; what
+  is drawn keeps its shape and comes out the same size on the page, also when the window is resized while drawing.
 - **Type:** type your name (it starts as your name for comments) and pick one of four handwriting styles (Caveat,
   Cedarville Cursive, Homemade Apple and Zeyada), shown as they will look. Western European characters only; for other scripts, draw or use an image.
 - **Image:** choose a photo or scan of your signature on paper (PNG, JPEG or TIFF). "Make the paper transparent"
@@ -350,12 +368,12 @@ the picked signature (or initials) inside its box. The field itself stays digita
 report a broken signature.
 
 **Moving and finishing:** what you put down is added as annotations, so it can still be moved, resized or deleted:
-Ctrl+click an item (or use the arrow) to select it. While there are such items, a notice above the pages says how
+click an item with the read tool (or Ctrl+click it with another tool) to select it. While there are such items, a notice above the pages says how
 many and has a Finish signing… button; the Sign pane has the same button. Finish signing (also in the Document menu)
 draws them into the pages as they look, after asking, so they can no longer be moved or removed as comments; Undo
 brings them back until you close the document. Saving without finishing keeps them movable, and the notice comes
 back when the document is opened again. Other comments and stamps are left alone. Signatures are listed in the
-Comments tab as "Signature", "Initials", "Tick" and so on.
+Comments view as "Signature", "Initials", "Tick" and so on.
 
 ## Digital signatures
 
@@ -380,7 +398,7 @@ changes under each signature. See [Digital signatures](signatures.md) for what e
 
 ### Signing with a digital ID
 
-☰ > Document > Digital signatures > Sign with digital ID… (also a button in the Sign tool's pane), or Certify… for the author's
+☰ > Document > Digital signatures > Sign with digital ID…, or Certify… for the author's
 certification: click an empty signature field or drag a box on the page, then pick your digital ID, type its
 password, and optionally a reason and a location. Sign… asks where to save the signed copy (`NAME-signed.pdf` by
 default), signs in the background, and opens the signed copy in place of the document. Changes made since opening
@@ -482,7 +500,11 @@ What you select decides what the inspector, the right-click menu and the floatin
 | --- | --- |
 | Nothing | The document: properties, opening view, password security, crop, watermark, headers/footers/Bates, OCR, optimise scanned pages, export pages as images, split into files, and buttons for export text, print and append PDFs |
 | Pages (click thumbnails; Shift for a range, Ctrl for one more) | Rotate, delete, extract to a new tab, insert images or a blank page after them, page labels from the first selected page, and the crop, watermark, headers/footers, OCR and optimise tools with the pages filled in |
-| An object, words, or a tool that adds content | That object's or tool's options |
+| An object, a comment, or a tool that adds content | That object's or tool's options |
+| Words | Nothing of their own: the inspector stays on the document or pages. Copy, highlight, redact, print and save the selection from the floating toolbar (or the docked buttons) and the right-click menu |
+
+The inspector holds controls, with at most a short line about state (such as how many areas are marked); how to
+use a tool is in its tooltip in the top bar and the menus, and in this guide.
 
 Menu commands for document and page settings open the matching section of the inspector.
 
@@ -490,9 +512,20 @@ Pages boxes, in the inspector's tools and the print dialog, take page numbers an
 `1-3,7`, `5-` (5 to the end) or `all`. Clicking or tabbing into a box that says `all` selects it, so typing page
 numbers replaces it.
 
-A watermark is text or a picture (PNG, JPEG or TIFF), centred on each page. After you apply a watermark or headers
-and footers, the section's button becomes Update: change a setting and press it to redo what you just added rather
-than stamping a second copy. Add another keeps it and adds a new one. Any other change returns the button to Apply.
+The page and document settings apply as you set them, with no Apply button, each change one undo step: typed
+text when you press Enter or leave the field, a choice at once, a number when you stop dragging it or leave its
+box. Document properties (title, author and the others) work this way. Saving or closing keeps a field you are
+still typing in. Password security is the exception: its Apply button sets the passwords, which take effect when
+you save.
+
+A watermark is text or a picture (PNG, JPEG or TIFF), centred on each page. While the Watermark or the Headers,
+footers, Bates section is open, the pages in its Pages box show what it describes as you set it, drawn over them
+(also when it is set to go behind the content, and in Liberation Sans, which has Helvetica's widths); nothing is
+added to the document until you choose Add to pages. After that, each change updates what you just added instead
+of stamping a second copy, one undo step each, a colour when its picker closes; Undo steps back through the
+changes, and the section's settings follow. Add another keeps it and adds a new one. Any other change to the
+document ends this: the section shows Add to pages again, and the pages show the settings again once you change
+one.
 
 If a damaged file makes LimarePDF fail while showing a document, that tab shows an error page with Save a copy and Close
 this tab; other tabs carry on.
@@ -501,12 +534,13 @@ Page labels are the page numbers viewers show, such as i, ii, 1, 2 or A-1; they 
 pages. When a document has them, the status bar shows the label with the page's place, such as "Page i (3 of 477)",
 and the thumbnails show the labels. To set them, select the first page to number, open Page labels in the
 inspector (or go to the page and choose ☰ > Pages > Page labels…), and pick a style, an optional prefix and the number to start at; the numbering runs to the next labelled
-range. Labels stay with their pages when pages are deleted or moved.
+range. The section shows the numbering the page has now, and each change applies at once, starting numbering
+there. Labels stay with their pages when pages are deleted or moved.
 
 Opening view, in the document's inspector, is how viewers that follow it show the document when it opens: its
 layout (continuous, facing, facing with the cover alone, or single page), the side panel (Pages or Bookmarks) and
-the page it opens at. Each can be left as Not set. Use current view fills them in from how you are viewing the
-document now; Apply saves them into the document like any other change, and Undo reverses it.
+the page it opens at. Each can be left as Not set. Each choice applies as you make it, and Use current view sets
+all three from how you are viewing the document now; Undo reverses any of them.
 
 Split into files makes files of a set number of pages, or starts a file at each bookmark down to the chosen level
 (1 is the top level only). Files are named after their bookmark, such as `book-002 Introduction.pdf`, and the pages
@@ -523,9 +557,12 @@ extracted file or a split part keeps the bookmarks to its own pages; a bookmark 
 destination, only when bookmarks below it stay. Deleting pages keeps every bookmark, without a destination when its
 page went.
 
-Crop trims margins from each side of the page as it is shown, measured from the full page; the fields start with
-the first page's current crop. Remove crop shows the whole page again. Cropping hides content but does not delete
-it.
+Crop trims margins from each side of the page as it is shown, measured from the full page. While the Crop section
+is open, the pages are shown whole, with the part outside each page's crop box dimmed. On the pages in its Pages
+box the crop box has handles: drag its edges or corners to crop, or type the margins (the fields start with the
+first page's crop). Each drag or number crops all those pages at once, one undo step, and dragging back out
+undoes a crop. While the section is open, clicks on the pages only move the crop box; close it, or press Esc, to
+see the pages cropped. Remove crop shows the whole page again. Cropping hides content but does not delete it.
 
 Right-click a page, an object, selected words or a thumbnail for a short menu of what applies there. Right-clicking
 selects what is under the pointer first. A selected object or run of words also gets a small floating toolbar with
@@ -539,7 +576,7 @@ the selected pages.
 
 Delete removes the selected object or pages. Deleting shows a notice with an Undo button.
 
-Remove blank pages (☰ > Document, or the command palette) deletes every page that is one even colour, give or take
+Remove blank pages (☰ > Pages, or the command palette) deletes every page that is one even colour, give or take
 scanner specks, faint show-through or a lone page number, and lists the pages it removed. Undo brings them back. A
 document whose pages are all blank is left alone.
 
@@ -549,17 +586,23 @@ Documents open with the read tool (the text cursor), which selects text, follows
 edits:
 
 - **Page text:** double-click a line to edit it there. The word you double-clicked is selected, so typing replaces
-  it. Enter or a click elsewhere keeps the change; Esc drops it. While you type, Ctrl+Z and Ctrl+Y undo and redo
-  typing in the box; once the change is kept, Undo takes the whole edit back. Editing the same line again within
-  a few seconds, with nothing else changed in between, joins the same undo step. The inspector shows the line's
-  font, size and colour; each change there is kept at once as its own undo step.
+  it. The line is drawn as it will be written: in its own font when LimarePDF can keep it, otherwise in the
+  Helvetica, Times or Courier that replaces it (which switches as you type a character the line's font can't
+  take), at its size and in its colour, with a thin outline around it and the old line hidden underneath in the
+  colour around it. Enter, Esc, Tab or a click elsewhere keeps the change. While you type, Ctrl+Z and Ctrl+Y undo
+  and redo typing in the line, and Ctrl+B and Ctrl+I switch the whole line to Bold or Italic; once the change is
+  kept, Undo takes the whole edit back. Editing the same line again within a few seconds, with nothing else
+  changed in between, joins the same undo step. The inspector shows the line's font, size and colour; each change
+  there is kept at once as its own undo step. A line turned on the page (not running left to right on screen)
+  and invisible recognised (OCR) text are edited in a plain box over the line instead.
 - **Pictures, shapes, comments and marks:** click one to select it, drag it to move it and drag a handle to resize
   it (Shift keeps the proportions). Arrow keys move it by 1 point, or 10 with Shift. A picture or shape covering
   most of the page, such as a scanned page or a background, isn't selected by a click, so that clicking a scan
   doesn't pick it up; the arrow selects it. A drag that starts anywhere else still selects text.
-- **Moving page text:** select the line (double-click it, then Enter), then choose Move or resize text on its
-  floating toolbar, or ☰ > Tools > Select, move and resize objects (the arrow). Text you have just added can be moved straight away, until you select
-  something else.
+- **Moving page text:** select the line (double-click it), then choose Move or resize text on its floating
+  toolbar: the line gets handles, and you drag it or them, or use the arrow keys, with the read tool still on,
+  until you click away or select something else. Text you have just added can be moved straight away in the same
+  way. The arrow (☰ > Tools > Select, move and resize objects) moves any line too.
 
 The arrow (☰ > Tools > Select, move and resize objects) selects any object, page text included:
 
@@ -571,18 +614,30 @@ The inspector shows the selected object's position and size, and for text the st
 shapes the fill, outline and width; for images "Replace image". Changes there are kept as you make them, without
 an Apply button: typed text when you press Enter or leave the box, a number when you stop dragging it or leave its
 box, a colour when its picker closes. Each is one undo step. The font size box shows the exact size, which isn't
-rounded to a listed one; type any size, or pick one from the list beside it.
+rounded to a listed one (10.126 shows as 10.126); type any size, or pick one from the list beside it. Going into
+the box and out again without typing changes nothing, and text that isn't a size leaves the size as it was.
 
 The other tools add content. Each puts one thing down and then gives way to the read tool, with the new item
 selected so you can adjust it (see [Keep tool active](#keep-tool-active)):
 
-- **Text:** click where the text starts, type, press Enter.
+- **Text:** click where the text starts and type. The text appears on the page as you type, in the font, size
+  and colour it will have, with a thin outline around it; the line sits on the point you clicked. Enter starts a
+  new line. Esc, a click elsewhere on the page, or choosing another tool finishes, and every line is added as one
+  undo step; nothing typed adds nothing. While you type, the inspector's font, Bold, Italic, size and colour
+  change the text (the keyboard comes back to it afterwards), Ctrl+B and Ctrl+I switch Bold and Italic, and
+  dragging the outline moves the text. A click on page text with this tool edits that line instead (see Page
+  text above), with the caret where you clicked, and a drag selects text, as with the read tool. The font is Helvetica, Times or Courier, with Bold and Italic, and only Western
+  European characters can be added: others can't be typed or pasted, and a note at the caret says so (see
+  [What doesn't work yet](features.md#what-doesnt-work-yet)). Each line becomes its own line of page text, so
+  it moves and is edited line by line afterwards.
 - **Image:** choose a PNG, JPEG or TIFF, then drag a box.
 - **Comment:** sticky notes, text boxes, rectangles, ellipses, lines and the pen, saved as annotations rather
   than page content; see [Notes and text boxes](#notes-and-text-boxes) and
   [Shapes, lines and drawings](#shapes-lines-and-drawings). A rectangle, ellipse or line can still be drawn into
-  the page content with "Draw on page (permanent)". Its menu also has the stamp tool (see [Stamps](#stamps)) and
-  the tool that marks areas for redaction (see [Redaction](#redaction)).
+  the page content with "Draw on page (permanent)". Its menu also has the stamp tool (see [Stamps](#stamps)).
+- **Redact:** drag a box to mark an area for redaction (see [Redaction](#redaction)).
+- **Fill and sign:** your signature, initials, the date and other items (see
+  [Filling and signing](#filling-and-signing)).
 
 ### Keep tool active
 
@@ -590,8 +645,9 @@ The tools that put something down (Add text, Add image, the note, text box, rect
 Redact and Fill and sign) go back to the read tool once they have put one thing down. The pin at the top right of a
 tool's options, Keep tool active, keeps that tool on instead, so you can put down several in a row; Esc or another
 tool leaves it. Each tool's pin is its own (pinning Redact doesn't pin Fill and sign) and is remembered between
-runs. The pen always stays on until Esc or another tool, since a drawing takes several strokes. LimarePDF always
-starts with the read tool.
+runs. The Note tool has no pin: kept on, every click would put down a note, so existing notes couldn't be opened
+or deleted. The pen always stays on until Esc or another tool, since a drawing takes several strokes. LimarePDF
+always starts with the read tool.
 
 Everything that changes the document can be undone with Ctrl+Z, up to 20 steps back. Each step keeps a whole copy
 of the document, and a document's steps are limited to 1 GB together, so undo goes back fewer steps on very large
@@ -645,16 +701,31 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Ctrl+Shift+H | Highlight the selected text |
 | Arrow keys (Shift for 10 points) | Move the selected object |
 | Ctrl+A, Ctrl+C | Select all text on the page, copy it (read tool) |
-| Esc | Cancel: drop the edit of a line being typed, clear the selection, or leave a tool for the read tool |
+| Esc | Cancel: close an open list, menu or colour picker (only that), finish (and keep) new text, a line, a note, a text box or a form field being typed, clear the selection, or leave a tool for the read tool |
+| Ctrl+B, Ctrl+I | Bold, Italic for new text being typed (Add text), or for the whole line being edited on the page |
 | Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |
 | Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the top bar, tabs, bottom bar and panels left to right; inside a dialog, its fields and then its buttons. Space or Enter presses the button. In a form, Tab moves between its fields; Ctrl+K reaches every command |
+
+### Screen readers
+
+Every button, field, list and menu has a name a screen reader can say, in the window, the inspector, the side
+views and the dialogs: icons and symbols are named in words (◀ and ▶ in Search results are Previous match and
+Next match), a field is named by the label beside it, and toggles such as Bold and Italic, the picked signature
+and the picked mark say whether they are on. An open list or menu is named after the button that opened it. The
+edges of the side panel and the inspector are named Side panel width and Inspector width, but can only be dragged
+with the mouse.
+
+The names are checked by the app's tests on Linux. LimarePDF hasn't been tried with a screen reader yet (Orca,
+Narrator or VoiceOver).
 
 ## Look and feel
 
 The app follows the system's light or dark theme. ☰ > View > Theme chooses System, Light or Dark. The choice is
 remembered between runs, in `settings.txt` in the same folder as the recent-files list, along with the markup
 colours and your name for comments. The app uses the Inter font
-and Phosphor icons.
+and Phosphor icons. It also includes the Liberation fonts, which have the widths of Helvetica, Times and Courier,
+to show text in its own look while it is typed on the page; they are only drawn on screen, never written into
+PDFs, and don't add to the fonts you can choose.
 
 The window opens at the size it had when the app last closed, and maximized if it was; a maximized window keeps
 the size it had before, for when you restore it. A size kept on a larger monitor is shrunk to fit a smaller one.

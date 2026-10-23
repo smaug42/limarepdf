@@ -533,10 +533,12 @@ mod tests {
         let s = Settings::from_file(Some(f.clone()));
         assert_eq!(s.keep_tools, [Tool::Stamp, Tool::Redact]);
         assert!(!s.fields_shown);
-        // Unknown names, tools that can't be pinned and repeats are left out.
-        std::fs::write(&f, "keep_tool_active = stamp, walrus, , stamp, pen, note\n").unwrap();
+        // Unknown names, tools that can't be pinned (the Note tool no longer can) and
+        // repeats are left out.
+        let line = "keep_tool_active = stamp, walrus, , stamp, pen, note, line\n";
+        std::fs::write(&f, line).unwrap();
         let s = Settings::from_file(Some(f.clone()));
-        assert_eq!(s.keep_tools, [Tool::Stamp, Tool::Note]);
+        assert_eq!(s.keep_tools, [Tool::Stamp, Tool::Line]);
         assert!(s.fields_shown);
         // Every placing tool has a name of its own.
         for t in Tool::PLACING {

@@ -200,7 +200,8 @@ fn credits(ui: &mut Ui) {
             row(
                 ui,
                 "Fonts:",
-                "Inter; Caveat, Cedarville Cursive and Zeyada (SIL Open Font License 1.1); \
+                "Inter, Liberation, Caveat, Cedarville Cursive and Zeyada \
+                 (SIL Open Font License 1.1); \
                  Homemade Apple (Apache License 2.0); all included unmodified",
             );
             row(ui, "Icons:", "Phosphor Icons (MIT)");

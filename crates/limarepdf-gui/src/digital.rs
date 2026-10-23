@@ -5,22 +5,26 @@
 //!
 //! Passwords are typed into the windows, handed to the background thread and overwritten
 //! there once used; they are never saved or logged. A wrong password, or any failure,
-//! means the password has to be typed again.
+//! means the password has to be typed again: a form comes back with what else was typed
+//! and the error, its passwords empty.
 
 use crate::dialogs::{self, Btn, Shell};
 use crate::signing::Saved;
+use crate::theme;
 use eframe::egui::{self, Context, RichText, Ui};
 use limarepdf_core::{
     display_line, DigitalId, DisallowedChanges, IdList, IdStore, NewId, Pdf, Permissions,
-    SignPlace, SignRequest,
+    SignPlace, SignRequest, WrongPassword,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
 
 /// The largest file read as a digital ID to import (limarepdf-core's own limit).
 const MAX_ID_FILE: u64 = 4 << 20;
 const WIDTH: f32 = 460.0;
+/// The narrowest a signature's Reason and Location are beside each other.
+const REASON_WIDTH: f32 = 180.0;
 
 fn clean(s: &str) -> String {
     display_line(s, 80)
@@ -82,12 +86,12 @@ pub struct Secret(String);
 
 impl Secret {
     fn edit(&mut self, ui: &mut Ui, hint: &str) -> egui::Response {
-        ui.add(
+        ui.add(theme::field(
             egui::TextEdit::singleline(&mut self.0)
                 .password(true)
                 .hint_text(hint)
-                .desired_width(240.0),
-        )
+                .desired_width(f32::INFINITY),
+        ))
     }
 }
 
@@ -120,32 +124,25 @@ fn list_of(store: &Result<IdStore, String>) -> IdList {
     store.as_ref().map(IdStore::list).unwrap_or_default()
 }
 
-fn row(ui: &mut Ui, name: &str, value: impl Into<String>) {
-    ui.horizontal_wrapped(|ui| {
-        ui.label(RichText::new(format!("{name}:")).weak());
-        ui.label(value.into());
-    });
-}
-
 /// An ID's certificate: who it names, who issued it, its key and dates.
 fn id_ui(ui: &mut Ui, id: &DigitalId) {
     let c = &id.cert;
-    ui.add(egui::Label::new(clean(&c.subject)).wrap());
+    dialogs::fact(ui, "Certificate", clean(&c.subject));
     let issuer = if c.self_issued {
         "itself (a self-made digital ID)".to_string()
     } else {
         clean(&c.issuer)
     };
-    row(ui, "Issued by", issuer);
+    dialogs::fact(ui, "Issued by", issuer);
     if !id.chain.is_empty() {
-        row(
+        dialogs::fact(
             ui,
             "With",
             format!("{} more certificate(s): its authorities", id.chain.len()),
         );
     }
-    row(ui, "Key", c.key.clone());
-    row(
+    dialogs::fact(ui, "Key", c.key.clone());
+    dialogs::fact(
         ui,
         "Valid",
         format!(
@@ -154,7 +151,7 @@ fn id_ui(ui: &mut Ui, id: &DigitalId) {
             c.not_after.format("%Y-%m-%d")
         ),
     );
-    row(ui, "SHA-256", c.sha256.clone());
+    dialogs::fact(ui, "SHA-256", c.sha256.clone());
     if let Some(why) = unusable(id) {
         ui.colored_label(ui.visuals().error_fg_color, why);
     }
@@ -166,28 +163,53 @@ fn error(ui: &mut Ui, e: &Option<String>) {
     }
 }
 
-/// A row of a form's grid: `label`, then the field `add` draws, named by the label; and
-/// under it, `error` when it is about this `field`.
+/// A field of a form, with `label` above it ([`dialogs::field`]) and the field `add`
+/// draws; and under it, `error` when it is about this `field`, also given to the field as
+/// its description, so a screen reader says it with the field. The keyboard goes to the
+/// field when `focus` is this `field`.
 fn form_row(
     ui: &mut Ui,
     label: &str,
     field: Field,
     error: &Option<(Field, String)>,
+    focus: &mut Option<Field>,
     add: impl FnOnce(&mut Ui) -> egui::Response,
 ) {
-    ui.label(label);
-    dialogs::set_name(&add(ui), label);
-    ui.end_row();
+    dialogs::space_above(ui, dialogs::FIELD_GAP);
+    let r = dialogs::field(ui, label, add);
+    if *focus == Some(field) {
+        *focus = None;
+        r.request_focus();
+    }
     if let Some((_, e)) = error.as_ref().filter(|(f, _)| *f == field) {
-        ui.label("");
+        r.ctx
+            .accesskit_node_builder(r.id, |n| n.set_description(e.as_str()));
         let text = RichText::new(e).color(ui.visuals().error_fg_color);
         ui.add(egui::Label::new(text).wrap());
-        ui.end_row();
     }
 }
 
+/// A field in a form that may be left empty.
+fn optional(ui: &mut Ui, text: &mut String) -> egui::Response {
+    let edit = egui::TextEdit::singleline(text)
+        .hint_text("Optional")
+        .desired_width(f32::INFINITY);
+    ui.add(theme::field(edit))
+}
+
+/// A form's error about no one field, shown at the form's end.
+fn form_error(ui: &mut Ui, error: &Option<(Field, String)>) {
+    let e = error.as_ref().filter(|(f, _)| *f == Field::Form);
+    self::error(ui, &e.map(|(_, e)| e.clone()));
+}
+
+/// `e` as a sentence.
+fn sentence(e: &anyhow::Error) -> String {
+    format!("{}.", capital(format!("{e:#}").trim_end_matches('.')))
+}
+
 fn window<'a>(title: &'a str, id: &str) -> Shell<'a> {
-    Shell::new(title).id(id).width(WIDTH + 40.0)
+    Shell::new(title).id(id).width(WIDTH + 2.0 * dialogs::SIDE)
 }
 
 fn busy_ui(ui: &mut Ui, what: &str) {
@@ -210,6 +232,16 @@ enum Field {
     Password,
     NewPassword,
     Again,
+    Reason,
+    Location,
+    /// No one field (the work failed): shown at the form's end.
+    Form,
+}
+
+/// Whether `e` says the password was wrong (or the ID's file damaged: PKCS#12 can't
+/// tell which).
+fn wrong_password(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.is::<WrongPassword>())
 }
 
 struct CreateForm {
@@ -219,8 +251,9 @@ struct CreateForm {
     password: Secret,
     again: Secret,
     error: Option<(Field, String)>,
-    /// Just opened: the keyboard goes to its first field.
-    opened: bool,
+    /// The field the keyboard goes to when next drawn: the first one when the form opens
+    /// (from a button that is gone), the password when it comes back after a failure.
+    focus: Option<Field>,
 }
 
 impl CreateForm {
@@ -252,9 +285,9 @@ impl CreateForm {
 struct ImportForm {
     file: PathBuf,
     password: Secret,
-    error: Option<String>,
-    /// Just opened: the keyboard goes to the password.
-    opened: bool,
+    error: Option<(Field, String)>,
+    /// The field the keyboard goes to when next drawn: the password.
+    focus: Option<Field>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -272,6 +305,8 @@ struct ExportForm {
     new_password: Secret,
     again: Secret,
     error: Option<(Field, String)>,
+    /// The field the keyboard goes to when next drawn: the ID's password after a failure.
+    focus: Option<Field>,
 }
 
 enum Page {
@@ -281,14 +316,68 @@ enum Page {
     Export(Box<ExportForm>),
 }
 
+impl Page {
+    /// The window's title while the page is shown: the task.
+    fn title(&self) -> String {
+        match self {
+            Page::List => "Digital IDs".into(),
+            Page::Create(_) => "Create a digital ID".into(),
+            Page::Import(_) => "Import a digital ID".into(),
+            Page::Export(f) => format!("Export \"{}\"", label(&f.id)),
+        }
+    }
+
+    /// The form again after its work failed with `e`: the error beside the password when
+    /// the password was wrong, otherwise at the form's end; the keyboard goes to the
+    /// password, which has to be typed again.
+    fn failed(mut self, e: &anyhow::Error) -> Page {
+        let text = sentence(e);
+        let wrong = wrong_password(e);
+        let general = |again: &str| {
+            let text = format!("{text} Type the {again} again to try again.");
+            (Field::Form, text)
+        };
+        match &mut self {
+            Page::List => {}
+            Page::Create(f) => {
+                // Making an ID opens no file of the signer's: its error is never the
+                // password's, even when the ID read back wrong.
+                f.error = Some(general("passwords"));
+                f.focus = Some(Field::Password);
+            }
+            Page::Import(f) => {
+                let password = (Field::Password, text.clone());
+                f.error = Some(if wrong { password } else { general("password") });
+                f.focus = Some(Field::Password);
+            }
+            Page::Export(f) => {
+                let password = (Field::Password, text.clone());
+                let again = if f.fresh { "passwords" } else { "password" };
+                f.error = Some(if wrong { password } else { general(again) });
+                f.focus = Some(Field::Password);
+            }
+        }
+        self
+    }
+}
+
+/// Work running in the Digital IDs window.
+struct Task {
+    /// What it is, for the window while it runs.
+    what: &'static str,
+    /// The form it was started from, without its passwords, shown again if it fails.
+    form: Page,
+    /// Its result: a sentence for the window.
+    rx: Receiver<limarepdf_core::Result<String>>,
+}
+
 /// The Digital IDs window.
 pub struct IdsWindow {
     store: Result<IdStore, String>,
     list: IdList,
     pick: usize,
     page: Page,
-    /// Work running: what it is, and its result (a sentence for the window).
-    task: Option<(&'static str, Receiver<limarepdf_core::Result<String>>)>,
+    task: Option<Task>,
     /// The last thing done (`true`) or why it failed.
     note: Option<(bool, String)>,
     /// Remove was clicked once; the second click removes.
@@ -330,33 +419,33 @@ impl IdsWindow {
 
     pub fn ui(&mut self, ctx: &Context, author: &str) -> IdsOut {
         let mut out = IdsOut::default();
-        if let Some((_, rx)) = &self.task {
-            if let Some(r) = poll(rx) {
-                self.task = None;
-                out.changed = true;
-                self.reload(None);
-                self.note = Some(match r {
-                    Ok(text) => (true, text),
-                    Err(e) => (false, format!("{e:#}")),
-                });
+        if let Some(r) = self.task.as_ref().and_then(|t| poll(&t.rx)) {
+            let task = self.task.take().expect("the task polled");
+            out.changed = true;
+            self.reload(None);
+            match r {
+                Ok(text) => self.note = Some((true, text)),
+                Err(e) => self.page = task.form.failed(&e),
             }
         }
         // Esc closes the list, not a form being filled in.
         let listed = matches!(self.page, Page::List) && self.task.is_none();
-        let (_, esc) = window("Digital IDs", "digital ids")
-            .esc(listed)
-            .show(ctx, |ui| {
-                if let Some((what, _)) = &self.task {
-                    busy_ui(ui, what);
-                    return;
-                }
-                match std::mem::replace(&mut self.page, Page::List) {
-                    Page::List => self.list_ui(ui, author, &mut out),
-                    Page::Create(f) => self.create_ui(ui, f),
-                    Page::Import(f) => self.import_ui(ui, f),
-                    Page::Export(f) => self.export_ui(ui, f),
-                }
-            });
+        let title = match &self.task {
+            Some(t) => t.form.title(),
+            None => self.page.title(),
+        };
+        let (_, esc) = window(&title, "digital ids").esc(listed).show(ctx, |ui| {
+            if let Some(task) = &self.task {
+                busy_ui(ui, task.what);
+                return;
+            }
+            match std::mem::replace(&mut self.page, Page::List) {
+                Page::List => self.list_ui(ui, author, &mut out),
+                Page::Create(f) => self.create_ui(ui, f),
+                Page::Import(f) => self.import_ui(ui, f),
+                Page::Export(f) => self.export_ui(ui, f),
+            }
+        });
         // Stays open while work runs, so its result is seen.
         out.close = (out.close || esc) && self.task.is_none();
         out
@@ -390,7 +479,7 @@ impl IdsWindow {
                     password: Secret::default(),
                     again: Secret::default(),
                     error: None,
-                    opened: true,
+                    focus: Some(Field::Name),
                 });
                 self.note = None;
             }
@@ -403,7 +492,7 @@ impl IdsWindow {
                         file,
                         password: Secret::default(),
                         error: None,
-                        opened: true,
+                        focus: Some(Field::Password),
                     });
                     self.note = None;
                 }
@@ -430,32 +519,36 @@ impl IdsWindow {
             )
             .wrap(),
         );
-        ui.add_space(6.0);
-        if self.list.ids.is_empty() {
-            ui.label("You have no digital IDs yet.");
-        }
-        for (i, id) in self.list.ids.iter().enumerate() {
-            let mut text = label(id);
-            if id.default {
-                text.push_str("  (default)");
+        dialogs::group(ui, "Your digital IDs", |ui| {
+            if self.list.ids.is_empty() {
+                ui.label("You have no digital IDs yet.");
+            } else {
+                dialogs::list_box(ui, |ui| {
+                    for (i, id) in self.list.ids.iter().enumerate() {
+                        let mut text = label(id);
+                        if id.default {
+                            text.push_str("  (default)");
+                        }
+                        if unusable(id).is_some() {
+                            text.push_str("  (can't sign)");
+                        }
+                        let r = dialogs::list_pick(ui, self.pick == i, text);
+                        if r.clicked() && self.pick != i {
+                            self.pick = i;
+                            self.remove_armed = false;
+                        }
+                    }
+                });
             }
-            if unusable(id).is_some() {
-                text.push_str("  (can't sign)");
+            for p in &self.list.problems {
+                let text = RichText::new(display_line(p, 200)).small().weak();
+                ui.add(egui::Label::new(text).wrap());
             }
-            if ui.selectable_label(self.pick == i, text).clicked() && self.pick != i {
-                self.pick = i;
-                self.remove_armed = false;
-            }
-        }
-        for p in &self.list.problems {
-            ui.label(RichText::new(display_line(p, 200)).small().weak());
-        }
+        });
         if let Some(id) = self.list.ids.get(self.pick).cloned() {
-            ui.add_space(6.0);
-            egui::Frame::group(ui.style()).show(ui, |ui| {
-                ui.set_width(ui.available_width());
+            dialogs::group(ui, "Selected ID", |ui| {
                 id_ui(ui, &id);
-                ui.add_space(4.0);
+                ui.add_space(8.0);
                 ui.horizontal_wrapped(|ui| {
                     if ui
                         .button("Export…")
@@ -473,6 +566,7 @@ impl IdsWindow {
                             new_password: Secret::default(),
                             again: Secret::default(),
                             error: None,
+                            focus: None,
                         }));
                         self.note = None;
                     }
@@ -522,7 +616,7 @@ impl IdsWindow {
             });
         }
         if let Some((ok, text)) = &self.note {
-            ui.add_space(6.0);
+            ui.add_space(dialogs::FIELD_GAP);
             let text = RichText::new(text);
             let text = if *ok {
                 text
@@ -535,7 +629,6 @@ impl IdsWindow {
 
     fn create_ui(&mut self, ui: &mut Ui, mut f: CreateForm) {
         dialogs::content(ui, |ui| {
-            ui.strong("Create a digital ID");
             ui.add(
                 egui::Label::new(
                     "LimarePDF makes a self-signed ID (RSA 3072-bit, valid for five years). The \
@@ -544,32 +637,29 @@ impl IdsWindow {
                 )
                 .wrap(),
             );
-            ui.add_space(6.0);
-            egui::Grid::new("new id").num_columns(2).show(ui, |ui| {
-                let e = &f.error;
-                form_row(ui, "Name", Field::Name, e, |ui| {
-                    let r = ui.text_edit_singleline(&mut f.name);
-                    // The keyboard starts in the form, as it opens from a button that is gone.
-                    if std::mem::take(&mut f.opened) {
-                        r.request_focus();
-                    }
-                    r
+            let (e, focus) = (&f.error, &mut f.focus);
+            dialogs::group(ui, "About you", |ui| {
+                form_row(ui, "Name", Field::Name, e, focus, |ui| {
+                    let edit = egui::TextEdit::singleline(&mut f.name).desired_width(f32::INFINITY);
+                    ui.add(theme::field(edit))
                 });
-                form_row(ui, "Organisation", Field::Organisation, e, |ui| {
-                    ui.add(egui::TextEdit::singleline(&mut f.organisation).hint_text("Optional"))
+                form_row(ui, "Organisation", Field::Organisation, e, focus, |ui| {
+                    optional(ui, &mut f.organisation)
                 });
-                form_row(ui, "Email", Field::Email, e, |ui| {
-                    ui.add(egui::TextEdit::singleline(&mut f.email).hint_text("Optional"))
+                form_row(ui, "Email", Field::Email, e, focus, |ui| {
+                    optional(ui, &mut f.email)
                 });
+            });
+            dialogs::group(ui, "Password", |ui| {
                 let at_least = format!("At least {} characters", limarepdf_core::MIN_PASSWORD);
-                form_row(ui, "Password", Field::Password, e, |ui| {
+                form_row(ui, "Password", Field::Password, e, focus, |ui| {
                     f.password.edit(ui, &at_least)
                 });
-                form_row(ui, "Again", Field::Again, e, |ui| {
+                form_row(ui, "Confirm password", Field::Again, e, focus, |ui| {
                     f.again.edit(ui, "Type it again")
                 });
             });
-            ui.add_space(4.0);
+            ui.add_space(dialogs::FIELD_GAP);
             ui.add(
                 egui::Label::new(
                     "Keep the password safe: LimarePDF can't recover it, and without it the ID \
@@ -578,6 +668,7 @@ impl IdsWindow {
                 )
                 .wrap(),
             );
+            form_error(ui, &f.error);
         });
         let hit = dialogs::footer(ui, None, &[Btn::primary("Create"), Btn::plain("Back")]);
         let (go, back) = (hit == Some(0), hit == Some(1));
@@ -588,44 +679,59 @@ impl IdsWindow {
             f.error = f.problem();
         }
         if go && f.error.is_none() {
-            if let Ok(store) = self.store.clone() {
-                let opt = |s: &str| Some(s.trim().to_string()).filter(|s| !s.is_empty());
-                let new = NewId {
-                    name: f.name.trim().to_string(),
-                    organisation: opt(&f.organisation),
-                    email: opt(&f.email),
-                };
-                let password = std::mem::take(&mut f.password);
-                let ctx = ui.ctx().clone();
-                self.task = Some((
-                    "Making the digital ID…",
-                    spawn(&ctx, move || {
-                        let id = store.create(&new, &password.0)?;
-                        Ok(format!(
-                            "Made the digital ID \"{}\". It is the default for signing. Keep a \
-                             copy: Export saves it with its key, for a backup or other apps.",
-                            label(&id)
-                        ))
-                    }),
-                ));
-                return;
-            }
+            self.create(ui.ctx(), f);
+            return;
         }
         self.page = Page::Create(f);
     }
 
+    /// Runs `work` on the store in the background, keeping `form` to show again if it
+    /// fails.
+    fn start(
+        &mut self,
+        ctx: &Context,
+        what: &'static str,
+        form: Page,
+        work: impl FnOnce(IdStore) -> limarepdf_core::Result<String> + Send + 'static,
+    ) {
+        match self.store.clone() {
+            Ok(store) => {
+                let rx = spawn(ctx, move || work(store));
+                self.task = Some(Task { what, form, rx });
+            }
+            Err(e) => self.page = form.failed(&anyhow::anyhow!(e)),
+        }
+    }
+
+    /// Starts making the ID the form describes.
+    fn create(&mut self, ctx: &Context, mut f: CreateForm) {
+        let opt = |s: &str| Some(s.trim().to_string()).filter(|s| !s.is_empty());
+        let new = NewId {
+            name: f.name.trim().to_string(),
+            organisation: opt(&f.organisation),
+            email: opt(&f.email),
+        };
+        let password = std::mem::take(&mut f.password);
+        f.again = Secret::default();
+        let form = Page::Create(f);
+        self.start(ctx, "Making the digital ID…", form, move |store| {
+            let id = store.create(&new, &password.0)?;
+            Ok(format!(
+                "Made the digital ID \"{}\". It is the default for signing. Keep a copy: \
+                 Export saves it with its key, for a backup or other apps.",
+                label(&id)
+            ))
+        });
+    }
+
     fn import_ui(&mut self, ui: &mut Ui, mut f: ImportForm) {
         dialogs::content(ui, |ui| {
-            ui.strong("Import a digital ID");
-            row(ui, "File", f.file.display().to_string());
-            ui.horizontal(|ui| {
-                ui.label("Password");
-                let r = f.password.edit(ui, "The file's password");
-                dialogs::set_name(&r, "Password");
-                if std::mem::take(&mut f.opened) {
-                    r.request_focus();
-                }
+            dialogs::fact(ui, "File", f.file.display().to_string());
+            let (e, focus) = (&f.error, &mut f.focus);
+            form_row(ui, "Password", Field::Password, e, focus, |ui| {
+                f.password.edit(ui, "The file's password")
             });
+            ui.add_space(dialogs::FIELD_GAP);
             ui.add(
                 egui::Label::new(
                     "LimarePDF keeps its own copy, protected by the same password. The key must \
@@ -634,7 +740,7 @@ impl IdsWindow {
                 )
                 .wrap(),
             );
-            error(ui, &f.error);
+            form_error(ui, &f.error);
         });
         let hit = dialogs::footer(ui, None, &[Btn::primary("Import"), Btn::plain("Back")]);
         let (mut go, back) = (hit == Some(0), hit == Some(1));
@@ -643,83 +749,85 @@ impl IdsWindow {
             return;
         }
         if go {
-            if let Ok(store) = self.store.clone() {
-                let password = std::mem::take(&mut f.password);
-                let file = f.file.clone();
-                let ctx = ui.ctx().clone();
-                self.task = Some((
-                    "Importing the digital ID…",
-                    spawn(&ctx, move || {
-                        use anyhow::Context as _;
-                        let size = std::fs::metadata(&file)
-                            .with_context(|| format!("reading {}", file.display()))?
-                            .len();
-                        if size > MAX_ID_FILE {
-                            anyhow::bail!("{} is too large to be a digital ID", file.display());
-                        }
-                        let bytes = std::fs::read(&file)
-                            .with_context(|| format!("reading {}", file.display()))?;
-                        let id = store.import(&bytes, &password.0, None)?;
-                        Ok(format!(
-                            "Imported \"{}\". It is the default for signing. {} still holds \
-                             the ID: keep it safe, or delete it if LimarePDF's copy is enough.",
-                            label(&id),
-                            file.display()
-                        ))
-                    }),
-                ));
-                return;
-            }
+            self.import(ui.ctx(), f);
+            return;
         }
         self.page = Page::Import(f);
     }
 
+    /// Starts importing the form's file with its password.
+    fn import(&mut self, ctx: &Context, mut f: ImportForm) {
+        let password = std::mem::take(&mut f.password);
+        let file = f.file.clone();
+        let form = Page::Import(f);
+        self.start(ctx, "Importing the digital ID…", form, move |store| {
+            use anyhow::Context as _;
+            let size = std::fs::metadata(&file)
+                .with_context(|| format!("reading {}", file.display()))?
+                .len();
+            if size > MAX_ID_FILE {
+                anyhow::bail!("{} is too large to be a digital ID", file.display());
+            }
+            let bytes =
+                std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?;
+            let id = store.import(&bytes, &password.0, None)?;
+            Ok(format!(
+                "Imported \"{}\". It is the default for signing. {} still holds the ID: keep \
+                 it safe, or delete it if LimarePDF's copy is enough.",
+                label(&id),
+                file.display()
+            ))
+        });
+    }
+
     fn export_ui(&mut self, ui: &mut Ui, mut f: Box<ExportForm>) {
         dialogs::content(ui, |ui| {
-            ui.strong(format!("Export \"{}\"", label(&f.id)));
-            ui.radio_value(
-                &mut f.kind,
-                ExportKind::Certificate,
-                "Certificate only (.cer): for others to trust your signatures",
-            );
-            ui.radio_value(
-                &mut f.kind,
-                ExportKind::Key,
-                "With its key (.p12): a backup, or to sign in other apps",
-            );
-            ui.add_space(4.0);
+            dialogs::group(ui, "What to export", |ui| {
+                ui.radio_value(
+                    &mut f.kind,
+                    ExportKind::Certificate,
+                    "Certificate only (.cer): for others to trust your signatures",
+                );
+                ui.radio_value(
+                    &mut f.kind,
+                    ExportKind::Key,
+                    "With its key (.p12): a backup, or to sign in other apps",
+                );
+            });
             match f.kind {
                 ExportKind::Certificate => {
+                    ui.add_space(dialogs::FIELD_GAP);
                     ui.add(
                         egui::Label::new(
                             "The certificate holds no key, so it is safe to share. Tell \
                              recipients its SHA-256 fingerprint another way, such as by phone, \
-                             so they can check it is yours:",
+                             so they can check it is yours.",
                         )
                         .wrap(),
                     );
-                    ui.label(RichText::new(&f.id.cert.sha256).monospace().small());
+                    ui.add_space(dialogs::FIELD_GAP);
+                    dialogs::fact(ui, "SHA-256", f.id.cert.sha256.clone());
                 }
                 ExportKind::Key => {
-                    let e = &f.error;
-                    egui::Grid::new("export id").num_columns(2).show(ui, |ui| {
-                        form_row(ui, "ID's password", Field::Password, e, |ui| {
+                    let (e, focus) = (&f.error, &mut f.focus);
+                    dialogs::group(ui, "Password", |ui| {
+                        form_row(ui, "ID's password", Field::Password, e, focus, |ui| {
                             f.password.edit(ui, "Password")
                         });
-                    });
-                    ui.checkbox(&mut f.fresh, "Protect the file with a new password");
-                    if f.fresh {
-                        egui::Grid::new("export new").num_columns(2).show(ui, |ui| {
+                        ui.add_space(dialogs::FIELD_GAP);
+                        ui.checkbox(&mut f.fresh, "Protect the file with a new password");
+                        if f.fresh {
                             let at_least =
                                 format!("At least {} characters", limarepdf_core::MIN_PASSWORD);
-                            form_row(ui, "New password", Field::NewPassword, e, |ui| {
+                            form_row(ui, "New password", Field::NewPassword, e, focus, |ui| {
                                 f.new_password.edit(ui, &at_least)
                             });
-                            form_row(ui, "Again", Field::Again, e, |ui| {
+                            form_row(ui, "Confirm password", Field::Again, e, focus, |ui| {
                                 f.again.edit(ui, "Type it again")
                             });
-                        });
-                    }
+                        }
+                    });
+                    ui.add_space(dialogs::FIELD_GAP);
                     ui.add(
                         egui::Label::new(
                             "Anyone with this file and its password can sign as you: keep it \
@@ -729,6 +837,7 @@ impl IdsWindow {
                     );
                 }
             }
+            form_error(ui, &f.error);
         });
         let hit = dialogs::footer(ui, None, &[Btn::primary("Export…"), Btn::plain("Back")]);
         let (go, back) = (hit == Some(0), hit == Some(1));
@@ -739,20 +848,7 @@ impl IdsWindow {
             match f.kind {
                 ExportKind::Certificate => {
                     if let Some(path) = save_path(&f.id.name, "cer", "Certificate") {
-                        self.note = Some(match limarepdf_core::write_file(&path, &f.id.cert.der) {
-                            Ok(()) => (
-                                true,
-                                format!(
-                                    "Saved the certificate of \"{}\" to {}. Recipients trust \
-                                     it in LimarePDF with Edit > Trusted certificates > Add, or in \
-                                     their PDF app's trusted certificates, after checking the \
-                                     fingerprint with you.",
-                                    label(&f.id),
-                                    path.display()
-                                ),
-                            ),
-                            Err(e) => (false, format!("{e:#}")),
-                        });
+                        self.export_certificate(f, &path);
                         return;
                     }
                 }
@@ -778,40 +874,62 @@ impl IdsWindow {
                     };
                     if let Some((field, why)) = problem {
                         f.error = Some((field, capital(&why)));
-                    } else if let (Ok(store), Some(path)) = (
-                        self.store.clone(),
-                        save_path(&f.id.name, "p12", "Digital ID"),
-                    ) {
-                        let password = std::mem::take(&mut f.password);
-                        let new_password = std::mem::take(&mut f.new_password);
-                        let (id, fresh) = (f.id.clone(), f.fresh);
-                        let ctx = ui.ctx().clone();
-                        self.task = Some((
-                            "Exporting the digital ID…",
-                            spawn(&ctx, move || {
-                                let unlocked = store.unlock(&id, &password.0)?;
-                                let file_password = if fresh { &new_password } else { &password };
-                                let bytes = unlocked.to_p12(&file_password.0)?;
-                                limarepdf_core::write_private(&path, &bytes)?;
-                                Ok(format!(
-                                    "Saved \"{}\" with its key to {}, protected by {}. Keep \
-                                     it safe.",
-                                    label(&id),
-                                    path.display(),
-                                    if fresh {
-                                        "the new password"
-                                    } else {
-                                        "the ID's password"
-                                    }
-                                ))
-                            }),
-                        ));
+                    } else if let Some(path) = save_path(&f.id.name, "p12", "Digital ID") {
+                        self.export_key(ui.ctx(), f, path);
                         return;
                     }
                 }
             }
         }
         self.page = Page::Export(f);
+    }
+
+    /// Saves the form's certificate to `path`. The form stays, with the error, if that
+    /// fails.
+    fn export_certificate(&mut self, mut f: Box<ExportForm>, path: &Path) {
+        match limarepdf_core::write_file(path, &f.id.cert.der) {
+            Ok(()) => {
+                self.note = Some((
+                    true,
+                    format!(
+                        "Saved the certificate of \"{}\" to {}. Recipients trust it in \
+                         LimarePDF with Edit > Trusted certificates > Add, or in their PDF \
+                         app's trusted certificates, after checking the fingerprint with you.",
+                        label(&f.id),
+                        path.display()
+                    ),
+                ));
+            }
+            Err(e) => {
+                f.error = Some((Field::Form, sentence(&e)));
+                self.page = Page::Export(f);
+            }
+        }
+    }
+
+    /// Starts saving the form's ID with its key to `path`.
+    fn export_key(&mut self, ctx: &Context, mut f: Box<ExportForm>, path: PathBuf) {
+        let password = std::mem::take(&mut f.password);
+        let new_password = std::mem::take(&mut f.new_password);
+        f.again = Secret::default();
+        let (id, fresh) = (f.id.clone(), f.fresh);
+        let form = Page::Export(f);
+        self.start(ctx, "Exporting the digital ID…", form, move |store| {
+            let unlocked = store.unlock(&id, &password.0)?;
+            let file_password = if fresh { &new_password } else { &password };
+            let bytes = unlocked.to_p12(&file_password.0)?;
+            limarepdf_core::write_private(&path, &bytes)?;
+            Ok(format!(
+                "Saved \"{}\" with its key to {}, protected by {}. Keep it safe.",
+                label(&id),
+                path.display(),
+                if fresh {
+                    "the new password"
+                } else {
+                    "the ID's password"
+                }
+            ))
+        });
     }
 }
 
@@ -899,9 +1017,13 @@ pub struct SignWindow {
     accept_disallowed: bool,
     /// Signing was refused for that reason: the question shown.
     disallowed: Option<String>,
+    /// A problem with the password, shown under it: missing, wrong, or to be typed again.
+    field_error: Option<(Field, String)>,
+    /// A problem with signing itself, shown at the form's end (the app sets some too).
     pub error: Option<String>,
     task: Option<Receiver<limarepdf_core::Result<Signed>>>,
-    focus: bool,
+    /// The field the keyboard goes to when next drawn: the password.
+    focus: Option<Field>,
 }
 
 impl SignWindow {
@@ -932,9 +1054,10 @@ impl SignWindow {
             use_saved: has_saved,
             accept_disallowed: false,
             disallowed: None,
+            field_error: None,
             error: None,
             task: None,
-            focus: true,
+            focus: Some(Field::Password),
         };
         w.pick_default();
         w
@@ -964,6 +1087,38 @@ impl SignWindow {
         self.task.is_some()
     }
 
+    /// The chosen ID can sign.
+    fn can_sign(&self) -> bool {
+        self.list
+            .ids
+            .get(self.pick)
+            .is_some_and(|i| unusable(i).is_none())
+    }
+
+    /// Whether signing can go ahead: an ID that can sign, and its password, which is asked
+    /// for beside it when missing.
+    fn ready(&mut self) -> bool {
+        if !self.can_sign() {
+            return false;
+        }
+        if self.password.0.is_empty() {
+            self.field_error = Some((Field::Password, "Type the ID's password.".into()));
+            self.focus = Some(Field::Password);
+            return false;
+        }
+        true
+    }
+
+    /// The signer agreed to sign although earlier signatures will report disallowed
+    /// changes: the password, used up by the refused try, is typed again.
+    fn sign_anyway(&mut self) {
+        self.accept_disallowed = true;
+        self.disallowed = None;
+        let again = "Type the ID's password again to sign.";
+        self.field_error = Some((Field::Password, again.into()));
+        self.focus = Some(Field::Password);
+    }
+
     /// Signs in the background with what the window holds. The password is used up:
     /// after a failure it is typed again.
     pub fn start(&mut self, ctx: &Context, input: Input) {
@@ -979,6 +1134,7 @@ impl SignWindow {
         let accept_disallowed = self.accept_disallowed;
         let art = if self.use_saved { input.art } else { None };
         self.error = None;
+        self.field_error = None;
         self.task = Some(spawn(ctx, move || {
             let unlocked = store.unlock(&id, &password.0)?;
             drop(password);
@@ -1026,10 +1182,16 @@ impl SignWindow {
                     Ok(s) => return SignOut::Done(Box::new(s)),
                     Err(e) => match e.downcast_ref::<DisallowedChanges>() {
                         Some(d) => self.disallowed = Some(disallowed_text(d)),
-                        None => self.error = Some(capital(&format!("{e:#}"))),
+                        None if wrong_password(&e) => {
+                            self.field_error = Some((Field::Password, sentence(&e)));
+                        }
+                        None => {
+                            let again = "Type the ID's password again to try again.";
+                            self.error = Some(format!("{} {again}", sentence(&e)));
+                        }
                     },
                 }
-                self.focus = true;
+                self.focus = Some(Field::Password);
             }
         }
         let mut out = SignOut::Open;
@@ -1041,7 +1203,10 @@ impl SignWindow {
         // Esc closes it until something is typed into it.
         let empty =
             self.password.0.is_empty() && self.reason.is_empty() && self.location.is_empty();
+        // Where the signature goes, under the title.
+        let place = capital(&self.where_text);
         let (_, esc) = window(title, "digital sign")
+            .file(Some(&place))
             .esc(empty && self.task.is_none())
             .show(ctx, |ui| {
                 if self.task.is_some() {
@@ -1058,12 +1223,7 @@ impl SignWindow {
                 if let Some(q) = self.disallowed.clone() {
                     dialogs::content(ui, |ui| ui.add(egui::Label::new(q).wrap()));
                     match dialogs::footer(ui, None, &[Btn::danger("Sign anyway"), Btn::cancel()]) {
-                        Some(0) => {
-                            self.accept_disallowed = true;
-                            self.disallowed = None;
-                            self.error = Some("Type the ID's password again to sign.".into());
-                            self.focus = true;
-                        }
+                        Some(0) => self.sign_anyway(),
                         Some(_) => out = SignOut::Cancel,
                         None => {}
                     }
@@ -1080,11 +1240,7 @@ impl SignWindow {
     fn form_ui(&mut self, ui: &mut Ui) -> SignOut {
         let mut out = SignOut::Open;
         dialogs::content(ui, |ui| self.form_body(ui, &mut out));
-        let can = self
-            .list
-            .ids
-            .get(self.pick)
-            .is_some_and(|i| unusable(i).is_none());
+        let can = self.can_sign();
         let go = if self.certify {
             "Certify…"
         } else {
@@ -1103,24 +1259,15 @@ impl SignWindow {
             Some(_) => out = SignOut::Cancel,
             None => {}
         }
-        if matches!(out, SignOut::Go) {
-            if !can {
-                return SignOut::Open;
-            }
-            if self.password.0.is_empty() {
-                self.error = Some("Type the ID's password.".into());
-                self.focus = true;
-                return SignOut::Open;
-            }
+        if matches!(out, SignOut::Go) && !self.ready() {
+            return SignOut::Open;
         }
         out
     }
 
-    /// The signing form: where, the ID, its password, and the options; `out` becomes Go
-    /// on Enter in the password.
+    /// The signing form: the ID, its password, and the options; `out` becomes Go on Enter
+    /// in the password.
     fn form_body(&mut self, ui: &mut Ui, out: &mut SignOut) {
-        row(ui, "Where", self.where_text.clone());
-        ui.add_space(6.0);
         if let Err(e) = &self.store {
             error(ui, &Some(e.clone()));
         } else if self.list.ids.is_empty() {
@@ -1134,11 +1281,11 @@ impl SignWindow {
         } else {
             let ids = &self.list.ids;
             let shown = ids.get(self.pick).map(label).unwrap_or_default();
-            ui.horizontal(|ui| {
-                ui.label("Digital ID");
+            let wide = ui.available_width();
+            dialogs::field(ui, "Digital ID", |ui| {
                 egui::ComboBox::from_id_salt("sign id")
                     .selected_text(shown)
-                    .width(260.0)
+                    .width(wide)
                     .show_ui(ui, |ui| {
                         for (i, id) in ids.iter().enumerate() {
                             let mut text = label(id);
@@ -1147,68 +1294,82 @@ impl SignWindow {
                             }
                             ui.selectable_value(&mut self.pick, i, text);
                         }
-                    });
+                    })
+                    .response
             });
             if let Some(id) = ids.get(self.pick) {
-                egui::Frame::group(ui.style()).show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    id_ui(ui, id);
-                    if id.cert.self_issued {
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(
-                                    "Others see you as an unknown signer until they trust your \
-                                     certificate: send it to them from Digital IDs (Export, \
-                                     certificate only).",
+                ui.add_space(8.0);
+                dialogs::list_box(ui, |ui| {
+                    egui::Frame::NONE.inner_margin(4).show(ui, |ui| {
+                        id_ui(ui, id);
+                        if id.cert.self_issued {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(
+                                        "Others see you as an unknown signer until they trust \
+                                         your certificate: send it to them from Digital IDs \
+                                         (Export, certificate only).",
+                                    )
+                                    .small()
+                                    .weak(),
                                 )
-                                .small()
-                                .weak(),
-                            )
-                            .wrap(),
-                        );
-                    }
+                                .wrap(),
+                            );
+                        }
+                    });
                 });
             }
-            ui.add_space(4.0);
-            egui::Grid::new("sign form").num_columns(2).show(ui, |ui| {
-                ui.label("Password");
+            let (e, focus) = (&self.field_error, &mut self.focus);
+            form_row(ui, "Password", Field::Password, e, focus, |ui| {
                 let r = self.password.edit(ui, "The ID's password");
-                if std::mem::take(&mut self.focus) {
-                    r.request_focus();
-                }
                 if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     *out = SignOut::Go;
                 }
-                ui.end_row();
-                ui.label("Reason");
-                ui.add(egui::TextEdit::singleline(&mut self.reason).hint_text("Optional"));
-                ui.end_row();
-                ui.label("Location");
-                ui.add(egui::TextEdit::singleline(&mut self.location).hint_text("Optional"));
-                ui.end_row();
+                r
             });
+            ui.add_space(dialogs::FIELD_GAP);
+            let half = (ui.available_width() - dialogs::COLUMN_GAP) / 2.0;
+            let mut both = (&mut self.reason, &mut self.location, focus);
+            dialogs::columns(
+                ui,
+                &mut both,
+                half,
+                REASON_WIDTH,
+                |ui, (reason, _, focus), _| {
+                    form_row(ui, "Reason", Field::Reason, e, focus, |ui| {
+                        optional(ui, reason)
+                    });
+                },
+                |ui, (_, location, focus), _| {
+                    form_row(ui, "Location", Field::Location, e, focus, |ui| {
+                        optional(ui, location)
+                    });
+                },
+            );
         }
         if self.certify {
-            ui.add_space(6.0);
+            ui.add_space(dialogs::FIELD_GAP);
             ui.add(
                 egui::Label::new(
                     "Certifying marks you as the document's author. Readers are told of any \
-                     change beyond what you allow. After certifying, others may:",
+                     change beyond what you allow.",
                 )
                 .wrap(),
             );
-            for (p, text) in [
-                (Permissions::NoChanges, "Make no changes"),
-                (Permissions::FormFilling, "Fill in forms and sign"),
-                (
-                    Permissions::FormFillingAndComments,
-                    "Fill in forms, sign and add comments",
-                ),
-            ] {
-                ui.radio_value(&mut self.permissions, p, text);
-            }
+            dialogs::group(ui, "Others may", |ui| {
+                for (p, text) in [
+                    (Permissions::NoChanges, "Make no changes"),
+                    (Permissions::FormFilling, "Fill in forms and sign"),
+                    (
+                        Permissions::FormFillingAndComments,
+                        "Fill in forms, sign and add comments",
+                    ),
+                ] {
+                    ui.radio_value(&mut self.permissions, p, text);
+                }
+            });
         }
-        ui.add_space(6.0);
+        ui.add_space(dialogs::FIELD_GAP);
         ui.add_enabled_ui(self.has_saved, |ui| {
             ui.checkbox(
                 &mut self.use_saved,
@@ -1320,7 +1481,7 @@ mod tests {
             password: Secret(PASSWORD.into()),
             again: Secret(again.into()),
             error: None,
-            opened: false,
+            focus: None,
         };
         let field = |f: CreateForm| f.problem().map(|(field, _)| field);
         assert_eq!(field(form("Jane", "", "", PASSWORD)), None);
@@ -1357,19 +1518,87 @@ mod tests {
             w.password.0.is_empty(),
             "the password is handed over, not kept"
         );
-        let rx = w.task.take().unwrap();
-        let r = rx
-            .recv_timeout(std::time::Duration::from_secs(120))
-            .unwrap();
-        let (tx, again) = channel();
-        tx.send(r).unwrap();
-        w.task = Some(again);
-        let mut out = SignOut::Open;
+        drawn(w).0
+    }
+
+    /// Draws the signing window as the app does, once its work (if any) is done; returns
+    /// what it did and its widgets.
+    fn drawn(w: &mut SignWindow) -> (SignOut, egui::accesskit::TreeUpdate) {
+        if let Some(rx) = w.task.take() {
+            let r = rx
+                .recv_timeout(std::time::Duration::from_secs(120))
+                .unwrap();
+            let (tx, again) = channel();
+            tx.send(r).unwrap();
+            w.task = Some(again);
+        }
+        let ctx = Context::default();
+        ctx.enable_accesskit();
         crate::theme::install(&ctx);
+        let mut out = SignOut::Open;
         let mut frame = ctx.run_ui(egui::RawInput::default(), |ui| out = w.ui(ui.ctx()));
         // Nothing draws the frame: its font atlas upload is dropped on purpose.
         frame.textures_delta.clear();
-        out
+        assert!(!w.busy());
+        (out, frame.platform_output.accesskit_update.unwrap())
+    }
+
+    #[test]
+    fn password_problems_are_said_at_the_password() {
+        let (mut w, dir) = window("password");
+        let mut doc = Pdf::from_text("Hello", (612.0, 792.0)).unwrap();
+        let base = doc.to_bytes().unwrap();
+        let input = |out: &Path| Input {
+            base: Arc::from(base.as_slice()),
+            edited: None,
+            art: None,
+            out: out.to_path_buf(),
+        };
+        let ctx = Context::default();
+        let out = dir.join("signed.pdf");
+        w.reason = "Approved".into();
+        for certify in [false, true] {
+            w.certify = certify;
+            // None typed: asked for beside it, with the keyboard there.
+            assert!(!w.ready());
+            let (_, tree) = drawn(&mut w);
+            said_at(&tree, "Password", "Type the ID's password.");
+            assert!(w.error.is_none());
+
+            // A wrong one: said there too; it is typed again.
+            w.password = Secret("not the password".into());
+            assert!(w.ready());
+            w.start(&ctx, input(&out));
+            let (_, tree) = drawn(&mut w);
+            let wrong = "The password is wrong, or the file is damaged.";
+            said_at(&tree, "Password", wrong);
+            assert!(w.password.0.is_empty() && w.error.is_none() && !out.exists());
+            assert_eq!(w.reason, "Approved");
+        }
+
+        // A failure that isn't the password's: at the form's end, and the keyboard is in
+        // Password, as the password is typed again.
+        std::fs::write(dir.join("blocker"), "a file, not a folder").unwrap();
+        w.password = Secret(PASSWORD.into());
+        w.start(&ctx, input(&dir.join("blocker").join("signed.pdf")));
+        let (_, tree) = drawn(&mut w);
+        let e = w.error.clone().unwrap();
+        assert!(
+            e.ends_with("Type the ID's password again to try again."),
+            "{e}"
+        );
+        assert!(w.field_error.is_none());
+        let field = |name: &str| {
+            tree.nodes
+                .iter()
+                .find(|(_, n)| n.label() == Some(name) && n.role() != egui::accesskit::Role::Label)
+                .map(|(id, n)| (*id, n.description().is_none()))
+        };
+        assert_eq!(field("Password"), Some((tree.focus, true)));
+        for name in ["Digital ID", "Reason", "Location"] {
+            assert!(field(name).is_some(), "{name} isn't named");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1436,8 +1665,10 @@ mod tests {
         let q = w.disallowed.clone().expect("the question");
         assert!(q.contains("\"Jane Example\""), "{q}");
         assert!(!out.exists());
-        w.disallowed = None;
-        w.accept_disallowed = true;
+        // Sign anyway: the password is asked for again, beside it.
+        w.sign_anyway();
+        let (_, tree) = drawn(&mut w);
+        said_at(&tree, "Password", "Type the ID's password again to sign.");
         let SignOut::Done(s2) = sign(&mut w, &s.bytes, Some(turned), &out) else {
             panic!("not signed: {:?}", w.error);
         };
@@ -1472,5 +1703,450 @@ mod tests {
         assert!(q.contains("\"Jane Doe\": page 1 turned"));
         assert!(q.contains("An earlier signer: a page added"));
         assert!(q.contains("password again"));
+    }
+
+    // ------------------------------------------------------------------ Digital IDs window
+
+    /// A folder of its own for a test, with `blocker`, a file no folder can be made in.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("limarepdf-ids-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("blocker"), "a file, not a folder").unwrap();
+        dir
+    }
+
+    /// A store in `dir` holding Jane Example's new ID.
+    fn store_with_id(dir: &Path) -> (IdStore, DigitalId) {
+        let store = IdStore::new(dir.join("ids"));
+        let new = NewId {
+            name: "Jane Example".into(),
+            ..NewId::default()
+        };
+        let id = store.create(&new, PASSWORD).unwrap();
+        (store, id)
+    }
+
+    fn ids_window(store: IdStore) -> IdsWindow {
+        let mut w = IdsWindow {
+            store: Ok(store),
+            list: IdList::default(),
+            pick: 0,
+            page: Page::List,
+            task: None,
+            note: None,
+            remove_armed: false,
+        };
+        w.reload(None);
+        w
+    }
+
+    /// The running task's form, which must hold no passwords.
+    fn running(w: &IdsWindow) -> &Page {
+        &w.task.as_ref().expect("work started").form
+    }
+
+    /// Waits for the window's work, then draws it as the app does; returns its widgets.
+    fn finish(w: &mut IdsWindow) -> egui::accesskit::TreeUpdate {
+        let task = w.task.as_mut().expect("work started");
+        let r = task
+            .rx
+            .recv_timeout(std::time::Duration::from_secs(120))
+            .unwrap();
+        let (tx, again) = channel();
+        tx.send(r).unwrap();
+        task.rx = again;
+        let ctx = Context::default();
+        ctx.enable_accesskit();
+        crate::theme::install(&ctx);
+        let mut frame = ctx.run_ui(egui::RawInput::default(), |ui| {
+            w.ui(ui.ctx(), "");
+        });
+        frame.textures_delta.clear();
+        assert!(w.task.is_none());
+        frame.platform_output.accesskit_update.unwrap()
+    }
+
+    /// The form's error is shown with `label`'s field, which has the keyboard and says the
+    /// error to a screen reader.
+    fn said_at(tree: &egui::accesskit::TreeUpdate, label: &str, error: &str) {
+        let (id, node) = tree
+            .nodes
+            .iter()
+            .find(|(_, n)| n.description() == Some(error))
+            .unwrap_or_else(|| panic!("no field says {error:?}"));
+        assert_eq!(node.label(), Some(label));
+        assert_eq!(tree.focus, *id, "the keyboard is in {label}");
+    }
+
+    /// Draws the window as the app does; returns its widgets.
+    fn shown(w: &mut IdsWindow) -> egui::accesskit::TreeUpdate {
+        let ctx = Context::default();
+        ctx.enable_accesskit();
+        crate::theme::install(&ctx);
+        let mut frame = ctx.run_ui(egui::RawInput::default(), |ui| {
+            w.ui(ui.ctx(), "");
+        });
+        frame.textures_delta.clear();
+        frame.platform_output.accesskit_update.unwrap()
+    }
+
+    /// G06: every control of the signing window, signing or certifying, and of the Digital
+    /// IDs window's list and forms says what it is.
+    #[test]
+    fn digital_id_controls_are_named() {
+        let (mut w, dir) = window("names");
+        for certify in [false, true] {
+            w.certify = certify;
+            let (_, tree) = drawn(&mut w);
+            let unclear = crate::dialogs::unclear_names(&tree);
+            assert_eq!(unclear, [""; 0], "certifying: {certify}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let dir = scratch("names");
+        let (store, id) = store_with_id(&dir);
+        let mut w = ids_window(store);
+        let create = CreateForm {
+            name: "Jane Example".into(),
+            organisation: String::new(),
+            email: String::new(),
+            password: Secret::default(),
+            again: Secret::default(),
+            error: None,
+            focus: None,
+        };
+        let export = ExportForm {
+            id,
+            kind: ExportKind::Key,
+            password: Secret::default(),
+            fresh: true,
+            new_password: Secret::default(),
+            again: Secret::default(),
+            error: None,
+            focus: None,
+        };
+        let import = import_form(&dir.join("jane.p12"), "");
+        for (what, page) in [
+            ("the list", Page::List),
+            ("a new ID", Page::Create(create)),
+            ("importing", Page::Import(import)),
+            ("exporting", Page::Export(Box::new(export))),
+        ] {
+            w.page = page;
+            let unclear = crate::dialogs::unclear_names(&shown(&mut w));
+            assert_eq!(unclear, [""; 0], "{what}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Batch 7b: the digital ID forms and the signing window label their fields above
+    /// them, as Print does (the user, 2026-10-22: "above for consistency"), wide and
+    /// narrow; a signature's Reason and Location side by side when there is room, and
+    /// the window titled with the task.
+    #[test]
+    fn digital_id_forms_have_labels_above_their_fields() {
+        use crate::dialogs::{drawn as settled, label_above};
+        let dir = scratch("labels");
+        let (store, id) = store_with_id(&dir);
+        let mut w = ids_window(store);
+        for size in [egui::vec2(1200.0, 900.0), egui::vec2(400.0, 900.0)] {
+            let create = CreateForm {
+                name: "Jane Example".into(),
+                organisation: String::new(),
+                email: String::new(),
+                password: Secret::default(),
+                again: Secret::default(),
+                error: None,
+                focus: None,
+            };
+            let export = ExportForm {
+                id: id.clone(),
+                kind: ExportKind::Key,
+                password: Secret::default(),
+                fresh: true,
+                new_password: Secret::default(),
+                again: Secret::default(),
+                error: None,
+                focus: None,
+            };
+            let import = import_form(&dir.join("jane.p12"), "");
+            for (title, page, labels) in [
+                (
+                    "Create a digital ID",
+                    Page::Create(create),
+                    &[
+                        "Name",
+                        "Organisation",
+                        "Email",
+                        "Password",
+                        "Confirm password",
+                    ][..],
+                ),
+                ("Import a digital ID", Page::Import(import), &["Password"]),
+                (
+                    "Export \"Jane Example\"",
+                    Page::Export(Box::new(export)),
+                    &["ID's password", "New password", "Confirm password"],
+                ),
+            ] {
+                w.page = page;
+                let tree = settled(size, |ctx| {
+                    w.ui(ctx, "");
+                });
+                let shown = tree.nodes.iter().any(|(_, n)| n.value() == Some(title));
+                assert!(shown, "{size:?}: no title {title:?}");
+                for l in labels {
+                    label_above(&tree, l).unwrap_or_else(|e| panic!("{size:?}: {e}"));
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let (mut w, dir) = window("labels");
+        for (size, beside) in [
+            (egui::vec2(1200.0, 900.0), true),
+            (egui::vec2(400.0, 900.0), false),
+        ] {
+            for certify in [false, true] {
+                w.certify = certify;
+                let tree = settled(size, |ctx| {
+                    w.ui(ctx);
+                });
+                for l in ["Digital ID", "Password", "Reason", "Location"] {
+                    label_above(&tree, l).unwrap_or_else(|e| panic!("{size:?}: {e}"));
+                }
+                let at = |name: &str| {
+                    let (_, n) = tree
+                        .nodes
+                        .iter()
+                        .find(|(_, n)| n.label() == Some(name))
+                        .unwrap_or_else(|| panic!("no {name}"));
+                    let b = n.bounds().unwrap();
+                    egui::Rect::from_min_max(
+                        egui::pos2(b.x0 as f32, b.y0 as f32),
+                        egui::pos2(b.x1 as f32, b.y1 as f32),
+                    )
+                };
+                let (reason, location) = (at("Reason"), at("Location"));
+                if beside {
+                    assert!((reason.top() - location.top()).abs() < 1.0, "{size:?}");
+                    assert!(location.left() > reason.right(), "{size:?}");
+                } else {
+                    assert!(location.top() > reason.bottom(), "{size:?}");
+                }
+                let heading = |n: &egui::accesskit::Node| n.value() == Some("Others may");
+                let shown = tree.nodes.iter().any(|(_, n)| heading(n));
+                assert_eq!(shown, certify, "{size:?}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn import_form(file: &Path, password: &str) -> ImportForm {
+        ImportForm {
+            file: file.to_path_buf(),
+            password: Secret(password.into()),
+            error: None,
+            focus: None,
+        }
+    }
+
+    #[test]
+    fn a_failed_import_comes_back_to_its_form() {
+        let dir = scratch("import");
+        let (store, id) = store_with_id(&dir.join("other"));
+        let file = dir.join("jane.p12");
+        let p12 = store
+            .unlock(&id, PASSWORD)
+            .unwrap()
+            .to_p12(PASSWORD)
+            .unwrap();
+        std::fs::write(&file, &p12).unwrap();
+        let mut w = ids_window(IdStore::new(dir.join("ids")));
+        let ctx = Context::default();
+
+        // A wrong password: said beside the password, which is to be typed again.
+        w.import(&ctx, import_form(&file, "not the password"));
+        let Page::Import(f) = running(&w) else {
+            panic!("not importing")
+        };
+        assert!(
+            f.password.0.is_empty(),
+            "the password is handed over, not kept"
+        );
+        let tree = finish(&mut w);
+        let Page::Import(f) = &w.page else {
+            panic!("not back at the form")
+        };
+        assert_eq!(f.file, file);
+        assert!(f.password.0.is_empty());
+        let (field, text) = f.error.clone().unwrap();
+        assert_eq!(field, Field::Password);
+        assert!(text.starts_with("The password is wrong"), "{text}");
+        said_at(&tree, "Password", &text);
+        assert!(w.note.is_none() && w.list.ids.is_empty());
+
+        // The file gone: said at the form's end, with what to do.
+        std::fs::remove_file(&file).unwrap();
+        w.page = Page::List;
+        w.import(&ctx, import_form(&file, PASSWORD));
+        finish(&mut w);
+        let Page::Import(f) = &w.page else {
+            panic!("not back at the form")
+        };
+        let (field, text) = f.error.clone().unwrap();
+        assert_eq!(field, Field::Form);
+        assert!(text.starts_with("Reading "), "{text}");
+        assert!(
+            text.ends_with("Type the password again to try again."),
+            "{text}"
+        );
+
+        // Tried again: imported, and the list says so.
+        std::fs::write(&file, &p12).unwrap();
+        w.page = Page::List;
+        w.import(&ctx, import_form(&file, PASSWORD));
+        finish(&mut w);
+        assert!(matches!(w.page, Page::List));
+        let (ok, text) = w.note.clone().unwrap();
+        assert!(
+            ok && text.starts_with("Imported \"Jane Example\""),
+            "{text}"
+        );
+        assert_eq!(w.list.ids.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_export_comes_back_to_its_form() {
+        let dir = scratch("export");
+        let (store, id) = store_with_id(&dir);
+        let mut w = ids_window(store);
+        let ctx = Context::default();
+        const NEW: &str = "a new file password";
+        let form = |kind, password: &str| {
+            Box::new(ExportForm {
+                id: id.clone(),
+                kind,
+                password: Secret(password.into()),
+                fresh: true,
+                new_password: Secret(NEW.into()),
+                again: Secret(NEW.into()),
+                error: None,
+                focus: None,
+            })
+        };
+        let out = dir.join("jane.p12");
+
+        // A wrong password for the ID: said beside it; every password is to be typed again.
+        w.export_key(&ctx, form(ExportKind::Key, "not the password"), out.clone());
+        let Page::Export(f) = running(&w) else {
+            panic!("not exporting")
+        };
+        assert!(f.password.0.is_empty() && f.new_password.0.is_empty() && f.again.0.is_empty());
+        let tree = finish(&mut w);
+        let Page::Export(f) = &w.page else {
+            panic!("not back at the form")
+        };
+        assert!(f.kind == ExportKind::Key && f.fresh && f.id.name == id.name);
+        assert!(f.password.0.is_empty() && f.new_password.0.is_empty() && f.again.0.is_empty());
+        let (field, text) = f.error.clone().unwrap();
+        assert_eq!(field, Field::Password);
+        said_at(&tree, "ID's password", &text);
+        assert!(!out.exists() && w.note.is_none());
+
+        // Nowhere to write it: said at the form's end.
+        let nowhere = dir.join("blocker").join("jane.p12");
+        w.page = Page::List;
+        w.export_key(&ctx, form(ExportKind::Key, PASSWORD), nowhere.clone());
+        finish(&mut w);
+        let Page::Export(f) = &w.page else {
+            panic!("not back at the form")
+        };
+        let (field, text) = f.error.clone().unwrap();
+        assert_eq!(field, Field::Form);
+        assert!(
+            text.ends_with("Type the passwords again to try again."),
+            "{text}"
+        );
+
+        // The certificate alone, nowhere to write it: the form stays too.
+        w.page = Page::List;
+        w.export_certificate(form(ExportKind::Certificate, ""), &nowhere);
+        let Page::Export(f) = &w.page else {
+            panic!("not back at the form")
+        };
+        assert_eq!(f.error.as_ref().map(|e| e.0), Some(Field::Form));
+        assert!(w.note.is_none());
+
+        // Tried again: saved under the new password.
+        w.page = Page::List;
+        w.export_key(&ctx, form(ExportKind::Key, PASSWORD), out.clone());
+        finish(&mut w);
+        assert!(matches!(w.page, Page::List));
+        let (ok, text) = w.note.clone().unwrap();
+        assert!(ok && text.contains("the new password"), "{text}");
+        let back = IdStore::new(dir.join("back"));
+        back.import(&std::fs::read(&out).unwrap(), NEW, None)
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_new_id_comes_back_to_its_form() {
+        let dir = scratch("create");
+        // The store's folder can't be made: the ID is made, then can't be kept.
+        let mut w = ids_window(IdStore::new(dir.join("blocker").join("ids")));
+        let ctx = Context::default();
+        let form = || CreateForm {
+            name: "Jane Example".into(),
+            organisation: "Example Ltd".into(),
+            email: "jane@example.com".into(),
+            password: Secret(PASSWORD.into()),
+            again: Secret(PASSWORD.into()),
+            error: None,
+            focus: None,
+        };
+        w.create(&ctx, form());
+        let Page::Create(f) = running(&w) else {
+            panic!("not making an ID")
+        };
+        assert!(f.password.0.is_empty() && f.again.0.is_empty());
+        let tree = finish(&mut w);
+        let Page::Create(f) = &w.page else {
+            panic!("not back at the form")
+        };
+        assert_eq!(
+            (f.name.as_str(), f.organisation.as_str(), f.email.as_str()),
+            ("Jane Example", "Example Ltd", "jane@example.com")
+        );
+        assert!(f.password.0.is_empty() && f.again.0.is_empty());
+        let (field, text) = f.error.clone().unwrap();
+        assert_eq!(field, Field::Form);
+        assert!(text.starts_with("Making the folder "), "{text}");
+        assert!(
+            text.ends_with("Type the passwords again to try again."),
+            "{text}"
+        );
+        // Shown at the form's end; the keyboard is in Password, to type it again.
+        let password = tree
+            .nodes
+            .iter()
+            .find(|(_, n)| n.label() == Some("Password") && n.description().is_none())
+            .map(|(id, _)| *id);
+        assert_eq!(Some(tree.focus), password);
+        assert!(w.note.is_none());
+
+        // Tried again with somewhere to keep it: made.
+        w.store = Ok(IdStore::new(dir.join("ids")));
+        w.page = Page::List;
+        w.create(&ctx, form());
+        finish(&mut w);
+        assert!(matches!(w.page, Page::List));
+        let (ok, text) = w.note.clone().unwrap();
+        assert!(ok && text.starts_with("Made the digital ID"), "{text}");
+        assert_eq!(w.list.ids.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

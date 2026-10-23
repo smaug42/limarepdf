@@ -69,7 +69,7 @@ pub(crate) fn symbolic_width(base: &str, code: u32) -> Option<f32> {
 }
 
 /// The Windows-1252 code of `c`, from 32 up.
-fn code(c: char) -> Option<usize> {
+pub(crate) fn code(c: char) -> Option<usize> {
     match c as u32 {
         u @ (0x20..=0x7E | 0xA0..=0xFF) => Some(u as usize),
         _ => CP1252_HIGH

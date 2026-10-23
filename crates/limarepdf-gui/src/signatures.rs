@@ -7,7 +7,7 @@
 //! cleaned for display first.
 
 use crate::banners::{self, Banner};
-use crate::dialogs::{self, Btn, Outcome, Shell};
+use crate::dialogs::{self, fact, Btn, Outcome, Shell};
 use crate::theme::{self, Tone};
 use eframe::egui::{self, Context, RichText, Ui};
 use egui_phosphor::regular as icon;
@@ -646,16 +646,6 @@ pub struct DetailsOut {
     pub go_to: Option<(usize, f32)>,
 }
 
-fn row(ui: &mut Ui, label: &str, value: impl Into<String>) {
-    ui.horizontal_top(|ui| {
-        ui.add_sized(
-            [96.0, 16.0],
-            egui::Label::new(RichText::new(label).weak()).halign(egui::Align::Min),
-        );
-        ui.add(egui::Label::new(value.into()).wrap());
-    });
-}
-
 /// The details of signature `i` of `c`'s report, as a window.
 pub fn details(ctx: &Context, doc: &str, c: &Checked, i: usize) -> DetailsOut {
     let mut out = DetailsOut::default();
@@ -676,9 +666,11 @@ pub fn details(ctx: &Context, doc: &str, c: &Checked, i: usize) -> DetailsOut {
                 ui.label(tone_icon(ui, lv.icon(), lv.tone()));
                 ui.add(egui::Label::new(RichText::new(summary(s)).strong()).wrap());
             });
-            ui.add_space(6.0);
             details_body(ui, c, s);
-            ui.add_space(8.0);
+            // What can be done with it, after a rule, as Advanced is in Print.
+            ui.add_space(20.0);
+            ui.add(egui::Separator::default().spacing(0.0));
+            ui.add_space(12.0);
             ui.horizontal_wrapped(|ui| {
                 let valid = s.status == SigStatus::Valid;
                 let trusted_alone = matches!(s.trust, Some(Trust::Signer { .. }));
@@ -747,7 +739,6 @@ pub fn details(ctx: &Context, doc: &str, c: &Checked, i: usize) -> DetailsOut {
 }
 
 fn details_body(ui: &mut Ui, c: &Checked, s: &DigitalSignature) {
-    let stamp = s.kind == SigKind::DocumentTimestamp;
     trust_status_ui(ui, &c.trust);
     let kind = match s.kind {
         SigKind::Approval => "Signature".to_string(),
@@ -757,84 +748,9 @@ fn details_body(ui: &mut Ui, c: &Checked, s: &DigitalSignature) {
                 .to_string()
         }
     };
-    row(ui, "Kind", kind);
-    let fields: Vec<String> = s
-        .fields
-        .iter()
-        .map(|f| format!("\"{}\"", clean(f)))
-        .collect();
-    let page = s
-        .page
-        .map(|p| format!(" on page {}", p + 1))
-        .unwrap_or_default();
-    row(ui, "Field", format!("{}{page}", fields.join(", ")));
-    if let Some(t) = &s.trust {
-        let mut line = trust_text(t);
-        if matches!(t, Trust::Unknown(_)) {
-            let self_made = s.signer.as_ref().is_some_and(|c| c.self_issued);
-            line.push_str(if stamp {
-                " Trust the authority to confirm its timestamps."
-            } else if self_made {
-                " To trust this signer, compare the SHA-256 fingerprint below with them in a \
-                 way you trust (in person, by phone), then choose Trust this signer."
-            } else {
-                " To trust the authority that issued the certificate, choose Trust an \
-                 authority; or trust this signer alone."
-            });
-        }
-        row(ui, "Trust", line);
-    }
-    if let Some(cert) = &s.signer {
-        let mut name = clean(cert.display_name());
-        if let Some(e) = cert
-            .email
-            .as_deref()
-            .filter(|e| Some(*e) != cert.common_name.as_deref())
-        {
-            name.push_str(&format!(" <{}>", clean(e)));
-        }
-        if let Some(o) = cert
-            .organisation
-            .as_deref()
-            .filter(|o| Some(*o) != cert.common_name.as_deref())
-        {
-            name.push_str(&format!(", {}", clean(o)));
-        }
-        row(ui, if stamp { "Authority" } else { "Signed by" }, name);
-        let issuer = if cert.self_issued {
-            "itself (a self-made digital ID)".into()
-        } else {
-            clean(cert.issuer_common_name.as_deref().unwrap_or(&cert.issuer))
-        };
-        row(ui, "Issued by", issuer);
-    }
-    if let Some(t) = &s.time {
-        let from = match t.source {
-            TimeSource::Timestamp => "from a timestamp authority",
-            TimeSource::SignerClock | TimeSource::Dictionary => "from the signer's computer",
-        };
-        row(
-            ui,
-            if stamp { "Time" } else { "Signed at" },
-            format!("{} ({from})", t.time.format(TIME)),
-        );
-    }
-    if let Some(ts) = s.timestamp.as_ref().filter(|_| !stamp) {
-        let trusted = match &ts.trust {
-            Some(t) if t.is_trusted() => " (trusted)".to_string(),
-            Some(Trust::Failed(why)) => format!(" (NOT TRUSTED: {})", clean_long(why)),
-            _ => " (LimarePDF can't confirm this authority)".to_string(),
-        };
-        row(
-            ui,
-            "Timestamp",
-            format!(
-                "{} by {}{trusted}",
-                ts.time.format(TIME),
-                clean(ts.authority.display_name())
-            ),
-        );
-    }
+    dialogs::group(ui, "Signature", |ui| signature_facts(ui, c, s, kind));
+    signer_facts(ui, s);
+    time_facts(ui, s);
     let claims: Vec<(&str, String)> = [
         ("Name", &s.name),
         ("Reason", &s.reason),
@@ -849,78 +765,35 @@ fn details_body(ui: &mut Ui, c: &Checked, s: &DigitalSignature) {
     })
     .collect();
     if !claims.is_empty() {
-        ui.add_space(4.0);
-        ui.label(
-            RichText::new("In the signer's own words (nobody checks these):")
-                .small()
-                .weak(),
-        );
-        for (l, v) in claims {
-            row(ui, l, v);
-        }
-    }
-    ui.add_space(4.0);
-    let mut alg: Vec<String> = Vec::new();
-    if let Some(c) = &s.signer {
-        alg.push(c.key.clone());
-    }
-    alg.extend(s.algorithm.map(String::from));
-    alg.extend(s.digest.map(String::from));
-    if !s.sub_filter.is_empty() {
-        alg.push(clean(&s.sub_filter));
-    }
-    if !alg.is_empty() {
-        row(ui, "Algorithm", alg.join(", "));
-    }
-    if let Some(l) = &s.locks {
-        row(ui, "Locked", lock_text(l));
-    }
-    if let Some(cert) = &s.signer {
-        row(
-            ui,
-            "Certificate",
-            format!(
-                "serial {}, valid {} to {}",
-                cert.serial,
-                cert.not_before.format("%Y-%m-%d"),
-                cert.not_after.format("%Y-%m-%d")
-            ),
-        );
-        row(ui, "SHA-256", cert.sha256.clone());
-    }
-    if let Some(len) = s.signed_len {
-        let what = if s.covers_whole_file {
-            "the whole file".to_string()
-        } else {
-            format!(
-                "{len} of {} bytes; the rest was added later",
-                c.report.file_len
-            )
-        };
-        row(ui, "Signed part", what);
+        dialogs::group(ui, "In the signer's own words", |ui| {
+            ui.label(RichText::new("Nobody checks these.").small().weak());
+            for (l, v) in claims {
+                fact(ui, l, v);
+            }
+        });
     }
     if !s.changes.is_empty() {
-        ui.add_space(6.0);
-        ui.label(RichText::new("Changes after signing").strong());
-        let bad = theme::tone(ui.visuals().dark_mode, Tone::Bad);
-        for ch in &s.changes {
-            let mut t = RichText::new(change_line(ch));
-            if let (false, Some(col)) = (ch.allowed(), bad) {
-                t = t.color(col);
+        dialogs::group(ui, "Changes after signing", |ui| {
+            let bad = theme::tone(ui.visuals().dark_mode, Tone::Bad);
+            for ch in &s.changes {
+                let mut t = RichText::new(change_line(ch));
+                if let (false, Some(col)) = (ch.allowed(), bad) {
+                    t = t.color(col);
+                }
+                ui.add(egui::Label::new(t).wrap());
             }
-            ui.add(egui::Label::new(t).wrap());
-        }
+        });
     }
     if !s.warnings.is_empty() {
-        ui.add_space(6.0);
-        ui.label(RichText::new("Warnings").strong());
-        for w in &s.warnings {
-            let w = clean_long(&w.to_string());
-            ui.add(egui::Label::new(format!("The signature {w}.")).wrap());
-        }
+        dialogs::group(ui, "Warnings", |ui| {
+            for w in &s.warnings {
+                let w = clean_long(&w.to_string());
+                ui.add(egui::Label::new(format!("The signature {w}.")).wrap());
+            }
+        });
     }
     if !s.certificates.is_empty() {
-        ui.add_space(6.0);
+        ui.add_space(dialogs::FIELD_GAP);
         egui::CollapsingHeader::new(format!(
             "Certificates in the signature ({})",
             s.certificates.len()
@@ -929,11 +802,11 @@ fn details_body(ui: &mut Ui, c: &Checked, s: &DigitalSignature) {
         .show(ui, |ui| {
             for cert in &s.certificates {
                 cert_ui(ui, cert);
-                ui.add_space(4.0);
+                ui.add_space(8.0);
             }
         });
     }
-    ui.add_space(6.0);
+    ui.add_space(dialogs::FIELD_GAP);
     ui.add(
         egui::Label::new(
             RichText::new(
@@ -945,6 +818,152 @@ fn details_body(ui: &mut Ui, c: &Checked, s: &DigitalSignature) {
         )
         .wrap(),
     );
+}
+
+/// What the signature is, where, whether its signer is trusted, and what it covers.
+fn signature_facts(ui: &mut Ui, c: &Checked, s: &DigitalSignature, kind: String) {
+    let stamp = s.kind == SigKind::DocumentTimestamp;
+    fact(ui, "Kind", kind);
+    let fields: Vec<String> = s
+        .fields
+        .iter()
+        .map(|f| format!("\"{}\"", clean(f)))
+        .collect();
+    let page = s
+        .page
+        .map(|p| format!(" on page {}", p + 1))
+        .unwrap_or_default();
+    fact(ui, "Field", format!("{}{page}", fields.join(", ")));
+    if let Some(t) = &s.trust {
+        let mut line = trust_text(t);
+        if matches!(t, Trust::Unknown(_)) {
+            let self_made = s.signer.as_ref().is_some_and(|c| c.self_issued);
+            line.push_str(if stamp {
+                " Trust the authority to confirm its timestamps."
+            } else if self_made {
+                " To trust this signer, compare the SHA-256 fingerprint below with them in a \
+                 way you trust (in person, by phone), then choose Trust this signer."
+            } else {
+                " To trust the authority that issued the certificate, choose Trust an \
+                 authority; or trust this signer alone."
+            });
+        }
+        fact(ui, "Trust", line);
+    }
+    if let Some(len) = s.signed_len {
+        let what = if s.covers_whole_file {
+            "the whole file".to_string()
+        } else {
+            format!(
+                "{len} of {} bytes; the rest was added later",
+                c.report.file_len
+            )
+        };
+        fact(ui, "Signed part", what);
+    }
+    if let Some(l) = &s.locks {
+        fact(ui, "Locked", lock_text(l));
+    }
+}
+
+/// Who signed, or which authority stamped: their certificate and how it signed.
+fn signer_facts(ui: &mut Ui, s: &DigitalSignature) {
+    let stamp = s.kind == SigKind::DocumentTimestamp;
+    let mut alg: Vec<String> = Vec::new();
+    if let Some(c) = &s.signer {
+        alg.push(c.key.clone());
+    }
+    alg.extend(s.algorithm.map(String::from));
+    alg.extend(s.digest.map(String::from));
+    if !s.sub_filter.is_empty() {
+        alg.push(clean(&s.sub_filter));
+    }
+    if s.signer.is_none() && alg.is_empty() {
+        return;
+    }
+    dialogs::group(ui, if stamp { "Authority" } else { "Signer" }, |ui| {
+        if let Some(cert) = &s.signer {
+            signer_cert_facts(ui, cert, stamp);
+        }
+        if !alg.is_empty() {
+            fact(ui, "Algorithm", alg.join(", "));
+        }
+    });
+}
+
+/// The signer's certificate: who it names, who issued it, and which it is.
+fn signer_cert_facts(ui: &mut Ui, cert: &CertInfo, stamp: bool) {
+    let mut name = clean(cert.display_name());
+    if let Some(e) = cert
+        .email
+        .as_deref()
+        .filter(|e| Some(*e) != cert.common_name.as_deref())
+    {
+        name.push_str(&format!(" <{}>", clean(e)));
+    }
+    if let Some(o) = cert
+        .organisation
+        .as_deref()
+        .filter(|o| Some(*o) != cert.common_name.as_deref())
+    {
+        name.push_str(&format!(", {}", clean(o)));
+    }
+    fact(ui, if stamp { "Authority" } else { "Signed by" }, name);
+    let issuer = if cert.self_issued {
+        "itself (a self-made digital ID)".into()
+    } else {
+        clean(cert.issuer_common_name.as_deref().unwrap_or(&cert.issuer))
+    };
+    fact(ui, "Issued by", issuer);
+    fact(
+        ui,
+        "Certificate",
+        format!(
+            "serial {}, valid {} to {}",
+            cert.serial,
+            cert.not_before.format("%Y-%m-%d"),
+            cert.not_after.format("%Y-%m-%d")
+        ),
+    );
+    fact(ui, "SHA-256", cert.sha256.clone());
+}
+
+/// When it was signed, and the timestamp that says so.
+fn time_facts(ui: &mut Ui, s: &DigitalSignature) {
+    let stamp = s.kind == SigKind::DocumentTimestamp;
+    let ts = s.timestamp.as_ref().filter(|_| !stamp);
+    if s.time.is_none() && ts.is_none() {
+        return;
+    }
+    dialogs::group(ui, "Time", |ui| {
+        if let Some(t) = &s.time {
+            let from = match t.source {
+                TimeSource::Timestamp => "from a timestamp authority",
+                TimeSource::SignerClock | TimeSource::Dictionary => "from the signer's computer",
+            };
+            fact(
+                ui,
+                if stamp { "Time" } else { "Signed at" },
+                format!("{} ({from})", t.time.format(TIME)),
+            );
+        }
+        if let Some(ts) = ts {
+            let trusted = match &ts.trust {
+                Some(t) if t.is_trusted() => " (trusted)".to_string(),
+                Some(Trust::Failed(why)) => format!(" (NOT TRUSTED: {})", clean_long(why)),
+                _ => " (LimarePDF can't confirm this authority)".to_string(),
+            };
+            fact(
+                ui,
+                "Timestamp",
+                format!(
+                    "{} by {}{trusted}",
+                    ts.time.format(TIME),
+                    clean(ts.authority.display_name())
+                ),
+            );
+        }
+    });
 }
 
 /// A certificate's subject, issuer, validity and fingerprint.
@@ -959,8 +978,8 @@ fn cert_ui(ui: &mut Ui, c: &CertInfo) {
     } else {
         clean(&c.issuer)
     };
-    row(ui, "Issued by", issuer);
-    row(
+    fact(ui, "Issued by", issuer);
+    fact(
         ui,
         "Valid",
         format!(
@@ -974,8 +993,8 @@ fn cert_ui(ui: &mut Ui, c: &CertInfo) {
             }
         ),
     );
-    row(ui, "Key", c.key.clone());
-    row(ui, "SHA-256", c.sha256.clone());
+    fact(ui, "Key", c.key.clone());
+    fact(ui, "SHA-256", c.sha256.clone());
 }
 
 // ------------------------------------------------------------------ trusting
@@ -1044,42 +1063,44 @@ impl TrustAsk {
     fn body(&mut self, ui: &mut Ui) {
         if self.choose_role {
             let ca = self.cert().is_some_and(limarepdf_core::is_authority);
-            ui.radio_value(
-                &mut self.role,
-                TrustRole::Signer,
-                "As a signer: signatures made with this certificate",
-            );
-            ui.add_enabled_ui(ca, |ui| {
+            dialogs::group(ui, "Trust it as", |ui| {
                 ui.radio_value(
                     &mut self.role,
-                    TrustRole::Authority,
-                    "As a certificate authority: also everyone it issued certificates to",
-                )
-                .on_disabled_hover_text("This certificate isn't a certificate authority.");
+                    TrustRole::Signer,
+                    "A signer: signatures made with this certificate",
+                );
+                ui.add_enabled_ui(ca, |ui| {
+                    ui.radio_value(
+                        &mut self.role,
+                        TrustRole::Authority,
+                        "A certificate authority: also everyone it issued certificates to",
+                    )
+                    .on_disabled_hover_text("This certificate isn't a certificate authority.");
+                });
             });
             if !ca {
                 self.role = TrustRole::Signer;
             }
-            ui.add_space(6.0);
         }
-        if self.choices.len() > 1 {
-            ui.label("Choose the certificate:");
-            let before = self.pick;
-            for (k, c) in self.choices.iter().enumerate() {
-                ui.radio_value(&mut self.pick, k, clean(&c.subject));
+        dialogs::group(ui, "Certificate", |ui| {
+            if self.choices.len() > 1 {
+                let before = self.pick;
+                for (k, c) in self.choices.iter().enumerate() {
+                    ui.radio_value(&mut self.pick, k, clean(&c.subject));
+                }
+                if self.pick != before && !self.label_edited {
+                    self.label = self
+                        .cert()
+                        .map(|c| clean(c.display_name()))
+                        .unwrap_or_default();
+                }
+                ui.add_space(dialogs::FIELD_GAP);
             }
-            if self.pick != before && !self.label_edited {
-                self.label = self
-                    .cert()
-                    .map(|c| clean(c.display_name()))
-                    .unwrap_or_default();
+            if let Some(c) = self.cert() {
+                cert_ui(ui, c);
             }
-            ui.add_space(6.0);
-        }
-        if let Some(c) = self.cert() {
-            cert_ui(ui, c);
-        }
-        ui.add_space(6.0);
+        });
+        ui.add_space(dialogs::FIELD_GAP);
         ui.add(
             egui::Label::new(
                 "Anyone can make a certificate with any name. Before trusting it, check this \
@@ -1106,17 +1127,19 @@ impl TrustAsk {
                 .wrap(),
             );
         }
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.label("Name in your list:");
-            if ui.text_edit_singleline(&mut self.label).changed() {
-                self.label_edited = true;
-            }
+        ui.add_space(20.0);
+        let r = dialogs::field(ui, "Name in your list", |ui| {
+            let edit = egui::TextEdit::singleline(&mut self.label).desired_width(f32::INFINITY);
+            ui.add(theme::field(edit))
         });
-        ui.label(RichText::new(TRUST_NOTE).small().weak());
-        if let Some(e) = &self.error {
-            ui.colored_label(ui.visuals().error_fg_color, e);
+        if r.changed() {
+            self.label_edited = true;
         }
+        if let Some(e) = &self.error {
+            ui.add(egui::Label::new(RichText::new(e).color(ui.visuals().error_fg_color)).wrap());
+        }
+        ui.add_space(dialogs::FIELD_GAP);
+        ui.label(RichText::new(TRUST_NOTE).small().weak());
     }
 }
 
@@ -1181,55 +1204,56 @@ impl TrustedWindow {
             )
             .wrap(),
         );
-        ui.add_space(6.0);
         trust_status_ui(ui, &self.status);
         let usable = self.status.error.is_none();
+        ui.add_space(20.0);
         if self.list.entries.is_empty() {
             ui.weak("You don't trust any certificates in LimarePDF yet.");
         }
-        for (i, e) in self.list.entries.iter().enumerate() {
-            ui.add_space(4.0);
-            ui.horizontal_top(|ui| {
-                ui.vertical(|ui| {
-                    let role = match e.role {
-                        TrustRole::Signer => "Signer",
-                        TrustRole::Authority => "Certificate authority",
-                    };
-                    ui.label(RichText::new(clean(&e.label)).strong());
-                    let added = e
-                        .added
-                        .map(|d| format!(", trusted {d}"))
-                        .unwrap_or_default();
-                    ui.label(RichText::new(format!("{role}{added}")).small());
-                    ui.add(
-                        egui::Label::new(RichText::new(clean(&e.cert.subject)).small().weak())
-                            .wrap(),
-                    );
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(format!("SHA-256 {}", e.cert.sha256))
-                                .small()
-                                .weak(),
-                        )
-                        .wrap(),
-                    );
-                });
-                if self.removing == Some(i) {
+        let entries = &self.list.entries;
+        let removing = &mut self.removing;
+        dialogs::list_rows(ui, entries.len(), |ui, i| {
+            let e = &entries[i];
+            let text = |ui: &mut Ui| {
+                let role = match e.role {
+                    TrustRole::Signer => "Signer",
+                    TrustRole::Authority => "Certificate authority",
+                };
+                ui.add(egui::Label::new(RichText::new(clean(&e.label)).strong()).wrap());
+                let added = e
+                    .added
+                    .map(|d| format!(", trusted {d}"))
+                    .unwrap_or_default();
+                ui.label(RichText::new(format!("{role}{added}")).small());
+                ui.add(
+                    egui::Label::new(RichText::new(clean(&e.cert.subject)).small().weak()).wrap(),
+                );
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!("SHA-256 {}", e.cert.sha256))
+                            .small()
+                            .weak(),
+                    )
+                    .wrap(),
+                );
+            };
+            dialogs::list_row(ui, text, |ui| {
+                if *removing == Some(i) {
                     if ui.button("Stop trusting").clicked() {
                         *out = TrustedOut::Remove(i);
                     }
                     if ui.button("Keep").clicked() {
-                        self.removing = None;
+                        *removing = None;
                     }
                 } else if ui
                     .add_enabled(usable, egui::Button::new("Remove…"))
                     .clicked()
                 {
-                    self.removing = Some(i);
+                    *removing = Some(i);
                 }
             });
-        }
-        ui.add_space(8.0);
+        });
+        ui.add_space(dialogs::FIELD_GAP);
         if let Some(p) = &self.path {
             ui.label(
                 RichText::new(format!("{TRUST_NOTE} Kept in {}.", p.display()))
@@ -1450,6 +1474,56 @@ mod tests {
         assert_eq!(b.tone, Tone::Neutral);
         // Text from outside is cleaned: no bidirectional controls.
         assert!(!b.text.contains('\u{202e}'), "{}", b.text);
+    }
+
+    /// Batch 7b: the Trust question in headed groups with "Name in your list" above its
+    /// field, and Signature details' facts in headed groups, each name beside its value,
+    /// with what can be done after them.
+    #[test]
+    fn trust_and_details_follow_the_dialog_look() {
+        use crate::dialogs::{drawn, label_above};
+        use egui::accesskit::{Node, TreeUpdate};
+        let at = |tree: &TreeUpdate, f: &dyn Fn(&Node) -> bool| {
+            let (_, n) = tree.nodes.iter().find(|(_, n)| f(n))?;
+            let b = n.bounds()?;
+            Some(egui::Rect::from_min_max(
+                egui::pos2(b.x0 as f32, b.y0 as f32),
+                egui::pos2(b.x1 as f32, b.y1 as f32),
+            ))
+        };
+        let size = egui::vec2(1200.0, 900.0);
+        let r = report(SELF_MADE, &TrustList::default());
+        let cert = r.signatures[0].signer.clone().expect("a signer");
+        let mut ask = TrustAsk::new(TrustRole::Signer, vec![cert], true);
+        let tree = drawn(size, |ctx| {
+            ask.ui(ctx);
+        });
+        label_above(&tree, "Name in your list").unwrap();
+        let heading = at(&tree, &|n| n.value() == Some("Trust it as")).expect("a heading");
+        let signer = "A signer: signatures made with this certificate";
+        let choice = at(&tree, &|n| n.label() == Some(signer)).expect("the choice");
+        assert!(heading.bottom() <= choice.top());
+
+        let c = Checked {
+            report: r,
+            trust: TrustStatus::default(),
+        };
+        let tree = drawn(size, |ctx| {
+            details(ctx, "walrus.pdf", &c, 0);
+        });
+        let heading = at(&tree, &|n| n.value() == Some("Signer")).expect("Signer");
+        let name = at(&tree, &|n| n.value() == Some("Issued by")).expect("Issued by");
+        let value = "itself (a self-made digital ID)";
+        let value = at(&tree, &|n| n.value() == Some(value)).expect("its value");
+        assert!(heading.bottom() <= name.top());
+        assert!((name.top() - value.top()).abs() < 1.0 && value.left() > name.right());
+        let note = |n: &Node| {
+            let start = "LimarePDF doesn't check whether";
+            n.value().is_some_and(|v| v.starts_with(start))
+        };
+        let note = at(&tree, &note).expect("the revocation note");
+        let button = at(&tree, &|n| n.label() == Some("View signed version")).unwrap();
+        assert!(button.top() > note.bottom());
     }
 
     #[test]

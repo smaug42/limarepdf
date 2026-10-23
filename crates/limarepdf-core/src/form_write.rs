@@ -17,7 +17,7 @@ impl Pdf {
     /// field, `Check` for a checkbox, and for radio groups and choices the export value of
     /// an option (a choice's shown text is accepted too). Read-only fields, push buttons
     /// and signature fields can't be set, and text LimarePDF can't write (characters outside
-    /// Latin-1) is refused rather than saved wrongly.
+    /// the standard fonts' WinAnsi set) is refused rather than saved wrongly.
     pub fn set_field(&mut self, name: &str, value: FieldValue) -> Result<()> {
         let (field, node) = self
             .form_nodes()
@@ -752,7 +752,7 @@ fn check_value(field: &Field, value: FieldValue) -> Result<FieldValue> {
             .find(|&c| !matches!(c, '\n' | '\r' | '?') && winansi_bytes(&c.to_string()) == b"?");
         match bad {
             Some(c) => bail!(
-                "LimarePDF can't write \"{c}\" in a form field yet; only Latin-1 (Western European) \
+                "LimarePDF can't write \"{c}\" in a form field yet; only Western European \
                  characters are supported"
             ),
             None => Ok(()),
