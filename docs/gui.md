@@ -565,9 +565,10 @@ edits:
   it (Shift keeps the proportions). Arrow keys move it by 1 point, or 10 with Shift. A picture or shape covering
   most of the page, such as a scanned page or a background, isn't selected by a click, so that clicking a scan
   doesn't pick it up; the arrow selects it. A drag that starts anywhere else still selects text.
-- **Moving page text:** select the line (double-click it, then Enter), then choose Move or resize text on its
-  floating toolbar, or ☰ > Tools > Select, move and resize objects (the arrow). Text you have just added can be moved straight away, until you select
-  something else.
+- **Moving page text:** select the line (double-click it), then choose Move or resize text on its floating
+  toolbar: the line gets handles, and you drag it or them, or use the arrow keys, with the read tool still on,
+  until you click away or select something else. Text you have just added can be moved straight away in the same
+  way. The arrow (☰ > Tools > Select, move and resize objects) moves any line too.
 
 The arrow (☰ > Tools > Select, move and resize objects) selects any object, page text included:
 

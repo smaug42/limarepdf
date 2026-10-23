@@ -30,7 +30,7 @@
   no line to edit, such as recognised text.
 - The read tool also selects pictures, shapes, comments and marks, with handles to move and resize them; not
   pictures or shapes covering most of the page, such as a scanned page. Page text moves with Move or resize text
-  (on its floating toolbar) or the arrow.
+  (on its floating toolbar), which keeps the read tool on until you click away, or with the arrow.
 - Changes in the inspector apply as you make them, each one an undo step: the Apply text changes, Apply style and
   Apply changes buttons are gone.
 - The font size is a box showing the exact size, with a list of the usual sizes beside it.

@@ -2047,7 +2047,7 @@ impl App {
                 self.open_inspector();
                 self.tabs[self.active].ed.focus_text_field();
             }
-            Act::MoveText => self.tabs[self.active].ed.set_tool_keep_sel(Tool::Select),
+            Act::MoveText => self.tabs[self.active].ed.move_text(),
             Act::SignWith(pick) => {
                 let ed = &mut self.tabs[self.active].ed;
                 ed.set_tool(Tool::Sign);
@@ -4993,6 +4993,98 @@ mod tests {
             .map(|c| c.as_sorted_char_range())
             .map(|r| (r.start.0, r.end.0));
         assert_eq!(picked, Some((12, 16)));
+    }
+
+    /// Move or resize text lets the line move with the read tool, which stays on: a click
+    /// away ends it, with no other tool left behind.
+    #[test]
+    fn move_or_resize_text_stays_in_the_read_tool() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let font = FontChoice::default();
+        assert!(app.tabs[0].edit(&ctx, |p| {
+            p.add_text(0, (100.0, 200.0), "Walrus", font, 20.0, [0.0; 3])
+        }));
+        let mut tree = window(&mut app, &ctx, 1400.0, vec![]);
+        for _ in 0..4 {
+            tree = window(&mut app, &ctx, 1400.0, vec![]);
+        }
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        let k = page.width() / 612.0;
+        let at = |x: f32, y: f32| page.min + egui::vec2(x, y) * k;
+        let mut time = 10.0;
+        let mut frame = |app: &mut App, events| {
+            time += 0.05;
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 800.0),
+                )),
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut f = eframe::Frame::_new_kittest();
+            let mut out = ctx.run_ui(raw, |ui| eframe::App::ui(app, ui, &mut f));
+            out.textures_delta.clear();
+        };
+        let button = |p: egui::Pos2, pressed| egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        // Double-click the line, then Move or resize text.
+        let p = at(130.0, 195.0);
+        frame(&mut app, vec![egui::Event::PointerMoved(p)]);
+        for pressed in [true, false, true, false] {
+            frame(&mut app, vec![button(p, pressed)]);
+        }
+        frame(&mut app, vec![]);
+        assert!(
+            app.tabs[0].ed.typing_on_page(),
+            "the line isn't being edited"
+        );
+        app.act(&ctx, Act::MoveText);
+        frame(&mut app, vec![]);
+        let ed = &app.tabs[0].ed;
+        assert_eq!(ed.tool, Tool::Read);
+        assert!(ed.object_moves() && !ed.typing_on_page());
+        // Dragged 50 points right.
+        frame(
+            &mut app,
+            vec![egui::Event::PointerMoved(p), button(p, true)],
+        );
+        for dx in [10.0, 30.0, 50.0] {
+            let to = p + egui::vec2(dx * k, 0.0);
+            frame(&mut app, vec![egui::Event::PointerMoved(to)]);
+        }
+        frame(&mut app, vec![button(p + egui::vec2(50.0 * k, 0.0), false)]);
+        for _ in 0..2 {
+            frame(&mut app, vec![]);
+        }
+        let x = app.tabs[0].pdf.page_objects(0).unwrap()[0].bbox[0];
+        assert!((x - 150.0).abs() < 0.5, "moved to {x}");
+        assert_eq!(app.tabs[0].ed.tool, Tool::Read);
+        // A click away: still the read tool, and the line no longer moves.
+        for _ in 0..20 {
+            frame(&mut app, vec![]);
+        }
+        let away = at(300.0, 300.0);
+        frame(&mut app, vec![egui::Event::PointerMoved(away)]);
+        frame(&mut app, vec![button(away, true)]);
+        frame(&mut app, vec![button(away, false)]);
+        frame(&mut app, vec![]);
+        let ed = &mut app.tabs[0].ed;
+        assert_eq!(ed.tool, Tool::Read);
+        assert_eq!(ed.sel(), None);
+        ed.select_object(0, 0);
+        assert!(
+            !ed.object_moves(),
+            "page text still moves with the read tool"
+        );
     }
 
     #[test]

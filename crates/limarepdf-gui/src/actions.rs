@@ -575,8 +575,8 @@ pub static ACTIONS: &[Action] = &[
         label: "Move or resize text",
         icon: icon::ARROWS_OUT_CARDINAL,
         enabled: fixed_text,
-        hint: "Move or resize the selected line of page text with the arrow tool. \
-               Choose Read and select text when done.",
+        hint: "Move or resize the selected line of page text: drag it or its handles, \
+               until you select something else.",
         ..BASE
     },
     Action {

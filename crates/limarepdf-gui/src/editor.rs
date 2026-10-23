@@ -1468,6 +1468,19 @@ impl Editor {
         self.selection = sel;
     }
 
+    /// Let the selected line of page text be moved and resized with the read tool, as
+    /// text just added is, until something else is selected (Move or resize text).
+    pub fn move_text(&mut self) {
+        // A line being edited on the page is finished first, what was typed kept.
+        if self.line_edit.take().is_some() {
+            self.commit_insp();
+        }
+        if self.tool != Tool::Read {
+            self.set_tool_keep_sel(Tool::Read);
+        }
+        self.loose = self.sel();
+    }
+
     /// Select object `id` on `page`; nothing, if the page has no such object.
     pub fn select_object(&mut self, page: usize, id: usize) {
         let obj = self.objs.get(&page).and_then(|v| v.get(id));
