@@ -492,7 +492,8 @@ What you select decides what the inspector, the right-click menu and the floatin
 | --- | --- |
 | Nothing | The document: properties, opening view, password security, crop, watermark, headers/footers/Bates, OCR, optimise scanned pages, export pages as images, split into files, and buttons for export text, print and append PDFs |
 | Pages (click thumbnails; Shift for a range, Ctrl for one more) | Rotate, delete, extract to a new tab, insert images or a blank page after them, page labels from the first selected page, and the crop, watermark, headers/footers, OCR and optimise tools with the pages filled in |
-| An object, words, or a tool that adds content | That object's or tool's options |
+| An object, a comment, or a tool that adds content | That object's or tool's options |
+| Words | Nothing of their own: the inspector stays on the document or pages. Copy, highlight, redact, print and save the selection from the floating toolbar (or the docked buttons) and the right-click menu |
 
 Menu commands for document and page settings open the matching section of the inspector.
 

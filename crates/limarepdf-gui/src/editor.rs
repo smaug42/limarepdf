@@ -2886,8 +2886,10 @@ impl Editor {
         }
     }
 
-    /// Whether the inspector shows the editor's section: a selected object or words, or
-    /// a tool that adds content (its options). Otherwise it shows pages or the document.
+    /// Whether the inspector shows the editor's section: a selected object or comment, or
+    /// a tool that adds content (its options). Otherwise it shows pages or the document;
+    /// selected words have no settings of their own (their commands are on the floating or
+    /// docked toolbar and the right-click menu).
     pub fn owns_panel(&self) -> bool {
         matches!(
             self.tool,
@@ -2904,7 +2906,6 @@ impl Editor {
                 | Tool::Sign
                 | Tool::DigitalSign
         ) || self.sel().is_some()
-            || self.selection.words().is_some()
             || self.selection.annot().is_some()
     }
 
@@ -3642,36 +3643,7 @@ impl Editor {
                 return;
             }
             // A selected object shows its properties below.
-            Tool::Select | Tool::Read if self.sel().is_some() => {}
-            Tool::Select => {}
-            Tool::Read => {
-                ui.strong("Selected text");
-                ui.label(
-                    "Drag over words to select them, across pages if you like, Shift+click to \
-                     extend, or press Ctrl+A for the whole page. Ctrl+C copies; right-click to \
-                     print or save the selection. Double-click a line of page text to edit it, \
-                     and click a picture, shape or comment to select, move or resize it.",
-                );
-                ui.separator();
-                match self.selected_text() {
-                    Some(text) => {
-                        let mut shown = text.clone();
-                        ui.add(
-                            egui::TextEdit::multiline(&mut shown)
-                                .desired_rows(6)
-                                .desired_width(f32::INFINITY)
-                                .interactive(false),
-                        );
-                        if ui.button("Copy").clicked() {
-                            ui.ctx().copy_text(text);
-                        }
-                    }
-                    None => {
-                        ui.weak("Nothing selected.");
-                    }
-                }
-                return;
-            }
+            Tool::Select | Tool::Read => {}
         }
 
         let Some(insp) = self.insp.as_mut() else {

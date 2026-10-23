@@ -101,6 +101,9 @@
   to the document, until Add to pages (was Apply). After that, each change updates the one just added, as its own
   undo step, replacing the Update button; Undo steps back through the changes with the settings following. Add
   another stays.
+- Selecting words no longer fills the inspector with instructions, a copy of the selected text and a Copy button;
+  it stays on the document or pages. Copy and the other commands for the selection are on its floating toolbar
+  (or docked buttons), the right-click menu and Ctrl+C.
 
 ### Fixed
 
