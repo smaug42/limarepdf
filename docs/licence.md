@@ -9,10 +9,13 @@ LimarePDF is dual-licensed under MIT or Apache-2.0, at your option. See [LICENSE
   Phosphor's file-pdf icon, drawn by `crates/limarepdf-gui/tools/make_icon.py`.
 - **Interface font:** Inter 4.1 by The Inter Project Authors, SIL Open Font License 1.1, included unmodified; see
   `crates/limarepdf-gui/assets/fonts/`. Release archives include the licence as `FONT-LICENSE-Inter.txt`.
-- **Fonts for text being typed on the page:** the Liberation fonts 2.1.5 (Sans, Serif and Mono, in four styles
+- **Fonts for text typed on the page:** the Liberation fonts 2.1.5 (Sans, Serif and Mono, in four styles
   each) by Red Hat, Inc., with digitized data by Google Corporation, SIL Open Font License 1.1 with the Reserved
-  Font Name "Liberation", included unmodified; see `crates/limarepdf-gui/assets/fonts/`. They are only drawn on
-  screen, never embedded in PDFs. Release archives include the licence as `FONT-LICENSE-Liberation.txt`.
+  Font Name "Liberation", included unmodified; see `crates/limarepdf-core/assets/fonts/`. They draw text while it
+  is typed, and are embedded in PDFs, cut down to the characters used, for text the standard PDF fonts can't
+  write; the licence allows embedding in documents, whole or as a subset. The programs store them compressed and
+  unpack them, unchanged byte for byte, when first used (a test checks each against its released checksum).
+  Release archives include the licence as `FONT-LICENSE-Liberation.txt`.
 - **Handwriting fonts** for typed signatures, included unmodified; see `crates/limarepdf-core/assets/fonts/`: Caveat by
   The Caveat Project Authors, Cedarville Cursive and Zeyada by Kimberly Geswein (SIL Open Font License 1.1), and
   Homemade Apple by Font Diner (Apache License 2.0). They are drawn as shapes and never embedded in PDFs. Release
@@ -50,6 +53,9 @@ These are in the source repository only, never in release archives:
   from them in `crates/limarepdf-core/tests/data/signatures/ids/`, made with OpenSSL by
   `crates/limarepdf-core/tools/make-signature-keys.sh`, are LimarePDF's own, with made-up identities; the keys and passwords are
   public and for tests only.
+- **Test fonts** in `crates/limarepdf-core/tests/data/fonts/`, for the tests of installed fonts written into
+  PDFs: Source Serif 4 by Adobe (with Reserved Font Name "Source") and Cantarell by The Cantarell Authors, SIL Open
+  Font License 1.1, included unmodified with their licences; the folder's README says where each is from.
 - The EU DSS project's samples (LGPL-2.1) are not included: `crates/limarepdf-core/tools/fetch-dss-samples.sh`
   downloads them for an optional test.
 

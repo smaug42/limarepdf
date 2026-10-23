@@ -120,31 +120,9 @@ of the file aren't kept in it.
 
 ## How this was tested
 
-- Redaction: `crates/limarepdf-core/tests/redact.rs` (made-up files: text with kerning and spacing, turned pages, hidden
-  text, alternative text, drawings, pictures with soft masks, JPEG, inline images, shared pictures and forms,
-  unreadable pictures, annotations, redaction marks), and `limarepdf-cli redact` on the PDFs in `/usr/share/doc` (common words
-  removed throughout, renders checked, nothing found by search afterwards) and on a scanned page in three forms
-  (plain, CCITT and JPEG) with a recognised text layer. Since 2026-10-20 (build plan, C2) the tests search the saved
-  output as written, the same way as for removing hidden information below, and check that what touched a mark
-  (comments with their pop-ups and replies, form fields and their drawings, alternative text in the structure tree,
-  thumbnails, private data) is gone. Opt-in cross-checks read the output with poppler (`pdftotext`, and
-  `pdfimages` for a blacked-out picture) and Ghostscript: `cargo test -p limarepdf-core --test redact -- --ignored
-  cross_check`. One of them redacts the Magick++ tutorial from ImageMagick's documentation, a real file whose
-  fonts are subsets, so its text can't be found in the file's bytes and only a reader can show it's gone. Another
-  places an area over a character of a font whose character map leaves codes out, where poppler shows it, and
-  checks with `pdftotext -bbox` that poppler then reads nothing there and the characters around it in their places.
-  Where those characters are was taken from poppler first (since the third outside audit, 2026-10-21), so the
-  tests don't only agree with LimarePDF's own reading.
-- The app's part (the Redact tool, marking selected text and search results, the notice, Apply and its report, the
-  save warning) was used by hand on Linux.
-- Removing hidden information: `crates/limarepdf-core/tests/sanitise.rs` (made-up files for each kind) and `limarepdf-cli sanitise`
-  on the PDFs in `/usr/share/doc`, which have metadata and bookmarks but no scripts, attachments or layers. Its dialog
-  was not clicked through. Since the second outside audit (2026-10-19), each kind's saved output is searched as
-  written, before anything repairs or prunes it: every string form of the removed text in the raw file and in every
-  stream in it, decoded, whether still used or not, with the form fields, actions and layers checked one by one
-  (`tests/common/saved.rs`). Opt-in cross-checks read the output with poppler (`pdftotext`, `pdfinfo -js`) and
-  Ghostscript (`txtwrite`, which draws form fields): `cargo test -p limarepdf-core --test sanitise -- --ignored
-  cross_check`. poppler lists only a field's own scripts, not scripts that follow other actions, so for those the
-  search is the evidence. A refused removal is checked to leave the document, its undo history and its recovery
-  copies as they were.
-- Marks made by LimarePDF were not yet opened in Acrobat or other apps, nor marks made by them applied in LimarePDF.
+Redaction and removing hidden information are tested on made-up files for each case, on public PDFs and on a
+scanned page. The saved file itself is searched for anything removed, and other readers (poppler and Ghostscript)
+are used to confirm it's gone. The Redact tool was used by hand on Linux; the Remove hidden information dialog
+wasn't clicked through. Marks made by LimarePDF haven't yet been opened in Acrobat or other apps, nor marks made
+by them applied in LimarePDF. The full record is in
+[Testing](developer/testing.md#redaction-and-hidden-information).

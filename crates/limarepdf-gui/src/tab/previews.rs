@@ -10,7 +10,7 @@ use crate::inspector::Section;
 use crate::page_text;
 use crate::typing_fonts::{self, Wanted};
 use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
-use limarepdf_core::{parse_page_range, picture_size, today_iso, winansi_byte, FontChoice};
+use limarepdf_core::{parse_page_range, picture_size, today_iso, writable, FontChoice};
 use std::path::PathBuf;
 
 /// How near an edge of the crop box (screen points) the pointer takes it.
@@ -42,10 +42,12 @@ pub(super) struct Previews {
     hf: Vec<usize>,
 }
 
-/// `s` as Helvetica writes it: characters it can't write become `?`.
+/// `s` as Helvetica (or its embedded face) writes it: characters neither can write become
+/// `?`.
 fn written(s: &str) -> String {
+    let helvetica = FontChoice::default();
     s.chars()
-        .map(|c| if winansi_byte(c).is_some() { c } else { '?' })
+        .map(|c| if writable(helvetica, c) { c } else { '?' })
         .collect()
 }
 

@@ -987,7 +987,7 @@ fn a_stamp_with_your_own_wording_is_drawn_in_its_colour_and_unsupported_letters_
     assert_eq!(d.get(b"C").unwrap(), &nums(&StampColor::Green.rgb()));
     assert!(ink(&mut p, [0, 0, 300, 200]).0 > 100, "the stamp is drawn");
     let bad = Stamp::Custom {
-        text: "Ωmega",
+        text: "日本",
         color: StampColor::Red,
         name_and_date: false,
     };

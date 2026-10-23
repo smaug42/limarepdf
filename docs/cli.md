@@ -57,14 +57,15 @@ with the status it would have had otherwise.
 | `limarepdf-cli form fill in.pdf -o out.pdf --set name=Ann --set agree=on` | Fill in fields. Checkboxes take `on` or `off`; a multi-select list takes its choices separated by `\|` |
 | `limarepdf-cli form fill in.pdf -o out.pdf --values values.json` | Fill in fields from a JSON object in the form `limarepdf-cli form list --json` prints, so you can list, edit and fill. A choice can be given by its export value or by the text shown for it. `--set` can be added and is applied after the file |
 | `limarepdf-cli form reset in.pdf -o out.pdf` | Put every field back to its default value |
-| `limarepdf-cli form flatten in.pdf -o out.pdf` | Draw the fields into the pages as they look now and remove them, so the values can't be changed. `--pages 1-3` flattens only those pages; fields elsewhere stay fillable. Refuses, naming the fields, when a shown value has no drawing and LimarePDF can't draw it (text beyond Western European), rather than lose it |
+| `limarepdf-cli form flatten in.pdf -o out.pdf` | Draw the fields into the pages as they look now and remove them, so the values can't be changed. `--pages 1-3` flattens only those pages; fields elsewhere stay fillable. Refuses, naming the fields, when a shown value has no drawing and LimarePDF can't draw it (text beyond Latin, Greek and Cyrillic), rather than lose it |
 | `limarepdf-cli form fill in.pdf -o out.pdf --values values.json --flatten` | Fill in, then flatten |
 
 Filling checks every value first: an unknown field name, a read-only field, text too long for the field, a line
 break in a single-line field, or an option the field doesn't have stops it before anything is written. LimarePDF draws
-each filled field itself, so the values show in every reader. Field text must be Western European for
+each filled field itself, so the values show in every reader. Field text must be Latin, Greek or Cyrillic for
 now; other characters are refused rather than written wrongly. When the field's own font can't show the text, LimarePDF
-uses the closest standard font (Helvetica, Times or Courier). Password fields are drawn as `*` and their value is
+uses the closest standard font (Helvetica, Times or Courier), or for characters those lack, its Liberation face,
+embedded in the file; the field keeps naming its own font, which other apps use when they draw it themselves. Password fields are drawn as `*` and their value is
 not kept in the file, as the PDF standard asks. Forms that need JavaScript to calculate or check values are filled,
 but their scripts don't run.
 
@@ -164,13 +165,17 @@ See [Scanning and OCR](scanning-and-ocr.md) for what these do.
 | Command | What it does |
 | --- | --- |
 | `limarepdf-cli stamp in.pdf -o out.pdf --kind approved --date --author "Sam Lee"` | Put an Approved stamp, with a name-and-date line, in the top right corner of page 1; kinds are `approved`, `not-approved`, `draft`, `final`, `confidential`, `for-comment` and `void` |
-| `limarepdf-cli stamp in.pdf -o out.pdf --text "Paid in full" --color green` | Put a stamp with your own wording (shown in capitals) in the top right corner of page 1; colours are `green`, `red` (the default) and `blue`; Western European characters only; `--date` and `--author` work as with `--kind` |
+| `limarepdf-cli stamp in.pdf -o out.pdf --text "Paid in full" --color green` | Put a stamp with your own wording (shown in capitals) in the top right corner of page 1; colours are `green`, `red` (the default) and `blue`; Latin, Greek and Cyrillic characters; `--date` and `--author` work as with `--kind` |
 | `limarepdf-cli stamp in.pdf -o out.pdf --image seal.png --pages all --at 300,700 --scale 50` | Put a picture stamp on every page, centred 300 points from the left and 700 from the top, at half its own size (longer side 160 points) |
-| `limarepdf-cli stamp in.pdf -o out.pdf --pages 3 --at 400,650 --signature "Sam Lee" --date` | Sign page 3 with a typed signature in handwriting, centred at that point, with today's date under it; `--style` picks the handwriting (1 Caveat, the default; 2 Cedarville Cursive; 3 Homemade Apple; 4 Zeyada), `--color blue` for blue ink. It fits 150 by 50 points (`--scale` changes that). Western European characters only. A picture of your signature works with `--image`. This is not a digital signature: see [Filling and signing](gui.md#filling-and-signing) |
+| `limarepdf-cli stamp in.pdf -o out.pdf --pages 3 --at 400,650 --signature "Sam Lee" --date` | Sign page 3 with a typed signature in handwriting, centred at that point, with today's date under it; `--style` picks the handwriting (1 Caveat, the default; 2 Cedarville Cursive; 3 Homemade Apple; 4 Zeyada), `--color blue` for blue ink. It fits 150 by 50 points (`--scale` changes that). Latin characters (Caveat has Cyrillic too); a name a style can't show is refused, naming the styles that can. A picture of your signature works with `--image`. This is not a digital signature: see [Filling and signing](gui.md#filling-and-signing) |
 | `limarepdf-cli watermark in.pdf -o out.pdf --text CONFIDENTIAL --opacity 0.3` | Add a text watermark |
 | `limarepdf-cli watermark in.pdf -o out.pdf --image logo.png --scale 40 --background` | Add a picture watermark, fitted inside 40% of the page, behind the content |
 | `limarepdf-cli header-footer in.pdf -o out.pdf --footer-center "Page {page} of {pages}" --header-right "{date}"` | Add headers and footers; tokens `{page}`, `{pages}`, `{date}`, `{bates}` |
 | `limarepdf-cli bates in.pdf -o out.pdf --prefix ACME- --digits 6` | Bates-number the pages |
+
+Watermark, header, footer and Bates text is Helvetica, and stamp wording Helvetica Bold; characters they lack
+(Polish, Czech, Vietnamese, Greek, Cyrillic and so on) are written in the matching Liberation face, embedded in
+the file. Other scripts (Hebrew, Arabic, Chinese and so on) are refused, with nothing written.
 
 ## Redaction
 

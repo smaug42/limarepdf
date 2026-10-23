@@ -552,6 +552,7 @@ impl App {
     ) -> Self {
         theme::install(&cc.egui_ctx);
         cc.egui_ctx.set_theme(settings.theme);
+        crate::font_list::warm(&cc.egui_ctx);
         let mut app = Self::with(settings, Recent::load());
         app.start_recovery(&cc.egui_ctx, files, page);
         app
@@ -4995,7 +4996,7 @@ mod tests {
         let typed = vec![
             egui::Event::Text("Walrus".into()),
             key(Key::Enter, none),
-            egui::Event::Text("Seal Ω".into()),
+            egui::Event::Text("Seal 中".into()),
             key(Key::B, egui::Modifiers::COMMAND),
         ];
         window(&mut app, &ctx, 1400.0, typed);
@@ -5014,10 +5015,9 @@ mod tests {
         };
         assert!(lines(&app).is_empty());
         tree = window(&mut app, &ctx, 1400.0, vec![]);
+        let note = "Helvetica can't write this character; choose an installed font that has it";
         assert!(
-            tree.nodes
-                .iter()
-                .any(|(_, n)| n.value() == Some(page_text::REFUSED)),
+            tree.nodes.iter().any(|(_, n)| n.value() == Some(note)),
             "no note about the refused character"
         );
         // Bold switched off in the inspector applies to the text being typed, which takes
@@ -5087,6 +5087,79 @@ mod tests {
         // One step: Undo takes both lines back.
         app.act(&ctx, Act::Undo);
         assert!(lines(&app).is_empty());
+    }
+
+    /// The Unicode text design, section 7: an installed family is found by searching the
+    /// font list, Bold and Italic are off for faces it lacks, and text typed in it is
+    /// written in it, refusing what it lacks with a note naming it.
+    #[test]
+    fn installed_fonts_are_chosen_from_the_list_and_written_in() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let serif = crate::font_list::test_family("Source Serif 4");
+        // The installed fonts read, as at start.
+        limarepdf_core::typefaces();
+        let mut app = app_with(&ctx, 1);
+        app.act(&ctx, Act::Tool(Tool::Text));
+        click_named(&mut app, &ctx, "Font");
+        settled_at(&mut app, &ctx, 1400.0);
+        assert!(egui::Popup::is_any_open(&ctx), "the list isn't open");
+        let enter = key_with(Key::Enter, egui::Modifiers::NONE);
+        window(
+            &mut app,
+            &ctx,
+            1400.0,
+            vec![egui::Event::Text("source serif".into())],
+        );
+        window(&mut app, &ctx, 1400.0, vec![enter]);
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert_eq!(app.tabs[0].ed.tfont.family, serif);
+        assert!(!egui::Popup::is_any_open(&ctx), "the list stays open");
+        let font = tree.nodes.iter().find(|(_, n)| n.label() == Some("Font"));
+        assert_eq!(font.and_then(|(_, n)| n.value()), Some("Source Serif 4"));
+        // Source Serif 4 here is regular only.
+        for name in ["Bold", "Italic"] {
+            let n = tree.nodes.iter().find(|(_, n)| n.label() == Some(name));
+            assert!(n.is_some_and(|(_, n)| n.is_disabled()), "{name} is on");
+        }
+
+        // Typed on the page: what it has is written in it, embedded.
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        let k = page.width() / 612.0;
+        let at = |x: f32, y: f32| page.min + egui::vec2(x, y) * k;
+        let click = |p: egui::Pos2| {
+            let press = |pressed| egui::Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            vec![egui::Event::PointerMoved(p), press(true), press(false)]
+        };
+        window(&mut app, &ctx, 1400.0, click(at(100.0, 200.0)));
+        settled_at(&mut app, &ctx, 1400.0);
+        window(
+            &mut app,
+            &ctx,
+            1400.0,
+            vec![egui::Event::Text("Zażółć 中".into())],
+        );
+        let tree = window(&mut app, &ctx, 1400.0, vec![]);
+        let note = limarepdf_core::refusal(app.tabs[0].ed.tfont, "中");
+        assert!(note.starts_with("Source Serif 4 has no"), "{note}");
+        assert!(
+            tree.nodes
+                .iter()
+                .any(|(_, n)| n.value() == Some(note.as_str())),
+            "no note naming the font"
+        );
+        window(&mut app, &ctx, 1400.0, click(at(300.0, 300.0)));
+        settled_at(&mut app, &ctx, 1400.0);
+        let objs = app.tabs[0].pdf.page_objects(0).unwrap();
+        let line = objs.iter().find(|o| o.text.as_deref() == Some("Zażółć"));
+        let font = line.and_then(|o| o.font_name.clone()).unwrap_or_default();
+        assert!(font.ends_with("+SourceSerif4-Regular"), "{font:?}");
     }
 
     #[test]
@@ -5271,7 +5344,7 @@ mod tests {
         assert!(c.r() < 8 && c.g() < 8 && c.b() > 247, "{c:?}");
         // Typing, a character that can't be written, and Ctrl+B for the whole line.
         let typed = vec![
-            egui::Event::Text("XΩ".into()),
+            egui::Event::Text("X中".into()),
             key(Key::B, egui::Modifiers::COMMAND),
         ];
         window(&mut app, &ctx, 1400.0, typed);
@@ -5281,10 +5354,9 @@ mod tests {
             n.and_then(|(_, n)| n.value().map(str::to_string))
         };
         assert_eq!(value(&tree).as_deref(), Some("WalXrus"));
+        let note = "Courier can't write this character; choose an installed font that has it";
         assert!(
-            tree.nodes
-                .iter()
-                .any(|(_, n)| n.value() == Some(page_text::REFUSED)),
+            tree.nodes.iter().any(|(_, n)| n.value() == Some(note)),
             "no note about the refused character"
         );
         let line = |app: &App| {
@@ -5314,6 +5386,122 @@ mod tests {
         app.act(&ctx, Act::Undo);
         let (text, font, _) = line(&app).expect("the line");
         assert_eq!((text.as_str(), font.as_str()), ("Walrus", "Courier"));
+    }
+
+    /// The inspector's font list and Bold change a line being edited on the page, which
+    /// stays open and takes the keyboard back; the inspector's own text box doesn't
+    /// appear above the list (reported 2026-10-23). Both are kept with the typing.
+    #[test]
+    fn the_inspector_changes_a_line_being_edited_without_ending_it() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let courier = FontChoice::from_name("Courier");
+        assert!(app.tabs[0].edit(&ctx, |p| {
+            p.add_text(0, (100.0, 200.0), "Walrus", courier, 40.0, [0.0; 3])
+        }));
+        // Frames a twentieth of a second apart, as double-clicks and lists need.
+        let time = std::cell::Cell::new(10.0);
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            time.set(time.get() + 0.05);
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 800.0),
+                )),
+                time: Some(time.get()),
+                events,
+                ..Default::default()
+            };
+            let mut f = eframe::Frame::_new_kittest();
+            let mut out = ctx.run_ui(raw, |ui| eframe::App::ui(app, ui, &mut f));
+            out.textures_delta.clear();
+            out.platform_output.accesskit_update.expect("the window")
+        };
+        let mut tree = frame(&mut app, vec![]);
+        for _ in 0..4 {
+            tree = frame(&mut app, vec![]);
+        }
+        let name = "Editing text: Walrus";
+        let editing = |tree: &egui::accesskit::TreeUpdate| node(tree, name).map(|(_, f)| f);
+        let text_box = |tree: &egui::accesskit::TreeUpdate| {
+            tree.nodes
+                .iter()
+                .any(|(_, n)| n.label() == Some("Text") && n.value().is_some())
+        };
+        // A click as the system sends it: a move, a press and a release, a frame each. While
+        // the line is edited, each frame keeps it open, without the inspector's text box.
+        let tap = |app: &mut App, p: egui::Pos2, editing_line: bool| {
+            for e in [
+                egui::Event::PointerMoved(p),
+                press(p, true),
+                press(p, false),
+            ] {
+                let t = frame(app, vec![e]);
+                if editing_line {
+                    assert!(editing(&t).is_some(), "the line stopped being edited");
+                    assert!(!text_box(&t), "the inspector's text box appeared");
+                }
+            }
+        };
+        // A double-click on the line with the read tool edits it; type over the word.
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        let k = page.width() / 612.0;
+        let p = page.min + egui::vec2(160.0, 190.0) * k;
+        frame(&mut app, vec![egui::Event::PointerMoved(p)]);
+        for _ in 0..2 {
+            frame(&mut app, vec![press(p, true)]);
+            frame(&mut app, vec![press(p, false)]);
+        }
+        for _ in 0..3 {
+            tree = frame(&mut app, vec![]);
+        }
+        assert_eq!(
+            editing(&tree),
+            Some(true),
+            "the line editor doesn't have the keyboard"
+        );
+        frame(&mut app, vec![egui::Event::Text("Seal".into())]);
+        tree = frame(&mut app, vec![]);
+        // Bold, then Times from the font list.
+        let (bold, _) = node(&tree, "Bold").expect("the inspector's Bold");
+        tap(&mut app, bold.center(), true);
+        for _ in 0..3 {
+            tree = frame(&mut app, vec![]);
+        }
+        assert_eq!(editing(&tree), Some(true), "the keyboard didn't come back");
+        let (font, _) = node(&tree, "Font").expect("the inspector's font list");
+        tap(&mut app, font.center(), true);
+        tree = frame(&mut app, vec![]);
+        assert!(egui::Popup::is_any_open(&ctx), "the font list isn't open");
+        assert!(editing(&tree).is_some() && !text_box(&tree));
+        let (times, _) = node(&tree, "Times").expect("Times in the font list");
+        tap(&mut app, times.center(), true);
+        for _ in 0..3 {
+            tree = frame(&mut app, vec![]);
+            assert!(!text_box(&tree), "the inspector's text box appeared");
+        }
+        assert_eq!(editing(&tree), Some(true), "the keyboard didn't come back");
+        // Typing goes on; Esc keeps the text and the style together.
+        frame(&mut app, vec![egui::Event::Text("s".into())]);
+        let esc = egui::Event::Key {
+            key: Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut app, vec![esc]);
+        for _ in 0..2 {
+            frame(&mut app, vec![]);
+        }
+        let objs = app.tabs[0].pdf.page_objects(0).unwrap();
+        let line = objs
+            .into_iter()
+            .find_map(|o| Some((o.text?, o.font_name?)))
+            .expect("the line");
+        assert_eq!((line.0.as_str(), line.1.as_str()), ("Seals", "Times-Bold"));
     }
 
     #[test]
@@ -5867,6 +6055,354 @@ mod tests {
         ];
         want.extend(footer("Use signature"));
         assert_eq!(tab_walk(&mut app, &ctx, 1200.0, want.len()), want);
+    }
+
+    /// Draws the dialog open in `app` on a screen `size` points big, at `scale` pixels per
+    /// point, with `events`; returns its widgets.
+    fn dialog_frame(
+        app: &mut App,
+        ctx: &egui::Context,
+        size: egui::Vec2,
+        scale: f32,
+        events: Vec<egui::Event>,
+    ) -> egui::accesskit::TreeUpdate {
+        let mut raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+            events,
+            ..Default::default()
+        };
+        raw.viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .native_pixels_per_point = Some(scale);
+        let mut out = ctx.run_ui(raw, |ui| app.dialogs(ui.ctx()));
+        out.textures_delta.clear();
+        out.platform_output
+            .accesskit_update
+            .expect("the dialog's widgets")
+    }
+
+    /// The `i`th of the app's questions and messages, with long texts where they can come
+    /// from the document or the system: its title, the buttons it shows, and the dialog.
+    fn question(app: &App, long: &str, i: usize) -> Option<(String, Vec<&'static str>, Dialog)> {
+        let two = |yes| vec![yes, "Cancel"];
+        let printer = || print::Printer {
+            name: format!("printer-{long}"),
+            default: true,
+        };
+        let q = match i {
+            0 => (
+                "Couldn't save".into(),
+                vec!["OK", "Copy"],
+                Dialog::Message(
+                    "Couldn't save".into(),
+                    format!("The folder /home/sam/{long} can't be written to. {long}"),
+                ),
+            ),
+            1 => (
+                "Close without saving?".into(),
+                two("Discard changes"),
+                Dialog::ConfirmClose(app.asked()),
+            ),
+            2 => (
+                "Quit without saving?".into(),
+                two("Quit without saving"),
+                Dialog::ConfirmQuit,
+            ),
+            3 => (
+                "Replace files?".into(),
+                two("Replace"),
+                Dialog::ConfirmReplace(
+                    app.asked(),
+                    ImageExport {
+                        pages: vec![0, 1],
+                        dpi: 150.0,
+                        format: ImageFormat::Png,
+                        dir: PathBuf::from(format!("/home/sam/{long}")),
+                        stem: long.into(),
+                    },
+                    2,
+                ),
+            ),
+            4 => (
+                "Flatten form?".into(),
+                two("Flatten form"),
+                Dialog::ConfirmFlatten(app.asked()),
+            ),
+            5 => (
+                "Flatten annotations?".into(),
+                two("Flatten annotations"),
+                Dialog::ConfirmFlattenAnnots(app.asked()),
+            ),
+            6 => (
+                "Break the signatures?".into(),
+                vec!["Details", "Save anyway", "Cancel"],
+                Dialog::ConfirmSaveSigned(app.asked(), false, long.into()),
+            ),
+            7 => (
+                "Replace the damaged original?".into(),
+                vec!["Save as…", "Replace original", "Cancel"],
+                Dialog::ConfirmSaveRepaired(app.asked()),
+            ),
+            8 => (
+                "Save changes the signers didn't allow?".into(),
+                vec!["Details", "Save anyway", "Cancel"],
+                Dialog::ConfirmSaveDisallowed(Box::new(SaveDisallowed {
+                    as_new: false,
+                    asked: app.asked(),
+                    bytes: Vec::new(),
+                    disallowed: limarepdf_core::DisallowedChanges {
+                        signers: vec![(format!("\"{long}\""), vec![long.into(); 3])],
+                    },
+                })),
+            ),
+            9 => (
+                "Apply 3 redactions?".into(),
+                two("Apply redactions"),
+                Dialog::ConfirmApplyRedactions(app.asked(), 3),
+            ),
+            10 => (
+                "Finish signing?".into(),
+                two("Finish signing"),
+                Dialog::ConfirmFinishSigning(app.asked(), 2),
+            ),
+            11 => (
+                "Remove hidden information".into(),
+                two("Remove"),
+                Dialog::RemoveHidden(
+                    app.asked(),
+                    dlg::RemoveHidden {
+                        kinds: limarepdf_core::Hidden::ALL
+                            .iter()
+                            .map(|&h| (h, 2, true))
+                            .collect(),
+                    },
+                ),
+            ),
+            12 => (
+                "Save without applying the redactions?".into(),
+                two("Save with marks"),
+                Dialog::ConfirmSaveMarks(app.asked(), false, 2),
+            ),
+            13 => (
+                "Print".into(),
+                two("Print"),
+                Dialog::Print(
+                    app.asked(),
+                    Box::new(dlg::Print::new(vec![printer()], "test.pdf".into())),
+                ),
+            ),
+            14 => (
+                "Print without these fields?".into(),
+                two("Print anyway"),
+                Dialog::ConfirmPrintFields(Box::new(PrintFields {
+                    asked: app.asked(),
+                    fields: (0..30).map(|i| format!("Field {i} {long}")).collect(),
+                    pages: vec![0],
+                    opts: print::PrintOptions {
+                        printer: Some(printer().name),
+                        copies: 1,
+                        sides: print::Sides::One,
+                        as_image: false,
+                        title: "test".into(),
+                    },
+                })),
+            ),
+            15 => (
+                "Save selected text".into(),
+                two("Save…"),
+                Dialog::SaveSelection(app.asked(), dlg::Layout::Original),
+            ),
+            16 => (
+                "Open link?".into(),
+                two("Open link"),
+                Dialog::OpenLink(format!("https://example.com/{long}")),
+            ),
+            17 => (
+                "Your name for comments".into(),
+                two("Save"),
+                Dialog::CommentName(long.into()),
+            ),
+            18 => (
+                "About LimarePDF".into(),
+                vec!["Close"],
+                Dialog::About(about::Page::Main),
+            ),
+            19 => (
+                "Recovery copy left over".into(),
+                vec!["OK", "Show file"],
+                Dialog::RecoveryFile {
+                    title: "Recovery copy left over".into(),
+                    text: format!("A copy in /home/sam/{long} couldn't be removed. {long}"),
+                    file: PathBuf::from(format!("/home/sam/{long}")),
+                },
+            ),
+            20 => (
+                "Break the signatures?".into(),
+                vec!["Details", "Sign anyway", "Cancel"],
+                Dialog::ConfirmSignRecovered(app.asked()),
+            ),
+            21 => (
+                "Password required".into(),
+                two("Open"),
+                Dialog::Password(dlg::Password {
+                    path: PathBuf::from(format!("/home/sam/{long}.pdf")),
+                    input: String::new(),
+                    error: Some(format!("That isn't the password. {long}")),
+                }),
+            ),
+            _ => return None,
+        };
+        Some(q)
+    }
+
+    /// G08: a menu open when a dialog opens by a shortcut (Page layout's, here) closes,
+    /// instead of showing over the dimmed window.
+    #[test]
+    fn a_menu_open_behind_closes_when_a_dialog_opens() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let tree = settled_at(&mut app, &ctx, 400.0);
+        let (at, _) = node(&tree, "Page layout").expect("the layout button");
+        let press = |pressed| egui::Event::PointerButton {
+            pos: at.center(),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        window(
+            &mut app,
+            &ctx,
+            400.0,
+            vec![egui::Event::PointerMoved(at.center()), press(true)],
+        );
+        window(&mut app, &ctx, 400.0, vec![press(false)]);
+        settled_at(&mut app, &ctx, 400.0);
+        assert!(egui::Popup::is_any_open(&ctx), "the menu didn't open");
+        app.act(&ctx, Act::About);
+        settled_at(&mut app, &ctx, 400.0);
+        assert!(matches!(app.dialog, Dialog::About(_)));
+        assert!(!egui::Popup::is_any_open(&ctx), "the menu stayed open");
+    }
+
+    /// G08: every question and message the app asks, wide, narrow and short, at each scale,
+    /// with long names and texts: inside the screen with its title and buttons in view and
+    /// no text past its sides; every control clearly named; Enter as it opens answering
+    /// nothing (but in a dialog's only field); Tab reaching each button; and Esc closing it
+    /// without acting.
+    #[test]
+    fn every_question_fits_and_is_answered_from_the_keyboard() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let long = "a-name-far-too-long-to-fit-on-one-line-of-a-dialog-".repeat(4);
+        app.tabs[0].path = Some(PathBuf::from(format!("/home/sam/{long}.pdf")));
+        let state = app.tabs[0].state();
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let rect = |b: egui::accesskit::Rect| {
+            egui::Rect::from_min_max(
+                egui::pos2(b.x0 as f32, b.y0 as f32),
+                egui::pos2(b.x1 as f32, b.y1 as f32),
+            )
+        };
+        let sizes = [
+            (1200.0, 800.0),
+            (400.0, 800.0),
+            (1200.0, 300.0),
+            (400.0, 300.0),
+        ];
+        for i in 0.. {
+            let Some((title, _, _)) = question(&app, &long, i) else {
+                assert_eq!(i, 22, "a question was left out");
+                break;
+            };
+            for (size, scale) in sizes
+                .iter()
+                .flat_map(|&s| [1.0, 1.5, 2.0].map(move |k| (egui::Vec2::from(s), k)))
+            {
+                let at = format!("{title} at {size:?}, scale {scale}");
+                let (_, buttons, dialog) = question(&app, &long, i).unwrap();
+                if let Some(id) = ctx.memory(|m| m.focused()) {
+                    ctx.memory_mut(|m| m.surrender_focus(id));
+                }
+                app.dialog = dialog;
+                let one_field = matches!(app.dialog, Dialog::Password(_) | Dialog::CommentName(_));
+                let mut tree = dialog_frame(&mut app, &ctx, size, scale, vec![]);
+                for _ in 0..4 {
+                    tree = dialog_frame(&mut app, &ctx, size, scale, vec![]);
+                }
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size).expand(0.5);
+                let window = ctx.memory(|m| m.top_modal_layer().and_then(|l| m.area_rect(l.id)));
+                let window = window.unwrap_or_else(|| panic!("{at}: no window"));
+                assert!(screen.contains_rect(window), "{at}: window {window:?}");
+                let inside = window.expand(0.5);
+                // Text shown as is: a one-line field scrolls what it holds within itself.
+                for (_, n) in &tree.nodes {
+                    let (Some(text), Some(b)) = (n.value(), n.bounds()) else {
+                        continue;
+                    };
+                    if n.role() != egui::accesskit::Role::Label {
+                        continue;
+                    }
+                    let r = rect(b);
+                    let across = r.left() >= inside.left() && r.right() <= inside.right();
+                    assert!(across, "{at}: {text:?} at {r:?} past {window:?}");
+                }
+                let shown = |name: &str| {
+                    let n = tree
+                        .nodes
+                        .iter()
+                        .find(|(_, n)| n.label() == Some(name) || n.value() == Some(name));
+                    n.and_then(|(_, n)| n.bounds()).map(rect)
+                };
+                let t = shown(&title).unwrap_or_else(|| panic!("{at}: no title"));
+                assert!(inside.contains_rect(t), "{at}: title {t:?}");
+                for b in &buttons {
+                    let r = shown(b).unwrap_or_else(|| panic!("{at}: no {b}"));
+                    assert!(inside.contains_rect(r), "{at}: {b} at {r:?}");
+                }
+                assert_eq!(dlg::unclear_names(&tree), [""; 0], "{at}");
+
+                if !one_field {
+                    dialog_frame(&mut app, &ctx, size, scale, vec![key(Key::Enter)]);
+                    assert!(!matches!(app.dialog, Dialog::None), "{at}: Enter answered");
+                }
+                let mut reached = Vec::new();
+                for _ in 0..buttons.len() + 12 {
+                    let tree = dialog_frame(&mut app, &ctx, size, scale, vec![key(Key::Tab)]);
+                    let focus = tree.nodes.iter().find(|(id, _)| *id == tree.focus);
+                    if let Some(name) = focus.and_then(|(_, n)| n.label()) {
+                        reached.push(name.to_string());
+                    }
+                }
+                for b in &buttons {
+                    assert!(reached.iter().any(|r| r == b), "{at}: Tab missed {b}");
+                }
+                // Tab may have opened Details; Esc closes the dialog all the same.
+                if let Some(id) = ctx.memory(|m| m.focused()) {
+                    ctx.memory_mut(|m| m.surrender_focus(id));
+                }
+                dialog_frame(&mut app, &ctx, size, scale, vec![key(Key::Escape)]);
+                assert!(
+                    matches!(app.dialog, Dialog::None),
+                    "{at}: Esc didn't close it"
+                );
+                assert_eq!(app.tabs.len(), 1, "{at}");
+                assert!(
+                    app.tabs[0].state() == state && !app.quit_ok,
+                    "{at}: Esc acted"
+                );
+            }
+        }
     }
 
     #[test]
@@ -6440,6 +6976,21 @@ mod tests {
             objs.into_iter().filter_map(|o| o.text).collect()
         };
         assert!(lines(&app).is_empty());
+        // A character Helvetica can't write isn't typed, and as a watermark can't be set
+        // in an installed font, the note doesn't point to one.
+        let field = egui::Id::new(("stamp-text", "Text"));
+        ctx.memory_mut(|m| m.request_focus(field));
+        window(&mut app, &ctx, 1400.0, vec![]);
+        window(&mut app, &ctx, 1400.0, vec![egui::Event::Text("中".into())]);
+        let typed = window(&mut app, &ctx, 1400.0, vec![]);
+        assert!(
+            typed
+                .nodes
+                .iter()
+                .any(|(_, n)| n.value() == Some(page_text::REFUSED)),
+            "no note about the refused character"
+        );
+        assert_eq!(app.tabs[0].forms.wm.text, "DRAFT");
         let add = middle(&tree, "Add to pages");
         window(&mut app, &ctx, 1400.0, click_at(add));
         let tree = settle(&mut app, &ctx);

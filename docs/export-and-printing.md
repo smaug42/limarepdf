@@ -41,7 +41,7 @@ form.
 
 A filled field with no drawing of its own is drawn by LimarePDF when printed, however the pages are sent (as a PDF,
 as images, or on Windows). On every system, a filled field meant for printing that has no drawing of its own, and
-whose text LimarePDF can't draw (characters beyond Western European, filled in by an app that left the drawing to the reader), would come out
+whose text LimarePDF can't draw (characters beyond Latin, Greek and Cyrillic, filled in by an app that left the drawing to the reader), would come out
 empty. Print names those fields and asks first (Print anyway); `limarepdf-cli print` names them and sends nothing
 (it has no way to print anyway: open the file in the app for that).
 
@@ -56,16 +56,7 @@ Not yet available: paper size, scaling, colour and printer-specific options. The
 
 ## How this was tested
 
-- Export: `crates/limarepdf-core/tests/export.rs` (sizes, content, re-import, names) and by running the CLI.
-- Printing: `crates/limarepdf-core/tests/print.rs`, with a stand-in for `lp` (its arguments, the document it receives, and
-  errors), and against a real CUPS with no printers (error messages). The Windows page placement and rotation are
-  unit-tested.
-- On paper on Linux, with an HP LaserJet P1606dn through CUPS (October 2026): pages, mixed A4 and Letter pages, a
-  turned page, comments and filled form fields print correctly. Getting there took three fixes, each for a way
-  CUPS handles PDFs on that setup that other PDFs sent with `lp` suffer from too: the job must name the paper
-  size, or every page prints blurred; comments are added after the page's content without resetting the drawing
-  state, so they came out upside down on pages that leave it turned; and form fields are removed without being
-  drawn. The last two were reproduced without a printer through CUPS's own `cupsfilter`
-  ([Testing](testing.md#acceptance-checks)).
-- On Windows only the print dialog has been tried; nothing has been printed on paper. Nothing has been printed on
-  macOS.
+Export and printing have automated tests. On paper, printing has been tried on Linux, with an HP laser printer
+through CUPS: pages, mixed A4 and Letter pages, a turned page, comments and filled form fields print correctly. On
+Windows only the print dialog has been tried, and nothing has been printed on macOS. The full record is in
+[Testing](developer/testing.md#export-and-printing).

@@ -1,7 +1,7 @@
 //! Every public test file LimarePDF opens, saved and opened again (build plan, stage C1).
 //!
 //! Opt-in. Fetch the files first (`sh tools/fetch-render-samples.sh` in crates/limarepdf-core),
-//! then, under a memory cap as testing.md describes:
+//! then, under a memory cap as docs/developer/testing.md describes:
 //! `cargo test --release -p limarepdf-core --test save_reopen -- --ignored --nocapture`.
 //!
 //! Each file is opened as the app opens it (form fields without a drawing get one, unless the

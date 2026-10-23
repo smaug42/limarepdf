@@ -9,6 +9,7 @@ mod dialogs;
 mod digital;
 mod editor;
 mod fields;
+mod font_list;
 mod inspector;
 mod markup;
 mod page_text;

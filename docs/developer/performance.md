@@ -8,7 +8,7 @@ memory is the most the program held in memory at once (its resident set) in any 
 
 The files: a generated 1,000-page text file (1.5 MB; a heading, 48 lines of text and a rule on each page), a generated
 200-page colour scan (139 MB; a 300 dpi Letter page of 694 KB JPEG, 200 times), and four public test files from the
-[comparison with poppler](rendering.md#compared-with-poppler).
+[comparison with poppler](testing.md#compared-with-poppler).
 
 | Task | Time | Peak memory |
 | --- | --- | --- |
@@ -37,8 +37,8 @@ What the numbers show:
   and about four times to change and save.
 - Drawing cost grows with the number of paths and with resolution. The 73,000-path page takes 2.6 s and 707 MB at
   36 dpi but nearly a minute and almost 10 GB at 150 dpi; poppler draws it at 150 dpi in 9 s with 329 MB. In the app,
-  zooming in on such a page is limited to the [tiles in view](rendering.md#high-zoom), but the whole page at a normal
-  zoom costs the same as here. Since 2026-10-19 large pages are [drawn in bands](rendering.md#large-drawings): the
+  zooming in on such a page is limited to the [tiles in view](../rendering.md#high-zoom), but the whole page at a normal
+  zoom costs the same as here. Since 2026-10-19 large pages are [drawn in bands](../rendering.md#large-drawings): the
   same page at 150 dpi now takes 54 s and 1.5 GB, and at 72 dpi 9.9 s and 1.4 GB (was 10.4 s and 2.7 GB).
 - The reasons for the 560 to 640 MB of the last three files weren't looked into: the 27,000-path file has no fonts at
   all, and one page of PDFBox 1910 at 36 dpi takes 114 MB.
@@ -116,7 +116,7 @@ now the size comes from the file's header. Peak memory includes the file itself,
   scan) and is needed anyway. What is lost is the renderer's fonts: the next page takes 19 ms instead of 6 ms on
   PDFBox 1910, 12 ms instead of 2 ms on bug1905623. A renderer can't be kept across documents, as the fonts belong
   to the old one.
-- *Pictures decoded again for each band.* Since pages are [drawn in bands](rendering.md#large-drawings), a picture
+- *Pictures decoded again for each band.* Since pages are [drawn in bands](../rendering.md#large-drawings), a picture
   across several bands is decoded once per band: a 300 dpi scan page takes 0.11 s instead of 0.05 s, at 600 dpi
   0.34 s instead of 0.11 s, the same pixels either way. Only hayro, which draws the pages, can keep decoded
   pictures, so this is recorded for discussion with it.
@@ -168,21 +168,21 @@ together peaked lower than the scan alone did in the other sessions.
 These are timings of single tasks, not a benchmark suite, and apart from the one poppler timing no comparison with
 other software was made. hayro's own documentation says its renderer has not yet been tuned for performance.
 
-OCR speed is in [Scanning and OCR](scanning-and-ocr.md#accuracy-and-speed).
+OCR speed is in [Scanning and OCR](../scanning-and-ocr.md#accuracy-and-speed).
 
 ## How the desktop app stays responsive
 
 - Pages are drawn lazily on a pool of worker threads, newest request first, with one page of prefetch either side.
 - Pages outside the view are dropped from memory, and thumbnails are drawn at their own small size.
 - At high zoom only the part of the page in view is drawn, in 512-pixel tiles
-  ([details](rendering.md#high-zoom)). A tile takes about 1 ms on text pages and about 20 ms on a dense form, at
+  ([details](../rendering.md#high-zoom)). A tile takes about 1 ms on text pages and about 20 ms on a dense form, at
   any zoom, while a whole Letter page at 1152 dpi takes about 0.4 s and 500 MB.
 - A whole-page drawing that is no longer wanted (a zoom passed through, changed colours, an edited document) stops
-  at its next [band](rendering.md#large-drawings) instead of running to the end.
+  at its next [band](../rendering.md#large-drawings) instead of running to the end.
 - Edits re-save the document without compressing it, and undo keeps plain snapshots (a whole copy of the document
   per step, up to 1 GB per document, see [above](#memory-in-the-desktop-app)).
 - OCR, optimising, exporting images and printing run in the background.
-- A [recovery copy](gui.md#recovery-copies) is made at most once a minute per changed document. The window only
+- A [recovery copy](../gui.md#recovery-copies) is made at most once a minute per changed document. The window only
   copies the document in memory; a background thread turns that into a file and writes it. On the 200-page scan the
   copy in memory took 16 to 57 ms and making the file about 20 ms (138 MB, before writing it to disk); on the 1,000
   text pages about 2 ms each (measured 2026-10-19). The file leaves out objects nothing uses any more, as a save

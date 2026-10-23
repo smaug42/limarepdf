@@ -213,12 +213,36 @@ pub fn sign_label(name: &str) -> Option<&'static str> {
 }
 
 /// A name to sign with as it will be drawn: trimmed, with runs of spaces made single.
-/// Fails when it is empty or has characters the handwriting style can't show.
+/// Fails when it is empty or has characters the handwriting style can't show, naming the
+/// styles that can.
 pub fn typed_signature(text: &str, style: SignStyle) -> Result<String> {
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if text.is_empty() {
         bail!("type a name to sign with");
     }
+    let bad = unshown(&text, style)?;
+    if !bad.is_empty() {
+        let others: Vec<&str> = SignStyle::ALL
+            .into_iter()
+            .filter(|&s| s != style && unshown(&text, s).is_ok_and(|b| b.is_empty()))
+            .map(SignStyle::label)
+            .collect();
+        let instead = match others.as_slice() {
+            [] => String::new(),
+            [one] => format!("{one} can show it, or "),
+            [first @ .., last] => format!("{} and {last} can show it, or ", first.join(", ")),
+        };
+        bail!(
+            "the {} handwriting can't show {bad:?}; {instead}draw your signature or use a picture \
+             instead",
+            style.label()
+        );
+    }
+    Ok(text)
+}
+
+/// The characters of `text` the handwriting `style` can't show, each once.
+fn unshown(text: &str, style: SignStyle) -> Result<String> {
     let font = FontRef::new(style.font()).map_err(|e| anyhow!("handwriting font: {e}"))?;
     let map = font.charmap();
     let mut bad = String::new();
@@ -227,13 +251,7 @@ pub fn typed_signature(text: &str, style: SignStyle) -> Result<String> {
             bad.push(c);
         }
     }
-    if !bad.is_empty() {
-        bail!(
-            "the {} handwriting can't show {bad:?}; draw your signature or use a picture instead",
-            style.label()
-        );
-    }
-    Ok(text)
+    Ok(bad)
 }
 
 /// A signature's or mark's drawing at its own size, ready to become a form XObject.
@@ -809,8 +827,20 @@ mod tests {
             assert!(typed_signature("José Müller", style).is_ok());
             assert!(typed_signature("   ", style).is_err());
             let e = typed_signature("李", style).unwrap_err().to_string();
-            assert!(e.contains('李'), "{e}");
+            assert!(e.contains('李') && !e.contains("can show it"), "{e}");
         }
+        // The note names the styles that have the character.
+        let e = typed_signature("Юлия", SignStyle::Zeyada)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("; Caveat can show it, or draw"), "{e}");
+        let e = typed_signature("Dvořák", SignStyle::HomemadeApple)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("Caveat, Cedarville Cursive and Zeyada can show it"),
+            "{e}"
+        );
     }
 
     #[test]

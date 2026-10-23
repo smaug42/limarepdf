@@ -12,9 +12,9 @@ use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeK
 use egui_phosphor::regular as icon;
 use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::{
-    words_text, Annot, AnnotKind, Family, FieldValue, FontChoice, Link, LinkTarget, ObjectKind,
-    PageObject, PageWord, PathStyle, Shape, ShapeLook, SignPlace, StampColor, StampKind,
-    StampPlace, TextEdit, TextStyle, MIN_SIGNATURE_BOX,
+    words_text, Annot, AnnotKind, FieldValue, FontChoice, Link, LinkTarget, ObjectKind, PageObject,
+    PageWord, PathStyle, Shape, ShapeLook, SignPlace, StampColor, StampKind, StampPlace, TextEdit,
+    TextStyle, MIN_SIGNATURE_BOX,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -385,7 +385,7 @@ struct Insp {
 impl Insp {
     /// The properties of object `o`, at `key`, as they are.
     fn of(key: (usize, usize), o: &PageObject) -> Self {
-        let font = FontChoice::from_name(o.font_name.as_deref().unwrap_or(""));
+        let font = font_of(o.font_name.as_deref().unwrap_or(""));
         let size = o.font_size.unwrap_or(12.0);
         let color = if o.kind == ObjectKind::Text {
             o.fill.unwrap_or([0.0; 3])
@@ -509,6 +509,8 @@ struct LineEdit {
     pick: Pick,
     /// Takes the keyboard on the next frame.
     fresh: bool,
+    /// Takes the keyboard back once a change in the inspector is finished.
+    refocus: bool,
     refused: page_text::Refused,
 }
 
@@ -533,14 +535,26 @@ fn text_change(insp: &Insp) -> TextEdit {
 }
 
 /// The font line `o` changed by `te` is written in, as core decides it: its own when it
-/// can be kept, else a standard font (the one chosen, or the nearest to its own).
-fn line_font<'a>(o: &'a PageObject, te: &TextEdit) -> Wanted<'a> {
+/// can be kept, else the one chosen, else `own`, the line's font as the inspector found it
+/// (the installed family it is from, or the nearest standard font).
+fn line_font<'a>(o: &'a PageObject, te: &TextEdit, own: FontChoice) -> Wanted<'a> {
     let name = o.font_name.as_deref().unwrap_or("");
     if te.keeps_font(o.font_reusable) {
         Wanted::Kept(name)
     } else {
-        Wanted::Standard(te.font.unwrap_or_else(|| FontChoice::from_name(name)))
+        Wanted::Standard(te.font.unwrap_or(own))
     }
+}
+
+/// The font a line set in the PDF font `name` is shown as in the inspector, and written in
+/// when it can't keep its own: the installed family it is from ([`FontChoice::of_font`]),
+/// once the installed fonts have been read (at start, on another thread), else the nearest
+/// standard font.
+fn font_of(name: &str) -> FontChoice {
+    limarepdf_core::typefaces_ready()
+        .then(|| FontChoice::installed_font(name, &limarepdf_core::typefaces()))
+        .flatten()
+        .unwrap_or_else(|| FontChoice::from_name(name))
 }
 
 /// Whether line `o` is edited drawn as it will be written; turned lines and invisible
@@ -612,6 +626,8 @@ pub struct Editor {
     focus_text: bool,
     /// The note about a character that box refused.
     text_refused: page_text::Refused,
+    /// Where the inspector was drawn last: a click there doesn't end a line being edited.
+    insp_rect: Rect,
     pub tfont: FontChoice,
     pub tsize: f32,
     pub tcolor: [f32; 3],
@@ -726,6 +742,7 @@ impl Default for Editor {
             adding: None,
             focus_text: false,
             text_refused: page_text::Refused::default(),
+            insp_rect: Rect::NOTHING,
             tfont: FontChoice::default(),
             tsize: 14.0,
             tcolor: [0.0; 3],
@@ -1116,6 +1133,7 @@ impl Editor {
             id,
             pick,
             fresh: true,
+            refocus: false,
             refused: page_text::Refused::default(),
         });
     }
@@ -1207,18 +1225,27 @@ impl Editor {
         if ctx.memory(|m| m.has_focus(id)) {
             // Before the editor sees the keys: what can't be written isn't typed, and
             // Ctrl+B and Ctrl+I switch the whole line, as the inspector's buttons do.
-            let t = page_text::take_typing(ui, true, !o.hidden);
-            insp.font.bold ^= t.bold;
-            insp.font.italic ^= t.italic;
-            if t.refused {
-                le.refused.mark(&ctx);
+            // Hidden (OCR) text is written in Helvetica.
+            let font = if o.hidden {
+                FontChoice::default()
+            } else {
+                insp.font
+            };
+            let t = page_text::take_typing(ui, true, !o.hidden, font);
+            insp.font = page_text::switched(insp.font, t.bold, t.italic);
+            if let Some(c) = t.refused {
+                le.refused.mark(&ctx, page_text::note(font, c));
             }
         }
         let b = o.bbox;
         let (out, area) = if drawn {
-            let family = typing_fonts::family(&ctx, line_font(&o, &text_change(insp)));
+            let wanted = line_font(&o, &text_change(insp), insp.orig_font);
             let style = page_text::Style {
-                font: egui::FontId::new((insp.size * k).max(1.0), family),
+                font: egui::FontId::new(
+                    (insp.size * k).max(1.0),
+                    typing_fonts::family(&ctx, wanted),
+                ),
+                coords: typing_fonts::coords(wanted),
                 color: page_text::shown(self.page_colours, insp.color),
                 mode: self.page_colours,
                 accent: ui.visuals().selection.stroke.color,
@@ -1305,6 +1332,24 @@ impl Editor {
             self.line_edit = None;
             self.commit_insp();
             return true;
+        }
+        // The inspector's font list, size, colour and buttons change the line being edited,
+        // which takes the keyboard back once the change is finished, as new text does.
+        let in_inspector = ctx.input(|i| {
+            let clicked = i.pointer.any_pressed() || i.pointer.any_released();
+            let at = i.pointer.press_origin().or(i.pointer.latest_pos());
+            clicked && at.is_some_and(|p| self.insp_rect.contains(p))
+        });
+        let picking = egui::Popup::is_any_open(&ctx);
+        if !edit.has_focus() && (le.refocus || in_inspector || picking) {
+            // Not in the click's own frames: a list it opens shows from the next one.
+            if settled(&ctx) && !picking && !in_inspector {
+                edit.request_focus();
+                le.refocus = false;
+            } else {
+                le.refocus = true;
+            }
+            return edit.hovered();
         }
         // Scrolled out of view, or the keyboard went elsewhere: keep what was typed. A click
         // that ended it still selects what it was on.
@@ -3095,24 +3140,7 @@ impl Editor {
     // ------------------------------------------------------------ inspector
 
     fn font_ui(ui: &mut egui::Ui, f: &mut FontChoice) {
-        let r = egui::ComboBox::from_id_salt(ui.id().with("fam"))
-            .selected_text(match f.family {
-                Family::Helvetica => "Helvetica",
-                Family::Times => "Times",
-                Family::Courier => "Courier",
-            })
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut f.family, Family::Helvetica, "Helvetica");
-                ui.selectable_value(&mut f.family, Family::Times, "Times");
-                ui.selectable_value(&mut f.family, Family::Courier, "Courier");
-            });
-        dialogs::set_name(&r.response, "Font");
-        ui.horizontal(|ui| {
-            let r = ui.toggle_value(&mut f.bold, egui::RichText::new("B").strong());
-            dialogs::set_name(&r, "Bold");
-            let r = ui.toggle_value(&mut f.italic, egui::RichText::new("I").italics());
-            dialogs::set_name(&r, "Italic");
-        });
+        crate::font_list::ui(ui, f);
     }
 
     /// Keep the working copy on the selected object. When another object (or none) is
@@ -3439,6 +3467,7 @@ impl Editor {
     }
 
     pub fn inspector(&mut self, ui: &mut egui::Ui) {
+        self.insp_rect = ui.clip_rect();
         if self.selection.annot().is_some() {
             self.annot_inspector(ui);
             return;
@@ -3675,9 +3704,10 @@ impl Editor {
                     let id = egui::Id::new(("text-object", page, id));
                     // What can't be written isn't typed, as on the page.
                     if ui.ctx().memory(|m| m.has_focus(id)) {
-                        let t = page_text::take_typing(ui, true, false);
-                        if t.refused {
-                            self.text_refused.mark(ui.ctx());
+                        let t = page_text::take_typing(ui, true, false, insp.font);
+                        if let Some(c) = t.refused {
+                            self.text_refused
+                                .mark(ui.ctx(), page_text::note(insp.font, c));
                         }
                     }
                     let out = egui::TextEdit::singleline(&mut insp.text)
@@ -3704,7 +3734,8 @@ impl Editor {
                         color_button(ui, &mut insp.color, "Text colour");
                     });
                 }
-                if !obj.font_reusable && !obj.hidden {
+                // A line in an installed family is written in that family.
+                if !obj.font_reusable && !obj.hidden && insp.orig_font.is_standard() {
                     ui.weak("Non-standard font: edits use the nearest standard one.")
                         .on_hover_text(obj.font_name.as_deref().unwrap_or("?"));
                 }
@@ -3744,7 +3775,9 @@ impl Editor {
             // What was changed goes with it.
             self.insp = None;
             self.actions.push(Action::Delete(page, id));
-        } else if settled(ui.ctx()) {
+        } else if settled(ui.ctx()) && self.line_edit.is_none() {
+            // A line being edited on the page shows the change as it is made, and keeps
+            // it with the typing when the editing finishes.
             self.commit_insp();
         }
     }
@@ -3792,6 +3825,7 @@ pub fn pick_image_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use limarepdf_core::Family;
 
     #[test]
     fn comment_changes_and_replies_not_yet_kept_are_pending() {
@@ -4126,6 +4160,18 @@ mod tests {
         assert!(!ed.typing_on_page() && ed.actions.is_empty());
     }
 
+    /// A line set in an installed family (by LimarePDF or another app) shows as that family,
+    /// once the installed fonts are read; a standard font stays one.
+    #[test]
+    fn a_line_in_an_installed_family_shows_as_that_family() {
+        let serif = crate::font_list::test_family("Source Serif 4");
+        limarepdf_core::typefaces();
+        let f = font_of("QWERTY+SourceSerif4-Regular");
+        assert_eq!((f.family, f.bold, f.italic), (serif, false, false));
+        assert_eq!(font_of("Times-Bold"), FontChoice::from_name("Times-Bold"));
+        assert_eq!(font_of("Arial,Bold"), FontChoice::from_name("Arial,Bold"));
+    }
+
     /// The editor draws a line in the font core will write it in.
     #[test]
     fn a_line_is_edited_in_the_font_it_will_be_written_in() {
@@ -4135,7 +4181,8 @@ mod tests {
         let o = ed.objs[&0][2].clone();
         let font = |ed: &Editor, o: &PageObject| {
             let te = text_change(ed.insp.as_ref().unwrap());
-            format!("{:?}", line_font(o, &te))
+            let own = font_of(o.font_name.as_deref().unwrap_or(""));
+            format!("{:?}", line_font(o, &te, own))
         };
         // Its own font, when core can keep it: plain ASCII and no style changed.
         let kept = PageObject {

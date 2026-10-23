@@ -37,7 +37,8 @@ holding work you would lose (a signature drawn, typed or chosen; a digital ID fo
 typed), where only Cancel closes it. A message's Copy button copies what it says, to pass on an error. Reasons and
 technical lists in a question are under Details. A dialog fits the window, also as it is resized: narrower in a
 narrow one, with smaller margins under 600 points wide, and in a short one its content scrolls while its buttons
-stay in view. Every dialog has the same look: text at 14 points, settings in headed groups, labels above the
+stay in view. Very long names are cut short: a file's under the title, and a printer's in Print (shown whole on
+hover and in the list of printers). Every dialog has the same look: text at 14 points, settings in headed groups, labels above the
 fields, fields, lists and buttons outlined, and radio buttons and checkboxes outlined on the dialog's background.
 Two short fields share a row when there is room (Copies and Print on, a signature's Reason and Location) and go
 one under the other when not. Lists of documents or certificates are an outlined box with each row's buttons on
@@ -182,8 +183,9 @@ background (none at first) and border, before you start.
 - **Text box:** drag a box, or click for a default size, then type straight onto the page. Enter starts a new
   line. Click outside the box or press Esc or Ctrl+Enter to finish; with nothing typed, no box is added. While you
   type in a note or text box, Ctrl+Z and Ctrl+Y undo and redo the typing. Finishing either by choosing another
-  tool keeps that tool. Text boxes use Helvetica, so characters
-  beyond Western European (Greek, Cyrillic, Chinese and so on) come out as `?`. When you finish, the box grows downward to fit its text, keeping its width; it
+  tool keeps that tool. Text boxes use Helvetica, and for Polish, Czech, Vietnamese, Greek, Cyrillic and other
+  characters it lacks, its Liberation Sans face, embedded in the file; others (Chinese, Hebrew and so on) come
+  out as `?`. When you finish, the box grows downward to fit its text, keeping its width; it
   stops at the bottom of the page, and it never shrinks (resize it with the arrow).
 
 When a note or text box is finished, the read tool comes back with it selected, so it can be moved straight away.
@@ -243,15 +245,16 @@ then comes back with the stamp selected, to move or resize (see [Keep tool activ
   on the page; what you type is the stamp to put down. It is shown in capitals and goes into the list above when
   you leave the box (Enter or a click elsewhere). Picking a colour also recolours the picked wording of your own.
   The last five wordings are remembered with their colours (right-click one to take it off the list). The stamp's font covers
-  Western European languages only, so wording with other characters (Greek, Cyrillic, Chinese and so on) can't
-  be used yet; the pane says which characters.
+  Latin, Greek and Cyrillic, so wording with other characters (Chinese, Hebrew and so on) can't be used yet; the
+  pane says which characters.
 - **Pictures:** Choose a picture… takes a PNG or JPEG file; it is put down with its longer side 160 points. The
   last five pictures are remembered by path (right-click one to take it off the list). Transparent parts of a PNG
   stay transparent.
 
 Stamps are annotations: other readers list them as comments. Select one to change its opacity and comment;
-its colours are part of the stamp. A stamp reads upright on a turned page. The text is Helvetica Bold, Western
-European characters only, so a name in other scripts shows as `?`.
+its colours are part of the stamp. A stamp reads upright on a turned page. The text is Helvetica Bold, or its Liberation
+face, embedded in the file, for characters it lacks; a name it can't show (in Chinese, say) is left off the
+name-and-date line.
 
 ## Redaction
 
@@ -311,8 +314,9 @@ and buttons (they run scripts, which LimarePDF doesn't) can't be filled in; hove
 field puts your signature in it (see [Filling and signing](#filling-and-signing)); clicking a digitally signed one
 shows its signature's details (see [Digital signatures](#digital-signatures)).
 
-LimarePDF draws the filled fields itself, so the values show the same in other readers. Text must be Western European for
-now; anything else is refused with a message rather than saved wrongly. Fields that have a value but
+LimarePDF draws the filled fields itself, so the values show the same in other readers. Text must be Latin, Greek
+or Cyrillic for now; anything else is refused with a message rather than saved wrongly. A value the field's own
+font can't show is drawn in the Liberation face of its kind, embedded in the file. Fields that have a value but
 no drawing of their own are drawn when the file opens. A value filled in by another app in other characters (Japanese,
 for example) shows only if that app drew it: if it didn't, LimarePDF can't either, so Flatten form… stops and names
 the fields rather than lose their values, and Print asks whether to print without them, since they would come out
@@ -334,7 +338,8 @@ signature… (or New… beside Signatures), opens a window with three ways to ma
   into curves and stay sharp at any zoom. In a narrow or short window the pad is smaller, at the same shape; what
   is drawn keeps its shape and comes out the same size on the page, also when the window is resized while drawing.
 - **Type:** type your name (it starts as your name for comments) and pick one of four handwriting styles (Caveat,
-  Cedarville Cursive, Homemade Apple and Zeyada), shown as they will look. Western European characters only; for other scripts, draw or use an image.
+  Cedarville Cursive, Homemade Apple and Zeyada), shown as they will look. Each has Latin characters, and Caveat
+  Cyrillic too; for a name a style can't show, the message names the styles that can, or draw or use an image.
 - **Image:** choose a photo or scan of your signature on paper (PNG, JPEG or TIFF). "Make the paper transparent"
   (on by default) keeps only the ink and cuts off the empty margins, so the signature sits on the page like ink.
 
@@ -587,13 +592,15 @@ edits:
 
 - **Page text:** double-click a line to edit it there. The word you double-clicked is selected, so typing replaces
   it. The line is drawn as it will be written: in its own font when LimarePDF can keep it, otherwise in the
-  Helvetica, Times or Courier that replaces it (which switches as you type a character the line's font can't
-  take), at its size and in its colour, with a thin outline around it and the old line hidden underneath in the
+  installed font it came from (when LimarePDF can embed it) or the Helvetica, Times or Courier that replaces it
+  (which switches as you type a character the line's font can't take), at its size and in its colour, with a thin outline around it and the old line hidden underneath in the
   colour around it. Enter, Esc, Tab or a click elsewhere keeps the change. While you type, Ctrl+Z and Ctrl+Y undo
   and redo typing in the line, and Ctrl+B and Ctrl+I switch the whole line to Bold or Italic; once the change is
   kept, Undo takes the whole edit back. Editing the same line again within a few seconds, with nothing else
-  changed in between, joins the same undo step. The inspector shows the line's font, size and colour; each change
-  there is kept at once as its own undo step. A line turned on the page (not running left to right on screen)
+  changed in between, joins the same undo step. The inspector shows the line's font, size and colour; while the
+  line is edited on the page, a change there shows on it at once, the line stays in editing and the keyboard
+  comes back to it, and the change is kept with the typing; otherwise each change is kept at once as its own undo
+  step. A line turned on the page (not running left to right on screen)
   and invisible recognised (OCR) text are edited in a plain box over the line instead.
 - **Pictures, shapes, comments and marks:** click one to select it, drag it to move it and drag a handle to resize
   it (Shift keeps the proportions). Arrow keys move it by 1 point, or 10 with Shift. A picture or shape covering
@@ -626,8 +633,17 @@ selected so you can adjust it (see [Keep tool active](#keep-tool-active)):
   undo step; nothing typed adds nothing. While you type, the inspector's font, Bold, Italic, size and colour
   change the text (the keyboard comes back to it afterwards), Ctrl+B and Ctrl+I switch Bold and Italic, and
   dragging the outline moves the text. A click on page text with this tool edits that line instead (see Page
-  text above), with the caret where you clicked, and a drag selects text, as with the read tool. The font is Helvetica, Times or Courier, with Bold and Italic, and only Western
-  European characters can be added: others can't be typed or pasted, and a note at the caret says so (see
+  text above), with the caret where you clicked, and a drag selects text, as with the read tool. The font list
+  has Helvetica, Times and Courier first, then the fonts installed on the computer whose licence allows
+  embedding them, each name drawn in its own font; type in its search field to narrow it, and Enter picks the
+  first. Bold and Italic are off for a family that has no such face. Latin (Vietnamese included), Greek and
+  Cyrillic characters can be added; those the standard fonts lack are written in their Liberation face, and text
+  in an installed font is written in that font, both embedded in the file (cut down to the characters used).
+  Chinese, Japanese and Korean can be typed in an installed font that has them. Others (Hebrew, Arabic,
+  Devanagari, Thai and so on, and emoji), and characters the chosen font doesn't have, can't be typed or pasted,
+  and a note at the caret says so. When another font could have the character (Chinese in Helvetica, say, or a
+  letter an installed font lacks), the note names the font in use and asks you to choose an installed font that
+  has it; the same goes for editing a line and the inspector's text field (see
   [What doesn't work yet](features.md#what-doesnt-work-yet)). Each line becomes its own line of page text, so
   it moves and is edited line by line afterwards.
 - **Image:** choose a PNG, JPEG or TIFF, then drag a box.
@@ -673,7 +689,7 @@ under ☰ > Edit). Both offer two layouts:
   from the top and bottom to the selected lines. Fonts, pictures and layout stay as they are, but anything else
   beside those lines shows too, such as the start of the first line, another column or a picture.
 - **Plain text (PDF):** only the selected words, set in 11-point Helvetica on pages the size of the first selected
-  page, keeping the line breaks. Characters outside Western European alphabets come out as `?`.
+  page, keeping the line breaks. Characters outside Latin, Greek and Cyrillic come out as `?`.
 
 Saving also offers **Text file (.txt)**, the same text that Ctrl+C copies.
 
@@ -711,9 +727,10 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 Every button, field, list and menu has a name a screen reader can say, in the window, the inspector, the side
 views and the dialogs: icons and symbols are named in words (◀ and ▶ in Search results are Previous match and
 Next match), a field is named by the label beside it, and toggles such as Bold and Italic, the picked signature
-and the picked mark say whether they are on. An open list or menu is named after the button that opened it. The
-edges of the side panel and the inspector are named Side panel width and Inspector width, but can only be dragged
-with the mouse.
+and the picked mark say whether they are on. An open list or menu is named after the button that opened it. In a
+list with a button on each row, the button names its row: Restore Report.pdf in Recover unsaved changes, Remove
+Jane Example… in Trusted certificates. The edges of the side panel and the inspector are named Side panel width
+and Inspector width, but can only be dragged with the mouse.
 
 The names are checked by the app's tests on Linux. LimarePDF hasn't been tried with a screen reader yet (Orca,
 Narrator or VoiceOver).
@@ -724,8 +741,8 @@ The app follows the system's light or dark theme. ☰ > View > Theme chooses Sys
 remembered between runs, in `settings.txt` in the same folder as the recent-files list, along with the markup
 colours and your name for comments. The app uses the Inter font
 and Phosphor icons. It also includes the Liberation fonts, which have the widths of Helvetica, Times and Courier,
-to show text in its own look while it is typed on the page; they are only drawn on screen, never written into
-PDFs, and don't add to the fonts you can choose.
+to show text in its own look while it is typed on the page and to write characters Helvetica, Times and Courier
+lack; they don't add to the fonts you can choose.
 
 The window opens at the size it had when the app last closed, and maximized if it was; a maximized window keeps
 the size it had before, for when you restore it. A size kept on a larger monitor is shrunk to fit a smaller one.

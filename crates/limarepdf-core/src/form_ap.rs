@@ -2,6 +2,7 @@
 //! This module lays out and draws; `form_write` picks the font and puts the result in
 //! the file.
 
+use crate::embed::{Codes, Pen};
 use crate::fonts::winansi_bytes;
 use lopdf::content::{Content, Operation};
 use lopdf::{Object, StringFormat};
@@ -16,17 +17,45 @@ const LEADING: f32 = 1.15;
 /// The highlight behind chosen options in a list box (Acrobat's colour).
 const HIGHLIGHT: [f32; 3] = [0.6, 0.757, 0.855];
 
-/// Widths of a font's characters by WinAnsi code, in 1/1000 em.
-pub(crate) struct Metrics(pub [f32; 256]);
+/// How text is measured and written in the appearance's font.
+pub(crate) enum Metrics {
+    /// A font with one byte per character (WinAnsi, or ZapfDingbats' own codes): its
+    /// widths by code, in 1/1000 em.
+    Bytes(Box<[f32; 256]>),
+    /// An embedded face, grown for the text drawn.
+    Embedded(Codes),
+}
 
 impl Metrics {
-    /// Width of WinAnsi-encoded text at `size`.
-    pub fn width(&self, bytes: &[u8], size: f32) -> f32 {
-        bytes.iter().map(|&b| self.0[b as usize]).sum::<f32>() * size / 1000.0
+    /// The metrics a pen writes with.
+    pub(crate) fn of(pen: Pen) -> Metrics {
+        match pen {
+            Pen::Standard(f) => crate::form_write::standard_metrics(f.base_font()),
+            Pen::Embedded(c) => Metrics::Embedded(c),
+        }
     }
 
-    fn text_width(&self, s: &str, size: f32) -> f32 {
-        self.width(&winansi_bytes(s), size)
+    /// Width of text written in one-byte codes at `size`.
+    fn byte_width(&self, bytes: &[u8], size: f32) -> f32 {
+        match self {
+            Metrics::Bytes(w) => bytes.iter().map(|&b| w[b as usize]).sum::<f32>() * size / 1000.0,
+            Metrics::Embedded(_) => 0.0,
+        }
+    }
+
+    pub(crate) fn text_width(&self, s: &str, size: f32) -> f32 {
+        match self {
+            Metrics::Bytes(_) => self.byte_width(&winansi_bytes(s), size),
+            Metrics::Embedded(c) => c.width(s, size),
+        }
+    }
+
+    /// The string that shows `s`.
+    fn string(&self, s: &str) -> Object {
+        match self {
+            Metrics::Bytes(_) => bytes_obj(winansi_bytes(s)),
+            Metrics::Embedded(c) => Object::String(c.bytes(s), StringFormat::Hexadecimal),
+        }
     }
 }
 
@@ -130,7 +159,7 @@ pub(crate) fn draw(look: &Look, body: &Body, m: &Metrics) -> Vec<u8> {
         } else {
             0.8 * iw.min(ih)
         };
-        let x = (w - m.width(&[*c], size)) / 2.0;
+        let x = (w - m.byte_width(&[*c], size)) / 2.0;
         // ZapfDingbats marks stand about 0.7 em tall on the baseline.
         let y = (h - 0.7 * size) / 2.0;
         ops.push(op("q", vec![]));
@@ -150,14 +179,13 @@ pub(crate) fn draw(look: &Look, body: &Body, m: &Metrics) -> Vec<u8> {
     ops.push(op("n", vec![]));
     let avail = iw - 2.0 * PAD;
     // Each line: its text and its baseline's x and y.
-    let mut lines: Vec<(Vec<u8>, f32, f32)> = Vec::new();
+    let mut lines: Vec<(Object, f32, f32)> = Vec::new();
     let size;
     match body {
         Body::Line(text) => {
             size = auto(look.size, || line_size(ih, avail, m.text_width(text, 1.0)));
-            let b = winansi_bytes(text);
-            let x = align(look.q, inset + PAD, avail, m.width(&b, size));
-            lines.push((b, x, centred_baseline(h, size)));
+            let x = align(look.q, inset + PAD, avail, m.text_width(text, size));
+            lines.push((m.string(text), x, centred_baseline(h, size)));
         }
         Body::Comb(text, n) => {
             let cell = iw / (*n).max(1) as f32;
@@ -166,9 +194,9 @@ pub(crate) fn draw(look: &Look, body: &Body, m: &Metrics) -> Vec<u8> {
             size = auto(look.size, || line_size(ih, cell, widest));
             let y = centred_baseline(h, size);
             for (i, c) in text.chars().take(*n).enumerate() {
-                let b = winansi_bytes(&c.to_string());
-                let x = inset + i as f32 * cell + (cell - m.width(&b, size)) / 2.0;
-                lines.push((b, x, y));
+                let c = c.to_string();
+                let x = inset + i as f32 * cell + (cell - m.text_width(&c, size)) / 2.0;
+                lines.push((m.string(&c), x, y));
             }
         }
         Body::Lines(text) => {
@@ -184,9 +212,8 @@ pub(crate) fn draw(look: &Look, body: &Body, m: &Metrics) -> Vec<u8> {
             // The first baseline sits one ascent (about 0.8 em) below the padding.
             let mut y = h - inset - PAD - 0.8 * size;
             for l in wrap(text, avail, size, m) {
-                let b = winansi_bytes(&l);
-                let x = align(look.q, inset + PAD, avail, m.width(&b, size));
-                lines.push((b, x, y));
+                let x = align(look.q, inset + PAD, avail, m.text_width(&l, size));
+                lines.push((m.string(&l), x, y));
                 y -= LEADING * size;
             }
         }
@@ -205,9 +232,8 @@ pub(crate) fn draw(look: &Look, body: &Body, m: &Metrics) -> Vec<u8> {
                     ops.push(op("f", vec![]));
                     ops.push(op("Q", vec![]));
                 }
-                let b = winansi_bytes(item);
-                let x = align(look.q, inset + PAD, avail, m.width(&b, size));
-                lines.push((b, x, centred_baseline(lh, size) + row_top - lh));
+                let x = align(look.q, inset + PAD, avail, m.text_width(item, size));
+                lines.push((m.string(item), x, centred_baseline(lh, size) + row_top - lh));
                 row_top -= lh;
             }
         }
@@ -216,9 +242,9 @@ pub(crate) fn draw(look: &Look, body: &Body, m: &Metrics) -> Vec<u8> {
     ops.push(op("BT", vec![]));
     ops.push(font_op(look, size));
     ops.extend(look.color.clone());
-    for (b, x, y) in lines {
+    for (s, x, y) in lines {
         ops.push(op("Tm", nums(&[1.0, 0.0, 0.0, 1.0, x, y])));
-        ops.push(op("Tj", vec![bytes_obj(b)]));
+        ops.push(op("Tj", vec![s]));
     }
     ops.push(op("ET", vec![]));
     ops.push(op("Q", vec![]));
@@ -358,7 +384,7 @@ mod tests {
 
     /// Every character 500 units wide.
     fn even() -> Metrics {
-        Metrics([500.0; 256])
+        Metrics::Bytes(Box::new([500.0; 256]))
     }
 
     fn look(w: f32, h: f32, size: f32) -> Look {

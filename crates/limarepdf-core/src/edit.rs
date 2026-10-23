@@ -1,18 +1,21 @@
 //! Editing page content: move/resize, delete, change text, restyle paths, replace images, insert objects.
 
-use crate::fonts::{winansi_bytes, FontChoice};
+use crate::embed::Pen;
+use crate::fonts::FontChoice;
 use crate::inline::Inline;
 use crate::matrix::{self as mx, mul, M};
 use crate::objects::{Obj, ObjectKind, Parsed, Show};
 use crate::{Pdf, Result};
 use anyhow::{anyhow, bail};
 use lopdf::content::{Content, Operation};
-use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream, StringFormat};
+use lopdf::{Dictionary, Object, ObjectId, Stream, StringFormat};
 
 #[derive(Clone, Debug)]
 pub struct TextEdit {
     pub text: String,
-    /// `None` keeps the current font (when it can be reused), otherwise one of the 12 standard fonts.
+    /// `None` keeps the current font (when it can be reused, else the installed family it is
+    /// from or the nearest standard font: [`FontChoice::of_font`]), otherwise a standard font
+    /// or an installed family's face.
     pub font: Option<FontChoice>,
     pub size: Option<f32>,
     pub color: Option<[f32; 3]>,
@@ -21,7 +24,7 @@ pub struct TextEdit {
 impl TextEdit {
     /// Whether [`Pdf::edit_text`] keeps the line's own font for this change: the font can
     /// be reused ([`crate::PageObject::font_reusable`]), the new text is plain ASCII and no
-    /// style changes. Otherwise the line is written anew in a standard font.
+    /// style changes. Otherwise the line is written anew.
     pub fn keeps_font(&self, reusable: bool) -> bool {
         let ascii = self.text.chars().all(|c| (' '..='~').contains(&c));
         let keep_style = self.font.is_none() && self.size.is_none() && self.color.is_none();
@@ -270,11 +273,16 @@ impl Pdf {
         Ok(nm)
     }
 
-    fn standard_font(&mut self, page: ObjectId, f: FontChoice) -> Result<String> {
-        let id = self.doc.add_object(dictionary! {
-            "Type" => "Font", "Subtype" => "Type1", "BaseFont" => f.base_font(), "Encoding" => "WinAnsiEncoding",
-        });
-        self.add_resource(page, "Font", "LimareEd", Object::Reference(id))
+    /// The font to write `text` in `f` with, added to the page's resources: its name there,
+    /// and the pen that writes the text (the standard font, or its embedded face when the
+    /// text needs it).
+    fn text_font(&mut self, page: ObjectId, f: FontChoice, text: &str) -> Result<(String, Pen)> {
+        let pen = self.pen(f, text)?;
+        let font = self.pen_font(&pen);
+        Ok((
+            self.add_resource(page, "Font", "LimareEd", font.into())?,
+            pen,
+        ))
     }
 
     /// D in user space for a displayed-page (y down) delta.
@@ -412,7 +420,8 @@ impl Pdf {
     }
 
     /// Change the text of a text object. Keeps the original font when it can be reused for plain ASCII;
-    /// otherwise the line is replaced by new text in a standard font at the same position.
+    /// otherwise the line is replaced by new text in a standard font at the same position, or its
+    /// embedded face for characters the standard font lacks.
     pub fn edit_text(&mut self, page_index: usize, id: usize, e: &TextEdit) -> Result<()> {
         let (page, parsed) = self.load_edit(page_index)?;
         let obj = Self::pick(&parsed, id)?.clone();
@@ -441,9 +450,8 @@ impl Pdf {
                 let (dx, dy) = t.dir;
                 let width = ((f.0 - s.0) * dx + (f.1 - s.1) * dy).max(0.1);
                 let size = t.size.max(1.0);
-                let tz = (100.0 * width / crate::text_width(&e.text, size).max(0.1))
-                    .clamp(1.0, 10_000.0);
-                let fname = self.standard_font(page, FontChoice::from_name("Helvetica"))?;
+                let (fname, pen) = self.text_font(page, FontChoice::default(), &e.text)?;
+                let tz = (100.0 * width / pen.width(&e.text, size).max(0.1)).clamp(1.0, 10_000.0);
                 out.extend([
                     op("q", vec![]),
                     op("BT", vec![]),
@@ -457,7 +465,7 @@ impl Pdf {
                             .map(|&x| r(x))
                             .collect(),
                     ),
-                    op("Tj", vec![lit(winansi_bytes(&e.text))]),
+                    op("Tj", vec![pen.string(&e.text)]),
                     op("ET", vec![]),
                     op("Q", vec![]),
                 ]);
@@ -488,10 +496,10 @@ impl Pdf {
             }
         }
         let mut out = closed(out, parsed.depth_left);
-        let font = e.font.unwrap_or_else(|| FontChoice::from_name(&t.base));
+        let font = e.font.unwrap_or_else(|| FontChoice::of_font(&t.base));
         let size = e.size.unwrap_or(t.size).max(1.0);
         let color = e.color.or(t.fill).unwrap_or([0.0; 3]);
-        let fname = self.standard_font(page, font)?;
+        let (fname, pen) = self.text_font(page, font, &e.text)?;
         let (dx, dy) = t.dir;
         out.extend([
             op("q", vec![]),
@@ -505,7 +513,7 @@ impl Pdf {
                     .map(|&x| r(x))
                     .collect(),
             ),
-            op("Tj", vec![lit(winansi_bytes(&e.text))]),
+            op("Tj", vec![pen.string(&e.text)]),
             op("ET", vec![]),
             op("Q", vec![]),
         ]);
@@ -632,7 +640,7 @@ impl Pdf {
         }
         let text = text.to_string();
         self.append_layer(page_index, move |s, page| {
-            let f = s.standard_font(page, font)?;
+            let (f, pen) = s.text_font(page, font, &text)?;
             Ok(vec![
                 op("BT", vec![]),
                 op("Tf", vec![name(&f), r(size.max(1.0))]),
@@ -644,7 +652,7 @@ impl Pdf {
                         .map(|&x| r(x))
                         .collect(),
                 ),
-                op("Tj", vec![lit(winansi_bytes(&text))]),
+                op("Tj", vec![pen.string(&text)]),
                 op("ET", vec![]),
             ])
         })

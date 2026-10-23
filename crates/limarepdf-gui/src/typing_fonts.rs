@@ -2,86 +2,30 @@
 //! word-processor design, section 4).
 //!
 //! New text and lines written anew are in one of the 12 standard fonts, drawn here in the
-//! bundled Liberation fonts, which have the widths of Helvetica, Times and Courier. A line
+//! bundled Liberation fonts, which have the widths of Helvetica, Times and Courier; each face
+//! is unpacked (core stores them compressed) and loaded the first time it is needed. A line
 //! that keeps its own font is drawn in that font when the computer has it (found through
 //! core's installed fonts and loaded the first time it is needed), else in the Liberation
-//! face of its kind. Inter is the last resort, and every family falls back to Inter for
-//! characters its font lacks.
+//! face of its kind. Inter is the last resort, and the stand-in while a font loads, and
+//! every family falls back to Inter for characters its font lacks.
+//!
+//! Text in an installed family (the Unicode text design, section 7) is drawn in the
+//! family's font file, at the weight chosen when it is a variable font ([`coords`]); the
+//! font list draws each family's name in it ([`preview`]).
 
-use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
+use eframe::egui::epaint::text::VariationCoords;
+use eframe::egui::{self, FontData, FontFamily};
 use limarepdf_core::render::InstalledFonts;
-use limarepdf_core::{Family, FontChoice};
+use limarepdf_core::{bundled_face, liberation, FaceFile, FontChoice};
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-/// The bundled faces, Liberation 2.1.5 (see `assets/fonts/README.md`): sans, serif and
-/// mono, each regular, bold, italic and bold italic.
-const LIBERATION: [[(&str, &[u8]); 4]; 3] = [
-    [
-        (
-            "Liberation Sans",
-            include_bytes!("../assets/fonts/LiberationSans-Regular.ttf"),
-        ),
-        (
-            "Liberation Sans Bold",
-            include_bytes!("../assets/fonts/LiberationSans-Bold.ttf"),
-        ),
-        (
-            "Liberation Sans Italic",
-            include_bytes!("../assets/fonts/LiberationSans-Italic.ttf"),
-        ),
-        (
-            "Liberation Sans Bold Italic",
-            include_bytes!("../assets/fonts/LiberationSans-BoldItalic.ttf"),
-        ),
-    ],
-    [
-        (
-            "Liberation Serif",
-            include_bytes!("../assets/fonts/LiberationSerif-Regular.ttf"),
-        ),
-        (
-            "Liberation Serif Bold",
-            include_bytes!("../assets/fonts/LiberationSerif-Bold.ttf"),
-        ),
-        (
-            "Liberation Serif Italic",
-            include_bytes!("../assets/fonts/LiberationSerif-Italic.ttf"),
-        ),
-        (
-            "Liberation Serif Bold Italic",
-            include_bytes!("../assets/fonts/LiberationSerif-BoldItalic.ttf"),
-        ),
-    ],
-    [
-        (
-            "Liberation Mono",
-            include_bytes!("../assets/fonts/LiberationMono-Regular.ttf"),
-        ),
-        (
-            "Liberation Mono Bold",
-            include_bytes!("../assets/fonts/LiberationMono-Bold.ttf"),
-        ),
-        (
-            "Liberation Mono Italic",
-            include_bytes!("../assets/fonts/LiberationMono-Italic.ttf"),
-        ),
-        (
-            "Liberation Mono Bold Italic",
-            include_bytes!("../assets/fonts/LiberationMono-BoldItalic.ttf"),
-        ),
-    ],
-];
-
-/// The bundled face for a standard font: Helvetica is Liberation Sans, and so on.
+/// The bundled face for a standard font: Helvetica is Liberation Sans, and so on. The faces
+/// are core's (`LIBERATION`, `bundled_face`), which embeds them in PDFs.
 fn face(f: FontChoice) -> &'static str {
-    let family = match f.family {
-        Family::Helvetica => 0,
-        Family::Times => 1,
-        Family::Courier => 2,
-    };
-    LIBERATION[family][f.bold as usize + 2 * f.italic as usize].0
+    liberation(f)
 }
 
 fn named(name: &str) -> FontFamily {
@@ -95,21 +39,10 @@ fn with_fallback(name: &str, fallback: &[String]) -> Vec<String> {
     list
 }
 
-/// Registers the bundled faces, each a family of its own named as in [`LIBERATION`].
-pub fn add_bundled(f: &mut FontDefinitions) {
-    let fallback = f.families[&FontFamily::Proportional].clone();
-    for (name, bytes) in LIBERATION.iter().flatten() {
-        f.font_data
-            .insert(name.to_string(), FontData::from_static(bytes).into());
-        f.families
-            .insert(named(name), with_fallback(name, &fallback));
-    }
-}
-
 /// What text being typed will be written in.
 #[derive(Clone, Copy, Debug)]
 pub enum Wanted<'a> {
-    /// One of the 12 standard fonts: new text, and lines written anew.
+    /// A standard font or an installed family's face: new text, and lines written anew.
     Standard(FontChoice),
     /// A line that keeps its own font, by the name the document gives it ("Arial,Bold").
     Kept(&'a str),
@@ -120,7 +53,9 @@ pub enum Wanted<'a> {
 enum Candidate {
     /// An installed font, by a PDF font name.
     Installed(String),
-    /// A bundled Liberation face.
+    /// An installed family's font file, and the face's index in it.
+    File(PathBuf, u32),
+    /// A bundled Liberation face, a family of its own named as in core's `LIBERATION`.
     Bundled(&'static str),
     Inter,
 }
@@ -128,31 +63,21 @@ enum Candidate {
 /// The fonts to try, best first.
 fn candidates(w: Wanted) -> Vec<Candidate> {
     let (mut out, f) = match w {
-        Wanted::Standard(f) => (vec![], f),
+        Wanted::Standard(f) => {
+            let file = f
+                .typeface()
+                .and_then(|t| t.face(f.bold, f.italic).cloned())
+                .map(|file| Candidate::File(file.path, file.index));
+            (file.into_iter().collect(), f.standard())
+        }
         Wanted::Kept(name) => (
             vec![Candidate::Installed(name.to_string())],
             FontChoice::from_name(name),
         ),
     };
+    // The bundled face is always there, ready a frame or two after it is first asked for:
+    // Inter meanwhile, rather than loading an installed font that would soon go unused.
     out.push(Candidate::Bundled(face(f)));
-    // Should the bundled face be missing: an installed copy, a font with its widths,
-    // then the font it stands for.
-    let style = match (f.bold, f.italic) {
-        (false, false) => "",
-        (true, false) => ",Bold",
-        (false, true) => ",Italic",
-        (true, true) => ",BoldItalic",
-    };
-    let names = match f.family {
-        Family::Helvetica => ["Liberation Sans", "Arial", "Helvetica"],
-        Family::Times => ["Liberation Serif", "Times New Roman", "Times"],
-        Family::Courier => ["Liberation Mono", "Courier New", "Courier"],
-    };
-    out.extend(
-        names
-            .iter()
-            .map(|n| Candidate::Installed(format!("{n}{style}"))),
-    );
     out.push(Candidate::Inter);
     out
 }
@@ -162,6 +87,7 @@ fn candidates(w: Wanted) -> Vec<Candidate> {
 fn pick(w: Wanted, mut ready: impl FnMut(&Candidate) -> bool) -> FontFamily {
     match candidates(w).into_iter().find(|c| ready(c)) {
         Some(Candidate::Installed(name)) => named(&installed_key(&name)),
+        Some(Candidate::File(path, index)) => named(&file_key(&path, index)),
         Some(Candidate::Bundled(name)) => named(name),
         Some(Candidate::Inter) | None => FontFamily::Proportional,
     }
@@ -170,10 +96,46 @@ fn pick(w: Wanted, mut ready: impl FnMut(&Candidate) -> bool) -> FontFamily {
 /// The egui font family to draw text being typed in.
 pub fn family(ctx: &egui::Context, w: Wanted) -> FontFamily {
     pick(w, |c| match c {
-        Candidate::Installed(name) => installed(ctx, name),
-        Candidate::Bundled(name) => has(ctx, &named(name)),
+        Candidate::Installed(name) => loaded(ctx, &installed_key(name), None, {
+            let name = name.clone();
+            move || {
+                let f = InstalledFonts::system().named(&name)?;
+                Some((Cow::Owned(f.data.as_ref().as_ref().to_vec()), f.index))
+            }
+        }),
+        Candidate::File(path, index) => file(ctx, path, *index, None),
+        Candidate::Bundled(name) => {
+            let name = *name;
+            loaded(ctx, name, None, move || {
+                Some((Cow::Borrowed(bundled_face(name)?), 0))
+            })
+        }
         Candidate::Inter => true,
     })
+}
+
+/// The variation settings to draw text in `w` with: the weight of a variable font, as it
+/// will be embedded; none for others (drawing ignores settings a font has no axis for, so
+/// text drawn in a stand-in while the font loads is unchanged).
+pub fn coords(w: Wanted) -> VariationCoords {
+    let Wanted::Standard(f) = w else {
+        return VariationCoords::default();
+    };
+    let face = f.typeface().and_then(|t| t.face(f.bold, f.italic).cloned());
+    VariationCoords::new(face.into_iter().flat_map(|face| face.coords))
+}
+
+/// Largest font file loaded only to draw a family's name in the font list: Chinese,
+/// Japanese and Korean fonts run to tens of megabytes, and their names show in the
+/// interface font instead.
+const MAX_PREVIEW: u64 = 4 << 20;
+
+/// The egui font family to draw a family's name in for the font list, from the face
+/// `face`; `None` until it is loaded (the first question starts loading it), or when the
+/// font is too large to load only for that.
+pub fn preview(ctx: &egui::Context, face: &FaceFile) -> Option<FontFamily> {
+    file(ctx, &face.path, face.index, Some(MAX_PREVIEW))
+        .then(|| named(&file_key(&face.path, face.index)))
 }
 
 fn has(ctx: &egui::Context, family: &FontFamily) -> bool {
@@ -185,24 +147,48 @@ fn installed_key(name: &str) -> String {
     format!("installed {name}")
 }
 
-/// Installed fonts looked for, by PDF font name, kept in the context's memory.
+/// The egui name of a font file's face.
+fn file_key(path: &std::path::Path, index: u32) -> String {
+    format!("file {}#{index}", path.display())
+}
+
+/// Whether the face at `index` in the font file `path` is ready to draw with; the first
+/// question starts loading it. With `max`, a larger file isn't loaded.
+fn file(ctx: &egui::Context, path: &std::path::Path, index: u32, max: Option<u64>) -> bool {
+    let path = path.to_path_buf();
+    loaded(ctx, &file_key(&path, index), max, move || {
+        if max.is_some_and(|max| std::fs::metadata(&path).map_or(true, |m| m.len() > max)) {
+            return None;
+        }
+        Some((Cow::Owned(std::fs::read(&path).ok()?), index))
+    })
+}
+
+/// Fonts loaded, by egui name, kept in the context's memory.
 #[derive(Clone, Default)]
 struct Loads(Arc<Mutex<HashMap<String, Load>>>);
 
 enum Load {
-    /// Being looked for on another thread: the first search reads every installed font.
+    /// Being looked for or read on another thread: the first search reads every installed
+    /// font.
     Looking,
     /// Found; `sent` once handed to egui, which adds it at the start of the next frame.
     Found { data: Arc<FontData>, sent: bool },
-    /// Not installed.
-    Missing,
+    /// Not installed, or not read: too large, when `limited`, which a question without a
+    /// limit asks again.
+    Missing { limited: bool },
 }
 
-/// Whether the installed font a PDF font name stands for is ready to draw with; the
-/// first question starts looking for it.
-fn installed(ctx: &egui::Context, name: &str) -> bool {
-    let key = installed_key(name);
-    if has(ctx, &named(&key)) {
+/// Whether the font egui knows as `key` is ready to draw with; the first question starts
+/// `fetch` (its bytes and index) on another thread. `max` says whether the question had a
+/// size limit.
+fn loaded(
+    ctx: &egui::Context,
+    key: &str,
+    max: Option<u64>,
+    fetch: impl FnOnce() -> Option<(Cow<'static, [u8]>, u32)> + Send + 'static,
+) -> bool {
+    if has(ctx, &named(key)) {
         return true;
     }
     let loads = ctx.data_mut(|d| {
@@ -211,26 +197,33 @@ fn installed(ctx: &egui::Context, name: &str) -> bool {
             .clone()
     });
     let mut l = loads.lock().unwrap_or_else(|e| e.into_inner());
-    match l.get(name) {
-        None => {
-            l.insert(name.to_string(), Load::Looking);
-            let (loads, ctx, name) = (loads.clone(), ctx.clone(), name.to_string());
+    let start = match l.get(key) {
+        None => true,
+        Some(Load::Missing { limited: true }) => max.is_none(),
+        _ => false,
+    };
+    match l.get(key) {
+        _ if start => {
+            l.insert(key.to_string(), Load::Looking);
+            let (loads, ctx, key) = (loads.clone(), ctx.clone(), key.to_string());
             std::thread::spawn(move || {
-                let load = match InstalledFonts::system().named(&name) {
-                    Some(f) => Load::Found {
+                let load = match fetch() {
+                    Some((bytes, index)) => Load::Found {
                         data: Arc::new(FontData {
-                            font: Cow::Owned(f.data.as_ref().as_ref().to_vec()),
-                            index: f.index,
+                            font: bytes,
+                            index,
                             tweak: Default::default(),
                         }),
                         sent: false,
                     },
-                    None => Load::Missing,
+                    None => Load::Missing {
+                        limited: max.is_some(),
+                    },
                 };
                 loads
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .insert(name, load);
+                    .insert(key, load);
                 ctx.request_repaint();
             });
         }
@@ -238,19 +231,18 @@ fn installed(ctx: &egui::Context, name: &str) -> bool {
             // Every font found so far goes in, so two arriving in one frame both stay.
             let mut defs = ctx.fonts(|f| f.definitions().clone());
             let fallback = defs.families[&FontFamily::Proportional].clone();
-            for (name, load) in l.iter_mut() {
+            for (key, load) in l.iter_mut() {
                 if let Load::Found { data, sent } = load {
-                    let key = installed_key(name);
                     defs.font_data.insert(key.clone(), data.clone());
                     defs.families
-                        .insert(named(&key), with_fallback(&key, &fallback));
+                        .insert(named(key), with_fallback(key, &fallback));
                     *sent = true;
                 }
             }
             drop(l);
             ctx.set_fonts(defs);
         }
-        Some(Load::Looking | Load::Found { sent: true, .. } | Load::Missing) => {}
+        _ => {}
     }
     false
 }
@@ -258,6 +250,7 @@ fn installed(ctx: &egui::Context, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use limarepdf_core::{Family, LIBERATION};
     use std::time::{Duration, Instant};
 
     fn choice(family: Family, bold: bool, italic: bool) -> FontChoice {
@@ -277,9 +270,9 @@ mod tests {
                 let want = format!(
                     "Liberation {}{}{}",
                     match family {
-                        Family::Helvetica => "Sans",
                         Family::Times => "Serif",
                         Family::Courier => "Mono",
+                        Family::Helvetica | Family::Installed(_) => "Sans",
                     },
                     if bold { " Bold" } else { "" },
                     if italic { " Italic" } else { "" },
@@ -287,11 +280,7 @@ mod tests {
                 assert_eq!(face(f), want, "{}", f.base_font());
                 // The file is that face: its PostScript name, "LiberationSerif-BoldItalic",
                 // is in it, and no other style's.
-                let (_, bytes) = LIBERATION
-                    .iter()
-                    .flatten()
-                    .find(|(n, _)| *n == want)
-                    .unwrap();
+                let bytes = bundled_face(&want).unwrap();
                 let base = want.split(' ').take(2).collect::<String>();
                 let style = want.split(' ').skip(2).collect::<String>();
                 let ps = |style: &str| match style {
@@ -327,20 +316,19 @@ mod tests {
             candidates(Wanted::Standard(bold_times)),
             [
                 Candidate::Bundled("Liberation Serif Bold"),
-                Candidate::Installed("Liberation Serif,Bold".into()),
-                Candidate::Installed("Times New Roman,Bold".into()),
-                Candidate::Installed("Times,Bold".into()),
-                Candidate::Inter,
+                Candidate::Inter
             ]
         );
         // A kept font: the font itself first, then the Liberation face of its kind.
         let kept = candidates(Wanted::Kept("CourierNewPS-ItalicMT"));
         assert_eq!(
-            kept[0],
-            Candidate::Installed("CourierNewPS-ItalicMT".into())
+            kept,
+            [
+                Candidate::Installed("CourierNewPS-ItalicMT".into()),
+                Candidate::Bundled("Liberation Mono Italic"),
+                Candidate::Inter,
+            ]
         );
-        assert_eq!(kept[1], Candidate::Bundled("Liberation Mono Italic"));
-        assert_eq!(kept.last(), Some(&Candidate::Inter));
 
         // Each falls to the next that is ready.
         let w = Wanted::Kept("Arial,Bold");
@@ -348,13 +336,6 @@ mod tests {
         assert_eq!(
             pick(w, |c| !matches!(c, Candidate::Installed(_))),
             named("Liberation Sans Bold")
-        );
-        assert_eq!(
-            pick(
-                w,
-                |c| matches!(c, Candidate::Installed(n) if n.starts_with("Helvetica"))
-            ),
-            named("installed Helvetica,Bold")
         );
         assert_eq!(
             pick(w, |c| *c == Candidate::Inter),
@@ -374,22 +355,44 @@ mod tests {
         out.textures_delta.clear();
     }
 
-    #[test]
-    fn the_bundled_faces_are_registered() {
-        let ctx = ctx();
-        for (name, _) in LIBERATION.iter().flatten() {
-            let list = ctx.fonts(|f| f.definitions().families[&named(name)].clone());
-            assert_eq!(list[0], *name);
-            assert!(
-                list.contains(&"Inter".to_string()),
-                "{name} falls back to Inter"
-            );
+    /// The family text in `w` is drawn in, after frames until it is `want` (a minute at
+    /// most): fonts load on another thread.
+    fn settled(ctx: &egui::Context, w: Wanted, want: &FontFamily) -> FontFamily {
+        let done = Instant::now() + Duration::from_secs(60);
+        let mut got = family(ctx, w);
+        while got != *want && Instant::now() < done {
+            frame(ctx);
+            got = family(ctx, w);
+            std::thread::sleep(Duration::from_millis(20));
         }
-        let f = choice(Family::Courier, false, true);
-        assert_eq!(
-            family(&ctx, Wanted::Standard(f)),
-            named("Liberation Mono Italic")
-        );
+        got
+    }
+
+    #[test]
+    fn the_bundled_faces_are_loaded_on_first_use() {
+        // None at start: each is unpacked and added the first time text in it is drawn, in
+        // Inter until then.
+        let ctx = ctx();
+        for name in LIBERATION.iter().flatten() {
+            assert!(!has(&ctx, &named(name)), "{name} at start");
+        }
+        let w = Wanted::Standard(choice(Family::Courier, false, true));
+        assert_eq!(family(&ctx, w), FontFamily::Proportional);
+        let want = named("Liberation Mono Italic");
+        assert_eq!(settled(&ctx, w, &want), want);
+        for name in LIBERATION.iter().flatten() {
+            if *name != "Liberation Mono Italic" {
+                assert!(!has(&ctx, &named(name)), "{name} too");
+            }
+        }
+        let list = ctx.fonts(|f| f.definitions().families[&want].clone());
+        assert_eq!(list[0], "Liberation Mono Italic");
+        assert!(list.contains(&"Inter".to_string()), "falls back to Inter");
+
+        for f in [choice(Family::Courier, false, false), FontChoice::default()] {
+            let want = named(face(f));
+            assert_eq!(settled(&ctx, Wanted::Standard(f), &want), want);
+        }
         // Drawn with the face: Courier's widths, so every letter is as wide.
         let width = |s: &str| {
             ctx.fonts_mut(|fonts| {
@@ -434,14 +437,17 @@ mod tests {
         // the search is done.
         let ctx = ctx();
         let w = Wanted::Kept("NoSuchFontAnywhere-BoldItalic");
-        assert_eq!(family(&ctx, w), named("Liberation Sans Bold Italic"));
+        let stand_in = named("Liberation Sans Bold Italic");
+        assert_eq!(settled(&ctx, w, &stand_in), stand_in);
         let done = Instant::now() + Duration::from_secs(60);
         loop {
             frame(&ctx);
             let loads = ctx.data_mut(|d| d.get_temp::<Loads>(egui::Id::new("typing fonts")));
             let looking = loads.is_some_and(|l| {
                 matches!(
-                    l.0.lock().unwrap().get("NoSuchFontAnywhere-BoldItalic"),
+                    l.0.lock()
+                        .unwrap()
+                        .get(&installed_key("NoSuchFontAnywhere-BoldItalic")),
                     Some(Load::Looking)
                 )
             });
@@ -450,7 +456,7 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert_eq!(family(&ctx, w), named("Liberation Sans Bold Italic"));
+        assert_eq!(family(&ctx, w), stand_in);
 
         // One that is installed here (most Linux systems have Liberation or DejaVu):
         // drawn in it a frame or two after the search ends.
@@ -462,14 +468,33 @@ mod tests {
             return;
         };
         let w = Wanted::Kept(name);
-        let mut got = family(&ctx, w);
-        while got != named(&installed_key(name)) && Instant::now() < done {
-            frame(&ctx);
-            got = family(&ctx, w);
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        let got = settled(&ctx, w, &named(&installed_key(name)));
         assert_eq!(got, named(&installed_key(name)));
         let list = ctx.fonts(|f| f.definitions().families[&got].clone());
         assert!(list.contains(&"Inter".to_string()));
+    }
+
+    #[test]
+    fn installed_faces_are_drawn_from_their_file_at_their_weight() {
+        let bold = choice(crate::font_list::test_family("Caveat"), true, false);
+        let t = bold.typeface().unwrap();
+        let face = t.face(true, false).unwrap().clone();
+        let w = Wanted::Standard(bold);
+        // The family's file first, then the Liberation face of its kind.
+        let list = candidates(w);
+        assert_eq!(list[0], Candidate::File(face.path.clone(), face.index));
+        assert_eq!(list[1], Candidate::Bundled("Liberation Sans Bold"));
+        // At the weight it will be written in; standard fonts have no settings.
+        assert_eq!(coords(w), VariationCoords::new([(*b"wght", 700.0)]));
+        let helvetica = Wanted::Standard(FontChoice::default());
+        assert_eq!(coords(helvetica), VariationCoords::default());
+
+        // Drawn in a stand-in until the file is loaded, then in it; its name in the font
+        // list too.
+        let ctx = ctx();
+        let want = named(&file_key(&face.path, face.index));
+        assert_ne!(family(&ctx, w), want);
+        assert_eq!(settled(&ctx, w, &want), want);
+        assert_eq!(preview(&ctx, &face), Some(want));
     }
 }

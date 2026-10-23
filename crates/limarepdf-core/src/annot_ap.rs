@@ -4,12 +4,15 @@
 //! the annotation's `/Rect`; text boxes are laid out from their own corner like form
 //! fields.
 
-use crate::form_ap::{self, encode, fill_color, nums, op, stroke_color, Body, Border, Look};
-use crate::form_write::{parse_da, standard_metrics};
+use crate::embed;
+use crate::form_ap::{
+    self, encode, fill_color, nums, op, stroke_color, Body, Border, Look, Metrics,
+};
+use crate::form_write::parse_da;
 use crate::matrix as mx;
 use crate::overlay::escape;
 use crate::stamps::{bold_width, rounded, StampColor, StampKind, CAP};
-use crate::Pdf;
+use crate::{Family, FontChoice, Pdf};
 use lopdf::content::Operation;
 use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream};
 
@@ -68,8 +71,8 @@ struct Drawing {
     bbox: [f32; 4],
     /// Opacity below 1, or the Multiply blend mode for highlights.
     gs: Option<Dictionary>,
-    /// The standard font it uses as [`FONT`], if any.
-    font: Option<&'static str>,
+    /// The font it uses as [`FONT`], if any.
+    font: Option<embed::Pen>,
     /// Turns the drawing to fit `/Rect`, for text boxes on turned pages.
     matrix: Option<[f32; 6]>,
 }
@@ -81,20 +84,24 @@ impl Pdf {
         let mut fonts: Vec<(&str, ObjectId)> = Vec::new();
         let mut n = 0;
         for &id in ids {
-            let Some(d) = self.annotation_drawing(id) else {
+            let pen = self.box_pen(id);
+            let Some(d) = self.annotation_drawing(id, pen) else {
                 continue;
             };
             let mut res = Dictionary::new();
-            if let Some(name) = d.font {
-                let f = match fonts.iter().find(|(n, _)| *n == name) {
-                    Some(&(_, f)) => f,
-                    None => {
-                        let f = self.doc.add_object(dictionary! {
-                            "Type" => "Font", "Subtype" => "Type1", "BaseFont" => name,
-                            "Encoding" => "WinAnsiEncoding",
-                        });
-                        fonts.push((name, f));
-                        f
+            if let Some(pen) = d.font {
+                let f = match &pen {
+                    embed::Pen::Embedded(c) => c.font,
+                    embed::Pen::Standard(f) => {
+                        let name = f.base_font();
+                        match fonts.iter().find(|(n, _)| *n == name) {
+                            Some(&(_, f)) => f,
+                            None => {
+                                let f = self.doc.add_object(pen.font());
+                                fonts.push((name, f));
+                                f
+                            }
+                        }
                     }
                 };
                 res.set("Font", dictionary! { FONT => f });
@@ -120,8 +127,35 @@ impl Pdf {
         n
     }
 
+    /// The font a text box's text is drawn in ([`Pdf::pen`]): Helvetica, or its embedded
+    /// face for characters Helvetica lacks. Characters neither has show as `?`, as they
+    /// did before LimarePDF embedded fonts. `None` for other annotations.
+    pub(crate) fn box_pen(&mut self, id: ObjectId) -> Option<embed::Pen> {
+        let d = self.doc.get_dictionary(id).ok()?;
+        if d.get(b"Subtype").and_then(Object::as_name).ok()? != b"FreeText" {
+            return None;
+        }
+        let text = self.box_text(d);
+        let helvetica = FontChoice::default();
+        Some(
+            self.pen(helvetica, &text)
+                .unwrap_or(embed::Pen::Standard(helvetica)),
+        )
+    }
+
+    /// A text box's text, its `/Contents` with line breaks as `\n`.
+    pub(crate) fn box_text(&self, d: &Dictionary) -> String {
+        d.get(b"Contents")
+            .ok()
+            .and_then(|o| self.text_value(o))
+            .unwrap_or_default()
+            .replace("\r\n", "\n")
+            .replace('\r', "\n")
+    }
+
     /// The appearance for one annotation, or `None` for a type LimarePDF doesn't draw.
-    fn annotation_drawing(&self, id: ObjectId) -> Option<Drawing> {
+    /// `pen` is a text box's font ([`Pdf::box_pen`]).
+    fn annotation_drawing(&self, id: ObjectId, pen: Option<embed::Pen>) -> Option<Drawing> {
         let d = self.doc.get_dictionary(id).ok()?;
         let rect = self.rect(d.get(b"Rect").ok()?)?;
         let sub = d.get(b"Subtype").ok()?.as_name().ok()?;
@@ -279,7 +313,7 @@ impl Pdf {
                 ops.push(op("S", vec![]));
             }
             b"Text" => note(&mut ops, rect, line.c.as_deref(), name(d)),
-            b"FreeText" => return Some(self.free_text(d, rect, alpha)),
+            b"FreeText" => return Some(self.free_text(d, rect, alpha, pen?)),
             b"Stamp" => return Some(stamp(rect, name(d), alpha)),
             b"Caret" => {
                 let r = self.inner(d, rect);
@@ -314,11 +348,11 @@ impl Pdf {
         (i > 0.05).then_some(CLOUD * i)
     }
 
-    /// A text box: its `/Contents` in Helvetica, with the size and colour from `/DA` (or
-    /// the `/DS` style string), on the `/C` background with a border, which may be cloudy.
-    /// A callout (`/CL`) is a line from what the box points at to the box, whose place in
-    /// `/Rect` `/RD` then gives.
-    fn free_text(&self, d: &Dictionary, rect: [f32; 4], alpha: f32) -> Drawing {
+    /// A text box: its `/Contents` in Helvetica (or its embedded face: `pen`), with the size
+    /// and colour from `/DA` (or the `/DS` style string), on the `/C` background with a
+    /// border, which may be cloudy. A callout (`/CL`) is a line from what the box points at
+    /// to the box, whose place in `/Rect` `/RD` then gives.
+    fn free_text(&self, d: &Dictionary, rect: [f32; 4], alpha: f32, pen: embed::Pen) -> Drawing {
         // `/Rotate` (as Acrobat writes it) turns the text with its page, so it reads
         // upright as the page is shown.
         let turn = d
@@ -426,14 +460,8 @@ impl Pdf {
                 .and_then(|o| self.int_value(o))
                 .unwrap_or(0),
         };
-        let text = d
-            .get(b"Contents")
-            .ok()
-            .and_then(|o| self.text_value(o))
-            .unwrap_or_default()
-            .replace("\r\n", "\n")
-            .replace('\r', "\n");
-        let body = form_ap::draw(&look, &Body::Lines(&text), &standard_metrics("Helvetica"));
+        let text = self.box_text(d);
+        let body = form_ap::draw(&look, &Body::Lines(&text), &Metrics::of(pen.clone()));
         let mut content = encode(ops);
         content.extend(format!("\nq 1 0 0 1 {} {} cm\n", tb[0], tb[1]).into_bytes());
         content.extend(body);
@@ -442,7 +470,7 @@ impl Pdf {
             content: with_gs(content, alpha, false),
             bbox: [0.0, 0.0, w, h],
             gs: gs_dict(alpha, false),
-            font: Some("Helvetica"),
+            font: Some(pen),
             matrix,
         }
     }
@@ -1036,7 +1064,11 @@ fn stamp(rect: [f32; 4], name: &[u8], alpha: f32) -> Drawing {
         content: with_gs(s.into_bytes(), alpha, false),
         bbox: [0.0, 0.0, w, h],
         gs: gs_dict(alpha, false),
-        font: Some("Helvetica-Bold"),
+        font: Some(embed::Pen::Standard(FontChoice {
+            family: Family::Helvetica,
+            bold: true,
+            italic: false,
+        })),
         matrix: None,
     }
 }

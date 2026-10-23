@@ -20,6 +20,9 @@ pub struct Pdf {
     pub(crate) repaired: bool,
     /// Whether the file was encrypted and needed a password to open.
     pub(crate) password_needed: bool,
+    /// The fonts LimarePDF embedded since the document was opened: in a signed document,
+    /// only these are grown (see `embed.rs`).
+    pub(crate) made_fonts: HashSet<ObjectId>,
 }
 
 /// Why a repaired document may read differently in other PDF apps.
@@ -169,6 +172,7 @@ impl Pdf {
             differs: None,
             repaired: false,
             password_needed,
+            made_fonts: Default::default(),
         };
         pdf.differs = pdf.match_other_readers(read);
         Ok(pdf)
@@ -223,6 +227,7 @@ impl Pdf {
             differs: None,
             repaired: false,
             password_needed: false,
+            made_fonts: Default::default(),
         }
     }
 
@@ -638,6 +643,7 @@ impl Pdf {
             differs: self.differs.clone(),
             repaired: self.repaired,
             password_needed: self.password_needed,
+            made_fonts: self.made_fonts.clone(),
         }
     }
 

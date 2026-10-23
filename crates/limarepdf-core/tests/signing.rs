@@ -8,7 +8,7 @@ mod sigkit;
 
 use limarepdf_core::{
     append_edits, sign_document, verify_signatures, AnnotKind, AppendedEdits, ChangeKind, Cipher,
-    DisallowedChanges, Encryption, FieldValue, IdStore, Info, InkColor, LockAction, Pdf,
+    DisallowedChanges, Encryption, FieldValue, IdStore, Info, InkColor, LockAction, NewId, Pdf,
     Permissions, Restrictions, SigKind, SigStatus, SignArt, SignPlace, SignRequest, SignRole,
     SignStyle, SignatureReport, SignedDocument, Stamp, StampPlace, Trust, TrustList, TrustRole,
     UnlockedId,
@@ -43,6 +43,41 @@ test_id!(rsa, "modern");
 test_id!(p256, "p256");
 test_id!(p384, "p384");
 test_id!(issued, "chain");
+
+/// A new ID whose owner's name is beyond Western European, made in a scratch folder.
+fn czech() -> &'static UnlockedId {
+    static ID: OnceLock<UnlockedId> = OnceLock::new();
+    ID.get_or_init(|| {
+        let dir =
+            std::env::temp_dir().join(format!("limarepdf-signing-{}-czech", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = IdStore::new(dir.join("ids"));
+        let new = NewId {
+            name: "Šárka Dvořák".into(),
+            ..NewId::default()
+        };
+        let id = store.create(&new, PASSWORD).unwrap();
+        let u = store.unlock(&id, PASSWORD).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        u
+    })
+}
+
+/// The ToUnicode maps of the fonts LimarePDF embedded in `bytes`.
+fn embedded_maps(bytes: &[u8]) -> Vec<String> {
+    let p = Pdf::from_bytes(bytes, None).unwrap();
+    p.doc
+        .objects
+        .values()
+        .filter_map(|o| o.as_dict().ok())
+        .filter(|d| d.has(b"LimarePDF"))
+        .map(|d| {
+            let id = d.get(b"ToUnicode").unwrap().as_reference().unwrap();
+            let s = p.doc.get_object(id).unwrap().as_stream().unwrap();
+            String::from_utf8(s.decompressed_content().unwrap_or(s.content.clone())).unwrap()
+        })
+        .collect()
+}
 
 fn req(id: &UnlockedId, place: SignPlace) -> SignRequest<'_> {
     SignRequest {
@@ -291,6 +326,57 @@ fn a_second_signature_keeps_the_first_valid() {
     let s3 = sign(&s2.bytes, &req(p384(), new_box(2)));
     let rep = newest_is_good(&s3.bytes, p384());
     assert!(rep.signatures.iter().all(|s| s.changes_allowed()));
+}
+
+/// A name beyond Western European is shown, in an embedded font. Signing again makes a
+/// font of its own rather than grow the first, which the first signature covers.
+#[test]
+fn a_name_beyond_western_european_is_shown_and_signing_again_keeps_the_first_valid() {
+    let s1 = sign(&base_pdf(), &req(czech(), new_box(0)));
+    newest_is_good(&s1.bytes, czech());
+    let maps = embedded_maps(&s1.bytes);
+    assert_eq!(maps.len(), 1);
+    // ř is U+0159, Š U+0160.
+    assert!(
+        maps[0].contains("<0159>") && maps[0].contains("<0160>"),
+        "{}",
+        maps[0]
+    );
+    let s2 = sign(&s1.bytes, &req(czech(), new_box(1)));
+    let rep = newest_is_good(&s2.bytes, czech());
+    assert!(
+        rep.signatures[0].changes_allowed(),
+        "{:?}",
+        rep.signatures[0].changes
+    );
+    assert_eq!(embedded_maps(&s2.bytes).len(), 2);
+}
+
+/// Text boxes beyond Western European added to a signed document, in two saves: each is
+/// a comment the signature allows, and the second doesn't rewrite the first's font.
+#[test]
+fn text_beyond_western_european_added_after_signing_keeps_the_signature_valid() {
+    let s = sign(&base_pdf(), &req(rsa(), new_box(0))).bytes;
+    let style = limarepdf_core::TextStyle::default();
+    let add = |t: &'static str| {
+        move |p: &mut Pdf| {
+            p.add_text_box(0, [20.0, 120.0, 280.0, 160.0], t, &style, "Jane")
+                .unwrap();
+        }
+    };
+    let a = save(&s, add("Съешь же ещё этих"));
+    assert!(a.disallowed.is_none(), "{:?}", a.disallowed);
+    let b = save(&a.bytes, add("Zażółć gęślą jaźń"));
+    assert!(b.disallowed.is_none(), "{:?}", b.disallowed);
+    assert!(b.bytes.starts_with(&a.bytes));
+    let rep = report(&b.bytes);
+    assert_eq!(rep.signatures[0].status, SigStatus::Valid);
+    assert!(
+        rep.signatures[0].changes_allowed(),
+        "{:?}",
+        rep.signatures[0].changes
+    );
+    assert_eq!(embedded_maps(&b.bytes).len(), 2);
 }
 
 #[test]

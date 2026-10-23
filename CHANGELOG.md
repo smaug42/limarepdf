@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### Added
+
+- Text beyond Western European: Polish, Czech, Turkish, Romanian, Vietnamese, Greek, Russian, Ukrainian and the
+  other languages written in Latin, Greek and Cyrillic, in new and edited text, text boxes, fill-and-sign text,
+  form values (flattening them too), headers, footers, Bates numbers, watermarks, stamp wording and the
+  name-and-date line, the name in a digital signature's look, and selected text printed or saved as a plain page,
+  in the app and on the command line. Text the standard fonts can write is written as before; other text is set
+  in the bundled Liberation face of the same font (same widths), embedded in the file and cut down to the
+  characters used, and reads back in search, copy and other apps. Form fields keep naming their own font.
+  Hebrew, Arabic, the Indic scripts, Thai and emoji aren't supported yet, nor Chinese, Japanese and Korean
+  outside installed fonts (below): they can't be typed (the note at the caret says so), and are refused
+  elsewhere, naming them, instead of coming out as `?` (a stamp leaves such a name off its line; text boxes and
+  a plain page of selected text still show `?`).
+- A typed signature a handwriting style can't show names the styles that can (Caveat has Cyrillic).
+- Installed fonts for new and edited text: the inspector's font list has Helvetica, Times and Courier, then the
+  fonts installed on the computer whose licence allows embedding (TrueType, OpenType and variable fonts), each
+  name drawn in its own font, with a search field. Text in one is embedded in the file, cut down to the
+  characters used, so it looks the same anywhere; Bold and Italic use the family's own faces (off when it has
+  none), and a character the font lacks is refused with a note naming the font. Chinese, Japanese and Korean
+  can be typed in an installed font that has them; typed in Helvetica, Times or Courier, they get a note naming
+  that font and asking for an installed font that has them. An edited line from a font that is installed is
+  written in that font again rather than in Helvetica, Times or Courier.
+
 ### Changed
 
 - The main window is rearranged. The top bar holds Open, Save and Export; Undo and Redo; the everyday tools (Read
@@ -87,9 +110,10 @@
 - Creating a digital ID shows a problem beside the field it is about, and the keyboard starts in the Name field.
 - The Fill and sign pane no longer has a Sign with digital ID button: digital signing and certifying are in
   Document > Digital signatures.
-- limarepdf includes the Liberation fonts (SIL Open Font License 1.1, about 4.4 MB), which have the widths of
-  Helvetica, Times and Courier, to show text in its own look while it is typed on the page. They are only drawn
-  on screen: text is still written in Helvetica, Times or Courier, and the font list is unchanged. Release
+- limarepdf and limarepdf-cli include the Liberation fonts (SIL Open Font License 1.1), which have the widths of
+  Helvetica, Times and Courier: the app shows text in its own look while it is typed on the page, and both write
+  in them the characters the standard fonts lack (see Added). They are stored compressed, adding about 2.4 MB to
+  each program rather than 4.4 MB, and each is unpacked, unchanged, the first time it is needed. Release
   archives and packages include their licence as `FONT-LICENSE-Liberation.txt`.
 - Add text is typed on the page, where you click, in the font, size and colour it will have, instead of in a box
   in the inspector with Add and Cancel. Enter starts a new line; Esc, a click elsewhere or another tool finishes,
@@ -139,6 +163,9 @@
 
 ### Fixed
 
+- Choosing a font, Bold, Italic, a size or a colour in the inspector while editing a line on the page ended the
+  editing and showed a text box of the line's text above the font list, moving it down. The line now stays in
+  editing, shows the change, and takes the keyboard back.
 - Going into the font size box and out again, or pressing Enter in it, without typing rounded an unusual size such
   as 10.126 to 10.13; it now changes nothing, and the box shows the exact size. A change of size smaller than a
   hundredth of a point was also lost.
@@ -147,6 +174,22 @@
   keeps its shape and size when the window is resized.
 - A dialog shown in a tall window stayed as tall when the window got shorter, pushing its buttons off screen; it
   now fits again.
+- A dialog taller than the window, such as Sign with digital ID in a narrow window, opened too low and grew a step
+  at a time, so until the mouse moved its buttons could be below the bottom of the screen. It now opens at its
+  size, inside the window.
+- A long printer name made the Print window, and its list of printers, wider than the screen; it is now cut short,
+  and shown whole on hover and in the list, over more than one line if need be.
+  About's row of links ran into the window's margin since dialogs moved to 14-point text, and past the screen's
+  edges in a small window; About is a little wider, and in a narrow window the links take two rows. Password
+  required showed a very
+  long file name in full; it is cut short as in the other dialogs.
+- A menu that was open when a dialog opened by its shortcut (such as Ctrl+P with the page layout menu open) stayed
+  on top of the dimmed window; it now closes.
+- Esc could be missed in Recover unsaved changes and Trusted certificates when their rows had different buttons
+  (such as a copy that can't be restored, or a certificate being removed): the window was laid out twice on every
+  frame.
+- Screen readers now say which document or certificate each Restore, Discard, Show file, Remove…, Stop trusting
+  and Keep button acts on (they all had the same names), and name About's copy button.
 - When making, importing or exporting a digital ID failed, for example with a wrong password, the Digital IDs
   window went back to its list with the error at the bottom, losing what was typed. The form now comes back with
   its name, file or export choices kept and the error beside the password, or at the end of the form for other
@@ -810,7 +853,7 @@ follow links and bookmarks, and select text without changing tools.
 ### Other changes
 
 - Search takes about twice as long as before, as it now reads pages with MPE's own text reader: 0.17 s for a
-  477-page manual. See [Performance](docs/performance.md).
+  477-page manual. See [Performance](docs/developer/performance.md).
 - Release notes on GitHub end with a link to every change since the previous version.
 - Installers and packages (a macOS app, Linux packages, Homebrew) are planned for once the app is more complete;
   see [Features and status](docs/features.md#packaging).

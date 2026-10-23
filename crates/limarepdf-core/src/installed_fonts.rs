@@ -301,6 +301,11 @@ impl InstalledFonts {
         InstalledFonts::new(db)
     }
 
+    /// The fonts, to offer for writing text (`typefaces.rs`).
+    pub(crate) fn database(&self) -> &Database {
+        &self.db
+    }
+
     /// No fonts at all, so every font that isn't embedded gets hayro's stand-in.
     pub fn none() -> Self {
         InstalledFonts::new(Database::new())
@@ -525,8 +530,8 @@ mod tests {
 
     #[test]
     fn named_is_the_font_or_its_widths() {
-        // The app's bundled Liberation fonts stand in for installed ones here.
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../limarepdf-gui/assets/fonts");
+        // The bundled Liberation fonts stand in for installed ones here.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
         let regular = dir.join("LiberationSans-Regular.ttf");
         let bold = dir.join("LiberationSans-Bold.ttf");
         let fonts = InstalledFonts::from_files(&[&regular, &bold]);

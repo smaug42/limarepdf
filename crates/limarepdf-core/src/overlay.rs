@@ -1,17 +1,29 @@
 //! Page overlays: watermarks, headers/footers, page numbers and Bates numbering.
-//! All text uses the PDF standard Helvetica font (WinAnsi).
+//! All text uses the PDF standard Helvetica font (WinAnsi), or its embedded face
+//! (Liberation Sans) for characters Helvetica lacks.
 
+use crate::embed::Face;
 use crate::fonts::winansi_byte;
 use crate::imgs::orient_matrix;
-use crate::{std14, Pdf, Result};
+use crate::{std14, FontChoice, Pdf, Result};
 use anyhow::bail;
 use lopdf::dictionary;
 use lopdf::{Dictionary, Object, ObjectId, Stream};
 
-/// Width in points of `s` in Helvetica at `size`.
+/// Width in points of `s` in Helvetica at `size`; characters Helvetica lacks are measured
+/// in its embedded face, which has the same widths for the rest.
 pub fn text_width(s: &str, size: f32) -> f32 {
     s.chars()
-        .map(|c| std14::width("Helvetica", c).unwrap_or(556.0))
+        .map(|c| {
+            std14::width("Helvetica", c).unwrap_or_else(|| {
+                let face = Face::liberation(FontChoice::default());
+                if face.covers(c) {
+                    face.width(&c.to_string(), 1000.0)
+                } else {
+                    556.0
+                }
+            })
+        })
         .sum::<f32>()
         * size
         / 1000.0
@@ -331,7 +343,8 @@ impl Pdf {
         if let Some(&bad) = idx.iter().find(|&&i| i >= ids.len()) {
             bail!("page {} does not exist", bad + 1);
         }
-        let font = self.make_font();
+        let pen = self.pen(FontChoice::default(), &wm.text)?;
+        let font = self.pen_font(&pen);
         let gs = self.make_gs(wm.opacity);
         for &i in idx {
             let page = ids[i];
@@ -342,7 +355,7 @@ impl Pdf {
             let gs_nm = self.add_resource(page, "ExtGState", "LimareGS", gs.into())?;
             let stream = format!(
                 "q\n{}\n/{gs_nm} gs\n{:.3} {:.3} {:.3} rg\n{}\n\
-                 BT /{font_nm} {:.2} Tf {:.3} {:.3} Td ({}) Tj ET\nQ\n",
+                 BT /{font_nm} {:.2} Tf {:.3} {:.3} Td {} Tj ET\nQ\n",
                 matrix(m),
                 wm.color.0,
                 wm.color.1,
@@ -351,7 +364,7 @@ impl Pdf {
                 wm.font_size,
                 tx,
                 ty,
-                escape(&wm.text),
+                pen.token(&wm.text),
             );
             self.add_overlay(page, stream, wm.foreground)?;
         }
@@ -412,22 +425,33 @@ impl Pdf {
                 bail!("the Bates numbers would go past {}", u64::MAX);
             }
         }
-        let font = self.make_font();
         let date = today_iso();
-        for (seq, &i) in idx.iter().enumerate() {
+        // Every page's lines, so one font holds what all of them need.
+        let lines: Vec<Vec<Placed>> = idx
+            .iter()
+            .enumerate()
+            .map(|(seq, &i)| {
+                let (_, vw, vh) = self.visual_matrix(ids[i]);
+                hf.lines(i, seq, total, (vw, vh), &date)
+            })
+            .collect();
+        let all: String = lines.iter().flatten().map(|l| l.text.as_str()).collect();
+        let pen = self.pen(FontChoice::default(), &all)?;
+        let font = self.pen_font(&pen);
+        for (&i, lines) in idx.iter().zip(lines) {
             let page = ids[i];
-            let (m, vw, vh) = self.visual_matrix(page);
+            let (m, _, _) = self.visual_matrix(page);
             let font_nm = self.add_resource(page, "Font", FONT_PREFIX, font.into())?;
             let mut s = format!(
                 "q\n{:.5} {:.5} {:.5} {:.5} {:.3} {:.3} cm\n{:.3} {:.3} {:.3} rg\nBT /{font_nm} {:.2} Tf\n",
                 m[0], m[1], m[2], m[3], m[4], m[5], hf.color.0, hf.color.1, hf.color.2, hf.font_size
             );
-            for l in hf.lines(i, seq, total, (vw, vh), &date) {
+            for l in lines {
                 s.push_str(&format!(
-                    "1 0 0 1 {:.3} {:.3} Tm ({}) Tj\n",
+                    "1 0 0 1 {:.3} {:.3} Tm {} Tj\n",
                     l.x,
                     l.y,
-                    escape(&l.text)
+                    pen.token(&l.text)
                 ));
             }
             s.push_str("ET\nQ\n");

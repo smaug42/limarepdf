@@ -1,3 +1,5 @@
+[User guide](README.md) › Getting started
+
 # Features and status
 
 **Status: 0.8, for testing.** Most testing has been on Linux. Annotations can be viewed, moved, deleted and flattened;
@@ -38,13 +40,20 @@ this list once it works. The feature table below has the details.
 
 **Typing and editing text**
 
-- Only Western European characters can be added: in new or edited text, text boxes, headers, footers, Bates
-  numbers, watermarks, stamps, form values and typed signatures. Others (Greek, Cyrillic, Chinese, Japanese,
-  Korean and so on) can't be typed when adding text or editing a line, where a note at the caret says so, and
-  elsewhere come out as `?`.
-- New text uses Helvetica, Times or Courier only (with Bold and Italic): other fonts, installed or bundled, can't
-  be chosen yet, as using them means embedding them in the PDF. Editing a line keeps its font only when the
-  file's font allows it (not for most embedded fonts); otherwise the line becomes Helvetica, Times or Courier
+- Only Latin (Vietnamese included), Greek and Cyrillic characters can be added: in new or edited text, text
+  boxes, headers, footers, Bates numbers, watermarks, stamps, form values and fill-and-sign text. New and edited
+  text can also be Chinese, Japanese or Korean in an installed font that has them (Noto Sans CJK, say), not in
+  Helvetica, Times or Courier (typed in those, a note at the caret asks for an installed font that has them).
+  Hebrew and Arabic (written right to left), the scripts whose letters join or change shape (Devanagari and the
+  other Indic scripts, Thai) and emoji can't, in any font: when adding text, editing a line or typing a header,
+  footer or watermark, a note at the caret says so; form values and stamp wording with them are refused; text boxes (typed in LimarePDF, or made by another app without a drawing) and
+  a plain-text page of selected text show them as `?`.
+  Typed signatures show what their handwriting has: Caveat has Cyrillic, the other three Latin only.
+- Installed fonts are offered only when their licence allows embedding and they have the Latin letters; a
+  family's missing bold or italic can't be made up (the button is off), and one line can't mix fonts, so a
+  character the chosen font lacks is refused rather than taken from another font. Editing a line keeps its font
+  only when the file's font allows it (not for most embedded fonts); otherwise the line is written in the
+  installed family it came from, when LimarePDF can embed it, or else in Helvetica, Times or Courier
   ([details](content-editing.md#limits)).
 - Text is edited one line at a time: a paragraph doesn't rewrap as you type, so a longer line can run into
   whatever is beside it.
@@ -93,7 +102,7 @@ available.
 | Pages boxes | Done | Numbers and ranges (`1-3,7`, `5-`, `all`) in printing and the inspector's tools; going into one that says `all` selects it, so typing replaces it. [Details](gui.md#selecting-and-the-inspector) |
 | App icon | Done | Window, taskbar and Windows `.exe`. Wayland needs the desktop entry installed. [Details](install.md#menu-entry-and-icon-on-linux) |
 | About window | Done | Version (copyable for bug reports), links, contributors, credits; "Made in Canada". [Details](gui.md#look-and-feel) |
-| Dialogs | Done | One look for every dialog and the command palette, as in the design's mockups (settings in headed groups, labels above fields, outlined fields and buttons, short fields side by side when there is room, smaller margins in narrow windows): task and document in the title, the action button highlighted (red when Undo can't take it back) in the platform's order, the window behind blocked, Esc as Cancel unless work would be lost, Copy on messages, reasons under Details, problems beside their fields (a missing or wrong password under the password, when signing too), and a digital ID form whose work fails comes back with what was typed (passwords aside); Tab goes through fields and buttons in the order shown, and screen readers can name each one. Checked on Linux only |
+| Dialogs | Done | One look for every dialog and the command palette, as in the design's mockups (settings in headed groups, labels above fields, outlined fields and buttons, short fields side by side when there is room, smaller margins in narrow windows): task and document in the title, the action button highlighted (red when Undo can't take it back) in the platform's order, the window behind blocked, Esc as Cancel unless work would be lost, Copy on messages, reasons under Details, problems beside their fields (a missing or wrong password under the password, when signing too), and a digital ID form whose work fails comes back with what was typed (passwords aside); Tab goes through fields and buttons in the order shown, and screen readers can name each one (a row's buttons say which document or certificate); long file and printer names are cut short. Each dialog is checked by the app's tests in wide, 400-point-narrow and 300-point-short windows at scales 1, 1.5 and 2, and by screenshot; not yet with a screen reader. Checked on Linux only |
 | Names for screen readers | Partial | Every button, field, list and menu in the window, the inspector, the side views and the dialogs has a name a screen reader can say: icons and symbols such as ◀ in words, Bold, Italic and the picked signature or mark with whether they are on. Checked by the app's tests on Linux; not yet tried with a screen reader. The panels' edges are named but can't be moved from the keyboard. [Details](gui.md#screen-readers) |
 | Window size | Done | Remembered between runs, and whether it was maximized; position: No. [Details](gui.md#look-and-feel) |
 | Light and dark themes | Done | Follows the system, or chosen in View > Theme; remembered between runs |
@@ -101,16 +110,16 @@ available.
 | Rendering | Done | Pages that can't be drawn, and pictures and fonts that can't, are reported; high zoom is drawn in tiles up to 6400%; large page images are drawn in bands, which bounds the memory a complex page takes (one test page from 9.7 GB to 1.5 GB), and the app stops drawing a page at a zoom it has moved past; fonts that aren't embedded use installed fonts or similar stand-ins where hayro asks (CID fonts, which Chinese, Japanese and Korean text uses), with a notice saying what to install; annotations without a drawing of their own are drawn by LimarePDF; damaged files are repaired when opened, with a notice. Known limits, mostly hayro's: some transparency groups are drawn wrongly, hairlines can come out light grey, plain fonts that aren't embedded use the standard fonts, media and 3D annotations aren't drawn, and no rich text or line captions. Compared with poppler over about 1,100 public test PDFs. [Details](rendering.md) |
 | Search | Done | Phrases across line breaks, and words hyphenated at a line end, are found and highlighted. Chinese, Japanese and Korean text in fonts without a ToUnicode map is read through the font's character map. [Details](search-and-text.md) |
 | Select and copy text | Done | With the default read tool; across pages, scrolling while you drag; in the order on the page, not the file's drawing order; includes recognised text |
-| Print or save selected text | Done | As the pages look, full width, cut down to the selected lines, or as plain text in Helvetica (Western European characters only); also saves a .txt file |
+| Print or save selected text | Done | As the pages look, full width, cut down to the selected lines, or as plain text in Helvetica (Latin, Greek and Cyrillic; other characters come out as `?`); also saves a .txt file |
 | Page operations: insert, delete, rotate, extract, reorder, crop, remove blank pages | Done | Crop by dragging the crop box on the pages, shown whole while it is set, or by typing margins. Blank means one even colour, give or take specks or a lone page number. Deleted and extracted-away pages leave nothing in the saved file: bookmarks, named destinations, links, form fields and tags no longer refer to them, and the tags' alternative text for their content goes. A form nested more than 32 deep is refused, changing nothing ([details](gui.md#selecting-and-the-inspector)) |
 | Merge and split | Done | Split by page count or at bookmarks, files named after them. Bookmarks, forms and named destinations of appended files are not carried over. Split parts, like extracted pages, keep the bookmarks to their own pages and nothing of the other pages; each is written as soon as it is made, so memory stays near the document's own size. Split by file size: No |
 | Undo and redo | Done | 20 levels, including password settings; fewer on very large documents (up to 1 GB per document) |
-| Headers, footers, page numbers, dates, Bates numbers | Done | Shown on the pages as you set them, added with Add to pages, then updated in place as you change them. Helvetica and Western European characters only; Bates numbers up to 18446744073709551615 (more is refused, changing nothing) |
+| Headers, footers, page numbers, dates, Bates numbers | Done | Shown on the pages as you set them, added with Add to pages, then updated in place as you change them. Helvetica; Latin, Greek and Cyrillic characters; Bates numbers up to 18446744073709551615 (more is refused, changing nothing) |
 | Watermarks | Done | Text or a PNG, JPEG or TIFF picture; centred, with size, opacity, rotation, above or behind. Shown on the pages as you set them, added with Add to pages, then updated in place |
 | Document properties | Done | Title, author, subject, keywords, creator, producer; each kept as you type it (Enter or leaving the field), one undo step each |
 | Password security | Done | All four ciphers and permission flags. [Things to know](security.md) |
 | Opening protected files | Done | With the open (user) password; files with an empty one (only a permissions password) open without asking, including RC4 files with a shortened password entry that other readers accept, and their notice says so |
-| Content editing | Partial | New text is typed on the page where you click, in the font, size and colour it will have, several lines added as one undo step. Double-click a line with the read tool, or click it with the Text tool, to edit it on the page, drawn in the font, size and colour it will have over the line; pictures, shapes and comments are selected, moved and resized with the read tool too, page text after Move or resize text on its toolbar (the read tool stays on) or with the arrow. Changes in the inspector apply at once, each an undo step; typing into one line again soon joins one step. Works on lines, not paragraphs; some fonts are replaced when edited; the text after a deleted, edited or moved line stays where it was (except in vertical writing). [Details](content-editing.md) |
+| Content editing | Partial | New text is typed on the page where you click, in the font, size and colour it will have, several lines added as one undo step. The font list offers Helvetica, Times and Courier and the installed fonts that allow embedding, searchable, each name in its own font. Double-click a line with the read tool, or click it with the Text tool, to edit it on the page, drawn in the font, size and colour it will have over the line; pictures, shapes and comments are selected, moved and resized with the read tool too, page text after Move or resize text on its toolbar (the read tool stays on) or with the arrow. Changes in the inspector apply at once, each an undo step; typing into one line again soon joins one step. Works on lines, not paragraphs; some fonts are replaced when edited; the text after a deleted, edited or moved line stays where it was (except in vertical writing). [Details](content-editing.md) |
 | Importing images as pages | Done | PNG, JPEG, TIFF. [Details](scanning-and-ocr.md#importing-images) |
 | Optimising scanned pages | Partial | Pages that are one image; only the pages chosen change, also when they share a picture with others. [Details](scanning-and-ocr.md#optimising-scanned-pages) |
 | OCR | Partial | Latin script; built-in recognition model. [Details](scanning-and-ocr.md#recognising-text-ocr) |
@@ -118,11 +127,11 @@ available.
 | Printing | Partial | No paper size or scaling options. Form values that would come out empty (no drawing, and text LimarePDF can't draw): the app asks first, the command line refuses and names the fields. Tried on paper on Linux (HP LaserJet, CUPS): pages, mixed sizes, a turned page, comments and form values print correctly. On Windows only the print dialog has been tried, and nothing has been printed on macOS. [Details](export-and-printing.md#printing) |
 | Driving scanners | No | Not planned: scan with your system's tool and import the images |
 | Export to Word, Excel, CSV | No | |
-| Annotations and comments | Partial | Shown (LimarePDF draws the common types when the file has no drawing; up to 10,000 per page, with a notice on a page that has more, whose others are still removed by Remove comments and redaction), listed in the Comments view with replies, deleted, flattened; `limarepdf-cli annot list\|remove\|flatten`. Highlight, underline, strike out and squiggly-underline selected text; add sticky notes and text boxes (Helvetica, Western European characters only), rectangles, ellipses, lines with an optional arrowhead, freehand pen drawings and stamps; reply to any annotation; select any annotation to change its colour, opacity and comment (and a shape's width, fill and arrowhead), and move or resize it with the read tool or the arrow; drag a line's ends to turn it, and turn freehand drawings with their rotate handle. Not yet: turning rectangles, ellipses and text boxes (see below), polygons, measuring, attachments, XFDF. [Details](gui.md#shapes-lines-and-drawings) |
-| Stamps | Done | Approved, Not approved, Draft, Final, Confidential, For comment and Void, or your own wording in green, red or blue (Western European characters only), optionally with the author's name and the date, or a PNG or JPEG picture; click to place or drag to size, then move and resize; `limarepdf-cli stamp`. Not yet: stamps made from selected content, or wording in other scripts. [Details](gui.md#stamps) |
-| Fill and sign | Done | A signature or initials drawn, typed in one of four handwriting styles or from an image (paper made transparent), up to five of each saved for next time; the date in three styles, your name, text and tick, cross and dot marks, in black or blue ink, picked from the Fill and sign button's menu or pane; placed anywhere or in an empty signature field (one at a time, or several with the tool kept active), movable until Finish signing draws them into the pages. Typed signatures from the command line: `limarepdf-cli stamp --signature`. Not a digital signature; typed signatures and text are Western European only; the date is in UTC. [Details](gui.md#filling-and-signing) |
+| Annotations and comments | Partial | Shown (LimarePDF draws the common types when the file has no drawing; up to 10,000 per page, with a notice on a page that has more, whose others are still removed by Remove comments and redaction), listed in the Comments view with replies, deleted, flattened; `limarepdf-cli annot list\|remove\|flatten`. Highlight, underline, strike out and squiggly-underline selected text; add sticky notes and text boxes (Helvetica; Latin, Greek and Cyrillic characters), rectangles, ellipses, lines with an optional arrowhead, freehand pen drawings and stamps; reply to any annotation; select any annotation to change its colour, opacity and comment (and a shape's width, fill and arrowhead), and move or resize it with the read tool or the arrow; drag a line's ends to turn it, and turn freehand drawings with their rotate handle. Not yet: turning rectangles, ellipses and text boxes (see below), polygons, measuring, attachments, XFDF. [Details](gui.md#shapes-lines-and-drawings) |
+| Stamps | Done | Approved, Not approved, Draft, Final, Confidential, For comment and Void, or your own wording in green, red or blue (Latin, Greek and Cyrillic characters), optionally with the author's name and the date, or a PNG or JPEG picture; click to place or drag to size, then move and resize; `limarepdf-cli stamp`. Not yet: stamps made from selected content, or wording in other scripts. [Details](gui.md#stamps) |
+| Fill and sign | Done | A signature or initials drawn, typed in one of four handwriting styles or from an image (paper made transparent), up to five of each saved for next time; the date in three styles, your name, text and tick, cross and dot marks, in black or blue ink, picked from the Fill and sign button's menu or pane; placed anywhere or in an empty signature field (one at a time, or several with the tool kept active), movable until Finish signing draws them into the pages. Typed signatures from the command line: `limarepdf-cli stamp --signature`. Not a digital signature; text is Latin, Greek and Cyrillic, typed signatures what their handwriting has (Caveat Latin and Cyrillic, the others Latin); the date is in UTC. [Details](gui.md#filling-and-signing) |
 | Measuring | No | |
-| Forms | Partial | Fill in text fields, checkboxes, radio buttons and lists in the app (Tab between fields, fields highlighted unless turned off, reset, flatten) and from the command line (`limarepdf-cli form`, values as JSON, flatten all or some pages). Western European text only, so a value filled in elsewhere in other characters shows only if that app drew it; flattening refuses, naming the fields, rather than lose one it can't draw; JavaScript doesn't run; creating fields: No; signature fields take a fill-and-sign signature, or a digital signature (Document > Digital signatures > Sign with digital ID, or `limarepdf-cli sign --field`). [Details](gui.md#filling-in-forms) |
+| Forms | Partial | Fill in text fields, checkboxes, radio buttons and lists in the app (Tab between fields, fields highlighted unless turned off, reset, flatten) and from the command line (`limarepdf-cli form`, values as JSON, flatten all or some pages). Latin, Greek and Cyrillic text, drawn in an embedded font when the field's own can't show it (the field keeps naming its own font for other apps), so a value filled in elsewhere in other scripts shows only if that app drew it; flattening refuses, naming the fields, rather than lose one it can't draw; JavaScript doesn't run; creating fields: No; signature fields take a fill-and-sign signature, or a digital signature (Document > Digital signatures > Sign with digital ID, or `limarepdf-cli sign --field`). [Details](gui.md#filling-in-forms) |
 | XFA-only forms (made for Adobe Reader) | No | Recognised and explained in a notice and by `limarepdf-cli form`; showing or filling them is not planned (see below). Hybrid forms are filled through their ordinary fields |
 | Form data import/export (FDF, XFDF), barcodes, JavaScript | No | |
 | Viewer preferences | Done | The layout, side panel (Pages or Bookmarks) and page a document opens with: followed when opening, set in the inspector's Opening view (each choice applies as you make it) or with `limarepdf-cli view-prefs`. Full screen and hiding the toolbar or menu: No. [Details](cli.md#viewer-preferences) |
@@ -143,8 +152,11 @@ available.
 
 ## Known limits
 
-- Header, footer, Bates and watermark text uses Helvetica and Western European characters only; other
-  characters print as `?`.
+- Text with characters the standard fonts lack (beyond Western European) is written in Liberation Sans, Serif or
+  Mono, which have the same widths as Helvetica, Times and Courier, embedded in the file and cut down to the
+  characters used (a few KB). One font per face grows as text is added; in a signed document, each save adds
+  fonts of its own instead, so the signed part stays as it was. Text in an installed font is always embedded
+  the same way (OpenType CFF fonts as such; a variable font at the weight chosen).
 - `limarepdf-cli render` leaves a filled form field empty when the field has no drawing of its own; the app's
   exports and all printing draw it. To be fixed ([details](export-and-printing.md#pages-as-images)).
 - Headers, footers and watermarks are added to the page content. They are not annotations and cannot be removed one
@@ -202,7 +214,7 @@ available.
 ## Planned and proposed
 
 Ideas for what comes next. None of these are available yet, and the list is not a commitment or an order. A wider
-pool of features other PDF tools have is in [ideas.md](ideas.md).
+pool of features other PDF tools have is in [ideas.md](developer/ideas.md).
 
 ### Reliability
 
@@ -210,9 +222,9 @@ pool of features other PDF tools have is in [ideas.md](ideas.md).
   signed document saved by adding to the original, when the original is unchanged, so its signatures stay; reopening
   the last session's documents.
 - **Acceptance checks** of everyday workflows by hand, in other readers and on Windows and macOS, as listed in
-  [Testing](testing.md#acceptance-checks). They have been run on Linux.
+  [Testing](developer/testing.md#acceptance-checks). They have been run on Linux.
 - **Very complex pages draw slowly:** one test page with 73,000 drawn paths and 84 shaded areas takes 54 s to draw
-  at 150 dpi, where poppler takes 9 s ([Performance](performance.md)). Its memory is now bounded by drawing in bands
+  at 150 dpi, where poppler takes 9 s ([Performance](developer/performance.md)). Its memory is now bounded by drawing in bands
   ([Rendering](rendering.md#large-drawings)).
 
 ### Rendering
@@ -226,7 +238,7 @@ Done for now (see the Rendering row above). Left for a later round:
 - **A very large memory request:** on one test file hayro asks for 7.6 GB at once to fill a single shape at 96 dpi.
   On Linux it draws, since the memory is never used; on Windows, which doesn't promise memory it hasn't got, it
   could stop the app. Not tried on Windows yet; the check is in
-  [Testing](testing.md#platform-smoke-checks).
+  [Testing](developer/testing.md#platform-smoke-checks).
 - **Notices for what hayro draws wrongly:** plain fonts that aren't embedded (such as Calibri or Wingdings, drawn
   with a standard font), and knockout or non-isolated transparency groups. Offered, not yet decided.
 - **A check on a HiDPI screen** (scale factor 2): tile sizes, the 4096-pixel cap and sharpness have only been tried
@@ -276,7 +288,7 @@ Checking, trust, digital IDs, signing, certifying and saving signed documents ar
 
 Not planned for now: timestamps from a timestamp server when signing (the signing time comes from your computer's
 clock) and long-term validation, revocation checks, Adobe's and the EU's lists of trusted authorities, smart cards and system
-keystores, signing encrypted files (see [ideas](ideas.md)).
+keystores, signing encrypted files (see [ideas](developer/ideas.md)).
 
 ### Packaging
 
@@ -310,3 +322,7 @@ archives stay.
 - **Standards output.** PDF/A for archiving, and PDF/UA tagging for accessibility.
 - **Revocation checked offline.** Use the revocation answers a signed document carries to tell whether a signer's
   certificate was withdrawn, without going online.
+
+---
+
+[← First steps](first-steps.md) · [User guide](README.md) · [Everyday tasks →](README.md#everyday-tasks)

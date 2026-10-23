@@ -9,30 +9,22 @@ This is a from-scratch implementation (with AI assistance): it contains no other
 
 ## Documentation
 
-**Get started**
+**[The user guide](docs/README.md)** takes you from installing LimarePDF to using every part of it. New to
+LimarePDF? Start here:
 
-- [Install and build](docs/install.md)
-- [Quick start](docs/quick-start.md)
-- [Features and status](docs/features.md)
+1. [Install LimarePDF](docs/install.md)
+2. [First steps](docs/first-steps.md)
+3. [Features and status](docs/features.md): what works, and what doesn't yet
 
-**Use LimarePDF**
+Then go to the [everyday tasks](docs/README.md#everyday-tasks), the [desktop app](docs/gui.md) and
+[command-line](docs/cli.md) references, or [Troubleshooting](docs/troubleshooting.md) when something goes wrong.
 
-- [Using the desktop app](docs/gui.md)
-- [Command-line reference](docs/cli.md)
-- [Content editing](docs/content-editing.md)
-- [Scanning and OCR](docs/scanning-and-ocr.md)
-- [Search and text](docs/search-and-text.md)
-- [Export and printing](docs/export-and-printing.md)
-- [Password security](docs/security.md)
-- [Redaction](docs/redaction.md)
-- [Digital signatures](docs/signatures.md)
+**For developers** ([all developer docs](docs/developer/README.md))
 
-**Under the hood**
-
-- [How it is built](docs/architecture.md)
-- [Rendering](docs/rendering.md)
-- [Performance](docs/performance.md)
-- [Testing and platforms](docs/testing.md)
-- [Releasing](docs/releasing.md)
+- [How it is built](docs/developer/architecture.md)
+- [Testing and platforms](docs/developer/testing.md)
+- [Performance](docs/developer/performance.md)
+- [Releasing](docs/developer/releasing.md)
+- [Ideas pool](docs/developer/ideas.md)
 
 **[Changelog](CHANGELOG.md)** · **[Licence](docs/licence.md)**
