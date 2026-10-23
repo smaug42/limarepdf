@@ -1,13 +1,16 @@
 //! Content editing state and interaction: selecting, moving and resizing objects, inserting text, images
 //! and shapes, and the inspector panel.
 
+use crate::dialogs;
 use crate::fields::FormUi;
 use crate::page_text::{self, PageText};
 use crate::selection::{ObjKind, Selection, WordAt};
 use crate::signing::{SignKit, SignPane, SignPick};
 use crate::theme;
+use crate::typing_fonts::{self, Wanted};
 use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use egui_phosphor::regular as icon;
+use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::{
     words_text, Annot, AnnotKind, Family, FieldValue, FontChoice, Link, LinkTarget, ObjectKind,
     PageObject, PageWord, PathStyle, Shape, ShapeLook, SignPlace, StampColor, StampKind,
@@ -487,10 +490,61 @@ fn settled(ctx: &egui::Context) -> bool {
 struct LineEdit {
     page: usize,
     id: usize,
-    /// The characters (from, to) selected when the box opens: the word double-clicked.
-    pick: (usize, usize),
+    /// What is selected when the editor opens.
+    pick: Pick,
     /// Takes the keyboard on the next frame.
     fresh: bool,
+    refused: page_text::Refused,
+}
+
+/// What a line editor selects when it opens.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Pick {
+    /// These characters (from, to): the word double-clicked, found among the page's words.
+    Chars(usize, usize),
+    /// The character nearest this point (page points) as the line is drawn; with `word`,
+    /// the word around it.
+    At(Pos2, bool),
+}
+
+/// The change the inspector's working copy makes to its line of text, as core is asked it.
+fn text_change(insp: &Insp) -> TextEdit {
+    TextEdit {
+        text: insp.text.replace(['\n', '\r'], " "),
+        font: (insp.font != insp.orig_font).then_some(insp.font),
+        size: (insp.size != insp.orig_size).then_some(insp.size),
+        color: (!same_color(insp.color, insp.orig_color)).then_some(insp.color),
+    }
+}
+
+/// The font line `o` changed by `te` is written in, as core decides it: its own when it
+/// can be kept, else a standard font (the one chosen, or the nearest to its own).
+fn line_font<'a>(o: &'a PageObject, te: &TextEdit) -> Wanted<'a> {
+    let name = o.font_name.as_deref().unwrap_or("");
+    if te.keeps_font(o.font_reusable) {
+        Wanted::Kept(name)
+    } else {
+        Wanted::Standard(te.font.unwrap_or_else(|| FontChoice::from_name(name)))
+    }
+}
+
+/// Whether line `o` is edited drawn as it will be written; turned lines and invisible
+/// (OCR) ones are edited in a plain box.
+fn drawn_in_place(o: &PageObject) -> bool {
+    o.upright && !o.hidden && o.baseline.is_some()
+}
+
+/// What hides line `o` while it is edited: its box, with room for accents above and
+/// descenders below, in page points.
+fn cover_box(o: &PageObject) -> [f32; 4] {
+    let b = o.bbox;
+    let h = b[3] - b[1];
+    [
+        b[0] - 0.05 * h,
+        b[1] - 0.12 * h,
+        b[2] + 0.05 * h,
+        b[3] + 0.06 * h,
+    ]
 }
 
 /// The characters (from, to) of the word at character `i` of `s`; empty between words.
@@ -541,6 +595,8 @@ pub struct Editor {
     pub adding: Option<PageText>,
     /// Put the keyboard in the inspector's text box for the selected text object.
     focus_text: bool,
+    /// The note about a character that box refused.
+    text_refused: page_text::Refused,
     pub tfont: FontChoice,
     pub tsize: f32,
     pub tcolor: [f32; 3],
@@ -633,6 +689,11 @@ pub struct Editor {
     pub digital_place: Option<SignPlace>,
     /// Why the digital signature tool couldn't take a place.
     digital_error: Option<String>,
+    /// How pages are coloured on screen (set by the tab), which text being typed matches.
+    pub page_colours: PageColours,
+    /// The colour around the line being edited (found by the tab), which hides the line
+    /// under the editor; `None` until known.
+    pub cover: Option<Color32>,
 }
 
 impl Default for Editor {
@@ -646,6 +707,7 @@ impl Default for Editor {
             draw: None,
             adding: None,
             focus_text: false,
+            text_refused: page_text::Refused::default(),
             tfont: FontChoice::default(),
             tsize: 14.0,
             tcolor: [0.0; 3],
@@ -703,6 +765,8 @@ impl Default for Editor {
             digital_fields: Vec::new(),
             digital_place: None,
             digital_error: None,
+            page_colours: PageColours::Normal,
+            cover: None,
         }
     }
 }
@@ -989,12 +1053,7 @@ impl Editor {
         let obj = self.objs.get(&page)?.get(id)?;
         match obj.kind {
             ObjectKind::Text => {
-                let te = TextEdit {
-                    text: insp.text.replace(['\n', '\r'], " "),
-                    font: (insp.font != insp.orig_font).then_some(insp.font),
-                    size: (insp.size != insp.orig_size).then_some(insp.size),
-                    color: (!same_color(insp.color, insp.orig_color)).then_some(insp.color),
-                };
+                let te = text_change(insp);
                 let same = obj.text.as_deref() == Some(te.text.as_str())
                     && te.font.is_none()
                     && te.size.is_none()
@@ -1028,24 +1087,26 @@ impl Editor {
         }
     }
 
-    /// Edit a line of page text on the page, with the characters `pick` selected.
-    fn start_line_edit(&mut self, page: usize, id: usize, pick: (usize, usize)) {
+    /// Edit a line of page text on the page, with `pick` selected.
+    fn start_line_edit(&mut self, page: usize, id: usize, pick: Pick) {
         self.select_object(page, id);
         self.sync_insp();
+        self.cover = None;
         self.line_edit = Some(LineEdit {
             page,
             id,
             pick,
             fresh: true,
+            refused: page_text::Refused::default(),
         });
     }
 
-    /// The characters of line `id`'s text to select when it is double-clicked at `p`: the
-    /// word there, found among the page's `words` on the line, or by where `p` falls along
-    /// the line when they don't match its text.
-    fn word_pick(&self, page: usize, id: usize, p: Pos2, words: &[PageWord]) -> (usize, usize) {
+    /// What to select of line `id`'s text when it is double-clicked at `p`: the word
+    /// there, found among the page's `words` on the line, or around where `p` falls on the
+    /// line when they don't match its text.
+    fn word_pick(&self, page: usize, id: usize, p: Pos2, words: &[PageWord]) -> Pick {
         let Some(o) = self.objs.get(&page).and_then(|v| v.get(id)) else {
-            return (0, 0);
+            return Pick::Chars(0, 0);
         };
         let text = o.text.as_deref().unwrap_or("");
         let b = o.bbox;
@@ -1060,25 +1121,22 @@ impl Editor {
         let spans = word_spans(text);
         let under = on.iter().position(|w| p.x >= w.bbox[0] && p.x <= w.bbox[2]);
         match under.filter(|_| on.len() == spans.len()) {
-            Some(j) => spans[j],
-            None => word_around(text, self.caret_pick(page, id, p)),
+            Some(j) => Pick::Chars(spans[j].0, spans[j].1),
+            None => Pick::At(p, true),
         }
-    }
-
-    /// The character of line `id`'s text nearest `p`, by where `p` falls along the line.
-    fn caret_pick(&self, page: usize, id: usize, p: Pos2) -> usize {
-        let Some(o) = self.objs.get(&page).and_then(|v| v.get(id)) else {
-            return 0;
-        };
-        let b = o.bbox;
-        let n = o.text.as_deref().unwrap_or("").chars().count();
-        let at = ((p.x - b[0]) / (b[2] - b[0]).max(0.01)).clamp(0.0, 1.0);
-        (at * n as f32).round() as usize
     }
 
     /// Whether a line of page text is being edited, or new text typed, on the page.
     pub fn typing_on_page(&self) -> bool {
         self.line_edit.is_some() || self.adding.is_some()
+    }
+
+    /// The line being edited drawn in place, as its page and the box to hide (page
+    /// points): the tab finds the colour around it for [`Self::cover`].
+    pub fn cover_wanted(&self) -> Option<(usize, [f32; 4])> {
+        let le = self.line_edit.as_ref()?;
+        let o = self.objs.get(&le.page)?.get(le.id)?;
+        drawn_in_place(o).then(|| (le.page, cover_box(o)))
     }
 
     /// The new text being typed on `page` (drawn at `r`, `k` pixels per point). Esc, Tab
@@ -1091,7 +1149,7 @@ impl Editor {
         let Some(a) = self.adding.as_mut().filter(|a| a.page == page) else {
             return false;
         };
-        let shown = a.ui(ui, r, k, &mut look, accent, settled);
+        let shown = a.ui(ui, r, k, &mut look, self.page_colours, accent, settled);
         // Ctrl+B and Ctrl+I change the inspector's choice, as its buttons do.
         self.tfont = look.font;
         if shown.done {
@@ -1100,81 +1158,142 @@ impl Editor {
         shown.over
     }
 
-    /// The line of page text being edited on `page` (drawn at `r`, `k` pixels per point),
-    /// in a box over the line. Enter or clicking away keeps the change, Esc drops it.
-    /// Returns true when the page should not take the pointer this frame: it is over the
-    /// box, or the box just opened or was dropped.
+    /// The line of page text being edited on `page` (drawn at `r`, `k` pixels per point):
+    /// drawn as it will be written, in the font core will write it in, over the line,
+    /// which is hidden underneath; a turned or invisible line in a plain box. Esc, Enter,
+    /// Tab or clicking away keeps the change. Returns true when the page should not take
+    /// the pointer this frame: it is over the editor, or the editor just opened or closed.
     fn line_edit_ui(&mut self, ui: &mut egui::Ui, page: usize, r: Rect, k: f32) -> bool {
-        let Some(le) = self.line_edit.as_ref().filter(|l| l.page == page) else {
+        if self.line_edit.as_ref().is_none_or(|l| l.page != page) {
+            return false;
+        }
+        self.sync_insp();
+        let Some(key) = self.line_edit.as_ref().map(|l| (l.page, l.id)) else {
             return false;
         };
-        let (key, pick, fresh) = ((le.page, le.id), le.pick, le.fresh);
-        self.sync_insp();
-        let b = self
-            .objs
-            .get(&page)
-            .and_then(|v| v.get(key.1))
-            .map(|o| o.bbox);
-        let selected = self.sel() == Some(key);
-        let insp = self.insp.as_mut().filter(|i| i.key == key);
-        let (Some(b), Some(insp), true) = (b, insp, selected) else {
+        let o = self.objs.get(&page).and_then(|v| v.get(key.1)).cloned();
+        let ok = self.sel() == Some(key) && self.insp.as_ref().is_some_and(|i| i.key == key);
+        let (Some(o), true) = (o, ok) else {
             self.line_edit = None;
             return false;
         };
+        let (Some(le), Some(insp)) = (self.line_edit.as_mut(), self.insp.as_mut()) else {
+            return false;
+        };
+        let ctx = ui.ctx().clone();
         let to_screen = |x: f32, y: f32| Pos2::new(r.min.x + x * k, r.min.y + y * k);
-        let area = Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3])).expand(2.0);
         let id = egui::Id::new(("line-edit", page));
-        // Light colours in either theme, as for text boxes: the text sits on the paper.
-        let font = egui::FontId::proportional((area.height() * 0.75).clamp(6.0, 96.0));
-        let out = egui::Area::new(id.with("area"))
-            .fixed_pos(area.min)
-            .order(egui::Order::Foreground)
-            .show(ui.ctx(), |ui| {
-                *ui.visuals_mut() = egui::Visuals::light();
-                ui.add(
+        let drawn = drawn_in_place(&o);
+        if ctx.memory(|m| m.has_focus(id)) {
+            // Before the editor sees the keys: what can't be written isn't typed, and
+            // Ctrl+B and Ctrl+I switch the whole line, as the inspector's buttons do.
+            let t = page_text::take_typing(ui, true, !o.hidden);
+            insp.font.bold ^= t.bold;
+            insp.font.italic ^= t.italic;
+            if t.refused {
+                le.refused.mark(&ctx);
+            }
+        }
+        let b = o.bbox;
+        let (out, area) = if drawn {
+            let family = typing_fonts::family(&ctx, line_font(&o, &text_change(insp)));
+            let style = page_text::Style {
+                font: egui::FontId::new((insp.size * k).max(1.0), family),
+                color: page_text::shown(self.page_colours, insp.color),
+                mode: self.page_colours,
+                accent: ui.visuals().selection.stroke.color,
+            };
+            let (x, y) = o.baseline.unwrap_or((b[0], b[3]));
+            let c = cover_box(&o);
+            let cover = self.cover.map(|fill| {
+                let c = Rect::from_min_max(to_screen(c[0], c[1]), to_screen(c[2], c[3]));
+                (c, fill)
+            });
+            let f = page_text::field(
+                &ctx,
+                id,
+                &mut insp.text,
+                to_screen(x, y),
+                &style,
+                false,
+                cover,
+                false,
+            );
+            (f.out, f.outline)
+        } else {
+            let area = Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3])).expand(2.0);
+            // Light colours in either theme, as for text boxes: the text sits on the paper.
+            let font = egui::FontId::proportional((area.height() * 0.75).clamp(6.0, 96.0));
+            let out = egui::Area::new(id.with("area"))
+                .fixed_pos(area.min)
+                .order(egui::Order::Foreground)
+                .show(&ctx, |ui| {
+                    *ui.visuals_mut() = egui::Visuals::light();
                     egui::TextEdit::singleline(&mut insp.text)
                         .id(id)
                         .font(font)
                         .min_size(area.size())
                         .desired_width(area.width())
                         .clip_text(false)
-                        .margin(egui::Margin::same(2)),
-                )
-            })
-            .inner;
-        if fresh {
-            // The word double-clicked is selected, as in a word processor.
-            let (from, to) = pick;
-            if let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), id) {
+                        .margin(egui::Margin::same(2))
+                        .show(ui)
+                })
+                .inner;
+            (out, area)
+        };
+        let edit = &out.response.response;
+        let name = format!("Editing text: {}", o.text.as_deref().unwrap_or(""));
+        dialogs::set_name(edit, &name);
+        le.refused.show(&ctx, &out, id);
+        if le.fresh {
+            // The caret where clicked, or the word double-clicked selected, as in a word
+            // processor: by the text as drawn, or along the plain box.
+            let (from, to) = match le.pick {
+                Pick::Chars(a, b) => (a, b),
+                Pick::At(p, word) => {
+                    let i = if drawn {
+                        let at = to_screen(p.x, p.y) - out.galley_pos;
+                        out.galley.cursor_from_pos(at).index.0
+                    } else {
+                        let n = insp.text.chars().count();
+                        let at = ((p.x - b[0]) / (b[2] - b[0]).max(0.01)).clamp(0.0, 1.0);
+                        (at * n as f32).round() as usize
+                    };
+                    if word {
+                        word_around(&insp.text, i)
+                    } else {
+                        (i, i)
+                    }
+                }
+            };
+            if let Some(mut st) = egui::TextEdit::load_state(&ctx, id) {
                 let range = egui::text::CCursorRange::two(
                     egui::text::CCursor::new(from),
                     egui::text::CCursor::new(to),
                 );
                 st.cursor.set_char_range(Some(range));
                 st.clear_undoer();
-                st.store(ui.ctx(), id);
+                st.store(&ctx, id);
             }
-            out.request_focus();
-            if let Some(l) = self.line_edit.as_mut() {
-                l.fresh = false;
-            }
+            edit.request_focus();
+            le.fresh = false;
             return true;
         }
         let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
-        if esc && (out.lost_focus() || out.has_focus()) {
-            // What was typed goes; the working copy starts again from the line.
+        if esc && (edit.lost_focus() || edit.has_focus()) {
+            // Esc keeps what was typed, as a click away does; Ctrl+Z takes it back.
             self.line_edit = None;
-            self.insp = None;
+            self.commit_insp();
             return true;
         }
         // Scrolled out of view, or the keyboard went elsewhere: keep what was typed. A click
         // that ended it still selects what it was on.
-        if !out.has_focus() || !ui.clip_rect().intersects(area) {
+        if !edit.has_focus() || !ui.clip_rect().intersects(area) {
             self.line_edit = None;
             self.commit_insp();
             return false;
         }
-        out.hovered()
+        edit.hovered()
     }
 
     /// The reply typed to the selected comment, as the change that adds it.
@@ -1445,6 +1564,60 @@ impl Editor {
             self.words(pdf, p);
         }
         self.selection = Selection::Words { anchor, end };
+    }
+
+    /// Start selecting words with a drag pressed at `p` (page points) on `page`, from the
+    /// word nearest it among the page's `words`.
+    fn start_word_drag(&mut self, page: usize, p: Option<Pos2>, words: &[PageWord]) {
+        if let Some(i) = p.and_then(|p| Self::nearest_word(words, p)) {
+            self.selection = Selection::word((page, i));
+            self.text_drag = true;
+        }
+    }
+
+    /// While words are selected by dragging, the selection's end follows the pointer:
+    /// whichever visible page (`page` drawn at `r`, `k` pixels per point) it is over, held
+    /// inside the view, which scrolls at its edges. The drag ends with `resp`'s.
+    #[allow(clippy::too_many_arguments)]
+    fn follow_word_drag(
+        &mut self,
+        ui: &egui::Ui,
+        pdf: &limarepdf_core::Pdf,
+        page: usize,
+        r: Rect,
+        k: f32,
+        resp: &egui::Response,
+        words: &[PageWord],
+    ) {
+        if self.text_drag {
+            let view = ui.clip_rect();
+            let at = ui.input(|i| i.pointer.latest_pos()).map(|p| view.clamp(p));
+            let at = at.filter(|p| r.contains(*p));
+            let at = at.map(|p| Pos2::new((p.x - r.min.x) / k, (p.y - r.min.y) / k));
+            if let Some(i) = at.and_then(|p| Self::nearest_word(words, p)) {
+                self.extend_words(pdf, (page, i));
+            }
+        }
+        if resp.drag_stopped() {
+            self.text_drag = false;
+        }
+    }
+
+    /// Shade the selected words of `page` (`words`) in `accent`.
+    fn paint_words(
+        &self,
+        painter: &egui::Painter,
+        page: usize,
+        words: &[PageWord],
+        screen_rect: impl Fn([f32; 4]) -> Rect,
+        accent: Color32,
+    ) {
+        if let Some(range) = self.selection.words_on(page, words.len()) {
+            let fill = accent.gamma_multiply(0.45);
+            for w in &words[range] {
+                painter.rect_filled(screen_rect(w.bbox), 1.0, fill);
+            }
+        }
     }
 
     /// The first and last index of the words on word `i`'s line.
@@ -2018,9 +2191,8 @@ impl Editor {
                     let p = ui.input(|i| i.pointer.press_origin()).map(to_pt);
                     if let Some(p) = p.filter(|&p| grabs(self, p)) {
                         start_arrange(self, p, true);
-                    } else if let Some(i) = nearest(p) {
-                        self.selection = Selection::word((page, i));
-                        self.text_drag = true;
+                    } else {
+                        self.start_word_drag(page, p, &words);
                     }
                 }
                 if self.drag.is_some() {
@@ -2033,16 +2205,7 @@ impl Editor {
                         self.drag_done(page);
                     }
                 }
-                if self.text_drag {
-                    let view = ui.clip_rect();
-                    let at = ui.input(|i| i.pointer.latest_pos()).map(|p| view.clamp(p));
-                    if let Some(i) = nearest(at.filter(|p| r.contains(*p)).map(to_pt)) {
-                        self.extend_words(pdf, (page, i));
-                    }
-                }
-                if resp.drag_stopped() {
-                    self.text_drag = false;
-                }
+                self.follow_word_drag(ui, pdf, page, r, k, &resp, &words);
                 let click_at = || resp.interact_pointer_pos().map(to_pt);
                 if resp.triple_clicked() {
                     let line = nearest(click_at()).and_then(|i| Self::line_of(&words, i));
@@ -2097,24 +2260,28 @@ impl Editor {
                         resp = resp.on_hover_text_at_pointer(tip);
                     }
                 }
-                if let Some(range) = self.selection.words_on(page, words.len()) {
-                    let fill = accent.gamma_multiply(0.45);
-                    for w in &words[range] {
-                        painter.rect_filled(screen_rect(w.bbox), 1.0, fill);
-                    }
-                }
+                self.paint_words(&painter, page, &words, screen_rect, accent);
             }
             Tool::Text => {
                 ui.ctx().set_cursor_icon(CursorIcon::Text);
+                // A drag selects text, as with the read tool, finishing new text first.
+                let words = self.words(pdf, page).to_vec();
+                if resp.drag_started() {
+                    self.finish_adding();
+                    let p = ui.input(|i| i.pointer.press_origin()).map(to_pt);
+                    self.start_word_drag(page, p, &words);
+                }
+                self.follow_word_drag(ui, pdf, page, r, k, &resp, &words);
+                self.paint_words(&painter, page, &words, screen_rect, accent);
                 if let Some(p) = click_pt(&resp).filter(|_| resp.clicked()) {
+                    self.selection.clear_words();
                     if self.adding.as_ref().is_some_and(PageText::has_text) {
                         // A click elsewhere finishes the text being typed.
                         self.finish_adding();
                     } else if let Some(i) = self.text_hit(page, p, tol) {
                         // On page text: edit its line, the caret where clicked.
                         self.adding = None;
-                        let at = self.caret_pick(page, i, p);
-                        self.start_line_edit(page, i, (at, at));
+                        self.start_line_edit(page, i, Pick::At(p, false));
                     } else {
                         // New text there; with nothing typed yet, it moves there.
                         self.adding = Some(PageText::new(page, (p.x, p.y)));
@@ -2786,8 +2953,8 @@ impl Editor {
             return;
         }
         if self.line_edit.take().is_some() {
-            // The working copy starts again from the line.
-            self.insp = None;
+            // What was typed is kept, as Esc in the editor does.
+            self.commit_insp();
             return;
         }
         if self.selection.annot().is_some() {
@@ -3496,14 +3663,25 @@ impl Editor {
             ObjectKind::Text => {
                 ui.add_space(4.0);
                 if self.line_edit.is_some() {
-                    ui.weak("Editing on the page: Enter or click away keeps it, Esc cancels.");
+                    ui.weak("Editing on the page. Ctrl+Z takes a change back.");
                 } else {
-                    let r = ui.add(
-                        egui::TextEdit::singleline(&mut insp.text).desired_width(f32::INFINITY),
-                    );
+                    let id = egui::Id::new(("text-object", page, id));
+                    // What can't be written isn't typed, as on the page.
+                    if ui.ctx().memory(|m| m.has_focus(id)) {
+                        let t = page_text::take_typing(ui, true, false);
+                        if t.refused {
+                            self.text_refused.mark(ui.ctx());
+                        }
+                    }
+                    let out = egui::TextEdit::singleline(&mut insp.text)
+                        .id(id)
+                        .desired_width(f32::INFINITY)
+                        .show(ui);
+                    let r = &out.response.response;
                     r.widget_info(|| {
                         egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Text")
                     });
+                    self.text_refused.show(ui.ctx(), &out, id);
                     if self.focus_text {
                         r.request_focus();
                         self.focus_text = false;
@@ -3868,12 +4046,9 @@ mod tests {
         let words = ed.words(&pdf, 0).to_vec();
         let cold = words.iter().find(|w| w.text == "cold").unwrap().bbox;
         let at = Pos2::new(cold[2] - 1.0, (cold[1] + cold[3]) / 2.0);
-        assert_eq!(ed.word_pick(0, 2, at, &words), (12, 16));
-        // Without the words: by where the click falls along the line.
-        assert_eq!(
-            ed.word_pick(0, 2, at, &[]),
-            word_around("Walrus like cold water", 14)
-        );
+        assert_eq!(ed.word_pick(0, 2, at, &words), Pick::Chars(12, 16));
+        // Without the words: around where the click falls on the line as it is drawn.
+        assert_eq!(ed.word_pick(0, 2, at, &[]), Pick::At(at, true));
     }
 
     #[test]
@@ -3933,18 +4108,94 @@ mod tests {
     }
 
     #[test]
-    fn escape_drops_what_was_typed_on_the_page() {
+    fn escape_keeps_what_was_typed_on_the_page() {
         let (_, mut ed) = page_with_objects();
-        ed.start_line_edit(0, 2, (0, 6));
+        ed.start_line_edit(0, 2, Pick::Chars(0, 6));
         assert!(ed.typing_on_page());
         ed.insp.as_mut().unwrap().text = "Seal".into();
         ed.escape();
         assert!(!ed.typing_on_page() && !ed.pending());
+        assert!(matches!(
+            ed.actions.as_slice(),
+            [Action::EditText(0, 2, te)] if te.text == "Seal"
+        ));
         // The line stays selected; Esc again clears it.
         assert_eq!(ed.sel(), Some((0, 2)));
         ed.escape();
         assert_eq!(ed.sel(), None);
-        assert!(ed.actions.is_empty());
+        // Nothing typed: Esc only closes the editor.
+        ed.actions.clear();
+        ed.start_line_edit(0, 2, Pick::Chars(0, 6));
+        ed.escape();
+        assert!(!ed.typing_on_page() && ed.actions.is_empty());
+    }
+
+    /// The editor draws a line in the font core will write it in.
+    #[test]
+    fn a_line_is_edited_in_the_font_it_will_be_written_in() {
+        let (_, mut ed) = page_with_objects();
+        ed.select_object(0, 2);
+        ed.sync_insp();
+        let o = ed.objs[&0][2].clone();
+        let font = |ed: &Editor, o: &PageObject| {
+            let te = text_change(ed.insp.as_ref().unwrap());
+            format!("{:?}", line_font(o, &te))
+        };
+        // Its own font, when core can keep it: plain ASCII and no style changed.
+        let kept = PageObject {
+            font_name: Some("Arial,Bold".into()),
+            font_reusable: true,
+            ..o.clone()
+        };
+        assert_eq!(font(&ed, &kept), "Kept(\"Arial,Bold\")");
+        ed.insp.as_mut().unwrap().text = "Walrus 42".into();
+        assert_eq!(font(&ed, &kept), "Kept(\"Arial,Bold\")");
+        // A character beyond ASCII, a style change, or a font that can't be kept: the
+        // standard font nearest it, or the one chosen.
+        let arial_bold = format!("Standard({:?})", FontChoice::from_name("Arial,Bold"));
+        ed.insp.as_mut().unwrap().text = "Café".into();
+        assert_eq!(font(&ed, &kept), arial_bold);
+        ed.insp.as_mut().unwrap().text = "Walrus".into();
+        ed.insp.as_mut().unwrap().size = 20.0;
+        assert_eq!(font(&ed, &kept), arial_bold);
+        ed.insp.as_mut().unwrap().size = ed.insp.as_ref().unwrap().orig_size;
+        let not_kept = PageObject {
+            font_reusable: false,
+            ..kept.clone()
+        };
+        assert_eq!(font(&ed, &not_kept), arial_bold);
+        ed.insp.as_mut().unwrap().font.italic = true;
+        let courier = FontChoice {
+            family: Family::Courier,
+            ..ed.insp.as_ref().unwrap().font
+        };
+        ed.insp.as_mut().unwrap().font = courier;
+        assert_eq!(font(&ed, &kept), format!("Standard({courier:?})"));
+        // Turned and invisible lines are edited in a plain box, and nothing hides them.
+        assert!(drawn_in_place(&o));
+        for plain in [
+            PageObject {
+                upright: false,
+                ..o.clone()
+            },
+            PageObject {
+                hidden: true,
+                ..o.clone()
+            },
+        ] {
+            assert!(!drawn_in_place(&plain));
+        }
+        ed.start_line_edit(0, 2, Pick::Chars(0, 0));
+        let (page, b) = ed.cover_wanted().expect("a box to hide");
+        assert_eq!(page, 0);
+        // The box with room for accents and descenders.
+        let ob = o.bbox;
+        assert!(
+            b[0] < ob[0] && b[1] < ob[1] && b[2] > ob[2] && b[3] > ob[3],
+            "{b:?}"
+        );
+        ed.objs.get_mut(&0).unwrap()[2].upright = false;
+        assert_eq!(ed.cover_wanted(), None);
     }
 
     #[test]

@@ -112,13 +112,6 @@ pub enum Wanted<'a> {
     /// One of the 12 standard fonts: new text, and lines written anew.
     Standard(FontChoice),
     /// A line that keeps its own font, by the name the document gives it ("Arial,Bold").
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "editing existing text on the page (word-processor batch 3) uses it"
-        )
-    )]
     Kept(&'a str),
 }
 
@@ -411,6 +404,28 @@ mod tests {
             })
         };
         assert!((width("iiii") - width("MMMM")).abs() < 0.01);
+        // egui sizes a font by its em, as PDF does: text typed in Liberation Sans is as
+        // wide as core measures it in Helvetica, so the caret and line length match.
+        let sans = |s: &str| {
+            ctx.fonts_mut(|fonts| {
+                fonts
+                    .layout_no_wrap(
+                        s.into(),
+                        egui::FontId::new(100.0, named("Liberation Sans")),
+                        egui::Color32::BLACK,
+                    )
+                    .size()
+                    .x
+            })
+        };
+        for s in ["Walrus like cold water", "MMMM iiii", "Hello, World!"] {
+            let want = limarepdf_core::text_width(s, 100.0);
+            assert!(
+                (sans(s) - want).abs() < 0.01 * want,
+                "{s}: {} vs {want}",
+                sans(s)
+            );
+        }
     }
 
     #[test]

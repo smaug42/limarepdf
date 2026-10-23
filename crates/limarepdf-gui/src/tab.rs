@@ -11,7 +11,7 @@ use crate::settings::Layout;
 use crate::signatures::{self, Check, PanelAct, SigState};
 use crate::signing::SignPick;
 use crate::theme;
-use crate::worker::{Colours, Key, Worker, TILE};
+use crate::worker::{Colours, Key, Sample, Worker, TILE};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptions, Vec2};
 use egui_phosphor::regular as icon;
 use limarepdf_core::render::{Missing, MAX_REGION_SCALE};
@@ -124,6 +124,8 @@ pub struct Tab {
     worker: Worker,
     /// The colours pages are drawn in on screen.
     colours: Colours,
+    /// The colour around the line being edited, found for that box in those colours.
+    line_cover: Option<(Sample, Colours, Color32)>,
     pub sizes: Vec<(f32, f32)>,
     pages: HashMap<usize, (u32, TextureHandle)>,
     /// At high zoom, the parts of the pages in view drawn at full size, over `pages`. The
@@ -283,6 +285,7 @@ impl Tab {
             repaired,
             worker: Worker::spawn(ctx.clone(), bytes, colours),
             colours,
+            line_cover: None,
             sizes,
             pages: HashMap::new(),
             tiles: HashMap::new(),
@@ -1541,7 +1544,35 @@ impl Tab {
 
     // ------------------------------------------------------------ drawing
 
+    /// The colour around the line being edited, for the editor to hide the line with:
+    /// asked of the worker when the line, the colours or the document change, the paper's
+    /// colour should the page not draw there.
+    fn sync_cover(&mut self) {
+        // The ring around the box the editor hides, in points.
+        const RING: f32 = 3.0;
+        let want = self
+            .ed
+            .cover_wanted()
+            .map(|(page, b)| Sample::around(page, b, RING));
+        while let Ok(s) = self.worker.samples.try_recv() {
+            let fill = s.colour.unwrap_or_else(|| s.colours.mode.paper());
+            let [r, g, b] = fill;
+            self.line_cover = Some((s.ask, s.colours, Color32::from_rgb(r, g, b)));
+        }
+        if let Some(ask) = want {
+            if self.worker.asked != Some((ask, self.colours)) {
+                self.worker.sample(ask);
+            }
+        }
+        self.ed.page_colours = self.colours.mode;
+        self.ed.cover = self
+            .line_cover
+            .filter(|c| Some(c.0) == want && c.1 == self.colours)
+            .map(|c| c.2);
+    }
+
     fn collect(&mut self, ctx: &egui::Context) {
+        self.sync_cover();
         while let Ok(r) = self.worker.rx.try_recv() {
             self.pending.remove(&r.key);
             self.note_missing(&r.missing);

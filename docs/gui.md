@@ -552,10 +552,15 @@ Documents open with the read tool (the text cursor), which selects text, follows
 edits:
 
 - **Page text:** double-click a line to edit it there. The word you double-clicked is selected, so typing replaces
-  it. Enter or a click elsewhere keeps the change; Esc drops it. While you type, Ctrl+Z and Ctrl+Y undo and redo
-  typing in the box; once the change is kept, Undo takes the whole edit back. Editing the same line again within
-  a few seconds, with nothing else changed in between, joins the same undo step. The inspector shows the line's
-  font, size and colour; each change there is kept at once as its own undo step.
+  it. The line is drawn as it will be written: in its own font when LimarePDF can keep it, otherwise in the
+  Helvetica, Times or Courier that replaces it (which switches as you type a character the line's font can't
+  take), at its size and in its colour, with a thin outline around it and the old line hidden underneath in the
+  colour around it. Enter, Esc, Tab or a click elsewhere keeps the change. While you type, Ctrl+Z and Ctrl+Y undo
+  and redo typing in the line, and Ctrl+B and Ctrl+I switch the whole line to Bold or Italic; once the change is
+  kept, Undo takes the whole edit back. Editing the same line again within a few seconds, with nothing else
+  changed in between, joins the same undo step. The inspector shows the line's font, size and colour; each change
+  there is kept at once as its own undo step. A line turned on the page (not running left to right on screen)
+  and invisible recognised (OCR) text are edited in a plain box over the line instead.
 - **Pictures, shapes, comments and marks:** click one to select it, drag it to move it and drag a handle to resize
   it (Shift keeps the proportions). Arrow keys move it by 1 point, or 10 with Shift. A picture or shape covering
   most of the page, such as a scanned page or a background, isn't selected by a click, so that clicking a scan
@@ -585,8 +590,8 @@ selected so you can adjust it (see [Keep tool active](#keep-tool-active)):
   new line. Esc, a click elsewhere on the page, or choosing another tool finishes, and every line is added as one
   undo step; nothing typed adds nothing. While you type, the inspector's font, Bold, Italic, size and colour
   change the text (the keyboard comes back to it afterwards), Ctrl+B and Ctrl+I switch Bold and Italic, and
-  dragging the outline moves the text. A click on page text with this tool edits that line instead, with the
-  caret where you clicked. The font is Helvetica, Times or Courier, with Bold and Italic, and only Western
+  dragging the outline moves the text. A click on page text with this tool edits that line instead (see Page
+  text above), with the caret where you clicked, and a drag selects text, as with the read tool. The font is Helvetica, Times or Courier, with Bold and Italic, and only Western
   European characters can be added: others can't be typed or pasted, and a note at the caret says so (see
   [What doesn't work yet](features.md#what-doesnt-work-yet)). Each line becomes its own line of page text, so
   it moves and is edited line by line afterwards.
@@ -660,8 +665,8 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Ctrl+Shift+H | Highlight the selected text |
 | Arrow keys (Shift for 10 points) | Move the selected object |
 | Ctrl+A, Ctrl+C | Select all text on the page, copy it (read tool) |
-| Esc | Cancel: finish (and keep) new text being typed, drop the edit of a line being typed, clear the selection, or leave a tool for the read tool |
-| Ctrl+B, Ctrl+I | Bold, Italic for new text being typed (Add text) |
+| Esc | Cancel: finish (and keep) new text or a line being typed, clear the selection, or leave a tool for the read tool |
+| Ctrl+B, Ctrl+I | Bold, Italic for new text being typed (Add text), or for the whole line being edited on the page |
 | Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |
 | Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the top bar, tabs, bottom bar and panels left to right; inside a dialog, its fields and then its buttons. Space or Enter presses the button. In a form, Tab moves between its fields; Ctrl+K reaches every command |
 

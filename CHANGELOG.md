@@ -25,7 +25,7 @@
   a pop-out over the pages. A narrow window folds the navigation panel and the inspector away and brings them back
   when there is room, unless you closed them; whether each panel is open is remembered between runs.
 - Double-click a line of page text with the read tool to edit it on the page, with the word under the pointer
-  selected; Enter or a click elsewhere keeps the change, Esc drops it. Editing the same line again within a few
+  selected; Enter, Esc, Tab or a click elsewhere keeps the change. Editing the same line again within a few
   seconds joins the same undo step. Double-click and triple-click still select a word and a line where there is
   no line to edit, such as recognised text.
 - The read tool also selects pictures, shapes, comments and marks, with handles to move and resize them; not
@@ -68,7 +68,14 @@
   and the lines are added as one undo step. The inspector's font, Bold, Italic, size and colour change the text
   as you type, as do Ctrl+B and Ctrl+I; drag the text's outline to move it. Characters LimarePDF can't write yet
   can't be typed or pasted there, and a note at the caret says so, instead of turning into `?`. With the Add
-  text tool, a click on page text edits that line, the caret where you clicked.
+  text tool, a click on page text edits that line, the caret where you clicked, and a drag selects text.
+- A line of page text being edited is drawn as it will be written, in the font it will have (its own when it can
+  be kept, else the Helvetica, Times or Courier replacing it, switching as you type), its size and its colour,
+  over the line, which is hidden underneath in the colour around it. Ctrl+B and Ctrl+I switch the whole line to
+  Bold or Italic. Characters LimarePDF can't write yet can't be typed there or in the inspector's text box, and a
+  note says so. Turned lines and invisible recognised text are still edited in a plain box.
+- Text being typed on the page matches the page colours: in Dark, Sepia and High contrast, new text and edited
+  lines show in the colours the page will give them, with a caret that shows on dark paper.
 
 ### Fixed
 

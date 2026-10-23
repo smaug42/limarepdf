@@ -40,18 +40,19 @@ this list once it works. The feature table below has the details.
 
 - Only Western European characters can be added: in new or edited text, text boxes, headers, footers, Bates
   numbers, watermarks, stamps, form values and typed signatures. Others (Greek, Cyrillic, Chinese, Japanese,
-  Korean and so on) can't be typed with Add text, where a note at the caret says so, and elsewhere come out as
-  `?`.
+  Korean and so on) can't be typed when adding text or editing a line, where a note at the caret says so, and
+  elsewhere come out as `?`.
 - New text uses Helvetica, Times or Courier only (with Bold and Italic): other fonts, installed or bundled, can't
   be chosen yet, as using them means embedding them in the PDF. Editing a line keeps its font only when the
   file's font allows it (not for most embedded fonts); otherwise the line becomes Helvetica, Times or Courier
   ([details](content-editing.md#limits)).
 - Text is edited one line at a time: a paragraph doesn't rewrap as you type, so a longer line can run into
   whatever is beside it.
-- While editing a line or typing a text box or a note on the page, Esc throws away what you typed (new text from
-  Add text keeps it). Being changed: Esc will keep it, and Ctrl+Z will remove it.
-- Existing text is edited in a box drawn in the app's own font, not in the line's font, size and colour, as new
-  text is. Being changed.
+- While typing a text box or a note on the page, Esc throws away what you typed (new text and edited lines keep
+  it). Being changed: Esc will keep it, and Ctrl+Z will remove it.
+- A line turned on the page, and invisible recognised (OCR) text, are edited in a plain box rather than drawn as
+  they look. Over a picture or a shaded background, the line being edited is hidden under one flat colour, the
+  one most common around it, until you finish.
 - No spell checking.
 
 **Selecting and arranging**
@@ -109,7 +110,7 @@ available.
 | Document properties | Done | Title, author, subject, keywords, creator, producer |
 | Password security | Done | All four ciphers and permission flags. [Things to know](security.md) |
 | Opening protected files | Done | With the open (user) password; files with an empty one (only a permissions password) open without asking, including RC4 files with a shortened password entry that other readers accept, and their notice says so |
-| Content editing | Partial | New text is typed on the page where you click, in the font, size and colour it will have, several lines added as one undo step. Double-click a line with the read tool to edit it on the page; pictures, shapes and comments are selected, moved and resized with the read tool too, page text with the arrow. Changes in the inspector apply at once, each an undo step; typing into one line again soon joins one step. Works on lines, not paragraphs; some fonts are replaced when edited; the text after a deleted, edited or moved line stays where it was (except in vertical writing). [Details](content-editing.md) |
+| Content editing | Partial | New text is typed on the page where you click, in the font, size and colour it will have, several lines added as one undo step. Double-click a line with the read tool, or click it with the Text tool, to edit it on the page, drawn in the font, size and colour it will have over the line; pictures, shapes and comments are selected, moved and resized with the read tool too, page text with the arrow. Changes in the inspector apply at once, each an undo step; typing into one line again soon joins one step. Works on lines, not paragraphs; some fonts are replaced when edited; the text after a deleted, edited or moved line stays where it was (except in vertical writing). [Details](content-editing.md) |
 | Importing images as pages | Done | PNG, JPEG, TIFF. [Details](scanning-and-ocr.md#importing-images) |
 | Optimising scanned pages | Partial | Pages that are one image; only the pages chosen change, also when they share a picture with others. [Details](scanning-and-ocr.md#optimising-scanned-pages) |
 | OCR | Partial | Latin script; built-in recognition model. [Details](scanning-and-ocr.md#recognising-text-ocr) |

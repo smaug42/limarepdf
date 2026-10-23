@@ -53,7 +53,11 @@ Text LimarePDF writes in the standard fonts (new and edited text, headers, foote
 is WinAnsi-encoded through `fonts::winansi_byte`, which also tells the app which characters can be typed. In the
 app, new text is typed on the page in `crates/limarepdf-gui/src/page_text.rs`, drawn while typing in the bundled
 Liberation fonts that `typing_fonts.rs` picks (same widths as Helvetica, Times and Courier), then written line by
-line with `Pdf::add_text` as one undo step.
+line with `Pdf::add_text` as one undo step. A line being edited (`editor.rs`'s line editor, sharing `page_text`'s
+drawing) sits on `PageObject::baseline` and is drawn in the font `TextEdit::keeps_font` says `Pdf::edit_text` will
+write: the line's own (installed, else its Liberation look-alike) or a standard one. The line underneath is
+covered in the colour the page worker (`worker.rs`, `Worker::sample`) finds around it, from a drawing of that
+part of the page in the current page colours.
 
 Redaction (`crates/limarepdf-core/src/redact.rs`) has its own pass over the page content rather than editing the
 parser's objects: it rewrites each text-showing operator character by character, keeping the rest in place with

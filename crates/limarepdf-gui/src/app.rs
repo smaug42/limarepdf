@@ -4793,6 +4793,254 @@ mod tests {
         assert!(ed.typing_on_page(), "the line isn't being edited");
     }
 
+    /// A line of page text is edited where it is, drawn as it will be written, over the
+    /// line hidden in the colour around it; Esc keeps the change, one Undo takes it back.
+    #[test]
+    fn a_line_is_edited_in_place_and_esc_keeps_it() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        // White Courier on a blue bar: each letter is 0.6 em, 24 points at 40.
+        let courier = FontChoice::from_name("Courier");
+        assert!(app.tabs[0].edit(&ctx, |p| {
+            let blue = limarepdf_core::PathStyle {
+                fill: Some([0.0, 0.0, 1.0]),
+                stroke: None,
+                line_width: 1.0,
+            };
+            p.add_shape(
+                0,
+                limarepdf_core::Shape::Rect,
+                [80.0, 150.0, 400.0, 230.0],
+                &blue,
+            )?;
+            p.add_text(0, (100.0, 200.0), "Walrus", courier, 40.0, [1.0; 3])
+        }));
+        app.act(&ctx, Act::Tool(Tool::Text));
+        let mut tree = window(&mut app, &ctx, 1400.0, vec![]);
+        for _ in 0..4 {
+            tree = window(&mut app, &ctx, 1400.0, vec![]);
+        }
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        let k = page.width() / 612.0;
+        let at = |x: f32, y: f32| page.min + egui::vec2(x, y) * k;
+        let press = |p: egui::Pos2, pressed| egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let key = |key, modifiers| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        // A click just past the third letter puts the caret after it.
+        let p = at(100.0 + 3.0 * 24.0 + 4.0, 190.0);
+        window(
+            &mut app,
+            &ctx,
+            1400.0,
+            vec![
+                egui::Event::PointerMoved(p),
+                press(p, true),
+                press(p, false),
+            ],
+        );
+        for _ in 0..2 {
+            tree = window(&mut app, &ctx, 1400.0, vec![]);
+        }
+        let name = "Editing text: Walrus";
+        let (r, focused) = node(&tree, name).expect("the line editor");
+        assert!(focused, "the line editor doesn't have the keyboard");
+        // On the line's baseline, from its left end.
+        assert!((r.min.x - at(100.0, 200.0).x).abs() < 1.5, "{r:?}");
+        assert!(
+            r.min.y < at(100.0, 200.0).y && r.max.y > at(100.0, 200.0).y,
+            "{r:?}"
+        );
+        let id = egui::Id::new(("line-edit", 0));
+        let caret = egui::TextEdit::load_state(&ctx, id)
+            .and_then(|s| s.cursor.char_range())
+            .map(|c| c.primary.index.0);
+        assert_eq!(caret, Some(3));
+        // The line under the editor is hidden in the bar's blue.
+        for _ in 0..500 {
+            if app.tabs[0].ed.cover.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            window(&mut app, &ctx, 1400.0, vec![]);
+        }
+        let c = app.tabs[0]
+            .ed
+            .cover
+            .expect("no colour to hide the line with");
+        assert!(c.r() < 8 && c.g() < 8 && c.b() > 247, "{c:?}");
+        // Typing, a character that can't be written, and Ctrl+B for the whole line.
+        let typed = vec![
+            egui::Event::Text("XΩ".into()),
+            key(Key::B, egui::Modifiers::COMMAND),
+        ];
+        window(&mut app, &ctx, 1400.0, typed);
+        tree = window(&mut app, &ctx, 1400.0, vec![]);
+        let value = |tree: &egui::accesskit::TreeUpdate| {
+            let n = tree.nodes.iter().find(|(_, n)| n.label() == Some(name));
+            n.and_then(|(_, n)| n.value().map(str::to_string))
+        };
+        assert_eq!(value(&tree).as_deref(), Some("WalXrus"));
+        assert!(
+            tree.nodes
+                .iter()
+                .any(|(_, n)| n.value() == Some(page_text::REFUSED)),
+            "no note about the refused character"
+        );
+        let line = |app: &App| {
+            let objs = app.tabs[0].pdf.page_objects(0).unwrap();
+            objs.into_iter()
+                .find_map(|o| Some((o.text?, o.font_name?, o.baseline?)))
+        };
+        assert_eq!(line(&app).map(|l| l.0).as_deref(), Some("Walrus"));
+        // Esc keeps it, in Courier Bold now, on the same baseline.
+        window(
+            &mut app,
+            &ctx,
+            1400.0,
+            vec![key(Key::Escape, egui::Modifiers::NONE)],
+        );
+        for _ in 0..2 {
+            window(&mut app, &ctx, 1400.0, vec![]);
+        }
+        let (text, font, (x, y)) = line(&app).expect("the line");
+        assert_eq!((text.as_str(), font.as_str()), ("WalXrus", "Courier-Bold"));
+        assert!(
+            (x - 100.0).abs() < 0.01 && (y - 200.0).abs() < 0.01,
+            "{x}, {y}"
+        );
+        let ed = &app.tabs[0].ed;
+        assert!(!ed.typing_on_page() && !ed.pending());
+        app.act(&ctx, Act::Undo);
+        let (text, font, _) = line(&app).expect("the line");
+        assert_eq!((text.as_str(), font.as_str()), ("Walrus", "Courier"));
+    }
+
+    #[test]
+    fn a_double_click_with_the_read_tool_edits_its_line() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let times = FontChoice::from_name("Times-Roman");
+        assert!(app.tabs[0].edit(&ctx, |p| {
+            p.add_text(
+                0,
+                (100.0, 200.0),
+                "Walrus like cold water",
+                times,
+                20.0,
+                [0.0; 3],
+            )
+        }));
+        let mut tree = window(&mut app, &ctx, 1400.0, vec![]);
+        for _ in 0..4 {
+            tree = window(&mut app, &ctx, 1400.0, vec![]);
+        }
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        let k = page.width() / 612.0;
+        let words = app.tabs[0].pdf.page_words(0).unwrap();
+        let cold = words.iter().find(|w| w.text == "cold").unwrap().bbox;
+        let p = page.min + egui::vec2((cold[0] + cold[2]) / 2.0, 195.0) * k;
+        let press = |pressed| egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let mut raw = |events, time| {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 800.0),
+                )),
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut frame = eframe::Frame::_new_kittest();
+            let mut out = ctx.run_ui(raw, |ui| eframe::App::ui(&mut app, ui, &mut frame));
+            out.textures_delta.clear();
+            out.platform_output.accesskit_update.expect("the window")
+        };
+        raw(vec![egui::Event::PointerMoved(p)], 10.0);
+        raw(vec![press(true)], 10.02);
+        raw(vec![press(false)], 10.08);
+        raw(vec![press(true)], 10.16);
+        raw(vec![press(false)], 10.22);
+        let mut tree = raw(vec![], 10.3);
+        for i in 0..3 {
+            tree = raw(vec![], 10.4 + i as f64 * 0.1);
+        }
+        let name = "Editing text: Walrus like cold water";
+        let (_, focused) = node(&tree, name).expect("the line editor");
+        assert!(focused, "the line editor doesn't have the keyboard");
+        // The word double-clicked is selected.
+        let id = egui::Id::new(("line-edit", 0));
+        let picked = egui::TextEdit::load_state(&ctx, id)
+            .and_then(|s| s.cursor.char_range())
+            .map(|c| c.as_sorted_char_range())
+            .map(|r| (r.start.0, r.end.0));
+        assert_eq!(picked, Some((12, 16)));
+    }
+
+    #[test]
+    fn a_drag_with_the_text_tool_selects_text() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let courier = FontChoice::from_name("Courier");
+        assert!(app.tabs[0].edit(&ctx, |p| {
+            p.add_text(0, (100.0, 200.0), "Walrus seal", courier, 40.0, [0.0; 3])
+        }));
+        app.act(&ctx, Act::Tool(Tool::Text));
+        let mut tree = window(&mut app, &ctx, 1400.0, vec![]);
+        for _ in 0..4 {
+            tree = window(&mut app, &ctx, 1400.0, vec![]);
+        }
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        let k = page.width() / 612.0;
+        let at = |x: f32| page.min + egui::vec2(x, 190.0) * k;
+        let press = |p: egui::Pos2, pressed| egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let (from, to) = (at(102.0), at(100.0 + 10.0 * 24.0));
+        window(
+            &mut app,
+            &ctx,
+            1400.0,
+            vec![egui::Event::PointerMoved(from), press(from, true)],
+        );
+        for x in [150.0, 220.0, 100.0 + 10.0 * 24.0] {
+            window(
+                &mut app,
+                &ctx,
+                1400.0,
+                vec![egui::Event::PointerMoved(at(x))],
+            );
+        }
+        window(&mut app, &ctx, 1400.0, vec![press(to, false)]);
+        let ed = &app.tabs[0].ed;
+        assert!(ed.selection.words().is_some(), "{:?}", ed.selection);
+        assert!(!ed.typing_on_page() && ed.adding.is_none());
+        assert_eq!(ed.tool, Tool::Text);
+    }
+
     /// The names of the controls Tab reaches in turn, from the window's first one, `n`
     /// presses.
     fn tab_walk(app: &mut App, ctx: &egui::Context, width: f32, n: usize) -> Vec<String> {
