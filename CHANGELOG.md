@@ -29,7 +29,8 @@
   comments and markup, editing text and pictures, forms, fill and sign, headers, footers, watermarks and stamps,
   scans and OCR, export and printing, password protection, redaction, digital signatures), each opening with
   short steps; then the desktop app and command-line references, troubleshooting and a glossary. Every page links
-  to the one before and after. The developer docs moved to `docs/developer/`.
+  to the one before and after. Screenshots show the parts of the window, the inspector, the Create signature
+  window and the signatures view. The developer docs moved to `docs/developer/`.
 
 ### Changed
 

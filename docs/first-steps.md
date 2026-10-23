@@ -20,17 +20,19 @@ From a terminal, `limarepdf report.pdf --page 3` opens a document at page 3.
 
 ## Find your way around
 
-- **The top bar** has, from the left: the menu ☰, which holds every command; Open, Save and Export; Undo and Redo;
-  the tools (Read and select text, Add text, Add image, Redact, Fill and sign, and Comment for notes, shapes and
-  drawings); and at the right, Search and Print. Hover over a button to see what it does. A tool's tooltip also
-  says how to use it.
-- **The left side** shows the page thumbnails, and has icons for Search results, Bookmarks and Comments. Click an
-  icon to open that view; click it again to fold the panel away.
-- **The middle** shows the pages. Scroll with the mouse wheel or touchpad. Ctrl+scroll, Ctrl+= and Ctrl+- zoom, and
-  Ctrl+0 fits the pages to the window's width again.
-- **The right side** is the inspector, which shows the options for whatever you have selected.
-- **The bottom bar** shows the page you are on and messages, and at the right the page layout (one column, two
-  pages side by side, or one page at a time), Fit width and the zoom.
+![The LimarePDF window with a report open, numbered: 1 the top bar, 2 the page thumbnails at the left, 3 the pages in the middle, 4 the inspector at the right, 5 the bottom bar](images/window-tour.png)
+
+1. **The top bar** has, from the left: the menu ☰, which holds every command; Open, Save and Export; Undo and
+   Redo; the tools (Read and select text, Add text, Add image, Redact, Fill and sign, and Comment for notes, shapes
+   and drawings); and at the right, Search and Print. Hover over a button to see what it does. A tool's tooltip
+   also says how to use it.
+2. **The left side** shows the page thumbnails, and has icons for Search results, Bookmarks and Comments. Click an
+   icon to open that view; click it again to fold the panel away.
+3. **The middle** shows the pages. Scroll with the mouse wheel or touchpad. Ctrl+scroll, Ctrl+= and Ctrl+- zoom,
+   and Ctrl+0 fits the pages to the window's width again.
+4. **The right side** is the inspector, which shows the options for whatever you have selected.
+5. **The bottom bar** shows the page you are on and messages, and at the right the page layout (one column, two
+   pages side by side, or one page at a time), Fit width and the zoom.
 
 Notices above the pages tell you about the document when it opens: that it is a form, a scan without text,
 digitally signed, damaged and repaired, and so on. Each has a button for what to do about it, and × to dismiss it.
@@ -48,6 +50,8 @@ Documents open with the read tool, the text cursor. It does most things:
   then offers rotate, delete, extract and insert. Drag thumbnails to put pages in a new order.
 - **The whole document:** with nothing selected (Esc clears a selection), the inspector shows the document's
   settings: properties, password security, watermark, headers and footers, text recognition and more.
+
+![A text box selected on the page, with its handles and a small toolbar, and its options in the inspector at the right: text size and colour, background, border, opacity, its text, Delete and a reply box](images/inspector.png)
 
 Right-click anything for a short menu of what you can do with it.
 
