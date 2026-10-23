@@ -1,3 +1,5 @@
+[User guide](README.md) › Reference
+
 # Command-line reference
 
 `limarepdf-cli` does everything the desktop app does to a document, for scripts and batches. Every command prints its own
@@ -91,7 +93,7 @@ The types are `highlight`, `underline`, `strikeout`, `squiggly`, `note`, `textbo
 Flattening draws highlights, notes, text boxes, shapes, lines, drawings, stamps and carets; replies and comment
 pop-ups are removed without being drawn, and hidden annotations are removed. Links, form fields, file attachments,
 sound and video, and redaction marks are kept. Annotations stored without a drawing get LimarePDF's drawing first (see
-[Comments and markup](gui.md#comments-and-markup)).
+[How comments are drawn](comments-and-markup.md#how-comments-are-drawn)).
 
 ## Pages
 
@@ -158,7 +160,7 @@ Bookmarks are numbered from 1 in the order `list` shows them, each followed by t
 | `limarepdf-cli optimize-scans in.pdf -o out.pdf --mode auto --max-dpi 200 --quality 75` | Shrink and clean up scanned pages; also `--no-deskew`, `--no-despeckle` |
 | `limarepdf-cli ocr in.pdf -o out.pdf --pages all` | Add a searchable text layer to pages without text (Latin script) |
 
-See [Scanning and OCR](scanning-and-ocr.md) for what these do.
+See [Scans and OCR](scanning-and-ocr.md) for what these do.
 
 ## Stamps
 
@@ -167,7 +169,7 @@ See [Scanning and OCR](scanning-and-ocr.md) for what these do.
 | `limarepdf-cli stamp in.pdf -o out.pdf --kind approved --date --author "Sam Lee"` | Put an Approved stamp, with a name-and-date line, in the top right corner of page 1; kinds are `approved`, `not-approved`, `draft`, `final`, `confidential`, `for-comment` and `void` |
 | `limarepdf-cli stamp in.pdf -o out.pdf --text "Paid in full" --color green` | Put a stamp with your own wording (shown in capitals) in the top right corner of page 1; colours are `green`, `red` (the default) and `blue`; Latin, Greek and Cyrillic characters; `--date` and `--author` work as with `--kind` |
 | `limarepdf-cli stamp in.pdf -o out.pdf --image seal.png --pages all --at 300,700 --scale 50` | Put a picture stamp on every page, centred 300 points from the left and 700 from the top, at half its own size (longer side 160 points) |
-| `limarepdf-cli stamp in.pdf -o out.pdf --pages 3 --at 400,650 --signature "Sam Lee" --date` | Sign page 3 with a typed signature in handwriting, centred at that point, with today's date under it; `--style` picks the handwriting (1 Caveat, the default; 2 Cedarville Cursive; 3 Homemade Apple; 4 Zeyada), `--color blue` for blue ink. It fits 150 by 50 points (`--scale` changes that). Latin characters (Caveat has Cyrillic too); a name a style can't show is refused, naming the styles that can. A picture of your signature works with `--image`. This is not a digital signature: see [Filling and signing](gui.md#filling-and-signing) |
+| `limarepdf-cli stamp in.pdf -o out.pdf --pages 3 --at 400,650 --signature "Sam Lee" --date` | Sign page 3 with a typed signature in handwriting, centred at that point, with today's date under it; `--style` picks the handwriting (1 Caveat, the default; 2 Cedarville Cursive; 3 Homemade Apple; 4 Zeyada), `--color blue` for blue ink. It fits 150 by 50 points (`--scale` changes that). Latin characters (Caveat has Cyrillic too); a name a style can't show is refused, naming the styles that can. A picture of your signature works with `--image`. This is not a digital signature: see [Fill and sign](fill-and-sign.md) |
 | `limarepdf-cli watermark in.pdf -o out.pdf --text CONFIDENTIAL --opacity 0.3` | Add a text watermark |
 | `limarepdf-cli watermark in.pdf -o out.pdf --image logo.png --scale 40 --background` | Add a picture watermark, fitted inside 40% of the page, behind the content |
 | `limarepdf-cli header-footer in.pdf -o out.pdf --footer-center "Page {page} of {pages}" --header-right "{date}"` | Add headers and footers; tokens `{page}`, `{pages}`, `{date}`, `{bates}` |
@@ -269,7 +271,7 @@ and what the document's certification or an earlier signer's lock doesn't allow,
 | `limarepdf-cli encrypt in.pdf -o out.pdf --owner-password OWN --user-password USR --cipher aes256 --no-copy` | Protect with passwords; `--no-…` options withdraw permissions |
 | `limarepdf-cli decrypt in.pdf -o out.pdf --password USR` | Remove password protection |
 
-See [Password security](security.md).
+See [Password protection](security.md).
 
 ## Printing
 
@@ -279,3 +281,7 @@ See [Password security](security.md).
 | `limarepdf-cli print in.pdf --printer Office --pages 1-3 --copies 2 --sides long-edge` | Print; `--as-image` sends pages drawn by LimarePDF. Refuses, naming the fields and sending nothing, when filled fields meant for printing would come out empty (no drawing, and text LimarePDF can't draw); to print such a file without them, open it in the app and choose Print anyway |
 
 See [Export and printing](export-and-printing.md).
+
+---
+
+[← The desktop app](gui.md) · [User guide](README.md) · [Rendering →](rendering.md)

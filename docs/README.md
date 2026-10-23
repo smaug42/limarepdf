@@ -13,23 +13,24 @@ no network connection, no subscription. This guide takes you from installing it 
 
 ## Everyday tasks
 
-- [Reading and finding](gui.md#the-window): pages, zoom, thumbnails, bookmarks, links, and
-  [search and copying text](search-and-text.md).
-- [Organising pages](gui.md#selecting-and-the-inspector): reorder, rotate, insert, delete, extract, merge and split.
-- [Comments and markup](gui.md#comments-and-markup): highlights, notes, text boxes, shapes, drawings and stamps.
-- [Editing text and pictures](gui.md#editing-page-content): change what is on the page, and add text and images
-  ([how editing works](content-editing.md)).
-- [Filling in forms](gui.md#filling-in-forms).
-- [Filling and signing](gui.md#filling-and-signing): put your signature, initials and the date on any document.
+- [Reading and finding](reading-and-finding.md): move around, zoom, search, bookmarks, links and copying text.
+- [Organising pages](organising-pages.md): reorder, rotate, insert, delete, extract, merge, split and crop pages.
+- [Comments and markup](comments-and-markup.md): highlights, notes, text boxes, shapes, drawings and replies.
+- [Editing text and pictures](content-editing.md): change what is on the page, and add text and pictures.
+- [Filling in forms](forms.md): fill in, reset and flatten forms.
+- [Fill and sign](fill-and-sign.md): put your signature, initials and the date on any document.
+- [Headers, footers, watermarks and stamps](headers-footers-watermarks.md): page numbers, Bates numbers, DRAFT
+  across every page, and stamps such as APPROVED.
 - [Scans and OCR](scanning-and-ocr.md): turn photos and scans into searchable PDFs.
-- [Export and printing](export-and-printing.md): pages as images, text, and printing.
+- [Export and printing](export-and-printing.md): printing, pages as pictures, and text.
 - [Password protection](security.md): protect a document, or open a protected one.
 - [Redaction](redaction.md): remove content for good, and remove hidden information.
 - [Digital signatures](signatures.md): check signed documents, and sign with a digital ID.
 
 ## Reference
 
-- [The desktop app](gui.md): every part of the window, keyboard shortcuts and settings.
+- [The desktop app](gui.md): every part of the window, the tools, saving and recovery copies, document properties,
+  keyboard shortcuts and settings.
 - [The command line](cli.md): `limarepdf-cli`, for scripts and batches.
 - [Rendering](rendering.md): how pages are drawn, and what isn't drawn right yet.
 - [Licence](licence.md): LimarePDF's licence and the works it includes.

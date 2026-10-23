@@ -32,10 +32,15 @@ Wayland desktops take a window's icon from its menu entry. The packages install 
 ### Dropping files on the window does nothing
 
 On Linux in a Wayland session (the default on current KDE and GNOME), the pointer shows a "no" sign: the windowing
-library LimarePDF uses doesn't take file drops from Wayland yet. Open files with the Open button or Ctrl+O instead.
-To have drops, start LimarePDF through XWayland with `env -u WAYLAND_DISPLAY limarepdf`. With fractional display
-scaling (such as 125%) the window can then look blurry, unless your desktop lets X11 apps scale themselves (in KDE,
-System Settings > Display & Monitor > Legacy Applications (X11)). [More](gui.md#opening-files).
+library LimarePDF uses doesn't take file drops from Wayland yet. Open files with the Open button or Ctrl+O instead;
+dragging pages within the app works too.
+
+To have drops, start LimarePDF through XWayland, Wayland's X11 compatibility layer, with
+`env -u WAYLAND_DISPLAY limarepdf`. With fractional display scaling (such as 125% or 150%) the window can then look
+blurry, unless your desktop lets X11 apps scale themselves (in KDE, System Settings > Display & Monitor > Legacy
+Applications (X11)). To make it the default, copy LimarePDF's menu entry (`io.github.smaug42.limarepdf.desktop`,
+usually in `/usr/share/applications`) to `~/.local/share/applications` and change its `Exec=` line to start with
+`env -u WAYLAND_DISPLAY`.
 
 ### "The file is damaged" notice
 
@@ -84,7 +89,7 @@ the text with the Add text tool in an installed font instead.
 
 When LimarePDF can't keep a line's own font (common for fonts embedded in the file), it writes the line in the
 installed font it came from, or in Helvetica, Times or Courier. The inspector says so. See
-[Content editing](content-editing.md#limits).
+[Editing text and pictures](content-editing.md#limits).
 
 ### Undo doesn't go back far enough
 

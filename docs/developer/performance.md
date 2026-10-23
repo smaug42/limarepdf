@@ -168,7 +168,7 @@ together peaked lower than the scan alone did in the other sessions.
 These are timings of single tasks, not a benchmark suite, and apart from the one poppler timing no comparison with
 other software was made. hayro's own documentation says its renderer has not yet been tuned for performance.
 
-OCR speed is in [Scanning and OCR](../scanning-and-ocr.md#accuracy-and-speed).
+OCR speed is in [Scans and OCR](../scanning-and-ocr.md#accuracy-and-speed).
 
 ## How the desktop app stays responsive
 

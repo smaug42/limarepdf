@@ -1,0 +1,148 @@
+[User guide](README.md) › Everyday tasks
+
+# Comments and markup
+
+Highlight text, add notes, text boxes, shapes and drawings, and answer other people's comments. All of these are
+annotations: other PDF readers show them and list them as comments, and they can be changed or removed later, here
+or in another app. To make them part of the pages for good, [flatten](#flatten-comments-into-the-pages) them.
+
+## Highlight text
+
+1. Select text with the read tool (the text cursor).
+2. Click **Highlight** on the small toolbar above it, or right-click > Highlight, or press Ctrl+Shift+H.
+
+The small arrow next to Highlight, or right-click > Underline, strike out, colour, has:
+
+- Underline, Strike out and Squiggly underline.
+- The highlight colour (yellow, green, blue, pink, orange) and the line colour (red, blue, green, black). The
+  colours chosen are remembered between runs.
+
+A selection across pages gets one highlight on each page, all in one undo step.
+
+## Add a note or a text box
+
+The **Comment** button in the top bar holds the commenting tools: notes, text boxes, rectangles, ellipses, lines,
+the pen and stamps (also in ☰ > Tools > Commenting). It shows the tool you used last; the small arrow beside it
+lists them all.
+
+**A note** (a sticky note with a comment):
+
+1. Pick Note, and click on the page.
+2. Type your comment in the box that opens beside the note.
+3. Click on the page outside it, or press Esc or Ctrl+Enter, to keep it. That click doesn't put down another note.
+
+**A text box** (text shown on the page):
+
+1. Pick Text box, then drag a box on the page, or click for a default size.
+2. Type straight onto the page. Enter starts a new line.
+3. Click outside the box, or press Esc or Ctrl+Enter, to finish.
+
+Before you start, the inspector sets the note's colour, or the text box's text size and colour, its background
+(none at first) and its border. When you finish, the read tool comes back with the new note or text box selected,
+so you can move it straight away.
+
+More about notes and text boxes:
+
+- With nothing typed, no note or text box is added. While you type, Ctrl+Z and Ctrl+Y undo and redo the typing;
+  once it is kept, Ctrl+Z takes the whole note or text box back. Finishing by choosing another tool keeps that
+  tool.
+- While you type a note, the colour in the inspector changes the note's colour: clicks in the inspector and its
+  colour picker leave the note open, and Esc, or a click that closes the picker, closes only the picker.
+- Notes show at the same size on screen whatever the zoom, in the note's colour and shaped like its icon: one of
+  the seven standard ones (Comment, which LimarePDF's notes use, Key, Note, Help, New paragraph, Paragraph and
+  Insert), or Note for any other. Printed, they keep their own drawing, or LimarePDF's, 20 points across. Hovering
+  over a note shows its comment.
+- Text boxes use Helvetica, and for Polish, Czech, Vietnamese, Greek, Cyrillic and other characters it lacks, its
+  Liberation Sans face, embedded in the file. Other characters (Chinese, Hebrew and so on) come out as `?`.
+- When you finish a text box, it grows downward to fit its text, keeping its width. It stops at the bottom of the
+  page, and never shrinks (resize it by dragging its handles).
+- The Text box tool can be kept on to add several in a row (see [Keep tool active](gui.md#keep-tool-active)). The
+  Note tool can't, so after each note the read tool is back to select, move or open notes.
+
+## Draw shapes, lines and freehand
+
+The Comment button's menu also holds the rectangle, ellipse, line and pen tools.
+
+- **Rectangle, ellipse, line:** drag on the page, or click for a default size. Shift keeps to squares, circles,
+  and lines at multiples of 45°. Before you start, the inspector sets the outline (or line) colour and width, the fill
+  of rectangles and ellipses (off until you turn it on), and an arrowhead at the end of a line.
+- **Pen:** drag to draw; a click makes a dot. Strokes started within 1.5 seconds of the last one, on the same page,
+  join the same drawing, so a word, or a circle with a tick, is one annotation. Each stroke is still its own undo
+  step. The inspector sets the pen's colour and width. The pen stays on until you press Esc or pick another tool,
+  since a drawing takes several strokes. Points closer together than about a third of a point to the line drawn
+  are dropped, which keeps files small.
+- **Draw on page (permanent):** with this switched on in the inspector, the rectangle, ellipse and line tools draw
+  into the page content instead, as part of the page rather than as comments. Those shapes are selected with the
+  arrow as page objects (see [Editing text and pictures](content-editing.md)).
+
+Stamps (Approved, Draft, your own wording or a picture) are in the same menu: see
+[Stamps](headers-footers-watermarks.md#stamps).
+
+## Change, move or delete a comment
+
+Click a highlight, note, shape or any other annotation with the read tool to select it. (With another tool on,
+Ctrl+click it.) It is outlined, and the inspector shows who made it and when, with its colour, opacity and comment,
+and for a shape its width, fill and arrowhead, for a text box its text, size, colours, background and border.
+
+- **Change it** in the inspector. Changes are kept as you make them, each one a step to undo; a comment being typed
+  is kept when you leave its box.
+- **Change its text:** double-click a note or text box.
+- **Move it** by dragging it, or with the arrow keys (1 point at a time, or 10 with Shift). **Resize it** by
+  dragging a handle.
+- **Delete it** with Delete or Backspace. Esc lets it go.
+
+Some things to know:
+
+- Notes keep their size, and highlights and other text markup stay on their text, so neither can be resized, and
+  markup can't be moved. Annotations the file locks can't be moved or deleted.
+- A drag that starts on a highlight still selects the text under it. Hovering over a mark shows its comment.
+- Lines and drawings are picked by clicking near their strokes, not anywhere in their box.
+- A selected line has a round handle on each end instead of a box: drag either end to turn the line, or to point
+  an arrow somewhere else (Shift keeps it at a multiple of 45° from the other end). Drag the line itself to move
+  it.
+- A selected freehand drawing has a round rotate handle above its box; the pointer becomes a circular arrow over
+  it. Drag it around to turn the drawing about the middle of its box. The angle shows while you drag, and Shift
+  keeps to steps of 15°. Rectangles, ellipses and text boxes can't be turned: PDF stores them as upright boxes.
+
+## See every comment, and reply
+
+The **Comments** view lists the document's annotations page by page, with replies indented under the comment they
+answer: click its icon on the left, or choose ☰ > View > Comments. Each row shows the author and the first line of
+the comment; hover over it for the type, date and the whole comment.
+
+- Click a row to go to the annotation and select it.
+- Right-click a row to delete it, along with any replies. Undo brings it back.
+- **Reply:** right-click a row and choose Reply…, or select an annotation and use the Reply box at the bottom of the
+  inspector. The inspector lists the replies it already has. Replies are saved as standard reply comments, which
+  aren't shown on the page or printed, and carry your name.
+
+## Your name on comments
+
+New comments are saved with your name, which is the computer's user name until you set it with ☰ > Edit > Your name
+for comments…. Leave it empty to save no name.
+
+## Flatten comments into the pages
+
+☰ > Document > Flatten annotations… draws all the annotations into the pages as they look now and removes them, so
+they can no longer be changed or removed in any reader. Their comment text is dropped. Links and form fields stay,
+and so do file attachments. Undo brings them back until you close the document.
+
+## How comments are drawn
+
+Some files store annotations without a drawing of their own, leaving each reader to draw them. LimarePDF draws
+highlights, underlines, strike-outs, squiggly underlines, notes, text boxes, rectangles, ellipses, lines, polygons,
+freehand drawings, stamps, carets and file attachment icons itself, on screen and when printing, including cloudy
+borders, text box callout lines and line leader lines. The file isn't changed by this; flattening saves LimarePDF's
+drawing into it (file attachments stay as they are). Text boxes are drawn in Helvetica, ignoring any rich-text
+styling; a stamp shows its name in a coloured frame. [Rendering](rendering.md#known-to-be-wrong) lists what isn't
+reproduced.
+
+The app shows up to 10,000 annotations on a page, with a notice on a page that has more.
+
+## From the command line
+
+`limarepdf-cli annot` lists, removes and flattens annotations: see [Annotations](cli.md#annotations).
+
+---
+
+[← Organising pages](organising-pages.md) · [User guide](README.md) · [Editing text and pictures →](content-editing.md)

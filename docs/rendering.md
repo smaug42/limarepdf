@@ -1,3 +1,5 @@
+[User guide](README.md) › Reference
+
 # Rendering
 
 LimarePDF draws pages with [hayro](https://crates.io/crates/hayro) 0.8, a pure-Rust PDF renderer that runs on the CPU.
@@ -204,3 +206,7 @@ on which fonts are installed, as in other viewers.
   1200% now peaks at about 4 GB on a 4K screen ([Performance](developer/performance.md#memory-in-the-desktop-app)).
 
 For timings and how the app keeps drawing responsive, see [Performance](developer/performance.md).
+
+---
+
+[← The command line](cli.md) · [User guide](README.md) · [Licence →](licence.md)

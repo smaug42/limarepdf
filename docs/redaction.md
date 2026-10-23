@@ -1,13 +1,51 @@
+[User guide](README.md) › Everyday tasks
+
 # Redaction
 
 Redaction removes content from a document for good. It doesn't just cover it: the text, pictures and drawings under
 a redacted area are taken out of the file, and the area is painted black. Copying, searching, moving the black box
 or reading the file's bytes can't bring them back.
 
-In the app, mark areas, selected text or search results, check the marks, then apply them (see
-[Redaction in the app](gui.md#redaction)). From the command line, use `limarepdf-cli redact` (see
-[the command line](cli.md#redaction)), which can also just mark, or apply marks already in a file. Marks are
-standard PDF redaction marks, so marks made in other apps can be applied in LimarePDF and the other way round.
+It is done in two steps: mark what to remove, then apply the marks. Marks are outlined in red and remove nothing by
+themselves, so they can be checked first, by you or by someone else in another app.
+
+## Redact a document
+
+1. Mark what to remove, in any of these ways:
+   - **Areas:** click **Redact** in the top bar (or choose ☰ > Tools > Mark areas for redaction), then drag a box
+     over anything: text, pictures, drawings.
+   - **Text:** select it with the read tool, then right-click > Mark for redaction (or ☰ > Edit > Mark for
+     redaction).
+   - **Every match of a search:** search (Ctrl+F), then press **Mark all for redaction** in Search results (or
+     choose ☰ > Edit > Mark all search results for redaction).
+2. Check the marks. They are listed in the Comments view as "Redaction mark".
+3. Choose **Apply redactions…** in the notice above the pages (or ☰ > Document > Apply redactions…), and confirm.
+4. Read the report, then save. Save As (Ctrl+Shift+S) keeps the original as it was.
+
+After marking one area, the Redact tool gives way to the read tool; pin it to mark several areas in a row (see
+[Keep tool active](gui.md#keep-tool-active)).
+
+**Changing marks:** select a mark (click it with the read tool, Ctrl+click it with another tool, or click it in the
+Comments view) to delete it or add a comment. Like highlights, marks can't be moved or resized: to change one,
+delete it and mark again.
+
+**The notice:** while a document has marks, a notice above the pages says how many and has an **Apply
+redactions…** button. It comes first, and goes once the marks are applied or deleted; dismissed, it comes back when
+another area is marked. The Redact tool's pane has the same button with the count. Saving a document that still
+has marks asks first, since nothing under them has been removed.
+
+**Applying** asks first, then removes everything under the marks, paints the areas black and removes the marks. It
+then checks that nothing readable is left under them; if anything is, nothing is changed and an error says what was
+found. A report lists what was removed from each page, and where the removed text can still be found elsewhere in
+the document (other pages, bookmarks, comments, form fields, document properties). Undo brings it all back until
+the document is closed; once saved, the removed content is gone from the file.
+
+Marks are standard PDF redaction marks, so marks made in other apps can be applied in LimarePDF, and the other way
+round. From the command line, `limarepdf-cli redact` marks, applies, or does both (see
+[Redaction](cli.md#redaction)).
+
+To remove information that isn't on any page, such as the author's name or hidden layers, see
+[Removing hidden information](#removing-hidden-information).
 
 ## What is removed
 
@@ -52,8 +90,17 @@ changes the areas you give it.
 
 ## Removing hidden information
 
-A file can carry information that isn't on any page. Document > Remove hidden information… (or `limarepdf-cli sanitise`)
-removes it. The app lists what this document has of each kind; what is ticked is removed:
+A file can carry information that isn't on any page, such as its author's name or the program that made it.
+
+1. Choose ☰ > Document > **Remove hidden information…**. It lists what the document carries besides its pages,
+   with how many of each, in two groups: what is removed by default (ticked), and what is kept by default (often
+   wanted, so not ticked).
+2. Tick what to remove, and press **Remove**. A summary follows.
+3. Save.
+
+Undo brings it back until you close the document. On the command line: `limarepdf-cli sanitise`.
+
+What is ticked at first:
 
 - **Document information and XMP metadata:** title, author, subject, keywords, the program that made it, and the
   XML metadata in the document and in pictures and other parts.
@@ -126,3 +173,7 @@ are used to confirm it's gone. The Redact tool was used by hand on Linux; the Re
 wasn't clicked through. Marks made by LimarePDF haven't yet been opened in Acrobat or other apps, nor marks made
 by them applied in LimarePDF. The full record is in
 [Testing](developer/testing.md#redaction-and-hidden-information).
+
+---
+
+[← Password protection](security.md) · [User guide](README.md) · [Digital signatures →](signatures.md)

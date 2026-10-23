@@ -6,7 +6,7 @@ The PDF words this guide uses, in plain terms.
 
 **Annotation.** Something added on top of a page rather than into it: a comment, sticky note, highlight, text box,
 shape, drawing or stamp. Other apps can show, move or remove annotations. Flattening one makes it part of the page.
-See [Comments and markup](gui.md#comments-and-markup).
+See [Comments and markup](comments-and-markup.md).
 
 **Bates number.** A number stamped on every page of a set of documents, such as `ABC000123`, so that each page can
 be referred to exactly. Common in legal work.

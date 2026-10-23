@@ -16,7 +16,8 @@ It uses:
 - [`egui`](https://crates.io/crates/egui) for the interface, and [`rfd`](https://crates.io/crates/rfd) for file
   dialogs;
 - [`image`](https://crates.io/crates/image) for images;
-- [`ocrs`](https://github.com/robertknight/ocrs) for text recognition (see [Scanning and OCR](../scanning-and-ocr.md));
+- [`ocrs`](https://github.com/robertknight/ocrs) for text recognition (see [Scans and OCR](../scanning-and-ocr.md));
+  the usual scanner and OCR libraries, SANE and Tesseract, are C/C++, so LimarePDF doesn't drive scanners;
 - [`serde_json`](https://crates.io/crates/serde_json) in the command line, for form values as JSON.
 
 Forms are read in `crates/limarepdf-core/src/forms.rs`. When a value changes, LimarePDF draws the field's appearance itself
@@ -57,7 +58,7 @@ stays until lopdf accepts the shorter `/U`; no issue has been filed upstream.
 
 Page content is read by LimarePDF's own parser (`crates/limarepdf-core/src/objects.rs`), which splits it into the objects that
 editing works on and reads the text that search, copying and export use, with its own reader for fonts' ToUnicode
-maps and Adobe's widths for the standard fonts (see [Search and text](../search-and-text.md#text-extraction)). CID
+maps and Adobe's widths for the standard fonts (see [How text is read](../reading-and-finding.md#how-text-is-read)). CID
 fonts' character maps, and Adobe's tables from character numbers to Unicode, are read with hayro's CMap parser
 (`hayro_cmap`, reached through hayro, which carries the predefined maps); the predefined ones are read once per
 process (`fonts::predefined`).
@@ -205,7 +206,7 @@ command palette, the right-click menus, the floating toolbar and the keyboard sh
 
 ## Content editing
 
-How editing works in the page content (moved from [Content editing](../content-editing.md), which describes it in
+How editing works in the page content (moved from [Editing text and pictures](../content-editing.md), which describes it in
 plain words). The page's content stream is split into objects: one per text line, per painted path, per image or
 form XObject, and per inline image.
 
