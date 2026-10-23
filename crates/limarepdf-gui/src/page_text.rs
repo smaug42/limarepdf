@@ -238,7 +238,11 @@ pub fn field(
                 ui.painter().rect_filled(c, 0.0, fill);
             }
             // The outline around the text moves it; the text itself takes the pointer.
-            let grab = movable.then(|| ui.interact(grip, id.with("grip"), Sense::drag()));
+            let grab = movable.then(|| {
+                let r = ui.interact(grip, id.with("grip"), Sense::drag());
+                dialogs::set_name(&r, "Move the text");
+                r
+            });
             ui.painter().rect_stroke(
                 outline,
                 2.0,

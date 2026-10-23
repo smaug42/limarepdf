@@ -54,9 +54,18 @@
   Done). Picking another tool closes it.
 - Go to field in Signature details closes the window, to show the field.
 - Tab goes through the top bar, the tabs, the bottom bar, the panels and each dialog's buttons in the order they
-  are shown, left to right. Screen readers can name every button and field: the search field, the pages and
-  their thumbnails, Print's printer, page range and copies, the signature drawing area and ink colours, and the
-  banners' Dismiss button. Closing the inspector's pop-out with Esc returns the keyboard to its button.
+  are shown, left to right. Closing the inspector's pop-out with Esc returns the keyboard to its button.
+- Screen readers can name the buttons, fields, lists and menus in the window, the inspector, the side views and
+  the dialogs, checked by the app's tests (not yet with a screen reader). Names added: the search field, the
+  pages and their thumbnails, Print's printer, page range and copies, the signature drawing area and ink
+  colours, the banners' Dismiss button; the font list, Bold and Italic (with whether they are on), the font
+  sizes, every colour button, line widths, opacity and the inspector's fields (each named by its label);
+  Search results' field and ◀ ▶ (Previous match, Next match, now also as tooltips); the Fill and sign pane's
+  saved signatures, date format, name, text and marks (with which is picked); Create signature's name field
+  and handwriting styles; the bookmark arrows (Expand or Collapse and the title); the command search field;
+  the zoom level; the edges of the side panel and inspector (Side panel width, Inspector width; mouse only);
+  and an open list or menu, after the button that opened it. Buttons with an icon are named by their words
+  alone, without the icon's character.
 - Creating a digital ID shows a problem beside the field it is about, and the keyboard starts in the Name field.
 - The Fill and sign pane no longer has a Sign with digital ID button: digital signing and certifying are in
   Document > Digital signatures.

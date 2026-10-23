@@ -533,14 +533,16 @@ impl Create {
 
     /// Typing a name, and picking one of the handwriting styles, shown as they will look.
     fn typed(&mut self, ui: &mut egui::Ui, previews: &mut Previews, color: InkColor) {
-        ui.add(
+        let name = match self.role {
+            SignRole::Signature => "Your name",
+            SignRole::Initials => "Your initials",
+        };
+        let r = ui.add(
             egui::TextEdit::singleline(&mut self.text)
-                .hint_text(match self.role {
-                    SignRole::Signature => "Your name",
-                    SignRole::Initials => "Your initials",
-                })
+                .hint_text(name)
                 .desired_width(ui.available_width()),
         );
+        dialogs::set_name(&r, name);
         ui.add_space(4.0);
         let room = ui.available_width() - 2.0 * ui.spacing().button_padding.x;
         for style in SignStyle::ALL {
@@ -556,7 +558,9 @@ impl Create {
                 Some(tex) => {
                     let size = Previews::size(&tex, Vec2::new(room, 60.0));
                     let img = egui::Image::new((tex.id(), size));
-                    ui.add(egui::Button::image(img).selected(self.style == style))
+                    let r = ui.add(egui::Button::image(img).selected(self.style == style));
+                    dialogs::set_name(&r, style.label());
+                    r
                 }
                 None => ui.selectable_label(self.style == style, style.label()),
             };
@@ -773,10 +777,9 @@ pub fn menu_ui(ui: &mut egui::Ui, menu: &SignMenu, acts: &mut Vec<Act>) {
     }
     ui.separator();
     for (m, glyph) in [(Mark::Tick, "✔"), (Mark::Cross, "✖"), (Mark::Dot, "●")] {
-        if ui
-            .button(format!("{glyph}  {}", capital(m.label())))
-            .clicked()
-        {
+        let r = ui.button(format!("{glyph}  {}", capital(m.label())));
+        dialogs::set_name(&r, &capital(m.label()));
+        if r.clicked() {
             acts.push(Act::SignWith(SignPick::Mark(m)));
             ui.close();
         }
@@ -868,7 +871,14 @@ impl SignPane {
                             Some(tex) => {
                                 let size = Previews::size(&tex, PREVIEW);
                                 let img = egui::Image::new((tex.id(), size));
-                                ui.add(egui::Button::image(img).selected(picked))
+                                let r = ui.add(egui::Button::image(img).selected(picked));
+                                // Named as in the toolbar's list.
+                                let name = match role {
+                                    SignRole::Signature => "Signature",
+                                    SignRole::Initials => "Initials",
+                                };
+                                dialogs::set_name(&r, &format!("{name} {}", i + 1));
+                                r
                             }
                             None => ui.selectable_label(picked, "Picture not found"),
                         };
@@ -900,23 +910,27 @@ impl SignPane {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.pick, SignPick::Date, "Date");
-            egui::ComboBox::from_id_salt("sign-date")
+            let r = egui::ComboBox::from_id_salt("sign-date")
                 .selected_text(kit.date.today())
                 .show_ui(ui, |ui| {
                     for d in DateStyle::ALL {
                         ui.selectable_value(&mut kit.date, d, d.today());
                     }
                 });
+            dialogs::set_name(&r.response, "Date format");
         });
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.pick, SignPick::Name, "Name");
-            ui.add(egui::TextEdit::singleline(author).hint_text("Your name"))
+            let r = ui
+                .add(egui::TextEdit::singleline(author).hint_text("Your name"))
                 .on_hover_text("Also signs your comments (Edit > Your name for comments)");
+            dialogs::set_name(&r, "Your name");
         });
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.pick, SignPick::Text, "Text");
             let r =
                 ui.add(egui::TextEdit::singleline(&mut self.text).hint_text("Type, then click"));
+            dialogs::set_name(&r, "Text to place");
             if r.changed() {
                 self.pick = SignPick::Text;
             }
@@ -924,8 +938,9 @@ impl SignPane {
         ui.horizontal(|ui| {
             ui.label("Marks");
             for (m, glyph) in [(Mark::Tick, "✔"), (Mark::Cross, "✖"), (Mark::Dot, "●")] {
-                ui.selectable_value(&mut self.pick, SignPick::Mark(m), glyph)
-                    .on_hover_text(m.label());
+                let r = ui.selectable_value(&mut self.pick, SignPick::Mark(m), glyph);
+                dialogs::set_name(&r, &capital(m.label()));
+                r.on_hover_text(m.label());
             }
         });
         ink_ui(ui, &mut kit.color);
@@ -1275,6 +1290,36 @@ mod tests {
                 assert_eq!(c.text, "Sam Q. Lee");
                 assert_eq!(c.picture.as_ref(), Some(&picture));
             }
+        }
+    }
+
+    /// G06: drawn, typed or chosen, for a signature or initials, every control in the Create
+    /// window says what it is, and the handwriting styles say which one is picked.
+    #[test]
+    fn create_controls_are_named() {
+        use egui::accesskit::Toggled;
+        let picture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/images/icon.png");
+        for role in [SignRole::Signature, SignRole::Initials] {
+            for way in [Way::Draw, Way::Type, Way::Picture] {
+                let mut c = Create::new(role, "Sam Lee");
+                c.way = way;
+                c.picture = Some(picture.clone());
+                let tree = Win::new(c, Vec2::new(1000.0, 800.0), 1.0).settled();
+                let unclear = crate::dialogs::unclear_names(&tree);
+                assert_eq!(unclear, [""; 0], "{role:?}, {way:?}");
+            }
+        }
+        let mut c = Create::new(SignRole::Signature, "Sam Lee");
+        c.way = Way::Type;
+        c.style = SignStyle::ALL[1];
+        let tree = Win::new(c, Vec2::new(1000.0, 800.0), 1.0).settled();
+        let toggled = |name: &str| {
+            let n = tree.nodes.iter().find(|(_, n)| n.label() == Some(name));
+            n.and_then(|(_, n)| n.toggled())
+        };
+        for (i, style) in SignStyle::ALL.into_iter().enumerate() {
+            let on = [Toggled::False, Toggled::True][usize::from(i == 1)];
+            assert_eq!(toggled(style.label()), Some(on), "{style:?}");
         }
     }
 

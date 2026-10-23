@@ -463,7 +463,9 @@ fn size_ui(ui: &mut egui::Ui, size: &mut f32, range: std::ops::RangeInclusive<f3
         .ui(ui, |ui| {
             for v in SIZES.into_iter().filter(|v| range.contains(v)) {
                 let on = v == *size;
-                if ui.selectable_label(on, size_text(v)).clicked() {
+                let r = ui.selectable_label(on, size_text(v));
+                dialogs::set_name(&r, &format!("{} pt", size_text(v)));
+                if r.clicked() {
                     chosen |= !on;
                     *size = v;
                     ui.close();
@@ -475,6 +477,13 @@ fn size_ui(ui: &mut egui::Ui, size: &mut f32, range: std::ops::RangeInclusive<f3
         .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Font sizes"));
     ui.label("pt");
     chosen
+}
+
+/// A colour button, named for screen readers (egui leaves it unnamed).
+pub fn color_button(ui: &mut egui::Ui, c: &mut [f32; 3], name: &str) -> egui::Response {
+    let r = ui.color_edit_button_rgb(c);
+    dialogs::set_name(&r, name);
+    r
 }
 
 /// Whether two colours are the same to the eye. The colour buttons store a colour back
@@ -3086,7 +3095,7 @@ impl Editor {
     // ------------------------------------------------------------ inspector
 
     fn font_ui(ui: &mut egui::Ui, f: &mut FontChoice) {
-        egui::ComboBox::from_id_salt(ui.id().with("fam"))
+        let r = egui::ComboBox::from_id_salt(ui.id().with("fam"))
             .selected_text(match f.family {
                 Family::Helvetica => "Helvetica",
                 Family::Times => "Times",
@@ -3097,9 +3106,12 @@ impl Editor {
                 ui.selectable_value(&mut f.family, Family::Times, "Times");
                 ui.selectable_value(&mut f.family, Family::Courier, "Courier");
             });
+        dialogs::set_name(&r.response, "Font");
         ui.horizontal(|ui| {
-            ui.toggle_value(&mut f.bold, egui::RichText::new("B").strong());
-            ui.toggle_value(&mut f.italic, egui::RichText::new("I").italics());
+            let r = ui.toggle_value(&mut f.bold, egui::RichText::new("B").strong());
+            dialogs::set_name(&r, "Bold");
+            let r = ui.toggle_value(&mut f.italic, egui::RichText::new("I").italics());
+            dialogs::set_name(&r, "Italic");
         });
     }
 
@@ -3168,24 +3180,25 @@ impl Editor {
                 None => {
                     ui.horizontal(|ui| {
                         let mut on = e.color.is_some();
-                        let label = match a.kind {
-                            AnnotKind::Square | AnnotKind::Circle => "Outline",
-                            AnnotKind::Line | AnnotKind::Ink => "Line",
-                            _ => "Colour",
+                        let (label, name) = match a.kind {
+                            AnnotKind::Square | AnnotKind::Circle => ("Outline", "Outline colour"),
+                            AnnotKind::Line | AnnotKind::Ink => ("Line", "Line colour"),
+                            _ => ("Colour", "Colour"),
                         };
                         if ui.checkbox(&mut on, label).changed() {
                             e.color = on.then_some(a.color.unwrap_or([0.0; 3]));
                         }
                         if let Some(c) = e.color.as_mut() {
-                            ui.color_edit_button_rgb(c);
+                            color_button(ui, c, name);
                         }
                         if let Some(s) = e.shape.as_mut() {
-                            ui.add(
+                            let r = ui.add(
                                 egui::DragValue::new(&mut s.width)
                                     .range(0.0..=40.0)
                                     .speed(0.1)
                                     .suffix(" pt"),
                             );
+                            dialogs::set_name(&r, "Line width");
                         }
                     });
                 }
@@ -3199,7 +3212,7 @@ impl Editor {
                                 s.fill = on.then_some([1.0, 1.0, 0.6]);
                             }
                             if let Some(c) = s.fill.as_mut() {
-                                ui.color_edit_button_rgb(c);
+                                color_button(ui, c, "Fill colour");
                             }
                         });
                     }
@@ -3212,22 +3225,22 @@ impl Editor {
             ui.horizontal(|ui| {
                 ui.label("Opacity");
                 let mut pct = e.opacity * 100.0;
-                if ui
-                    .add(egui::Slider::new(&mut pct, 0.0..=100.0).suffix(" %"))
-                    .changed()
-                {
+                let r = dialogs::slider(ui, &mut pct, 0.0..=100.0, " %", "Opacity");
+                if r.changed() {
                     e.opacity = pct / 100.0;
                 }
             });
-            ui.label(if e.text.is_some() { "Text" } else { "Comment" });
-            ui.add(
+            let label = if e.text.is_some() { "Text" } else { "Comment" };
+            ui.label(label);
+            let r = ui.add(
                 egui::TextEdit::multiline(&mut e.contents)
                     .desired_rows(4)
                     .desired_width(f32::INFINITY),
             );
+            dialogs::set_name(&r, label);
             // Changes are kept as they are made, each finished one a step to undo; the
             // comment when it is left.
-            if ui.button((theme::icon(icon::TRASH), "Delete")).clicked() {
+            if theme::glyph_button(ui, icon::TRASH, "Delete").clicked() {
                 self.actions.push(Action::DeleteAnnot(a.page, a.id));
                 done = true;
             } else if !e.same_as(&now) && settled(ui.ctx()) {
@@ -3262,18 +3275,18 @@ impl Editor {
                 .desired_rows(2)
                 .desired_width(f32::INFINITY),
         );
+        dialogs::set_name(&out, "Reply");
         if self.reply_focus {
             out.request_focus();
             self.reply_focus = false;
         }
         let ready = !self.reply.trim().is_empty();
-        if ui
-            .add_enabled(
-                ready,
-                egui::Button::new((theme::icon(icon::ARROW_BEND_UP_LEFT), "Add reply")),
-            )
-            .clicked()
-        {
+        let add = ui.add_enabled(
+            ready,
+            egui::Button::new((theme::icon(icon::ARROW_BEND_UP_LEFT), "Add reply")),
+        );
+        dialogs::set_name(&add, "Add reply");
+        if add.clicked() {
             let text = std::mem::take(&mut self.reply);
             self.actions.push(Action::Reply(a.page, a.id, text));
         }
@@ -3341,6 +3354,7 @@ impl Editor {
                 .hint_text("Type, then click on the page")
                 .desired_width(f32::INFINITY),
         );
+        dialogs::set_name(&entry, "Your own stamp");
         // What is typed is the stamp to put down straight away; it joins the list when
         // the box is left (Enter, or a click on the page or elsewhere).
         let wording = limarepdf_core::stamp_wording(&self.stamp_draft);
@@ -3368,8 +3382,10 @@ impl Editor {
         ui.add_enabled_ui(self.stamp_name_date, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Name");
-                ui.add(egui::TextEdit::singleline(&mut self.author).hint_text("No name"))
+                let r = ui
+                    .add(egui::TextEdit::singleline(&mut self.author).hint_text("No name"))
                     .on_hover_text("Also signs your comments (Edit > Your name for comments)");
+                dialogs::set_name(&r, "Your name");
             });
         });
         ui.separator();
@@ -3444,7 +3460,7 @@ impl Editor {
                 ui.horizontal(|ui| {
                     ui.label("Size");
                     size_ui(ui, &mut self.tsize, 4.0..=200.0);
-                    ui.color_edit_button_rgb(&mut self.tcolor);
+                    color_button(ui, &mut self.tcolor, "Text colour");
                 });
                 // Changes apply to the text being typed, which then takes the keyboard back.
                 if self.new_look() != was {
@@ -3470,22 +3486,25 @@ impl Editor {
                 if self.tool != Tool::Line {
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut self.fill_on, "Fill");
-                        ui.color_edit_button_rgb(&mut self.fill);
+                        color_button(ui, &mut self.fill, "Fill colour");
                     });
                 }
                 ui.horizontal(|ui| {
-                    if self.tool == Tool::Line {
+                    let name = if self.tool == Tool::Line {
                         self.stroke_on = true;
+                        "Line colour"
                     } else {
                         ui.checkbox(&mut self.stroke_on, "Outline");
-                    }
-                    ui.color_edit_button_rgb(&mut self.stroke);
-                    ui.add(
+                        "Outline colour"
+                    };
+                    color_button(ui, &mut self.stroke, name);
+                    let r = ui.add(
                         egui::DragValue::new(&mut self.width)
                             .range(0.25..=40.0)
                             .speed(0.1)
                             .suffix(" pt"),
                     );
+                    dialogs::set_name(&r, "Line width");
                 });
                 if self.tool == Tool::Line && !self.draw_permanent {
                     ui.checkbox(&mut self.arrow, "Arrowhead");
@@ -3501,13 +3520,14 @@ impl Editor {
             Tool::Pen => {
                 ui.strong("Pen");
                 ui.horizontal(|ui| {
-                    ui.color_edit_button_rgb(&mut self.pen_color);
-                    ui.add(
+                    color_button(ui, &mut self.pen_color, "Pen colour");
+                    let r = ui.add(
                         egui::DragValue::new(&mut self.pen_width)
                             .range(0.25..=40.0)
                             .speed(0.1)
                             .suffix(" pt"),
                     );
+                    dialogs::set_name(&r, "Pen width");
                 });
                 return;
             }
@@ -3516,7 +3536,7 @@ impl Editor {
                 let was = self.note_color;
                 ui.horizontal(|ui| {
                     ui.label("Colour");
-                    ui.color_edit_button_rgb(&mut self.note_color);
+                    color_button(ui, &mut self.note_color, "Note colour");
                 });
                 // The colour applies to the note being typed, which then takes the
                 // keyboard back.
@@ -3623,12 +3643,14 @@ impl Editor {
             for (label, v, lo) in [("X", &mut x, -5000.0), ("Y", &mut y, -5000.0)] {
                 ui.label(label);
                 let r = ui.add(egui::DragValue::new(v).range(lo..=20000.0).speed(0.5));
+                dialogs::set_name(&r, label);
                 geom_done |= r.drag_stopped() || r.lost_focus();
             }
             ui.end_row();
-            for (label, v) in [("W", &mut w), ("H", &mut h)] {
+            for (label, name, v) in [("W", "Width", &mut w), ("H", "Height", &mut h)] {
                 ui.label(label);
                 let r = ui.add(egui::DragValue::new(v).range(1.0..=20000.0).speed(0.5));
+                dialogs::set_name(&r, name);
                 geom_done |= r.drag_stopped() || r.lost_focus();
             }
             ui.end_row();
@@ -3679,7 +3701,7 @@ impl Editor {
                     ui.horizontal(|ui| {
                         ui.label("Size");
                         size_ui(ui, &mut insp.size, 1.0..=400.0);
-                        ui.color_edit_button_rgb(&mut insp.color);
+                        color_button(ui, &mut insp.color, "Text colour");
                     });
                 }
                 if !obj.font_reusable && !obj.hidden {
@@ -3691,27 +3713,25 @@ impl Editor {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut insp.fill_on, "Fill");
-                    ui.color_edit_button_rgb(&mut insp.fill);
+                    color_button(ui, &mut insp.fill, "Fill colour");
                 });
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut insp.stroke_on, "Outline");
-                    ui.color_edit_button_rgb(&mut insp.stroke);
-                    ui.add(
+                    color_button(ui, &mut insp.stroke, "Outline colour");
+                    let r = ui.add(
                         egui::DragValue::new(&mut insp.width)
                             .range(0.25..=100.0)
                             .speed(0.1)
                             .suffix(" pt"),
                     );
+                    dialogs::set_name(&r, "Outline width");
                 });
             }
             ObjectKind::Image => {
                 ui.add_space(4.0);
                 if obj.inline {
                     ui.weak("Inline image: can't be replaced.");
-                } else if ui
-                    .button((theme::icon(icon::IMAGE), "Replace image…"))
-                    .clicked()
-                {
+                } else if theme::glyph_button(ui, icon::IMAGE, "Replace image…").clicked() {
                     if let Some(bytes) = pick_image() {
                         self.actions.push(Action::ReplaceImage(page, id, bytes));
                     }
@@ -3720,7 +3740,7 @@ impl Editor {
             ObjectKind::Form => {}
         }
         ui.add_space(6.0);
-        if ui.button((theme::icon(icon::TRASH), "Delete")).clicked() {
+        if theme::glyph_button(ui, icon::TRASH, "Delete").clicked() {
             // What was changed goes with it.
             self.insp = None;
             self.actions.push(Action::Delete(page, id));
@@ -3735,7 +3755,7 @@ fn text_style_ui(ui: &mut egui::Ui, s: &mut TextStyle) {
     ui.horizontal(|ui| {
         ui.label("Text");
         size_ui(ui, &mut s.size, 4.0..=200.0);
-        ui.color_edit_button_rgb(&mut s.color);
+        color_button(ui, &mut s.color, "Text colour");
     });
     ui.horizontal(|ui| {
         let mut on = s.fill.is_some();
@@ -3743,17 +3763,18 @@ fn text_style_ui(ui: &mut egui::Ui, s: &mut TextStyle) {
             s.fill = on.then_some([1.0, 1.0, 0.85]);
         }
         if let Some(c) = s.fill.as_mut() {
-            ui.color_edit_button_rgb(c);
+            color_button(ui, c, "Background colour");
         }
     });
     ui.horizontal(|ui| {
         ui.label("Border");
-        ui.add(
+        let r = ui.add(
             egui::DragValue::new(&mut s.border)
                 .range(0.0..=20.0)
                 .speed(0.1)
                 .suffix(" pt"),
         );
+        dialogs::set_name(&r, "Border width");
     });
 }
 

@@ -465,6 +465,20 @@ fn named(label: &str) -> egui::WidgetInfo {
     egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label)
 }
 
+/// Names the resize handle egui gives `panel` (by its id) and leaves unnamed, once egui
+/// has added it this frame, so no stray node is made. egui keeps the handle under the
+/// panel's id with "__resize"; the naming tests fail if that changes. It can't be moved
+/// with the keyboard (egui's limit).
+fn name_resize_handle(ctx: &egui::Context, panel: &str, name: &str) {
+    let id = egui::Id::new(panel).with("__resize");
+    if ctx.viewport(|v| v.this_pass.widgets.get(id).is_some()) {
+        ctx.accesskit_node_builder(id, |n| {
+            n.set_role(egui::accesskit::Role::Splitter);
+            n.set_label(name);
+        });
+    }
+}
+
 /// How long the undo toast stays, in seconds.
 const TOAST_SECONDS: f64 = 6.0;
 
@@ -3047,6 +3061,7 @@ impl App {
                 .hint_text("Type a command")
                 .desired_width(f32::INFINITY);
             let r = ui.add(field);
+            dlg::set_name(&r, "Command");
             r.request_focus();
             if r.changed() {
                 p.row = 0;
@@ -3177,7 +3192,9 @@ fn annotate_button(
     ui.menu_button(theme::icon(icon::CARET_DOWN).size(10.0), |ui| {
         for a in tools {
             let b = egui::Button::new((theme::icon(a.icon).size(16.0), a.label)).selected(on(a));
-            if ui.add(b).clicked() {
+            let r = ui.add(b);
+            dlg::set_name(&r, a.label);
+            if r.clicked() {
                 acts.push(a.act);
                 ui.close();
             }
@@ -3213,7 +3230,9 @@ fn tool_menu(
             for a in tools {
                 let b =
                     egui::Button::new((theme::icon(a.icon).size(16.0), a.label)).selected(is_on(a));
-                if ui.add(b).clicked() {
+                let r = ui.add(b);
+                dlg::set_name(&r, a.label);
+                if r.clicked() {
                     acts.push(a.act);
                     ui.close();
                 }
@@ -3432,7 +3451,9 @@ fn palette_row(ui: &mut egui::Ui, a: &Action, n: usize, on: bool, enabled: bool)
         .selected(on)
         .frame_when_inactive(on)
         .min_size(egui::vec2(ui.available_width(), 28.0));
-    ui.add_enabled(enabled, b)
+    let r = ui.add_enabled(enabled, b);
+    dlg::set_name(&r, a.label);
+    r
 }
 
 /// File > Open recent: the recent files that still exist, then Clear recent files.
@@ -3546,14 +3567,17 @@ fn empty_state(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
         for (i, path) in recent.iter().take(shown).enumerate() {
             // The name, not the icon, is the part that shrinks: cut short with "…".
             // The growing space after it keeps the rows left-aligned.
-            let name = file_name(path).atom_shrink(true);
+            let label = file_name(path);
+            let name = label.clone().atom_shrink(true);
             let glyph = theme::icon(icon::FILE_PDF).size(14.0);
             let row = egui::Button::new((glyph, name, egui::Atom::grow()))
                 .truncate()
                 .frame_when_inactive(false)
                 .min_size(egui::vec2(ui.available_width(), 26.0));
             let tip = path.display().to_string();
-            if ui.add(row).on_hover_text(tip).clicked() {
+            let r = ui.add(row);
+            dlg::set_name(&r, &label);
+            if r.on_hover_text(tip).clicked() {
                 acts.push(Act::OpenRecent(i));
             }
         }
@@ -3905,9 +3929,11 @@ impl eframe::App for App {
                     bar(ui, Act::ZoomOut, false, &mut acts);
                     // The zoom level; clicking it resets to actual size.
                     let level = format!("{:.0}%", t.zoom * 100.0);
-                    let b = egui::Button::new(level).frame_when_inactive(false);
+                    let b = egui::Button::new(&level).frame_when_inactive(false);
                     let tip = tooltip(ui.ctx(), actions::get(Act::Actual));
-                    if ui.add(b).on_hover_text(tip).clicked() {
+                    let r = ui.add(b);
+                    dlg::set_name(&r, &format!("Zoom {level}"));
+                    if r.on_hover_text(tip).clicked() {
                         acts.push(Act::Actual);
                     }
                     bar(ui, Act::ZoomIn, false, &mut acts);
@@ -3980,23 +4006,27 @@ impl eframe::App for App {
                         Side::Signatures => t.show_signatures(ui),
                         Side::Search => {
                             let r = ui.text_edit_singleline(&mut t.query);
+                            dlg::set_name(&r, "Search for");
                             let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                             ui.horizontal(|ui| {
                                 if ui.button("Find").clicked() || enter {
                                     t.run_search();
                                 }
-                                if ui.button("◀").clicked() {
-                                    t.step_hit(-1);
-                                }
-                                if ui.button("▶").clicked() {
-                                    t.step_hit(1);
+                                for (glyph, name, step) in
+                                    [("◀", "Previous match", -1), ("▶", "Next match", 1)]
+                                {
+                                    let r = ui.button(glyph);
+                                    dlg::set_name(&r, name);
+                                    if r.on_hover_text(name).clicked() {
+                                        t.step_hit(step);
+                                    }
                                 }
                             });
                             ui.label(format!("{} match(es)", t.hits.len()));
                             if !t.hits.is_empty() {
                                 let a = actions::get(Act::MarkResultsRedact);
-                                if ui
-                                    .button(format!("{} Mark all for redaction", a.icon))
+                                let label = "Mark all for redaction";
+                                if theme::glyph_button(ui, a.icon, label)
                                     .on_hover_text(a.hint)
                                     .clicked()
                                 {
@@ -4020,6 +4050,7 @@ impl eframe::App for App {
                         }
                     });
                 });
+            name_resize_handle(&ctx, "side", "Side panel width");
         }
 
         // The inspector: the editor's section for a selected object or words or a tool
@@ -4091,6 +4122,7 @@ impl eframe::App for App {
                     .auto_shrink([false, false])
                     .show(ui, |ui| panel_apply = inspector_body(s, t, ui, &c));
             });
+            name_resize_handle(&ctx, "inspector", "Inspector width");
             if toggle {
                 open = !open;
             }
@@ -4196,6 +4228,7 @@ impl eframe::App for App {
         self.signature_windows(&ctx);
         self.digital_windows(&ctx);
         self.dialogs(&ctx);
+        dlg::name_popups(&ctx);
 
         let title = match self.tabs.get(self.active) {
             Some(t) => format!("{} - LimarePDF", t.title()),
@@ -4364,12 +4397,17 @@ mod tests {
             .expect("the window's widgets")
     }
 
-    /// The names of the controls Tab can reach, drawn `width` points wide once settled.
-    fn focusable(app: &mut App, ctx: &egui::Context, width: f32) -> Vec<Option<String>> {
+    /// The window drawn `width` points wide once settled.
+    fn settled_at(app: &mut App, ctx: &egui::Context, width: f32) -> egui::accesskit::TreeUpdate {
         for _ in 0..4 {
             window(app, ctx, width, vec![]);
         }
-        let tree = window(app, ctx, width, vec![]);
+        window(app, ctx, width, vec![])
+    }
+
+    /// The names of the controls Tab can reach, drawn `width` points wide once settled.
+    fn focusable(app: &mut App, ctx: &egui::Context, width: f32) -> Vec<Option<String>> {
+        let tree = settled_at(app, ctx, width);
         tree.nodes
             .iter()
             .filter(|(_, n)| n.supports_action(egui::accesskit::Action::Focus))
@@ -4384,11 +4422,10 @@ mod tests {
         theme::install(&ctx);
         let mut app = app_with(&ctx, 1);
         for width in [1400.0, 1000.0, 760.0, 560.0, 400.0] {
+            // The panels' resize handles too.
+            let tree = settled_at(&mut app, &ctx, width);
+            assert_eq!(dlg::unclear_names(&tree), [""; 0], "at {width}");
             let names = focusable(&mut app, &ctx, width);
-            // Besides egui's own panel resize handles, which have no name.
-            let unnamed = names.iter().filter(|n| n.is_none()).count();
-            let handles = usize::from(app.side.shown()) + usize::from(app.inspector.shown());
-            assert!(unnamed <= handles, "{unnamed} unnamed at {width}");
             for name in [
                 "Menu",
                 "Open",
@@ -4400,6 +4437,271 @@ mod tests {
                 assert!(names.contains(&Some(name.into())), "no {name} at {width}");
             }
         }
+    }
+
+    /// Adds to `bad` the controls in `tree` whose names don't say what they are, in
+    /// `what`'s state.
+    fn note_unclear(tree: &egui::accesskit::TreeUpdate, what: &str, bad: &mut Vec<String>) {
+        bad.extend(
+            dlg::unclear_names(tree)
+                .into_iter()
+                .map(|n| format!("{what}: {n}")),
+        );
+    }
+
+    /// Adds to `bad` the controls whose names don't say what they are in `what`'s state,
+    /// wide and narrow.
+    fn clear_names(app: &mut App, ctx: &egui::Context, what: &str, bad: &mut Vec<String>) {
+        for width in [1400.0, 560.0] {
+            let tree = settled_at(app, ctx, width);
+            note_unclear(&tree, &format!("{what} at {width}"), bad);
+        }
+    }
+
+    /// Clicks the control named `name` in the whole window, 1400 points wide.
+    fn click_named(app: &mut App, ctx: &egui::Context, name: &str) {
+        let tree = settled_at(app, ctx, 1400.0);
+        let p = middle(&tree, name);
+        window(app, ctx, 1400.0, vec![egui::Event::PointerMoved(p)]);
+        window(app, ctx, 1400.0, vec![press(p, true)]);
+        window(app, ctx, 1400.0, vec![press(p, false)]);
+    }
+
+    /// G06: contextual controls are named too: each tool's inspector, text being added and
+    /// a line edited on the page, each kind of comment selected, each side view, Fill and
+    /// sign with saved signatures, and the lists, menus and command search opened.
+    #[test]
+    fn controls_have_clear_names_in_every_state() {
+        use crate::signing::{Entry, Saved};
+        use limarepdf_core::{BookmarkPlace, Shape, ShapeLook, SignRole, SignStyle, TextStyle};
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let mut comments = Vec::new();
+        assert!(app.tabs[0].edit(&ctx, |p| {
+            p.add_text(
+                0,
+                (100.0, 200.0),
+                "Walrus",
+                FontChoice::default(),
+                40.0,
+                [0.0; 3],
+            )?;
+            let yellow = [1.0, 1.0, 0.0];
+            comments.push(p.add_note(0, (300.0, 600.0), yellow, "Walrus", "Tester")?);
+            let style = TextStyle::default();
+            let rect = [300.0, 300.0, 500.0, 360.0];
+            comments.push(p.add_text_box(0, rect, "Walrus", &style, "Tester")?);
+            for (shape, rect) in [
+                (Shape::Rect, [100.0, 400.0, 200.0, 500.0]),
+                (Shape::Line, [100.0, 520.0, 200.0, 560.0]),
+            ] {
+                let look = ShapeLook::default();
+                let red = Some([1.0, 0.0, 0.0]);
+                comments.push(p.add_shape_annotation(0, shape, rect, red, &look, "Tester")?);
+            }
+            p.add_bookmark("Walrus", 0, BookmarkPlace::End).map(drop)
+        }));
+        app.tabs[0].query = "Walrus".into();
+        app.tabs[0].run_search();
+        assert!(!app.tabs[0].hits.is_empty());
+        let mut bad = Vec::new();
+        clear_names(&mut app, &ctx, "Read", &mut bad);
+
+        for tool in [
+            Tool::Select,
+            Tool::Text,
+            Tool::Image,
+            Tool::Rect,
+            Tool::Ellipse,
+            Tool::Line,
+            Tool::Note,
+            Tool::TextBox,
+            Tool::Pen,
+            Tool::Stamp,
+            Tool::Redact,
+            Tool::Sign,
+            Tool::DigitalSign,
+        ] {
+            // Not through the command, which asks for a picture for Image.
+            app.tabs[0].ed.set_tool(tool);
+            clear_names(&mut app, &ctx, &format!("{tool:?}"), &mut bad);
+        }
+
+        // Text being added on the page, and a line of page text edited there.
+        app.act(&ctx, Act::Tool(Tool::Text));
+        let (page, k) = page_on_screen(&mut app, &ctx);
+        let p = page + egui::vec2(300.0, 100.0) * k;
+        window(&mut app, &ctx, 1400.0, click_at(p));
+        assert!(app.tabs[0].ed.adding.is_some());
+        clear_names(&mut app, &ctx, "Adding text", &mut bad);
+        app.act(&ctx, Act::Tool(Tool::Read));
+        app.act(&ctx, Act::Tool(Tool::Text));
+        let (page, k) = page_on_screen(&mut app, &ctx);
+        let p = page + egui::vec2(160.0, 190.0) * k;
+        window(&mut app, &ctx, 1400.0, click_at(p));
+        assert!(app.tabs[0].ed.typing_on_page());
+        clear_names(&mut app, &ctx, "Editing a line", &mut bad);
+        app.act(&ctx, Act::Tool(Tool::Read));
+
+        for (n, id) in comments.into_iter().enumerate() {
+            app.tabs[0].ed.selection = Selection::Annot { page: 0, id };
+            clear_names(&mut app, &ctx, &format!("Comment {n}"), &mut bad);
+        }
+        app.tabs[0].ed.selection = Selection::None;
+
+        // Each section of the document's inspector opened, then with pages selected.
+        for s in [
+            Section::Properties,
+            Section::Security,
+            Section::Crop,
+            Section::HeaderFooter,
+            Section::Watermark,
+            Section::Ocr,
+            Section::Scans,
+            Section::Export,
+            Section::Split,
+        ] {
+            app.reveal(s);
+            clear_names(&mut app, &ctx, &format!("{s:?}"), &mut bad);
+        }
+        app.reveal_labels();
+        clear_names(&mut app, &ctx, "Selected pages", &mut bad);
+        app.tabs[0].ed.selection = Selection::None;
+
+        app.side.set_open(true);
+        for (side, what) in [
+            (Side::Pages, "Pages"),
+            (Side::Search, "Search results"),
+            (Side::Bookmarks, "Bookmarks"),
+            (Side::Comments, "Comments"),
+        ] {
+            app.tabs[0].side = side;
+            clear_names(&mut app, &ctx, what, &mut bad);
+        }
+
+        // Fill and sign with saved signatures and initials, and its choices menu open.
+        for role in [SignRole::Signature, SignRole::Initials] {
+            let saved = Saved::Typed {
+                text: "Sam Lee".into(),
+                style: SignStyle::ALL[0],
+            };
+            let e = Entry { saved, keep: false };
+            app.settings.sign.add(role, e).unwrap();
+        }
+        app.act(&ctx, Act::Tool(Tool::Sign));
+        clear_names(&mut app, &ctx, "Fill and sign", &mut bad);
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        let initials = node(&tree, "Initials 1");
+        assert!(initials.is_some(), "no saved initials shown");
+        click_named(&mut app, &ctx, "Fill and sign choices");
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert!(egui::Popup::is_any_open(&ctx), "the menu isn't open");
+        note_unclear(&tree, "Fill and sign choices", &mut bad);
+        app.act(&ctx, Act::Tool(Tool::Read));
+
+        // The font and size lists, the menu and the command search, open.
+        let esc = vec![key_with(Key::Escape, egui::Modifiers::NONE)];
+        app.act(&ctx, Act::Tool(Tool::Text));
+        for list in ["Font", "Font sizes"] {
+            click_named(&mut app, &ctx, list);
+            let tree = settled_at(&mut app, &ctx, 1400.0);
+            assert!(egui::Popup::is_any_open(&ctx), "{list} isn't open");
+            note_unclear(&tree, &format!("{list} open"), &mut bad);
+            window(&mut app, &ctx, 1400.0, esc.clone());
+        }
+        app.act(&ctx, Act::Tool(Tool::Read));
+        click_named(&mut app, &ctx, "Menu");
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert!(egui::Popup::is_any_open(&ctx), "the menu isn't open");
+        note_unclear(&tree, "Menu open", &mut bad);
+        window(&mut app, &ctx, 1400.0, esc);
+        app.act(&ctx, Act::Palette);
+        clear_names(&mut app, &ctx, "Command search", &mut bad);
+        assert_eq!(bad, [""; 0]);
+    }
+
+    /// G06: Bold and Italic say whether they are on, and Tab goes through the new text's
+    /// look in the order shown.
+    #[test]
+    fn text_look_controls_say_their_state_in_reading_order() {
+        use egui::accesskit::Toggled;
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        app.act(&ctx, Act::Tool(Tool::Text));
+        let toggled = |tree: &egui::accesskit::TreeUpdate, name: &str| {
+            let n = tree.nodes.iter().find(|(_, n)| n.label() == Some(name));
+            n.and_then(|(_, n)| n.toggled())
+        };
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert_eq!(toggled(&tree, "Bold"), Some(Toggled::False));
+        assert_eq!(toggled(&tree, "Italic"), Some(Toggled::False));
+        app.tabs[0].ed.tfont.bold = true;
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert_eq!(toggled(&tree, "Bold"), Some(Toggled::True));
+        assert_eq!(toggled(&tree, "Italic"), Some(Toggled::False));
+        let font = tree.nodes.iter().find(|(_, n)| n.label() == Some("Font"));
+        let value = font.and_then(|(_, n)| n.value());
+        assert_eq!(value, Some("Helvetica"));
+
+        let reached = tab_walk(&mut app, &ctx, 1400.0, 80);
+        let look = [
+            "Font",
+            "Bold",
+            "Italic",
+            "Font size",
+            "Font sizes",
+            "Text colour",
+        ];
+        let at = reached.iter().position(|n| n == "Font").expect("no Font");
+        assert_eq!(reached[at..at + look.len()], look);
+
+        // The list, once open, is named after the control that opened it.
+        click_named(&mut app, &ctx, "Font");
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        let menu = tree
+            .nodes
+            .iter()
+            .find(|(_, n)| n.role() == egui::accesskit::Role::Menu);
+        assert_eq!(menu.and_then(|(_, n)| n.label()), Some("Font"));
+    }
+
+    /// G06: Fill and sign's saved signatures and marks say which one is picked.
+    #[test]
+    fn fill_and_sign_says_which_choice_is_picked() {
+        use crate::signing::{Entry, Saved, SignPick};
+        use egui::accesskit::Toggled;
+        use limarepdf_core::{Mark, SignRole, SignStyle};
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        for text in ["Sam Lee", "S. Lee"] {
+            let saved = Saved::Typed {
+                text: text.into(),
+                style: SignStyle::ALL[0],
+            };
+            let e = Entry { saved, keep: false };
+            app.settings.sign.add(SignRole::Signature, e).unwrap();
+        }
+        app.act(&ctx, Act::Tool(Tool::Sign));
+        let toggled = |tree: &egui::accesskit::TreeUpdate, name: &str| {
+            let n = tree.nodes.iter().find(|(_, n)| n.label() == Some(name));
+            n.and_then(|(_, n)| n.toggled())
+        };
+        app.tabs[0].ed.sign.pick = SignPick::Saved(SignRole::Signature, 1);
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert_eq!(toggled(&tree, "Signature 1"), Some(Toggled::False));
+        assert_eq!(toggled(&tree, "Signature 2"), Some(Toggled::True));
+        assert_eq!(toggled(&tree, "Tick"), Some(Toggled::False));
+        app.tabs[0].ed.sign.pick = SignPick::Mark(Mark::Tick);
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert_eq!(toggled(&tree, "Signature 2"), Some(Toggled::False));
+        assert_eq!(toggled(&tree, "Tick"), Some(Toggled::True));
+        assert_eq!(toggled(&tree, "Cross"), Some(Toggled::False));
     }
 
     #[test]
@@ -4561,7 +4863,7 @@ mod tests {
         );
         // Bold switched off in the inspector applies to the text being typed, which takes
         // the keyboard back: Ctrl+B there switches it on again.
-        let (b, _) = node(&tree, "B").expect("the inspector's Bold");
+        let (b, _) = node(&tree, "Bold").expect("the inspector's Bold");
         window(&mut app, &ctx, 1400.0, click(b.center()));
         assert!(!app.tabs[0].ed.tfont.bold);
         for _ in 0..2 {

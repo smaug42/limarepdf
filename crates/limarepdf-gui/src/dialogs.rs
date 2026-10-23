@@ -204,6 +204,78 @@ pub fn set_name(r: &egui::Response, name: &str) {
     r.ctx.accesskit_node_builder(r.id, |n| n.set_label(name));
 }
 
+/// A slider with the number it is set to beside it, to type in, both named `name` for
+/// screen readers. egui's own number box beside a slider can't be named, so the slider is
+/// drawn without it and this one added.
+pub fn slider<N: egui::emath::Numeric>(
+    ui: &mut Ui,
+    value: &mut N,
+    range: std::ops::RangeInclusive<N>,
+    suffix: &str,
+    name: &str,
+) -> egui::Response {
+    let span = range.end().to_f64() - range.start().to_f64();
+    let r = ui.add(egui::Slider::new(value, range.clone()).show_value(false));
+    set_name(&r, name);
+    let number = egui::DragValue::new(value)
+        .range(range)
+        .suffix(suffix)
+        .speed(span / 200.0);
+    let n = ui.add(number);
+    set_name(&n, name);
+    r | n
+}
+
+/// Names each open menu or list after the control that opened it, once everything is
+/// drawn. egui makes a popup's background a control Tab can reach, with no name: its id
+/// is the opener's with "popup" (menus, lists and right-click menus alike), the
+/// background's that with "move". The naming tests fail if egui changes that.
+pub fn name_popups(ctx: &egui::Context) {
+    let open: Vec<(egui::Id, egui::Id)> = ctx.viewport(|v| {
+        let pass = &v.this_pass;
+        let mut out = Vec::new();
+        for (layer, state) in &pass.layers {
+            for &popup in &state.open_popups {
+                let back = popup.with("move");
+                let opener = pass
+                    .widgets
+                    .get_layer(*layer)
+                    .find(|w| w.id.with("popup") == popup);
+                if let (true, Some(w)) = (pass.widgets.contains(back), opener) {
+                    out.push((back, w.id));
+                }
+            }
+        }
+        out
+    });
+    for (back, opener) in open {
+        let name = ctx.accesskit_node_builder(opener, |n| n.label().map(str::to_string));
+        if let Some(name) = name.flatten() {
+            ctx.accesskit_node_builder(back, |n| {
+                n.set_role(egui::accesskit::Role::Menu);
+                n.set_label(name);
+            });
+        }
+    }
+}
+
+/// The controls in `tree` that Tab can reach whose names don't say what they are: no
+/// name, a name without a letter (a glyph such as ◀), or one holding an icon (the icon
+/// font's private-use characters). Each is given as its role and name.
+#[cfg(test)]
+pub fn unclear_names(tree: &egui::accesskit::TreeUpdate) -> Vec<String> {
+    tree.nodes
+        .iter()
+        .filter(|(_, n)| n.supports_action(egui::accesskit::Action::Focus))
+        .filter_map(|(_, n)| {
+            let name = n.label().unwrap_or_default();
+            let icon = name.chars().any(|c| ('\u{e000}'..='\u{f8ff}').contains(&c));
+            let clear = name.chars().any(char::is_alphabetic) && !icon;
+            (!clear).then(|| format!("{:?} {name:?}", n.role()))
+        })
+        .collect()
+}
+
 /// Controls at the right end of a row (whose `ui` is laid out right to left) laid out
 /// left to right, so Tab reaches them in reading order: in a box as wide as they were
 /// when last drawn, `last`. Returns their width; when that changed, the frame is drawn

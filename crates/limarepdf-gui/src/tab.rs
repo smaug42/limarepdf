@@ -1407,8 +1407,7 @@ impl Tab {
         let Some((_, items)) = &self.outline else {
             return;
         };
-        let add = ui
-            .button((theme::icon(icon::PLUS), "Add bookmark"))
+        let add = theme::glyph_button(ui, icon::PLUS, "Add bookmark")
             .on_hover_text(match self.outline_sel {
                 Some(_) => "Bookmark the current page, after the selected bookmark",
                 None => "Bookmark the current page",
@@ -1448,10 +1447,24 @@ impl Tab {
                         } else {
                             icon::CARET_RIGHT
                         };
-                        let caret = egui::Button::new(theme::icon(caret).size(10.0))
-                            .frame_when_inactive(false);
-                        if ui.add_visible(item.has_children, caret).clicked() {
-                            toggle = Some(i);
+                        if item.has_children {
+                            let button = egui::Button::new(theme::icon(caret).size(10.0))
+                                .frame_when_inactive(false);
+                            let r = ui.add(button);
+                            let what = if open { "Collapse" } else { "Expand" };
+                            crate::dialogs::set_name(&r, &format!("{what} {}", item.title));
+                            if r.clicked() {
+                                toggle = Some(i);
+                            }
+                        } else {
+                            // The caret's room, so titles line up; nothing a screen reader
+                            // would find.
+                            let font = egui::FontId::new(10.0, theme::icons());
+                            let c = caret.chars().next().unwrap_or(' ');
+                            let w = ui.ctx().fonts_mut(|f| f.glyph_width(&font, c));
+                            let pad = ui.spacing().button_padding.x;
+                            let size = egui::vec2(w + 2.0 * pad, ui.spacing().interact_size.y);
+                            ui.allocate_exact_size(size, egui::Sense::hover());
                         }
                         if let Some((at, title)) = &mut editing {
                             if *at == i {
@@ -1490,19 +1503,18 @@ impl Tab {
                             rename = Some(Some((i, item.title.clone())));
                         }
                         r.context_menu(|ui| {
-                            let pencil = theme::icon(icon::PENCIL_SIMPLE);
-                            if ui.button((pencil, "Rename")).clicked() {
+                            if theme::glyph_button(ui, icon::PENCIL_SIMPLE, "Rename").clicked() {
                                 rename = Some(Some((i, item.title.clone())));
                             }
-                            let plus = theme::icon(icon::PLUS);
-                            if ui.button((plus, "Add bookmark under this")).clicked() {
+                            let under = "Add bookmark under this";
+                            if theme::glyph_button(ui, icon::PLUS, under).clicked() {
                                 place = Some(BookmarkPlace::Under(i));
                             }
                             let label = match item.has_children {
                                 true => "Delete, with its children",
                                 false => "Delete",
                             };
-                            if ui.button((theme::icon(icon::TRASH), label)).clicked() {
+                            if theme::glyph_button(ui, icon::TRASH, label).clicked() {
                                 delete = Some(i);
                             }
                         });
@@ -1618,8 +1630,8 @@ impl Tab {
                             chosen = Some(i);
                         }
                         r.context_menu(|ui| {
-                            let answer = theme::icon(icon::ARROW_BEND_UP_LEFT);
-                            if ui.button((answer, "Reply…")).clicked() {
+                            let answer = icon::ARROW_BEND_UP_LEFT;
+                            if theme::glyph_button(ui, answer, "Reply…").clicked() {
                                 chosen = Some(i);
                                 reply = true;
                             }

@@ -98,6 +98,13 @@ pub fn icon(glyph: &str) -> RichText {
     RichText::new(glyph).family(icons())
 }
 
+/// A button showing `glyph` before `text`; screen readers say the text alone.
+pub fn glyph_button(ui: &mut egui::Ui, glyph: &str, text: &str) -> egui::Response {
+    let r = ui.button((icon(glyph), text));
+    crate::dialogs::set_name(&r, text);
+    r
+}
+
 /// Install the fonts and the light and dark styles.
 pub fn install(ctx: &egui::Context) {
     ctx.set_fonts(fonts());

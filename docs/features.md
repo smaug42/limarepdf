@@ -74,6 +74,8 @@ this list once it works. The feature table below has the details.
 - No autosave or custom shortcuts, and English only (unsaved work is kept in recovery copies).
 - Tested mostly on Linux: Windows only partly, macOS not at all; printing on paper only on Linux. Dropping files
   onto the window doesn't work in Linux Wayland sessions yet.
+- The side panel and the inspector can be made wider or narrower only by dragging their edge with the mouse, not
+  from the keyboard. Screen readers haven't been tried yet (Orca, Narrator, VoiceOver).
 
 ## Feature status
 
@@ -92,6 +94,7 @@ available.
 | App icon | Done | Window, taskbar and Windows `.exe`. Wayland needs the desktop entry installed. [Details](install.md#menu-entry-and-icon-on-linux) |
 | About window | Done | Version (copyable for bug reports), links, contributors, credits; "Made in Canada". [Details](gui.md#look-and-feel) |
 | Dialogs | Done | One look for every dialog: task and document in the title, the action button highlighted (red when Undo can't take it back) in the platform's order, the window behind blocked, Esc as Cancel unless work would be lost, Copy on messages, reasons under Details, problems beside their fields (a missing or wrong password under the password, when signing too), and a digital ID form whose work fails comes back with what was typed (passwords aside); Tab goes through fields and buttons in the order shown, and screen readers can name each one. Checked on Linux only |
+| Names for screen readers | Partial | Every button, field, list and menu in the window, the inspector, the side views and the dialogs has a name a screen reader can say: icons and symbols such as ◀ in words, Bold, Italic and the picked signature or mark with whether they are on. Checked by the app's tests on Linux; not yet tried with a screen reader. The panels' edges are named but can't be moved from the keyboard. [Details](gui.md#screen-readers) |
 | Window size | Done | Remembered between runs, and whether it was maximized; position: No. [Details](gui.md#look-and-feel) |
 | Light and dark themes | Done | Follows the system, or chosen in View > Theme; remembered between runs |
 | Page colour modes | Done | View > Page colours: Normal, Automatic (dark pages with the dark theme), Dark, High contrast, Sepia. Pictures keep their colours unless "Recolour pictures too" is on. On screen only: the file, printing and exports keep their colours. See [Rendering](rendering.md#page-colour-modes) |

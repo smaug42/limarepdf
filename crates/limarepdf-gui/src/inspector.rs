@@ -14,6 +14,7 @@
 
 use crate::actions::{self, Act, Ctx};
 use crate::app::IMAGE_EXTS;
+use crate::dialogs::{set_name, slider};
 use crate::fields::{self, FormUi};
 use crate::selection::Selection;
 use crate::tab::{Side, Stamp, StampForm, Tab};
@@ -759,17 +760,19 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
         sections.show(ui, Some(Section::Split), "Split into files", |ui| {
             ui.horizontal(|ui| {
                 ui.radio_value(&mut f.split_at_marks, false, "Pages per file");
-                ui.add_enabled(
+                let r = ui.add_enabled(
                     !f.split_at_marks,
                     egui::DragValue::new(&mut f.split).range(1..=100_000),
                 );
+                set_name(&r, "Pages per file");
             });
             ui.horizontal(|ui| {
                 ui.radio_value(&mut f.split_at_marks, true, "At bookmarks, levels");
-                ui.add_enabled(
+                let r = ui.add_enabled(
                     f.split_at_marks,
                     egui::DragValue::new(&mut f.split_level).range(1..=9),
                 );
+                set_name(&r, "Bookmark levels");
             });
             if ui.button("Choose folder…").clicked() {
                 apply = Some(Apply::Split);
@@ -871,20 +874,24 @@ impl Sections {
 }
 
 /// A full-width button for a registry command: icon and label, disabled when the
-/// command is not available.
+/// command is not available. Screen readers say the label alone.
 fn act_button(ui: &mut Ui, act: Act, c: &Ctx) -> bool {
     let a = actions::get(act);
     let glyph = theme::icon(if a.icon.is_empty() { " " } else { a.icon }).size(16.0);
     let b = egui::Button::new((glyph, a.label))
         .min_size(egui::vec2(ui.available_width(), 26.0))
         .frame_when_inactive(false);
-    ui.add_enabled((a.enabled)(c), b).clicked()
+    let r = ui.add_enabled((a.enabled)(c), b);
+    set_name(&r, a.label);
+    r.clicked()
 }
 
 fn range_row(ui: &mut Ui, text: &mut String) -> egui::Response {
     ui.horizontal(|ui| {
         ui.label("Pages");
-        crate::dialogs::pages_box(ui, text, Some(f32::INFINITY))
+        let r = crate::dialogs::pages_box(ui, text, Some(f32::INFINITY));
+        set_name(&r, "Pages");
+        r
     })
     .inner
 }
@@ -895,6 +902,30 @@ fn grid(ui: &mut Ui, id: &str, body: impl FnOnce(&mut Ui)) {
         .num_columns(2)
         .spacing([8.0, 6.0])
         .show(ui, body);
+}
+
+/// A row of a grid: `label`, then a slider with its number, named by the label.
+fn slider_row<N: egui::emath::Numeric>(
+    ui: &mut Ui,
+    label: &str,
+    value: &mut N,
+    range: std::ops::RangeInclusive<N>,
+    suffix: &str,
+) -> egui::Response {
+    row(ui, label, |ui| {
+        ui.horizontal(|ui| slider(ui, value, range, suffix, label))
+            .inner
+    })
+}
+
+/// A row of a grid: `label`, then the control `add` makes, named by the label for screen
+/// readers.
+fn row(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui) -> egui::Response) -> egui::Response {
+    ui.label(label);
+    let r = add(ui);
+    set_name(&r, label);
+    ui.end_row();
+    r
 }
 
 /// A page dimension in points.
@@ -915,9 +946,9 @@ fn blank_ui(ui: &mut Ui, size: &mut (f32, f32), after: usize) -> bool {
         }
     });
     ui.horizontal(|ui| {
-        ui.add(points(&mut size.0));
+        set_name(&ui.add(points(&mut size.0)), "Width");
         ui.label("×");
-        ui.add(points(&mut size.1));
+        set_name(&ui.add(points(&mut size.1)), "Height");
     });
     ui.button(format!("Insert after page {}", after + 1))
         .clicked()
@@ -944,13 +975,14 @@ fn label_ui(
     ui.horizontal(|ui| {
         ui.label("Style");
         let style = s.style;
-        egui::ComboBox::from_id_salt("label-style")
+        let r = egui::ComboBox::from_id_salt("label-style")
             .selected_text(name(s.style))
             .show_ui(ui, |ui| {
                 for st in LabelStyle::ALL.map(Some).into_iter().chain([None]) {
                     ui.selectable_value(&mut s.style, st, name(st));
                 }
             });
+        set_name(&r.response, "Style");
         if s.style != style {
             apply = Some(Apply::Label(None));
         }
@@ -958,6 +990,7 @@ fn label_ui(
     ui.horizontal(|ui| {
         ui.label("Prefix");
         let r = ui.add(egui::TextEdit::singleline(&mut s.prefix).desired_width(80.0));
+        set_name(&r, "Prefix");
         if r.has_focus() {
             *typing = Some(LABEL_PREFIX);
         }
@@ -968,7 +1001,9 @@ fn label_ui(
         let start = egui::DragValue::new(&mut s.start)
             .range(1..=999_999_999)
             .update_while_editing(false);
-        if let_go(&ui.add_enabled(s.style.is_some(), start)) {
+        let r = ui.add_enabled(s.style.is_some(), start);
+        set_name(&r, "Start at");
+        if let_go(&r) {
             apply = Some(Apply::Label(Some("label-start")));
         }
     });
@@ -997,18 +1032,16 @@ fn crop_ui(ui: &mut Ui, s: &mut Crop) -> Option<Option<&'static str>> {
             ("Left", 3, "crop-left"),
             ("Right", 1, "crop-right"),
         ] {
-            ui.label(name);
             let v = &mut s.margins[i];
             let field = egui::DragValue::new(v)
                 .range(0.0..=14400.0)
                 .suffix(" pt")
                 .update_while_editing(false);
-            let r = ui.add(field);
+            let r = row(ui, name, |ui| ui.add(field));
             s.dragged |= r.dragged();
             if let_go(&r) {
                 apply = Some(Some(key));
             }
-            ui.end_row();
         }
     });
     if ui.button("Remove crop").clicked() {
@@ -1024,10 +1057,9 @@ fn meta_ui(ui: &mut Ui, s: &mut Info, typing: &mut Option<&'static str>) -> bool
     let mut kept = false;
     grid(ui, "meta", |ui| {
         for (label, f) in meta_fields(s) {
-            ui.label(label);
             let mut v = f.clone().unwrap_or_default();
             let field = egui::TextEdit::singleline(&mut v).desired_width(f32::INFINITY);
-            let r = ui.add(field);
+            let r = row(ui, label, |ui| ui.add(field));
             if r.changed() {
                 *f = Some(v);
             }
@@ -1035,7 +1067,6 @@ fn meta_ui(ui: &mut Ui, s: &mut Info, typing: &mut Option<&'static str>) -> bool
                 *typing = Some(label);
             }
             kept |= r.lost_focus();
-            ui.end_row();
         }
     });
     kept
@@ -1073,24 +1104,26 @@ fn view_ui(
         Some(OpenPanel::Bookmarks) => "Bookmarks",
     };
     grid(ui, "view", |ui| {
-        ui.label("Layout");
-        egui::ComboBox::from_id_salt("view-layout")
-            .selected_text(layout_name(v.layout))
-            .show_ui(ui, |ui| {
-                for l in [None].into_iter().chain(OpenLayout::ALL.map(Some)) {
-                    ui.selectable_value(&mut v.layout, l, layout_name(l));
-                }
-            });
-        ui.end_row();
-        ui.label("Side panel");
-        egui::ComboBox::from_id_salt("view-panel")
-            .selected_text(panel_name(v.panel))
-            .show_ui(ui, |ui| {
-                for p in [None].into_iter().chain(OpenPanel::ALL.map(Some)) {
-                    ui.selectable_value(&mut v.panel, p, panel_name(p));
-                }
-            });
-        ui.end_row();
+        row(ui, "Layout", |ui| {
+            egui::ComboBox::from_id_salt("view-layout")
+                .selected_text(layout_name(v.layout))
+                .show_ui(ui, |ui| {
+                    for l in [None].into_iter().chain(OpenLayout::ALL.map(Some)) {
+                        ui.selectable_value(&mut v.layout, l, layout_name(l));
+                    }
+                })
+                .response
+        });
+        row(ui, "Side panel", |ui| {
+            egui::ComboBox::from_id_salt("view-panel")
+                .selected_text(panel_name(v.panel))
+                .show_ui(ui, |ui| {
+                    for p in [None].into_iter().chain(OpenPanel::ALL.map(Some)) {
+                        ui.selectable_value(&mut v.panel, p, panel_name(p));
+                    }
+                })
+                .response
+        });
         ui.label("Page");
         ui.horizontal(|ui| {
             let mut set = v.page.is_some();
@@ -1100,6 +1133,7 @@ fn view_ui(
                 .range(1..=here.pages.max(1))
                 .update_while_editing(false);
             let r = ui.add_enabled(set, field);
+            set_name(&r, "Page to open at");
             *page = n - 1;
             v.page = set.then_some(*page);
             number = Some(r);
@@ -1131,33 +1165,38 @@ fn security_ui(ui: &mut Ui, s: &mut Sec) -> bool {
     ui.add_enabled_ui(s.enabled, |ui| {
         grid(ui, "sec", |ui| {
             ui.label("Open");
-            ui.add(egui::TextEdit::singleline(&mut s.user).password(true))
+            let r = ui
+                .add(egui::TextEdit::singleline(&mut s.user).password(true))
                 .on_hover_text("Needed to open the document");
+            set_name(&r, "Open password");
             ui.end_row();
             ui.label("Permissions");
-            ui.add(egui::TextEdit::singleline(&mut s.owner).password(true))
+            let r = ui
+                .add(egui::TextEdit::singleline(&mut s.owner).password(true))
                 .on_hover_text("Needed to change the permissions");
+            set_name(&r, "Permissions password");
             ui.end_row();
-            ui.label("Encryption");
             let name = |c: Cipher| match c {
                 Cipher::Rc4_40 => "40-bit RC4 (weak)",
                 Cipher::Rc4_128 => "128-bit RC4 (weak)",
                 Cipher::Aes128 => "128-bit AES",
                 Cipher::Aes256 => "256-bit AES",
             };
-            egui::ComboBox::from_id_salt("cipher")
-                .selected_text(name(s.cipher))
-                .show_ui(ui, |ui| {
-                    for c in [
-                        Cipher::Aes256,
-                        Cipher::Aes128,
-                        Cipher::Rc4_128,
-                        Cipher::Rc4_40,
-                    ] {
-                        ui.selectable_value(&mut s.cipher, c, name(c));
-                    }
-                });
-            ui.end_row();
+            row(ui, "Encryption", |ui| {
+                egui::ComboBox::from_id_salt("cipher")
+                    .selected_text(name(s.cipher))
+                    .show_ui(ui, |ui| {
+                        for c in [
+                            Cipher::Aes256,
+                            Cipher::Aes128,
+                            Cipher::Rc4_128,
+                            Cipher::Rc4_40,
+                        ] {
+                            ui.selectable_value(&mut s.cipher, c, name(c));
+                        }
+                    })
+                    .response
+            });
         });
         ui.label("Allow:");
         ui.checkbox(&mut s.r.print, "Printing");
@@ -1181,9 +1220,11 @@ struct Press {
     left: bool,
 }
 
-/// A text field of a stamp section, which notes in `p` when it is left.
-fn stamp_text(ui: &mut Ui, text: &mut String, p: &mut Press) {
-    let r = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
+/// A text field of a stamp section, which notes in `p` when it is left; a grid row named
+/// `label`.
+fn stamp_text(ui: &mut Ui, label: &str, text: &mut String, p: &mut Press) {
+    let field = egui::TextEdit::singleline(text).desired_width(f32::INFINITY);
+    let r = row(ui, label, |ui| ui.add(field));
     p.left |= r.lost_focus();
 }
 
@@ -1241,27 +1282,15 @@ fn watermark_ui(ui: &mut Ui, s: &mut Wm, linked: bool) -> Press {
                 };
             });
             ui.end_row();
-            ui.label("Size");
-            ui.add(egui::Slider::new(&mut s.scale, 5.0..=100.0).suffix("% of page"));
-            ui.end_row();
+            slider_row(ui, "Size", &mut s.scale, 5.0..=100.0, "% of page");
         } else {
-            ui.label("Text");
-            stamp_text(ui, &mut s.text, &mut p);
-            ui.end_row();
-            ui.label("Size");
-            ui.add(egui::Slider::new(&mut s.size, 12.0..=300.0));
-            ui.end_row();
+            stamp_text(ui, "Text", &mut s.text, &mut p);
+            slider_row(ui, "Size", &mut s.size, 12.0..=300.0, "");
         }
-        ui.label("Opacity");
-        ui.add(egui::Slider::new(&mut s.opacity, 0.02..=1.0));
-        ui.end_row();
-        ui.label("Rotation");
-        ui.add(egui::Slider::new(&mut s.rotation, -90.0..=90.0).suffix("°"));
-        ui.end_row();
+        slider_row(ui, "Opacity", &mut s.opacity, 0.02..=1.0, "");
+        slider_row(ui, "Rotation", &mut s.rotation, -90.0..=90.0, "°");
         if !s.picture {
-            ui.label("Colour");
-            ui.color_edit_button_rgb(&mut s.color);
-            ui.end_row();
+            row(ui, "Colour", |ui| ui.color_edit_button_rgb(&mut s.color));
         }
     });
     ui.radio_value(&mut s.foreground, true, "Above the content");
@@ -1276,40 +1305,34 @@ fn header_footer_ui(ui: &mut Ui, s: &mut Hf, linked: bool) -> Press {
     ui.weak("Tokens: {page}  {pages}  {date}  {bates}");
     grid(ui, "hf", |ui| {
         let sides = ["left", "centre", "right"];
-        for (name, row) in [("Header", &mut s.header), ("Footer", &mut s.footer)] {
-            for (side, text) in sides.iter().zip(row.iter_mut()) {
-                ui.label(format!("{name}, {side}"));
-                stamp_text(ui, text, &mut p);
-                ui.end_row();
+        for (name, line) in [("Header", &mut s.header), ("Footer", &mut s.footer)] {
+            for (side, text) in sides.iter().zip(line.iter_mut()) {
+                stamp_text(ui, &format!("{name}, {side}"), text, &mut p);
             }
         }
-        ui.label("Font size");
-        ui.add(egui::DragValue::new(&mut s.size).range(5.0..=48.0));
-        ui.end_row();
-        ui.label("Margin");
-        ui.add(
-            egui::DragValue::new(&mut s.margin)
-                .range(10.0..=144.0)
-                .suffix(" pt"),
-        );
-        ui.end_row();
+        row(ui, "Font size", |ui| {
+            ui.add(egui::DragValue::new(&mut s.size).range(5.0..=48.0))
+        });
+        row(ui, "Margin", |ui| {
+            ui.add(
+                egui::DragValue::new(&mut s.margin)
+                    .range(10.0..=144.0)
+                    .suffix(" pt"),
+            )
+        });
     });
     ui.checkbox(&mut s.bates, "Bates numbering")
         .on_hover_text("Without a {bates} token the number goes at the bottom right.");
     ui.add_enabled_ui(s.bates, |ui| {
         grid(ui, "bates", |ui| {
-            ui.label("Prefix");
-            stamp_text(ui, &mut s.prefix, &mut p);
-            ui.end_row();
-            ui.label("Suffix");
-            stamp_text(ui, &mut s.suffix, &mut p);
-            ui.end_row();
-            ui.label("Digits");
-            ui.add(egui::DragValue::new(&mut s.digits).range(1..=12));
-            ui.end_row();
-            ui.label("Start");
-            ui.add(egui::DragValue::new(&mut s.start).range(0..=999_999_999));
-            ui.end_row();
+            stamp_text(ui, "Prefix", &mut s.prefix, &mut p);
+            stamp_text(ui, "Suffix", &mut s.suffix, &mut p);
+            row(ui, "Digits", |ui| {
+                ui.add(egui::DragValue::new(&mut s.digits).range(1..=12))
+            });
+            row(ui, "Start", |ui| {
+                ui.add(egui::DragValue::new(&mut s.start).range(0..=999_999_999))
+            });
         });
     });
     p.left |= range_row(ui, &mut s.range).lost_focus();
@@ -1321,37 +1344,37 @@ fn scan_ui(ui: &mut Ui, pages: &mut String, o: &mut ScanOptions, busy: bool) -> 
     ui.weak("Only pages that are one full-page image.");
     range_row(ui, pages);
     grid(ui, "scan", |ui| {
-        ui.label("Store as");
         let label = |m: ScanMode| match m {
             ScanMode::Auto => "Automatic",
             ScanMode::BlackWhite => "Black and white",
             ScanMode::Gray => "Greyscale",
             ScanMode::Color => "Colour",
         };
-        egui::ComboBox::from_id_salt("scan-mode")
-            .selected_text(label(o.mode))
-            .show_ui(ui, |ui| {
-                for m in [
-                    ScanMode::Auto,
-                    ScanMode::BlackWhite,
-                    ScanMode::Gray,
-                    ScanMode::Color,
-                ] {
-                    ui.selectable_value(&mut o.mode, m, label(m));
-                }
-            });
-        ui.end_row();
+        row(ui, "Store as", |ui| {
+            egui::ComboBox::from_id_salt("scan-mode")
+                .selected_text(label(o.mode))
+                .show_ui(ui, |ui| {
+                    for m in [
+                        ScanMode::Auto,
+                        ScanMode::BlackWhite,
+                        ScanMode::Gray,
+                        ScanMode::Color,
+                    ] {
+                        ui.selectable_value(&mut o.mode, m, label(m));
+                    }
+                })
+                .response
+        });
         ui.label("Image resolution")
             .on_hover_text("Greyscale and colour images above this are downsampled");
-        ui.add(
+        let r = ui.add(
             egui::DragValue::new(&mut o.max_dpi)
                 .range(72.0..=600.0)
                 .suffix(" dpi"),
         );
+        set_name(&r, "Image resolution");
         ui.end_row();
-        ui.label("JPEG quality");
-        ui.add(egui::Slider::new(&mut o.jpeg_quality, 10..=100));
-        ui.end_row();
+        slider_row(ui, "JPEG quality", &mut o.jpeg_quality, 10..=100, "");
     });
     ui.checkbox(&mut o.deskew, "Straighten tilted pages");
     ui.checkbox(&mut o.despeckle, "Remove specks (black and white)");
@@ -1369,15 +1392,17 @@ fn export_ui(ui: &mut Ui, s: &mut Export, busy: bool) -> bool {
             ui.radio_value(&mut s.jpeg, true, "JPEG");
         });
         ui.end_row();
-        ui.label("Resolution");
-        ui.add(
-            egui::DragValue::new(&mut s.dpi)
-                .range(36.0..=MAX_DPI)
-                .suffix(" dpi"),
-        );
-        ui.end_row();
+        row(ui, "Resolution", |ui| {
+            ui.add(
+                egui::DragValue::new(&mut s.dpi)
+                    .range(36.0..=MAX_DPI)
+                    .suffix(" dpi"),
+            )
+        });
         ui.label("JPEG quality");
-        ui.add_enabled(s.jpeg, egui::Slider::new(&mut s.quality, 10..=100));
+        ui.add_enabled_ui(s.jpeg, |ui| {
+            ui.horizontal(|ui| slider(ui, &mut s.quality, 10..=100, "", "JPEG quality"));
+        });
         ui.end_row();
     });
     ui.add_enabled(!busy, egui::Button::new("Choose folder…"))

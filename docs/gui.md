@@ -698,6 +698,18 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |
 | Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the top bar, tabs, bottom bar and panels left to right; inside a dialog, its fields and then its buttons. Space or Enter presses the button. In a form, Tab moves between its fields; Ctrl+K reaches every command |
 
+### Screen readers
+
+Every button, field, list and menu has a name a screen reader can say, in the window, the inspector, the side
+views and the dialogs: icons and symbols are named in words (◀ and ▶ in Search results are Previous match and
+Next match), a field is named by the label beside it, and toggles such as Bold and Italic, the picked signature
+and the picked mark say whether they are on. An open list or menu is named after the button that opened it. The
+edges of the side panel and the inspector are named Side panel width and Inspector width, but can only be dragged
+with the mouse.
+
+The names are checked by the app's tests on Linux. LimarePDF hasn't been tried with a screen reader yet (Orca,
+Narrator or VoiceOver).
+
 ## Look and feel
 
 The app follows the system's light or dark theme. ☰ > View > Theme chooses System, Light or Dark. The choice is

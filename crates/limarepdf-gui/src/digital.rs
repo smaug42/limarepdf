@@ -1747,6 +1747,67 @@ mod tests {
         assert_eq!(tree.focus, *id, "the keyboard is in {label}");
     }
 
+    /// Draws the window as the app does; returns its widgets.
+    fn shown(w: &mut IdsWindow) -> egui::accesskit::TreeUpdate {
+        let ctx = Context::default();
+        ctx.enable_accesskit();
+        crate::theme::install(&ctx);
+        let mut frame = ctx.run_ui(egui::RawInput::default(), |ui| {
+            w.ui(ui.ctx(), "");
+        });
+        frame.textures_delta.clear();
+        frame.platform_output.accesskit_update.unwrap()
+    }
+
+    /// G06: every control of the signing window, signing or certifying, and of the Digital
+    /// IDs window's list and forms says what it is.
+    #[test]
+    fn digital_id_controls_are_named() {
+        let (mut w, dir) = window("names");
+        for certify in [false, true] {
+            w.certify = certify;
+            let (_, tree) = drawn(&mut w);
+            let unclear = crate::dialogs::unclear_names(&tree);
+            assert_eq!(unclear, [""; 0], "certifying: {certify}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let dir = scratch("names");
+        let (store, id) = store_with_id(&dir);
+        let mut w = ids_window(store);
+        let create = CreateForm {
+            name: "Jane Example".into(),
+            organisation: String::new(),
+            email: String::new(),
+            password: Secret::default(),
+            again: Secret::default(),
+            error: None,
+            focus: None,
+        };
+        let export = ExportForm {
+            id,
+            kind: ExportKind::Key,
+            password: Secret::default(),
+            fresh: true,
+            new_password: Secret::default(),
+            again: Secret::default(),
+            error: None,
+            focus: None,
+        };
+        let import = import_form(&dir.join("jane.p12"), "");
+        for (what, page) in [
+            ("the list", Page::List),
+            ("a new ID", Page::Create(create)),
+            ("importing", Page::Import(import)),
+            ("exporting", Page::Export(Box::new(export))),
+        ] {
+            w.page = page;
+            let unclear = crate::dialogs::unclear_names(&shown(&mut w));
+            assert_eq!(unclear, [""; 0], "{what}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn import_form(file: &Path, password: &str) -> ImportForm {
         ImportForm {
             file: file.to_path_buf(),
