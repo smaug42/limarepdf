@@ -429,20 +429,16 @@ impl FormUi {
         if !out.lost_focus() {
             return;
         }
-        // Tab is taken here, or `keys` would see it too and move on a second field.
-        let (esc, tab, shift) = ui.input_mut(|i| {
+        // Tab is taken here, or `keys` would see it too and move on a second field. Esc,
+        // like Enter or a click away, keeps what was typed.
+        let (tab, shift) = ui.input_mut(|i| {
             let shift = i.modifiers.shift;
             (
-                i.key_pressed(Key::Escape),
                 i.consume_key(egui::Modifiers::SHIFT, Key::Tab)
                     || i.consume_key(egui::Modifiers::NONE, Key::Tab),
                 shift,
             )
         });
-        if esc {
-            self.focus = None;
-            return;
-        }
         if text != original {
             *original = text.clone();
             acts.push(set(&field, FieldValue::Text(text.clone())));
@@ -455,7 +451,8 @@ impl FormUi {
     }
 
     /// A choice's options in a list below the field. A click on one chooses it; in a
-    /// multi-select list it adds or removes it, and the list stays open.
+    /// multi-select list it adds or removes it, and the list stays open until a click
+    /// outside it, Esc or Enter.
     fn options(&mut self, ui: &mut egui::Ui, fi: usize, rect: Rect, acts: &mut Vec<Action>) {
         let f = self.fields()[fi].clone();
         let FieldKind::Choice {
@@ -478,7 +475,10 @@ impl FormUi {
             _ => Vec::new(),
         };
         let mut pick: Option<Vec<String>> = None;
-        let mut close = false;
+        // Enter closes a multi-select list. It is taken first, or an option with the
+        // keyboard would take it as a click (Space chooses one).
+        let mut close =
+            multi && !*fresh && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter));
         let area = egui::Area::new(egui::Id::new(("field-options", &f.name)))
             .order(egui::Order::Foreground)
             .fixed_pos(rect.left_bottom())
@@ -514,9 +514,6 @@ impl FormUi {
                                 }
                             }
                         });
-                    if multi && ui.button("Done").clicked() {
-                        close = true;
-                    }
                 });
             });
         let first = std::mem::take(fresh);
@@ -769,6 +766,154 @@ mod tests {
             [Action::SetField(_, name, FieldValue::Text(t))] if name == "a" && t == "typed"
         ));
         assert!(!ui.typing(), "still counted once kept");
+    }
+
+    /// Draw the open text box or list of field `fi`, over a field at a fixed place, with
+    /// `events`; returns the AccessKit tree.
+    fn shown(
+        ui: &mut FormUi,
+        ctx: &egui::Context,
+        fi: usize,
+        events: Vec<egui::Event>,
+        acts: &mut Vec<Action>,
+    ) -> egui::accesskit::TreeUpdate {
+        let raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let rect = Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(90.0, 20.0));
+        let mut out = ctx.run_ui(raw, |eui| {
+            ui.text_box(eui, fi, rect, 1.0, acts);
+            ui.options(eui, fi, rect, acts);
+        });
+        out.textures_delta.clear();
+        out.platform_output.accesskit_update.expect("the widgets")
+    }
+
+    fn key(key: Key) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    fn click(at: egui::Pos2) -> Vec<egui::Event> {
+        let press = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        vec![egui::Event::PointerMoved(at), press(true), press(false)]
+    }
+
+    #[test]
+    fn esc_keeps_what_was_typed_in_a_text_field() {
+        let p = form(vec![(
+            0,
+            250,
+            dictionary! { "FT" => "Tx", "T" => text("a") },
+        )]);
+        let mut ui = loaded(&p);
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut acts = Vec::new();
+        ui.activate(0, 0, &mut acts);
+        shown(&mut ui, &ctx, 0, vec![], &mut acts);
+        let typed = vec![egui::Event::Text("Walrus".into())];
+        shown(&mut ui, &ctx, 0, typed, &mut acts);
+        assert!(ui.typing() && acts.is_empty());
+        shown(&mut ui, &ctx, 0, vec![key(Key::Escape)], &mut acts);
+        shown(&mut ui, &ctx, 0, vec![], &mut acts);
+        assert!(matches!(
+            acts.as_slice(),
+            [Action::SetField(_, name, FieldValue::Text(t))] if name == "a" && t == "Walrus"
+        ));
+        assert!(!ui.typing());
+    }
+
+    /// A multi-select list has no Done: each click applies, the list stays open, and a
+    /// click outside it, Esc or Enter closes it with the choices kept.
+    #[test]
+    fn a_multi_select_list_applies_as_clicked_and_closes_without_done() {
+        let opts = vec![text("Walrus"), text("Seal"), text("Puffin")];
+        let mut p = form(vec![(
+            0,
+            250,
+            dictionary! { "FT" => "Ch", "T" => text("pick"), "Ff" => 1 << 21, "Opt" => opts },
+        )]);
+        let mut ui = loaded(&p);
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut acts = Vec::new();
+        let open = |ui: &mut FormUi| {
+            ui.focus = None;
+            ui.activate(0, 0, &mut Vec::new());
+            assert!(matches!(
+                ui.focus.as_ref().unwrap().edit,
+                Edit::Options { .. }
+            ));
+        };
+        let is_open = |ui: &FormUi| matches!(ui.focus.as_ref().unwrap().edit, Edit::Options { .. });
+        let option = |tree: &egui::accesskit::TreeUpdate, name: &str| {
+            let (_, n) = tree
+                .nodes
+                .iter()
+                .find(|(_, n)| n.label() == Some(name) || n.value() == Some(name))
+                .unwrap_or_else(|| panic!("no {name}"));
+            let b = n.bounds().expect("placed");
+            egui::pos2((b.x0 + b.x1) as f32 / 2.0, (b.y0 + b.y1) as f32 / 2.0)
+        };
+        open(&mut ui);
+        shown(&mut ui, &ctx, 0, vec![], &mut acts);
+        let mut tree = shown(&mut ui, &ctx, 0, vec![], &mut acts);
+        assert!(
+            !tree.nodes.iter().any(|(_, n)| n.label() == Some("Done")),
+            "the list still has Done"
+        );
+        // Each click applies at once, and the list stays open for the next.
+        for (name, want) in [
+            ("Walrus", vec!["Walrus"]),
+            ("Puffin", vec!["Walrus", "Puffin"]),
+        ] {
+            let at = option(&tree, name);
+            shown(&mut ui, &ctx, 0, click(at), &mut acts);
+            let Some(Action::SetField(_, _, v)) = acts.pop() else {
+                panic!("{name} not applied");
+            };
+            let want: Vec<String> = want.into_iter().map(String::from).collect();
+            assert_eq!(v, FieldValue::Choice(want));
+            assert!(is_open(&ui), "closed by choosing {name}");
+            p.set_field("pick", v).unwrap();
+            ui.invalidate();
+            ui.load(&p);
+            tree = shown(&mut ui, &ctx, 0, vec![], &mut acts);
+        }
+        // Enter, Esc and a click outside each close it, leaving the field's ring and the
+        // choices as they are.
+        let closers = [
+            vec![key(Key::Enter)],
+            vec![key(Key::Escape)],
+            click(egui::pos2(600.0, 500.0)),
+        ];
+        for events in closers {
+            open(&mut ui);
+            shown(&mut ui, &ctx, 0, vec![], &mut acts);
+            shown(&mut ui, &ctx, 0, events, &mut acts);
+            assert!(matches!(ui.focus.as_ref().unwrap().edit, Edit::Ring));
+        }
+        assert!(acts.is_empty(), "closing changed the choices");
+        assert_eq!(
+            ui.fields()[0].value,
+            FieldValue::Choice(vec!["Walrus".into(), "Puffin".into()])
+        );
     }
 
     #[test]

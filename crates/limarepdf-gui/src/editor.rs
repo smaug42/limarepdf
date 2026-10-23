@@ -633,6 +633,9 @@ pub struct Editor {
     pub annot_tool: Tool,
     /// A note or text box being typed.
     pub writing: Option<Writing>,
+    /// The pass in which a click outside a note closed it: that click puts down nothing
+    /// else, whichever page it was on.
+    note_closed: Option<u64>,
     pub note_color: [f32; 3],
     /// How new text boxes are set.
     pub box_style: TextStyle,
@@ -732,6 +735,7 @@ impl Default for Editor {
             annot_insp: None,
             annot_tool: Tool::Note,
             writing: None,
+            note_closed: None,
             note_color: [1.0, 0.85, 0.2],
             box_style: TextStyle {
                 border: 1.0,
@@ -1126,9 +1130,10 @@ impl Editor {
         }
     }
 
-    /// Whether a line of page text is being edited, or new text typed, on the page.
+    /// Whether a line of page text is being edited, or new text, a note or a text box
+    /// typed, on the page.
     pub fn typing_on_page(&self) -> bool {
-        self.line_edit.is_some() || self.adding.is_some()
+        self.line_edit.is_some() || self.adding.is_some() || self.writing.is_some()
     }
 
     /// The line being edited drawn in place, as its page and the box to hide (page
@@ -1304,9 +1309,10 @@ impl Editor {
     }
 
     /// The note or text box being typed on `page` (drawn at `r`, `k` pixels per point):
-    /// a comment box beside a note's icon, or the text box's own area. Returns true when
-    /// the page should not take the pointer this frame: it is over the text box, or the
-    /// typing just ended.
+    /// a comment box beside a note's icon, or the text box's own area. Esc and Ctrl+Enter
+    /// keep what was typed, as does a click outside a note's comment box or the text box
+    /// losing the keyboard. Returns true when the page should not take the pointer this
+    /// frame: it is over the text box, or the typing just ended.
     fn writing_ui(&mut self, ui: &mut egui::Ui, page: usize, r: Rect, k: f32) -> bool {
         let Some(w) = self.writing.as_mut().filter(|w| w.page == page) else {
             return false;
@@ -1316,13 +1322,12 @@ impl Editor {
         let area = Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3]));
         // Light colours in either theme, as for form fields: the text sits on the paper.
         let theme = ui.visuals().clone();
-        let (out, done, cancel) = if w.note {
+        let (out, outside) = if w.note {
             let [cr, cg, cb] = self.note_color.map(|v| (v * 255.0).round() as u8);
             if w.id.is_none() {
                 ui.painter()
                     .rect_filled(area, 2.0, Color32::from_rgb(cr, cg, cb));
             }
-            let (mut done, mut cancel) = (false, false);
             let inner = egui::Area::new(ui.id().with(("note-writing", page)))
                 .fixed_pos(area.right_top() + Vec2::new(6.0, 0.0))
                 .order(egui::Order::Foreground)
@@ -1330,22 +1335,18 @@ impl Editor {
                     egui::Frame::popup(ui.style())
                         .show(ui, |ui| {
                             ui.set_width(240.0);
-                            let out = ui.add(
+                            ui.add(
                                 egui::TextEdit::multiline(&mut w.text)
                                     .id(egui::Id::new(("note-text", page)))
                                     .hint_text("Comment")
                                     .desired_rows(4)
                                     .desired_width(f32::INFINITY),
-                            );
-                            ui.horizontal(|ui| {
-                                done = ui.button("Done").clicked();
-                                cancel = ui.button("Cancel").clicked();
-                            });
-                            out
+                            )
                         })
                         .inner
                 });
-            (inner.inner, done, cancel)
+            let outside = inner.response.clicked_elsewhere();
+            (inner.inner, outside)
         } else {
             let te = egui::TextEdit::multiline(&mut w.text)
                 .id(egui::Id::new(("box-text", page)))
@@ -1357,15 +1358,15 @@ impl Editor {
             *ui.visuals_mut() = egui::Visuals::light();
             let out = ui.put(area, te);
             *ui.visuals_mut() = theme;
-            (out, false, false)
+            (out, false)
         };
         if w.fresh {
             out.request_focus();
             w.fresh = false;
             return false;
         }
-        // Ctrl+Enter finishes; Esc drops what was typed. The focus is asked first: asking
-        // inside `input_mut` would wait on the lock it holds.
+        // The focus is asked first: asking inside `input_mut` would wait on the lock it
+        // holds.
         let focused = out.has_focus();
         let (finish, esc) = ui.input_mut(|i| {
             (
@@ -1373,12 +1374,13 @@ impl Editor {
                 i.key_pressed(egui::Key::Escape),
             )
         });
-        if cancel || (esc && (out.lost_focus() || out.has_focus())) {
-            self.writing = None;
-            return true;
-        }
-        // A note stays open until Done; a text box ends when it loses the keyboard.
-        if done || finish || (!w.note && out.lost_focus()) {
+        let esc = esc && (out.lost_focus() || out.has_focus());
+        // A note stays open when it loses the keyboard (to Tab, say) until a click outside
+        // it; a text box ends then.
+        if finish || esc || outside || (!w.note && out.lost_focus()) {
+            if outside {
+                self.note_closed = Some(ui.ctx().cumulative_pass_nr());
+            }
             self.finish_writing();
             return true;
         }
@@ -2304,11 +2306,19 @@ impl Editor {
             Tool::Note => {
                 ui.ctx().set_cursor_icon(CursorIcon::Cell);
                 if let Some(p) = click_pt(&resp).filter(|_| resp.clicked()) {
-                    // The icon, drawn at a fixed size on screen from the note's top left
-                    // corner, is centred on the click. The note itself is 20 points.
-                    let (x, y) = (p.x - NOTE_PX / 2.0 / k, p.y - NOTE_PX / 2.0 / k);
-                    let rect = [x, y, x + 20.0, y + 20.0];
-                    self.start_writing(Writing::new(page, true, rect, 0.0));
+                    // A click away from a note being typed (on another page) only closes
+                    // it, as a click on its own page does.
+                    let closed = self.note_closed == Some(ui.ctx().cumulative_pass_nr());
+                    if self.writing.is_some() || closed {
+                        self.finish_writing();
+                    } else {
+                        // The icon, drawn at a fixed size on screen from the note's top
+                        // left corner, is centred on the click. The note itself is 20
+                        // points.
+                        let (x, y) = (p.x - NOTE_PX / 2.0 / k, p.y - NOTE_PX / 2.0 / k);
+                        let rect = [x, y, x + 20.0, y + 20.0];
+                        self.start_writing(Writing::new(page, true, rect, 0.0));
+                    }
                 }
                 if let Some(a) = hover_pt.and_then(|p| self.annot_at(pdf, page, p)) {
                     resp = resp.on_hover_text_at_pointer(annot_tip(a));
@@ -2952,17 +2962,17 @@ impl Editor {
         }
     }
 
-    /// Esc: keep the new text being typed, or drop a note, text box or line being typed on
-    /// the page, or clear a selected annotation, or the word or object selection (read
-    /// tool); otherwise leave a drawing tool for the arrow, or with the arrow clear the
-    /// selection.
+    /// Esc: keep the new text, note, text box or line being typed on the page, or clear a
+    /// selected annotation, or the word or object selection (read tool); otherwise leave a
+    /// drawing tool for the arrow, or with the arrow clear the selection.
     pub fn escape(&mut self) {
         if self.adding.is_some() {
             self.finish_adding();
             self.adding = None;
             return;
         }
-        if self.writing.take().is_some() {
+        if self.writing.is_some() {
+            self.finish_writing();
             return;
         }
         if self.line_edit.take().is_some() {
@@ -3500,8 +3510,9 @@ impl Editor {
                     ui.color_edit_button_rgb(&mut self.note_color);
                 });
                 ui.label(
-                    "Click on the page to place a note, type its comment, then press Done \
-                     (or Ctrl+Enter). Ctrl+click selects an annotation.",
+                    "Click on the page to place a note and type its comment. A click \
+                     outside it, Esc or Ctrl+Enter keeps it. Ctrl+click selects an \
+                     annotation.",
                 );
                 return;
             }

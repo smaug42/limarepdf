@@ -48,8 +48,6 @@ this list once it works. The feature table below has the details.
   ([details](content-editing.md#limits)).
 - Text is edited one line at a time: a paragraph doesn't rewrap as you type, so a longer line can run into
   whatever is beside it.
-- While typing a text box or a note on the page, Esc throws away what you typed (new text and edited lines keep
-  it). Being changed: Esc will keep it, and Ctrl+Z will remove it.
 - A line turned on the page, and invisible recognised (OCR) text, are edited in a plain box rather than drawn as
   they look. Over a picture or a shaded background, the line being edited is hidden under one flat colour, the
   one most common around it, until you finish.

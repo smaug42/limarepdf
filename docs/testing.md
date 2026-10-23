@@ -160,6 +160,12 @@ drawn in its look-alike font, size and colour (the page colours applied), over t
 around it (the bar's blue, the paper), with a caret that shows on dark paper. Not tried: Windows and macOS, a real
 HiDPI screen, a screen reader, an installed font being picked up for a kept line, turned lines.
 
+Notes and form lists without Done (2026-10-22) were checked the same way, on a made-up form with a list allowing
+several choices: the list opened, a second choice clicked with the list staying open, Enter and Esc closing it with
+both choices kept; a note typed and kept by a click outside it and by Esc, the read tool coming back with it
+selected; at 1200 and 400 points wide, in the light, dark and system themes, at scales 1, 1.5 and 2. Not tried:
+Windows and macOS, a real HiDPI screen, a screen reader.
+
 Each feature page says what was not tested, under "How this was tested".
 
 ## Acceptance checks

@@ -76,6 +76,14 @@
   note says so. Turned lines and invisible recognised text are still edited in a plain box.
 - Text being typed on the page matches the page colours: in Dark, Sepia and High contrast, new text and edited
   lines show in the colours the page will give them, with a caret that shows on dark paper.
+- Esc keeps what you typed instead of throwing it away, in a text box, a note and a form's text field, as it
+  already did for new text and edited lines; Ctrl+Z takes it back. A note's comment box has no Done or Cancel
+  button: a click outside it, Esc or Ctrl+Enter closes it, keeping the comment (a note with nothing typed isn't
+  added), and a click outside it on the page doesn't put down another note. A list that allows several choices has
+  no Done button: each click applies, and a click outside it, Esc or Enter closes it.
+- Finishing a note or text box by choosing another tool keeps that tool, as Add text does, instead of going back
+  to the read tool. While typing in a note or text box, Ctrl+Z and Ctrl+Y undo and redo the typing, not the
+  document.
 
 ### Fixed
 

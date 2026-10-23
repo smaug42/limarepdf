@@ -5133,6 +5133,179 @@ mod tests {
         assert_eq!(ed.tool, Tool::Text);
     }
 
+    /// A window with one page, drawn until settled: the page's screen place for page
+    /// points, and its pixels per point.
+    fn page_on_screen(app: &mut App, ctx: &egui::Context) -> (egui::Pos2, f32) {
+        let mut tree = window(app, ctx, 1400.0, vec![]);
+        for _ in 0..4 {
+            tree = window(app, ctx, 1400.0, vec![]);
+        }
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        (page.min, page.width() / 612.0)
+    }
+
+    fn press(p: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        }
+    }
+
+    fn click_at(p: egui::Pos2) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(p),
+            press(p, true),
+            press(p, false),
+        ]
+    }
+
+    fn key_with(key: Key, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    /// The comments of the document's annotations.
+    fn comments(app: &App) -> Vec<String> {
+        let annots = app.tabs[0].pdf.annotations();
+        annots.into_iter().map(|a| a.contents).collect()
+    }
+
+    /// A note being typed has no buttons: Esc, a click outside it and Ctrl+Enter each keep
+    /// what was typed, as one undo step; an empty one adds nothing; another tool stays.
+    #[test]
+    fn a_note_is_kept_by_esc_a_click_outside_or_ctrl_enter() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let (min, k) = page_on_screen(&mut app, &ctx);
+        let at = |x: f32, y: f32| min + egui::vec2(x, y) * k;
+        let typing =
+            |ctx: &egui::Context| ctx.memory(|m| m.has_focus(egui::Id::new(("note-text", 0usize))));
+        // Put a note down at (x, y) with the Note tool and type `text` into it.
+        let note = |app: &mut App, x: f32, y: f32, text: &str| {
+            app.act(&ctx, Act::Tool(Tool::Note));
+            window(app, &ctx, 1400.0, click_at(at(x, y)));
+            let tree = window(app, &ctx, 1400.0, vec![]);
+            assert!(typing(&ctx), "the note doesn't have the keyboard");
+            for name in ["Done", "Cancel"] {
+                assert!(node(&tree, name).is_none(), "the note has {name}");
+            }
+            window(app, &ctx, 1400.0, vec![egui::Event::Text(text.into())]);
+            assert_eq!(
+                app.tabs[0].ed.writing.as_ref().map(|w| w.text.as_str()),
+                Some(text)
+            );
+        };
+        let settle = |app: &mut App| {
+            for _ in 0..2 {
+                window(app, &ctx, 1400.0, vec![]);
+            }
+        };
+        let none = egui::Modifiers::NONE;
+        // Esc keeps it; the read tool comes back with it selected; one Undo removes it.
+        note(&mut app, 100.0, 100.0, "Walrus");
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::Escape, none)]);
+        settle(&mut app);
+        assert_eq!(comments(&app), ["Walrus"]);
+        let ed = &app.tabs[0].ed;
+        assert!(ed.writing.is_none() && !ed.pending());
+        assert_eq!(ed.tool, Tool::Read);
+        assert!(matches!(ed.selection, Selection::Annot { page: 0, .. }));
+        app.act(&ctx, Act::Undo);
+        assert!(comments(&app).is_empty());
+        // With the tool kept active, a click outside the note keeps it and puts down
+        // nothing else; Ctrl+Enter keeps the next.
+        app.settings.keep_tools = vec![Tool::Note];
+        note(&mut app, 100.0, 100.0, "Seal");
+        window(&mut app, &ctx, 1400.0, click_at(at(300.0, 400.0)));
+        settle(&mut app);
+        assert_eq!(comments(&app), ["Seal"]);
+        assert!(app.tabs[0].ed.writing.is_none(), "the click started a note");
+        assert_eq!(app.tabs[0].ed.tool, Tool::Note);
+        note(&mut app, 200.0, 200.0, "Puffin");
+        let ctrl_enter = key_with(Key::Enter, egui::Modifiers::COMMAND);
+        window(&mut app, &ctx, 1400.0, vec![ctrl_enter]);
+        settle(&mut app);
+        assert_eq!(comments(&app), ["Seal", "Puffin"]);
+        // Ctrl+Z while typing undoes the typing, not the document (its second page stays).
+        note(&mut app, 300.0, 300.0, "");
+        let ctrl_z = key_with(Key::Z, egui::Modifiers::COMMAND);
+        window(&mut app, &ctx, 1400.0, vec![ctrl_z]);
+        assert_eq!(app.tabs[0].page_count(), 2);
+        assert_eq!(comments(&app).len(), 2);
+        // Empty: Esc adds nothing.
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::Escape, none)]);
+        settle(&mut app);
+        assert_eq!(comments(&app).len(), 2);
+        assert!(app.tabs[0].ed.writing.is_none());
+        // Finished by choosing another tool: the note is kept and that tool stays.
+        app.settings.keep_tools.clear();
+        note(&mut app, 400.0, 400.0, "Krill");
+        app.act(&ctx, Act::Tool(Tool::Rect));
+        settle(&mut app);
+        assert_eq!(comments(&app), ["Seal", "Puffin", "Krill"]);
+        assert_eq!(app.tabs[0].ed.tool, Tool::Rect);
+    }
+
+    /// Esc keeps a text box being typed and an existing note's changed comment; a text box
+    /// finished by choosing another tool leaves that tool on.
+    #[test]
+    fn esc_keeps_a_text_box_and_a_changed_note() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let (min, k) = page_on_screen(&mut app, &ctx);
+        let at = |x: f32, y: f32| min + egui::vec2(x, y) * k;
+        let none = egui::Modifiers::NONE;
+        // Put a text box down at (x, y) (a click gives the default size) and type `text`
+        // into it.
+        let text_box = |app: &mut App, x: f32, y: f32, text: &str| {
+            app.act(&ctx, Act::Tool(Tool::TextBox));
+            window(app, &ctx, 1400.0, click_at(at(x, y)));
+            window(app, &ctx, 1400.0, vec![]);
+            let id = egui::Id::new(("box-text", 0usize));
+            assert!(ctx.memory(|m| m.has_focus(id)), "the box has no keyboard");
+            window(app, &ctx, 1400.0, vec![egui::Event::Text(text.into())]);
+        };
+        let settle = |app: &mut App| {
+            for _ in 0..2 {
+                window(app, &ctx, 1400.0, vec![]);
+            }
+        };
+        text_box(&mut app, 100.0, 100.0, "Walrus");
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::Escape, none)]);
+        settle(&mut app);
+        assert_eq!(comments(&app), ["Walrus"]);
+        assert_eq!(app.tabs[0].ed.tool, Tool::Read);
+        // Empty: nothing.
+        text_box(&mut app, 100.0, 300.0, "");
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::Escape, none)]);
+        settle(&mut app);
+        assert_eq!(comments(&app), ["Walrus"]);
+        // Another tool chosen: the box is kept and the tool stays.
+        text_box(&mut app, 100.0, 200.0, "Seal");
+        app.act(&ctx, Act::Tool(Tool::Rect));
+        settle(&mut app);
+        assert_eq!(comments(&app), ["Walrus", "Seal"]);
+        assert_eq!(app.tabs[0].ed.tool, Tool::Rect);
+        // An existing note opened for typing: Esc keeps the change, in one step.
+        let mut app = typing_in_a_note(&ctx, "Walrus typed");
+        app.tabs[0].ed.escape();
+        app.tabs[0].apply_actions(&ctx);
+        assert_eq!(comments(&app), ["Walrus typed"]);
+        app.act(&ctx, Act::Undo);
+        assert_eq!(comments(&app), ["Old text"]);
+    }
+
     /// The names of the controls Tab reaches in turn, from the window's first one, `n`
     /// presses.
     fn tab_walk(app: &mut App, ctx: &egui::Context, width: f32, n: usize) -> Vec<String> {

@@ -761,7 +761,9 @@ impl Tab {
                         new = Some(pdf.add_note(p, at, color, &text, &author)?);
                         Ok(())
                     };
-                    if self.edit_pages(ctx, &[p], add) {
+                    // Finished by choosing another tool: that tool stays.
+                    let placing = matches!(self.ed.tool, Tool::Note | Tool::Read);
+                    if self.edit_pages(ctx, &[p], add) && placing {
                         self.after_annot(p, new);
                     }
                 }
@@ -893,7 +895,9 @@ impl Tab {
                         new = Some(pdf.add_text_box(p, rect, &text, &style, &author)?);
                         Ok(())
                     };
-                    if self.edit_pages(ctx, &[p], add) {
+                    // Finished by choosing another tool: that tool stays.
+                    let placing = matches!(self.ed.tool, Tool::TextBox | Tool::Read);
+                    if self.edit_pages(ctx, &[p], add) && placing {
                         self.after_annot(p, new);
                     }
                 }

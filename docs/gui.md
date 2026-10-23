@@ -164,13 +164,16 @@ the pen and stamps (also in ☰ > Tools > Commenting). It shows the one you used
 lists them all. The inspector sets the note colour, or the text box's text size and colour,
 background (none at first) and border, before you start.
 
-- **Note:** click on the page. A comment box opens beside the note; type, then click Done (or press Ctrl+Enter).
-  Cancel or Esc drops it, and so does Done with nothing typed. Hovering over a note shows its comment. Notes
+- **Note:** click on the page. A comment box opens beside the note; type, then click outside it or press Esc or
+  Ctrl+Enter to keep the comment (that click doesn't put down another note). With nothing typed, no note is added.
+  Ctrl+Z takes a note back. Hovering over a note shows its comment. Notes
   show at the same size on screen whatever the zoom, in the note's colour and shaped like its icon: one of the
   seven standard ones (Comment, which LimarePDF's notes use, Key, Note, Help, New paragraph, Paragraph and Insert),
   or Note for any other; printed, they keep their own drawing, or LimarePDF's, 20 points across.
 - **Text box:** drag a box, or click for a default size, then type straight onto the page. Enter starts a new
-  line. Click outside the box or press Ctrl+Enter to finish; Esc drops it. Text boxes use Helvetica, so characters
+  line. Click outside the box or press Esc or Ctrl+Enter to finish; with nothing typed, no box is added. While you
+  type in a note or text box, Ctrl+Z and Ctrl+Y undo and redo the typing. Finishing either by choosing another
+  tool keeps that tool. Text boxes use Helvetica, so characters
   beyond Western European (Greek, Cyrillic, Chinese and so on) come out as `?`. When you finish, the box grows downward to fit its text, keeping its width; it
   stops at the bottom of the page, and it never shrinks (resize it with the arrow).
 
@@ -278,11 +281,12 @@ brings it back. See [Removing hidden information](redaction.md#removing-hidden-i
 Form fields work with the read tool, like links: hovering tints a field and shows its description, and a click
 fills it in. With the editing tools, hold Ctrl (Cmd on macOS) and click.
 
-- **Text fields:** a click opens a text box over the field. Enter (in a one-line field) or clicking elsewhere keeps
-  what you typed; Esc drops it. Password fields show dots, and their value is not kept in the file.
+- **Text fields:** a click opens a text box over the field. Enter (in a one-line field), Esc or clicking elsewhere
+  keeps what you typed; Ctrl+Z takes it back. Password fields show dots, and their value is not kept in the file.
 - **Checkboxes and radio buttons:** a click ticks or chooses.
 - **Drop-downs and lists:** a click opens the options. In a list that allows several choices, each click adds or
-  removes one; Done closes it. A drop-down you can type in has a text box at the top; Enter keeps the text.
+  removes one at once; a click outside the list, Esc or Enter closes it. A drop-down you can type in has a text box
+  at the top; Enter keeps the text.
 - **Tab and Shift+Tab** move to the next and previous field, top to bottom and page by page. On a checkbox or radio
   button, Space ticks it; on a list, Space or Enter opens it.
 
@@ -666,7 +670,7 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Ctrl+Shift+H | Highlight the selected text |
 | Arrow keys (Shift for 10 points) | Move the selected object |
 | Ctrl+A, Ctrl+C | Select all text on the page, copy it (read tool) |
-| Esc | Cancel: finish (and keep) new text or a line being typed, clear the selection, or leave a tool for the read tool |
+| Esc | Cancel: finish (and keep) new text, a line, a note, a text box or a form field being typed, clear the selection, or leave a tool for the read tool |
 | Ctrl+B, Ctrl+I | Bold, Italic for new text being typed (Add text), or for the whole line being edited on the page |
 | Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |
 | Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the top bar, tabs, bottom bar and panels left to right; inside a dialog, its fields and then its buttons. Space or Enter presses the button. In a form, Tab moves between its fields; Ctrl+K reaches every command |
