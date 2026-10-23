@@ -14,8 +14,9 @@ with Acrobat are still to be tested.
 - **View:** tabs, thumbnails, continuous scrolling, zoom, search with highlights on the page, bookmarks, links and
   comments.
 - **Organise pages:** drag thumbnails to reorder; rotate, insert, delete and extract pages; merge and split files.
-- **Edit content:** double-click a line of text to edit it in place; move, resize, restyle and delete text, images
-  and shapes; add text, shapes and images. Changes in the inspector apply as you make them.
+- **Edit content:** double-click a line of text to edit it in place, making words bold, italic or another font,
+  size or colour as in a word processor; move, resize, restyle and delete text, images and shapes; add text,
+  shapes and images. Changes in the inspector apply as you make them.
 - **Fill in forms:** text fields, checkboxes, radio buttons and lists, in the app or from JSON on the command line;
   flatten them so the values can't be changed.
 - **Fill and sign:** put a drawn, typed or picture signature, initials, the date, your name and ticks on any
@@ -50,16 +51,20 @@ this list once it works. The feature table below has the details.
   a plain-text page of selected text show them as `?`.
   Typed signatures show what their handwriting has: Caveat has Cyrillic, the other three Latin only.
 - Installed fonts are offered only when their licence allows embedding and they have the Latin letters; a
-  family's missing bold or italic can't be made up (the button is off), and one line can't mix fonts, so a
-  character the chosen font lacks is refused rather than taken from another font. Editing a line keeps its font
-  only when the file's font allows it (not for most embedded fonts); otherwise the line is written in the
-  installed family it came from, when LimarePDF can embed it, or else in Helvetica, Times or Courier
-  ([details](content-editing.md#limits)).
+  family's missing bold or italic can't be made up (the button is off), and a typed character goes in the font of
+  the words around it, so one that font lacks is refused rather than taken from another font. Editing a line
+  keeps each part's font only when the file's font allows it (not for most embedded fonts, unless that part is
+  left as it was); otherwise the part is written in the installed family it came from, when LimarePDF can embed
+  it, or else in Helvetica, Times or Courier ([details](content-editing.md#limits)).
 - Text is edited one line at a time: a paragraph doesn't rewrap as you type, so a longer line can run into
   whatever is beside it.
-- A line turned on the page, and invisible recognised (OCR) text, are edited in a plain box rather than drawn as
-  they look. Over a picture or a shaded background, the line being edited is hidden under one flat colour, the
-  one most common around it, until you finish.
+- Words are styled in the line being edited: selecting words with the read tool and pressing Ctrl+B doesn't make
+  them bold; double-click the line first. Page text has no underline or strike-through (underline and strike-out
+  comments can be added over it).
+- A line turned on the page, and invisible recognised (OCR) text, are edited in a box over the line rather than
+  drawn where they are (a turned line's box shows its fonts, sizes and colours). Over a picture or a shaded
+  background, the line being edited is hidden under one flat colour, the one most common around it, until you
+  finish.
 - No spell checking.
 
 **Selecting and arranging**
@@ -121,7 +126,7 @@ available.
 | Document properties | Done | Title, author, subject, keywords, creator, producer; each kept as you type it (Enter or leaving the field), one undo step each. [Details](gui.md#document-properties) |
 | Password security | Done | All four ciphers and permission flags. [Things to know](security.md) |
 | Opening protected files | Done | With the open (user) password; files with an empty one (only a permissions password) open without asking, including RC4 files with a shortened password entry that other readers accept, and their notice says so |
-| Content editing | Partial | New text is typed on the page where you click, in the font, size and colour it will have, several lines added as one undo step. The font list offers Helvetica, Times and Courier and the installed fonts that allow embedding, searchable, each name in its own font. Double-click a line with the read tool, or click it with the Text tool, to edit it on the page, drawn in the font, size and colour it will have over the line; pictures, shapes and comments are selected, moved and resized with the read tool too, page text after Move or resize text on its toolbar (the read tool stays on) or with the arrow. Changes in the inspector apply at once, each an undo step; typing into one line again soon joins one step. Works on lines, not paragraphs; some fonts are replaced when edited; the text after a deleted, edited or moved line stays where it was (except in vertical writing). [Details](content-editing.md) |
+| Content editing | Partial | New text is typed on the page where you click, in the font, size and colour it will have, several lines added as one undo step. The font list offers Helvetica, Times and Courier and the installed fonts that allow embedding, searchable, each name in its own font. Double-click a line with the read tool, or click it with the Text tool, to edit it on the page, drawn in the fonts, sizes and colours it will have over the line; select words and press Ctrl+B or Ctrl+I, or pick a font, size or colour, to change those words only (the word at the caret, or what is typed next, with nothing selected), with Ctrl+Z and Ctrl+Y for typing and styles alike, and the same for new text. A line with a bold word or a superscript in it is one object; pictures, shapes and comments are selected, moved and resized with the read tool too, page text after Move or resize text on its toolbar (the read tool stays on) or with the arrow. Changes in the inspector apply at once, each an undo step; typing into one line again soon joins one step. Works on lines, not paragraphs; some fonts are replaced when edited; the text after a deleted, edited or moved line stays where it was (except in vertical writing). [Details](content-editing.md) |
 | Importing images as pages | Done | PNG, JPEG, TIFF. [Details](scanning-and-ocr.md#importing-images) |
 | Optimising scanned pages | Partial | Pages that are one image; only the pages chosen change, also when they share a picture with others. [Details](scanning-and-ocr.md#optimising-scanned-pages) |
 | OCR | Partial | Latin script; built-in recognition model. [Details](scanning-and-ocr.md#recognising-text-ocr) |

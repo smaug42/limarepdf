@@ -65,8 +65,7 @@ pub struct Styled {
 }
 
 impl Styled {
-    /// `text` all in `style`.
-    #[cfg(test)]
+    /// `text` all in `style`: new text, typed in the inspector's choices.
     pub fn plain(text: &str, style: CharStyle) -> Self {
         Self {
             text: text.to_string(),
@@ -344,6 +343,23 @@ impl Styled {
         self.looked_at(sel)[0]
     }
 
+    /// The colours of what a style command with `sel` selected looks at, each once, in
+    /// order.
+    pub fn colors(&self, sel: (usize, usize)) -> Vec<[f32; 3]> {
+        let mut out: Vec<[f32; 3]> = Vec::new();
+        for s in self.looked_at(sel) {
+            if !out.iter().any(|c| same_color(*c, s.color)) {
+                out.push(s.color);
+            }
+        }
+        out
+    }
+
+    /// The style text typed at the end takes: what new text carries on in.
+    pub fn end_style(&self) -> CharStyle {
+        self.typing_style(self.styles.len())
+    }
+
     /// What the inspector shows with `sel` selected: the selection's values, or those of
     /// what is typed at the caret.
     pub fn shown(&self, sel: (usize, usize)) -> Shown {
@@ -384,8 +400,48 @@ impl Styled {
 
     /// The text in parts of one style each, as core writes it.
     pub fn parts(&self) -> Vec<TextPart> {
+        self.parts_in(0..self.styles.len())
+    }
+
+    /// The lines of new text to write (Enter starts one), each in parts, with how far its
+    /// baseline is below the first line's, in points: each line [`page_text::line_gap`]
+    /// below the one before, by the two lines' largest sizes, as they are drawn while
+    /// typing. Blank lines are left out but keep their space; spaces ending a line go.
+    pub fn lines(&self) -> Vec<(f32, Vec<TextPart>)> {
+        let chars: Vec<char> = self.text.chars().collect();
+        let mut out = Vec::new();
+        let (mut start, mut dy, mut above) = (0, 0.0, None);
+        while start <= chars.len() {
+            let end = chars[start..]
+                .iter()
+                .position(|&c| c == '\n')
+                .map_or(chars.len(), |i| start + i);
+            // Its largest size, the line break ending it included.
+            let size = self.styles[start..(end + 1).min(chars.len())]
+                .iter()
+                .map(|s| s.size)
+                .fold(0.0, f32::max);
+            if let Some(a) = above {
+                dy += page_text::line_gap(a, size);
+            }
+            above = Some(size);
+            let mut last = end;
+            while last > start && chars[last - 1].is_whitespace() {
+                last -= 1;
+            }
+            if last > start {
+                out.push((dy, self.parts_in(start..last)));
+            }
+            start = end + 1;
+        }
+        out
+    }
+
+    /// Characters `range` in parts of one style each.
+    fn parts_in(&self, range: std::ops::Range<usize>) -> Vec<TextPart> {
         let mut out: Vec<TextPart> = Vec::new();
-        for (c, s) in self.text.chars().zip(&self.styles) {
+        let chars = self.text.chars().zip(&self.styles);
+        for (c, s) in chars.skip(range.start).take(range.len()) {
             let font = match self.kept(s) {
                 Some(i) => PartFont::Span(i),
                 None => PartFont::Choice(s.font),
@@ -416,6 +472,102 @@ impl Styled {
                     && same_color(a.color, b.color)
                     && a.rise == b.rise
             })
+    }
+}
+
+/// Typing within this many seconds of the last, where it left the caret, joins its undo
+/// step, as text editors group typing.
+const JOIN: f64 = 1.0;
+/// The most steps kept.
+const STEPS: usize = 100;
+
+/// Undo and redo inside a line being typed (the design, section 6.5): typing and style
+/// changes in order. It watches the text once a frame ([`Self::observe`]): typing joins
+/// the step before it as text editors join it, and each style change is a step of its own,
+/// changes made while a list or colour picker is open joining into one.
+#[derive(Clone, Debug, Default)]
+pub struct History {
+    undo: Vec<(Styled, (usize, usize))>,
+    redo: Vec<(Styled, (usize, usize))>,
+    /// The text when last watched, and the selection then.
+    last: Styled,
+    sel: (usize, usize),
+    /// The last change was typing, at this time, leaving the caret here.
+    typing: Option<(f64, usize)>,
+    /// The last change was a style change not yet finished.
+    styling: bool,
+}
+
+impl History {
+    /// Nothing to undo yet in `text`.
+    pub fn new(text: &Styled) -> Self {
+        Self {
+            last: text.clone(),
+            ..Default::default()
+        }
+    }
+
+    /// Watch `text` this frame, at time `now`, with `sel` selected when known: a change
+    /// since the last frame becomes a step to undo, unless it carries on the one before.
+    /// `settled` says no list, picker or button is in use.
+    pub fn observe(&mut self, text: &Styled, sel: Option<(usize, usize)>, now: f64, settled: bool) {
+        let before = self.sel;
+        self.sel = sel.unwrap_or(before);
+        if text.text != self.last.text {
+            let joins = self
+                .typing
+                .is_some_and(|(at, caret)| now - at < JOIN && before == (caret, caret));
+            if !joins {
+                self.push(before);
+            }
+            self.typing = Some((now, self.sel.1));
+            self.styling = false;
+        } else if !text.same_as(&self.last) {
+            if !self.styling {
+                self.push(before);
+            }
+            self.typing = None;
+            self.styling = !settled;
+        } else {
+            self.styling &= !settled;
+            return;
+        }
+        self.last = text.clone();
+        self.redo.clear();
+    }
+
+    /// The text when last watched becomes a step to undo, with the selection `sel`.
+    fn push(&mut self, sel: (usize, usize)) {
+        let mut was = self.last.clone();
+        was.next = None;
+        self.undo.push((was, sel));
+        if self.undo.len() > STEPS {
+            self.undo.remove(0);
+        }
+    }
+
+    /// Take `text` back a step: returns the selection it had then, or `None` with nothing
+    /// to undo.
+    pub fn undo(&mut self, text: &mut Styled) -> Option<(usize, usize)> {
+        let (was, sel) = self.undo.pop()?;
+        self.redo.push((std::mem::replace(text, was), self.sel));
+        Some(self.went_to(text, sel))
+    }
+
+    /// Take `text` forward a step undone: returns the selection it had then.
+    pub fn redo(&mut self, text: &mut Styled) -> Option<(usize, usize)> {
+        let (next, sel) = self.redo.pop()?;
+        self.undo.push((std::mem::replace(text, next), self.sel));
+        Some(self.went_to(text, sel))
+    }
+
+    /// `text` is now a step taken back or forward, with `sel` selected.
+    fn went_to(&mut self, text: &Styled, sel: (usize, usize)) -> (usize, usize) {
+        self.last = text.clone();
+        self.sel = sel;
+        self.typing = None;
+        self.styling = false;
+        sel
     }
 }
 
@@ -543,6 +695,104 @@ mod tests {
         assert_eq!(texts, ["one ", "two", " three"]);
         assert_eq!(parts[1].font, PartFont::Choice(bold().font));
         assert!(Styled::plain("", CharStyle::default()).parts().is_empty());
+    }
+
+    #[test]
+    fn new_text_is_written_a_line_at_a_time_spaced_by_its_sizes() {
+        let mut s = Styled::plain("", CharStyle::default());
+        s.sync("Big  \n\n  small\n ", None);
+        // "Big" 30 points, its line break included; the rest 10.
+        s.set_size((0, 6), 30.0);
+        let lines = s.lines();
+        let texts: Vec<Vec<&str>> = lines
+            .iter()
+            .map(|(_, parts)| parts.iter().map(|p| p.text.as_str()).collect())
+            .collect();
+        // Spaces ending a line go; blank lines are left out but keep their space.
+        assert_eq!(texts, [vec!["Big"], vec!["  small"]]);
+        let gap = page_text::line_gap(30.0, 12.0) + page_text::line_gap(12.0, 12.0);
+        assert_eq!(lines[1].0, gap);
+        // A line in two styles is one line in two parts.
+        let mut s = Styled::plain("one two", CharStyle::default());
+        s.bold((4, 7));
+        let lines = s.lines();
+        assert_eq!((lines.len(), lines[0].1.len()), (1, 2));
+        assert!(Styled::plain(" \n ", CharStyle::default())
+            .lines()
+            .is_empty());
+        assert_eq!(s.end_style().font, bold().font);
+    }
+
+    #[test]
+    fn undo_takes_back_typing_and_styles_in_order() {
+        let mut s = Styled::plain("one two", CharStyle::default());
+        let mut h = History::new(&s);
+        let mut at = 0.0;
+        let mut seen = |s: &Styled, h: &mut History, sel, settled| {
+            at += 0.1;
+            h.observe(s, Some(sel), at, settled);
+        };
+        // Typing at the end, a letter a frame: one step. Each command follows a frame
+        // where its selection was seen, as in the editor.
+        seen(&s, &mut h, (7, 7), true);
+        for (i, t) in ["one twos", "one twosx"].iter().enumerate() {
+            s.sync(t, Some(8 + i));
+            seen(&s, &mut h, (8 + i, 8 + i), true);
+        }
+        // Bold on a word, then more typing: three steps in all.
+        seen(&s, &mut h, (0, 3), true);
+        s.bold((0, 3));
+        seen(&s, &mut h, (0, 3), true);
+        seen(&s, &mut h, (9, 9), true);
+        s.sync("one twosxy", Some(10));
+        seen(&s, &mut h, (10, 10), true);
+        assert_eq!(marks(&s), "BBB.......");
+        // Each step back puts back the selection it was made with.
+        assert_eq!(h.undo(&mut s), Some((9, 9)));
+        assert_eq!((s.text(), marks(&s).as_str()), ("one twosx", "BBB......"));
+        assert_eq!(h.undo(&mut s), Some((0, 3)));
+        assert_eq!(marks(&s), ".........");
+        assert_eq!(h.undo(&mut s), Some((7, 7)));
+        assert_eq!(s.text(), "one two");
+        assert_eq!(h.undo(&mut s), None);
+        // Redo goes forward again, each step with the selection it was undone with.
+        assert_eq!(h.redo(&mut s), Some((0, 3)));
+        assert_eq!(h.redo(&mut s), Some((9, 9)));
+        assert_eq!(marks(&s), "BBB......");
+        // A change after undoing drops what could be redone.
+        h.undo(&mut s);
+        s.set_size((0, 3), 20.0);
+        seen(&s, &mut h, (0, 3), true);
+        assert_eq!(h.redo(&mut s), None);
+        // Typing after a pause, or elsewhere, is a step of its own.
+        let mut s = Styled::plain("ab", CharStyle::default());
+        let mut h = History::new(&s);
+        s.sync("abc", Some(3));
+        h.observe(&s, Some((3, 3)), 1.0, true);
+        s.sync("abcd", Some(4));
+        h.observe(&s, Some((4, 4)), 3.0, true);
+        h.observe(&s, Some((0, 0)), 3.05, true);
+        s.sync("xabcd", Some(1));
+        h.observe(&s, Some((1, 1)), 3.1, true);
+        let mut texts = Vec::new();
+        while h.undo(&mut s).is_some() {
+            texts.push(s.text().to_string());
+        }
+        assert_eq!(texts, ["abcd", "abc", "ab"]);
+        // Colours picked while the picker is open are one step.
+        let mut s = Styled::plain("ab", CharStyle::default());
+        let mut h = History::new(&s);
+        for (i, c) in [0.2, 0.4, 0.6].iter().enumerate() {
+            s.set_color((0, 2), [*c, 0.0, 0.0]);
+            h.observe(&s, Some((0, 2)), i as f64 * 0.1, false);
+        }
+        h.observe(&s, Some((0, 2)), 0.5, true);
+        s.set_color((0, 2), [1.0, 0.0, 0.0]);
+        h.observe(&s, Some((0, 2)), 0.6, true);
+        h.undo(&mut s);
+        assert_eq!(s.styles()[0].color, [0.6, 0.0, 0.0]);
+        h.undo(&mut s);
+        assert_eq!(s.styles()[0].color, [0.0; 3]);
     }
 
     #[test]

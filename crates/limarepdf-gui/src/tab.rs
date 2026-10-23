@@ -3,7 +3,6 @@ use crate::banners::{self, Banner};
 use crate::editor::{annot_tip, Action, Editor, StampPick, Tool};
 use crate::inspector::{Forms, Hf, Sec, Wm};
 use crate::markup::Mark;
-use crate::page_text;
 use crate::recovery::schedule::Schedule;
 use crate::recovery::TabId;
 use crate::selection::Selection;
@@ -873,12 +872,11 @@ impl Tab {
                         self.after_insert(p);
                     }
                 }
-                Action::AddText(p, pos, text, look) => {
+                Action::AddText(p, pos, text) => {
                     // Every line in one change, so Undo takes them back together.
                     let add = |pdf: &mut Pdf| {
-                        for (dy, line) in page_text::lines(&text, look.size) {
-                            let at = (pos.0, pos.1 + dy);
-                            pdf.add_text(p, at, line, look.font, look.size, look.color)?;
+                        for (dy, parts) in text.lines() {
+                            pdf.add_text_parts(p, (pos.0, pos.1 + dy), &parts)?;
                         }
                         Ok(())
                     };
@@ -2835,6 +2833,7 @@ fn drag_feedback(ui: &egui::Ui, rects: &[Rect], target: Option<usize>, p: Pos2, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::page_text;
 
     #[test]
     fn replies_follow_what_they_answer() {
@@ -3053,9 +3052,10 @@ mod tests {
         assert_eq!(t.ed.keep, [Tool::Rect]);
         // New page text: selected, and movable with the read tool until something else is.
         t.ed.set_tool(Tool::Text);
-        t.ed.adding = Some(page_text::PageText::new(0, (72.0, 72.0)));
+        let look = t.ed.new_look();
+        t.ed.adding = Some(page_text::PageText::new(0, (72.0, 72.0), look));
         if let Some(a) = t.ed.adding.as_mut() {
-            a.text = "Walrus".into();
+            a.text.sync("Walrus", None);
         }
         t.ed.escape();
         t.apply_actions(&ctx);

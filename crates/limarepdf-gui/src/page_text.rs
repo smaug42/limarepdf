@@ -4,14 +4,24 @@
 //! page text being edited share the drawing, the keys and the note about characters
 //! that can't be written.
 
-use crate::{dialogs, typing_fonts};
+use crate::dialogs;
+use crate::styled::{CharStyle, History, Styled};
+use crate::typing_fonts::{self, Wanted};
 use eframe::egui::epaint::text::{ByteIndex, VariationCoords};
-use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
+use eframe::egui::{self, Color32, Galley, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use limarepdf_core::page_colours::PageColours;
-use limarepdf_core::{installed_could_write, writable, FontChoice};
+use limarepdf_core::{installed_could_write, writable, FontChoice, TextPart};
+use std::sync::Arc;
 
 /// The space from one line's baseline to the next, as a multiple of the size (Acrobat's).
 pub const LEADING: f32 = 1.2;
+
+/// How far a line's baseline is below the one before, by each one's largest size: the
+/// line above's share below its baseline and the line's own above it, as word processors
+/// space lines of different sizes; 1.2 times the size when they are the same.
+pub fn line_gap(above: f32, below: f32) -> f32 {
+    LEADING * (0.25 * above + 0.75 * below)
+}
 /// Shown at the caret when a character typed or pasted can't be written.
 pub const REFUSED: &str =
     "LimarePDF can't add this character yet: Latin, Greek and Cyrillic characters work";
@@ -28,12 +38,36 @@ pub struct Look {
     pub color: [f32; 3],
 }
 
+impl Look {
+    /// The look of text in `s`.
+    pub fn of(s: CharStyle) -> Self {
+        Self {
+            font: s.font,
+            size: s.size,
+            color: s.color,
+        }
+    }
+
+    /// Text typed in this look.
+    pub fn style(self) -> CharStyle {
+        CharStyle {
+            font: self.font,
+            span: None,
+            size: self.size,
+            color: self.color,
+            rise: 0.0,
+        }
+    }
+}
+
 /// New text being typed on the page (the Add text tool).
 pub struct PageText {
     pub page: usize,
     /// The left end of the first line's baseline, in displayed-page points (y down).
     pub at: (f32, f32),
-    pub text: String,
+    /// What is typed, a style for each character.
+    pub text: Styled,
+    history: History,
     /// Takes the keyboard on the next frame.
     fresh: bool,
     /// Takes the keyboard back once a change in the inspector is finished.
@@ -117,16 +151,25 @@ pub fn switched(mut f: FontChoice, bold: bool, italic: bool) -> FontChoice {
 pub struct Taken {
     pub bold: bool,
     pub italic: bool,
+    /// Ctrl+Z.
+    pub undo: bool,
+    /// Ctrl+Y or Ctrl+Shift+Z.
+    pub redo: bool,
     /// A character that can't be written was typed or pasted, and left out: the first.
     pub refused: Option<char>,
 }
 
 /// Take this frame's typing in hand before the editor with the keyboard sees it: what
-/// can't be written in `font` goes (see [`keep_typable`]), and with `styles`, Ctrl+B and
-/// Ctrl+I are taken to switch Bold and Italic.
+/// can't be written in `font` goes (see [`keep_typable`]); Ctrl+Z and Ctrl+Y are taken for
+/// the caller's [`History`], as the editor's own undo would take back the text without
+/// its styles; and with `styles`, Ctrl+B and Ctrl+I are taken to switch Bold and Italic.
 pub fn take_typing(ui: &egui::Ui, single: bool, styles: bool, font: FontChoice) -> Taken {
     let mut t = Taken::default();
     ui.input_mut(|i| {
+        let shift = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+        t.redo = i.consume_key(shift, egui::Key::Z)
+            | i.consume_key(egui::Modifiers::COMMAND, egui::Key::Y);
+        t.undo = i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z);
         if styles {
             t.bold = i.consume_key(egui::Modifiers::COMMAND, egui::Key::B);
             t.italic = i.consume_key(egui::Modifiers::COMMAND, egui::Key::I);
@@ -144,6 +187,45 @@ pub fn take_typing(ui: &egui::Ui, single: bool, styles: bool, font: FontChoice) 
         }
     });
     t
+}
+
+/// Take `text`, typed in the editor `id`, back or forward a step of `history` when `t`
+/// took Ctrl+Z or Ctrl+Y, selecting what was selected then.
+pub fn undo_redo(
+    ctx: &egui::Context,
+    id: egui::Id,
+    t: &Taken,
+    history: &mut History,
+    text: &mut Styled,
+) {
+    let sel = if t.undo {
+        history.undo(text)
+    } else if t.redo {
+        history.redo(text)
+    } else {
+        None
+    };
+    if let Some(sel) = sel {
+        select(ctx, id, sel);
+    }
+}
+
+/// What is selected in the text editor `id`: the characters from the anchor to the caret.
+pub fn selection(ctx: &egui::Context, id: egui::Id) -> Option<(usize, usize)> {
+    let r = egui::TextEdit::load_state(ctx, id)?.cursor.char_range()?;
+    Some((r.secondary.index.0, r.primary.index.0))
+}
+
+/// Select the characters `sel` (from the anchor to the caret) in the text editor `id`.
+pub fn select(ctx: &egui::Context, id: egui::Id, sel: (usize, usize)) {
+    if let Some(mut st) = egui::TextEdit::load_state(ctx, id) {
+        let range = egui::text::CCursorRange::two(
+            egui::text::CCursor::new(sel.0),
+            egui::text::CCursor::new(sel.1),
+        );
+        st.cursor.set_char_range(Some(range));
+        st.store(ctx, id);
+    }
 }
 
 /// The note at the caret about a refused character, for a few seconds after: since when,
@@ -209,6 +291,30 @@ pub struct Run {
     pub rise: f32,
 }
 
+/// The runs `parts` are drawn in at `k` pixels per point: each part in the font `font`
+/// gives it, its colour as `color` shows it.
+pub fn runs<'w>(
+    ctx: &egui::Context,
+    parts: &[TextPart],
+    k: f32,
+    color: impl Fn([f32; 3]) -> Color32,
+    font: impl Fn(&TextPart) -> Wanted<'w>,
+) -> Vec<Run> {
+    parts
+        .iter()
+        .map(|p| {
+            let wanted = font(p);
+            Run {
+                chars: p.text.chars().count(),
+                font: egui::FontId::new((p.size * k).max(1.0), typing_fonts::family(ctx, wanted)),
+                coords: typing_fonts::coords(wanted),
+                color: color(p.color),
+                rise: p.rise * k,
+            }
+        })
+        .collect()
+}
+
 /// How text being typed on the page is drawn this frame.
 pub struct Style<'a> {
     /// The runs of the text as the editor has it, which within a frame can be ahead of
@@ -228,10 +334,19 @@ pub struct Field {
     pub outline: Rect,
 }
 
+/// `text` laid out as [`job`] lays it out in `runs`, and how far its first baseline is
+/// below the top.
+pub fn galley(ctx: &egui::Context, text: &str, runs: &[Run]) -> (Arc<Galley>, f32) {
+    ctx.fonts_mut(|f| {
+        let (j, ascent) = job(f, text, runs);
+        (f.layout_job(j), ascent)
+    })
+}
+
 /// `text` laid out as it is drawn in `runs` (the last one takes any characters left over):
-/// never wrapped, each line 1.2 times its largest size below the one before, the runs of
-/// a line on one baseline and raised ones above it. Also returns how far the first
-/// baseline is below the top.
+/// never wrapped, each line's baseline [`line_gap`] below the one before, the runs of a
+/// line on one baseline and raised ones above it. Also returns how far the first baseline
+/// is below the top.
 fn job(f: &mut egui::epaint::FontsView, text: &str, runs: &[Run]) -> (egui::text::LayoutJob, f32) {
     // Each line's pieces: their bytes, and their run.
     let mut lines: Vec<Vec<(std::ops::Range<usize>, usize)>> = vec![Vec::new()];
@@ -277,26 +392,42 @@ fn job(f: &mut egui::epaint::FontsView, text: &str, runs: &[Run]) -> (egui::text
         text: text.to_string(),
         ..Default::default()
     };
-    let mut first = None;
-    for line in lines {
-        let fallback = Run {
-            chars: 0,
-            font: egui::FontId::proportional(12.0),
-            coords: VariationCoords::default(),
-            color: Color32::BLACK,
-            rise: 0.0,
-        };
-        let run_of = |i: usize| runs.get(i).unwrap_or(&fallback);
-        let height = LEADING
-            * line
+    let fallback = Run {
+        chars: 0,
+        font: egui::FontId::proportional(12.0),
+        coords: VariationCoords::default(),
+        color: Color32::BLACK,
+        rise: 0.0,
+    };
+    let run_of = |i: usize| runs.get(i).unwrap_or(&fallback);
+    // Each line's largest size, and how far its baseline is below the top of its row.
+    let measured: Vec<(f32, f32)> = lines
+        .iter()
+        .map(|line| {
+            let size = line
                 .iter()
                 .map(|(_, i)| run_of(*i).font.size)
                 .fold(0.0, f32::max);
-        let top = line
+            let top = line
+                .iter()
+                .map(|(_, i)| ascent(f, &run_of(*i).font))
+                .fold(0.0, f32::max);
+            (size, top)
+        })
+        .collect();
+    for (j, line) in lines.into_iter().enumerate() {
+        let (size, top) = measured[j];
+        // A row as high as puts the next line's baseline its gap below this one's; the
+        // last 1.2 times its size. Never so short that a part can't sit on the baseline.
+        let wanted = match measured.get(j + 1) {
+            Some(&(next, next_top)) => top + line_gap(size, next) - next_top,
+            None => LEADING * size,
+        };
+        let least = line
             .iter()
-            .map(|(_, i)| ascent(f, &run_of(*i).font))
+            .map(|(_, i)| top - ascent(f, &run_of(*i).font) - run_of(*i).rise)
             .fold(0.0, f32::max);
-        first.get_or_insert(top);
+        let height = wanted.max(least);
         for (bytes, i) in line {
             let r = run_of(i);
             // egui puts a run's baseline its ascent plus the row's height less its own
@@ -315,7 +446,7 @@ fn job(f: &mut egui::epaint::FontsView, text: &str, runs: &[Run]) -> (egui::text
             });
         }
     }
-    (job, first.unwrap_or(0.0))
+    (job, measured.first().map_or(0.0, |m| m.1))
 }
 
 /// Draw `text` for typing (the editor `id`) with its first baseline's left end at
@@ -341,13 +472,7 @@ pub fn field(
     let color = first.map_or(Color32::BLACK, |r| r.color);
     let px = runs.iter().map(|r| r.font.size).fold(1.0, f32::max);
     let line = LEADING * px;
-    let laid = |text: &str| {
-        let runs = (style.runs)(text);
-        ctx.fonts_mut(|f| {
-            let (j, ascent) = job(f, text, &runs);
-            (f.layout_job(j), ascent)
-        })
-    };
+    let laid = |text: &str| galley(ctx, text, &(style.runs)(text));
     // The first row's baseline sits on the origin.
     let (galley, ascent) = laid(text);
     let size = galley.size();
@@ -417,12 +542,15 @@ pub fn field(
 }
 
 impl PageText {
-    /// New text starting at `at` (the baseline's left end, page points) on `page`.
-    pub fn new(page: usize, at: (f32, f32)) -> Self {
+    /// New text starting at `at` (the baseline's left end, page points) on `page`, typed
+    /// in `look`.
+    pub fn new(page: usize, at: (f32, f32), look: Look) -> Self {
+        let text = Styled::plain("", look.style());
         Self {
             page,
             at,
-            text: String::new(),
+            history: History::new(&text),
+            text,
             fresh: true,
             refocus: false,
             refused: Refused::default(),
@@ -430,49 +558,53 @@ impl PageText {
         }
     }
 
+    /// The editor's id.
+    pub fn id(&self) -> egui::Id {
+        egui::Id::new(("page-text", self.page))
+    }
+
     /// Whether there is anything to add.
     pub fn has_text(&self) -> bool {
-        !self.text.trim().is_empty()
+        !self.text.text().trim().is_empty()
     }
 
     /// Draw the editor over the page drawn at `r`, `k` pixels per point, in the page
-    /// colour `mode`, and take the keyboard. Ctrl+B and Ctrl+I switch `look`'s Bold and
-    /// Italic. `accent` outlines it; `settled` says a change in the inspector is finished,
-    /// so the keyboard can come back.
-    #[allow(clippy::too_many_arguments)]
+    /// colour `mode`, and take the keyboard. Ctrl+B and Ctrl+I switch Bold and Italic as
+    /// the inspector's buttons do, and Ctrl+Z and Ctrl+Y undo and redo typing and styles.
+    /// `accent` outlines it; `settled` says a change in the inspector is finished, so the
+    /// keyboard can come back.
     pub fn ui(
         &mut self,
         ui: &mut egui::Ui,
         r: Rect,
         k: f32,
-        look: &mut Look,
         mode: PageColours,
         accent: Color32,
         settled: bool,
     ) -> Shown {
         let ctx = ui.ctx().clone();
-        let id = egui::Id::new(("page-text", self.page));
+        let id = self.id();
         if ctx.memory(|m| m.has_focus(id)) {
             // Before the editor sees the keys: what can't be written isn't typed.
-            let t = take_typing(ui, false, true, look.font);
-            look.font = switched(look.font, t.bold, t.italic);
+            let sel = selection(&ctx, id).unwrap_or((0, 0));
+            let font = self.text.typing_font(sel);
+            let t = take_typing(ui, false, true, font);
+            undo_redo(&ctx, id, &t, &mut self.history, &mut self.text);
+            if t.bold {
+                self.text.bold(sel);
+            }
+            if t.italic {
+                self.text.italic(sel);
+            }
             if let Some(c) = t.refused {
-                self.refused.mark(&ctx, note(look.font, c));
+                self.refused.mark(&ctx, note(font, c));
             }
         }
-        let wanted = typing_fonts::Wanted::Standard(look.font);
-        let run = Run {
-            chars: 0,
-            font: egui::FontId::new((look.size * k).max(1.0), typing_fonts::family(&ctx, wanted)),
-            coords: typing_fonts::coords(wanted),
-            color: shown(mode, look.color),
-            rise: 0.0,
-        };
+        let text = &self.text;
         let runs = |t: &str| {
-            vec![Run {
-                chars: t.chars().count(),
-                ..run.clone()
-            }]
+            let text = text.preview(t);
+            let font = |p: &TextPart| Wanted::Standard(text.font_of(p));
+            runs(&ctx, &text.drawn_parts(), k, |c| shown(mode, c), font)
         };
         let style = Style {
             runs: &runs,
@@ -480,7 +612,21 @@ impl PageText {
             accent,
         };
         let origin = Pos2::new(r.min.x + self.at.0 * k, r.min.y + self.at.1 * k);
-        let f = field(&ctx, id, &mut self.text, origin, &style, true, None, true);
+        let mut typed = text.text().to_string();
+        let f = field(&ctx, id, &mut typed, origin, &style, true, None, true);
+        // The styles follow what was typed.
+        let sel = f
+            .out
+            .cursor_range
+            .map(|c| (c.secondary.index.0, c.primary.index.0));
+        if self.text.sync(&typed, sel.map(|s| s.1)) {
+            ctx.request_repaint();
+        }
+        if let Some(sel) = sel {
+            self.text.caret_at(sel);
+        }
+        let now = ctx.input(|i| i.time);
+        self.history.observe(&self.text, sel, now, settled);
         let edit = &f.out.response.response;
         dialogs::set_name(edit, NAME);
         let mut on_grip = false;
@@ -530,23 +676,13 @@ impl PageText {
     }
 }
 
-/// The lines of `text` to write, each with how far its baseline is below the first
-/// line's, in points: blank lines are left out but keep their space.
-pub fn lines(text: &str, size: f32) -> Vec<(f32, &str)> {
-    text.split('\n')
-        .enumerate()
-        .filter(|(_, l)| !l.trim().is_empty())
-        .map(|(i, l)| (i as f32 * LEADING * size, l.trim_end()))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// A line in parts is drawn as it will be written: its parts on one baseline whatever
-    /// their sizes, raised ones above it, and each line 1.2 times its largest size below
-    /// the one before.
+    /// their sizes, raised ones above it, and each line's baseline [`line_gap`] below the
+    /// one before.
     #[test]
     fn parts_of_a_line_share_its_baseline() {
         let ctx = egui::Context::default();
@@ -575,9 +711,27 @@ mod tests {
         let near = |a: f32, b: f32| (a - b).abs() <= 1.0;
         assert!(near(base[0], top) && near(base[2], top), "{base:?} {top}");
         assert!(near(base[4], top - 6.0), "{base:?} {top}");
-        // The first line is as high as its 30-pixel text needs; the second as its 10.
-        assert!(near(galley.rows[1].pos.y, 36.0), "{:?}", galley.rows[1].pos);
-        assert!(near(galley.size().y, 48.0), "{:?}", galley.size());
+        // The second line's baseline is below the first by a quarter of the 30-pixel
+        // line's height and three quarters of its own 10-pixel line's.
+        let second = &galley.rows[1];
+        let below = second.pos.y + second.glyphs[0].pos.y - top;
+        assert!(near(below, line_gap(30.0, 10.0)), "{below}");
+        assert!(near(line_gap(30.0, 10.0), 18.0) && near(line_gap(10.0, 10.0), 12.0));
+        // It is 1.2 times its own size high.
+        assert!(
+            near(galley.size().y - second.pos.y, 12.0),
+            "{:?}",
+            galley.size()
+        );
+        // Three lines of one size: 1.2 times the size apart.
+        let one = [run(8, 20.0, 0.0)];
+        let (galley, _) = super::galley(&ctx, "a\nb\nc", &one);
+        let bases: Vec<f32> = galley
+            .rows
+            .iter()
+            .map(|r| r.pos.y + r.glyphs[0].pos.y)
+            .collect();
+        assert!(near(bases[1] - bases[0], 24.0) && near(bases[2] - bases[1], 24.0));
     }
 
     #[test]
@@ -676,14 +830,5 @@ mod tests {
         }
         // Black text on dark paper is light.
         assert!(shown(PageColours::Dark, [0.0; 3]).r() > 200);
-    }
-
-    #[test]
-    fn lines_are_spaced_and_blank_ones_left_out() {
-        assert_eq!(
-            lines("Walrus  \n\n  Seal\n ", 10.0),
-            [(0.0, "Walrus"), (24.0, "  Seal")]
-        );
-        assert!(lines(" \n", 10.0).is_empty());
     }
 }

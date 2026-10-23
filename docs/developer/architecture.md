@@ -70,10 +70,14 @@ font, WinAnsi-encoded through `fonts::winansi_byte`, while the text fits it, els
 `form_ap::Metrics`, which is one-byte widths or an embedded font's codes. In the
 app, new text is typed on the page in `crates/limarepdf-gui/src/page_text.rs`, drawn while typing in the bundled
 Liberation fonts that `typing_fonts.rs` picks (same widths as Helvetica, Times and Courier), then written line by
-line with `Pdf::add_text` as one undo step. A line being edited (`editor.rs`'s line editor, sharing `page_text`'s
-drawing) sits on `PageObject::baseline` and is drawn in the font `TextEdit::keeps_font` says `Pdf::edit_text` will
-write: the line's own (installed, else its Liberation look-alike), the installed family it is from, or a
-standard one. The line underneath is
+line with `Pdf::add_text_parts` as one undo step. A line being edited (`editor.rs`'s line editor, sharing
+`page_text`'s drawing) sits on `PageObject::baseline` and each part is drawn in the font
+`PageObject::keeps_font` says `Pdf::edit_text` will write it in: the part's own (installed, else its Liberation
+look-alike), the installed family it is from, or a standard one. Both edit a `styled::Styled`, the text with a
+style per character: it keeps the styles through egui's plain-string `TextEdit` by comparing each frame's text
+with the last, applies Word's rules for style commands, gives the inspector its values (`None` where the
+selection mixes them), and hands core the line as `TextPart`s; `styled::History` is the undo inside the line,
+which takes Ctrl+Z and Ctrl+Y before the `TextEdit` does. The line underneath is
 covered in the colour the page worker (`worker.rs`, `Worker::sample`) finds around it, from a drawing of that
 part of the page in the current page colours.
 
