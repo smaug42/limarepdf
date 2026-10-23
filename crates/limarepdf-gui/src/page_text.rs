@@ -8,7 +8,7 @@ use crate::{dialogs, typing_fonts};
 use eframe::egui::epaint::text::VariationCoords;
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use limarepdf_core::page_colours::PageColours;
-use limarepdf_core::{writable, FontChoice};
+use limarepdf_core::{installed_could_write, writable, FontChoice};
 
 /// The space from one line's baseline to the next, as a multiple of the size (Acrobat's).
 pub const LEADING: f32 = 1.2;
@@ -78,11 +78,17 @@ fn keep_typable(s: &str, single: bool, font: FontChoice) -> (String, Option<char
     (kept, refused)
 }
 
-/// The note at the caret for `c`, refused in `font`: an installed family that lacks it is
-/// named, as another font may have it.
+/// The note at the caret of a text editor for `c`, refused in `font`: the font is named
+/// when an installed font that has `c` could write it (Chinese in Helvetica, or what an
+/// installed family lacks), as choosing another font may help.
 pub fn note(font: FontChoice, c: char) -> String {
-    if font.is_standard() {
+    if !installed_could_write(c) {
         REFUSED.to_string()
+    } else if font.is_standard() {
+        format!(
+            "{} can't write this character; choose an installed font that has it",
+            font.family_name()
+        )
     } else {
         limarepdf_core::refusal(font, &c.to_string())
     }
@@ -466,7 +472,20 @@ mod tests {
             keep_typable("Seal\r\nfish", true, sans),
             ("Seal fish".into(), None)
         );
-        assert_eq!(note(sans, '中'), REFUSED);
+        // The note points to installed fonts for what one could write, not for
+        // right-to-left or shaped scripts, emoji or control characters.
+        assert_eq!(
+            note(sans, '中'),
+            "Helvetica can't write this character; choose an installed font that has it"
+        );
+        let times = FontChoice::from_name("Times-Bold");
+        assert_eq!(
+            note(times, '한'),
+            "Times can't write this character; choose an installed font that has it"
+        );
+        for c in ['ש', 'क', '😀', '\u{7}'] {
+            assert_eq!(note(sans, c), REFUSED, "{c:?}");
+        }
     }
 
     fn installed(name: &str) -> FontChoice {

@@ -1222,7 +1222,8 @@ struct Press {
 }
 
 /// A text field of a stamp section, which notes in `p` when it is left; a grid row named
-/// `label`. What Helvetica (or its embedded face) can't write isn't typed, as on the page.
+/// `label`. What Helvetica (or its embedded face) can't write isn't typed, as on the page;
+/// the note doesn't point to installed fonts, as a stamp can't be set in one.
 fn stamp_text(ui: &mut Ui, label: &str, text: &mut String, p: &mut Press) {
     let id = egui::Id::new(("stamp-text", label));
     let note = id.with("refused");
@@ -1230,11 +1231,12 @@ fn stamp_text(ui: &mut Ui, label: &str, text: &mut String, p: &mut Press) {
     let mut refused: page_text::Refused = ctx.data(|d| d.get_temp(note)).unwrap_or_default();
     let helvetica = limarepdf_core::FontChoice::default();
     let focused = ctx.memory(|m| m.has_focus(id));
-    if let Some(c) = focused
+    if focused
         .then(|| page_text::take_typing(ui, true, false, helvetica).refused)
         .flatten()
+        .is_some()
     {
-        refused.mark(&ctx, page_text::note(helvetica, c));
+        refused.mark(&ctx, page_text::REFUSED.to_string());
     }
     let field = egui::TextEdit::singleline(text)
         .id(id)

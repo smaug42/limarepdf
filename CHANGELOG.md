@@ -20,7 +20,8 @@
   name drawn in its own font, with a search field. Text in one is embedded in the file, cut down to the
   characters used, so it looks the same anywhere; Bold and Italic use the family's own faces (off when it has
   none), and a character the font lacks is refused with a note naming the font. Chinese, Japanese and Korean
-  can be typed in an installed font that has them. An edited line from a font that is installed is written in
+  can be typed in an installed font that has them; typed in Helvetica, Times or Courier, they get a note naming
+  that font and asking for an installed font that has them. An edited line from a font that is installed is written in
   that font again rather than in Helvetica, Times or Courier.
 
 ### Changed

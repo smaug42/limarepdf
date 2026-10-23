@@ -369,15 +369,18 @@ pub(crate) fn cant_write(missing: &str) -> String {
     )
 }
 
+/// Whether LimarePDF could write `c` in an installed font that has it: not a control
+/// character, nor of a right-to-left or shaped script, nor an emoji (no font LimarePDF
+/// offers has them), so choosing another font may help.
+pub fn installed_could_write(c: char) -> bool {
+    !c.is_control() && !right_to_left(c) && !shaped(c) && !emoji(c)
+}
+
 /// The message refusing text in `f` with the characters `missing`: an installed family
 /// lacking them is named, as another font may have them.
 pub fn refusal(f: FontChoice, missing: &str) -> String {
     match f.typeface() {
-        Some(t)
-            if missing
-                .chars()
-                .any(|c| !c.is_control() && !right_to_left(c) && !shaped(c)) =>
-        {
+        Some(t) if missing.chars().any(installed_could_write) => {
             format!("{} has no \"{missing}\"; choose another font", t.name)
         }
         _ => cant_write(missing),
@@ -840,6 +843,18 @@ fn shaped(c: char) -> bool {
             | '\u{ABC0}'..='\u{ABFF}'
             | '\u{D7B0}'..='\u{D7FF}'
             | '\u{11000}'..='\u{11FFF}'
+    )
+}
+
+/// Whether `c` is an emoji picture (faces, animals, flags and the rest), drawn by colour
+/// fonts that aren't offered as they lack the Latin letters (`typefaces.rs`).
+fn emoji(c: char) -> bool {
+    matches!(
+        c,
+        '\u{1F1E6}'..='\u{1F1FF}'
+            | '\u{1F300}'..='\u{1F6FF}'
+            | '\u{1F900}'..='\u{1F9FF}'
+            | '\u{1FA70}'..='\u{1FAFF}'
     )
 }
 
@@ -1428,7 +1443,12 @@ mod tests {
         }
         for c in ['A', 'Ω', 'ж', '中', 'あ', '한', 'ẫ'] {
             assert!(!shaped(c), "{c:?}");
+            assert!(installed_could_write(c), "{c:?}");
         }
+        for c in ['\n', 'ש', 'ب', 'क', 'ก', '😀', '🐋', '🇬'] {
+            assert!(!installed_could_write(c), "{c:?}");
+        }
+        assert_eq!(refusal(caveat, "🐋"), cant_write("🐋"));
 
         // A face the family lacks.
         let bold_serif = installed("Source Serif 4", true);

@@ -640,8 +640,10 @@ selected so you can adjust it (see [Keep tool active](#keep-tool-active)):
   Cyrillic characters can be added; those the standard fonts lack are written in their Liberation face, and text
   in an installed font is written in that font, both embedded in the file (cut down to the characters used).
   Chinese, Japanese and Korean can be typed in an installed font that has them. Others (Hebrew, Arabic,
-  Devanagari, Thai and so on), and characters the chosen font doesn't have, can't be typed or pasted, and a note
-  at the caret says so, naming the font when it is an installed one (see
+  Devanagari, Thai and so on, and emoji), and characters the chosen font doesn't have, can't be typed or pasted,
+  and a note at the caret says so. When another font could have the character (Chinese in Helvetica, say, or a
+  letter an installed font lacks), the note names the font in use and asks you to choose an installed font that
+  has it; the same goes for editing a line and the inspector's text field (see
   [What doesn't work yet](features.md#what-doesnt-work-yet)). Each line becomes its own line of page text, so
   it moves and is edited line by line afterwards.
 - **Image:** choose a PNG, JPEG or TIFF, then drag a box.

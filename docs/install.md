@@ -9,7 +9,7 @@ the project's Releases page on GitHub: Linux (`.tar.gz`), Windows
 ([checking a download](#checking-a-download)).
 
 Each archive holds the desktop app (`limarepdf`), the command-line tool (`limarepdf-cli`), these docs, the changelog, and the
-licences, including those of the bundled OCR model and font. The Linux archive also has a desktop entry and icon
+licences, including those of the bundled OCR model and fonts. The Linux archive also has a desktop entry and icon
 ([below](#menu-entry-and-icon-on-linux)). Unpack it anywhere; there is no installer.
 
 The binaries are not code-signed, so the system warns the first time you run them. On macOS, run

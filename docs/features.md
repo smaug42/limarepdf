@@ -41,10 +41,10 @@ this list once it works. The feature table below has the details.
 - Only Latin (Vietnamese included), Greek and Cyrillic characters can be added: in new or edited text, text
   boxes, headers, footers, Bates numbers, watermarks, stamps, form values and fill-and-sign text. New and edited
   text can also be Chinese, Japanese or Korean in an installed font that has them (Noto Sans CJK, say), not in
-  Helvetica, Times or Courier. Hebrew and Arabic (written right to left), the scripts whose letters join or
-  change shape (Devanagari and the other Indic scripts, Thai) and emoji can't, in any font: when adding text,
-  editing a line or typing a header, footer or watermark, a note at the caret says so; form values and stamp
-  wording with them are refused; a plain-text page of selected text, and text boxes another app made without a
+  Helvetica, Times or Courier (typed in those, a note at the caret asks for an installed font that has them).
+  Hebrew and Arabic (written right to left), the scripts whose letters join or change shape (Devanagari and the
+  other Indic scripts, Thai) and emoji can't, in any font: when adding text, editing a line or typing a header,
+  footer or watermark, a note at the caret says so; form values and stamp wording with them are refused; a plain-text page of selected text, and text boxes another app made without a
   drawing, show them as `?`.
   Typed signatures show what their handwriting has: Caveat has Cyrillic, the other three Latin only.
 - Installed fonts are offered only when their licence allows embedding and they have the Latin letters; a

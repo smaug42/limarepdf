@@ -5015,10 +5015,9 @@ mod tests {
         };
         assert!(lines(&app).is_empty());
         tree = window(&mut app, &ctx, 1400.0, vec![]);
+        let note = "Helvetica can't write this character; choose an installed font that has it";
         assert!(
-            tree.nodes
-                .iter()
-                .any(|(_, n)| n.value() == Some(page_text::REFUSED)),
+            tree.nodes.iter().any(|(_, n)| n.value() == Some(note)),
             "no note about the refused character"
         );
         // Bold switched off in the inspector applies to the text being typed, which takes
@@ -5355,10 +5354,9 @@ mod tests {
             n.and_then(|(_, n)| n.value().map(str::to_string))
         };
         assert_eq!(value(&tree).as_deref(), Some("WalXrus"));
+        let note = "Courier can't write this character; choose an installed font that has it";
         assert!(
-            tree.nodes
-                .iter()
-                .any(|(_, n)| n.value() == Some(page_text::REFUSED)),
+            tree.nodes.iter().any(|(_, n)| n.value() == Some(note)),
             "no note about the refused character"
         );
         let line = |app: &App| {
@@ -6978,6 +6976,21 @@ mod tests {
             objs.into_iter().filter_map(|o| o.text).collect()
         };
         assert!(lines(&app).is_empty());
+        // A character Helvetica can't write isn't typed, and as a watermark can't be set
+        // in an installed font, the note doesn't point to one.
+        let field = egui::Id::new(("stamp-text", "Text"));
+        ctx.memory_mut(|m| m.request_focus(field));
+        window(&mut app, &ctx, 1400.0, vec![]);
+        window(&mut app, &ctx, 1400.0, vec![egui::Event::Text("中".into())]);
+        let typed = window(&mut app, &ctx, 1400.0, vec![]);
+        assert!(
+            typed
+                .nodes
+                .iter()
+                .any(|(_, n)| n.value() == Some(page_text::REFUSED)),
+            "no note about the refused character"
+        );
+        assert_eq!(app.tabs[0].forms.wm.text, "DRAFT");
         let add = middle(&tree, "Add to pages");
         window(&mut app, &ctx, 1400.0, click_at(add));
         let tree = settle(&mut app, &ctx);
