@@ -11,7 +11,10 @@ How a release is made, for maintainers.
      Unreleased as they are made;
    - check the signature crates listed in [How it is built](architecture.md#signature-crates): if a pinned
      pre-release (`rsa`, `pkcs1`) has a final version, move to it; if RUSTSEC-2023-0071 has a fixed `rsa`, take it
-     and remove the `--ignore` from the `audit` job in `ci.yml`; read any new advisory the `audit` job reports.
+     and remove the `--ignore` from the `audit` job in `ci.yml`; read any new advisory the `audit` job reports;
+   - check that the user guide's screenshots (`docs/images/`) still show the app as it is, and retake any that
+     don't: a 1000×660 window in the light theme under a virtual X server, made-up documents and digital IDs only,
+     cut down to the part the page is about.
 2. Open a pull request. CI builds, tests and packages all four platforms; check the archives in the run's artifacts.
    Merge when it is green.
 3. On `main`, after pulling the merge, make a signed tag and push it:

@@ -36,6 +36,8 @@ the pane), opens a window with three ways to make one:
 - **Image:** choose a photo or scan of your signature on paper (PNG, JPEG or TIFF). **Make the paper transparent**
   (on by default) keeps only the ink and cuts off the empty margins, so the signature sits on the page like ink.
 
+![The Create signature window on its Type tab: a name typed and shown in the four handwriting styles, the first one picked, the ink colour (Black or Blue), Save for next time ticked, and the Use signature and Cancel buttons](images/create-signature.png)
+
 The window also has the ink colour (the same choice as the pane's). **Use signature** puts it in the list. Esc
 closes the window only while nothing is drawn, typed (beyond the name it starts with) or chosen; picking another
 tool closes it.

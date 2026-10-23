@@ -18,6 +18,8 @@ forth between them; round trips with Acrobat itself are still to be tested (see 
 3. To see a signer as trusted, check their certificate's fingerprint with them, then use **Trust this signer…** in
    Details (see [Trusting signers](#trusting-signers)).
 
+![A document signed by two people: a green banner above the page says "Signed, and all signatures are valid." with a Signatures button, and the Digital signatures view at the left lists each signature with what changed after it, Details… and Signed version](images/signatures-panel.png)
+
 ## Sign with a digital ID
 
 1. The first time, make a digital ID: ☰ > Document > Digital signatures > **Digital IDs…**, then **Create…** (or

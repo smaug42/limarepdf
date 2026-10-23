@@ -232,6 +232,8 @@ LimarePDF manages to delete it, or you do. The limits of this promise:
 
 What you select decides what the inspector, the right-click menu and the floating toolbar offer.
 
+![A text box selected on the page, with its handles and the floating toolbar, and its options in the inspector at the right: text size and colour, background, border, opacity, its text, Delete and a reply box](images/inspector.png)
+
 | Selected | Inspector |
 | --- | --- |
 | Nothing | The document: properties, opening view, password security, the form (when there is one), crop, watermark, headers/footers/Bates, OCR, optimise scanned pages, export pages as images, split into files, and buttons for export text, print and append PDFs |
