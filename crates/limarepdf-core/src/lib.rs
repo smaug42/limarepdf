@@ -15,6 +15,9 @@ pub mod disk;
 mod display;
 mod doc;
 mod edit;
+// The writers set text in it from the Unicode text work's batch 2.
+#[cfg_attr(not(test), allow(dead_code))]
+mod embed;
 mod excerpt;
 mod fonts;
 mod form_ap;
@@ -68,6 +71,7 @@ pub use cms_check::CertInfo;
 pub use display::{display_line, display_text, local_date, local_time, quoted_list};
 pub use doc::{part_file_name, write_file, Info, Pdf, SplitBy};
 pub use edit::{PathStyle, Shape, TextEdit};
+pub use embed::{liberation, LIBERATION};
 pub use fonts::{winansi_byte, Family, FontChoice};
 pub use forms::{Field, FieldKind, FieldValue, Widget};
 pub use ids::{

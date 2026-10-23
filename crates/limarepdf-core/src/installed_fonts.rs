@@ -525,8 +525,8 @@ mod tests {
 
     #[test]
     fn named_is_the_font_or_its_widths() {
-        // The app's bundled Liberation fonts stand in for installed ones here.
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../limarepdf-gui/assets/fonts");
+        // The bundled Liberation fonts stand in for installed ones here.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
         let regular = dir.join("LiberationSans-Regular.ttf");
         let bold = dir.join("LiberationSans-Bold.ttf");
         let fonts = InstalledFonts::from_files(&[&regular, &bold]);

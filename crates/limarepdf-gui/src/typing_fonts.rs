@@ -10,78 +10,15 @@
 
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
 use limarepdf_core::render::InstalledFonts;
-use limarepdf_core::{Family, FontChoice};
+use limarepdf_core::{liberation, Family, FontChoice, LIBERATION};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-/// The bundled faces, Liberation 2.1.5 (see `assets/fonts/README.md`): sans, serif and
-/// mono, each regular, bold, italic and bold italic.
-const LIBERATION: [[(&str, &[u8]); 4]; 3] = [
-    [
-        (
-            "Liberation Sans",
-            include_bytes!("../assets/fonts/LiberationSans-Regular.ttf"),
-        ),
-        (
-            "Liberation Sans Bold",
-            include_bytes!("../assets/fonts/LiberationSans-Bold.ttf"),
-        ),
-        (
-            "Liberation Sans Italic",
-            include_bytes!("../assets/fonts/LiberationSans-Italic.ttf"),
-        ),
-        (
-            "Liberation Sans Bold Italic",
-            include_bytes!("../assets/fonts/LiberationSans-BoldItalic.ttf"),
-        ),
-    ],
-    [
-        (
-            "Liberation Serif",
-            include_bytes!("../assets/fonts/LiberationSerif-Regular.ttf"),
-        ),
-        (
-            "Liberation Serif Bold",
-            include_bytes!("../assets/fonts/LiberationSerif-Bold.ttf"),
-        ),
-        (
-            "Liberation Serif Italic",
-            include_bytes!("../assets/fonts/LiberationSerif-Italic.ttf"),
-        ),
-        (
-            "Liberation Serif Bold Italic",
-            include_bytes!("../assets/fonts/LiberationSerif-BoldItalic.ttf"),
-        ),
-    ],
-    [
-        (
-            "Liberation Mono",
-            include_bytes!("../assets/fonts/LiberationMono-Regular.ttf"),
-        ),
-        (
-            "Liberation Mono Bold",
-            include_bytes!("../assets/fonts/LiberationMono-Bold.ttf"),
-        ),
-        (
-            "Liberation Mono Italic",
-            include_bytes!("../assets/fonts/LiberationMono-Italic.ttf"),
-        ),
-        (
-            "Liberation Mono Bold Italic",
-            include_bytes!("../assets/fonts/LiberationMono-BoldItalic.ttf"),
-        ),
-    ],
-];
-
-/// The bundled face for a standard font: Helvetica is Liberation Sans, and so on.
+/// The bundled face for a standard font: Helvetica is Liberation Sans, and so on. The faces
+/// are core's (`LIBERATION`), which embeds them in PDFs.
 fn face(f: FontChoice) -> &'static str {
-    let family = match f.family {
-        Family::Helvetica => 0,
-        Family::Times => 1,
-        Family::Courier => 2,
-    };
-    LIBERATION[family][f.bold as usize + 2 * f.italic as usize].0
+    liberation(f).0
 }
 
 fn named(name: &str) -> FontFamily {

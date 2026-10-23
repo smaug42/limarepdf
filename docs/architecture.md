@@ -72,6 +72,16 @@ write: the line's own (installed, else its Liberation look-alike) or a standard 
 covered in the colour the page worker (`worker.rs`, `Worker::sample`) finds around it, from a drawing of that
 part of the page in the current page colours.
 
+Text the standard fonts can't write goes into an embedded font (`crates/limarepdf-core/src/embed.rs`,
+`Pdf::embed_text`): the bundled Liberation face of the standard font (`LIBERATION`, in core's `assets/fonts/`; the
+app's `typing_fonts.rs` draws with the same copy) as a Type 0 font with a CIDFontType2 descendant, `Identity-H`,
+`/W` widths and a ToUnicode map. The font file is cut down to the glyphs used by the `subsetter` crate. There is
+one such font per face per document, rewritten in place as text is added: the old glyphs are given to the
+subsetter first, so they keep their numbers and earlier text stays valid. The font dictionary's `/LimarePDF` entry
+records the face, the glyphs with their characters and a checksum of the font file; a font another app has
+changed since is left alone and a new one started. Characters are put together (NFC) first; right-to-left
+scripts are refused (Liberation has Hebrew). The writers move onto it in the Unicode text work's second batch.
+
 Redaction (`crates/limarepdf-core/src/redact.rs`) has its own pass over the page content rather than editing the
 parser's objects: it rewrites each text-showing operator character by character, keeping the rest in place with
 spacing numbers, cuts drawings into sub-paths, and redacts inside form XObjects as copies. Pictures are decoded,
