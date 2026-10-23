@@ -37,8 +37,12 @@ holding work you would lose (a signature drawn, typed or chosen; a digital ID fo
 typed), where only Cancel closes it. A message's Copy button copies what it says, to pass on an error. Reasons and
 technical lists in a question are under Details. A dialog fits the window, also as it is resized: narrower in a
 narrow one, with smaller margins under 600 points wide, and in a short one its content scrolls while its buttons
-stay in view. Fields, lists and buttons in dialogs are outlined; labels go above the fields in Print and Create
-signature, and beside them in the digital ID forms.
+stay in view. Every dialog has the same look: text at 14 points, settings in headed groups, labels above the
+fields, fields, lists and buttons outlined, and radio buttons and checkboxes outlined on the dialog's background.
+Two short fields share a row when there is room (Copies and Print on, a signature's Reason and Location) and go
+one under the other when not. Lists of documents or certificates are an outlined box with each row's buttons on
+its right (under it in a narrow window); facts to read, such as a certificate's, have their names in a column on
+the left.
 
 A question about a document (Flatten, Apply redactions, Discard changes and the others) acts on the document it was
 asked about, even if another tab has come to the front meanwhile, and brings it back to the front. If that document
@@ -100,7 +104,8 @@ Save As to a new file keeps the signed original.
   panel is remembered between runs.
 
 Ctrl+K opens the command palette, which lists every command. Type to filter, use Up and Down to choose, and press
-Enter to run.
+Enter to run; Esc closes it. It looks like the dialogs, without a title or buttons: a search field, then each
+command with its category and shortcut in columns.
 
 ## Links
 
@@ -278,8 +283,9 @@ nothing under them has been removed.
 
 **Remove hidden information:** Document > Remove hidden information… lists what the document carries besides its
 pages (metadata, scripts, attachments, hidden layers, private data, and comments, form values, bookmarks and content
-outside the crop box), with how many of each it has. Tick what to remove and press Remove; a summary follows. Undo
-brings it back. See [Removing hidden information](redaction.md#removing-hidden-information).
+outside the crop box), with how many of each it has, in two groups: what is removed by default (ticked), and
+what is kept by default (often wanted, so not ticked). Tick what to remove and press Remove; a summary follows.
+Undo brings it back. See [Removing hidden information](redaction.md#removing-hidden-information).
 
 ## Filling in forms
 

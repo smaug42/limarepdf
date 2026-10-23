@@ -436,8 +436,9 @@ impl Create {
                 if let Some(e) = &self.error {
                     ui.colored_label(ui.visuals().error_fg_color, e);
                 }
-                ui.add_space(8.0);
-                ink_ui(ui, color);
+                ui.add_space(dialogs::FIELD_GAP);
+                ink_field(ui, color);
+                ui.add_space(dialogs::FIELD_GAP);
                 ui.checkbox(&mut self.keep, "Save for next time")
                     .on_hover_text(
                         "Keep it in LimarePDF's settings folder on this computer, so it is there \
@@ -672,23 +673,35 @@ fn pad_size(ui: &egui::Ui) -> Vec2 {
 }
 
 /// The ink colours to pick from, in the Fill and sign pane and the Create window.
+/// The ink colours, with "Ink" beside them, as in the Fill and sign panel.
 fn ink_ui(ui: &mut egui::Ui, color: &mut InkColor) {
     ui.horizontal(|ui| {
         ui.label("Ink");
-        // A dot in the ink's colour, then its name in the usual text colour, which
-        // stays readable when picked.
-        let font = egui::TextStyle::Button.resolve(ui.style());
-        let fg = ui.visuals().text_color();
-        for c in InkColor::ALL {
-            let [r, g, b] = c.rgb().map(|v| (v * 255.0) as u8);
-            let mut job = egui::text::LayoutJob::default();
-            let fmt = |color| egui::TextFormat::simple(font.clone(), color);
-            job.append("● ", 0.0, fmt(Color32::from_rgb(r, g, b)));
-            job.append(&capital(c.name()), 0.0, fmt(fg));
-            let r = ui.selectable_value(color, c, job);
-            crate::dialogs::set_name(&r, &format!("{} ink", capital(c.name())));
-        }
+        ink_choices(ui, color);
     });
+}
+
+/// The ink colours, with "Ink" above them, as dialogs label their fields.
+fn ink_field(ui: &mut egui::Ui, color: &mut InkColor) {
+    ui.label("Ink");
+    ui.add_space(2.0);
+    ui.horizontal(|ui| ink_choices(ui, color));
+}
+
+fn ink_choices(ui: &mut egui::Ui, color: &mut InkColor) {
+    // A dot in the ink's colour, then its name in the usual text colour, which stays
+    // readable when picked.
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let fg = ui.visuals().text_color();
+    for c in InkColor::ALL {
+        let [r, g, b] = c.rgb().map(|v| (v * 255.0) as u8);
+        let mut job = egui::text::LayoutJob::default();
+        let fmt = |color| egui::TextFormat::simple(font.clone(), color);
+        job.append("● ", 0.0, fmt(Color32::from_rgb(r, g, b)));
+        job.append(&capital(c.name()), 0.0, fmt(fg));
+        let r = ui.selectable_value(color, c, job);
+        crate::dialogs::set_name(&r, &format!("{} ink", capital(c.name())));
+    }
 }
 
 fn capital(s: &str) -> String {

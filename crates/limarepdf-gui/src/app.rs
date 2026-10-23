@@ -3055,35 +3055,59 @@ impl App {
         }
         p.row = p.row.min(last);
         let mut run = None;
-        let modal = egui::Modal::new(egui::Id::new("palette")).show(ctx, |ui| {
-            ui.set_width(480.0);
-            let field = egui::TextEdit::singleline(&mut p.query)
-                .hint_text("Type a command")
-                .desired_width(f32::INFINITY);
-            let r = ui.add(field);
-            dlg::set_name(&r, "Command");
-            r.request_focus();
-            if r.changed() {
-                p.row = 0;
-            }
-            ui.separator();
-            let list = egui::ScrollArea::vertical().max_height(360.0);
-            list.show(ui, |ui| {
-                if items.is_empty() {
-                    ui.weak("No matching command.");
+        // In the dialogs' look, as a launcher: no title or buttons (option A of the mockup).
+        let frame = egui::Frame::window(&ctx.global_style()).inner_margin(16);
+        let width = (ctx.content_rect().width() - 32.0).clamp(240.0, 480.0);
+        let modal = egui::Modal::new(egui::Id::new("palette"))
+            .frame(frame)
+            .show(ctx, |ui| {
+                ui.set_width(width);
+                theme::dialog_style(ui.style_mut());
+                let field = theme::field(
+                    egui::TextEdit::singleline(&mut p.query)
+                        .hint_text("Type a command")
+                        .desired_width(f32::INFINITY),
+                )
+                .margin(egui::Margin {
+                    left: 36,
+                    right: 12,
+                    top: 0,
+                    bottom: 0,
+                });
+                let r = ui.add(field);
+                // The search icon, inside the field before the text.
+                let at = r.rect.left_center() + egui::vec2(12.0, 0.0);
+                let weak = ui.visuals().weak_text_color();
+                let font = egui::FontId::new(16.0, theme::icons());
+                let glass = icon::MAGNIFYING_GLASS;
+                ui.painter()
+                    .text(at, egui::Align2::LEFT_CENTER, glass, font, weak);
+                dlg::set_name(&r, "Command");
+                r.request_focus();
+                if r.changed() {
+                    p.row = 0;
                 }
-                for (n, a) in items.iter().enumerate() {
-                    let on = n == p.row;
-                    let r = palette_row(ui, a, n, on, (a.enabled)(c));
-                    if on && (up || down) {
-                        r.scroll_to_me(None);
+                ui.add_space(12.0);
+                ui.add(egui::Separator::default().spacing(0.0));
+                ui.add_space(8.0);
+                let columns = palette_columns(ui, &items);
+                let list = egui::ScrollArea::vertical().max_height(360.0);
+                list.show(ui, |ui| {
+                    if items.is_empty() {
+                        ui.weak("No matching command.");
                     }
-                    if r.clicked() {
-                        run = Some(a.act);
+                    for (n, a) in items.iter().enumerate() {
+                        let on = n == p.row;
+                        let r = palette_row(ui, a, on, (a.enabled)(c), columns);
+                        if on && (up || down) {
+                            r.scroll_to_me(None);
+                        }
+                        if r.clicked() {
+                            run = Some(a.act);
+                        }
                     }
-                }
+                });
             });
-        });
         if enter {
             if let Some(a) = items.get(p.row).filter(|a| (a.enabled)(c)) {
                 run = Some(a.act);
@@ -3433,26 +3457,91 @@ fn inspector_popout(
     (apply, !(clicked_outside && !child_open))
 }
 
-/// One row of the command palette: icon, label, then group and shortcut on the right.
-/// `n` is the row number; `on` highlights it.
-fn palette_row(ui: &mut egui::Ui, a: &Action, n: usize, on: bool, enabled: bool) -> egui::Response {
-    let glyph = if a.icon.is_empty() {
-        // Keeps labels aligned with the rows that have an icon.
-        egui::Atom::custom(egui::Id::new(("palette-icon", n)), [18.0, 18.0])
+/// The widths of the command search's category and shortcut columns: the widest of each
+/// among `items`.
+fn palette_columns(ui: &egui::Ui, items: &[&Action]) -> (f32, f32) {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let width = |text: String| {
+        let g = ui
+            .painter()
+            .layout_no_wrap(text, font.clone(), egui::Color32::PLACEHOLDER);
+        g.size().x
+    };
+    let mut columns = (0.0_f32, 0.0_f32);
+    for a in items {
+        columns.0 = columns.0.max(width(a.group.name().to_string()));
+        if let Some(k) = a.keys.first() {
+            columns.1 = columns.1.max(width(ui.ctx().format_shortcut(k)));
+        }
+    }
+    columns
+}
+
+/// A row of the command search: the command's icon and name, then its category and
+/// shortcut in columns `columns` wide, aligned down the list.
+fn palette_row(
+    ui: &mut egui::Ui,
+    a: &Action,
+    on: bool,
+    enabled: bool,
+    columns: (f32, f32),
+) -> egui::Response {
+    let sense = if enabled {
+        egui::Sense::click()
     } else {
-        theme::icon(a.icon).size(16.0).into()
+        egui::Sense::hover()
     };
-    let right = match a.keys.first() {
-        Some(k) => format!("{}    {}", a.group.name(), ui.ctx().format_shortcut(k)),
-        None => a.group.name().to_string(),
-    };
-    let b = egui::Button::new((glyph, a.label))
-        .shortcut_text(right)
-        .selected(on)
-        .frame_when_inactive(on)
-        .min_size(egui::vec2(ui.available_width(), 28.0));
-    let r = ui.add_enabled(enabled, b);
+    let size = egui::vec2(ui.available_width(), theme::DIALOG_CONTROL);
+    let (rect, r) = ui.allocate_exact_size(size, sense);
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, a.label));
     dlg::set_name(&r, a.label);
+    if !ui.is_rect_visible(rect) {
+        return r;
+    }
+    let v = ui.visuals();
+    let radius = f32::from(theme::RADIUS);
+    if on {
+        ui.painter().rect_filled(rect, radius, v.selection.bg_fill);
+    } else if r.hovered() && enabled {
+        ui.painter()
+            .rect_filled(rect, radius, v.widgets.hovered.weak_bg_fill);
+    }
+    let (mut text, mut weak) = (v.text_color(), v.weak_text_color());
+    if on {
+        text = v.selection.stroke.color;
+    }
+    if !enabled {
+        text = weak;
+        weak = weak.gamma_multiply(0.7);
+    }
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let pad = 10.0;
+    let gap = 24.0;
+    let y = rect.center().y;
+    let painter = ui.painter_at(rect);
+    if !a.icon.is_empty() {
+        let at = egui::pos2(rect.left() + pad, y);
+        let icons = egui::FontId::new(16.0, theme::icons());
+        painter.text(at, egui::Align2::LEFT_CENTER, a.icon, icons, text);
+    }
+    // The shortcut flush right, the category in its column before it.
+    let key_left = rect.right() - pad - columns.1;
+    if let Some(k) = a.keys.first() {
+        let at = egui::pos2(rect.right() - pad, y);
+        let key = ui.ctx().format_shortcut(k);
+        painter.text(at, egui::Align2::RIGHT_CENTER, key, font.clone(), weak);
+    }
+    let cat_left = key_left - if columns.1 > 0.0 { gap } else { 0.0 } - columns.0;
+    let at = egui::pos2(cat_left, y);
+    let category = a.group.name();
+    painter.text(at, egui::Align2::LEFT_CENTER, category, font.clone(), weak);
+    // The name, cut short with … if it would reach the category.
+    let left = rect.left() + pad + 26.0;
+    let mut job = egui::text::LayoutJob::simple_singleline(a.label.to_string(), font, text);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((cat_left - gap - left).max(0.0));
+    let galley = ui.painter().layout_job(job);
+    let at = egui::pos2(left, y - galley.size().y / 2.0);
+    painter.galley(at, galley, text);
     r
 }
 
@@ -4648,6 +4737,48 @@ mod tests {
         app.act(&ctx, Act::Palette);
         clear_names(&mut app, &ctx, "Command search", &mut bad);
         assert_eq!(bad, [""; 0]);
+    }
+
+    /// Batch 7b: the command search in the dialogs' look, as a launcher (option A of the
+    /// mockup): 16 points around it, its field as tall as the dialogs' and holding the
+    /// keyboard, a rule, then rows as tall, lined up with the field; Enter runs the row
+    /// picked and Esc closes it, wide and narrow.
+    #[test]
+    fn command_search_has_the_dialog_look() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        for width in [1400.0, 400.0] {
+            app.act(&ctx, Act::Palette);
+            let tree = settled_at(&mut app, &ctx, width);
+            let (field, focused) = node(&tree, "Command").expect("the field");
+            assert!(focused, "{width}: the keyboard isn't in the field");
+            assert!(field.height() >= theme::DIALOG_CONTROL - 0.5, "{width}");
+            let id = egui::Id::new("palette");
+            let at = ctx.memory(|m| m.area_rect(id)).expect("the window");
+            let inset = 16.0 + ctx.global_style().visuals.window_stroke.width;
+            assert!((field.left() - at.left() - inset).abs() < 1.0, "{width}");
+            assert!((field.top() - at.top() - inset).abs() < 1.0, "{width}");
+            let (row, _) = node(&tree, "Open…").expect("a command's row");
+            assert!(row.height() >= theme::DIALOG_CONTROL - 0.5, "{width}");
+            assert!(row.top() >= field.bottom() + 12.0, "{width}: no rule");
+            assert!((row.left() - field.left()).abs() < 1.0, "{width}");
+            assert!(at.contains_rect(row), "{width}");
+            let esc = key_with(Key::Escape, egui::Modifiers::NONE);
+            window(&mut app, &ctx, width, vec![esc]);
+            assert!(app.palette.is_none(), "{width}: Esc didn't close it");
+        }
+        app.act(&ctx, Act::Palette);
+        settled_at(&mut app, &ctx, 1400.0);
+        let typed = egui::Event::Text("About".into());
+        window(&mut app, &ctx, 1400.0, vec![typed]);
+        window(&mut app, &ctx, 1400.0, vec![]);
+        let enter = key_with(Key::Enter, egui::Modifiers::NONE);
+        window(&mut app, &ctx, 1400.0, vec![enter]);
+        assert!(app.palette.is_none());
+        let about = matches!(app.dialog, Dialog::About(_));
+        assert!(about, "Enter didn't run About");
     }
 
     /// G06: Bold and Italic say whether they are on, and Tab goes through the new text's

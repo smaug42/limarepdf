@@ -55,6 +55,19 @@
   side or both (one under the other in a narrow window); and Print as image under Advanced, below a rule. A page
   range that can't be read is reported under it instead of in a separate message.
 - Create signature's Type has a "Your name" label above an outlined field, and the drawing area an outline.
+- Every dialog now has Print's look: text at 14 points, settings in headed groups, labels above the fields, and
+  radio buttons and checkboxes outlined on the dialog's background. Password required and Your name for comments
+  have a labelled field. Remove hidden information lists what is removed by default and what is kept by default
+  in two groups. The digital ID windows are titled with the task (Create a digital ID, Import a digital ID,
+  Export), their forms are grouped (About you, Password), "Again" is now "Confirm password", and the Digital IDs
+  window lists the IDs in a box above the selected one's details. Sign and Certify show where the signature goes
+  under the title, the digital ID as a full-width list, Reason beside Location when there is room, and what others
+  may change under its own heading. Signature details groups its facts (Signature, Signer, Time, the signer's own
+  words, changes, warnings) with its buttons after a rule; the Trust question groups the choice and the
+  certificate, with "Name in your list" above its field. Trusted certificates and Recover unsaved changes list
+  their entries in one box, each with its buttons beside it. Create signature puts "Ink" above its colours.
+- The command palette (Ctrl+K) takes the dialogs' look without a title or buttons: an outlined search field with a
+  search icon, a rule, and the commands with their category and shortcut in aligned columns.
 - Create signature: Draw, Type and Image (was Picture), the ink colour in the window too, and Use signature (was
   Done). Picking another tool closes it.
 - Go to field in Signature details closes the window, to show the field.

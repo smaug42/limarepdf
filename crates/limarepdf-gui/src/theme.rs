@@ -239,10 +239,17 @@ fn style(dark: bool) -> Style {
 /// The height of fields, lists and buttons in dialogs.
 pub const DIALOG_CONTROL: f32 = 32.0;
 
-/// The look inside dialogs: fields, lists and buttons outlined, on the dialog's
-/// background, and [`DIALOG_CONTROL`] tall. Radio buttons and checkboxes keep their rows.
+/// The look inside dialogs: text and buttons at 14 points, and fields, lists and buttons
+/// outlined, on the dialog's background, and [`DIALOG_CONTROL`] tall. Radio buttons and
+/// checkboxes keep their rows (and are filled as the dialog is by
+/// [`dialog_choices`]).
 pub fn dialog_style(s: &mut Style) {
     let p = palette(s.visuals.dark_mode);
+    for t in [TextStyle::Body, TextStyle::Button] {
+        if let Some(f) = s.text_styles.get_mut(&t) {
+            f.size = 14.0;
+        }
+    }
     let w = &mut s.visuals.widgets;
     w.inactive.weak_bg_fill = p.surface;
     for wv in [&mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
@@ -252,6 +259,13 @@ pub fn dialog_style(s: &mut Style) {
     s.spacing.button_padding = Vec2::new(12.0, 8.0);
     // A scroll bar beside the fields, not over their outlines.
     s.spacing.scroll = egui::style::ScrollStyle::solid();
+}
+
+/// Radio buttons and checkboxes at rest on the dialog's background, outlined, as in the
+/// mockup. egui fills scroll bars with the same colour, so this is for what is inside a
+/// scrolling area, not the area itself.
+pub fn dialog_choices(s: &mut Style) {
+    s.visuals.widgets.inactive.bg_fill = palette(s.visuals.dark_mode).surface;
 }
 
 /// `edit` as a field in a dialog: as tall as the dialog's other controls, its text

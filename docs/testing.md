@@ -108,7 +108,11 @@ symbol alone) in each tool's inspector, the inspector's sections, the side views
 the digital ID windows and open lists and menus, with Bold, Italic and picked choices saying whether they are on
 (not yet tried with a real screen reader); Tab reaches the bars and the Print and Create signature
 dialogs in the order shown, docked controls stay docked through resizing, Esc closes the inspector's pop-out and
-returns to its button, and dialog buttons are clicked as a user would (confirmations act on their own document). The redesigned window
+returns to its button, and dialog buttons are clicked as a user would (confirmations act on their own document).
+The dialogs' layout is checked from where their parts are drawn: labels above their fields (Password, Your name
+for comments, the digital ID forms, Sign and Certify, the Trust question), headed groups (Remove hidden
+information, Signature details), rows with their buttons beside them or under them when narrow (Recover unsaved
+changes), Reason beside Location when there is room, and the command palette's field, rows and insets. The redesigned window
 (top bar, inspector, command palette, right-click menus, floating toolbar, thumbnail dragging, collapsing inspector)
 has been used by hand on Linux. Later additions (recent files, document notices, fit width, the theme button, crop)
 were checked by screenshot under a virtual X server; not every one has been clicked through by hand. Of the newest:

@@ -26,9 +26,13 @@ the same everywhere; the desktop app's side is `crates/limarepdf-gui/src/fields.
 Every dialog in the desktop app is built from the same parts in `crates/limarepdf-gui/src/dialogs.rs`, so they all
 look like Print: `Shell` (the window over the dimmed app, its title and file, and the dialogs' look from
 `theme::dialog_style`: outlined fields and buttons 32 points tall), `content` (the settings, scrolling in a short
-window), `group` (a heading and its settings), `field` (a label above a field, which also names it for screen
-readers; text fields go through `theme::field`) and `footer` (a note and the buttons, in the platform's order).
-Margins are smaller in windows under 600 points wide.
+window, with radio buttons and checkboxes on the dialog's background from `theme::dialog_choices`), `group` (a
+heading and its settings), `field` (a label above a field, which also names it for screen readers; text fields go
+through `theme::field`), `columns` (two fields side by side, one under the other when narrow), `list_box`,
+`list_rows`, `list_row` and `list_pick` (an outlined list, rows with their buttons on the right, or rows to pick),
+`fact` (a name and a value to read) and `footer` (a note and the buttons, in the platform's order). Margins are
+smaller in windows under 600 points wide. The command palette (`palette_ui` in `app.rs`) uses the same look
+without `Shell`, as a launcher with no title or buttons.
 
 Damaged files are repaired in `crates/limarepdf-core/src/repair.rs` when lopdf reads a file with no pages, or had
 to rebuild its table itself (its own scan ignores `/Length`, so its result is kept only when the repair fails): it
