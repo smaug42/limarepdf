@@ -169,6 +169,9 @@
 
 ### Fixed
 
+- Making a digital ID and signing with one use an updated cryptography library (`ctutils` 0.4.5): earlier
+  versions could take measurably different times depending on secret values, which could leak information about
+  the key (RUSTSEC-2026-0385).
 - Choosing a font, Bold, Italic, a size or a colour in the inspector while editing a line on the page ended the
   editing and showed a text box of the line's text above the font list, moving it down. The line now stays in
   editing, shows the change, and takes the keyboard back.
