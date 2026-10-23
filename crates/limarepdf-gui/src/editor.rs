@@ -74,14 +74,14 @@ impl Tool {
 
     /// The tools that put one thing down and go back to the read tool, unless kept active
     /// (see [`Editor::keep`]). The pen stays in hand until Esc or another tool, as a
-    /// drawing takes several strokes.
-    pub const PLACING: [Tool; 10] = [
+    /// drawing takes several strokes. The Note tool always goes back: kept active, every
+    /// click put down a note, so none could be opened or deleted.
+    pub const PLACING: [Tool; 9] = [
         Tool::Text,
         Tool::Image,
         Tool::Rect,
         Tool::Ellipse,
         Tool::Line,
-        Tool::Note,
         Tool::TextBox,
         Tool::Stamp,
         Tool::Redact,
@@ -96,12 +96,11 @@ impl Tool {
             Tool::Rect => "rectangle",
             Tool::Ellipse => "ellipse",
             Tool::Line => "line",
-            Tool::Note => "note",
             Tool::TextBox => "text_box",
             Tool::Stamp => "stamp",
             Tool::Redact => "redact",
             Tool::Sign => "fill_and_sign",
-            Tool::Read | Tool::Select | Tool::Pen | Tool::DigitalSign => "",
+            Tool::Read | Tool::Select | Tool::Pen | Tool::Note | Tool::DigitalSign => "",
         }
     }
 
@@ -144,6 +143,11 @@ pub struct Writing {
     size: f32,
     /// Takes the keyboard on the next frame.
     fresh: bool,
+    /// Takes the keyboard back once a change in the inspector is finished.
+    refocus: bool,
+    /// A list or colour picker was open last frame: the click that closes it is not one
+    /// outside a new note.
+    picking: bool,
 }
 
 impl Writing {
@@ -158,6 +162,8 @@ impl Writing {
             original: String::new(),
             size,
             fresh: true,
+            refocus: false,
+            picking: false,
         }
     }
 
@@ -1311,8 +1317,10 @@ impl Editor {
     /// The note or text box being typed on `page` (drawn at `r`, `k` pixels per point):
     /// a comment box beside a note's icon, or the text box's own area. Esc and Ctrl+Enter
     /// keep what was typed, as does a click outside a note's comment box or the text box
-    /// losing the keyboard. Returns true when the page should not take the pointer this
-    /// frame: it is over the text box, or the typing just ended.
+    /// losing the keyboard. For a new note only a click on the page counts as outside, so
+    /// its colour can be changed in the inspector while it is typed. Returns true when the
+    /// page should not take the pointer this frame: it is over the text box, or the typing
+    /// just ended.
     fn writing_ui(&mut self, ui: &mut egui::Ui, page: usize, r: Rect, k: f32) -> bool {
         let Some(w) = self.writing.as_mut().filter(|w| w.page == page) else {
             return false;
@@ -1322,7 +1330,8 @@ impl Editor {
         let area = Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3]));
         // Light colours in either theme, as for form fields: the text sits on the paper.
         let theme = ui.visuals().clone();
-        let (out, outside) = if w.note {
+        // `held`: a click on the page that only closed a list or colour picker.
+        let (out, outside, held) = if w.note {
             let [cr, cg, cb] = self.note_color.map(|v| (v * 255.0).round() as u8);
             if w.id.is_none() {
                 ui.painter()
@@ -1345,8 +1354,24 @@ impl Editor {
                         })
                         .inner
                 });
-            let outside = inner.response.clicked_elsewhere();
-            (inner.inner, outside)
+            // An existing note's inspector has a comment box of its own, so a click there
+            // closes the note as before. Panels are drawn on the background layer, which
+            // egui doesn't list among the layers under the pointer.
+            if w.id.is_some() {
+                let outside = inner.response.clicked_elsewhere();
+                (inner.inner, outside, false)
+            } else {
+                let click = ui.input(|i| i.pointer.any_click().then(|| i.pointer.interact_pos()));
+                let on_page = click.flatten().is_some_and(|pos| {
+                    let layer = ui.ctx().layer_id_at(pos);
+                    !inner.response.rect.contains(pos)
+                        && ui.clip_rect().contains(pos)
+                        && layer.is_none_or(|l| l == ui.layer_id())
+                });
+                let open = egui::Popup::is_any_open(ui.ctx());
+                let picking = std::mem::replace(&mut w.picking, open);
+                (inner.inner, on_page && !picking, on_page && picking)
+            }
         } else {
             let te = egui::TextEdit::multiline(&mut w.text)
                 .id(egui::Id::new(("box-text", page)))
@@ -1358,7 +1383,7 @@ impl Editor {
             *ui.visuals_mut() = egui::Visuals::light();
             let out = ui.put(area, te);
             *ui.visuals_mut() = theme;
-            (out, false)
+            (out, false, false)
         };
         if w.fresh {
             out.request_focus();
@@ -1384,7 +1409,12 @@ impl Editor {
             self.finish_writing();
             return true;
         }
-        !w.note && out.hovered()
+        // After the keys, so the Esc that closed the colour picker doesn't also end it.
+        if w.refocus && settled(ui.ctx()) && !out.has_focus() {
+            out.request_focus();
+            w.refocus = false;
+        }
+        held || (!w.note && out.hovered())
     }
 
     /// The selected annotation, once its page's annotations have been read.
@@ -2309,8 +2339,13 @@ impl Editor {
                     // A click away from a note being typed (on another page) only closes
                     // it, as a click on its own page does.
                     let closed = self.note_closed == Some(ui.ctx().cumulative_pass_nr());
+                    let picking = egui::Popup::is_any_open(ui.ctx())
+                        || self.writing.as_ref().is_some_and(|w| w.picking);
                     if self.writing.is_some() || closed {
-                        self.finish_writing();
+                        // A click that only closes a list or colour picker keeps it open.
+                        if !picking {
+                            self.finish_writing();
+                        }
                     } else {
                         // The icon, drawn at a fixed size on screen from the note's top
                         // left corner, is centred on the click. The note itself is 20
@@ -3505,14 +3540,22 @@ impl Editor {
             }
             Tool::Note => {
                 ui.strong("New note");
+                let was = self.note_color;
                 ui.horizontal(|ui| {
                     ui.label("Colour");
                     ui.color_edit_button_rgb(&mut self.note_color);
                 });
+                // The colour applies to the note being typed, which then takes the
+                // keyboard back.
+                if !same_color(self.note_color, was) {
+                    if let Some(w) = self.writing.as_mut().filter(|w| w.note && w.id.is_none()) {
+                        w.refocus = true;
+                    }
+                }
                 ui.label(
-                    "Click on the page to place a note and type its comment. A click \
-                     outside it, Esc or Ctrl+Enter keeps it. Ctrl+click selects an \
-                     annotation.",
+                    "Click on the page to place a note and type its comment; the colour \
+                     can be changed while typing. A click on the page outside it, Esc or \
+                     Ctrl+Enter keeps it. Ctrl+click selects an annotation.",
                 );
                 return;
             }
@@ -3593,7 +3636,7 @@ impl Editor {
                 text_style_ui(ui, &mut self.box_style);
                 ui.label(
                     "Drag a box on the page, or click for a default size, then type. Click \
-                     outside the box or press Ctrl+Enter to finish; Esc drops it. Ctrl+click \
+                     outside the box, press Esc or Ctrl+Enter to finish. Ctrl+click \
                      selects an annotation.",
                 );
                 return;
