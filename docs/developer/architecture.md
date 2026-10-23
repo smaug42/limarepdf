@@ -11,12 +11,12 @@ LimarePDF is written entirely in Rust, with no C or C++ dependencies.
 It uses:
 
 - [`lopdf`](https://crates.io/crates/lopdf) for the document structure and encryption;
-- [`hayro`](https://crates.io/crates/hayro) to draw pages, on the CPU (see [Rendering](rendering.md)), and
+- [`hayro`](https://crates.io/crates/hayro) to draw pages, on the CPU (see [Rendering](../rendering.md)), and
   [`fontdb`](https://crates.io/crates/fontdb) to find installed fonts for fonts a file doesn't embed;
 - [`egui`](https://crates.io/crates/egui) for the interface, and [`rfd`](https://crates.io/crates/rfd) for file
   dialogs;
 - [`image`](https://crates.io/crates/image) for images;
-- [`ocrs`](https://github.com/robertknight/ocrs) for text recognition (see [Scanning and OCR](scanning-and-ocr.md));
+- [`ocrs`](https://github.com/robertknight/ocrs) for text recognition (see [Scanning and OCR](../scanning-and-ocr.md));
 - [`serde_json`](https://crates.io/crates/serde_json) in the command line, for form values as JSON.
 
 Forms are read in `crates/limarepdf-core/src/forms.rs`. When a value changes, LimarePDF draws the field's appearance itself
@@ -45,7 +45,7 @@ planted in an attachment can't end the stream early; a later copy of a number wi
 cross-reference stream dictionary outside stream data that names a catalog, appends a rebuilt cross-reference
 table, and has lopdf read the file again. Object stream members lopdf's reader skips are then read one by one, and
 when the trailers name no usable catalog, the last catalog object with a page tree is used. See
-[Rendering](rendering.md#damaged-files).
+[Rendering](../rendering.md#damaged-files).
 
 Two workarounds in `crates/limarepdf-core/src/doc.rs` read a corrected copy of a file when lopdf refuses it (offsets
 stay where they were, so nothing counts as repaired). `blank_null_encrypt` blanks a trailer's `/Encrypt null`, which
@@ -57,7 +57,7 @@ stays until lopdf accepts the shorter `/U`; no issue has been filed upstream.
 
 Page content is read by LimarePDF's own parser (`crates/limarepdf-core/src/objects.rs`), which splits it into the objects that
 editing works on and reads the text that search, copying and export use, with its own reader for fonts' ToUnicode
-maps and Adobe's widths for the standard fonts (see [Search and text](search-and-text.md#text-extraction)). CID
+maps and Adobe's widths for the standard fonts (see [Search and text](../search-and-text.md#text-extraction)). CID
 fonts' character maps, and Adobe's tables from character numbers to Unicode, are read with hayro's CMap parser
 (`hayro_cmap`, reached through hayro, which carries the predefined maps); the predefined ones are read once per
 process (`fonts::predefined`).
@@ -108,7 +108,7 @@ parser's objects: it rewrites each text-showing operator character by character,
 spacing numbers, cuts drawings into sub-paths, and redacts inside form XObjects as copies. Pictures are decoded,
 blacked out and saved again in `redact_img.rs`. Afterwards the pages are parsed again to check that nothing readable
 is left under the marks. Hidden information (metadata, scripts, attachments, hidden layers) is removed by
-`sanitise.rs`. See [Redaction](redaction.md).
+`sanitise.rs`. See [Redaction](../redaction.md).
 
 Fill-and-sign signatures (`crates/limarepdf-core/src/sign.rs`) are stamp annotations whose artwork LimarePDF draws once:
 pen strokes smoothed into curves, typed names as the glyph outlines of a bundled handwriting font (read with the
@@ -180,7 +180,7 @@ signature object (where that section says it is), patches the byte range, makes 
 by hand, so the pre-release `cms` crate isn't needed) and fills it in, and checks the result with
 `verify_signatures` before returning it. When the edits would make an earlier signature report a change it
 doesn't allow, it returns a `DisallowedChanges` error naming each signer and change, so the app can ask before
-signing again with `accept_disallowed`. See [Digital signatures](signatures.md).
+signing again with `accept_disallowed`. See [Digital signatures](../signatures.md).
 
 Saving a signed document (`sig_save.rs`, `append_edits`) uses the same writer without a signature: nothing is
 appended when no object changed; otherwise every signature is checked before and after, each must check as it did
@@ -202,3 +202,69 @@ replaces the tab and is checked like any opened file.
 
 In the desktop app, every command is defined once in `crates/limarepdf-gui/src/actions.rs`; the menu, the top bar, the
 command palette, the right-click menus, the floating toolbar and the keyboard shortcuts are all built from that list.
+
+## Content editing
+
+How editing works in the page content (moved from [Content editing](../content-editing.md), which describes it in
+plain words). The page's content stream is split into objects: one per text line, per painted path, per image or
+form XObject, and per inline image.
+
+- **Moving or resizing** wraps the object's drawing operators in `q <matrix> cm … Q`.
+- **Editing text** rewrites the string in place when the font is a plain, non-subset, standard-encoded simple font
+  and the new text is ASCII, with no font, size or colour change. Otherwise the old line is removed and the new
+  text is added at the same position, size and colour, in the font chosen, else in the installed family the
+  line's font is from (found by its PostScript name, the subset tag left off; `FontChoice::of_font`), else in the
+  nearest of the 12 standard fonts. While a line is edited on the page, the app makes the same test as it goes
+  (`TextEdit::keeps_font`) and draws the line in the font it will have: the line's own font installed on the
+  computer, or else the Liberation face of its kind, when the font is kept; the installed family's font, or the
+  Liberation face of the standard font replacing it, otherwise. The old line is covered with the most
+  common colour in a 3-point ring around its box, from a separate drawing of that part of the page in the current
+  page colours.
+- **Adding** text, shapes or images draws them on top of the page. New text of several lines is written as one
+  text line each, their baselines 1.2 times the size apart (Acrobat's spacing), in one of the 12 standard fonts
+  with the WinAnsi encoding. A line with characters WinAnsi lacks (Polish, Czech, Vietnamese, Greek, Cyrillic and
+  so on) is written in the bundled Liberation face of that font instead, embedded in the file and cut down to the
+  characters used; one font object per face grows as more is typed. Characters Liberation can't write (right-to-left
+  and joined scripts, Chinese, Japanese, Korean) can't be typed. While it is typed, the app draws the text in the
+  Liberation face, which has the standard font's widths, so the caret and line length match the written result.
+- **Installed fonts** (the inspector's font list after the three standard ones) are the families whose fonts
+  allow embedding (`OS/2 fsType`: not restricted, subsetting allowed, not bitmaps only), have outlines and the
+  Latin letters; up to four faces each (regular, bold, italic, bold italic), a variable font set at weight 400 or
+  700 (and its `ital` or `slnt` axis for italic). Text in one is always embedded, cut down to the characters used,
+  the same way: TrueType fonts and variable fonts (set at the weight, which makes them TrueType) as
+  CIDFontType2 with `/FontFile2`, OpenType CFF fonts as CIDFontType0 with `/FontFile3 /OpenType`. The app draws
+  the text in the font's own file, at that weight.
+- **Invisible text** from OCR is edited as invisible text and stays in place.
+- **Text after a changed line** stays where it was. Text on the same line can carry on from where the line ended
+  (a show operator with no line move before it); when the line is deleted, edited or moved, its end is set again
+  with `Tm` before that text, and the line position is set again before the next line move, which `Tm` also
+  changes.
+- **Inline images** are lifted out of the content before it is read, each replaced by a placeholder operator, and
+  written back in place of those operators only, never of text that looks like one. The placeholder's name is
+  chosen per content stream so that nothing in the stream already has it.
+
+Every edit is checked to re-parse before it is applied, inline images lifted out as when the page is next read.
+An edit that fails leaves the document unchanged.
+
+## Signature crates
+
+Checking and digital IDs use these pure-Rust crates (moved from [Digital signatures](../signatures.md#security-notes)),
+from the RustCrypto project unless noted, pinned to exact versions where they are pre-releases:
+
+| Crate | Version | Status | Used for |
+| --- | --- | --- | --- |
+| `rsa` | 0.10.0-rc.19 | pre-release | RSA keys and signatures |
+| `pkcs1` | 0.8.0-rc.5 | pre-release | RSA key encoding |
+| `der`, `spki`, `x509-cert` | 0.8.2, 0.8.1, 0.3.0 | stable | certificates; making self-signed ones |
+| `p256`, `p384` | 0.14.0 | stable | ECDSA keys and signatures |
+| `sha1`, `sha2` | 0.11.0 | stable | digests |
+| `hmac`, `pbkdf2` | 0.13.0 | stable | ID file integrity checks and password stretching |
+| `aes`, `cbc` | 0.9, 0.2.1 | stable | ID file encryption |
+| `des`, `rc2` | 0.9.0 | stable | reading older ID files only (3DES, RC2) |
+| `zeroize`, `subtle` | 1.9, 2.6 | stable | wiping secrets, constant-time comparison |
+| `getrandom` | 0.4 | stable | random numbers from the operating system |
+| `rpassword` | 7.5.4 | stable, not RustCrypto | asking for passwords without showing them (command line) |
+
+"Pre-release" means their programming interface may still change, not that they are untested; they come from the
+same project and review as the stable crates. LimarePDF's own reader and writer handle the signature data (see
+[Digital signatures](../signatures.md#security-notes)), so the pre-release `cms` crate isn't used.

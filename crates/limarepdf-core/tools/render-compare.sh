@@ -1,6 +1,6 @@
 #!/bin/sh
 # Compares LimarePDF's rendering with poppler's pdftoppm over public test PDFs and writes a
-# report with side-by-side pictures of the pages that differ (docs/testing.md). Downloads
+# report with side-by-side pictures of the pages that differ (docs/developer/testing.md). Downloads
 # the files first if needed (tools/fetch-render-samples.sh). Needs pdftoppm (poppler-utils)
 # and curl.
 #

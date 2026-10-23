@@ -26,13 +26,14 @@ This is a from-scratch implementation (with AI assistance): it contains no other
 - [Password security](docs/security.md)
 - [Redaction](docs/redaction.md)
 - [Digital signatures](docs/signatures.md)
-
-**Under the hood**
-
-- [How it is built](docs/architecture.md)
 - [Rendering](docs/rendering.md)
-- [Performance](docs/performance.md)
-- [Testing and platforms](docs/testing.md)
-- [Releasing](docs/releasing.md)
+
+**For developers** ([all developer docs](docs/developer/README.md))
+
+- [How it is built](docs/developer/architecture.md)
+- [Testing and platforms](docs/developer/testing.md)
+- [Performance](docs/developer/performance.md)
+- [Releasing](docs/developer/releasing.md)
+- [Ideas pool](docs/developer/ideas.md)
 
 **[Changelog](CHANGELOG.md)** · **[Licence](docs/licence.md)**

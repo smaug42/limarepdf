@@ -17,7 +17,7 @@ Run them with `cargo test --workspace`.
 | `crates/limarepdf-core/tests/integration.rs` | Overlays, encryption round trips with all four ciphers, RC4 files with an empty password and a 16-byte `/U` (revisions 3 and 4), whether a file needed a password to open, encrypted files reading as other apps read them, search, crop margins on turned pages |
 | `crates/limarepdf-core/tests/edit.rs` | Content editing: objects and text edits (moving one object leaves the next one's colour, place and stacking as they were); edited, added and invisible (OCR) text upright and in place on a page that flips and scales itself without restoring the state afterwards, as pages printed from web browsers do, and repeated edits not nesting the old content deeper; the text after a deleted, edited (in place, in a new font, invisible) or moved line kept where it was, drawn and as objects, and left as it was after vertical writing; inline images written back only where they were, not into text that reads like their placeholder or an operator spelled like one. Reading text: words, search boxes placed by glyph widths, ToUnicode maps, predefined Chinese, Japanese and Korean character maps without one (UCS-2, UTF-16 and Shift-JIS; text and widths by character number), word gaps, text inside form XObjects, phrases across lines. Added text keeps every WinAnsi character, those of codes 128 to 159 included. Each text line's baseline and whether it runs upright (scaled, turned, upside down, mirrored, on a turned page, with a rise); whether an edit keeps the line's font, as the app predicts it, matching the font written |
 | `crates/limarepdf-core/tests/repair.rs` | Damaged files built by hand open with their page drawn and are marked repaired: wrong offsets, no table or trailer, a cross-reference stream that doesn't decode, a missing `endobj`, a later copy of an object winning, a trailer naming the wrong catalog, object stream members starting with comments, and an encrypted file (a wrong password is still reported as one); a page list holding a page itself (also with the content's offset wrong), and a page whose number a second object takes (as two public test files do), mended and saved clean; intact files aren't repaired; files with no pages to find (an empty page list, one naming a missing page, a document made with none) are refused, not opened empty; a repaired document saves as a clean file. Crafted files: `endstream` in a content stream's comment followed by a fake page, an uncompressed attached PDF reusing the outer file's object numbers (its length given directly, or in an object before or after it, or before it with a spoofed copy of that object inside the attachment), `stream` and a line break inside a string, a stream cut off by the end of the file, a `/Length` too short, an object freed by a later revision (not on the page, not saved), and a number reused at a higher generation. Unit tests in `repair.rs` (dictionary ends, object headers, stream data skipped by `/Length`, direct or in an object of its own (not a copy inside the data), or to `endstream`, trailers inside stream data ignored, trailer values written back) |
-| `crates/limarepdf-core/tests/render_coverage.rs` | Rendering, pixel by pixel; see [Rendering](rendering.md) |
+| `crates/limarepdf-core/tests/render_coverage.rs` | Rendering, pixel by pixel; see [Rendering](#rendering) below |
 | `crates/limarepdf-core/tests/render_compare.rs` | Opt-in: LimarePDF's rendering compared with poppler's `pdftoppm` over about 1,100 public test PDFs; see below |
 | `crates/limarepdf-core/tests/save_reopen.rs` | Opt-in: the same public test PDFs saved unchanged, and with page 1 turned and a comment added, then opened again: pages, page sizes and labels, annotations, form fields and values, bookmarks, page text and drawn pages compared with the document before saving; see below |
 | `crates/limarepdf-core/tests/render_region.rs` | Drawing part of a page, as the app's tiles at high zoom do: tiles match the whole page pixel by pixel, are cut at the page's edges, land in place at the highest scale, and keep pictures in dark pages; a page drawn in bands matches one drawn at once, and a drawing stops between bands when asked |
@@ -198,7 +198,174 @@ digital ID (it opens from the system's file chooser), Print and Save selected te
 questions, and busy states (their layout is tested). Not tried: Windows and macOS, a real HiDPI screen, a screen
 reader.
 
-Each feature page says what was not tested, under "How this was tested".
+## How each feature was checked
+
+The record for each feature, moved here from the user pages, which keep a short summary under "How this was
+tested" or "What has been checked".
+
+### Rendering
+
+`crates/limarepdf-core/tests/render_coverage.rs` checks rendering pixel by pixel on small made-up pages. Drawn correctly:
+
+- all 16 blend modes;
+- isolated transparency groups, and a blend mode applied to a whole group;
+- colour-key image masks (`/Mask [..]`);
+- annotations that have an appearance stream (`/AP`): Text, Highlight, Link, Stamp, FreeText and Widget were tested,
+  including the Widget `/AS` state and the Hidden flag;
+- annotations with the NoView flag are hidden, in the desktop app and `limarepdf-cli render` (LimarePDF marks them Hidden before
+  drawing, since hayro ignores NoView);
+- annotations without an appearance stream: hayro draws nothing for them, so LimarePDF draws its own for Highlight,
+  Underline, StrikeOut, Squiggly, Text (notes, with the seven standard icons), FreeText (with callout lines),
+  Square, Circle, Line (with leader lines), Polygon, PolyLine, Ink, Stamp (the stamp's name in a coloured frame),
+  Caret and FileAttachment (the four standard icons), with cloudy borders on Square, Circle, Polygon and FreeText,
+  in the copy it renders and prints, not in the file (`crates/limarepdf-core/tests/annots.rs`);
+- password-protected files with all four ciphers.
+
+#### Compared with poppler
+
+An opt-in check draws about 1,100 public test PDFs (the pdf.js and PDFBox test files hayro is tested on) with
+LimarePDF and with poppler, and lists the pages that differ beyond anti-aliasing, with pictures side by side
+([how to run it](#automated-tests)). These test files were collected from bug reports, so they are much harder than
+everyday documents. The first run (2026-10-17, hayro 0.8.0, poppler 26.08) drew 1,311 pages from 1,089 files:
+
+- 1,079 pages match apart from anti-aliasing (0.5% of pixels or fewer different);
+- 220 pages differ by more than that, 23 of them by more than 10%. Many of the worst are poppler's mistakes, such as
+  a grey background, garbled scans or striped photos where LimarePDF's page looks right. Differences that are
+  LimarePDF's include very thin lines drawn light grey where poppler draws them solid, and fonts that aren't
+  embedded (on 39 pages LimarePDF reported a font it couldn't draw; with installed fonts and stand-ins, none on a
+  machine with the Noto CJK and Liberation fonts);
+- 7 damaged files that poppler repairs couldn't be opened by LimarePDF, and 2 failed in both. Since LimarePDF
+  [repairs damaged files](../rendering.md#damaged-files) (2026-10-18), all 7 open and match poppler to within 2% of
+  their pixels, one that poppler can't draw opens too, and one fails in both. A few pages poppler can't draw are
+  drawn by LimarePDF.
+
+None of the files crashed LimarePDF or took longer than a minute to draw.
+
+The latest run (2026-10-18, with installed fonts and damaged-file repair) drew 1,312 pages from the same files and
+listed 228. More pages are listed than in the first run because files that couldn't be opened before are now drawn
+and compared, and stand-in fonts differ from poppler's choices. Not every listed page has been looked at by eye; the
+differences found to be LimarePDF's are the gaps under [Known to be wrong](../rendering.md#known-to-be-wrong).
+
+### Export and printing
+
+- Export: `crates/limarepdf-core/tests/export.rs` (sizes, content, re-import, names) and by running the CLI.
+- Printing: `crates/limarepdf-core/tests/print.rs`, with a stand-in for `lp` (its arguments, the document it receives, and
+  errors), and against a real CUPS with no printers (error messages). The Windows page placement and rotation are
+  unit-tested.
+- On paper on Linux, with an HP LaserJet P1606dn through CUPS (October 2026): pages, mixed A4 and Letter pages, a
+  turned page, comments and filled form fields print correctly. Getting there took three fixes, each for a way
+  CUPS handles PDFs on that setup that other PDFs sent with `lp` suffer from too: the job must name the paper
+  size, or every page prints blurred; comments are added after the page's content without resetting the drawing
+  state, so they came out upside down on pages that leave it turned; and form fields are removed without being
+  drawn. The last two were reproduced without a printer through CUPS's own `cupsfilter`
+  ([Acceptance checks](#acceptance-checks)).
+- On Windows only the print dialog has been tried; nothing has been printed on paper. Nothing has been printed on
+  macOS.
+
+### Redaction and hidden information
+
+- Redaction: `crates/limarepdf-core/tests/redact.rs` (made-up files: text with kerning and spacing, turned pages, hidden
+  text, alternative text, drawings, pictures with soft masks, JPEG, inline images, shared pictures and forms,
+  unreadable pictures, annotations, redaction marks), and `limarepdf-cli redact` on the PDFs in `/usr/share/doc` (common words
+  removed throughout, renders checked, nothing found by search afterwards) and on a scanned page in three forms
+  (plain, CCITT and JPEG) with a recognised text layer. Since 2026-10-20 (build plan, C2) the tests search the saved
+  output as written, the same way as for removing hidden information below, and check that what touched a mark
+  (comments with their pop-ups and replies, form fields and their drawings, alternative text in the structure tree,
+  thumbnails, private data) is gone. Opt-in cross-checks read the output with poppler (`pdftotext`, and
+  `pdfimages` for a blacked-out picture) and Ghostscript: `cargo test -p limarepdf-core --test redact -- --ignored
+  cross_check`. One of them redacts the Magick++ tutorial from ImageMagick's documentation, a real file whose
+  fonts are subsets, so its text can't be found in the file's bytes and only a reader can show it's gone. Another
+  places an area over a character of a font whose character map leaves codes out, where poppler shows it, and
+  checks with `pdftotext -bbox` that poppler then reads nothing there and the characters around it in their places.
+  Where those characters are was taken from poppler first (since the third outside audit, 2026-10-21), so the
+  tests don't only agree with LimarePDF's own reading.
+- The app's part (the Redact tool, marking selected text and search results, the notice, Apply and its report, the
+  save warning) was used by hand on Linux.
+- Removing hidden information: `crates/limarepdf-core/tests/sanitise.rs` (made-up files for each kind) and `limarepdf-cli sanitise`
+  on the PDFs in `/usr/share/doc`, which have metadata and bookmarks but no scripts, attachments or layers. Its dialog
+  was not clicked through. Since the second outside audit (2026-10-19), each kind's saved output is searched as
+  written, before anything repairs or prunes it: every string form of the removed text in the raw file and in every
+  stream in it, decoded, whether still used or not, with the form fields, actions and layers checked one by one
+  (`tests/common/saved.rs`). Opt-in cross-checks read the output with poppler (`pdftotext`, `pdfinfo -js`) and
+  Ghostscript (`txtwrite`, which draws form fields): `cargo test -p limarepdf-core --test sanitise -- --ignored
+  cross_check`. poppler lists only a field's own scripts, not scripts that follow other actions, so for those the
+  search is the evidence. A refused removal is checked to leave the document, its undo history and its recovery
+  copies as they were.
+- Marks made by LimarePDF were not yet opened in Acrobat or other apps, nor marks made by them applied in LimarePDF.
+
+### Scanning and OCR
+
+- Import: `crates/limarepdf-core/tests/import.rs`, and by hand with ImageMagick-made files, including CMYK JPEG and 300 dpi
+  G4 TIFF.
+- Optimising: `crates/limarepdf-core/tests/scan.rs`, and by hand on ImageMagick-made 300 dpi scans (5.3 MB down to 0.5 MB, a
+  1.2° tilt corrected). The black-and-white or greyscale choice is a heuristic not yet tried on real scanner output.
+- OCR: `crates/limarepdf-core/tests/ocr.rs`, the measurements in
+  [Scanning and OCR](../scanning-and-ocr.md#accuracy-and-speed), and one real scan. Correcting recognised text was
+  tested in code.
+- The GUI's inspector sections for these were not clicked through in testing.
+
+### Digital signatures
+
+Checked against third-party signed files with known results: the pyHanko and node-signpdf samples in LimarePDF's tests,
+and the EU DSS project's validation samples (signatures from Adobe products, Italian, Spanish and German signers,
+PAdES with timestamps, and published attacks). Each file's expected result and why is recorded in
+`crates/limarepdf-core/tests/signatures.rs`. LimarePDF's own test signatures are also checked with poppler's `pdfsig` and
+OpenSSL, which agree. Signatures by RSA keys whose certificates allow them only for RSA-PSS were checked with
+`openssl cms -verify` (without judging trust): OpenSSL and LimarePDF agree on all 12 cases, among them PKCS#1 v1.5
+signatures by such keys, a different digest or mask, a salt shorter, equal and longer than the key's minimum,
+limits given as defaults or left out, and limits that can't be read. On a 13th, a limit to an undefined trailer
+field, LimarePDF is stricter (see [Limitations](../signatures.md#limitations)).
+
+Where LimarePDF and `pdfsig` differ, LimarePDF follows the PDF rules: it refuses byte ranges with gaps or uncovered parts that
+`pdfsig` accepts, refuses two signers in one signature, and accepts signers named by key identifier, which `pdfsig`
+calls invalid.
+
+Changes after signing were checked on the same samples, among them files changed by Adobe Acrobat and Acrobat
+Reader (a comment added, a second field signed), iText (a signature added) and PAdES tools (timestamps and
+validation data), which LimarePDF reports as allowed, and the DSS attack samples (shadow hide and replace, a page added,
+a signature appearance changed, a reason replaced), which LimarePDF refuses. One DSS sample whose later revisions point
+to cross-reference sections that don't exist is refused as malformed, and its document timestamp, which covers those
+damaged revisions, shows *can't check*, where DSS repairs the file and accepts it.
+`pdfsig` doesn't judge changes after signing, so there is no cross-check for this part.
+
+Trust was checked on chains made with OpenSSL for the purpose (good chains, and each way a chain can fail), whose
+verdicts are cross-checked with `openssl verify` at the signing time with S/MIME signing checks and RFC 5280 policy
+processing; they agree on 21 chains. LimarePDF is stricter than OpenSSL by design on four others: name constraints, a
+1024-bit RSA authority, a SHA-1 link, and a policy mapping to "any policy" (which RFC 5280 forbids). On the
+third-party samples, trusting the authority from a signature's own chain makes 14 of 16 CA-issued signers trusted,
+including EU qualified-signature chains that require certificate policies; the other two have SHA-1-signed
+certificates, which LimarePDF refuses.
+
+Digital ID files were checked against OpenSSL both ways: LimarePDF imports files OpenSSL makes in each shape other apps
+write (OpenSSL 3's default, OpenSSL 1's and Windows' 3DES and RC2 forms, AES-128, PBES2 with 3DES, SHA-512 and
+PBMAC1 integrity checks, unencrypted parts, P-256 and P-384 keys, non-ASCII and empty passwords, an ID with its
+authority), and Windows' BER encoding, made from those files. OpenSSL reads the files LimarePDF writes, both its own and
+exported ones, takes out the same certificate and a key that signs a PDF LimarePDF then checks as valid and, once
+trusted, trusted. `openssl x509` shows the extensions described under
+[making a digital ID](../signatures.md#making-a-digital-id).
+
+LimarePDF's own signatures were checked with `pdfsig` and OpenSSL (`openssl cms -verify` over the signed bytes): RSA-3072,
+P-256, P-384 and a CA-issued ID with its chain, a second and third signature on a signed file, a certification, and
+a signature in the field a certified document left empty. Both call every one valid, and `pdfsig` finds each
+earlier signature valid too. Signed files with classic cross-reference tables, cross-reference streams and object
+streams, and pages turned 90 degrees, were checked by LimarePDF.
+
+Saving signed documents was checked on the 53 third-party samples LimarePDF can open with a signature in them. Saved
+without changes, or after an undo, nothing is added. With a comment added, every signature checks as before, by
+LimarePDF and by `pdfsig` alike, and LimarePDF reports the comment as allowed except where the document's certification or a
+signer's lock forbids comments; with a page changed, LimarePDF reports a change not allowed. LimarePDF declines to add to five:
+three damaged files, one hybrid file whose objects its PDF library would misread afterwards (see the limitations),
+and one whose signature was already broken (its byte range ran past the end of the file). A document LimarePDF signed and
+then saved with a comment and a filled-in field is in the `pdfsig` and OpenSSL cross-check above.
+
+A document LimarePDF signed with a self-signed digital ID, opened in Adobe Acrobat Reader on Windows, shows its signature
+as made with a self-signed certificate, with the signer's details in their places.
+
+Not yet tested: signatures made in Adobe Acrobat by LimarePDF's testers, LimarePDF-made certifications in Acrobat, LimarePDF's
+signatures in Acrobat beyond that first look, documents signed in Acrobat and saved with changes in LimarePDF (and the other way round), and digital ID files
+exported from Acrobat or Windows, or LimarePDF's exported files imported there. Where LimarePDF is stricter than Acrobat (see
+the limitations) is to be confirmed in those tests. The checks still to run are listed under
+[Round trips with Adobe Acrobat](#round-trips-with-adobe-acrobat).
 
 ## Acceptance checks
 
@@ -246,8 +413,9 @@ This is how the dropped form fields were found.
 ## Round trips with Adobe Acrobat
 
 From the digital signatures design. Each row is done in the order given, on Windows. "Reader" rows need only the free
-Acrobat Reader; "Acrobat" rows need Acrobat Pro or Standard. Results go into
-[Compatibility](signatures.md#compatibility); a failure is fixed or written down as a limit.
+Acrobat Reader; "Acrobat" rows need Acrobat Pro or Standard. Results go into [Digital signatures](#digital-signatures)
+above, summed up in the user page's [Compatibility](../signatures.md#compatibility); a failure is fixed or written
+down as a limit.
 
 | Check | Needs | Result |
 | --- | --- | --- |

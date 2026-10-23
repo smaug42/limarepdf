@@ -604,65 +604,23 @@ counts as an annotation that isn't a comment, so filling it in isn't allowed.
 
 ## Compatibility
 
-Checked against third-party signed files with known results: the pyHanko and node-signpdf samples in LimarePDF's tests,
-and the EU DSS project's validation samples (signatures from Adobe products, Italian, Spanish and German signers,
-PAdES with timestamps, and published attacks). Each file's expected result and why is recorded in
-`crates/limarepdf-core/tests/signatures.rs`. LimarePDF's own test signatures are also checked with poppler's `pdfsig` and
-OpenSSL, which agree. Signatures by RSA keys whose certificates allow them only for RSA-PSS were checked with
-`openssl cms -verify` (without judging trust): OpenSSL and LimarePDF agree on all 12 cases, among them PKCS#1 v1.5
-signatures by such keys, a different digest or mask, a salt shorter, equal and longer than the key's minimum,
-limits given as defaults or left out, and limits that can't be read. On a 13th, a limit to an undefined trailer
-field, LimarePDF is stricter (see [Limitations](#limitations)).
+- **Checking** agrees with poppler's `pdfsig` and OpenSSL on third-party signed files with known results (signatures
+  from Adobe products, Italian, Spanish and German signers, PAdES with timestamps, and published attacks) and on
+  LimarePDF's own signatures, which both call valid. Where they differ, LimarePDF follows the PDF rules, which makes
+  it stricter in a few cases (see [Limitations](#limitations)).
+- **Changes after signing** made by Adobe Acrobat and Acrobat Reader (a comment, a second signature), iText and
+  PAdES tools are reported as allowed; the published attacks (shadow hide and replace, a page added, a signature's
+  look or reason replaced) are refused.
+- **Trust** agrees with OpenSSL's chain checks, except where LimarePDF is stricter by design (name constraints,
+  1024-bit RSA authorities, SHA-1 links). EU qualified-signature chains are trusted once their authority is.
+- **Digital ID files** made by OpenSSL and Windows, in each form other apps write, can be imported, and OpenSSL
+  reads the ones LimarePDF writes.
+- **Saving a signed document** with a comment added keeps every signature valid in LimarePDF and `pdfsig` alike.
+- **Adobe Acrobat:** a document signed in LimarePDF with a self-signed ID shows in Acrobat Reader on Windows as
+  signed with a self-signed certificate, with the signer's details in their places. The other round trips with
+  Acrobat haven't been run yet, so where LimarePDF is stricter than Acrobat is still to be confirmed.
 
-Where LimarePDF and `pdfsig` differ, LimarePDF follows the PDF rules: it refuses byte ranges with gaps or uncovered parts that
-`pdfsig` accepts, refuses two signers in one signature, and accepts signers named by key identifier, which `pdfsig`
-calls invalid.
-
-Changes after signing were checked on the same samples, among them files changed by Adobe Acrobat and Acrobat
-Reader (a comment added, a second field signed), iText (a signature added) and PAdES tools (timestamps and
-validation data), which LimarePDF reports as allowed, and the DSS attack samples (shadow hide and replace, a page added,
-a signature appearance changed, a reason replaced), which LimarePDF refuses. One DSS sample whose later revisions point
-to cross-reference sections that don't exist is refused as malformed, and its document timestamp, which covers those
-damaged revisions, shows *can't check*, where DSS repairs the file and accepts it.
-`pdfsig` doesn't judge changes after signing, so there is no cross-check for this part.
-
-Trust was checked on chains made with OpenSSL for the purpose (good chains, and each way a chain can fail), whose
-verdicts are cross-checked with `openssl verify` at the signing time with S/MIME signing checks and RFC 5280 policy
-processing; they agree on 21 chains. LimarePDF is stricter than OpenSSL by design on four others: name constraints, a
-1024-bit RSA authority, a SHA-1 link, and a policy mapping to "any policy" (which RFC 5280 forbids). On the
-third-party samples, trusting the authority from a signature's own chain makes 14 of 16 CA-issued signers trusted,
-including EU qualified-signature chains that require certificate policies; the other two have SHA-1-signed
-certificates, which LimarePDF refuses.
-
-Digital ID files were checked against OpenSSL both ways: LimarePDF imports files OpenSSL makes in each shape other apps
-write (OpenSSL 3's default, OpenSSL 1's and Windows' 3DES and RC2 forms, AES-128, PBES2 with 3DES, SHA-512 and
-PBMAC1 integrity checks, unencrypted parts, P-256 and P-384 keys, non-ASCII and empty passwords, an ID with its
-authority), and Windows' BER encoding, made from those files. OpenSSL reads the files LimarePDF writes, both its own and
-exported ones, takes out the same certificate and a key that signs a PDF LimarePDF then checks as valid and, once
-trusted, trusted. `openssl x509` shows the extensions described under [making a digital ID](#making-a-digital-id).
-
-LimarePDF's own signatures were checked with `pdfsig` and OpenSSL (`openssl cms -verify` over the signed bytes): RSA-3072,
-P-256, P-384 and a CA-issued ID with its chain, a second and third signature on a signed file, a certification, and
-a signature in the field a certified document left empty. Both call every one valid, and `pdfsig` finds each
-earlier signature valid too. Signed files with classic cross-reference tables, cross-reference streams and object
-streams, and pages turned 90 degrees, were checked by LimarePDF.
-
-Saving signed documents was checked on the 53 third-party samples LimarePDF can open with a signature in them. Saved
-without changes, or after an undo, nothing is added. With a comment added, every signature checks as before, by
-LimarePDF and by `pdfsig` alike, and LimarePDF reports the comment as allowed except where the document's certification or a
-signer's lock forbids comments; with a page changed, LimarePDF reports a change not allowed. LimarePDF declines to add to five:
-three damaged files, one hybrid file whose objects its PDF library would misread afterwards (see the limitations),
-and one whose signature was already broken (its byte range ran past the end of the file). A document LimarePDF signed and
-then saved with a comment and a filled-in field is in the `pdfsig` and OpenSSL cross-check above.
-
-A document LimarePDF signed with a self-signed digital ID, opened in Adobe Acrobat Reader on Windows, shows its signature
-as made with a self-signed certificate, with the signer's details in their places.
-
-Not yet tested: signatures made in Adobe Acrobat by LimarePDF's testers, LimarePDF-made certifications in Acrobat, LimarePDF's
-signatures in Acrobat beyond that first look, documents signed in Acrobat and saved with changes in LimarePDF (and the other way round), and digital ID files
-exported from Acrobat or Windows, or LimarePDF's exported files imported there. Where LimarePDF is stricter than Acrobat (see
-the limitations) is to be confirmed in those tests. The checks still to run are listed in
-[Testing](testing.md#round-trips-with-adobe-acrobat).
+The full record, with the files used, is in [Testing](developer/testing.md#digital-signatures).
 
 ## Limitations
 
@@ -752,28 +710,11 @@ the limitations) is to be confirmed in those tests. The checks still to run are 
 
 ## Security notes
 
-Checking and digital IDs use these pure-Rust crates, from the RustCrypto project unless noted, pinned to exact
-versions where they are pre-releases:
-
-| Crate | Version | Status | Used for |
-| --- | --- | --- | --- |
-| `rsa` | 0.10.0-rc.19 | pre-release | RSA keys and signatures |
-| `pkcs1` | 0.8.0-rc.5 | pre-release | RSA key encoding |
-| `der`, `spki`, `x509-cert` | 0.8.2, 0.8.1, 0.3.0 | stable | certificates; making self-signed ones |
-| `p256`, `p384` | 0.14.0 | stable | ECDSA keys and signatures |
-| `sha1`, `sha2` | 0.11.0 | stable | digests |
-| `hmac`, `pbkdf2` | 0.13.0 | stable | ID file integrity checks and password stretching |
-| `aes`, `cbc` | 0.9, 0.2.1 | stable | ID file encryption |
-| `des`, `rc2` | 0.9.0 | stable | reading older ID files only (3DES, RC2) |
-| `zeroize`, `subtle` | 1.9, 2.6 | stable | wiping secrets, constant-time comparison |
-| `getrandom` | 0.4 | stable | random numbers from the operating system |
-| `rpassword` | 7.5.4 | stable, not RustCrypto | asking for passwords without showing them (command line) |
-
-"Pre-release" means their programming interface may still change, not that they are untested; they come from the
-same project and review as the stable crates. LimarePDF reads the signature data with its own small reader, which works
-on the bytes as written and never re-encodes what was signed. It reads and writes PKCS#12 ID files with its own
-code on the same reader, checked against OpenSSL (see [compatibility](#compatibility)), and writes the signatures
-it makes with its own small writer, so the pre-release `cms` crate isn't used.
+Checking and digital IDs use pure-Rust cryptography crates, most from the RustCrypto project
+([the list](developer/architecture.md#signature-crates)). LimarePDF reads the signature data with its own small
+reader, which works on the bytes as written and never re-encodes what was signed. It reads and writes PKCS#12 ID
+files with its own code on the same reader, checked against OpenSSL (see [compatibility](#compatibility)), and
+writes the signatures it makes with its own small writer.
 
 **Checking** treats every signed file as possibly hostile. Malformed signature data, certificates, dates and
 cross-reference sections are refused with a reason, and work is bounded: how deeply data may nest,
@@ -806,7 +747,7 @@ shows it, and one with signatures is refused.
 **RUSTSEC-2023-0071**, a timing leak in `rsa` with no fixed version yet, concerns using a private key. Checking
 uses only public keys, so it doesn't apply to checking. It applies to signing with an RSA key: an attacker would
 have to time many signings on your computer. LimarePDF blinds its RSA signatures, which makes such timing harder. CI runs
-`cargo audit` on every change with this one advisory set aside; [releasing](releasing.md) has a step to look for
+`cargo audit` on every change with this one advisory set aside; [releasing](developer/releasing.md) has a step to look for
 final versions and new advisories before each release.
 
 **Digital IDs** are as safe as their passwords. In the files LimarePDF writes, the key is encrypted with AES-256, using a

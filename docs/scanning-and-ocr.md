@@ -75,13 +75,10 @@ parallel.
 
 ## How this was tested
 
-- Import: `crates/limarepdf-core/tests/import.rs`, and by hand with ImageMagick-made files, including CMYK JPEG and 300 dpi
-  G4 TIFF.
-- Optimising: `crates/limarepdf-core/tests/scan.rs`, and by hand on ImageMagick-made 300 dpi scans (5.3 MB down to 0.5 MB, a
-  1.2° tilt corrected). The black-and-white or greyscale choice is a heuristic not yet tried on real scanner output.
-- OCR: `crates/limarepdf-core/tests/ocr.rs`, the measurements above, and one real scan. Correcting recognised text was
-  tested in code.
-- The GUI's inspector sections for these were not clicked through in testing.
+Importing, optimising and OCR have automated tests, and were tried by hand on made-up scans (CMYK JPEG and 300 dpi
+TIFF among them) and one real scan. The black-and-white or greyscale choice hasn't been tried on real scanner
+output yet, and the app's inspector sections for these weren't clicked through. The full record is in
+[Testing](developer/testing.md#scanning-and-ocr).
 
 ## Licence of the OCR model
 

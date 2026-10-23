@@ -4,7 +4,7 @@ Usage, from the repository: python3 crates/limarepdf-core/tools/measure.py [--ru
 
 Builds the release CLI, makes the test files in target/tmp/measure (a 1,000-page text file and a
 200-page colour scan at 300 dpi), runs each task N times (3 by default) and prints a Markdown table
-for docs/performance.md: the median time and the largest peak memory (resident set size) of the
+for docs/developer/performance.md: the median time and the largest peak memory (resident set size) of the
 runs, with the machine and commit. --only runs the tasks whose name contains TEXT.
 
 The corpus rows use files from tools/fetch-render-samples.sh and are skipped if those aren't

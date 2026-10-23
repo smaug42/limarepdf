@@ -853,7 +853,7 @@ follow links and bookmarks, and select text without changing tools.
 ### Other changes
 
 - Search takes about twice as long as before, as it now reads pages with MPE's own text reader: 0.17 s for a
-  477-page manual. See [Performance](docs/performance.md).
+  477-page manual. See [Performance](docs/developer/performance.md).
 - Release notes on GitHub end with a link to every change since the previous version.
 - Installers and packages (a macOS app, Linux packages, Homebrew) are planned for once the app is more complete;
   see [Features and status](docs/features.md#packaging).

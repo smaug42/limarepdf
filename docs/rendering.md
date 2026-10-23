@@ -4,46 +4,13 @@ LimarePDF draws pages with [hayro](https://crates.io/crates/hayro) 0.8, a pure-R
 
 ## What has been checked
 
-`crates/limarepdf-core/tests/render_coverage.rs` checks rendering pixel by pixel on small made-up pages. Drawn correctly:
-
-- all 16 blend modes;
-- isolated transparency groups, and a blend mode applied to a whole group;
-- colour-key image masks (`/Mask [..]`);
-- annotations that have an appearance stream (`/AP`): Text, Highlight, Link, Stamp, FreeText and Widget were tested,
-  including the Widget `/AS` state and the Hidden flag;
-- annotations with the NoView flag are hidden, in the desktop app and `limarepdf-cli render` (LimarePDF marks them Hidden before
-  drawing, since hayro ignores NoView);
-- annotations without an appearance stream: hayro draws nothing for them, so LimarePDF draws its own for Highlight,
-  Underline, StrikeOut, Squiggly, Text (notes, with the seven standard icons), FreeText (with callout lines),
-  Square, Circle, Line (with leader lines), Polygon, PolyLine, Ink, Stamp (the stamp's name in a coloured frame),
-  Caret and FileAttachment (the four standard icons), with cloudy borders on Square, Circle, Polygon and FreeText,
-  in the copy it renders and prints, not in the file (`crates/limarepdf-core/tests/annots.rs`);
-- password-protected files with all four ciphers.
-
-### Compared with poppler
-
-An opt-in check draws about 1,100 public test PDFs (the pdf.js and PDFBox test files hayro is tested on) with
-LimarePDF and with poppler, and lists the pages that differ beyond anti-aliasing, with pictures side by side
-([how to run it](testing.md)). These test files were collected from bug reports, so they are much harder than
-everyday documents. The first run (2026-10-17, hayro 0.8.0, poppler 26.08) drew 1,311 pages from 1,089 files:
-
-- 1,079 pages match apart from anti-aliasing (0.5% of pixels or fewer different);
-- 220 pages differ by more than that, 23 of them by more than 10%. Many of the worst are poppler's mistakes, such as
-  a grey background, garbled scans or striped photos where LimarePDF's page looks right. Differences that are
-  LimarePDF's include very thin lines drawn light grey where poppler draws them solid, and fonts that aren't
-  embedded (on 39 pages LimarePDF reported a font it couldn't draw; with installed fonts and stand-ins, none on a
-  machine with the Noto CJK and Liberation fonts);
-- 7 damaged files that poppler repairs couldn't be opened by LimarePDF, and 2 failed in both. Since LimarePDF
-  [repairs damaged files](#damaged-files) (2026-10-18), all 7 open and match poppler to within 2% of their pixels,
-  one that poppler can't draw opens too, and one fails in both. A few pages poppler can't draw are drawn by
-  LimarePDF.
-
-None of the files crashed LimarePDF or took longer than a minute to draw.
-
-The latest run (2026-10-18, with installed fonts and damaged-file repair) drew 1,312 pages from the same files and
-listed 228. More pages are listed than in the first run because files that couldn't be opened before are now drawn
-and compared, and stand-in fonts differ from poppler's choices. Not every listed page has been looked at by eye; the
-differences found to be LimarePDF's are the gaps under [Known to be wrong](#known-to-be-wrong).
+Rendering is checked pixel by pixel on small made-up pages: blend modes, transparency, image masks, comments and
+other annotations with and without their own drawing (LimarePDF draws the common types itself when a file has
+none), and password-protected files. It is also compared with poppler on about 1,100 public test files collected
+from bug reports, much harder than everyday documents: most pages match apart from anti-aliasing, many of the
+pages that differ most are poppler's mistakes, and none of the files crashed LimarePDF or took over a minute to
+draw. The differences found to be LimarePDF's are listed under [Known to be wrong](#known-to-be-wrong). The full
+record is in [Testing](developer/testing.md#rendering).
 
 ## Damaged files
 
@@ -234,6 +201,6 @@ on which fonts are installed, as in other viewers.
   a zoom since passed, the colours changed, or the document was edited. Before, zooming in a few steps quickly
   drew the page at every zoom passed through, one per drawing thread at a time (five on a six-core machine), which
   for 5134 would have come to an estimated 11 GB. Zooming 5134 by hand straight to over 400% and then to over
-  1200% now peaks at about 4 GB on a 4K screen ([Performance](performance.md#memory-in-the-desktop-app)).
+  1200% now peaks at about 4 GB on a 4K screen ([Performance](developer/performance.md#memory-in-the-desktop-app)).
 
-For timings and how the app keeps drawing responsive, see [Performance](performance.md).
+For timings and how the app keeps drawing responsive, see [Performance](developer/performance.md).

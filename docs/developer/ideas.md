@@ -2,7 +2,7 @@
 
 Features other PDF tools have that LimarePDF doesn't, collected from a comparison with PDF-XChange Editor, Stirling-PDF,
 pdfcpu, Acrobat and Foxit (October 2026). This is a pool to pick from as the app grows, not a plan or a promise.
-Items already planned are in [features.md](features.md#planned-and-proposed) and aren't repeated here.
+Items already planned are in [features.md](../features.md#planned-and-proposed) and aren't repeated here.
 
 Sizes are rough guesses: **S** small, **M** medium, **L** large. A dash means not yet judged.
 
@@ -138,7 +138,7 @@ Small or medium additions that build on what LimarePDF already has:
 - Shell completions (S); renaming files by their content (M)
 - Sessions (reopen the last documents), custom shortcuts (M each)
 - File drops on Linux Wayland: a setting or environment variable to run under XWayland, which has drops, or the
-  winit upgrade once it supports Wayland drops ([today's workaround](gui.md#opening-files)) (S)
+  winit upgrade once it supports Wayland drops ([today's workaround](../gui.md#opening-files)) (S)
 
 ## Left out on purpose
 

@@ -1265,8 +1265,9 @@ fn cross_check_redacted_output_with_poppler_and_ghostscript() {
 }
 
 /// A real public PDF: the Magick++ tutorial ImageMagick installs. Its page 14 has text, a
-/// picture and drawings (testing.md's redaction check uses it too), and its fonts are
-/// subsets, so its text isn't in the file as written and only a reader can tell it's gone.
+/// picture and drawings (docs/developer/testing.md's redaction check uses it too), and its
+/// fonts are subsets, so its text isn't in the file as written and only a reader can tell
+/// it's gone.
 const TUTORIAL: &str = "/usr/share/doc/ImageMagick-7/www/magick++/tutorial/Magick++_tutorial.pdf";
 
 /// Redacting text through the whole tutorial and half of page 14's picture, read back by

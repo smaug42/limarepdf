@@ -212,7 +212,7 @@ available.
 ## Planned and proposed
 
 Ideas for what comes next. None of these are available yet, and the list is not a commitment or an order. A wider
-pool of features other PDF tools have is in [ideas.md](ideas.md).
+pool of features other PDF tools have is in [ideas.md](developer/ideas.md).
 
 ### Reliability
 
@@ -220,9 +220,9 @@ pool of features other PDF tools have is in [ideas.md](ideas.md).
   signed document saved by adding to the original, when the original is unchanged, so its signatures stay; reopening
   the last session's documents.
 - **Acceptance checks** of everyday workflows by hand, in other readers and on Windows and macOS, as listed in
-  [Testing](testing.md#acceptance-checks). They have been run on Linux.
+  [Testing](developer/testing.md#acceptance-checks). They have been run on Linux.
 - **Very complex pages draw slowly:** one test page with 73,000 drawn paths and 84 shaded areas takes 54 s to draw
-  at 150 dpi, where poppler takes 9 s ([Performance](performance.md)). Its memory is now bounded by drawing in bands
+  at 150 dpi, where poppler takes 9 s ([Performance](developer/performance.md)). Its memory is now bounded by drawing in bands
   ([Rendering](rendering.md#large-drawings)).
 
 ### Rendering
@@ -236,7 +236,7 @@ Done for now (see the Rendering row above). Left for a later round:
 - **A very large memory request:** on one test file hayro asks for 7.6 GB at once to fill a single shape at 96 dpi.
   On Linux it draws, since the memory is never used; on Windows, which doesn't promise memory it hasn't got, it
   could stop the app. Not tried on Windows yet; the check is in
-  [Testing](testing.md#platform-smoke-checks).
+  [Testing](developer/testing.md#platform-smoke-checks).
 - **Notices for what hayro draws wrongly:** plain fonts that aren't embedded (such as Calibri or Wingdings, drawn
   with a standard font), and knockout or non-isolated transparency groups. Offered, not yet decided.
 - **A check on a HiDPI screen** (scale factor 2): tile sizes, the 4096-pixel cap and sharpness have only been tried
@@ -286,7 +286,7 @@ Checking, trust, digital IDs, signing, certifying and saving signed documents ar
 
 Not planned for now: timestamps from a timestamp server when signing (the signing time comes from your computer's
 clock) and long-term validation, revocation checks, Adobe's and the EU's lists of trusted authorities, smart cards and system
-keystores, signing encrypted files (see [ideas](ideas.md)).
+keystores, signing encrypted files (see [ideas](developer/ideas.md)).
 
 ### Packaging
 

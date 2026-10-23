@@ -5,45 +5,27 @@ page explains how that works and where it stops. For how to use it, see [Using t
 
 ## How it works
 
-The page's content stream is split into objects: one per text line, per painted path, per image or form XObject, and
-per inline image.
+LimarePDF splits a page's content into objects, one per line of text, drawn shape or picture, and edits them in
+the page itself.
 
-- **Moving or resizing** wraps the object's drawing operators in `q <matrix> cm … Q`.
-- **Editing text** rewrites the string in place when the font is a plain, non-subset, standard-encoded simple font
-  and the new text is ASCII, with no font, size or colour change. Otherwise the old line is removed and the new
-  text is added at the same position, size and colour, in the font chosen, else in the installed family the
-  line's font is from (found by its PostScript name, the subset tag left off; `FontChoice::of_font`), else in the
-  nearest of the 12 standard fonts. While a line is edited on the page, the app makes the same test as it goes
-  (`TextEdit::keeps_font`) and draws the line in the font it will have: the line's own font installed on the
-  computer, or else the Liberation face of its kind, when the font is kept; the installed family's font, or the
-  Liberation face of the standard font replacing it, otherwise. The old line is covered with the most
-  common colour in a 3-point ring around its box, from a separate drawing of that part of the page in the current
-  page colours.
-- **Adding** text, shapes or images draws them on top of the page. New text of several lines is written as one
-  text line each, their baselines 1.2 times the size apart (Acrobat's spacing), in one of the 12 standard fonts
-  with the WinAnsi encoding. A line with characters WinAnsi lacks (Polish, Czech, Vietnamese, Greek, Cyrillic and
-  so on) is written in the bundled Liberation face of that font instead, embedded in the file and cut down to the
-  characters used; one font object per face grows as more is typed. Characters Liberation can't write (right-to-left
-  and joined scripts, Chinese, Japanese, Korean) can't be typed. While it is typed, the app draws the text in the
-  Liberation face, which has the standard font's widths, so the caret and line length match the written result.
-- **Installed fonts** (the inspector's font list after the three standard ones) are the families whose fonts
-  allow embedding (`OS/2 fsType`: not restricted, subsetting allowed, not bitmaps only), have outlines and the
-  Latin letters; up to four faces each (regular, bold, italic, bold italic), a variable font set at weight 400 or
-  700 (and its `ital` or `slnt` axis for italic). Text in one is always embedded, cut down to the characters used,
-  the same way: TrueType fonts and variable fonts (set at the weight, which makes them TrueType) as
-  CIDFontType2 with `/FontFile2`, OpenType CFF fonts as CIDFontType0 with `/FontFile3 /OpenType`. The app draws
-  the text in the font's own file, at that weight.
-- **Invisible text** from OCR is edited as invisible text and stays in place.
-- **Text after a changed line** stays where it was. Text on the same line can carry on from where the line ended
-  (a show operator with no line move before it); when the line is deleted, edited or moved, its end is set again
-  with `Tm` before that text, and the line position is set again before the next line move, which `Tm` also
-  changes.
-- **Inline images** are lifted out of the content before it is read, each replaced by a placeholder operator, and
-  written back in place of those operators only, never of text that looks like one. The placeholder's name is
-  chosen per content stream so that nothing in the stream already has it.
+- **Moving or resizing** places the object anew, leaving its drawing as it is.
+- **Editing text** keeps the line's own font when it can: a plain standard font, with plain text and no change of
+  font, size or colour. Otherwise the line is written again in the same place, size and colour, in the font you
+  chose, else in the installed family the line's font comes from, else in the nearest of Helvetica, Times and
+  Courier. While you edit a line it is drawn in the font it will have, and the old line underneath is hidden in
+  the colour around it.
+- **Adding** text, shapes or pictures draws them over the page. Each typed line becomes its own line of page text,
+  spaced 1.2 times the size apart (as Acrobat does). Text in Helvetica, Times or Courier with characters those
+  fonts lack (Polish, Czech, Vietnamese, Greek, Cyrillic and so on) is written in the bundled Liberation face of
+  that font, which has the same widths, embedded in the file and cut down to the characters used.
+- **Installed fonts** (the inspector's font list after the three standard ones) are the families whose licence
+  allows embedding, with up to four styles each. Text in one is always embedded in the file, cut down to the
+  characters used, so it looks the same on any computer.
+- **Recognised (OCR) text** stays invisible and in place when edited, and text after a changed line stays where
+  it was.
 
-Every edit is checked to re-parse before it is applied, inline images lifted out as when the page is next read.
-An edit that fails leaves the document unchanged.
+Every edit is checked before it is applied, and one that fails leaves the document unchanged. The technical
+detail is in [How it is built](developer/architecture.md#content-editing).
 
 ## Limits
 

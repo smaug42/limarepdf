@@ -110,7 +110,7 @@ pub(crate) fn replace(
 
 /// Syncs the folder holding `path`, which makes its rename durable (Unix). Windows has no
 /// call for it: there the file is synced before the rename, and a power cut just after it
-/// can still lose the rename (the platform note in docs/architecture.md).
+/// can still lose the rename (the platform note in docs/developer/architecture.md).
 fn sync_folder(path: &Path) -> std::io::Result<()> {
     #[cfg(test)]
     if let Some(r) = tests::folder_sync(path) {
