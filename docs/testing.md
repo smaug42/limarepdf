@@ -112,7 +112,13 @@ returns to its button, and dialog buttons are clicked as a user would (confirmat
 The dialogs' layout is checked from where their parts are drawn: labels above their fields (Password, Your name
 for comments, the digital ID forms, Sign and Certify, the Trust question), headed groups (Remove hidden
 information, Signature details), rows with their buttons beside them or under them when narrow (Recover unsaved
-changes), Reason beside Location when there is room, and the command palette's field, rows and insets. The redesigned window
+changes), Reason beside Location when there is room, and the command palette's field, rows and insets. Every
+question and message the app asks (22 of them) is drawn in a wide, a 400-point-narrow and a 300-point-short window
+at scales 1, 1.5 and 2, with long file, printer and certificate names: the window inside the screen, its title and
+buttons in view, no text past its sides, every control clearly named, Enter answering nothing as it opens (but in
+a dialog's only field), Tab reaching each button, and Esc closing it without acting. The Digital IDs window (its
+list, forms and running work), Sign and Certify, Signature details, the Trust question, Trusted certificates and
+Recover unsaved changes are checked the same way for size, names and Esc. The redesigned window
 (top bar, inspector, command palette, right-click menus, floating toolbar, thumbnail dragging, collapsing inspector)
 has been used by hand on Linux. Later additions (recent files, document notices, fit width, the theme button, crop)
 were checked by screenshot under a virtual X server; not every one has been clicked through by hand. Of the newest:
@@ -181,6 +187,15 @@ showed on the pages; after Add to pages the written watermark covered its previe
 dragged down 87 points, the cut-off part dimmed as it moved, and Esc showed the pages cropped. Not tried: Windows
 and macOS, a real HiDPI screen, a screen reader, a picture watermark's preview by screenshot (its decoding and
 placement are tested), a turned page's previews by screenshot (their layout is tested).
+
+Every dialog in its final look (2026-10-22) was checked the same way, on a made-up document with a made-up digital
+ID, a trusted certificate and a stand-in printer list (one queue name 120 characters long; nothing printed): each
+at 1200×800 in the light and dark themes (some in the system theme), the ones reached from the keyboard also at
+400×800, 1200×300 and 400×300 and at scales 1.5 and 2; Recover unsaved changes after ending the app with
+`kill -9` once a recovery copy was made, wide, narrow and dark; and the close confirmation. Not shot: Import a
+digital ID (it opens from the system's file chooser), Print and Save selected text, the signed and repaired save
+questions, and busy states (their layout is tested). Not tried: Windows and macOS, a real HiDPI screen, a screen
+reader.
 
 Each feature page says what was not tested, under "How this was tested".
 
@@ -261,6 +276,8 @@ happened in everyday use but no result was written down.
 | Print to a real printer | Printed on paper (HP LaserJet P1606dn through CUPS, 2026-10-18; the "Printing" acceptance check) | Print dialog only; nothing printed on paper | Not run |
 | Keyboard shortcuts (Ctrl, or Cmd on macOS) | Used by hand | Not run | Not run |
 | HiDPI screen (scale 2) | Not run | Not run | Not run |
+| Screen reader (Orca, Narrator, VoiceOver): the bars, panels, each dialog, filling in a form; what is said and where the keyboard goes | Not run (names checked by the app's tests only) | Not run | Not run |
+| Dialogs: open each, Tab through it, Esc; in a narrow and a short window | Screenshots under a virtual X server (2026-10-22), not clicked through on a desktop | Not run | Not run |
 | Window size remembered: resize, close, reopen; maximize, close, reopen, restore | KDE Wayland (2026-10-19): size and maximized kept; restoring a window that started maximized puts it at the top-left (KDE's placement) | Not run | Not run |
 | Name and icon in the taskbar, dock and Open with | Not recorded | Icon checked by hand (0.5) | Not run |
 | A damaged file and a file that fails to draw: message, no crash | Not recorded | Not run | Not run |

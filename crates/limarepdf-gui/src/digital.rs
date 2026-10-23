@@ -1840,6 +1840,144 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// G08: the Digital IDs window's list and forms, and Sign and Certify, on short and
+    /// narrow screens: the window inside the screen with its buttons in view, and every
+    /// control clearly named. While work runs, the window says what it is doing, offers no
+    /// buttons (the work can't be stopped) and stays open on Esc; Esc closes the list and
+    /// an empty signing window, never a form with something typed in.
+    #[test]
+    fn digital_windows_fit_short_screens_and_say_when_busy() {
+        use crate::dialogs::{drawn_window, fits, unclear_names};
+        let dir = scratch("short");
+        let (store, id) = store_with_id(&dir);
+        let mut w = ids_window(store);
+        let sizes = [
+            egui::vec2(1200.0, 300.0),
+            egui::vec2(400.0, 300.0),
+            egui::vec2(400.0, 800.0),
+        ];
+        let create = || CreateForm {
+            name: "Jane Example".into(),
+            organisation: "Example Ltd".into(),
+            email: String::new(),
+            password: Secret::default(),
+            again: Secret::default(),
+            error: Some((Field::Form, "Making the folder failed.".into())),
+            focus: None,
+        };
+        for size in sizes {
+            let export = ExportForm {
+                id: id.clone(),
+                kind: ExportKind::Key,
+                password: Secret::default(),
+                fresh: true,
+                new_password: Secret::default(),
+                again: Secret::default(),
+                error: None,
+                focus: None,
+            };
+            let import = import_form(&dir.join("jane.p12"), "");
+            for (page, buttons) in [
+                (Page::List, &["Create…", "Import…", "Close"][..]),
+                (Page::Create(create()), &["Create", "Back"]),
+                (Page::Import(import), &["Import", "Back"]),
+                (Page::Export(Box::new(export)), &["Export…", "Back"]),
+            ] {
+                w.page = page;
+                let (tree, window) = drawn_window(size, |ctx| {
+                    w.ui(ctx, "");
+                });
+                fits(&tree, window, size, buttons).unwrap();
+                assert_eq!(unclear_names(&tree), [""; 0], "{size:?}");
+            }
+
+            // Work running: what it is, no buttons, Esc ignored.
+            let (_tx, rx) = channel();
+            w.page = Page::List;
+            w.task = Some(Task {
+                what: "Making the digital ID…",
+                form: Page::Create(create()),
+                rx,
+            });
+            let (tree, window) = drawn_window(size, |ctx| {
+                w.ui(ctx, "");
+            });
+            fits(&tree, window, size, &[]).unwrap();
+            let busy = tree
+                .nodes
+                .iter()
+                .any(|(_, n)| n.value() == Some("Making the digital ID…"));
+            assert!(busy, "{size:?}: doesn't say what it is doing");
+            let buttons = tree
+                .nodes
+                .iter()
+                .filter(|(_, n)| n.role() == egui::accesskit::Role::Button)
+                .count();
+            assert_eq!(buttons, 0, "{size:?}: buttons while busy");
+            assert!(
+                !esc_closes(|ctx| w.ui(ctx, "").close),
+                "{size:?}: Esc while busy"
+            );
+            w.task = None;
+        }
+        // Esc: the list closes; a form doesn't.
+        w.page = Page::List;
+        assert!(esc_closes(|ctx| w.ui(ctx, "").close));
+        w.page = Page::Create(create());
+        assert!(!esc_closes(|ctx| w.ui(ctx, "").close));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let (mut w, dir) = window("short");
+        for size in sizes {
+            for certify in [false, true] {
+                w.certify = certify;
+                let go = if certify { "Certify…" } else { "Sign…" };
+                let (tree, window) = drawn_window(size, |ctx| {
+                    w.ui(ctx);
+                });
+                fits(&tree, window, size, &[go, "Digital IDs…", "Cancel"])
+                    .unwrap_or_else(|e| panic!("certify {certify}: {e}"));
+                assert_eq!(unclear_names(&tree), [""; 0], "{size:?}");
+            }
+        }
+        let cancelled = |w: &mut SignWindow| esc_closes(|ctx| matches!(w.ui(ctx), SignOut::Cancel));
+        assert!(cancelled(&mut w), "Esc kept the empty window");
+        w.reason = "Approved".into();
+        assert!(
+            !cancelled(&mut w),
+            "Esc closed a window with a reason typed"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Whether the window `show` draws (returning whether it closes) closes on Esc.
+    fn esc_closes(mut show: impl FnMut(&Context) -> bool) -> bool {
+        let ctx = Context::default();
+        crate::theme::install(&ctx);
+        let esc = egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        };
+        let mut closed = false;
+        for events in [vec![], vec![], vec![], vec![], vec![esc]] {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1000.0, 800.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            ctx.run_ui(raw, |ui| closed = show(ui.ctx()))
+                .textures_delta
+                .clear();
+        }
+        closed
+    }
+
     /// Batch 7b: the digital ID forms and the signing window label their fields above
     /// them, as Print does (the user, 2026-10-22: "above for consistency"), wide and
     /// narrow; a signature's Reason and Location side by side when there is room, and

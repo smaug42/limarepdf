@@ -37,7 +37,8 @@ holding work you would lose (a signature drawn, typed or chosen; a digital ID fo
 typed), where only Cancel closes it. A message's Copy button copies what it says, to pass on an error. Reasons and
 technical lists in a question are under Details. A dialog fits the window, also as it is resized: narrower in a
 narrow one, with smaller margins under 600 points wide, and in a short one its content scrolls while its buttons
-stay in view. Every dialog has the same look: text at 14 points, settings in headed groups, labels above the
+stay in view. Very long names are cut short: a file's under the title, and a printer's in Print (shown whole on
+hover and in the list of printers). Every dialog has the same look: text at 14 points, settings in headed groups, labels above the
 fields, fields, lists and buttons outlined, and radio buttons and checkboxes outlined on the dialog's background.
 Two short fields share a row when there is room (Copies and Print on, a signature's Reason and Location) and go
 one under the other when not. Lists of documents or certificates are an outlined box with each row's buttons on
@@ -711,9 +712,10 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 Every button, field, list and menu has a name a screen reader can say, in the window, the inspector, the side
 views and the dialogs: icons and symbols are named in words (◀ and ▶ in Search results are Previous match and
 Next match), a field is named by the label beside it, and toggles such as Bold and Italic, the picked signature
-and the picked mark say whether they are on. An open list or menu is named after the button that opened it. The
-edges of the side panel and the inspector are named Side panel width and Inspector width, but can only be dragged
-with the mouse.
+and the picked mark say whether they are on. An open list or menu is named after the button that opened it. In a
+list with a button on each row, the button names its row: Restore Report.pdf in Recover unsaved changes, Remove
+Jane Example… in Trusted certificates. The edges of the side panel and the inspector are named Side panel width
+and Inspector width, but can only be dragged with the mouse.
 
 The names are checked by the app's tests on Linux. LimarePDF hasn't been tried with a screen reader yet (Orca,
 Narrator or VoiceOver).

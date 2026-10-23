@@ -108,7 +108,8 @@ pub fn made_in_canada(ui: &mut Ui, id: &str, weak: bool) {
 
 /// Show the About window; true once it is closed.
 pub fn show(ctx: &Context, page: &mut Page) -> bool {
-    let shell = Shell::new("About LimarePDF").width(380.0);
+    // Wide enough for the links on one row in dialogs' 14-point text.
+    let shell = Shell::new("About LimarePDF").width(410.0);
     let (close, esc) = shell.show(ctx, |ui| {
         dialogs::content(ui, |ui| {
             ui.with_layout(Layout::top_down(Align::Center), |ui| match page {
@@ -146,9 +147,9 @@ fn main_page(ui: &mut Ui, page: &mut Page) {
     centred_row(ui, "about-version", |ui| {
         ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
         let copy = egui::Button::new(theme::icon(icon::COPY).size(14.0)).frame_when_inactive(false);
-        if ui
-            .add(copy)
-            .on_hover_text("Copy the version and system, for a bug report")
+        let r = ui.add(copy);
+        dialogs::set_name(&r, "Copy the version and system");
+        if r.on_hover_text("Copy the version and system, for a bug report")
             .clicked()
         {
             ui.ctx().copy_text(version_text());
@@ -158,22 +159,43 @@ fn main_page(ui: &mut Ui, page: &mut Page) {
     ui.add_space(12.0);
     made_in_canada(ui, "about-canada", false);
     ui.add_space(12.0);
-    centred_row(ui, "about-links", |ui| {
-        let link = |ui: &mut Ui, text: &str, url: &str| {
-            if ui.link(text).on_hover_text(url).clicked() {
-                ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+    // Each link and its address; Contributors is a page of this window.
+    let links = [
+        ("Website", Some(WEBSITE)),
+        ("Licence", Some(LICENCE)),
+        ("Contributors", None),
+        ("Report a problem", Some(ISSUES)),
+    ];
+    let mut row = |ui: &mut Ui, id: &str, links: &[(&str, Option<&str>)]| {
+        centred_row(ui, id, |ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            for (i, &(text, url)) in links.iter().enumerate() {
+                if i > 0 {
+                    ui.weak("·");
+                }
+                match url {
+                    Some(url) => {
+                        if ui.link(text).on_hover_text(url).clicked() {
+                            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                        }
+                    }
+                    None => {
+                        if ui.link(text).clicked() {
+                            *page = Page::Contributors;
+                        }
+                    }
+                }
             }
-        };
-        link(ui, "Website", WEBSITE);
-        ui.weak("·");
-        link(ui, "Licence", LICENCE);
-        ui.weak("·");
-        if ui.link("Contributors").clicked() {
-            *page = Page::Contributors;
-        }
-        ui.weak("·");
-        link(ui, "Report a problem", ISSUES);
-    });
+        });
+    };
+    // Two rows when the window is narrower than the row of all four was.
+    let whole: Option<f32> = ui.data(|d| d.get_temp(ui.id().with("about-links")));
+    if whole.is_some_and(|w| w > ui.available_width()) {
+        row(ui, "about-links-1", &links[..2]);
+        row(ui, "about-links-2", &links[2..]);
+    } else {
+        row(ui, "about-links", &links);
+    }
     ui.add_space(8.0);
     ui.separator();
     ui.with_layout(Layout::top_down(Align::Min), credits);
@@ -245,6 +267,44 @@ mod tests {
         ] {
             let d = eframe::icon_data::from_png_bytes(png).unwrap();
             assert_eq!(d.rgba.len(), (d.width * d.height * 4) as usize);
+        }
+    }
+
+    /// The links are one row inside the card in a window of usual size, and two in a narrow
+    /// one, also when short (where the scroll bar takes room), each row inside the card.
+    #[test]
+    fn the_links_fit_on_one_row_or_two() {
+        let mut page = Page::Main;
+        for (size, rows) in [
+            (egui::vec2(1200.0, 800.0), 1),
+            (egui::vec2(1200.0, 300.0), 1),
+            (egui::vec2(400.0, 800.0), 2),
+            (egui::vec2(400.0, 300.0), 2),
+        ] {
+            let (tree, window) = dialogs::drawn_window(size, |ctx| {
+                show(ctx, &mut page);
+            });
+            let at = |name: &str| {
+                let (_, n) = tree
+                    .nodes
+                    .iter()
+                    .find(|(_, n)| n.label() == Some(name))
+                    .unwrap_or_else(|| panic!("{size:?}: no {name}"));
+                let b = n.bounds().unwrap();
+                egui::Rect::from_min_max(
+                    egui::pos2(b.x0 as f32, b.y0 as f32),
+                    egui::pos2(b.x1 as f32, b.y1 as f32),
+                )
+            };
+            // Inside the card's content, its margins kept.
+            let content = window.shrink2(egui::vec2(16.0, 0.0));
+            for link in ["Website", "Licence", "Contributors", "Report a problem"] {
+                let r = at(link);
+                let inside = r.left() >= content.left() - 0.5 && r.right() <= content.right() + 0.5;
+                assert!(inside, "{size:?}: {link} at {r:?} in {window:?}");
+            }
+            let same = (at("Website").top() - at("Report a problem").top()).abs() < 1.0;
+            assert_eq!(if same { 1 } else { 2 }, rows, "{size:?}");
         }
     }
 

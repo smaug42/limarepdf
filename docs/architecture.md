@@ -31,7 +31,9 @@ heading and its settings), `field` (a label above a field, which also names it f
 through `theme::field`), `columns` (two fields side by side, one under the other when narrow), `list_box`,
 `list_rows`, `list_row` and `list_pick` (an outlined list, rows with their buttons on the right, or rows to pick),
 `fact` (a name and a value to read) and `footer` (a note and the buttons, in the platform's order). Margins are
-smaller in windows under 600 points wide. The command palette (`palette_ui` in `app.rs`) uses the same look
+smaller in windows under 600 points wide. A button on a list's row is named with what the row is (`set_name`), and
+`list_rows` gives each row its own id for what it remembers. Tests draw a dialog with `dialogs::drawn_window` and
+check it with `fits` (inside the screen, its buttons inside it) and `unclear_names`. The command palette (`palette_ui` in `app.rs`) uses the same look
 without `Shell`, as a launcher with no title or buttons.
 
 Damaged files are repaired in `crates/limarepdf-core/src/repair.rs` when lopdf reads a file with no pages, or had

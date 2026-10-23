@@ -1237,19 +1237,26 @@ impl TrustedWindow {
                     .wrap(),
                 );
             };
+            // Named for screen readers with the certificate each acts on.
+            let who = clean(&e.label);
             dialogs::list_row(ui, text, |ui| {
                 if *removing == Some(i) {
-                    if ui.button("Stop trusting").clicked() {
+                    let r = ui.button("Stop trusting");
+                    dialogs::set_name(&r, &format!("Stop trusting {who}"));
+                    if r.clicked() {
                         *out = TrustedOut::Remove(i);
                     }
-                    if ui.button("Keep").clicked() {
+                    let r = ui.button("Keep");
+                    dialogs::set_name(&r, &format!("Keep trusting {who}"));
+                    if r.clicked() {
                         *removing = None;
                     }
-                } else if ui
-                    .add_enabled(usable, egui::Button::new("Remove…"))
-                    .clicked()
-                {
-                    *removing = Some(i);
+                } else {
+                    let r = ui.add_enabled(usable, egui::Button::new("Remove…"));
+                    dialogs::set_name(&r, &format!("Remove {who}…"));
+                    if r.clicked() {
+                        *removing = Some(i);
+                    }
                 }
             });
         });
@@ -1524,6 +1531,134 @@ mod tests {
         let note = at(&tree, &note).expect("the revocation note");
         let button = at(&tree, &|n| n.label() == Some("View signed version")).unwrap();
         assert!(button.top() > note.bottom());
+    }
+
+    /// G08: Trusted certificates, one entry waiting for its second click: each row's
+    /// buttons say which certificate they act on, every control is clearly named, and Esc
+    /// closes the window (rows of different widths once had it laid out twice each frame,
+    /// losing the key).
+    #[test]
+    fn each_trusted_certificate_s_buttons_say_which_it_is() {
+        use crate::dialogs::{drawn, unclear_names};
+        let r = report(SELF_MADE, &TrustList::default());
+        let cert = r.signatures[0].signer.clone().expect("a signer");
+        let mut list = TrustList::default();
+        for (label, role) in [
+            ("Sam Walrus", TrustRole::Signer),
+            ("Walrus Authority", TrustRole::Authority),
+        ] {
+            list.entries.push(limarepdf_core::TrustEntry {
+                role,
+                label: label.into(),
+                added: None,
+                cert: cert.clone(),
+            });
+        }
+        let mut w = TrustedWindow {
+            list,
+            status: TrustStatus::default(),
+            path: None,
+            removing: Some(0),
+        };
+        for size in [egui::vec2(1200.0, 800.0), egui::vec2(400.0, 300.0)] {
+            let tree = drawn(size, |ctx| {
+                w.ui(ctx);
+            });
+            assert_eq!(unclear_names(&tree), [""; 0], "{size:?}");
+            for name in [
+                "Stop trusting Sam Walrus",
+                "Keep trusting Sam Walrus",
+                "Remove Walrus Authority…",
+            ] {
+                let found = tree.nodes.iter().any(|(_, n)| n.label() == Some(name));
+                assert!(found, "{size:?}: no {name}");
+            }
+
+            let ctx = Context::default();
+            theme::install(&ctx);
+            let esc = egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            };
+            let mut closed = false;
+            for events in [vec![], vec![], vec![], vec![], vec![esc]] {
+                let raw = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    events,
+                    ..Default::default()
+                };
+                ctx.run_ui(raw, |_| closed = matches!(w.ui(&ctx), TrustedOut::Close))
+                    .textures_delta
+                    .clear();
+            }
+            assert!(closed, "{size:?}: Esc didn't close it");
+        }
+    }
+
+    /// G08: Signature details and the Trust question on short and narrow screens: the
+    /// window inside the screen with its buttons in view and every control clearly named;
+    /// Esc closes details, and the question until its name is changed.
+    #[test]
+    fn signature_windows_fit_short_screens() {
+        use crate::dialogs::{drawn_window, fits, unclear_names};
+        let r = report(SELF_MADE, &TrustList::default());
+        let cert = r.signatures[0].signer.clone().expect("a signer");
+        let c = Checked {
+            report: r,
+            trust: TrustStatus::default(),
+        };
+        let mut ask = TrustAsk::new(TrustRole::Signer, vec![cert], true);
+        for size in [
+            egui::vec2(1200.0, 300.0),
+            egui::vec2(400.0, 300.0),
+            egui::vec2(400.0, 800.0),
+        ] {
+            let (tree, window) = drawn_window(size, |ctx| {
+                details(ctx, "walrus.pdf", &c, 0);
+            });
+            fits(&tree, window, size, &["Close"]).unwrap();
+            assert_eq!(unclear_names(&tree), [""; 0], "{size:?}");
+            let (tree, window) = drawn_window(size, |ctx| {
+                ask.ui(ctx);
+            });
+            fits(&tree, window, size, &["Trust", "Cancel"]).unwrap();
+            assert_eq!(unclear_names(&tree), [""; 0], "{size:?}");
+        }
+        let esc_closes = |show: &mut dyn FnMut(&Context) -> bool| {
+            let ctx = Context::default();
+            theme::install(&ctx);
+            let esc = egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            };
+            let mut closed = false;
+            for events in [vec![], vec![], vec![], vec![], vec![esc]] {
+                let raw = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000.0, 800.0),
+                    )),
+                    events,
+                    ..Default::default()
+                };
+                ctx.run_ui(raw, |ui| closed = show(ui.ctx()))
+                    .textures_delta
+                    .clear();
+            }
+            closed
+        };
+        assert!(esc_closes(
+            &mut |ctx| details(ctx, "walrus.pdf", &c, 0).close
+        ));
+        assert!(esc_closes(&mut |ctx| ask.ui(ctx) == Outcome::Cancel));
+        ask.label_edited = true;
+        assert!(!esc_closes(&mut |ctx| ask.ui(ctx) == Outcome::Cancel));
     }
 
     #[test]

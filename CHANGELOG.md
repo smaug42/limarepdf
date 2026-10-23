@@ -147,6 +147,22 @@
   keeps its shape and size when the window is resized.
 - A dialog shown in a tall window stayed as tall when the window got shorter, pushing its buttons off screen; it
   now fits again.
+- A dialog taller than the window, such as Sign with digital ID in a narrow window, opened too low and grew a step
+  at a time, so until the mouse moved its buttons could be below the bottom of the screen. It now opens at its
+  size, inside the window.
+- A long printer name made the Print window, and its list of printers, wider than the screen; it is now cut short,
+  and shown whole on hover and in the list, over more than one line if need be.
+  About's row of links ran into the window's margin since dialogs moved to 14-point text, and past the screen's
+  edges in a small window; About is a little wider, and in a narrow window the links take two rows. Password
+  required showed a very
+  long file name in full; it is cut short as in the other dialogs.
+- A menu that was open when a dialog opened by its shortcut (such as Ctrl+P with the page layout menu open) stayed
+  on top of the dimmed window; it now closes.
+- Esc could be missed in Recover unsaved changes and Trusted certificates when their rows had different buttons
+  (such as a copy that can't be restored, or a certificate being removed): the window was laid out twice on every
+  frame.
+- Screen readers now say which document or certificate each Restore, Discard, Show file, Remove…, Stop trusting
+  and Keep button acts on (they all had the same names), and name About's copy button.
 - When making, importing or exporting a digital ID failed, for example with a wrong password, the Digital IDs
   window went back to its list with the error at the bottom, losing what was typed. The form now comes back with
   its name, file or export choices kept and the error beside the password, or at the end of the form for other

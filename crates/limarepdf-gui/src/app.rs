@@ -5869,6 +5869,354 @@ mod tests {
         assert_eq!(tab_walk(&mut app, &ctx, 1200.0, want.len()), want);
     }
 
+    /// Draws the dialog open in `app` on a screen `size` points big, at `scale` pixels per
+    /// point, with `events`; returns its widgets.
+    fn dialog_frame(
+        app: &mut App,
+        ctx: &egui::Context,
+        size: egui::Vec2,
+        scale: f32,
+        events: Vec<egui::Event>,
+    ) -> egui::accesskit::TreeUpdate {
+        let mut raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+            events,
+            ..Default::default()
+        };
+        raw.viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .native_pixels_per_point = Some(scale);
+        let mut out = ctx.run_ui(raw, |ui| app.dialogs(ui.ctx()));
+        out.textures_delta.clear();
+        out.platform_output
+            .accesskit_update
+            .expect("the dialog's widgets")
+    }
+
+    /// The `i`th of the app's questions and messages, with long texts where they can come
+    /// from the document or the system: its title, the buttons it shows, and the dialog.
+    fn question(app: &App, long: &str, i: usize) -> Option<(String, Vec<&'static str>, Dialog)> {
+        let two = |yes| vec![yes, "Cancel"];
+        let printer = || print::Printer {
+            name: format!("printer-{long}"),
+            default: true,
+        };
+        let q = match i {
+            0 => (
+                "Couldn't save".into(),
+                vec!["OK", "Copy"],
+                Dialog::Message(
+                    "Couldn't save".into(),
+                    format!("The folder /home/sam/{long} can't be written to. {long}"),
+                ),
+            ),
+            1 => (
+                "Close without saving?".into(),
+                two("Discard changes"),
+                Dialog::ConfirmClose(app.asked()),
+            ),
+            2 => (
+                "Quit without saving?".into(),
+                two("Quit without saving"),
+                Dialog::ConfirmQuit,
+            ),
+            3 => (
+                "Replace files?".into(),
+                two("Replace"),
+                Dialog::ConfirmReplace(
+                    app.asked(),
+                    ImageExport {
+                        pages: vec![0, 1],
+                        dpi: 150.0,
+                        format: ImageFormat::Png,
+                        dir: PathBuf::from(format!("/home/sam/{long}")),
+                        stem: long.into(),
+                    },
+                    2,
+                ),
+            ),
+            4 => (
+                "Flatten form?".into(),
+                two("Flatten form"),
+                Dialog::ConfirmFlatten(app.asked()),
+            ),
+            5 => (
+                "Flatten annotations?".into(),
+                two("Flatten annotations"),
+                Dialog::ConfirmFlattenAnnots(app.asked()),
+            ),
+            6 => (
+                "Break the signatures?".into(),
+                vec!["Details", "Save anyway", "Cancel"],
+                Dialog::ConfirmSaveSigned(app.asked(), false, long.into()),
+            ),
+            7 => (
+                "Replace the damaged original?".into(),
+                vec!["Save as…", "Replace original", "Cancel"],
+                Dialog::ConfirmSaveRepaired(app.asked()),
+            ),
+            8 => (
+                "Save changes the signers didn't allow?".into(),
+                vec!["Details", "Save anyway", "Cancel"],
+                Dialog::ConfirmSaveDisallowed(Box::new(SaveDisallowed {
+                    as_new: false,
+                    asked: app.asked(),
+                    bytes: Vec::new(),
+                    disallowed: limarepdf_core::DisallowedChanges {
+                        signers: vec![(format!("\"{long}\""), vec![long.into(); 3])],
+                    },
+                })),
+            ),
+            9 => (
+                "Apply 3 redactions?".into(),
+                two("Apply redactions"),
+                Dialog::ConfirmApplyRedactions(app.asked(), 3),
+            ),
+            10 => (
+                "Finish signing?".into(),
+                two("Finish signing"),
+                Dialog::ConfirmFinishSigning(app.asked(), 2),
+            ),
+            11 => (
+                "Remove hidden information".into(),
+                two("Remove"),
+                Dialog::RemoveHidden(
+                    app.asked(),
+                    dlg::RemoveHidden {
+                        kinds: limarepdf_core::Hidden::ALL
+                            .iter()
+                            .map(|&h| (h, 2, true))
+                            .collect(),
+                    },
+                ),
+            ),
+            12 => (
+                "Save without applying the redactions?".into(),
+                two("Save with marks"),
+                Dialog::ConfirmSaveMarks(app.asked(), false, 2),
+            ),
+            13 => (
+                "Print".into(),
+                two("Print"),
+                Dialog::Print(
+                    app.asked(),
+                    Box::new(dlg::Print::new(vec![printer()], "test.pdf".into())),
+                ),
+            ),
+            14 => (
+                "Print without these fields?".into(),
+                two("Print anyway"),
+                Dialog::ConfirmPrintFields(Box::new(PrintFields {
+                    asked: app.asked(),
+                    fields: (0..30).map(|i| format!("Field {i} {long}")).collect(),
+                    pages: vec![0],
+                    opts: print::PrintOptions {
+                        printer: Some(printer().name),
+                        copies: 1,
+                        sides: print::Sides::One,
+                        as_image: false,
+                        title: "test".into(),
+                    },
+                })),
+            ),
+            15 => (
+                "Save selected text".into(),
+                two("Save…"),
+                Dialog::SaveSelection(app.asked(), dlg::Layout::Original),
+            ),
+            16 => (
+                "Open link?".into(),
+                two("Open link"),
+                Dialog::OpenLink(format!("https://example.com/{long}")),
+            ),
+            17 => (
+                "Your name for comments".into(),
+                two("Save"),
+                Dialog::CommentName(long.into()),
+            ),
+            18 => (
+                "About LimarePDF".into(),
+                vec!["Close"],
+                Dialog::About(about::Page::Main),
+            ),
+            19 => (
+                "Recovery copy left over".into(),
+                vec!["OK", "Show file"],
+                Dialog::RecoveryFile {
+                    title: "Recovery copy left over".into(),
+                    text: format!("A copy in /home/sam/{long} couldn't be removed. {long}"),
+                    file: PathBuf::from(format!("/home/sam/{long}")),
+                },
+            ),
+            20 => (
+                "Break the signatures?".into(),
+                vec!["Details", "Sign anyway", "Cancel"],
+                Dialog::ConfirmSignRecovered(app.asked()),
+            ),
+            21 => (
+                "Password required".into(),
+                two("Open"),
+                Dialog::Password(dlg::Password {
+                    path: PathBuf::from(format!("/home/sam/{long}.pdf")),
+                    input: String::new(),
+                    error: Some(format!("That isn't the password. {long}")),
+                }),
+            ),
+            _ => return None,
+        };
+        Some(q)
+    }
+
+    /// G08: a menu open when a dialog opens by a shortcut (Page layout's, here) closes,
+    /// instead of showing over the dimmed window.
+    #[test]
+    fn a_menu_open_behind_closes_when_a_dialog_opens() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let tree = settled_at(&mut app, &ctx, 400.0);
+        let (at, _) = node(&tree, "Page layout").expect("the layout button");
+        let press = |pressed| egui::Event::PointerButton {
+            pos: at.center(),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        window(
+            &mut app,
+            &ctx,
+            400.0,
+            vec![egui::Event::PointerMoved(at.center()), press(true)],
+        );
+        window(&mut app, &ctx, 400.0, vec![press(false)]);
+        settled_at(&mut app, &ctx, 400.0);
+        assert!(egui::Popup::is_any_open(&ctx), "the menu didn't open");
+        app.act(&ctx, Act::About);
+        settled_at(&mut app, &ctx, 400.0);
+        assert!(matches!(app.dialog, Dialog::About(_)));
+        assert!(!egui::Popup::is_any_open(&ctx), "the menu stayed open");
+    }
+
+    /// G08: every question and message the app asks, wide, narrow and short, at each scale,
+    /// with long names and texts: inside the screen with its title and buttons in view and
+    /// no text past its sides; every control clearly named; Enter as it opens answering
+    /// nothing (but in a dialog's only field); Tab reaching each button; and Esc closing it
+    /// without acting.
+    #[test]
+    fn every_question_fits_and_is_answered_from_the_keyboard() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let long = "a-name-far-too-long-to-fit-on-one-line-of-a-dialog-".repeat(4);
+        app.tabs[0].path = Some(PathBuf::from(format!("/home/sam/{long}.pdf")));
+        let state = app.tabs[0].state();
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let rect = |b: egui::accesskit::Rect| {
+            egui::Rect::from_min_max(
+                egui::pos2(b.x0 as f32, b.y0 as f32),
+                egui::pos2(b.x1 as f32, b.y1 as f32),
+            )
+        };
+        let sizes = [
+            (1200.0, 800.0),
+            (400.0, 800.0),
+            (1200.0, 300.0),
+            (400.0, 300.0),
+        ];
+        for i in 0.. {
+            let Some((title, _, _)) = question(&app, &long, i) else {
+                assert_eq!(i, 22, "a question was left out");
+                break;
+            };
+            for (size, scale) in sizes
+                .iter()
+                .flat_map(|&s| [1.0, 1.5, 2.0].map(move |k| (egui::Vec2::from(s), k)))
+            {
+                let at = format!("{title} at {size:?}, scale {scale}");
+                let (_, buttons, dialog) = question(&app, &long, i).unwrap();
+                if let Some(id) = ctx.memory(|m| m.focused()) {
+                    ctx.memory_mut(|m| m.surrender_focus(id));
+                }
+                app.dialog = dialog;
+                let one_field = matches!(app.dialog, Dialog::Password(_) | Dialog::CommentName(_));
+                let mut tree = dialog_frame(&mut app, &ctx, size, scale, vec![]);
+                for _ in 0..4 {
+                    tree = dialog_frame(&mut app, &ctx, size, scale, vec![]);
+                }
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size).expand(0.5);
+                let window = ctx.memory(|m| m.top_modal_layer().and_then(|l| m.area_rect(l.id)));
+                let window = window.unwrap_or_else(|| panic!("{at}: no window"));
+                assert!(screen.contains_rect(window), "{at}: window {window:?}");
+                let inside = window.expand(0.5);
+                // Text shown as is: a one-line field scrolls what it holds within itself.
+                for (_, n) in &tree.nodes {
+                    let (Some(text), Some(b)) = (n.value(), n.bounds()) else {
+                        continue;
+                    };
+                    if n.role() != egui::accesskit::Role::Label {
+                        continue;
+                    }
+                    let r = rect(b);
+                    let across = r.left() >= inside.left() && r.right() <= inside.right();
+                    assert!(across, "{at}: {text:?} at {r:?} past {window:?}");
+                }
+                let shown = |name: &str| {
+                    let n = tree
+                        .nodes
+                        .iter()
+                        .find(|(_, n)| n.label() == Some(name) || n.value() == Some(name));
+                    n.and_then(|(_, n)| n.bounds()).map(rect)
+                };
+                let t = shown(&title).unwrap_or_else(|| panic!("{at}: no title"));
+                assert!(inside.contains_rect(t), "{at}: title {t:?}");
+                for b in &buttons {
+                    let r = shown(b).unwrap_or_else(|| panic!("{at}: no {b}"));
+                    assert!(inside.contains_rect(r), "{at}: {b} at {r:?}");
+                }
+                assert_eq!(dlg::unclear_names(&tree), [""; 0], "{at}");
+
+                if !one_field {
+                    dialog_frame(&mut app, &ctx, size, scale, vec![key(Key::Enter)]);
+                    assert!(!matches!(app.dialog, Dialog::None), "{at}: Enter answered");
+                }
+                let mut reached = Vec::new();
+                for _ in 0..buttons.len() + 12 {
+                    let tree = dialog_frame(&mut app, &ctx, size, scale, vec![key(Key::Tab)]);
+                    let focus = tree.nodes.iter().find(|(id, _)| *id == tree.focus);
+                    if let Some(name) = focus.and_then(|(_, n)| n.label()) {
+                        reached.push(name.to_string());
+                    }
+                }
+                for b in &buttons {
+                    assert!(reached.iter().any(|r| r == b), "{at}: Tab missed {b}");
+                }
+                // Tab may have opened Details; Esc closes the dialog all the same.
+                if let Some(id) = ctx.memory(|m| m.focused()) {
+                    ctx.memory_mut(|m| m.surrender_focus(id));
+                }
+                dialog_frame(&mut app, &ctx, size, scale, vec![key(Key::Escape)]);
+                assert!(
+                    matches!(app.dialog, Dialog::None),
+                    "{at}: Esc didn't close it"
+                );
+                assert_eq!(app.tabs.len(), 1, "{at}");
+                assert!(
+                    app.tabs[0].state() == state && !app.quit_ok,
+                    "{at}: Esc acted"
+                );
+            }
+        }
+    }
+
     #[test]
     fn esc_closes_the_inspector_pop_out_and_focuses_its_button() {
         let ctx = egui::Context::default();

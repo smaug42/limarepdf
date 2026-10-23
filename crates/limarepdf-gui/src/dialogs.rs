@@ -175,6 +175,12 @@ impl<'a> Shell<'a> {
         let width = self.width.min(room).max(240.0);
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(0);
         let at = insets(ctx);
+        // A menu still open as the dialog opens (its shortcut pressed with a menu open)
+        // would show over the dimmed window: closed. The dialog's own lists open later.
+        let layer = egui::LayerId::new(egui::Order::Foreground, self.id);
+        if !ctx.memory(|m| m.areas().visible_last_frame(&layer)) {
+            egui::Popup::close_all(ctx);
+        }
         let r = egui::Modal::new(self.id).frame(frame).show(ctx, |ui| {
             ui.set_width(width);
             theme::dialog_style(ui.style_mut());
@@ -222,14 +228,20 @@ pub fn content<R>(ui: &mut Ui, body: impl FnOnce(&mut Ui) -> R) -> R {
     egui::Frame::NONE
         .inner_margin(Margin::symmetric(at.side, at.content))
         .show(ui, |ui| {
-            egui::ScrollArea::vertical()
-                .max_height(max)
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    theme::dialog_choices(ui.style_mut());
-                    body(ui)
-                })
-                .inner
+            // Room up to `max` whatever the window's height last frame: given only that,
+            // a tall dialog grew by its footer's height each frame until it reached `max`.
+            let room = egui::vec2(ui.available_width(), max);
+            ui.allocate_ui(room, |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(max)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        theme::dialog_choices(ui.style_mut());
+                        body(ui)
+                    })
+                    .inner
+            })
+            .inner
         })
         .inner
 }
@@ -329,7 +341,8 @@ pub fn list_box<R>(ui: &mut Ui, body: impl FnOnce(&mut Ui) -> R) -> R {
 }
 
 /// A [`list_box`] of `n` rows with a rule between them, `row` drawing each; nothing when
-/// there are none.
+/// there are none. Each row has an id of its own, so what a [`list_row`] remembers is
+/// its own.
 pub fn list_rows(ui: &mut Ui, n: usize, mut row: impl FnMut(&mut Ui, usize)) {
     if n == 0 {
         return;
@@ -339,7 +352,7 @@ pub fn list_rows(ui: &mut Ui, n: usize, mut row: impl FnMut(&mut Ui, usize)) {
             if i > 0 {
                 ui.add(egui::Separator::default().spacing(0.0));
             }
-            row(ui, i);
+            ui.push_id(i, |ui| row(ui, i));
         }
     });
 }
@@ -494,7 +507,17 @@ pub fn unclear_names(tree: &egui::accesskit::TreeUpdate) -> Vec<String> {
 
 /// The widgets of what `show` draws on a screen `size` points big, once settled.
 #[cfg(test)]
-pub fn drawn(size: egui::Vec2, mut show: impl FnMut(&Context)) -> egui::accesskit::TreeUpdate {
+pub fn drawn(size: egui::Vec2, show: impl FnMut(&Context)) -> egui::accesskit::TreeUpdate {
+    drawn_window(size, show).0
+}
+
+/// The widgets of the dialog `show` draws on a screen `size` points big, once settled,
+/// and where its window is (nothing when no dialog is open).
+#[cfg(test)]
+pub fn drawn_window(
+    size: egui::Vec2,
+    mut show: impl FnMut(&Context),
+) -> (egui::accesskit::TreeUpdate, egui::Rect) {
     let ctx = Context::default();
     ctx.enable_accesskit();
     theme::install(&ctx);
@@ -508,7 +531,42 @@ pub fn drawn(size: egui::Vec2, mut show: impl FnMut(&Context)) -> egui::accesski
         out.textures_delta.clear();
         tree = out.platform_output.accesskit_update;
     }
-    tree.expect("the widgets")
+    let window = ctx.memory(|m| m.top_modal_layer().and_then(|l| m.area_rect(l.id)));
+    (
+        tree.expect("the widgets"),
+        window.unwrap_or(egui::Rect::NOTHING),
+    )
+}
+
+/// Whether the dialog `window` and the controls named `names` in `tree` are inside a
+/// screen `size` points big, the controls inside the window too; if not, what is wrong.
+#[cfg(test)]
+pub fn fits(
+    tree: &egui::accesskit::TreeUpdate,
+    window: egui::Rect,
+    size: egui::Vec2,
+    names: &[&str],
+) -> Result<(), String> {
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size).expand(0.5);
+    if !screen.contains_rect(window) {
+        return Err(format!("{size:?}: window {window:?}"));
+    }
+    for name in names {
+        let (_, n) = tree
+            .nodes
+            .iter()
+            .find(|(_, n)| n.label() == Some(name))
+            .ok_or(format!("{size:?}: no {name}"))?;
+        let b = n.bounds().ok_or(format!("{size:?}: {name} not placed"))?;
+        let r = egui::Rect::from_min_max(
+            egui::pos2(b.x0 as f32, b.y0 as f32),
+            egui::pos2(b.x1 as f32, b.y1 as f32),
+        );
+        if !window.expand(0.5).contains_rect(r) {
+            return Err(format!("{size:?}: {name} at {r:?}, window {window:?}"));
+        }
+    }
+    Ok(())
 }
 
 /// Whether the text `label` is shown above the control it names, at its left edge, as
@@ -787,15 +845,22 @@ fn print_body(ui: &mut Ui, s: &mut Print) -> bool {
                 p.name.clone()
             }
         };
+        // A long queue name is cut short to the dialog's width, and shown whole on hover.
+        let chosen = name(&s.printers[s.printer]);
         egui::ComboBox::from_id_salt("printer")
             .width(wide)
-            .selected_text(name(&s.printers[s.printer]))
+            .truncate()
+            .selected_text(&chosen)
             .show_ui(ui, |ui| {
+                // Open, as wide as the dialog, a long name over more than one line.
+                ui.set_max_width(wide);
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                 for (i, p) in s.printers.iter().enumerate() {
                     ui.selectable_value(&mut s.printer, i, name(p));
                 }
             })
             .response
+            .on_hover_text(chosen)
     });
     let mut enter = false;
     if s.selection.is_none() {
@@ -960,7 +1025,9 @@ pub struct Password {
     pub error: Option<String>,
 }
 pub fn password(ctx: &Context, s: &mut Password) -> Outcome {
-    let name = s.path.file_name().map(|n| n.to_string_lossy().into_owned());
+    // Cut short as the tab's title is.
+    let name = s.path.file_name();
+    let name = name.map(|n| limarepdf_core::display_line(&n.to_string_lossy(), 120));
     let shell = Shell::new("Password required").file(name.as_deref());
     modal(ctx, shell, Btn::primary("Open"), true, |ui| {
         ui.add(
@@ -1115,15 +1182,25 @@ pub fn restore(ctx: &Context, offers: &[Offer]) -> RestoreOut {
                     ui.add(egui::Label::new(RichText::new(title).strong()).wrap());
                     ui.add(egui::Label::new(RichText::new(&o.detail).weak()).wrap());
                 };
+                // Named for screen readers with the document each acts on.
+                let what = o.title.clone().unwrap_or_else(|| format!("copy {}", i + 1));
                 list_row(ui, text, |ui| {
                     if o.title.is_some() {
-                        if ui.add(theme::primary_button("Restore")).clicked() {
+                        let r = ui.add(theme::primary_button("Restore"));
+                        set_name(&r, &format!("Restore {what}"));
+                        if r.clicked() {
                             out = RestoreOut::Restore(i);
                         }
-                    } else if ui.button("Show file").clicked() {
-                        out = RestoreOut::ShowFile(i);
+                    } else {
+                        let r = ui.button("Show file");
+                        set_name(&r, &format!("Show the file of {what}"));
+                        if r.clicked() {
+                            out = RestoreOut::ShowFile(i);
+                        }
                     }
-                    if ui.button("Discard").clicked() {
+                    let r = ui.button("Discard");
+                    set_name(&r, &format!("Discard {what}"));
+                    if r.clicked() {
                         out = RestoreOut::Discard(i);
                     }
                 });
@@ -1457,6 +1534,21 @@ mod tests {
         assert!(named(&tree, "Both sides, flip on short edge").is_none());
     }
 
+    /// A long printer name keeps Print inside a narrow screen, chosen and in the open list.
+    #[test]
+    fn a_long_printer_name_fits_chosen_and_listed() {
+        let long = "Upstairs_colour_inkjet_beside_the_staff_room_on_the_second_floor_near_the_lift";
+        let mut w = PrintWin::new((400.0, 800.0), 1.0);
+        w.s.printers[1].name = long.into();
+        w.s.printer = 1;
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, w.size).expand(0.5);
+        w.settled();
+        assert!(screen.contains_rect(w.window()), "{:?}", w.window());
+        let tree = w.click("Printer");
+        let item = named(&tree, long).expect("the listed printer");
+        assert!(screen.contains_rect(item), "{item:?}");
+    }
+
     /// A page range that can't be printed is reported under it, above Copies.
     #[test]
     fn a_wrong_page_range_is_reported_under_it() {
@@ -1592,7 +1684,8 @@ mod tests {
             });
             let title = text(&tree, "Report.pdf").expect("the title");
             let detail = text(&tree, "From /home/sam/Documents, 3 pages").unwrap();
-            let (restore, discard) = (named(&tree, "Restore"), named(&tree, "Discard"));
+            let restore = named(&tree, "Restore Report.pdf");
+            let discard = named(&tree, "Discard Report.pdf");
             let (restore, discard) = (restore.unwrap(), discard.unwrap());
             if beside {
                 let text = title.right().max(detail.right());
@@ -1603,5 +1696,132 @@ mod tests {
             }
             assert!(discard.left() > restore.right(), "{width}: Tab order");
         }
+    }
+
+    /// G08: Recover unsaved changes, with several documents and a copy that can't be
+    /// restored, wide, narrow and short: each row's buttons say which document they act on,
+    /// every control is clearly named, the window and Not now are on screen, and Esc keeps
+    /// the copies (Not now).
+    #[test]
+    fn each_recovered_document_s_buttons_say_which_it_is() {
+        let offers = [
+            Offer {
+                title: Some("Report.pdf".into()),
+                detail: "From /home/sam/Documents, 3 pages".into(),
+            },
+            Offer {
+                title: Some("Minutes.pdf".into()),
+                detail: "From /home/sam/Documents, 1 page".into(),
+            },
+            Offer {
+                title: None,
+                detail: "It can't be restored: its file is damaged.".into(),
+            },
+        ];
+        for size in [
+            (1000.0, 800.0),
+            (400.0, 800.0),
+            (1000.0, 300.0),
+            (400.0, 300.0),
+        ] {
+            let size = egui::Vec2::from(size);
+            let tree = drawn(size, |ctx| {
+                restore(ctx, &offers);
+            });
+            assert_eq!(unclear_names(&tree), [""; 0], "{size:?}");
+            for name in [
+                "Restore Report.pdf",
+                "Discard Report.pdf",
+                "Restore Minutes.pdf",
+                "Discard Minutes.pdf",
+                "Show the file of copy 3",
+                "Discard copy 3",
+            ] {
+                assert!(named(&tree, name).is_some(), "{size:?}: no {name}");
+            }
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size).expand(0.5);
+            let not_now = named(&tree, "Not now").expect("Not now");
+            assert!(screen.contains_rect(not_now), "{size:?}: {not_now:?}");
+
+            let ctx = Context::default();
+            theme::install(&ctx);
+            let mut out = RestoreOut::Open;
+            for events in [vec![], vec![], vec![], vec![], vec![esc()]] {
+                let raw = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    events,
+                    ..Default::default()
+                };
+                ctx.run_ui(raw, |_| out = restore(&ctx, &offers))
+                    .textures_delta
+                    .clear();
+            }
+            assert_eq!(out, RestoreOut::NotNow, "{size:?}");
+        }
+    }
+
+    fn esc() -> egui::Event {
+        egui::Event::Key {
+            key: Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        }
+    }
+
+    /// G08: a message's Copy puts its title and text on the clipboard, for passing on an
+    /// error's details, and leaves the message open; OK closes it.
+    #[test]
+    fn a_message_can_be_copied() {
+        let ctx = Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let (title, text) = ("Couldn't save", "The folder /home/sam can't be written to.");
+        let frame = |events: Vec<egui::Event>| {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut outcome = Outcome::Open;
+            let mut o = ctx.run_ui(raw, |_| outcome = message(&ctx, title, text));
+            o.textures_delta.clear();
+            (outcome, o.platform_output)
+        };
+        let press = |at: egui::Pos2| {
+            let button = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            [
+                vec![egui::Event::PointerMoved(at), button(true)],
+                vec![button(false)],
+            ]
+        };
+        for _ in 0..3 {
+            frame(vec![]);
+        }
+        let tree = frame(vec![]).1.accesskit_update.expect("the message");
+        let copy = named(&tree, "Copy").expect("Copy").center();
+        let [down, up] = press(copy);
+        frame(down);
+        let (outcome, output) = frame(up);
+        let copied = output
+            .commands
+            .iter()
+            .any(|c| *c == egui::OutputCommand::CopyText(format!("{title}\n\n{text}")));
+        assert!(copied, "{:?}", output.commands);
+        assert!(outcome == Outcome::Open, "Copy closed the message");
+        let tree = frame(vec![]).1.accesskit_update.expect("the message");
+        let ok = named(&tree, "OK").expect("OK").center();
+        let [down, up] = press(ok);
+        frame(down);
+        assert!(frame(up).0 == Outcome::Cancel, "OK didn't close it");
     }
 }
