@@ -1017,6 +1017,8 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Tools,
         label: "Select, move and resize objects",
         icon: icon::CURSOR,
+        hint: "Click an object to select it. Drag to move, drag the handles to resize (Shift \
+               keeps proportions); arrow keys nudge.",
         ..BASE
     },
     Action {
@@ -1025,6 +1027,7 @@ pub static ACTIONS: &[Action] = &[
         label: "Add text",
         icon: icon::TEXT_T,
         sep: true,
+        hint: "Click on the page where the text should start, and type.",
         ..BASE
     },
     Action {
@@ -1032,6 +1035,7 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Tools,
         label: "Add image…",
         icon: icon::IMAGE,
+        hint: "Choose a picture, then drag a box on the page or click to place it.",
         ..BASE
     },
     Action {
@@ -1039,6 +1043,8 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Tools,
         label: "Mark areas for redaction",
         icon: icon::EYE_SLASH,
+        hint: "Drag a box over anything to remove. Nothing is removed until the marks are \
+               applied.",
         ..BASE
     },
     Action {
@@ -1046,8 +1052,8 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Tools,
         label: "Fill and sign",
         icon: icon::SIGNATURE,
-        hint: "Put your signature, initials, the date or a tick on the page. Not a digital \
-               signature.",
+        hint: "Put your signature, initials, the date or a tick on the page: click to put it \
+               down, or drag a box to size it. Not a digital signature.",
         ..BASE
     },
     Action {
@@ -1057,6 +1063,7 @@ pub static ACTIONS: &[Action] = &[
         icon: icon::NOTE,
         sep: true,
         submenu: "Commenting",
+        hint: "Click on the page to place a note and type its comment.",
         ..BASE
     },
     Action {
@@ -1065,6 +1072,7 @@ pub static ACTIONS: &[Action] = &[
         label: "Add a text box",
         icon: icon::TEXTBOX,
         submenu: "Commenting",
+        hint: "Drag a box on the page, or click for a default size, then type.",
         ..BASE
     },
     Action {
@@ -1073,6 +1081,7 @@ pub static ACTIONS: &[Action] = &[
         label: "Add a rectangle",
         icon: icon::SQUARE,
         submenu: "Commenting",
+        hint: "Drag on the page, or click for a default size. Shift keeps squares.",
         ..BASE
     },
     Action {
@@ -1081,6 +1090,7 @@ pub static ACTIONS: &[Action] = &[
         label: "Add an ellipse",
         icon: icon::CIRCLE,
         submenu: "Commenting",
+        hint: "Drag on the page, or click for a default size. Shift keeps circles.",
         ..BASE
     },
     Action {
@@ -1089,6 +1099,7 @@ pub static ACTIONS: &[Action] = &[
         label: "Add a line or arrow",
         icon: icon::LINE_SEGMENT,
         submenu: "Commenting",
+        hint: "Drag on the page, or click for a default length. Shift keeps 45° steps.",
         ..BASE
     },
     Action {
@@ -1097,6 +1108,7 @@ pub static ACTIONS: &[Action] = &[
         label: "Draw with the pen",
         icon: icon::SCRIBBLE,
         submenu: "Commenting",
+        hint: "Drag to draw. Strokes made close together become one drawing.",
         ..BASE
     },
     Action {
@@ -1105,6 +1117,7 @@ pub static ACTIONS: &[Action] = &[
         label: "Add a stamp",
         icon: icon::STAMP,
         submenu: "Commenting",
+        hint: "Click on the page to put the stamp down, or drag a box to size it.",
         ..BASE
     },
     // ------------------------------------------------------------ Document
@@ -1447,11 +1460,16 @@ pub fn context_menu(ui: &mut egui::Ui, sel: &Selection, c: &Ctx, acts: &mut Vec<
     }
 }
 
-/// Tooltip for a command: its label and first shortcut.
+/// Tooltip for a command: its label and first shortcut, then its hint on a line of its own.
 pub fn tooltip(ctx: &egui::Context, a: &Action) -> String {
-    match a.keys.first() {
+    let name = match a.keys.first() {
         Some(k) => format!("{} ({})", a.label, ctx.format_shortcut(k)),
         None => a.label.to_string(),
+    };
+    if a.hint.is_empty() {
+        name
+    } else {
+        format!("{name}\n{}", a.hint)
     }
 }
 

@@ -305,7 +305,7 @@ have an exported copy. Signatures already made with it stay valid.
 1. Choose ☰ > Document > Digital signatures > **Sign with digital ID…**, or **Certify…** to
    [certify](#what-signing-does) the document (only before anyone has signed it).
 2. Click an empty signature field on the page, or drag a box where the signature goes (at least 12 points each
-   way). The pane also lists the document's empty signature fields to pick from. Cancel there, or Esc, to stop.
+   way). The pane also lists the document's empty signature fields to pick from. Esc, or another tool, stops.
 3. In the window, pick the digital ID (the default is picked; expired IDs can't sign), type its password, and
    optionally a reason and a location. **Show my saved signature beside the text** uses the first signature in
    your fill-and-sign list for the left part of the look; without one, your name is written in handwriting. For a

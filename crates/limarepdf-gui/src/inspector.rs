@@ -685,8 +685,6 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
             });
         }
         None => {
-            ui.weak("Select pages in the thumbnails, or pick a tool, for more options.");
-            ui.add_space(4.0);
             sections.show(ui, Some(Section::Properties), "Properties", |ui| {
                 if meta_ui(ui, &mut f.meta, &mut f.typing) {
                     apply = Some(Apply::Props);
@@ -738,7 +736,7 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
     });
     let ocr = "Recognise text (OCR)";
     sections.show(ui, Some(Section::Ocr), ocr, |ui| {
-        ui.weak("Pages without text; Latin script. Runs in the background.");
+        ui.weak("Pages without text, Latin script only.");
         range_row(ui, &mut f.ocr);
         let run = egui::Button::new("Recognise");
         if ui.add_enabled(!c.busy, run).clicked() {
@@ -802,28 +800,23 @@ fn form_ui(ui: &mut Ui, form: &FormUi, c: &Ctx) -> Option<Act> {
     let mut act = None;
     let n = form.fields().len();
     ui.weak(format!("{n} field{}", if n == 1 { "" } else { "s" }));
-    match form.focused_field() {
-        Some(f) => {
-            ui.strong(&f.name);
-            if let Some(tip) = &f.tooltip {
-                ui.label(tip);
-            }
-            let mut flags = Vec::new();
-            if f.required {
-                flags.push("Required");
-            }
-            if let Some(why) = fields::why_not(f) {
-                flags.push(why);
-            }
-            if !flags.is_empty() {
-                ui.weak(flags.join(" · "));
-            }
-            if act_button(ui, Act::ClearField, c) {
-                act = Some(Act::ClearField);
-            }
+    if let Some(f) = form.focused_field() {
+        ui.strong(&f.name);
+        if let Some(tip) = &f.tooltip {
+            ui.label(tip);
         }
-        None => {
-            ui.weak("Click a field to fill it in, or press Tab.");
+        let mut flags = Vec::new();
+        if f.required {
+            flags.push("Required");
+        }
+        if let Some(why) = fields::why_not(f) {
+            flags.push(why);
+        }
+        if !flags.is_empty() {
+            ui.weak(flags.join(" · "));
+        }
+        if act_button(ui, Act::ClearField, c) {
+            act = Some(Act::ClearField);
         }
     }
     let mut shown = c.fields_shown;
@@ -948,7 +941,6 @@ fn label_ui(
 ) -> Option<Apply> {
     let name = |st: Option<LabelStyle>| st.map_or("Prefix only", LabelStyle::name);
     let mut apply = None;
-    ui.weak("The page numbers viewers show, such as i, ii, 1, 2. Nothing is printed on the pages.");
     ui.horizontal(|ui| {
         ui.label("Style");
         let style = s.style;
@@ -995,7 +987,6 @@ fn label_ui(
 /// [`Tab::crop`]), and Remove crop sets them to zero. While the section is open the pages
 /// are shown whole with the crop box on them.
 fn crop_ui(ui: &mut Ui, s: &mut Crop) -> Option<Option<&'static str>> {
-    ui.weak("Drag the crop box's edges on the page, or type how much to trim from each side.");
     range_row(ui, &mut s.pages);
     let mut apply = None;
     s.dragged = false;
@@ -1069,7 +1060,6 @@ fn view_ui(
 ) -> Option<Option<&'static str>> {
     let before = *v;
     let mut number = None;
-    ui.weak("How viewers show this document when it opens, if they follow it. LimarePDF does.");
     let layout_name = |l: Option<OpenLayout>| match l {
         None => "Not set",
         Some(OpenLayout::Continuous) => "Continuous pages",
@@ -1177,7 +1167,7 @@ fn security_ui(ui: &mut Ui, s: &mut Sec) -> bool {
         ui.checkbox(&mut s.r.annotate, "Commenting");
         ui.checkbox(&mut s.r.fill_forms, "Filling form fields");
         ui.checkbox(&mut s.r.assemble, "Page assembly");
-        ui.weak("Permission flags are advisory: they rely on the viewer honouring them.");
+        ui.weak("Other apps may ignore these.");
     });
     ui.weak("Applies when you save.");
     ui.button("Apply").clicked()
@@ -1202,12 +1192,9 @@ fn stamp_text(ui: &mut Ui, text: &mut String, p: &mut Press) {
 /// update it and Add another adds one more.
 fn stamp_button(ui: &mut Ui, linked: bool, ready: bool, what: &str, p: &mut Press) {
     if linked {
-        ui.weak(format!(
-            "Changes update the {what} just added. Undo takes each back."
-        ));
+        ui.weak(format!("Changes update the {what} just added."));
         p.add |= ui.button("Add another").clicked();
     } else {
-        ui.weak("Shown on the pages; nothing is added until you choose Add to pages.");
         let add = egui::Button::new("Add to pages");
         p.add |= ui.add_enabled(ready, add).clicked();
     }
@@ -1307,7 +1294,8 @@ fn header_footer_ui(ui: &mut Ui, s: &mut Hf, linked: bool) -> Press {
         );
         ui.end_row();
     });
-    ui.checkbox(&mut s.bates, "Bates numbering");
+    ui.checkbox(&mut s.bates, "Bates numbering")
+        .on_hover_text("Without a {bates} token the number goes at the bottom right.");
     ui.add_enabled_ui(s.bates, |ui| {
         grid(ui, "bates", |ui| {
             ui.label("Prefix");
@@ -1323,7 +1311,6 @@ fn header_footer_ui(ui: &mut Ui, s: &mut Hf, linked: bool) -> Press {
             ui.add(egui::DragValue::new(&mut s.start).range(0..=999_999_999));
             ui.end_row();
         });
-        ui.weak("Without a {bates} token the number goes at the bottom right.");
     });
     p.left |= range_row(ui, &mut s.range).lost_focus();
     stamp_button(ui, linked, true, "headers and footers", &mut p);
@@ -1331,7 +1318,7 @@ fn header_footer_ui(ui: &mut Ui, s: &mut Hf, linked: bool) -> Press {
 }
 
 fn scan_ui(ui: &mut Ui, pages: &mut String, o: &mut ScanOptions, busy: bool) -> bool {
-    ui.weak("Pages that are one image covering the page. Runs in the background.");
+    ui.weak("Only pages that are one full-page image.");
     range_row(ui, pages);
     grid(ui, "scan", |ui| {
         ui.label("Store as");

@@ -59,8 +59,8 @@ Save As to a new file keeps the signed original.
 - **Top bar:** the menu (☰), Open, Save and an Export menu (pages as images, text); Undo and Redo; the tools: Read
   and select text, Add text, Add image, Redact and Fill and sign, then the Comment button with its menu (notes, text
   boxes, shapes, the pen, stamps) and the Tools menu, which holds every tool; at the right, Search and Print. The
-  buttons are icons, each named by its tooltip. As the window narrows, the search field becomes an icon, and then
-  the tools fold one by one into the Tools menu: the Comment button first, then Add image, Redact, Add text and
+  buttons are icons, each named by its tooltip; a tool's tooltip also says how to use it. As the window narrows,
+  the search field becomes an icon, and then the tools fold one by one into the Tools menu: the Comment button first, then Add image, Redact, Add text and
   Fill and sign, coming back in reverse as the window widens. In very narrow windows Export and then Undo and Redo
   leave the bar too (they stay in ☰, and Undo and Redo on their keys). Read and select text stays. The Tools menu
   shows the current tool when that one isn't on the bar.
@@ -494,6 +494,9 @@ What you select decides what the inspector, the right-click menu and the floatin
 | Pages (click thumbnails; Shift for a range, Ctrl for one more) | Rotate, delete, extract to a new tab, insert images or a blank page after them, page labels from the first selected page, and the crop, watermark, headers/footers, OCR and optimise tools with the pages filled in |
 | An object, a comment, or a tool that adds content | That object's or tool's options |
 | Words | Nothing of their own: the inspector stays on the document or pages. Copy, highlight, redact, print and save the selection from the floating toolbar (or the docked buttons) and the right-click menu |
+
+The inspector holds controls, with at most a short line about state (such as how many areas are marked); how to
+use a tool is in its tooltip in the top bar and the menus, and in this guide.
 
 Menu commands for document and page settings open the matching section of the inspector.
 

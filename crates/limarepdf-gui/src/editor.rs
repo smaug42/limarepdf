@@ -3155,7 +3155,7 @@ impl Editor {
         );
         ui.weak(about.join(" · "));
         if a.locked() {
-            ui.weak("Locked in this document: it can't be changed or deleted here.");
+            ui.weak("Locked: can't be changed or deleted.");
         }
         ui.separator();
         let mut done = false;
@@ -3225,9 +3225,6 @@ impl Editor {
                     .desired_rows(4)
                     .desired_width(f32::INFINITY),
             );
-            if writable(&a) {
-                ui.weak("Double-click it on the page to type there.");
-            }
             // Changes are kept as they are made, each finished one a step to undo; the
             // comment when it is left.
             if ui.button((theme::icon(icon::TRASH), "Delete")).clicked() {
@@ -3412,11 +3409,6 @@ impl Editor {
                 self.stamp = StampPick::Picture(path);
             }
         }
-        ui.separator();
-        ui.label(
-            "Click on the page to put the stamp down, or drag a box to size it. The arrow \
-             moves and resizes it afterwards. Ctrl+click selects an annotation.",
-        );
     }
 
     /// The Create signature window, while open (from the Fill and sign menu or pane, or a
@@ -3460,21 +3452,13 @@ impl Editor {
                         a.refocus = true;
                     }
                 }
-                ui.label(if self.adding.is_some() {
-                    "Type on the page. Enter starts a new line; Esc or a click elsewhere \
-                     finishes."
-                } else {
-                    "Click on the page where the text should start, and type."
-                });
                 ui.separator();
             }
             Tool::Image => {
                 ui.strong("Insert image");
-                ui.label(if self.pending_image.is_some() {
-                    "Drag a box on the page, or click to place it at a default width."
-                } else {
-                    "No image chosen."
-                });
+                if self.pending_image.is_none() {
+                    ui.label("No image chosen.");
+                }
                 ui.separator();
             }
             Tool::Rect | Tool::Ellipse | Tool::Line => {
@@ -3512,13 +3496,6 @@ impl Editor {
                          still be moved with the arrow, but it is no longer a comment that \
                          other apps can list, hide or remove.",
                     );
-                ui.label(if self.draw_permanent {
-                    "Drag on the page, or click for a default size. Shift keeps squares, \
-                     circles and 45° lines."
-                } else {
-                    "Drag on the page, or click for a default size. Shift keeps squares, \
-                     circles and 45° lines. Ctrl+click selects an annotation."
-                });
                 ui.separator();
             }
             Tool::Pen => {
@@ -3532,11 +3509,6 @@ impl Editor {
                             .suffix(" pt"),
                     );
                 });
-                ui.label(
-                    "Drag to draw. Strokes made one soon after another become one drawing, \
-                     which the arrow tool moves as a whole and Undo takes back a stroke at a \
-                     time. Ctrl+click selects an annotation.",
-                );
                 return;
             }
             Tool::Note => {
@@ -3553,11 +3525,6 @@ impl Editor {
                         w.refocus = true;
                     }
                 }
-                ui.label(
-                    "Click on the page to place a note and type its comment; the colour \
-                     can be changed while typing. A click on the page outside it, Esc or \
-                     Ctrl+Enter keeps it. Ctrl+click selects an annotation.",
-                );
                 return;
             }
             Tool::Stamp => {
@@ -3580,10 +3547,7 @@ impl Editor {
                 } else {
                     "Sign with a digital ID"
                 });
-                ui.label(
-                    "Click an empty signature field, or drag a box on the page where the \
-                     signature goes. You choose your digital ID next.",
-                );
+                ui.label("Click an empty signature field, or drag a box.");
                 if !self.digital_fields.is_empty() {
                     ui.add_space(6.0);
                     ui.label("Empty signature fields:");
@@ -3603,20 +3567,11 @@ impl Editor {
                     ui.add_space(4.0);
                     ui.colored_label(ui.visuals().error_fg_color, e);
                 }
-                ui.add_space(6.0);
-                if ui.button("Cancel").clicked() {
-                    self.set_tool(Tool::Read);
-                }
                 return;
             }
             Tool::Redact => {
                 ui.strong("Mark for redaction");
-                ui.label(
-                    "Drag a box over anything to remove: text, pictures, drawings. Each box \
-                     becomes a red-outlined mark; nothing is removed yet. Check the marks, then \
-                     choose Document > Apply redactions to remove what is under them for good. \
-                     Selected text and search results can be marked too.",
-                );
+                ui.label("Nothing is removed until the marks are applied.");
                 ui.add_space(6.0);
                 let n = self.redact_marks;
                 ui.label(match n {
@@ -3635,11 +3590,6 @@ impl Editor {
             Tool::TextBox => {
                 ui.strong("New text box");
                 text_style_ui(ui, &mut self.box_style);
-                ui.label(
-                    "Drag a box on the page, or click for a default size, then type. Click \
-                     outside the box, press Esc or Ctrl+Enter to finish. Ctrl+click \
-                     selects an annotation.",
-                );
                 return;
             }
             // A selected object shows its properties below.
@@ -3647,9 +3597,6 @@ impl Editor {
         }
 
         let Some(insp) = self.insp.as_mut() else {
-            if self.tool == Tool::Select {
-                ui.label("Click an object on the page to select it. Drag to move, drag the handles to resize (Shift keeps proportions). Arrow keys nudge, Delete removes.");
-            }
             return;
         };
         let (page, id) = insp.key;
@@ -3660,7 +3607,7 @@ impl Editor {
             ObjectKind::Text if obj.hidden => "Recognised text (invisible)",
             ObjectKind::Text => "Text",
             ObjectKind::Image => "Image",
-            ObjectKind::Form => "Group (form XObject)",
+            ObjectKind::Form => "Group",
             ObjectKind::Path => "Shape",
         });
 
@@ -3701,9 +3648,8 @@ impl Editor {
         match obj.kind {
             ObjectKind::Text => {
                 ui.add_space(4.0);
-                if self.line_edit.is_some() {
-                    ui.weak("Editing on the page. Ctrl+Z takes a change back.");
-                } else {
+                // While the line is edited on the page, the text is typed there.
+                if self.line_edit.is_none() {
                     let id = egui::Id::new(("text-object", page, id));
                     // What can't be written isn't typed, as on the page.
                     if ui.ctx().memory(|m| m.has_focus(id)) {
@@ -3727,11 +3673,7 @@ impl Editor {
                     }
                 }
                 if obj.hidden {
-                    ui.weak(
-                        "Text found by OCR. It is not drawn, but it is what search, select \
-                         and copy use. Correct misread words here; the line stays invisible \
-                         and in place. Clear it to remove the line.",
-                    );
+                    ui.weak("Used by search and copy. Clear it to remove the line.");
                 } else {
                     Self::font_ui(ui, &mut insp.font);
                     ui.horizontal(|ui| {
@@ -3741,10 +3683,8 @@ impl Editor {
                     });
                 }
                 if !obj.font_reusable && !obj.hidden {
-                    ui.weak(format!(
-                        "Font \"{}\" is embedded or non-standard. Edited text is set in the nearest standard font.",
-                        obj.font_name.as_deref().unwrap_or("?")
-                    ));
+                    ui.weak("Non-standard font: edits use the nearest standard one.")
+                        .on_hover_text(obj.font_name.as_deref().unwrap_or("?"));
                 }
             }
             ObjectKind::Path => {
@@ -3767,7 +3707,7 @@ impl Editor {
             ObjectKind::Image => {
                 ui.add_space(4.0);
                 if obj.inline {
-                    ui.weak("Inline image: it can be moved, resized or deleted, but not replaced.");
+                    ui.weak("Inline image: can't be replaced.");
                 } else if ui
                     .button((theme::icon(icon::IMAGE), "Replace image…"))
                     .clicked()
@@ -3777,11 +3717,7 @@ impl Editor {
                     }
                 }
             }
-            ObjectKind::Form => {
-                ui.weak(
-                    "A reusable group of content. It can be moved, resized or deleted as a whole.",
-                );
-            }
+            ObjectKind::Form => {}
         }
         ui.add_space(6.0);
         if ui.button((theme::icon(icon::TRASH), "Delete")).clicked() {

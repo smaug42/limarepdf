@@ -104,6 +104,11 @@
 - Selecting words no longer fills the inspector with instructions, a copy of the selected text and a Copy button;
   it stays on the document or pages. Copy and the other commands for the selection are on its floating toolbar
   (or docked buttons), the right-click menu and Ctrl+C.
+- The inspector no longer explains how to use each tool in paragraphs: the tools' panels show their options, and
+  how to use a tool is in its tooltip, which now follows its name in the top bar. Other long notes in the
+  inspector are cut to a short line or a tooltip (Bates numbering's), or removed where the panel shows it already
+  (page labels, crop, opening view, form fields). Signing with a digital ID loses its Cancel button: Esc or
+  another tool stops it, as for every tool. A selected group of content is called "Group".
 
 ### Fixed
 

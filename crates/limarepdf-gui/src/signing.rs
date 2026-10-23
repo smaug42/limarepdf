@@ -930,18 +930,7 @@ impl SignPane {
         });
         ink_ui(ui, &mut kit.color);
         ui.add_space(6.0);
-        ui.label(
-            "Click on the page to put the picked item down, or drag a box to size it. Click \
-             an empty signature field to sign in it. Click an item with the read tool (or \
-             Ctrl+click it here) to select it, then move or resize it.",
-        );
-        ui.label(
-            egui::RichText::new(
-                "This is a picture of your signature, not a digital signature: it doesn't \
-                 prove who signed.",
-            )
-            .weak(),
-        );
+        ui.weak("A picture, not a digital signature.");
         ui.add_space(6.0);
         ui.label(match items {
             0 => "Nothing placed yet.".to_string(),
