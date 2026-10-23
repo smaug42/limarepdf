@@ -11,15 +11,15 @@ use crate::recent::Recent;
 use crate::selection::Selection;
 use crate::settings::{Layout, Settings};
 use crate::signatures::{self as sigs, Check, SigState, TrustAsk, TrustedOut, TrustedWindow};
-use crate::tab::{Side, Stamp, State, Tab};
+use crate::tab::{Side, State, Tab};
 use crate::theme;
 use crate::worker::Colours;
 use eframe::egui::{self, AtomExt as _, Key};
 use egui_phosphor::regular as icon;
 use limarepdf_core::render::{image_names, ImageFormat};
 use limarepdf_core::{
-    parse_page_range, part_file_name, print, Bates, HeaderFooter, ImageImport, ImageWatermark,
-    OcrResult, OpenPanel, Pdf, ScanResult, SplitBy, TrustRole, Watermark,
+    parse_page_range, part_file_name, print, ImageImport, OcrResult, OpenPanel, Pdf, ScanResult,
+    SplitBy, TrustRole,
 };
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -1895,6 +1895,11 @@ impl App {
                 let (dx, dy) = (dx as f32 * step, dy as f32 * step);
                 self.tabs[self.active].ed.nudge(dx, dy);
             }
+            // Setting the crop on the pages: Esc closes the Crop section, showing the pages
+            // as cropped again.
+            Act::Escape if self.tabs[self.active].crop_view() => {
+                self.tabs[self.active].forms.close = Some(inspector::Section::Crop);
+            }
             Act::Escape => self.tabs[self.active].ed.escape(),
             Act::NextPage | Act::PrevPage | Act::FirstPage | Act::LastPage => {
                 let t = &mut self.tabs[self.active];
@@ -2295,30 +2300,12 @@ impl App {
                 let size = self.tabs[active].forms.blank;
                 self.insert_blank(ctx, after, size);
             }
-            Apply::Label(page) => {
-                let t = &mut self.tabs[active];
-                let l = &t.forms.label;
-                let range = limarepdf_core::LabelRange {
-                    page,
-                    style: l.style,
-                    prefix: l.prefix.clone(),
-                    first: l.start.max(1),
-                };
-                t.edit(ctx, |p| p.set_label_range(range));
-            }
+            Apply::Label(joins) => self.tabs[active].keep_label(ctx, joins),
             Apply::RemoveLabels => {
-                self.tabs[active].edit(ctx, |p| p.set_label_ranges(&[]));
+                self.tabs[active].edit_setting(ctx, None, |p| p.set_label_ranges(&[]));
             }
-            Apply::Props => {
-                let t = &mut self.tabs[active];
-                let info = t.forms.meta.clone();
-                t.edit(ctx, |p| p.set_info(&info));
-            }
-            Apply::ViewPrefs => {
-                let t = &mut self.tabs[active];
-                let prefs = t.forms.view;
-                t.edit(ctx, |p| p.set_view_prefs(&prefs));
-            }
+            Apply::Props => self.tabs[active].keep_props(ctx),
+            Apply::ViewPrefs(joins) => self.tabs[active].keep_view(ctx, joins),
             Apply::Security => {
                 let encryption = self.tabs[active].forms.sec.encryption();
                 // No recovery copy made before may outlast the password (recovery design,
@@ -2336,82 +2323,19 @@ impl App {
                 self.status = "Security settings apply when you save.".into();
                 self.notify(ctx, "Changed password security".into());
             }
-            Apply::Crop => {
+            Apply::Crop(joins) => {
                 let t = &mut self.tabs[active];
                 let s = &t.forms.crop;
                 match parse_page_range(&s.pages, n) {
                     Ok(idx) => {
                         let m = s.margins;
-                        t.edit(ctx, |p| {
-                            idx.iter().try_for_each(|&i| p.set_crop_margins(i, m))
-                        });
+                        t.crop(ctx, &idx, m, joins);
                     }
                     Err(e) => t.error = Some(e.to_string()),
                 }
             }
-            Apply::Watermark { replace } => {
-                let t = &mut self.tabs[active];
-                if !replace {
-                    t.forget_stamp();
-                }
-                let s = &t.forms.wm;
-                let image = match (&s.picture, &s.image) {
-                    (false, _) => Ok(None),
-                    (true, None) => Err(anyhow::anyhow!("choose a picture first")),
-                    (true, Some(path)) => std::fs::read(path)
-                        .map(Some)
-                        .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display())),
-                };
-                match image.and_then(|im| Ok((im, parse_page_range(&s.range, n)?))) {
-                    Ok((Some(image), idx)) => {
-                        let wm = ImageWatermark {
-                            image,
-                            scale: s.scale / 100.0,
-                            opacity: s.opacity,
-                            rotation: s.rotation,
-                            foreground: s.foreground,
-                        };
-                        t.edit_stamp(ctx, Stamp::Watermark, |p| p.add_image_watermark(&idx, &wm));
-                    }
-                    Ok((None, idx)) => {
-                        let wm = Watermark {
-                            text: s.text.clone(),
-                            font_size: s.size,
-                            opacity: s.opacity,
-                            rotation: s.rotation,
-                            color: (s.color[0], s.color[1], s.color[2]),
-                            foreground: s.foreground,
-                        };
-                        t.edit_stamp(ctx, Stamp::Watermark, |p| p.add_watermark(&idx, &wm));
-                    }
-                    Err(e) => t.error = Some(e.to_string()),
-                }
-            }
-            Apply::HeaderFooter { replace } => {
-                let t = &mut self.tabs[active];
-                if !replace {
-                    t.forget_stamp();
-                }
-                let s = &t.forms.hf;
-                match parse_page_range(&s.range, n) {
-                    Ok(idx) => {
-                        let hf = HeaderFooter {
-                            header: s.header.clone(),
-                            footer: s.footer.clone(),
-                            font_size: s.size,
-                            margin: s.margin,
-                            color: (0.0, 0.0, 0.0),
-                            bates: s.bates.then(|| Bates {
-                                prefix: s.prefix.clone(),
-                                suffix: s.suffix.clone(),
-                                digits: s.digits as usize,
-                                start: s.start,
-                            }),
-                        };
-                        t.edit_stamp(ctx, Stamp::HeaderFooter, |p| p.add_header_footer(&idx, &hf));
-                    }
-                    Err(e) => t.error = Some(e.to_string()),
-                }
+            Apply::Stamp { kind, update } => {
+                self.tabs[active].stamp_from_form(ctx, kind, update);
             }
             Apply::Ocr => match parse_page_range(&self.tabs[active].forms.ocr, n) {
                 Ok(idx) => self.spawn_job(ctx, OCR_JOB, move |p| {
@@ -5901,6 +5825,230 @@ mod tests {
         let texts: Vec<String> = back.annotations().into_iter().map(|a| a.contents).collect();
         assert_eq!(texts, ["Walrus typed"]);
         assert!(!app.tabs[0].dirty, "saved, yet marked unsaved");
+    }
+
+    /// The window drawn 1400 points wide with `events` (see [`window`]), and the text drawn
+    /// on the pages: the previews, in Liberation fonts.
+    fn drawn_texts(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) -> Vec<String> {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1400.0, 800.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut out = ctx.run_ui(raw, |ui| eframe::App::ui(app, ui, &mut frame));
+        out.textures_delta.clear();
+        // Only text drawn on the pages, in the fonts of the text written there.
+        fn walk(s: &egui::Shape, out: &mut Vec<String>) {
+            match s {
+                egui::Shape::Text(t) => {
+                    let section = t.galley.job.sections.first();
+                    if let Some(egui::FontFamily::Name(n)) =
+                        section.map(|s| &s.format.font_id.family)
+                    {
+                        if n.starts_with("Liberation") {
+                            out.push(t.galley.text().to_string());
+                        }
+                    }
+                }
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut texts = Vec::new();
+        for c in &out.shapes {
+            walk(&c.shape, &mut texts);
+        }
+        texts
+    }
+
+    /// The middle of the control called `name`.
+    fn middle(tree: &egui::accesskit::TreeUpdate, name: &str) -> egui::Pos2 {
+        node(tree, name)
+            .unwrap_or_else(|| panic!("no {name}"))
+            .0
+            .center()
+    }
+
+    /// The window settled after a change: a few frames with no input.
+    fn settle(app: &mut App, ctx: &egui::Context) -> egui::accesskit::TreeUpdate {
+        for _ in 0..3 {
+            window(app, ctx, 1400.0, vec![]);
+        }
+        window(app, ctx, 1400.0, vec![])
+    }
+
+    /// Document properties apply as typed, with no Apply button: Enter or leaving a field
+    /// keeps it, one undo step each, and saving keeps what is still being typed.
+    #[test]
+    fn properties_are_kept_by_enter_or_leaving_a_field() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let info = limarepdf_core::Info {
+            title: Some("Walrus".into()),
+            ..Default::default()
+        };
+        assert!(app.tabs[0].edit(&ctx, |p| p.set_info(&info)));
+        app.tabs[0].forms.reveal = Some(inspector::Section::Properties);
+        let tree = settle(&mut app, &ctx);
+        // Password security is folded, so any Apply would be the properties'.
+        let buttons = |tree: &egui::accesskit::TreeUpdate| -> Vec<String> {
+            tree.nodes
+                .iter()
+                .filter(|(_, n)| n.role() == egui::accesskit::Role::Button)
+                .filter_map(|(_, n)| n.label().map(str::to_string))
+                .collect()
+        };
+        let shown = buttons(&tree);
+        assert!(!shown.iter().any(|b| b == "Apply"), "{shown:?}");
+        let field = |tree: &egui::accesskit::TreeUpdate, value: &str| {
+            let (_, n) = tree
+                .nodes
+                .iter()
+                .find(|(_, n)| {
+                    n.role() == egui::accesskit::Role::TextInput && n.value() == Some(value)
+                })
+                .unwrap_or_else(|| panic!("no field holding {value:?}"));
+            let b = n.bounds().unwrap();
+            egui::pos2(((b.x0 + b.x1) / 2.0) as f32, ((b.y0 + b.y1) / 2.0) as f32)
+        };
+        let none = egui::Modifiers::NONE;
+        let title = |app: &App| app.tabs[0].pdf.info().title;
+        // Enter keeps it.
+        window(&mut app, &ctx, 1400.0, click_at(field(&tree, "Walrus")));
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::End, none)]);
+        let typed = vec![egui::Event::Text(" notes".into())];
+        window(&mut app, &ctx, 1400.0, typed);
+        assert_eq!(title(&app).as_deref(), Some("Walrus"), "kept before Enter");
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::Enter, none)]);
+        let tree = settle(&mut app, &ctx);
+        assert_eq!(title(&app).as_deref(), Some("Walrus notes"));
+        // Leaving the field keeps it: a click on the page.
+        let at = field(&tree, "Walrus notes");
+        window(&mut app, &ctx, 1400.0, click_at(at));
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::End, none)]);
+        window(&mut app, &ctx, 1400.0, vec![egui::Event::Text("!".into())]);
+        let tree = settle(&mut app, &ctx);
+        window(&mut app, &ctx, 1400.0, click_at(middle(&tree, "Page 1")));
+        settle(&mut app, &ctx);
+        assert_eq!(title(&app).as_deref(), Some("Walrus notes!"));
+        // Typing not yet kept is kept by saving.
+        app.tabs[0].ed.selection = Selection::default();
+        let tree = settle(&mut app, &ctx);
+        let at = field(&tree, "Walrus notes!");
+        window(&mut app, &ctx, 1400.0, click_at(at));
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::End, none)]);
+        window(&mut app, &ctx, 1400.0, vec![egui::Event::Text("?".into())]);
+        settle(&mut app, &ctx);
+        assert!(app.tabs[0].typing_in_forms());
+        let path =
+            std::env::temp_dir().join(format!("limarepdf-app-{}-props.pdf", std::process::id()));
+        app.tabs[0].path = Some(path.clone());
+        app.act(&ctx, Act::Save);
+        let back = Pdf::from_bytes(&std::fs::read(&path).unwrap(), None).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(back.info().title.as_deref(), Some("Walrus notes!?"));
+        // One undo step each.
+        let t = &mut app.tabs[0];
+        for was in ["Walrus notes!", "Walrus notes", "Walrus"] {
+            t.undo(&ctx);
+            assert_eq!(t.pdf.info().title.as_deref(), Some(was));
+        }
+    }
+
+    /// A watermark is drawn over the pages while its section is open, and nothing is written
+    /// until Add to pages; then changes update it in place. Headers and footers likewise.
+    #[test]
+    fn stamps_are_shown_on_the_pages_until_added() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        app.tabs[0].forms.reveal = Some(inspector::Section::Watermark);
+        let tree = settle(&mut app, &ctx);
+        // On the page in view, written nowhere.
+        let texts = drawn_texts(&mut app, &ctx, vec![]);
+        assert_eq!(texts, ["DRAFT"]);
+        let lines = |app: &App| -> Vec<String> {
+            let objs = app.tabs[0].pdf.page_objects(0).unwrap();
+            objs.into_iter().filter_map(|o| o.text).collect()
+        };
+        assert!(lines(&app).is_empty());
+        let add = middle(&tree, "Add to pages");
+        window(&mut app, &ctx, 1400.0, click_at(add));
+        let tree = settle(&mut app, &ctx);
+        assert_eq!(lines(&app), ["DRAFT"]);
+        assert!(node(&tree, "Add another").is_some());
+        let texts = drawn_texts(&mut app, &ctx, vec![]);
+        assert!(texts.is_empty(), "still previewed: {texts:?}");
+        // A change updates it.
+        app.tabs[0].forms.wm.text = "COPY".into();
+        settle(&mut app, &ctx);
+        assert_eq!(lines(&app), ["COPY"]);
+        app.tabs[0].undo(&ctx);
+        assert_eq!(lines(&app), ["DRAFT"]);
+        // Headers and footers, with their tokens filled in for each page.
+        app.tabs[0].forms.reveal = Some(inspector::Section::HeaderFooter);
+        settle(&mut app, &ctx);
+        assert_eq!(drawn_texts(&mut app, &ctx, vec![]), ["Page 1 of 2"]);
+        assert_eq!(lines(&app), ["DRAFT"]);
+    }
+
+    /// While the Crop section is open the pages are drawn whole with the crop box on them;
+    /// dragging its top edge crops the pages, one undo step, and can pull it back out. Esc
+    /// closes the section, showing the pages cropped.
+    #[test]
+    fn the_crop_box_is_dragged_on_the_page() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        app.tabs[0].forms.reveal = Some(inspector::Section::Crop);
+        let drag = |app: &mut App, from: egui::Pos2, to: egui::Pos2| {
+            window(app, &ctx, 1400.0, vec![egui::Event::PointerMoved(from)]);
+            window(app, &ctx, 1400.0, vec![press(from, true)]);
+            for i in 1..=4 {
+                let at = from + (to - from) * (i as f32 / 4.0);
+                window(app, &ctx, 1400.0, vec![egui::Event::PointerMoved(at)]);
+            }
+            window(app, &ctx, 1400.0, vec![press(to, false)]);
+        };
+        // The page, inside the room around it to take its edges.
+        fn page_in(tree: &egui::accesskit::TreeUpdate) -> egui::Rect {
+            let (r, _) = node(tree, "Crop box on page 1").expect("the crop box");
+            r.shrink(8.0)
+        }
+        let tree = settle(&mut app, &ctx);
+        assert!(app.tabs[0].crop_view());
+        let page = page_in(&tree);
+        let k = page.width() / 612.0;
+        let top = egui::pos2(page.center().x, page.min.y);
+        drag(&mut app, top, top + egui::vec2(0.0, 72.0 * k));
+        let margins = |app: &App, p| app.tabs[0].pdf.crop_margins(p).unwrap();
+        assert_eq!(margins(&app, 0), [72.0, 0.0, 0.0, 0.0]);
+        assert_eq!(margins(&app, 1), [72.0, 0.0, 0.0, 0.0]);
+        assert_eq!(app.tabs[0].sizes[0], (612.0, 792.0), "not shown whole");
+        // Esc: shown as cropped.
+        let esc = key_with(Key::Escape, egui::Modifiers::NONE);
+        window(&mut app, &ctx, 1400.0, vec![esc]);
+        settle(&mut app, &ctx);
+        assert!(!app.tabs[0].crop_view());
+        assert_eq!(app.tabs[0].sizes[0], (612.0, 720.0));
+        // Open again, and pulled back out past the page's top.
+        app.tabs[0].forms.reveal = Some(inspector::Section::Crop);
+        let page = page_in(&settle(&mut app, &ctx));
+        let edge = egui::pos2(page.center().x, page.min.y + 72.0 * k);
+        drag(&mut app, edge, egui::pos2(edge.x, page.min.y - 30.0));
+        assert_eq!(margins(&app, 0), [0.0; 4]);
+        app.tabs[0].undo(&ctx);
+        assert_eq!(margins(&app, 1), [72.0, 0.0, 0.0, 0.0]);
+        app.tabs[0].undo(&ctx);
+        assert_eq!(margins(&app, 1), [0.0; 4]);
     }
 
     /// What the signing window hands over once a document was signed and written.

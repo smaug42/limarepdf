@@ -88,6 +88,19 @@
 - Finishing a note or text box by choosing another tool keeps that tool, as Add text does, instead of going back
   to the read tool. While typing in a note or text box, Ctrl+Z and Ctrl+Y undo and redo the typing, not the
   document.
+- Document properties, Opening view and Page labels apply as you set them, one undo step per change, instead of
+  with Apply or Number from page N: a property or the label prefix when you press Enter or leave the field, a
+  choice at once, a number when you let go of it. Page labels show the numbering the first selected page has,
+  and a change starts numbering there. Use current view sets the opening view at once. Saving or closing keeps
+  a field still being typed in.
+- Crop is set on the pages: while the Crop section is open the pages are shown whole, the part outside each crop
+  box dimmed, and the crop box's edges and corners can be dragged on the pages being cropped. Each drag or
+  margin typed crops at once, one undo step; Esc or closing the section shows the pages cropped. The Crop button
+  is gone; Remove crop stays.
+- Watermarks and headers, footers and Bates numbers are shown on the pages as you set them, without being added
+  to the document, until Add to pages (was Apply). After that, each change updates the one just added, as its own
+  undo step, replacing the Update button; Undo steps back through the changes with the settings following. Add
+  another stays.
 
 ### Fixed
 

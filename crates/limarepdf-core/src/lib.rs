@@ -73,13 +73,15 @@ pub use forms::{Field, FieldKind, FieldValue, Widget};
 pub use ids::{
     password_problem, DigitalId, IdList, IdStore, NewId, UnlockedId, WrongPassword, MIN_PASSWORD,
 };
-pub use imgs::{image_dimensions, ImageImport};
+pub use imgs::{image_dimensions, picture_preview, ImageImport};
 pub use labels::{LabelRange, LabelStyle};
 pub use links::{Link, LinkTarget};
 pub use objects::{words_text, ObjectKind, PageObject, PageWord};
 pub use ocr::{Ocr, OcrLine, OcrResult, OcrWord};
 pub use outline::{BookmarkPlace, OutlineItem};
-pub use overlay::{text_width, Bates, HeaderFooter, ImageWatermark, Watermark};
+pub use overlay::{
+    picture_size, text_width, today_iso, Bates, HeaderFooter, ImageWatermark, Placed, Watermark,
+};
 pub use pagerange::{format_page_range, parse_page_range};
 pub use redact::{PageRedaction, RedactReport};
 pub use sanitise::{Hidden, HiddenReport, LayersDamaged};

@@ -56,7 +56,6 @@ this list once it works. The feature table below has the details.
 **Selecting and arranging**
 
 - One object at a time: several pictures, shapes or lines of text can't be selected to move or delete together.
-- Pages are cropped by typing margins; you can't yet drag a crop box on the page.
 - Bookmarks can't be moved or reordered, and links can't be added or edited.
 - Merging doesn't carry over the bookmarks and form fields of the files added.
 
@@ -100,12 +99,12 @@ available.
 | Search | Done | Phrases across line breaks, and words hyphenated at a line end, are found and highlighted. Chinese, Japanese and Korean text in fonts without a ToUnicode map is read through the font's character map. [Details](search-and-text.md) |
 | Select and copy text | Done | With the default read tool; across pages, scrolling while you drag; in the order on the page, not the file's drawing order; includes recognised text |
 | Print or save selected text | Done | As the pages look, full width, cut down to the selected lines, or as plain text in Helvetica (Western European characters only); also saves a .txt file |
-| Page operations: insert, delete, rotate, extract, reorder, crop, remove blank pages | Done | Crop by margins; no dragging a crop box on the page. Blank means one even colour, give or take specks or a lone page number. Deleted and extracted-away pages leave nothing in the saved file: bookmarks, named destinations, links, form fields and tags no longer refer to them, and the tags' alternative text for their content goes. A form nested more than 32 deep is refused, changing nothing ([details](gui.md#selecting-and-the-inspector)) |
+| Page operations: insert, delete, rotate, extract, reorder, crop, remove blank pages | Done | Crop by dragging the crop box on the pages, shown whole while it is set, or by typing margins. Blank means one even colour, give or take specks or a lone page number. Deleted and extracted-away pages leave nothing in the saved file: bookmarks, named destinations, links, form fields and tags no longer refer to them, and the tags' alternative text for their content goes. A form nested more than 32 deep is refused, changing nothing ([details](gui.md#selecting-and-the-inspector)) |
 | Merge and split | Done | Split by page count or at bookmarks, files named after them. Bookmarks, forms and named destinations of appended files are not carried over. Split parts, like extracted pages, keep the bookmarks to their own pages and nothing of the other pages; each is written as soon as it is made, so memory stays near the document's own size. Split by file size: No |
 | Undo and redo | Done | 20 levels, including password settings; fewer on very large documents (up to 1 GB per document) |
-| Headers, footers, page numbers, dates, Bates numbers | Done | Helvetica and Western European characters only; Bates numbers up to 18446744073709551615 (more is refused, changing nothing) |
-| Watermarks | Done | Text or a PNG, JPEG or TIFF picture; centred, with size, opacity, rotation, above or behind |
-| Document properties | Done | Title, author, subject, keywords, creator, producer |
+| Headers, footers, page numbers, dates, Bates numbers | Done | Shown on the pages as you set them, added with Add to pages, then updated in place as you change them. Helvetica and Western European characters only; Bates numbers up to 18446744073709551615 (more is refused, changing nothing) |
+| Watermarks | Done | Text or a PNG, JPEG or TIFF picture; centred, with size, opacity, rotation, above or behind. Shown on the pages as you set them, added with Add to pages, then updated in place |
+| Document properties | Done | Title, author, subject, keywords, creator, producer; each kept as you type it (Enter or leaving the field), one undo step each |
 | Password security | Done | All four ciphers and permission flags. [Things to know](security.md) |
 | Opening protected files | Done | With the open (user) password; files with an empty one (only a permissions password) open without asking, including RC4 files with a shortened password entry that other readers accept, and their notice says so |
 | Content editing | Partial | New text is typed on the page where you click, in the font, size and colour it will have, several lines added as one undo step. Double-click a line with the read tool, or click it with the Text tool, to edit it on the page, drawn in the font, size and colour it will have over the line; pictures, shapes and comments are selected, moved and resized with the read tool too, page text after Move or resize text on its toolbar (the read tool stays on) or with the arrow. Changes in the inspector apply at once, each an undo step; typing into one line again soon joins one step. Works on lines, not paragraphs; some fonts are replaced when edited; the text after a deleted, edited or moved line stays where it was (except in vertical writing). [Details](content-editing.md) |
@@ -123,8 +122,8 @@ available.
 | Forms | Partial | Fill in text fields, checkboxes, radio buttons and lists in the app (Tab between fields, fields highlighted unless turned off, reset, flatten) and from the command line (`limarepdf-cli form`, values as JSON, flatten all or some pages). Western European text only, so a value filled in elsewhere in other characters shows only if that app drew it; flattening refuses, naming the fields, rather than lose one it can't draw; JavaScript doesn't run; creating fields: No; signature fields take a fill-and-sign signature, or a digital signature (Document > Digital signatures > Sign with digital ID, or `limarepdf-cli sign --field`). [Details](gui.md#filling-in-forms) |
 | XFA-only forms (made for Adobe Reader) | No | Recognised and explained in a notice and by `limarepdf-cli form`; showing or filling them is not planned (see below). Hybrid forms are filled through their ordinary fields |
 | Form data import/export (FDF, XFDF), barcodes, JavaScript | No | |
-| Viewer preferences | Done | The layout, side panel (Pages or Bookmarks) and page a document opens with: followed when opening, set in the inspector's Opening view or with `limarepdf-cli view-prefs`. Full screen and hiding the toolbar or menu: No. [Details](cli.md#viewer-preferences) |
-| Page labels | Done | Numbering such as i, ii, 1, 2 or A-1: shown in the status bar, thumbnails and bookmark tips; set from the selected pages in the inspector or with `limarepdf-cli labels`; kept with their pages when pages move. Going to a page by its label: No. [Details](cli.md#page-labels) |
+| Viewer preferences | Done | The layout, side panel (Pages or Bookmarks) and page a document opens with: followed when opening, set in the inspector's Opening view (each choice applies as you make it) or with `limarepdf-cli view-prefs`. Full screen and hiding the toolbar or menu: No. [Details](cli.md#viewer-preferences) |
+| Page labels | Done | Numbering such as i, ii, 1, 2 or A-1: shown in the status bar, thumbnails and bookmark tips; set from the selected pages in the inspector, applying as you set them, or with `limarepdf-cli labels`; kept with their pages when pages move. Going to a page by its label: No. [Details](cli.md#page-labels) |
 | Bookmarks | Partial | Shown in the Bookmarks view (also from the command palette) and followed; added, renamed and deleted in that view or with `limarepdf-cli bookmarks`. Moving or reordering them, styles and colours: No. [Details](gui.md#the-window), [CLI](cli.md#bookmarks) |
 | Links | Partial | Followed: to pages, and to web and email addresses after asking. Links to other PDF files, and adding or editing links: No. [Details](gui.md#links) |
 | Layers, attachments | No | |
@@ -146,7 +145,10 @@ available.
 - `limarepdf-cli render` leaves a filled form field empty when the field has no drawing of its own; the app's
   exports and all printing draw it. To be fixed ([details](export-and-printing.md#pages-as-images)).
 - Headers, footers and watermarks are added to the page content. They are not annotations and cannot be removed one
-  by one later; use Undo before saving.
+  by one later; use Undo before saving. The one just added can be changed until anything else changes.
+- While a watermark or headers and footers are being set, the pages show them drawn over the content, also when
+  they are set to go behind it, and in Liberation Sans, which has Helvetica's widths; once added, the pages show
+  them as written.
 - Saving rewrites the whole file, except for digitally signed documents, whose changes are added after what was
   signed so the signatures stay valid ([details](signatures.md#saving-a-signed-document)). It writes a temporary file
   beside the document, readable only by you (on Linux and macOS) when it replaces a file, then puts it in the

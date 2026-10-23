@@ -500,9 +500,20 @@ Pages boxes, in the inspector's tools and the print dialog, take page numbers an
 `1-3,7`, `5-` (5 to the end) or `all`. Clicking or tabbing into a box that says `all` selects it, so typing page
 numbers replaces it.
 
-A watermark is text or a picture (PNG, JPEG or TIFF), centred on each page. After you apply a watermark or headers
-and footers, the section's button becomes Update: change a setting and press it to redo what you just added rather
-than stamping a second copy. Add another keeps it and adds a new one. Any other change returns the button to Apply.
+The page and document settings apply as you set them, with no Apply button, each change one undo step: typed
+text when you press Enter or leave the field, a choice at once, a number when you stop dragging it or leave its
+box. Document properties (title, author and the others) work this way. Saving or closing keeps a field you are
+still typing in. Password security is the exception: its Apply button sets the passwords, which take effect when
+you save.
+
+A watermark is text or a picture (PNG, JPEG or TIFF), centred on each page. While the Watermark or the Headers,
+footers, Bates section is open, the pages in its Pages box show what it describes as you set it, drawn over them
+(also when it is set to go behind the content, and in Liberation Sans, which has Helvetica's widths); nothing is
+added to the document until you choose Add to pages. After that, each change updates what you just added instead
+of stamping a second copy, one undo step each, a colour when its picker closes; Undo steps back through the
+changes, and the section's settings follow. Add another keeps it and adds a new one. Any other change to the
+document ends this: the section shows Add to pages again, and the pages show the settings again once you change
+one.
 
 If a damaged file makes LimarePDF fail while showing a document, that tab shows an error page with Save a copy and Close
 this tab; other tabs carry on.
@@ -511,12 +522,13 @@ Page labels are the page numbers viewers show, such as i, ii, 1, 2 or A-1; they 
 pages. When a document has them, the status bar shows the label with the page's place, such as "Page i (3 of 477)",
 and the thumbnails show the labels. To set them, select the first page to number, open Page labels in the
 inspector (or go to the page and choose ☰ > Pages > Page labels…), and pick a style, an optional prefix and the number to start at; the numbering runs to the next labelled
-range. Labels stay with their pages when pages are deleted or moved.
+range. The section shows the numbering the page has now, and each change applies at once, starting numbering
+there. Labels stay with their pages when pages are deleted or moved.
 
 Opening view, in the document's inspector, is how viewers that follow it show the document when it opens: its
 layout (continuous, facing, facing with the cover alone, or single page), the side panel (Pages or Bookmarks) and
-the page it opens at. Each can be left as Not set. Use current view fills them in from how you are viewing the
-document now; Apply saves them into the document like any other change, and Undo reverses it.
+the page it opens at. Each can be left as Not set. Each choice applies as you make it, and Use current view sets
+all three from how you are viewing the document now; Undo reverses any of them.
 
 Split into files makes files of a set number of pages, or starts a file at each bookmark down to the chosen level
 (1 is the top level only). Files are named after their bookmark, such as `book-002 Introduction.pdf`, and the pages
@@ -533,9 +545,12 @@ extracted file or a split part keeps the bookmarks to its own pages; a bookmark 
 destination, only when bookmarks below it stay. Deleting pages keeps every bookmark, without a destination when its
 page went.
 
-Crop trims margins from each side of the page as it is shown, measured from the full page; the fields start with
-the first page's current crop. Remove crop shows the whole page again. Cropping hides content but does not delete
-it.
+Crop trims margins from each side of the page as it is shown, measured from the full page. While the Crop section
+is open, the pages are shown whole, with the part outside each page's crop box dimmed. On the pages in its Pages
+box the crop box has handles: drag its edges or corners to crop, or type the margins (the fields start with the
+first page's crop). Each drag or number crops all those pages at once, one undo step, and dragging back out
+undoes a crop. While the section is open, clicks on the pages only move the crop box; close it, or press Esc, to
+see the pages cropped. Remove crop shows the whole page again. Cropping hides content but does not delete it.
 
 Right-click a page, an object, selected words or a thumbnail for a short menu of what applies there. Right-clicking
 selects what is under the pointer first. A selected object or run of words also gets a small floating toolbar with

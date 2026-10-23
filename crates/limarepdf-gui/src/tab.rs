@@ -1,7 +1,7 @@
 use crate::actions::{self, Act, Ctx};
 use crate::banners::{self, Banner};
 use crate::editor::{annot_tip, Action, Editor, StampPick, Tool};
-use crate::inspector::{Forms, Sec};
+use crate::inspector::{Forms, Hf, Sec, Wm};
 use crate::markup::Mark;
 use crate::page_text;
 use crate::recovery::schedule::Schedule;
@@ -16,11 +16,15 @@ use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptio
 use egui_phosphor::regular as icon;
 use limarepdf_core::render::{Missing, MAX_REGION_SCALE};
 use limarepdf_core::{
-    Annot, BookmarkPlace, Encryption, LinkTarget, OutlineItem, Pdf, SearchHit, Shape, ShapeLook,
-    StampPlace,
+    Annot, BookmarkPlace, Encryption, ImageWatermark, LinkTarget, OutlineItem, Pdf, SearchHit,
+    Shape, ShapeLook, StampPlace,
 };
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
+
+mod previews;
+use previews::{CropDrag, Picture};
 
 const GAP: f32 = 16.0;
 /// Room left beside a fitted page, beyond the gaps, so it never meets the scroll bar.
@@ -60,6 +64,73 @@ struct Step {
     /// good (see [`Tab::edit_removing`]): undoing it puts the content back, redoing it
     /// removes it again.
     removal: bool,
+    /// The stamp the inspector's form was linked to in this state, if any.
+    stamp: Option<Stamped>,
+}
+
+/// A watermark or headers and footers just added, which the inspector's form keeps
+/// updating until anything else changes: the document's bytes before it was added, and
+/// the settings it was added with.
+#[derive(Clone)]
+pub struct Stamped {
+    base: Arc<Vec<u8>>,
+    pub form: StampForm,
+}
+
+impl Stamped {
+    pub fn kind(&self) -> Stamp {
+        self.form.kind()
+    }
+}
+
+/// The settings a stamp was added with.
+#[derive(Clone, PartialEq)]
+pub enum StampForm {
+    Wm(Wm),
+    Hf(Hf),
+}
+
+impl StampForm {
+    pub fn kind(&self) -> Stamp {
+        match self {
+            StampForm::Wm(_) => Stamp::Watermark,
+            StampForm::Hf(_) => Stamp::HeaderFooter,
+        }
+    }
+}
+
+/// Add the stamp `form` describes to `pages`; `picture`: the watermark picture's file.
+fn stamp_onto(
+    p: &mut Pdf,
+    form: &StampForm,
+    pages: &[usize],
+    picture: Option<Vec<u8>>,
+) -> limarepdf_core::Result<()> {
+    match form {
+        StampForm::Wm(s) => match picture {
+            Some(image) => p.add_image_watermark(
+                pages,
+                &ImageWatermark {
+                    image,
+                    scale: s.scale / 100.0,
+                    opacity: s.opacity,
+                    rotation: s.rotation,
+                    foreground: s.foreground,
+                },
+            ),
+            None => p.add_watermark(pages, &s.watermark()),
+        },
+        StampForm::Hf(s) => p.add_header_footer(pages, &s.header_footer()),
+    }
+}
+
+/// What an edit redraws: every page, some pages (their old pictures shown until the new
+/// ones arrive), or nothing, for changes that don't show on the pages (document
+/// properties, page labels, the crop while the pages are shown whole).
+enum Redraw<'a> {
+    All,
+    Pages(&'a [usize]),
+    Nothing,
 }
 
 impl Step {
@@ -158,8 +229,21 @@ pub struct Tab {
     goto: Option<usize>,
     undo: Vec<Step>,
     redo: Vec<Step>,
-    /// The last edit made by [`Tab::edit_stamp`]: its kind, and the revision and undo depth just after it.
-    last_stamp: Option<(Stamp, u64, usize)>,
+    /// The stamp the inspector's form is linked to: the last change made, until anything
+    /// else changes (undo and redo bring the link back with the state it belongs to).
+    pub stamp: Option<Stamped>,
+    /// The setting the last edit made by [`Tab::edit_setting`] changed, the revision and undo
+    /// depth just after it, and when (`egui` time). Changing it again within
+    /// [`MERGE_PAUSE`], with nothing else in between, joins that undo step.
+    last_setting: Option<(&'static str, u64, usize, f64)>,
+    /// While the inspector's Crop section is open: each page's crop margins, the pages
+    /// being drawn whole so the crop box can be shown and dragged on them.
+    crop_view: Option<Vec<[f32; 4]>>,
+    /// The crop box being dragged on a page: the page, which sides move (top, right,
+    /// bottom, left), the margins when the drag started, and the margins now.
+    crop_drag: Option<CropDrag>,
+    /// The picture the watermark preview shows.
+    wm_picture: Option<Picture>,
     /// The line of page text whose words the last edit changed, the revision and undo depth
     /// just after it, and when (`egui` time). Changing its words again before anything else
     /// changes, within [`MERGE_PAUSE`], joins that undo step.
@@ -304,7 +388,11 @@ impl Tab {
             goto: None,
             undo: Vec::new(),
             redo: Vec::new(),
-            last_stamp: None,
+            stamp: None,
+            last_setting: None,
+            crop_view: None,
+            crop_drag: None,
+            wm_picture: None,
             last_line: None,
             side: Side::Pages,
             query: String::new(),
@@ -433,9 +521,9 @@ impl Tab {
     /// What a command can change in the tab, taken before it runs: if the command fails part
     /// way, comparing tells whether it changed anything.
     /// Whether closing would lose work: unsaved changes, or typing not yet kept in the
-    /// document ([`Editor::pending`]).
+    /// document ([`Editor::pending`], [`Tab::typing_in_forms`]).
     pub fn unsaved(&self) -> bool {
-        self.dirty || self.ed.pending()
+        self.dirty || self.ed.pending() || self.typing_in_forms()
     }
 
     /// Put what has been typed but not yet kept into the document, as clicking away
@@ -443,6 +531,7 @@ impl Tab {
     pub fn keep_typing(&mut self, ctx: &egui::Context) {
         self.ed.keep_pending();
         self.apply_actions(ctx);
+        self.keep_forms(ctx);
     }
 
     pub fn state(&self) -> State {
@@ -472,7 +561,7 @@ impl Tab {
         ctx: &egui::Context,
         f: impl FnOnce(&mut Pdf) -> limarepdf_core::Result<()>,
     ) -> bool {
-        self.edit_inner(ctx, None, false, false, f)
+        self.edit_inner(ctx, Redraw::All, false, false, f)
     }
 
     /// Like [`Tab::edit`], for a change that removes content for good (redaction, removing hidden
@@ -483,48 +572,125 @@ impl Tab {
         ctx: &egui::Context,
         f: impl FnOnce(&mut Pdf) -> limarepdf_core::Result<()>,
     ) -> bool {
-        self.edit_inner(ctx, None, true, false, f)
+        self.edit_inner(ctx, Redraw::All, true, false, f)
     }
 
-    /// Like [`Tab::edit`], but if the last change was the same kind of stamp, it is replaced rather than
-    /// added to, so adjusting a setting and applying again doesn't pile up copies. One undo step either way.
-    pub fn edit_stamp(
+    /// Like [`Tab::edit`], for a document setting that doesn't show on the pages (properties,
+    /// opening view, page labels): nothing is redrawn and the view stays where it is.
+    /// `joins`: a name for the setting, when changing it again soon (a number nudged up and
+    /// up) should join the same undo step.
+    pub fn edit_setting(
         &mut self,
         ctx: &egui::Context,
-        kind: Stamp,
+        joins: Option<&'static str>,
         f: impl FnOnce(&mut Pdf) -> limarepdf_core::Result<()>,
     ) -> bool {
-        let mut replaced = None;
-        if self.replaces_stamp(kind) {
-            if let Some(Step {
-                pdf: Some(bytes), ..
-            }) = self.undo.last()
-            {
-                if let Ok(before) = Pdf::from_bytes(bytes, None) {
-                    let step = self.undo.pop();
-                    replaced = Some((std::mem::replace(&mut self.pdf, before), step));
-                }
-            }
-        }
-        let ok = self.edit(ctx, f);
+        let now = ctx.input(|i| i.time);
+        let merge = joins.is_some_and(|key| {
+            self.last_setting.is_some_and(|(k, rev, depth, at)| {
+                k == key
+                    && rev == self.revision
+                    && depth == self.undo.len()
+                    && now - at < MERGE_PAUSE
+            })
+        });
+        let ok = self.edit_inner(ctx, Redraw::Nothing, false, merge, f);
         if ok {
-            self.last_stamp = Some((kind, self.revision, self.undo.len()));
-        } else if let Some((pdf, step)) = replaced {
-            // Put the earlier stamp back.
-            self.pdf = pdf;
-            self.undo.extend(step);
+            self.last_setting = joins.map(|k| (k, self.revision, self.undo.len(), now));
         }
         ok
     }
 
-    /// Keep the last stamp: the next one is added alongside it.
-    pub fn forget_stamp(&mut self) {
-        self.last_stamp = None;
+    /// The stamp of this kind the inspector's form is linked to, if any.
+    pub fn linked(&self, kind: Stamp) -> Option<&Stamped> {
+        self.stamp.as_ref().filter(|s| s.kind() == kind)
     }
 
-    /// Whether applying a stamp of this kind now would replace the previous one.
-    pub fn replaces_stamp(&self, kind: Stamp) -> bool {
-        self.last_stamp == Some((kind, self.revision, self.undo.len()))
+    /// Add the stamp the form describes to `pages`, or, with `update`, put it in place of the
+    /// one the form is linked to (see [`Tab::linked`]). Either way one undo step, and the form
+    /// is linked to the result.
+    pub fn put_stamp(
+        &mut self,
+        ctx: &egui::Context,
+        form: StampForm,
+        pages: &[usize],
+        update: bool,
+    ) -> bool {
+        let base = if update {
+            match self.linked(form.kind()) {
+                Some(s) => Some(s.base.clone()),
+                None => return false,
+            }
+        } else {
+            None
+        };
+        // A picture is read again each time, so a changed file shows.
+        let picture = match &form {
+            StampForm::Wm(w) if w.picture => match &w.image {
+                Some(path) => match std::fs::read(path) {
+                    Ok(b) => Some(b),
+                    Err(e) => {
+                        self.error = Some(format!("reading {}: {e}", path.display()));
+                        return false;
+                    }
+                },
+                None => {
+                    self.error = Some("choose a picture first".into());
+                    return false;
+                }
+            },
+            _ => None,
+        };
+        let add = |p: &mut Pdf| {
+            if let Some(b) = &base {
+                *p = Pdf::from_bytes(b, None)?;
+            }
+            stamp_onto(p, &form, pages, picture)
+        };
+        if !self.edit_inner(ctx, Redraw::Pages(pages), false, false, add) {
+            return false;
+        }
+        // The state before the stamp, which the undo step just made holds.
+        let base = base.or_else(|| {
+            let before = self.undo.last()?.pdf.clone()?;
+            Some(Arc::new(before))
+        });
+        self.stamp = base.map(|base| Stamped {
+            base,
+            form: form.clone(),
+        });
+        true
+    }
+
+    /// Crop `pages` by `margins` (see [`Pdf::set_crop_margins`]), one undo step; `joins` as
+    /// for [`Tab::edit_setting`]. While the pages are shown whole for cropping, nothing is
+    /// redrawn.
+    pub fn crop(
+        &mut self,
+        ctx: &egui::Context,
+        pages: &[usize],
+        margins: [f32; 4],
+        joins: Option<&'static str>,
+    ) -> bool {
+        let changes: Vec<usize> = pages
+            .iter()
+            .copied()
+            .filter(|&i| self.pdf.crop_margins(i).ok() != Some(margins))
+            .collect();
+        if changes.is_empty() {
+            return true;
+        }
+        let f = |p: &mut Pdf| {
+            changes
+                .iter()
+                .try_for_each(|&i| p.set_crop_margins(i, margins))
+        };
+        if self.crop_view.is_some() {
+            self.edit_setting(ctx, joins, f)
+        } else {
+            // The pages change size.
+            self.edit(ctx, f)
+        }
     }
 
     /// Like [`Tab::edit`] for changes confined to the given pages: the old picture stays visible until the new
@@ -535,7 +701,7 @@ impl Tab {
         pages: &[usize],
         f: impl FnOnce(&mut Pdf) -> limarepdf_core::Result<()>,
     ) -> bool {
-        self.edit_inner(ctx, Some(pages), false, false, f)
+        self.edit_inner(ctx, Redraw::Pages(pages), false, false, f)
     }
 
     /// `scrub`: the change removes content for good; see [`Tab::edit_removing`]. `merge`:
@@ -543,7 +709,7 @@ impl Tab {
     fn edit_inner(
         &mut self,
         ctx: &egui::Context,
-        soft: Option<&[usize]>,
+        redraw: Redraw,
         scrub: bool,
         merge: bool,
         f: impl FnOnce(&mut Pdf) -> limarepdf_core::Result<()>,
@@ -566,9 +732,10 @@ impl Tab {
         // Redraw before recording the change: if redrawing panics, the change is put back too, so the
         // document never holds a change the pages don't show.
         let redrawn = crate::guard(|| {
-            match soft {
-                Some(pages) => self.soft_refresh(ctx, pages),
-                None => self.refresh(ctx),
+            match redraw {
+                Redraw::All => self.refresh(ctx),
+                Redraw::Pages(pages) => self.soft_refresh(ctx, pages),
+                Redraw::Nothing => self.reread(),
             }
             Ok(())
         });
@@ -616,8 +783,54 @@ impl Tab {
         self.thumbs.clear();
     }
 
+    /// What the pages are drawn from: the document, or, while the crop is being set, the
+    /// document with every page shown whole. Also brings the crop margins up to date.
+    fn shown_snapshot(&mut self) -> limarepdf_core::Result<Vec<u8>> {
+        if self.crop_view.is_none() {
+            return self.pdf.app_snapshot();
+        }
+        self.reread();
+        self.pdf.uncropped_app_snapshot()
+    }
+
+    /// The page sizes the view lays out: whole pages while the crop is being set.
+    fn shown_sizes(&self) -> Vec<(f32, f32)> {
+        if self.crop_view.is_none() {
+            return sizes_of(&self.pdf);
+        }
+        (0..self.pdf.page_count())
+            .map(|i| self.pdf.full_page_size(i).unwrap_or((612.0, 792.0)))
+            .collect()
+    }
+
+    /// After a change that doesn't show on the pages: read again what the tab keeps from the
+    /// document besides the pictures.
+    fn reread(&mut self) {
+        self.labels = self.pdf.page_labels();
+        if let Some(m) = self.crop_view.as_mut() {
+            *m = (0..self.pdf.page_count())
+                .map(|i| self.pdf.crop_margins(i).unwrap_or_default())
+                .collect();
+        }
+    }
+
+    /// Show every page whole, with its crop box on it, or as cropped again.
+    pub fn set_crop_view(&mut self, ctx: &egui::Context, on: bool) {
+        if self.crop_view.is_some() == on {
+            return;
+        }
+        self.crop_view = on.then(Vec::new);
+        self.crop_drag = None;
+        self.refresh(ctx);
+    }
+
+    /// Whether the pages are shown whole for setting the crop.
+    pub fn crop_view(&self) -> bool {
+        self.crop_view.is_some()
+    }
+
     fn soft_refresh(&mut self, ctx: &egui::Context, pages: &[usize]) {
-        match self.pdf.app_snapshot() {
+        match self.shown_snapshot() {
             Ok(bytes) => {
                 self.worker = Worker::spawn(ctx.clone(), bytes, self.colours);
                 self.pending.clear();
@@ -701,7 +914,7 @@ impl Tab {
                         });
                     let kept = self.ed.sel() == Some((p, id));
                     let edit = |pdf: &mut Pdf| pdf.edit_text(p, id, &te);
-                    if self.edit_inner(ctx, Some(&[p]), false, merge, edit) {
+                    if self.edit_inner(ctx, Redraw::Pages(&[p]), false, merge, edit) {
                         // The line keeps its place unless the edit had to move it to the
                         // end of the page's content.
                         let objs = self.ed.objects(&self.pdf, p);
@@ -1057,11 +1270,14 @@ impl Tab {
     /// `removal` when the change removes content for good.
     fn push_undo(&mut self, pdf: Option<Vec<u8>>, removal: bool) {
         let encryption = self.encryption.clone();
+        // The link to a stamp belongs to the state before the change.
+        let stamp = self.stamp.take();
         self.undo.push(Step {
             pdf,
             encryption,
             scrubbed: self.scrubbed,
             removal,
+            stamp,
         });
         // Redo is emptied here, so the undo steps are all the budget covers.
         self.redo.clear();
@@ -1113,7 +1329,15 @@ impl Tab {
         };
         let encryption = std::mem::replace(&mut self.encryption, step.encryption);
         let scrubbed = std::mem::replace(&mut self.scrubbed, step.scrubbed);
+        let stamp = std::mem::replace(&mut self.stamp, step.stamp);
         self.forms.sec = Sec::of(self.encryption.as_ref());
+        // Stepping through a stamp's changes: the form shows the settings of the state
+        // gone back to.
+        match self.stamp.as_ref().map(|s| &s.form) {
+            Some(StampForm::Wm(w)) => self.forms.wm = w.clone(),
+            Some(StampForm::Hf(h)) => self.forms.hf = h.clone(),
+            None => {}
+        }
         self.dirty = true;
         if pdf.is_some() {
             self.revision += 1;
@@ -1124,15 +1348,16 @@ impl Tab {
             encryption,
             scrubbed,
             removal: step.removal,
+            stamp,
         })
     }
 
     /// Re-render from the current document state.
     pub fn refresh(&mut self, ctx: &egui::Context) {
-        match self.pdf.app_snapshot() {
+        match self.shown_snapshot() {
             Ok(bytes) => {
                 self.worker = Worker::spawn(ctx.clone(), bytes, self.colours);
-                self.sizes = sizes_of(&self.pdf);
+                self.sizes = self.shown_sizes();
                 self.labels = self.pdf.page_labels();
                 self.pages.clear();
                 self.tiles.clear();
@@ -1963,6 +2188,8 @@ impl Tab {
     pub fn show_pages(&mut self, ui: &mut egui::Ui, base: &Ctx) {
         let ctx = ui.ctx().clone();
         self.collect(&ctx);
+        // Before the layout: setting the crop shows the pages whole.
+        let previews = self.previews(&ctx);
         let ppp = ctx.pixels_per_point();
         let dark = ui.visuals().dark_mode;
         let paper = self.paper();
@@ -2119,19 +2346,25 @@ impl Tab {
                     tiled = true;
                     self.draw_tiles(&painter, i, r, q, &mut want_tiles, &mut keep_tiles);
                 }
-                let matches = self.matches.get(&i).map_or(&[][..], |v| v.as_slice());
-                let cur = current.filter(|c| c.0 == i).map(|c| c.1);
-                self.ed
-                    .overlay(ui, &self.pdf, i, r, self.zoom * BASE, matches, cur);
-                let resp = self
-                    .ed
-                    .page_ui(ui, &self.pdf, self.id, i, r, self.zoom * BASE);
-                self.context_menu(&resp, base);
-                // The right-click menu replaces the toolbar while it is open.
-                let menu_open = resp.context_menu_opened();
-                if let Some((p, b)) = self.ed.selection_box() {
-                    if p == i && !self.ed.dragging() && !menu_open {
-                        self.floating_toolbar(ui, base, r, self.zoom * BASE, b);
+                // Setting the crop: the page, drawn whole, takes only the crop box's drags.
+                if self.crop_view.is_some() {
+                    self.crop_page_ui(ui, &previews, i, r, self.zoom * BASE);
+                } else {
+                    self.draw_previews(ui, &previews, i, r, self.zoom * BASE);
+                    let matches = self.matches.get(&i).map_or(&[][..], |v| v.as_slice());
+                    let cur = current.filter(|c| c.0 == i).map(|c| c.1);
+                    self.ed
+                        .overlay(ui, &self.pdf, i, r, self.zoom * BASE, matches, cur);
+                    let resp = self
+                        .ed
+                        .page_ui(ui, &self.pdf, self.id, i, r, self.zoom * BASE);
+                    self.context_menu(&resp, base);
+                    // The right-click menu replaces the toolbar while it is open.
+                    let menu_open = resp.context_menu_opened();
+                    if let Some((p, b)) = self.ed.selection_box() {
+                        if p == i && !self.ed.dragging() && !menu_open {
+                            self.floating_toolbar(ui, base, r, self.zoom * BASE, b);
+                        }
                     }
                 }
                 if !self.failed.contains_key(&i)
@@ -2638,6 +2871,7 @@ mod tests {
             encryption: None,
             scrubbed: false,
             removal,
+            stamp: None,
         };
         let sizes = |s: &[Step]| s.iter().map(Step::size).collect::<Vec<_>>();
         // The oldest go first; password-only steps take nothing.
@@ -2888,5 +3122,170 @@ mod tests {
         assert!(edge_speed(10.0) > 0.0);
         assert!(edge_speed(100.0) > edge_speed(10.0));
         assert_eq!(edge_speed(1e6), 3000.0);
+    }
+
+    fn blank_tab(ctx: &egui::Context, pages: usize) -> Tab {
+        let mut pdf = Pdf::new();
+        for i in 0..pages {
+            pdf.insert_blank(i, 612.0, 792.0).unwrap();
+        }
+        Tab::new(ctx, 1, pdf, None, Colours::default()).unwrap()
+    }
+
+    /// Properties, the opening view and page labels apply as they are set: one undo step
+    /// per change, nothing redrawn and the view left where it is, nothing written for a
+    /// setting left as it was, and a number nudged again soon joining one step.
+    #[test]
+    fn document_settings_apply_as_set_without_redrawing() {
+        use crate::inspector::Label;
+        use limarepdf_core::{Info, LabelStyle, OpenLayout};
+        let ctx = egui::Context::default();
+        let mut t = blank_tab(&ctx, 3);
+        // Properties: only what differs is written, and an empty field is one not there.
+        t.forms.meta = t.pdf.info();
+        t.forms.meta.author = Some(String::new());
+        t.keep_props(&ctx);
+        assert!(t.undo.is_empty());
+        t.forms.meta.title = Some("Walrus".into());
+        t.keep_props(&ctx);
+        assert_eq!(t.pdf.info().title.as_deref(), Some("Walrus"));
+        assert_eq!(t.undo.len(), 1);
+        // Not redrawn: a full redraw goes back to the top of the current page.
+        assert!(t.goto.is_none());
+        // Opening view: a choice, then the page nudged up and up, one step; after a pause, a
+        // step of its own.
+        t.forms.view.layout = Some(OpenLayout::Facing);
+        t.keep_view(&ctx, None);
+        for p in [1, 2] {
+            t.forms.view.page = Some(p);
+            t.keep_view(&ctx, Some("view-page"));
+        }
+        assert_eq!(t.undo.len(), 3);
+        assert_eq!(t.pdf.view_prefs().page, Some(2));
+        t.last_setting.as_mut().unwrap().3 -= MERGE_PAUSE + 1.0;
+        t.forms.view.page = Some(0);
+        t.keep_view(&ctx, Some("view-page"));
+        assert_eq!(t.undo.len(), 4);
+        // Page labels: the form shows the numbering the page has, so it changes nothing
+        // as it is; a change numbers from that page on.
+        assert_eq!(
+            Label::at(&[], 2),
+            Label {
+                style: Some(LabelStyle::Decimal),
+                prefix: String::new(),
+                start: 3
+            }
+        );
+        t.forms.label_page = 1;
+        t.forms.label = Label::at(&t.pdf.label_ranges(), 1);
+        t.keep_label(&ctx, None);
+        assert_eq!(t.undo.len(), 4);
+        t.forms.label.style = Some(LabelStyle::LowerRoman);
+        t.forms.label.start = 1;
+        t.keep_label(&ctx, None);
+        assert_eq!(t.labels, Some(vec!["1".into(), "i".into(), "ii".into()]));
+        let at_last = Label::at(&t.pdf.label_ranges(), 2);
+        assert_eq!(at_last.style, Some(LabelStyle::LowerRoman));
+        assert_eq!(at_last.start, 2);
+        assert!(t.goto.is_none());
+        // Undo takes back one change at a time.
+        t.undo(&ctx);
+        assert_eq!(t.labels, None);
+        t.undo(&ctx);
+        assert_eq!(t.pdf.view_prefs().page, Some(2));
+        t.undo(&ctx);
+        assert_eq!(t.pdf.view_prefs().page, None);
+        assert_eq!(t.pdf.view_prefs().layout, Some(OpenLayout::Facing));
+        t.undo(&ctx);
+        t.undo(&ctx);
+        assert_eq!(t.pdf.info(), Info::default());
+    }
+
+    /// The text of page `p`'s lines, in order.
+    fn page_lines(t: &Tab, p: usize) -> Vec<String> {
+        let objs = t.pdf.page_objects(p).unwrap();
+        objs.into_iter().filter_map(|o| o.text).collect()
+    }
+
+    /// Once a watermark is added, changes update it in place, each an undo step; undo and
+    /// redo step through its settings with the form following, and the form stays linked
+    /// to it until anything else changes.
+    #[test]
+    fn a_stamp_is_updated_in_place_and_undo_steps_through_its_settings() {
+        let ctx = egui::Context::default();
+        let mut t = blank_tab(&ctx, 2);
+        t.forms.wm.text = "DRAFT".into();
+        t.stamp_from_form(&ctx, Stamp::Watermark, false);
+        assert_eq!(page_lines(&t, 1), ["DRAFT"]);
+        assert!(t.linked(Stamp::Watermark).is_some() && t.forms.wm_added);
+        t.forms.wm.text = "COPY".into();
+        t.stamp_from_form(&ctx, Stamp::Watermark, true);
+        t.forms.wm.opacity = 0.5;
+        t.stamp_from_form(&ctx, Stamp::Watermark, true);
+        // One watermark, not three.
+        assert_eq!(page_lines(&t, 0), ["COPY"]);
+        assert_eq!(t.undo.len(), 3);
+        t.undo(&ctx);
+        assert_eq!(page_lines(&t, 0), ["COPY"]);
+        assert_eq!(t.forms.wm.opacity, 0.25);
+        t.undo(&ctx);
+        assert_eq!(page_lines(&t, 0), ["DRAFT"]);
+        assert_eq!(t.forms.wm.text, "DRAFT");
+        assert!(t.linked(Stamp::Watermark).is_some());
+        t.undo(&ctx);
+        assert!(page_lines(&t, 0).is_empty());
+        assert!(t.linked(Stamp::Watermark).is_none());
+        t.redo(&ctx);
+        t.redo(&ctx);
+        assert_eq!(page_lines(&t, 0), ["COPY"]);
+        assert_eq!(t.forms.wm.text, "COPY");
+        assert!(t.linked(Stamp::Watermark).is_some());
+        // Headers and footers alongside: the watermark's link ends, theirs begins.
+        t.stamp_from_form(&ctx, Stamp::HeaderFooter, false);
+        assert_eq!(page_lines(&t, 1), ["COPY", "Page 2 of 2"]);
+        assert!(t.linked(Stamp::Watermark).is_none());
+        assert!(t.linked(Stamp::HeaderFooter).is_some());
+        // Anything else ends the link; the stamp stays, and changing the form now adds
+        // nothing until asked.
+        assert!(t.edit(&ctx, |p| p.insert_blank(2, 612.0, 792.0)));
+        assert!(t.linked(Stamp::HeaderFooter).is_none());
+        t.forms.hf.size = 12.0;
+        let depth = t.undo.len();
+        t.keep_forms(&ctx);
+        assert_eq!(t.undo.len(), depth);
+        // Add another adds a second.
+        t.stamp_from_form(&ctx, Stamp::Watermark, false);
+        assert_eq!(page_lines(&t, 0), ["COPY", "Page 1 of 2", "COPY"]);
+    }
+
+    /// While the crop is set on the pages, they are shown whole: cropping them changes the
+    /// document but not the layout, nothing is redrawn, and nudges join one step.
+    #[test]
+    fn cropping_while_the_pages_are_shown_whole() {
+        let ctx = egui::Context::default();
+        let mut t = blank_tab(&ctx, 2);
+        assert!(t.edit(&ctx, |p| p.set_crop_margins(1, [0.0, 0.0, 90.0, 0.0])));
+        t.set_crop_view(&ctx, true);
+        assert_eq!(t.sizes, [(612.0, 792.0); 2]);
+        let own = [[0.0; 4], [0.0, 0.0, 90.0, 0.0]];
+        assert_eq!(t.crop_view.as_deref(), Some(&own[..]));
+        t.goto = None;
+        let depth = t.undo.len();
+        for top in [72.0, 80.0] {
+            assert!(t.crop(&ctx, &[0, 1], [top, 0.0, 0.0, 0.0], Some("crop-top")));
+        }
+        assert_eq!(t.undo.len(), depth + 1);
+        assert_eq!(t.pdf.crop_margins(1).unwrap(), [80.0, 0.0, 0.0, 0.0]);
+        assert_eq!(t.crop_view.as_ref().unwrap()[0], [80.0, 0.0, 0.0, 0.0]);
+        assert_eq!(t.sizes, [(612.0, 792.0); 2]);
+        assert!(t.goto.is_none());
+        // Crops already as asked: nothing written.
+        assert!(t.crop(&ctx, &[0, 1], [80.0, 0.0, 0.0, 0.0], None));
+        assert_eq!(t.undo.len(), depth + 1);
+        // Shown as cropped again.
+        t.set_crop_view(&ctx, false);
+        assert_eq!(t.sizes, [(612.0, 712.0); 2]);
+        t.undo(&ctx);
+        assert_eq!(t.sizes, [(612.0, 792.0), (612.0, 702.0)]);
     }
 }

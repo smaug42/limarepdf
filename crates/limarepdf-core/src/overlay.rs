@@ -61,6 +61,24 @@ impl Default for Watermark {
     }
 }
 
+impl Watermark {
+    /// Where the text's baseline starts, in points from the page's middle (y up), before
+    /// the text is turned by `rotation` about the middle: the text is centred on it.
+    pub fn text_start(&self) -> (f32, f32) {
+        (
+            -text_width(&self.text, self.font_size) / 2.0,
+            -self.font_size * 0.35,
+        )
+    }
+}
+
+/// The size in points of a picture watermark at `scale` (a fraction of the page) on a
+/// page `vw` × `vh` points, for a picture `iw` × `ih` pixels as it is meant to be seen.
+pub fn picture_size(scale: f32, iw: f32, ih: f32, vw: f32, vh: f32) -> (f32, f32) {
+    let k = (scale * vw / iw).min(scale * vh / ih);
+    (iw * k, ih * k)
+}
+
 /// A picture placed in the middle of each page, such as a logo.
 #[derive(Clone, Debug)]
 pub struct ImageWatermark {
@@ -138,6 +156,78 @@ impl Default for HeaderFooter {
             color: (0.0, 0.0, 0.0),
             bates: None,
         }
+    }
+}
+
+/// One line of a header or footer on a page: its text, tokens filled in, and where its
+/// baseline starts, in points from the page's bottom left as displayed (y up).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Placed {
+    pub text: String,
+    pub x: f32,
+    pub y: f32,
+}
+
+impl HeaderFooter {
+    /// The lines written on page `page` (0-based) of a document of `pages`, the `seq`th
+    /// page stamped (counting from 0, for the Bates number), on a page `vw` × `vh` points
+    /// as displayed, dated `date`.
+    pub fn lines(
+        &self,
+        page: usize,
+        seq: usize,
+        pages: usize,
+        (vw, vh): (f32, f32),
+        date: &str,
+    ) -> Vec<Placed> {
+        let bates = self.bates.as_ref().map(|b| {
+            format!(
+                "{}{:0w$}{}",
+                b.prefix,
+                b.start.saturating_add(seq as u64),
+                b.suffix,
+                w = b.digits
+            )
+        });
+        let expand = |t: &str| {
+            t.replace("{page}", &(page + 1).to_string())
+                .replace("{pages}", &pages.to_string())
+                .replace("{date}", date)
+                .replace("{bates}", bates.as_deref().unwrap_or(""))
+        };
+        let mut out = Vec::new();
+        let mut put = |text: &str, slot: usize, y: f32| {
+            if text.is_empty() {
+                return;
+            }
+            let text = expand(text);
+            let tw = text_width(&text, self.font_size);
+            let x = match slot {
+                0 => self.margin,
+                1 => (vw - tw) / 2.0,
+                _ => vw - self.margin - tw,
+            };
+            out.push(Placed { text, x, y });
+        };
+        for slot in 0..3 {
+            put(&self.header[slot], slot, vh - self.margin);
+            put(&self.footer[slot], slot, self.margin - self.font_size);
+        }
+        // Bates numbers with no explicit slot go bottom-right if the user did not use {bates}.
+        let slotted = self
+            .header
+            .iter()
+            .chain(self.footer.iter())
+            .any(|t| t.contains("{bates}"));
+        if let Some(text) = bates.filter(|_| !slotted) {
+            let tw = text_width(&text, self.font_size);
+            out.push(Placed {
+                text,
+                x: vw - self.margin - tw,
+                y: self.margin / 2.0,
+            });
+        }
+        out
     }
 }
 
@@ -247,7 +337,7 @@ impl Pdf {
             let page = ids[i];
             let (m, vw, vh) = self.visual_matrix(page);
             let (s, c) = wm.rotation.to_radians().sin_cos();
-            let tw = text_width(&wm.text, wm.font_size);
+            let (tx, ty) = wm.text_start();
             let font_nm = self.add_resource(page, "Font", "LimareWf", font.into())?;
             let gs_nm = self.add_resource(page, "ExtGState", "LimareGS", gs.into())?;
             let stream = format!(
@@ -259,8 +349,8 @@ impl Pdf {
                 wm.color.2,
                 matrix([c, s, -s, c, vw / 2.0, vh / 2.0]),
                 wm.font_size,
-                -tw / 2.0,
-                -wm.font_size * 0.35,
+                tx,
+                ty,
                 escape(&wm.text),
             );
             self.add_overlay(page, stream, wm.foreground)?;
@@ -283,8 +373,7 @@ impl Pdf {
         for &i in idx {
             let page = ids[i];
             let (m, vw, vh) = self.visual_matrix(page);
-            let k = (wm.scale * vw / iw).min(wm.scale * vh / ih);
-            let (pw, ph) = (iw * k, ih * k);
+            let (pw, ph) = picture_size(wm.scale, iw, ih, vw, vh);
             let (s, c) = wm.rotation.to_radians().sin_cos();
             let img_nm = self.add_resource(page, "XObject", "LimareWi", img.into())?;
             let gs_nm = self.add_resource(page, "ExtGState", "LimareGS", gs.into())?;
@@ -328,73 +417,29 @@ impl Pdf {
         for (seq, &i) in idx.iter().enumerate() {
             let page = ids[i];
             let (m, vw, vh) = self.visual_matrix(page);
-            let bates = hf.bates.as_ref().map(|b| {
-                format!(
-                    "{}{:0w$}{}",
-                    b.prefix,
-                    b.start + seq as u64,
-                    b.suffix,
-                    w = b.digits
-                )
-            });
-            let expand = |t: &str| {
-                t.replace("{page}", &(i + 1).to_string())
-                    .replace("{pages}", &total.to_string())
-                    .replace("{date}", &date)
-                    .replace("{bates}", bates.as_deref().unwrap_or(""))
-            };
             let font_nm = self.add_resource(page, "Font", FONT_PREFIX, font.into())?;
             let mut s = format!(
                 "q\n{:.5} {:.5} {:.5} {:.5} {:.3} {:.3} cm\n{:.3} {:.3} {:.3} rg\nBT /{font_nm} {:.2} Tf\n",
                 m[0], m[1], m[2], m[3], m[4], m[5], hf.color.0, hf.color.1, hf.color.2, hf.font_size
             );
-            let mut put = |text: &str, slot: usize, y: f32| {
-                if text.is_empty() {
-                    return;
-                }
-                let t = expand(text);
-                let tw = text_width(&t, hf.font_size);
-                let x = match slot {
-                    0 => hf.margin,
-                    1 => (vw - tw) / 2.0,
-                    _ => vw - hf.margin - tw,
-                };
+            for l in hf.lines(i, seq, total, (vw, vh), &date) {
                 s.push_str(&format!(
                     "1 0 0 1 {:.3} {:.3} Tm ({}) Tj\n",
-                    x,
-                    y,
-                    escape(&t)
+                    l.x,
+                    l.y,
+                    escape(&l.text)
                 ));
-            };
-            for slot in 0..3 {
-                put(&hf.header[slot], slot, vh - hf.margin);
-                put(&hf.footer[slot], slot, hf.margin - hf.font_size);
             }
             s.push_str("ET\nQ\n");
-            // Bates numbers with no explicit slot go bottom-right if the user did not use {bates}.
-            if hf.bates.is_some()
-                && !hf
-                    .header
-                    .iter()
-                    .chain(hf.footer.iter())
-                    .any(|t| t.contains("{bates}"))
-            {
-                let t = bates.clone().unwrap_or_default();
-                let tw = text_width(&t, hf.font_size);
-                s.push_str(&format!(
-                    "q\n{:.5} {:.5} {:.5} {:.5} {:.3} {:.3} cm\n{:.3} {:.3} {:.3} rg\nBT /{font_nm} {:.2} Tf 1 0 0 1 {:.3} {:.3} Tm ({}) Tj ET\nQ\n",
-                    m[0], m[1], m[2], m[3], m[4], m[5], hf.color.0, hf.color.1, hf.color.2, hf.font_size,
-                    vw - hf.margin - tw, hf.margin / 2.0, escape(&t)
-                ));
-            }
             self.wrap_contents(page, None, Some(s.into_bytes()))?;
         }
         Ok(())
     }
 }
 
-/// Today's UTC date as YYYY-MM-DD (no external time crate).
-fn today_iso() -> String {
+/// Today's UTC date as YYYY-MM-DD (no external time crate): the `{date}` of headers and
+/// footers.
+pub fn today_iso() -> String {
     let [y, m, d, ..] = utc_now();
     format!("{y:04}-{m:02}-{d:02}")
 }

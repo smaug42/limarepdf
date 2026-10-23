@@ -5,19 +5,24 @@
 //! document: properties, security, the same tools set to all pages, export and split.
 //! (A selected object or words, or a drawing tool in use, show the editor's own
 //! section instead; see `Editor::owns_panel`.) The panel reports which button was
-//! pressed as an [`Apply`]; the app carries it out.
+//! pressed, or which setting changed, as an [`Apply`]; the app carries it out.
+//!
+//! Settings apply as they are changed, as in a word processor, one undo step each: text
+//! when Enter is pressed or the field is left, choices at once, numbers once let go (a
+//! number nudged again soon joins the same step). Watermarks and headers and footers are
+//! shown on the pages until Add to pages, then each change updates the one added.
 
 use crate::actions::{self, Act, Ctx};
 use crate::app::IMAGE_EXTS;
 use crate::fields::{self, FormUi};
 use crate::selection::Selection;
-use crate::tab::{Side, Stamp, Tab};
+use crate::tab::{Side, Stamp, StampForm, Tab};
 use crate::theme;
 use eframe::egui::{self, Ui};
 use limarepdf_core::render::{ImageFormat, MAX_DPI};
 use limarepdf_core::{
-    Cipher, Encryption, Info, LabelStyle, OpenLayout, OpenPanel, Restrictions, ScanMode,
-    ScanOptions, ViewPrefs,
+    parse_page_range, Bates, Cipher, Encryption, HeaderFooter, Info, LabelRange, LabelStyle,
+    OpenLayout, OpenPanel, Restrictions, ScanMode, ScanOptions, ViewPrefs, Watermark,
 };
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -48,19 +53,19 @@ impl Section {
     }
 }
 
-/// A button pressed in the panel.
+/// A button pressed in the panel, or a setting changed. `Option<&'static str>`: the
+/// setting's name when changing it again soon joins the same undo step (see
+/// [`Tab::edit_setting`]).
 pub enum Apply {
     Act(Act),
     Props,
     Security,
-    Crop,
-    /// `replace`: update the headers and footers just added instead of adding more.
-    HeaderFooter {
-        replace: bool,
-    },
-    /// `replace`: update the watermark just added instead of adding another.
-    Watermark {
-        replace: bool,
+    Crop(Option<&'static str>),
+    /// `update`: put the form's settings in place of the stamp just added (see
+    /// [`Tab::linked`]) instead of adding one.
+    Stamp {
+        kind: Stamp,
+        update: bool,
     },
     Ocr,
     Scans,
@@ -68,10 +73,10 @@ pub enum Apply {
     Split,
     /// Insert a blank page after this page (0-based), at the form's size.
     Blank(usize),
-    /// Number the pages from this page (0-based) on, as the form says.
-    Label(usize),
+    /// Number the pages from the form's page on, as it says.
+    Label(Option<&'static str>),
     RemoveLabels,
-    ViewPrefs,
+    ViewPrefs(Option<&'static str>),
 }
 
 impl Apply {
@@ -81,20 +86,27 @@ impl Apply {
             Apply::Act(a) => crate::actions::name(*a),
             Apply::Props => "Properties",
             Apply::Security => "Password security",
-            Apply::Crop => "Crop",
-            Apply::HeaderFooter { .. } => "Headers, footers, Bates",
-            Apply::Watermark { .. } => "Watermark",
+            Apply::Crop(_) => "Crop",
+            Apply::Stamp {
+                kind: Stamp::HeaderFooter,
+                ..
+            } => "Headers, footers, Bates",
+            Apply::Stamp {
+                kind: Stamp::Watermark,
+                ..
+            } => "Watermark",
             Apply::Ocr => "Recognise text (OCR)",
             Apply::Scans => "Optimise scanned pages",
             Apply::Export => "Export pages as images",
             Apply::Split => "Split into files",
             Apply::Blank(_) => "Insert blank page",
-            Apply::Label(_) | Apply::RemoveLabels => "Page labels",
-            Apply::ViewPrefs => "Opening view",
+            Apply::Label(..) | Apply::RemoveLabels => "Page labels",
+            Apply::ViewPrefs(_) => "Opening view",
         }
     }
 }
 
+#[derive(Clone, PartialEq)]
 pub struct Wm {
     /// A picture instead of text.
     pub picture: bool,
@@ -125,7 +137,30 @@ impl Default for Wm {
         }
     }
 }
+impl Wm {
+    /// The text watermark the form describes.
+    pub fn watermark(&self) -> Watermark {
+        Watermark {
+            text: self.text.clone(),
+            font_size: self.size,
+            opacity: self.opacity,
+            rotation: self.rotation,
+            color: (self.color[0], self.color[1], self.color[2]),
+            foreground: self.foreground,
+        }
+    }
 
+    /// Whether there is something to add: some text, or a picture chosen.
+    pub fn ready(&self) -> bool {
+        if self.picture {
+            self.image.is_some()
+        } else {
+            !self.text.trim().is_empty()
+        }
+    }
+}
+
+#[derive(Clone, PartialEq)]
 pub struct Hf {
     pub header: [String; 3],
     pub footer: [String; 3],
@@ -151,6 +186,24 @@ impl Default for Hf {
             digits: 6,
             start: 1,
             range: "all".into(),
+        }
+    }
+}
+impl Hf {
+    /// The headers and footers the form describes.
+    pub fn header_footer(&self) -> HeaderFooter {
+        HeaderFooter {
+            header: self.header.clone(),
+            footer: self.footer.clone(),
+            font_size: self.size,
+            margin: self.margin,
+            color: (0.0, 0.0, 0.0),
+            bates: self.bates.then(|| Bates {
+                prefix: self.prefix.clone(),
+                suffix: self.suffix.clone(),
+                digits: self.digits as usize,
+                start: self.start,
+            }),
         }
     }
 }
@@ -209,6 +262,8 @@ pub struct Crop {
     pub pages: String,
     /// Points trimmed from the full page: top, right, bottom, left as displayed.
     pub margins: [f32; 4],
+    /// A margin is being dragged in the form: the pages show the margins as they are now.
+    pub dragged: bool,
 }
 
 pub struct Export {
@@ -237,7 +292,8 @@ impl Export {
     }
 }
 
-/// Page numbering to set from the first selected page.
+/// Page numbering from the first selected page on: as the document has it, until changed.
+#[derive(Clone, PartialEq, Debug)]
 pub struct Label {
     /// `None`: the prefix alone.
     pub style: Option<LabelStyle>,
@@ -253,6 +309,55 @@ impl Default for Label {
         }
     }
 }
+impl Label {
+    /// The numbering in effect at `page` (0-based): that of the range it is in, carried on
+    /// to it. Pages before the first range, or in a document without labels, are numbered
+    /// plainly from 1.
+    pub fn at(ranges: &[LabelRange], page: usize) -> Label {
+        match ranges.iter().rev().find(|r| r.page <= page) {
+            Some(r) => Label {
+                style: r.style,
+                prefix: r.prefix.clone(),
+                start: r
+                    .first
+                    .saturating_add(u32::try_from(page - r.page).unwrap_or(u32::MAX)),
+            },
+            None => Label {
+                start: u32::try_from(page + 1).unwrap_or(u32::MAX),
+                ..Label::default()
+            },
+        }
+    }
+}
+
+/// The document properties form's fields, by name.
+fn meta_fields(i: &mut Info) -> [(&'static str, &mut Option<String>); 6] {
+    [
+        ("Title", &mut i.title),
+        ("Author", &mut i.author),
+        ("Subject", &mut i.subject),
+        ("Keywords", &mut i.keywords),
+        ("Creator", &mut i.creator),
+        ("Producer", &mut i.producer),
+    ]
+}
+
+/// Whether the properties form says something the document doesn't. Fields left alone are
+/// `None`, and an empty field is the same as one the document doesn't have.
+pub fn props_changed(form: &Info, doc: &Info) -> bool {
+    let (mut form, mut doc) = (form.clone(), doc.clone());
+    let changed = meta_fields(&mut form)
+        .into_iter()
+        .zip(meta_fields(&mut doc))
+        .any(|((_, f), (_, d))| {
+            f.as_ref()
+                .is_some_and(|f| f != d.as_deref().unwrap_or_default())
+        });
+    changed
+}
+
+/// The page label prefix's name as the field being typed in (see `Forms::typing`).
+const LABEL_PREFIX: &str = "label-prefix";
 
 /// The panel's form state, kept per tab.
 #[derive(Default)]
@@ -274,16 +379,52 @@ pub struct Forms {
     /// Size of a new blank page, in points.
     pub blank: (f32, f32),
     pub label: Label,
+    /// The page (0-based) `label` is for: the first selected page.
+    pub label_page: usize,
     /// The viewer preferences being edited, and the page shown in the page box (0-based)
     /// while no opening page is set.
     pub view: ViewPrefs,
     pub view_page: usize,
     /// Section to open and scroll to on the next frame.
     pub reveal: Option<Section>,
+    /// Section to close on the next frame.
+    pub close: Option<Section>,
+    /// The sections open, and the frame (`egui`'s pass number) the panel was last drawn in:
+    /// the pages show the crop box and stamp previews while their section is open.
+    shown: Vec<Section>,
+    shown_in: u64,
+    /// The text field that had the keyboard when the panel was last drawn (see
+    /// [`meta_fields`] and [`LABEL_PREFIX`]).
+    typing: Option<&'static str>,
+    /// The watermark and the headers and footers aren't previewed on the pages: one was
+    /// just added, and the form hasn't changed since (so a stamp the form is no longer
+    /// linked to isn't shown twice).
+    pub wm_added: bool,
+    pub hf_added: bool,
+    /// Settings a stamp couldn't be updated to, so they aren't tried again every frame.
+    pub refused: Option<StampForm>,
     /// Document revision the properties were read at.
     meta_rev: Option<u64>,
     /// Selection the page ranges were filled in for.
     filled_for: Option<Selection>,
+}
+
+impl Forms {
+    /// Whether section `s` was open when the panel was last drawn, in pass `pass` or the one
+    /// before (the panel is drawn before the pages, so normally in this one).
+    pub fn open(&self, s: Section, pass: u64) -> bool {
+        self.drawn(pass) && self.shown.contains(&s)
+    }
+
+    /// Whether the panel was drawn in pass `pass` or the one before.
+    pub fn drawn(&self, pass: u64) -> bool {
+        pass.saturating_sub(self.shown_in) <= 1
+    }
+
+    /// Whether a text field had the keyboard when the panel was last drawn.
+    pub fn typing(&self) -> bool {
+        self.typing.is_some()
+    }
 }
 
 /// Page numbers as a range, consecutive runs collapsed: "1-3,7".
@@ -308,26 +449,47 @@ pub fn range_text(pages: &BTreeSet<usize>) -> String {
 
 impl Tab {
     /// Bring the forms up to date: properties after the document changed, page ranges
-    /// and blank-page size after the selection changed, and the crop margins after
-    /// either.
-    fn sync_forms(&mut self) {
+    /// and blank-page size after the selection changed, and the crop margins and page
+    /// labels after either. A text field being typed in keeps what was typed.
+    fn sync_forms(&mut self, ctx: &egui::Context) {
         let changed = self.forms.meta_rev != Some(self.revision);
+        let typing = self.forms.typing;
         if changed {
             if self.forms.meta_rev.is_none() {
                 self.forms.sec = Sec::of(self.encryption.as_ref());
                 self.forms.split = 1;
                 self.forms.split_level = 1;
             }
-            self.forms.meta = self.pdf.info();
+            let mut typed = std::mem::replace(&mut self.forms.meta, self.pdf.info());
+            for ((name, now), (_, was)) in meta_fields(&mut self.forms.meta)
+                .into_iter()
+                .zip(meta_fields(&mut typed))
+            {
+                if typing == Some(name) {
+                    *now = was.take();
+                }
+            }
             self.forms.view = self.pdf.view_prefs();
             self.forms.view_page = self.forms.view.page.unwrap_or(0);
             self.forms.meta_rev = Some(self.revision);
         }
         let sel = self.ed.selection.clone();
         let first = sel.pages().and_then(|s| s.first().copied());
-        if changed || self.forms.filled_for.as_ref() != Some(&sel) {
+        let moved = self.forms.filled_for.as_ref() != Some(&sel);
+        if moved && typing == Some(LABEL_PREFIX) {
+            // Typing for other pages, left by choosing these: kept for those pages.
+            self.keep_label(ctx, None);
+        }
+        if changed || moved {
             let margins = self.pdf.crop_margins(first.unwrap_or(0));
             self.forms.crop.margins = margins.unwrap_or_default();
+            let page = first.unwrap_or(0);
+            let label = Label::at(&self.pdf.label_ranges(), page);
+            let typed = std::mem::replace(&mut self.forms.label, label);
+            if typing == Some(LABEL_PREFIX) && !moved {
+                self.forms.label.prefix = typed.prefix;
+            }
+            self.forms.label_page = page;
         }
         if self.forms.filled_for.as_ref() == Some(&sel) {
             return;
@@ -348,6 +510,103 @@ impl Tab {
         f.blank = self.sizes.get(page).copied().unwrap_or((612.0, 792.0));
         f.filled_for = Some(sel);
     }
+
+    /// Keep the properties form's changes, one undo step.
+    pub fn keep_props(&mut self, ctx: &egui::Context) {
+        if props_changed(&self.forms.meta, &self.pdf.info()) {
+            let info = self.forms.meta.clone();
+            self.edit_setting(ctx, None, |p| p.set_info(&info));
+        }
+    }
+
+    /// Keep the opening view form's changes, one undo step; `joins` as for
+    /// [`Tab::edit_setting`].
+    pub fn keep_view(&mut self, ctx: &egui::Context, joins: Option<&'static str>) {
+        let prefs = self.forms.view;
+        if prefs != self.pdf.view_prefs() {
+            self.edit_setting(ctx, joins, |p| p.set_view_prefs(&prefs));
+        }
+    }
+
+    /// Number the pages from the label form's page on as it says, unless that is the
+    /// numbering they have; `joins` as for [`Tab::edit_setting`].
+    pub fn keep_label(&mut self, ctx: &egui::Context, joins: Option<&'static str>) {
+        let page = self.forms.label_page;
+        let l = &self.forms.label;
+        if page >= self.pdf.page_count() || Label::at(&self.pdf.label_ranges(), page) == *l {
+            return;
+        }
+        let range = LabelRange {
+            page,
+            style: l.style,
+            prefix: l.prefix.clone(),
+            first: l.start.max(1),
+        };
+        self.edit_setting(ctx, joins, |p| p.set_label_range(range));
+    }
+
+    /// Add the stamp the form for `kind` describes to its pages, or, with `update`, put it
+    /// in place of the one the form is linked to.
+    pub fn stamp_from_form(&mut self, ctx: &egui::Context, kind: Stamp, update: bool) {
+        let (form, range) = match kind {
+            Stamp::Watermark => (StampForm::Wm(self.forms.wm.clone()), &self.forms.wm.range),
+            Stamp::HeaderFooter => (StampForm::Hf(self.forms.hf.clone()), &self.forms.hf.range),
+        };
+        let pages = match parse_page_range(range, self.page_count()) {
+            Ok(p) => p,
+            Err(e) => {
+                self.error = Some(e.to_string());
+                self.forms.refused = Some(form);
+                return;
+            }
+        };
+        if !self.put_stamp(ctx, form.clone(), &pages, update) {
+            self.forms.refused = Some(form);
+            return;
+        }
+        match kind {
+            Stamp::Watermark => self.forms.wm_added = true,
+            Stamp::HeaderFooter => self.forms.hf_added = true,
+        }
+    }
+
+    /// Whether a text field of the forms holds typing the document doesn't have yet.
+    pub fn typing_in_forms(&self) -> bool {
+        match self.forms.typing {
+            None => false,
+            Some(LABEL_PREFIX) => {
+                Label::at(&self.pdf.label_ranges(), self.forms.label_page) != self.forms.label
+            }
+            Some(_) => props_changed(&self.forms.meta, &self.pdf.info()),
+        }
+    }
+
+    /// Keep what is being typed in the forms, as leaving the field would (before saving or
+    /// closing), and a linked stamp's changes not yet in it.
+    pub fn keep_forms(&mut self, ctx: &egui::Context) {
+        match self.forms.typing.take() {
+            Some(LABEL_PREFIX) => self.keep_label(ctx, None),
+            Some(_) => self.keep_props(ctx),
+            None => {}
+        }
+        for kind in [Stamp::Watermark, Stamp::HeaderFooter] {
+            if self.stamp_behind(kind) {
+                self.stamp_from_form(ctx, kind, true);
+            }
+        }
+    }
+
+    /// Whether the form for `kind` is linked to a stamp and says something else, that it
+    /// can be updated to.
+    fn stamp_behind(&self, kind: Stamp) -> bool {
+        let form = match kind {
+            Stamp::Watermark if self.forms.wm.ready() => StampForm::Wm(self.forms.wm.clone()),
+            Stamp::HeaderFooter => StampForm::Hf(self.forms.hf.clone()),
+            Stamp::Watermark => return false,
+        };
+        self.linked(kind).is_some_and(|s| s.form != form)
+            && self.forms.refused.as_ref() != Some(&form)
+    }
 }
 
 /// The panel's heading, drawn by the app beside the button that hides the panel: "Edit"
@@ -365,12 +624,15 @@ pub fn title(t: &Tab) -> String {
 
 /// Draw the page or document section for `t`. Returns the button pressed, if any.
 pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
-    t.sync_forms();
+    t.sync_forms(ui.ctx());
     let mut apply = None;
     let reveal = t.forms.reveal.take();
+    let close = t.forms.close.take();
     let pages = t.ed.selection.pages().cloned();
-    let wm_again = t.replaces_stamp(Stamp::Watermark);
-    let hf_again = t.replaces_stamp(Stamp::HeaderFooter);
+    let wm_link = t.linked(Stamp::Watermark).is_some();
+    let hf_link = t.linked(Stamp::HeaderFooter).is_some();
+    let wm_behind = t.stamp_behind(Stamp::Watermark);
+    let hf_behind = t.stamp_behind(Stamp::HeaderFooter);
     let here = Here {
         layout: t.layout.to_open(t.cover),
         panel: match (c.side, t.side) {
@@ -382,6 +644,14 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
         pages: t.page_count(),
     };
     let f = &mut t.forms;
+    let was_typing = f.typing.take();
+    f.shown.clear();
+    f.shown_in = ui.ctx().cumulative_pass_nr();
+    let mut sections = Sections {
+        reveal,
+        close,
+        open: Vec::new(),
+    };
     match &pages {
         Some(pages) => {
             if pages.len() > 1 {
@@ -401,15 +671,15 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
             }
             let last = pages.last().copied().unwrap_or(0);
             ui.add_space(4.0);
-            section(ui, reveal, None, "Insert blank page", |ui| {
+            sections.show(ui, None, "Insert blank page", |ui| {
                 if blank_ui(ui, &mut f.blank, last) {
                     apply = Some(Apply::Blank(last));
                 }
             });
-            let first = pages.first().copied().unwrap_or(0);
             let labelled = t.labels.is_some();
-            section(ui, reveal, Some(Section::Labels), "Page labels", |ui| {
-                if let Some(a) = label_ui(ui, &mut f.label, first, labelled) {
+            sections.show(ui, Some(Section::Labels), "Page labels", |ui| {
+                let page = f.label_page;
+                if let Some(a) = label_ui(ui, &mut f.label, page, labelled, &mut f.typing) {
                     apply = Some(a);
                 }
             });
@@ -417,24 +687,24 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
         None => {
             ui.weak("Select pages in the thumbnails, or pick a tool, for more options.");
             ui.add_space(4.0);
-            section(ui, reveal, Some(Section::Properties), "Properties", |ui| {
-                if meta_ui(ui, &mut f.meta) {
+            sections.show(ui, Some(Section::Properties), "Properties", |ui| {
+                if meta_ui(ui, &mut f.meta, &mut f.typing) {
                     apply = Some(Apply::Props);
                 }
             });
-            section(ui, reveal, None, "Opening view", |ui| {
-                if view_ui(ui, &mut f.view, &mut f.view_page, &here) {
-                    apply = Some(Apply::ViewPrefs);
+            sections.show(ui, None, "Opening view", |ui| {
+                if let Some(joins) = view_ui(ui, &mut f.view, &mut f.view_page, &here) {
+                    apply = Some(Apply::ViewPrefs(joins));
                 }
             });
             let sec = "Password security";
-            section(ui, reveal, Some(Section::Security), sec, |ui| {
+            sections.show(ui, Some(Section::Security), sec, |ui| {
                 if security_ui(ui, &mut f.sec) {
                     apply = Some(Apply::Security);
                 }
             });
             if c.form {
-                section(ui, reveal, None, "Form", |ui| {
+                sections.show(ui, None, "Form", |ui| {
                     if let Some(a) = form_ui(ui, &t.ed.form, c) {
                         apply = Some(Apply::Act(a));
                     }
@@ -443,24 +713,31 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
         }
     }
     // Tools that work on a page range: the selected pages, or all.
-    section(ui, reveal, Some(Section::Crop), "Crop", |ui| {
-        if crop_ui(ui, &mut f.crop) {
-            apply = Some(Apply::Crop);
+    sections.show(ui, Some(Section::Crop), "Crop", |ui| {
+        if let Some(joins) = crop_ui(ui, &mut f.crop) {
+            apply = Some(Apply::Crop(joins));
         }
     });
-    section(ui, reveal, Some(Section::Watermark), "Watermark", |ui| {
-        if let Some(replace) = watermark_ui(ui, &mut f.wm, wm_again) {
-            apply = Some(Apply::Watermark { replace });
+    sections.show(ui, Some(Section::Watermark), "Watermark", |ui| {
+        let before = f.wm.clone();
+        let press = watermark_ui(ui, &mut f.wm, wm_link);
+        // Changed since one was added: shown on the pages again until added.
+        f.wm_added &= wm_link || f.wm == before;
+        if let Some(a) = stamp_change(ui, Stamp::Watermark, press, wm_behind) {
+            apply = Some(a);
         }
     });
     let hf_title = "Headers, footers, Bates";
-    section(ui, reveal, Some(Section::HeaderFooter), hf_title, |ui| {
-        if let Some(replace) = header_footer_ui(ui, &mut f.hf, hf_again) {
-            apply = Some(Apply::HeaderFooter { replace });
+    sections.show(ui, Some(Section::HeaderFooter), hf_title, |ui| {
+        let before = f.hf.clone();
+        let press = header_footer_ui(ui, &mut f.hf, hf_link);
+        f.hf_added &= hf_link || f.hf == before;
+        if let Some(a) = stamp_change(ui, Stamp::HeaderFooter, press, hf_behind) {
+            apply = Some(a);
         }
     });
     let ocr = "Recognise text (OCR)";
-    section(ui, reveal, Some(Section::Ocr), ocr, |ui| {
+    sections.show(ui, Some(Section::Ocr), ocr, |ui| {
         ui.weak("Pages without text; Latin script. Runs in the background.");
         range_row(ui, &mut f.ocr);
         let run = egui::Button::new("Recognise");
@@ -469,19 +746,19 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
         }
     });
     let scans = "Optimise scanned pages";
-    section(ui, reveal, Some(Section::Scans), scans, |ui| {
+    sections.show(ui, Some(Section::Scans), scans, |ui| {
         if scan_ui(ui, &mut f.scan_pages, &mut f.scan, c.busy) {
             apply = Some(Apply::Scans);
         }
     });
     if pages.is_none() {
         let export = "Export pages as images";
-        section(ui, reveal, Some(Section::Export), export, |ui| {
+        sections.show(ui, Some(Section::Export), export, |ui| {
             if export_ui(ui, &mut f.export, c.busy) {
                 apply = Some(Apply::Export);
             }
         });
-        section(ui, reveal, Some(Section::Split), "Split into files", |ui| {
+        sections.show(ui, Some(Section::Split), "Split into files", |ui| {
             ui.horizontal(|ui| {
                 ui.radio_value(&mut f.split_at_marks, false, "Pages per file");
                 ui.add_enabled(
@@ -506,6 +783,16 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
                 apply = Some(Apply::Act(a));
             }
         }
+    }
+    f.shown = sections.open;
+    // A field typed in that no longer has the keyboard is kept, as leaving it does, also
+    // when it is no longer drawn (the panel showing selected pages instead).
+    if apply.is_none() && f.typing.is_none() {
+        apply = match was_typing {
+            Some(LABEL_PREFIX) => Some(Apply::Label(None)),
+            Some(_) => Some(Apply::Props),
+            None => None,
+        };
     }
     apply
 }
@@ -551,21 +838,42 @@ fn form_ui(ui: &mut Ui, form: &FormUi, c: &Ctx) -> Option<Act> {
     act
 }
 
-/// A collapsible section; opened and scrolled into view when it is `reveal`.
-fn section(
-    ui: &mut Ui,
+/// The panel's collapsible sections: the one to open and scroll into view (`reveal`), the
+/// one to close, and those found open.
+struct Sections {
     reveal: Option<Section>,
-    this: Option<Section>,
-    title: &str,
-    body: impl FnOnce(&mut Ui),
-) {
-    let open = this.is_some() && reveal == this;
-    let r = egui::CollapsingHeader::new(title)
-        .id_salt(("inspector", title))
-        .open(open.then_some(true))
-        .show(ui, body);
-    if open {
-        r.header_response.scroll_to_me(Some(egui::Align::TOP));
+    close: Option<Section>,
+    open: Vec<Section>,
+}
+
+impl Sections {
+    fn show(
+        &mut self,
+        ui: &mut Ui,
+        this: Option<Section>,
+        title: &str,
+        body: impl FnOnce(&mut Ui),
+    ) {
+        let reveal = this.is_some() && self.reveal == this;
+        let close = this.is_some() && self.close == this;
+        let set = if close {
+            Some(false)
+        } else {
+            reveal.then_some(true)
+        };
+        let r = egui::CollapsingHeader::new(title)
+            .id_salt(("inspector", title))
+            .open(set)
+            .show(ui, body);
+        if reveal {
+            r.header_response.scroll_to_me(Some(egui::Align::TOP));
+        }
+        // Open as the user left it, not while it folds away.
+        let id = r.header_response.id;
+        let state = egui::collapsing_header::CollapsingState::load(ui.ctx(), id);
+        if state.is_some_and(|s| s.is_open()) {
+            self.open.extend(this);
+        }
     }
 }
 
@@ -580,11 +888,12 @@ fn act_button(ui: &mut Ui, act: Act, c: &Ctx) -> bool {
     ui.add_enabled((a.enabled)(c), b).clicked()
 }
 
-fn range_row(ui: &mut Ui, text: &mut String) {
+fn range_row(ui: &mut Ui, text: &mut String) -> egui::Response {
     ui.horizontal(|ui| {
         ui.label("Pages");
-        crate::dialogs::pages_box(ui, text, Some(f32::INFINITY));
-    });
+        crate::dialogs::pages_box(ui, text, Some(f32::INFINITY))
+    })
+    .inner
 }
 
 /// A two-column grid of labels and controls, sized for the panel.
@@ -621,12 +930,28 @@ fn blank_ui(ui: &mut Ui, size: &mut (f32, f32), after: usize) -> bool {
         .clicked()
 }
 
-/// The numbering to set from page `first` on, until the next numbering the document has after it.
-fn label_ui(ui: &mut Ui, s: &mut Label, first: usize, labelled: bool) -> Option<Apply> {
+/// Whether a number field's change is to be kept now: once it is let go, not while it is
+/// dragged. A number typed in arrives when the field is left or Enter pressed (the
+/// fields don't `update_while_editing`).
+fn let_go(r: &egui::Response) -> bool {
+    (r.changed() && !r.dragged()) || r.drag_stopped()
+}
+
+/// The numbering from page `first` on, until the next numbering the document has after it,
+/// as it is; a change applies at once. `typing`: set when the prefix has the keyboard.
+fn label_ui(
+    ui: &mut Ui,
+    s: &mut Label,
+    first: usize,
+    labelled: bool,
+    typing: &mut Option<&'static str>,
+) -> Option<Apply> {
     let name = |st: Option<LabelStyle>| st.map_or("Prefix only", LabelStyle::name);
+    let mut apply = None;
     ui.weak("The page numbers viewers show, such as i, ii, 1, 2. Nothing is printed on the pages.");
     ui.horizontal(|ui| {
         ui.label("Style");
+        let style = s.style;
         egui::ComboBox::from_id_salt("label-style")
             .selected_text(name(s.style))
             .show_ui(ui, |ui| {
@@ -634,77 +959,95 @@ fn label_ui(ui: &mut Ui, s: &mut Label, first: usize, labelled: bool) -> Option<
                     ui.selectable_value(&mut s.style, st, name(st));
                 }
             });
+        if s.style != style {
+            apply = Some(Apply::Label(None));
+        }
     });
     ui.horizontal(|ui| {
         ui.label("Prefix");
-        ui.add(egui::TextEdit::singleline(&mut s.prefix).desired_width(80.0));
+        let r = ui.add(egui::TextEdit::singleline(&mut s.prefix).desired_width(80.0));
+        if r.has_focus() {
+            *typing = Some(LABEL_PREFIX);
+        }
+        if r.lost_focus() {
+            apply = Some(Apply::Label(None));
+        }
         ui.label("Start at");
-        ui.add_enabled(
-            s.style.is_some(),
-            egui::DragValue::new(&mut s.start).range(1..=99_999),
-        );
+        let start = egui::DragValue::new(&mut s.start)
+            .range(1..=999_999_999)
+            .update_while_editing(false);
+        if let_go(&ui.add_enabled(s.style.is_some(), start)) {
+            apply = Some(Apply::Label(Some("label-start")));
+        }
     });
-    let preview = match s.style {
+    let shown = match s.style {
         Some(st) => format!("{}{}", s.prefix, st.format(s.start)),
         None => s.prefix.clone(),
     };
-    ui.weak(format!("Page {} will be labelled “{preview}”.", first + 1));
-    if ui
-        .button(format!("Number from page {}", first + 1))
-        .clicked()
-    {
-        return Some(Apply::Label(first));
-    }
+    ui.weak(format!("Page {} is labelled “{shown}”.", first + 1));
     if labelled && ui.button("Remove all page labels").clicked() {
         return Some(Apply::RemoveLabels);
     }
-    None
-}
-
-/// Margins to trim, and the buttons to crop or show the whole page. Removing the crop
-/// sets the margins to zero.
-fn crop_ui(ui: &mut Ui, s: &mut Crop) -> bool {
-    ui.weak("Trimmed from each side of the full page, as shown.");
-    range_row(ui, &mut s.pages);
-    grid(ui, "crop", |ui| {
-        for (name, i) in [("Top", 0), ("Bottom", 2), ("Left", 3), ("Right", 1)] {
-            ui.label(name);
-            let v = &mut s.margins[i];
-            ui.add(egui::DragValue::new(v).range(0.0..=14400.0).suffix(" pt"));
-            ui.end_row();
-        }
-    });
-    let mut apply = false;
-    ui.horizontal(|ui| {
-        apply = ui.button("Crop").clicked();
-        if ui.button("Remove crop").clicked() {
-            s.margins = [0.0; 4];
-            apply = true;
-        }
-    });
     apply
 }
 
-fn meta_ui(ui: &mut Ui, s: &mut Info) -> bool {
-    grid(ui, "meta", |ui| {
-        for (label, f) in [
-            ("Title", &mut s.title),
-            ("Author", &mut s.author),
-            ("Subject", &mut s.subject),
-            ("Keywords", &mut s.keywords),
-            ("Creator", &mut s.creator),
-            ("Producer", &mut s.producer),
+/// The margins trimmed from the pages, as they are; a change crops at once (see
+/// [`Tab::crop`]), and Remove crop sets them to zero. While the section is open the pages
+/// are shown whole with the crop box on them.
+fn crop_ui(ui: &mut Ui, s: &mut Crop) -> Option<Option<&'static str>> {
+    ui.weak("Drag the crop box's edges on the page, or type how much to trim from each side.");
+    range_row(ui, &mut s.pages);
+    let mut apply = None;
+    s.dragged = false;
+    grid(ui, "crop", |ui| {
+        for (name, i, key) in [
+            ("Top", 0, "crop-top"),
+            ("Bottom", 2, "crop-bottom"),
+            ("Left", 3, "crop-left"),
+            ("Right", 1, "crop-right"),
         ] {
-            ui.label(label);
-            let mut v = f.clone().unwrap_or_default();
-            let field = egui::TextEdit::singleline(&mut v).desired_width(f32::INFINITY);
-            if ui.add(field).changed() {
-                *f = Some(v);
+            ui.label(name);
+            let v = &mut s.margins[i];
+            let field = egui::DragValue::new(v)
+                .range(0.0..=14400.0)
+                .suffix(" pt")
+                .update_while_editing(false);
+            let r = ui.add(field);
+            s.dragged |= r.dragged();
+            if let_go(&r) {
+                apply = Some(Some(key));
             }
             ui.end_row();
         }
     });
-    ui.button("Apply").clicked()
+    if ui.button("Remove crop").clicked() {
+        s.margins = [0.0; 4];
+        apply = Some(None);
+    }
+    apply
+}
+
+/// The document's properties; a field is kept when Enter is pressed or it is left, so
+/// returns true then. `typing`: set to the field that has the keyboard.
+fn meta_ui(ui: &mut Ui, s: &mut Info, typing: &mut Option<&'static str>) -> bool {
+    let mut kept = false;
+    grid(ui, "meta", |ui| {
+        for (label, f) in meta_fields(s) {
+            ui.label(label);
+            let mut v = f.clone().unwrap_or_default();
+            let field = egui::TextEdit::singleline(&mut v).desired_width(f32::INFINITY);
+            let r = ui.add(field);
+            if r.changed() {
+                *f = Some(v);
+            }
+            if r.has_focus() {
+                *typing = Some(label);
+            }
+            kept |= r.lost_focus();
+            ui.end_row();
+        }
+    });
+    kept
 }
 
 /// How the document is being viewed now, for "Use current view".
@@ -716,7 +1059,16 @@ struct Here {
     pages: usize,
 }
 
-fn view_ui(ui: &mut Ui, v: &mut ViewPrefs, page: &mut usize, here: &Here) -> bool {
+/// The document's opening view, as it is; a choice applies as it is made, so returns
+/// `Some` then (with the name to join undo steps by, for the page number).
+fn view_ui(
+    ui: &mut Ui,
+    v: &mut ViewPrefs,
+    page: &mut usize,
+    here: &Here,
+) -> Option<Option<&'static str>> {
+    let before = *v;
+    let mut number = None;
     ui.weak("How viewers show this document when it opens, if they follow it. LimarePDF does.");
     let layout_name = |l: Option<OpenLayout>| match l {
         None => "Not set",
@@ -754,31 +1106,34 @@ fn view_ui(ui: &mut Ui, v: &mut ViewPrefs, page: &mut usize, here: &Here) -> boo
             let mut set = v.page.is_some();
             ui.checkbox(&mut set, "Open at");
             let mut n = *page + 1;
-            let field = egui::DragValue::new(&mut n).range(1..=here.pages.max(1));
-            ui.add_enabled(set, field);
+            let field = egui::DragValue::new(&mut n)
+                .range(1..=here.pages.max(1))
+                .update_while_editing(false);
+            let r = ui.add_enabled(set, field);
             *page = n - 1;
             v.page = set.then_some(*page);
+            number = Some(r);
         });
         ui.end_row();
     });
-    ui.horizontal(|ui| {
-        if ui
-            .button("Use current view")
-            .on_hover_text(
-                "Fill in this document's layout, side panel and page as you see them now.",
-            )
-            .clicked()
-        {
-            *page = here.page;
-            *v = ViewPrefs {
-                layout: Some(here.layout),
-                panel: here.panel,
-                page: Some(here.page),
-            };
-        }
-        ui.button("Apply").clicked()
-    })
-    .inner
+    if ui
+        .button("Use current view")
+        .on_hover_text("Set this document's layout, side panel and page as you see them now.")
+        .clicked()
+    {
+        *page = here.page;
+        *v = ViewPrefs {
+            layout: Some(here.layout),
+            panel: here.panel,
+            page: Some(here.page),
+        };
+        return Some(None);
+    }
+    match number {
+        Some(r) if r.dragged() => None,
+        Some(r) if let_go(&r) => Some(Some("view-page")),
+        _ => (*v != before).then_some(None),
+    }
 }
 
 fn security_ui(ui: &mut Ui, s: &mut Sec) -> bool {
@@ -828,26 +1183,55 @@ fn security_ui(ui: &mut Ui, s: &mut Sec) -> bool {
     ui.button("Apply").clicked()
 }
 
-/// The buttons of a stamp section. `again`: the stamp was just added, so it can be updated or
-/// another added. Returns whether to replace it, when a button was pressed.
-fn stamp_apply(ui: &mut Ui, again: bool, what: &str) -> Option<bool> {
-    if !again {
-        return ui.button("Apply").clicked().then_some(false);
-    }
-    ui.weak(format!("Update changes the {what} just added."));
-    ui.horizontal(|ui| {
-        if ui.button("Update").clicked() {
-            Some(true)
-        } else if ui.button("Add another").clicked() {
-            Some(false)
-        } else {
-            None
-        }
-    })
-    .inner
+/// What happened in a stamp section: its button was pressed (Add to pages, or Add
+/// another), or a text field was left.
+#[derive(Default)]
+struct Press {
+    add: bool,
+    left: bool,
 }
 
-fn watermark_ui(ui: &mut Ui, s: &mut Wm, again: bool) -> Option<bool> {
+/// A text field of a stamp section, which notes in `p` when it is left.
+fn stamp_text(ui: &mut Ui, text: &mut String, p: &mut Press) {
+    let r = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
+    p.left |= r.lost_focus();
+}
+
+/// The button of a stamp section. Before one is added, it is shown on the pages and Add
+/// to pages adds it (`ready`: there is something to add); once added (`linked`), changes
+/// update it and Add another adds one more.
+fn stamp_button(ui: &mut Ui, linked: bool, ready: bool, what: &str, p: &mut Press) {
+    if linked {
+        ui.weak(format!(
+            "Changes update the {what} just added. Undo takes each back."
+        ));
+        p.add |= ui.button("Add another").clicked();
+    } else {
+        ui.weak("Shown on the pages; nothing is added until you choose Add to pages.");
+        let add = egui::Button::new("Add to pages");
+        p.add |= ui.add_enabled(ready, add).clicked();
+    }
+}
+
+/// The change a stamp section asks for: adding one when its button was pressed; else, when
+/// the form is linked to a stamp and says something else (`behind`), updating it once
+/// nothing is being dragged, typed or picked (a colour applies when its picker closes).
+fn stamp_change(ui: &Ui, kind: Stamp, p: Press, behind: bool) -> Option<Apply> {
+    if p.add {
+        return Some(Apply::Stamp {
+            kind,
+            update: false,
+        });
+    }
+    let busy = ui.input(|i| i.pointer.any_down())
+        || ui.ctx().egui_wants_keyboard_input()
+        || egui::Popup::is_any_open(ui.ctx());
+    let settled = p.left || !busy;
+    (behind && settled).then_some(Apply::Stamp { kind, update: true })
+}
+
+fn watermark_ui(ui: &mut Ui, s: &mut Wm, linked: bool) -> Press {
+    let mut p = Press::default();
     ui.horizontal(|ui| {
         ui.radio_value(&mut s.picture, false, "Text");
         ui.radio_value(&mut s.picture, true, "Picture");
@@ -875,7 +1259,7 @@ fn watermark_ui(ui: &mut Ui, s: &mut Wm, again: bool) -> Option<bool> {
             ui.end_row();
         } else {
             ui.label("Text");
-            ui.add(egui::TextEdit::singleline(&mut s.text).desired_width(f32::INFINITY));
+            stamp_text(ui, &mut s.text, &mut p);
             ui.end_row();
             ui.label("Size");
             ui.add(egui::Slider::new(&mut s.size, 12.0..=300.0));
@@ -895,18 +1279,20 @@ fn watermark_ui(ui: &mut Ui, s: &mut Wm, again: bool) -> Option<bool> {
     });
     ui.radio_value(&mut s.foreground, true, "Above the content");
     ui.radio_value(&mut s.foreground, false, "Behind the content");
-    range_row(ui, &mut s.range);
-    stamp_apply(ui, again, "watermark")
+    p.left |= range_row(ui, &mut s.range).lost_focus();
+    stamp_button(ui, linked, s.ready(), "watermark", &mut p);
+    p
 }
 
-fn header_footer_ui(ui: &mut Ui, s: &mut Hf, again: bool) -> Option<bool> {
+fn header_footer_ui(ui: &mut Ui, s: &mut Hf, linked: bool) -> Press {
+    let mut p = Press::default();
     ui.weak("Tokens: {page}  {pages}  {date}  {bates}");
     grid(ui, "hf", |ui| {
         let sides = ["left", "centre", "right"];
         for (name, row) in [("Header", &mut s.header), ("Footer", &mut s.footer)] {
             for (side, text) in sides.iter().zip(row.iter_mut()) {
                 ui.label(format!("{name}, {side}"));
-                ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
+                stamp_text(ui, text, &mut p);
                 ui.end_row();
             }
         }
@@ -925,10 +1311,10 @@ fn header_footer_ui(ui: &mut Ui, s: &mut Hf, again: bool) -> Option<bool> {
     ui.add_enabled_ui(s.bates, |ui| {
         grid(ui, "bates", |ui| {
             ui.label("Prefix");
-            ui.add(egui::TextEdit::singleline(&mut s.prefix).desired_width(f32::INFINITY));
+            stamp_text(ui, &mut s.prefix, &mut p);
             ui.end_row();
             ui.label("Suffix");
-            ui.add(egui::TextEdit::singleline(&mut s.suffix).desired_width(f32::INFINITY));
+            stamp_text(ui, &mut s.suffix, &mut p);
             ui.end_row();
             ui.label("Digits");
             ui.add(egui::DragValue::new(&mut s.digits).range(1..=12));
@@ -939,8 +1325,9 @@ fn header_footer_ui(ui: &mut Ui, s: &mut Hf, again: bool) -> Option<bool> {
         });
         ui.weak("Without a {bates} token the number goes at the bottom right.");
     });
-    range_row(ui, &mut s.range);
-    stamp_apply(ui, again, "headers and footers")
+    p.left |= range_row(ui, &mut s.range).lost_focus();
+    stamp_button(ui, linked, true, "headers and footers", &mut p);
+    p
 }
 
 fn scan_ui(ui: &mut Ui, pages: &mut String, o: &mut ScanOptions, busy: bool) -> bool {

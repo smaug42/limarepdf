@@ -166,6 +166,15 @@ both choices kept; a note typed and kept by a click outside it and by Esc, the r
 selected; at 1200 and 400 points wide, in the light, dark and system themes, at scales 1, 1.5 and 2. Not tried:
 Windows and macOS, a real HiDPI screen, a screen reader.
 
+The inspector's page and document settings applying as they are set (2026-10-22) were checked the same way, on a
+made-up two-page document: the Watermark, Headers, footers, Bates, Crop and Properties sections at 1200, 800 and
+400 points wide, in the light, dark and system themes, at scales 1, 1.5 and 2. The watermark and footer previews
+showed on the pages; after Add to pages the written watermark covered its preview to within 1.5 pixels at a
+110-pixel size (the difference is the renderer's stand-in Helvetica against Liberation Sans); the crop box was
+dragged down 87 points, the cut-off part dimmed as it moved, and Esc showed the pages cropped. Not tried: Windows
+and macOS, a real HiDPI screen, a screen reader, a picture watermark's preview by screenshot (its decoding and
+placement are tested), a turned page's previews by screenshot (their layout is tested).
+
 Each feature page says what was not tested, under "How this was tested".
 
 ## Acceptance checks

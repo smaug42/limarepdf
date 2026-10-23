@@ -352,3 +352,101 @@ fn search_joins_words_hyphenated_at_a_line_end() {
         assert!(p.find_text_matches(0, q).unwrap().is_empty(), "{q}");
     }
 }
+
+/// Headers, footers and Bates numbers are written where `HeaderFooter::lines` puts them,
+/// on a turned page too, and a watermark's text starts where `Watermark::text_start` says:
+/// the app's previews are drawn there.
+#[test]
+fn stamps_are_written_where_their_layout_says() {
+    let near = |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).abs() < 0.5 && (a.1 - b.1).abs() < 0.5;
+    for turn in [0, 90] {
+        let mut p = Pdf::new();
+        p.insert_blank(0, 300.0, 200.0).unwrap();
+        p.rotate_pages(&[0], turn).unwrap();
+        let hf = HeaderFooter {
+            header: ["".into(), "Head {page}".into(), "".into()],
+            bates: Some(Bates::default()),
+            ..Default::default()
+        };
+        p.add_header_footer(&[0], &hf).unwrap();
+        let size = p.page_size(0).unwrap();
+        let lines = hf.lines(0, 0, 1, size, &limarepdf_core::today_iso());
+        let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, ["Head 1", "Page 1 of 1", "000001"]);
+        let objs = p.page_objects(0).unwrap();
+        for l in &lines {
+            let o = objs
+                .iter()
+                .find(|o| o.text.as_deref() == Some(&l.text))
+                .unwrap_or_else(|| panic!("{} not written", l.text));
+            // Lines count y up from the bottom; page objects down from the top.
+            let want = (l.x, size.1 - l.y);
+            assert!(
+                near(o.baseline.unwrap(), want),
+                "{turn}: {:?} {want:?}",
+                o.baseline
+            );
+        }
+    }
+    let mut p = Pdf::new();
+    p.insert_blank(0, 300.0, 200.0).unwrap();
+    let wm = Watermark {
+        text: "DRAFT".into(),
+        font_size: 40.0,
+        rotation: 0.0,
+        ..Default::default()
+    };
+    p.add_watermark(&[0], &wm).unwrap();
+    let (tx, ty) = wm.text_start();
+    let objs = p.page_objects(0).unwrap();
+    let o = objs
+        .iter()
+        .find(|o| o.text.as_deref() == Some("DRAFT"))
+        .unwrap();
+    assert!(
+        near(o.baseline.unwrap(), (150.0 + tx, 100.0 - ty)),
+        "{:?}",
+        o.baseline
+    );
+}
+
+/// While the crop is being set the app draws pages whole: the uncropped snapshot shows each
+/// page's full box and leaves the document as it was, crop boxes of its own or none.
+#[test]
+fn the_uncropped_snapshot_shows_whole_pages() {
+    let mut p = Pdf::new();
+    for i in 0..2 {
+        p.insert_blank(i, 300.0, 200.0).unwrap();
+    }
+    p.set_crop_margins(0, [20.0, 10.0, 0.0, 30.0]).unwrap();
+    let whole = render::load(p.uncropped_app_snapshot().unwrap(), None).unwrap();
+    let r = render::Renderer::new(&whole);
+    assert_eq!(r.page_size(0).unwrap(), (300.0, 200.0));
+    assert_eq!(p.full_page_size(0).unwrap(), (300.0, 200.0));
+    // The document: page 1 cropped as before, page 2 still with no crop box at all.
+    assert_eq!(p.page_size(0).unwrap(), (260.0, 180.0));
+    let bytes = p.snapshot().unwrap();
+    let crop_boxes = bytes.windows(8).filter(|w| w == b"/CropBox").count();
+    assert_eq!(crop_boxes, 1);
+}
+
+/// A picture for the watermark preview: RGBA, upright and no bigger than asked.
+#[test]
+fn a_picture_is_decoded_for_its_preview() {
+    let mut png = Vec::new();
+    let img = image::RgbImage::from_fn(40, 20, |x, _| {
+        if x < 20 {
+            image::Rgb([255, 0, 0])
+        } else {
+            image::Rgb([0, 0, 255])
+        }
+    });
+    img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    let (w, h, px) = limarepdf_core::picture_preview(&png, 1000).unwrap();
+    assert_eq!((w, h), (40, 20));
+    assert_eq!(&px[..4], [255, 0, 0, 255]);
+    assert_eq!(&px[px.len() - 4..], [0, 0, 255, 255]);
+    let (w, h, px) = limarepdf_core::picture_preview(&png, 10).unwrap();
+    assert_eq!((w, h, px.len()), (10, 5, 200));
+}
