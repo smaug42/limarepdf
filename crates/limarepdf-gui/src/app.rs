@@ -4469,7 +4469,8 @@ mod tests {
 
     /// G06: contextual controls are named too: each tool's inspector, text being added and
     /// a line edited on the page, each kind of comment selected, each side view, Fill and
-    /// sign with saved signatures, and the lists, menus and command search opened.
+    /// sign with saved signatures, the lists, menus and command search opened, and Print's
+    /// states (V01).
     #[test]
     fn controls_have_clear_names_in_every_state() {
         use crate::signing::{Entry, Saved};
@@ -4616,7 +4617,34 @@ mod tests {
         let tree = settled_at(&mut app, &ctx, 1400.0);
         assert!(egui::Popup::is_any_open(&ctx), "the menu isn't open");
         note_unclear(&tree, "Menu open", &mut bad);
+        window(&mut app, &ctx, 1400.0, esc.clone());
+
+        // Print with all pages, with a page range it can't print, with its Print on list
+        // open, and for the selected text.
+        let printer = print::Printer {
+            name: "limarepdf-test-no-such-printer".into(),
+            default: true,
+        };
+        let print = || Box::new(dlg::Print::new(vec![printer.clone()], "test.pdf".into()));
+        app.dialog = Dialog::Print(app.asked(), print());
+        clear_names(&mut app, &ctx, "Print", &mut bad);
+        let mut range = print();
+        range.all = false;
+        range.pages = "9".into();
+        range.error = Some("There is no page 9.".into());
+        app.dialog = Dialog::Print(app.asked(), range);
+        clear_names(&mut app, &ctx, "Print a page range", &mut bad);
+        click_named(&mut app, &ctx, "Print on");
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert!(egui::Popup::is_any_open(&ctx), "Print on isn't open");
+        note_unclear(&tree, "Print on open", &mut bad);
         window(&mut app, &ctx, 1400.0, esc);
+        let mut selected = print();
+        selected.selection = Some(dlg::Layout::Original);
+        app.dialog = Dialog::Print(app.asked(), selected);
+        clear_names(&mut app, &ctx, "Print selected text", &mut bad);
+        app.dialog = Dialog::None;
+
         app.act(&ctx, Act::Palette);
         clear_names(&mut app, &ctx, "Command search", &mut bad);
         assert_eq!(bad, [""; 0]);
@@ -5679,20 +5707,20 @@ mod tests {
         };
         let print = dlg::Print::new(vec![printer], "test.pdf".into());
         app.dialog = Dialog::Print(app.asked(), Box::new(print));
-        let mut want = vec![
-            "Printer",
-            "All pages",
-            "Page range",
-            "Page range",
-            "Copies",
-            "One side",
-            "Both sides, flip on long edge",
-            "Both sides, flip on short edge",
-        ];
+        let mut want = vec!["Printer", "All pages", "Page range", "Copies", "Print on"];
         if !cfg!(windows) {
             want.push("Advanced");
         }
         want.extend(footer("Print"));
+        assert_eq!(tab_walk(&mut app, &ctx, 1200.0, want.len()), want);
+        // With Page range chosen, its pages after it, from the start again.
+        if let Dialog::Print(_, s) = &mut app.dialog {
+            s.all = false;
+        }
+        if let Some(id) = ctx.memory(|m| m.focused()) {
+            ctx.memory_mut(|m| m.surrender_focus(id));
+        }
+        want.insert(3, "Pages to print");
         assert_eq!(tab_walk(&mut app, &ctx, 1200.0, want.len()), want);
 
         app.dialog = Dialog::None;

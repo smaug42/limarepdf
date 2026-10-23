@@ -26,10 +26,10 @@ Word, Excel and CSV export are not available.
 
 ## Printing
 
-Print (the top bar's Print button, Ctrl+P, or the inspector) chooses the printer, the pages (all pages, or a page
-range, which starts as the selected pages when there are any), copies and printing on one side or both, and runs in
-the background. A page range LimarePDF can't read is reported under it, with what you typed kept. Print as image is
-under Advanced. On the command line: `limarepdf-cli printers` and
+Print (the top bar's Print button, Ctrl+P, or the inspector) chooses the printer, the pages (All pages, or Page
+range, which shows a Pages to print field below it and starts as the selected pages when there are any), copies and
+Print on (one side, or both sides flipped on the long or short edge), and runs in the background. A page range
+LimarePDF can't read is reported under it, with what you typed kept. Print as image is under Advanced. On the command line: `limarepdf-cli printers` and
 `limarepdf-cli print`.
 
 **Linux and macOS** print through CUPS. The chosen pages go to `lp` as an unencrypted PDF, which CUPS draws with its

@@ -47,9 +47,14 @@
   the action that does the task highlighted (red when Undo can't take it back or it breaks signatures) and before
   Cancel (after it on macOS). The window behind is dimmed and takes no clicks or shortcuts while a dialog is open.
   Esc cancels any dialog, except one holding work that would be lost. Messages have a Copy button; a signed
-  document's save and sign questions put the reason under Details.
-- Print: all pages or a page range, one side or both as a list of choices, and Print as image under Advanced; a page
+  document's save and sign questions put the reason under Details. The title is larger, in Inter Medium (now
+  included), with more room around the title, the settings and the buttons; fields, lists and buttons are
+  outlined and taller; and in a window under 600 points wide the margins are smaller.
+- Print: the printer above a list of printers; All pages and Page range on one row, with the pages to print
+  below them once Page range is chosen (which puts the keyboard there); Copies beside a Print on list of one
+  side or both (one under the other in a narrow window); and Print as image under Advanced, below a rule. A page
   range that can't be read is reported under it instead of in a separate message.
+- Create signature's Type has a "Your name" label above an outlined field, and the drawing area an outline.
 - Create signature: Draw, Type and Image (was Picture), the ink colour in the window too, and Use signature (was
   Done). Picking another tool closes it.
 - Go to field in Signature details closes the window, to show the field.
@@ -57,7 +62,7 @@
   are shown, left to right. Closing the inspector's pop-out with Esc returns the keyboard to its button.
 - Screen readers can name the buttons, fields, lists and menus in the window, the inspector, the side views and
   the dialogs, checked by the app's tests (not yet with a screen reader). Names added: the search field, the
-  pages and their thumbnails, Print's printer, page range and copies, the signature drawing area and ink
+  pages and their thumbnails, Print's printer, pages to print, copies and Print on, the signature drawing area and ink
   colours, the banners' Dismiss button; the font list, Bold and Italic (with whether they are on), the font
   sizes, every colour button, line widths, opacity and the inspector's fields (each named by its label);
   Search results' field and ◀ ▶ (Previous match, Next match, now also as tooltips); the Fill and sign pane's

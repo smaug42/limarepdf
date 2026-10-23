@@ -80,7 +80,7 @@ impl<'a> Btn<'a> {
             Look::Danger => theme::danger_button(self.text),
             Look::Plain => egui::Button::new(self.text.to_owned()),
         };
-        b.min_size(egui::vec2(72.0, 28.0))
+        b.min_size(egui::vec2(80.0, theme::DIALOG_CONTROL))
     }
 }
 
@@ -94,9 +94,43 @@ pub fn ordered(buttons: &[Btn]) -> Vec<usize> {
     order
 }
 
+/// The space at each side of a dialog's content, in a window wide enough: a dialog sized
+/// to fit its content is that much wider on each side.
+pub const SIDE: f32 = 24.0;
+
+/// Below this window width, dialogs have less space around their parts.
+const NARROW: f32 = 600.0;
+
+/// The space around a dialog's parts, in points: at its sides, above its title, above and
+/// below its content, and above and below its buttons.
+struct Insets {
+    side: i8,
+    top: i8,
+    content: i8,
+    footer: i8,
+}
+
+fn insets(ctx: &Context) -> Insets {
+    if ctx.content_rect().width() < NARROW {
+        Insets {
+            side: 16,
+            top: 18,
+            content: 20,
+            footer: 14,
+        }
+    } else {
+        Insets {
+            side: SIDE as i8,
+            top: 22,
+            content: 22,
+            footer: 16,
+        }
+    }
+}
+
 /// A dialog: a window over a dimmed app, which takes no input while it is open, with the
 /// task as its title and, when that needs saying, the file it acts on. What goes in it is
-/// drawn with [`content`] and [`footer`].
+/// drawn with [`content`] and [`footer`], in the dialogs' look ([`theme::dialog_style`]).
 pub struct Shell<'a> {
     id: egui::Id,
     title: &'a str,
@@ -111,7 +145,7 @@ impl<'a> Shell<'a> {
             id: egui::Id::new(("dialog", title)),
             title,
             file: None,
-            width: 420.0,
+            width: 470.0,
             esc: true,
         }
     }
@@ -140,19 +174,21 @@ impl<'a> Shell<'a> {
         let room = ctx.content_rect().width() - 32.0;
         let width = self.width.min(room).max(240.0);
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(0);
+        let at = insets(ctx);
         let r = egui::Modal::new(self.id).frame(frame).show(ctx, |ui| {
             ui.set_width(width);
+            theme::dialog_style(ui.style_mut());
             egui::Frame::NONE
                 .inner_margin(Margin {
-                    left: 20,
-                    right: 20,
-                    top: 16,
+                    left: at.side,
+                    right: at.side,
+                    top: at.top,
                     bottom: 0,
                 })
                 .show(ui, |ui| {
                     let title = RichText::new(self.title)
-                        .size(18.0)
-                        .family(theme::semibold())
+                        .size(20.0)
+                        .family(theme::medium())
                         .strong();
                     ui.add(egui::Label::new(title).wrap());
                     if let Some(f) = self.file {
@@ -174,11 +210,17 @@ pub fn any_open(ctx: &Context) -> bool {
     !ctx.memory(|m| m.is_above_modal_layer(egui::LayerId::background()))
 }
 
-/// A dialog's content, padded, and scrolling when the window is too short for it.
+/// A dialog's content, padded, and scrolling when the window is too short for it: drawn
+/// under the dialog's title, with a [`footer`] to come.
 pub fn content<R>(ui: &mut Ui, body: impl FnOnce(&mut Ui) -> R) -> R {
-    let max = (ui.ctx().content_rect().height() - 200.0).max(120.0);
+    let at = insets(ui.ctx());
+    let above = ui.cursor().min.y - ui.max_rect().min.y;
+    let footer = 2.0 * f32::from(at.footer) + theme::DIALOG_CONTROL + 1.0;
+    // And some of the screen left above and below the window.
+    let around = 2.0 * f32::from(at.content) + 16.0;
+    let max = (ui.ctx().content_rect().height() - above - footer - around).max(60.0);
     egui::Frame::NONE
-        .inner_margin(Margin::symmetric(20, 14))
+        .inner_margin(Margin::symmetric(at.side, at.content))
         .show(ui, |ui| {
             egui::ScrollArea::vertical()
                 .max_height(max)
@@ -189,13 +231,35 @@ pub fn content<R>(ui: &mut Ui, body: impl FnOnce(&mut Ui) -> R) -> R {
         .inner
 }
 
+/// Space between the groups and fields of a dialog's content.
+const GAP: f32 = 20.0;
+
+/// [`GAP`], unless nothing is above in `ui`.
+fn gap(ui: &mut Ui) {
+    if ui.cursor().min.y > ui.max_rect().min.y + 1.0 {
+        ui.add_space(GAP);
+    }
+}
+
 /// A titled group of settings in a dialog's content.
 pub fn group<R>(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui) -> R) -> R {
+    gap(ui);
+    ui.label(RichText::new(title).family(theme::medium()).strong());
     ui.add_space(4.0);
-    ui.label(RichText::new(title).family(theme::semibold()).strong());
+    body(ui)
+}
+
+/// A field in a dialog's content with its label above it, which also names it for screen
+/// readers. `add` adds the field and returns it.
+pub fn field(
+    ui: &mut Ui,
+    label: &str,
+    add: impl FnOnce(&mut Ui) -> egui::Response,
+) -> egui::Response {
+    ui.label(label);
     ui.add_space(2.0);
-    let r = body(ui);
-    ui.add_space(10.0);
+    let r = add(ui);
+    set_name(&r, label);
     r
 }
 
@@ -300,13 +364,14 @@ pub fn reading_order(ui: &mut Ui, last: Option<f32>, add: impl FnOnce(&mut Ui)) 
 pub fn footer(ui: &mut Ui, note: Option<RichText>, buttons: &[Btn]) -> Option<usize> {
     ui.add(egui::Separator::default().spacing(0.0));
     let mut hit = None;
+    let at = insets(ui.ctx());
     egui::Frame::NONE
-        .inner_margin(Margin::symmetric(20, 12))
+        .inner_margin(Margin::symmetric(at.side, at.footer))
         .show(ui, |ui| {
             // A row only as tall as its controls: given the rest of the window, it would be
             // centred in it, and keep the window as tall as it ever was when the screen gets
             // shorter.
-            let row = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
+            let row = egui::vec2(ui.available_width(), theme::DIALOG_CONTROL);
             let layout = egui::Layout::right_to_left(Align::Center);
             ui.allocate_ui_with_layout(row, layout, |ui| {
                 let id = ui.id().with("footer buttons");
@@ -505,10 +570,18 @@ pub fn print(ctx: &Context, s: &mut Print) -> Outcome {
     out
 }
 
-/// The Print dialog's settings; true when Enter was pressed in the page range.
+/// The choices for printing on one side or both.
+const SIDES: [(Sides, &str); 3] = [
+    (Sides::One, "One side"),
+    (Sides::LongEdge, "Both sides, flip on long edge"),
+    (Sides::ShortEdge, "Both sides, flip on short edge"),
+];
+
+/// The Print dialog's settings, as in the dialog mockup; true when Enter was pressed in
+/// the page range.
 fn print_body(ui: &mut Ui, s: &mut Print) -> bool {
     let wide = ui.available_width();
-    group(ui, "Printer", |ui| {
+    field(ui, "Printer", |ui| {
         let name = |p: &Printer| {
             if p.default {
                 format!("{} (default)", p.name)
@@ -516,59 +589,57 @@ fn print_body(ui: &mut Ui, s: &mut Print) -> bool {
                 p.name.clone()
             }
         };
-        let r = egui::ComboBox::from_id_salt("printer")
+        egui::ComboBox::from_id_salt("printer")
             .width(wide)
             .selected_text(name(&s.printers[s.printer]))
             .show_ui(ui, |ui| {
                 for (i, p) in s.printers.iter().enumerate() {
                     ui.selectable_value(&mut s.printer, i, name(p));
                 }
-            });
-        set_name(&r.response, "Printer");
+            })
+            .response
     });
     let mut enter = false;
     if s.selection.is_none() {
         group(ui, "Pages", |ui| {
-            ui.radio_value(&mut s.all, true, "All pages");
-            ui.horizontal(|ui| {
-                ui.radio_value(&mut s.all, false, "Page range");
-                let r = ui.add(
-                    egui::TextEdit::singleline(&mut s.pages)
-                        .hint_text("e.g. 1-3, 5, 8-")
-                        .desired_width(160.0),
-                );
-                set_name(&r, "Page range");
-                if r.changed() {
-                    s.all = false;
-                    s.error = None;
-                }
-                enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+            let mut range = None;
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 18.0;
+                ui.radio_value(&mut s.all, true, "All pages");
+                range = Some(ui.radio_value(&mut s.all, false, "Page range"));
             });
+            if s.all {
+                return;
+            }
+            // Shown once Page range is chosen, taking the keyboard when chosen.
+            ui.add_space(8.0);
+            let r = field(ui, "Pages to print", |ui| {
+                let edit = egui::TextEdit::singleline(&mut s.pages)
+                    .hint_text("e.g. 1-3, 5, 8-")
+                    .desired_width(f32::INFINITY);
+                ui.add(theme::field(edit))
+            });
+            if range.is_some_and(|c| c.clicked()) {
+                r.request_focus();
+            }
+            if r.changed() {
+                s.error = None;
+            }
+            enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
             if let Some(e) = &s.error {
                 ui.colored_label(ui.visuals().error_fg_color, e);
             }
         });
     }
-    group(ui, "Copies and sides", |ui| {
-        ui.horizontal(|ui| {
-            ui.label("Copies");
-            let r = ui.add(egui::DragValue::new(&mut s.copies).range(1..=999));
-            set_name(&r, "Copies");
-        });
-        ui.label("Print on");
-        for (x, label) in [
-            (Sides::One, "One side"),
-            (Sides::LongEdge, "Both sides, flip on long edge"),
-            (Sides::ShortEdge, "Both sides, flip on short edge"),
-        ] {
-            ui.radio_value(&mut s.sides, x, label);
-        }
-    });
+    group(ui, "Copies and sides", |ui| copies_and_sides(ui, s));
     if let Some(layout) = &mut s.selection {
         layout_choice(ui, layout, &[Layout::Original, Layout::Plain]);
     }
     // Windows always prints pages drawn by LimarePDF.
     if !cfg!(windows) {
+        ui.add_space(GAP);
+        ui.add(egui::Separator::default().spacing(0.0));
+        ui.add_space(8.0);
         egui::CollapsingHeader::new("Advanced")
             .default_open(s.as_image)
             .show(ui, |ui| {
@@ -581,6 +652,68 @@ fn print_body(ui: &mut Ui, s: &mut Print) -> bool {
             });
     }
     enter
+}
+
+/// Copies beside Print on, as two columns when the longest choice fits beside Copies;
+/// one under the other otherwise.
+fn copies_and_sides(ui: &mut Ui, s: &mut Print) {
+    let gap = 16.0;
+    let width = ui.available_width();
+    let copies_width = ((width - gap) / 2.6).clamp(80.0, 95.0);
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let longest = SIDES
+        .iter()
+        .map(|(_, l)| {
+            let g = ui.painter().layout_no_wrap(
+                l.to_string(),
+                font.clone(),
+                egui::Color32::PLACEHOLDER,
+            );
+            g.size().x
+        })
+        .fold(0.0, f32::max);
+    // The list's padding and arrow.
+    let sp = ui.spacing();
+    let need = longest + 2.0 * sp.button_padding.x + sp.icon_width + sp.icon_spacing;
+    let beside = width - copies_width - gap >= need;
+    let copies = |ui: &mut Ui, s: &mut Print| {
+        field(ui, "Copies", |ui| {
+            ui.spacing_mut().interact_size.x = copies_width;
+            ui.add(egui::DragValue::new(&mut s.copies).range(1..=999))
+        });
+    };
+    let sides = |ui: &mut Ui, s: &mut Print, width: f32| {
+        let shown = SIDES.iter().find(|(x, _)| *x == s.sides).map(|(_, l)| *l);
+        field(ui, "Print on", |ui| {
+            egui::ComboBox::from_id_salt("sides")
+                .width(width)
+                .selected_text(shown.unwrap_or_default())
+                .show_ui(ui, |ui| {
+                    for (x, label) in SIDES {
+                        ui.selectable_value(&mut s.sides, x, label);
+                    }
+                })
+                .response
+        });
+    };
+    if beside {
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            ui.vertical(|ui| {
+                ui.set_width(copies_width);
+                copies(ui, s);
+            });
+            ui.vertical(|ui| {
+                let rest = ui.available_width();
+                ui.set_width(rest);
+                sides(ui, s, rest);
+            });
+        });
+    } else {
+        copies(ui, s);
+        ui.add_space(12.0);
+        sides(ui, s, width);
+    }
 }
 
 /// Save the selected text: choose the layout; the file dialog follows.
@@ -639,11 +772,11 @@ pub fn password(ctx: &Context, s: &mut Password) -> Outcome {
     let shell = Shell::new("Password required").file(name.as_deref());
     modal(ctx, shell, Btn::primary("Open"), true, |ui| {
         ui.label("This document is protected. Type its password to open it.");
-        let r = ui.add(
+        let r = ui.add(theme::field(
             egui::TextEdit::singleline(&mut s.input)
                 .password(true)
                 .hint_text("Password"),
-        );
+        ));
         if let Some(e) = &s.error {
             ui.colored_label(ui.visuals().error_fg_color, e);
         }
@@ -659,7 +792,9 @@ pub fn comment_name(ctx: &Context, name: &mut String) -> Outcome {
             "Comments and markup you add are saved with this name, so others see who made \
              them. Leave it empty to save no name.",
         );
-        let r = ui.add(egui::TextEdit::singleline(name).hint_text("No name"));
+        let r = ui.add(theme::field(
+            egui::TextEdit::singleline(name).hint_text("No name"),
+        ));
         entered(ui, &r)
     })
 }
@@ -908,6 +1043,229 @@ mod tests {
     fn other_page_ranges_are_edited_where_clicked() {
         // The click lands past the end of the text, so typing adds to it.
         assert_eq!(click_and_type("1-3", ",5"), "1-3,5");
+    }
+
+    /// The Print dialog on a screen `size` points big, at `scale` pixels per point.
+    struct PrintWin {
+        ctx: Context,
+        s: Print,
+        size: egui::Vec2,
+        scale: f32,
+        /// What the last frame returned.
+        out: Outcome,
+    }
+
+    impl PrintWin {
+        fn new(size: (f32, f32), scale: f32) -> Self {
+            let ctx = Context::default();
+            ctx.enable_accesskit();
+            theme::install(&ctx);
+            let printers = vec![
+                Printer {
+                    name: "Office laser".into(),
+                    default: true,
+                },
+                Printer {
+                    name: "Hall inkjet".into(),
+                    default: false,
+                },
+            ];
+            PrintWin {
+                ctx,
+                s: Print::new(printers, "walrus.pdf".into()),
+                size: size.into(),
+                scale,
+                out: Outcome::Open,
+            }
+        }
+
+        /// Draws the dialog with `events`, and returns its AccessKit tree.
+        fn frame(&mut self, events: Vec<egui::Event>) -> egui::accesskit::TreeUpdate {
+            let mut raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.size)),
+                events,
+                ..Default::default()
+            };
+            raw.viewports
+                .entry(egui::ViewportId::ROOT)
+                .or_default()
+                .native_pixels_per_point = Some(self.scale);
+            let PrintWin { ctx, s, out, .. } = self;
+            let mut o = ctx.run_ui(raw, |_| *out = print(ctx, s));
+            o.textures_delta.clear();
+            o.platform_output.accesskit_update.expect("the dialog")
+        }
+
+        fn settled(&mut self) -> egui::accesskit::TreeUpdate {
+            for _ in 0..4 {
+                self.frame(vec![]);
+            }
+            self.frame(vec![])
+        }
+
+        /// Clicks the control named `label`; returns the tree once settled.
+        fn click(&mut self, label: &str) -> egui::accesskit::TreeUpdate {
+            let tree = self.settled();
+            let p = named(&tree, label).expect(label).center();
+            let press = |pressed| egui::Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            self.frame(vec![egui::Event::PointerMoved(p), press(true)]);
+            self.frame(vec![press(false)]);
+            self.settled()
+        }
+
+        fn window(&self) -> egui::Rect {
+            let id = egui::Id::new(("dialog", "Print"));
+            self.ctx.memory(|m| m.area_rect(id)).expect("the window")
+        }
+    }
+
+    fn rect(b: egui::accesskit::Rect) -> egui::Rect {
+        egui::Rect::from_min_max(
+            egui::pos2(b.x0 as f32, b.y0 as f32),
+            egui::pos2(b.x1 as f32, b.y1 as f32),
+        )
+    }
+
+    /// Where the control named `label` is, if shown.
+    fn named(tree: &egui::accesskit::TreeUpdate, label: &str) -> Option<egui::Rect> {
+        let (_, n) = tree.nodes.iter().find(|(_, n)| n.label() == Some(label))?;
+        n.bounds().map(rect)
+    }
+
+    /// Where the text `value` is, if shown.
+    fn text(tree: &egui::accesskit::TreeUpdate, value: &str) -> Option<egui::Rect> {
+        let (_, n) = tree.nodes.iter().find(|(_, n)| n.value() == Some(value))?;
+        n.bounds().map(rect)
+    }
+
+    /// Whether the control named `label` has the keyboard.
+    fn focused(tree: &egui::accesskit::TreeUpdate, label: &str) -> bool {
+        tree.nodes
+            .iter()
+            .any(|(id, n)| n.label() == Some(label) && *id == tree.focus)
+    }
+
+    /// V01/V02: Print as in the dialog mockup, wide, at half width and at 400 points, at
+    /// each scale: All pages and Page range on one row, the pages to print below them only
+    /// once Page range is chosen (taking the keyboard, and keeping what was typed), Copies
+    /// beside Print on unless the window is too narrow, and the dialogs' insets and button
+    /// height.
+    #[test]
+    fn print_follows_the_mockup_at_every_size() {
+        for size in [(1200.0, 800.0), (800.0, 800.0), (400.0, 800.0)] {
+            for scale in [1.0, 1.5, 2.0] {
+                let at = format!("{size:?} at {scale}");
+                let mut w = PrintWin::new(size, scale);
+                let tree = w.settled();
+                let get = |label: &str| named(&tree, label).expect(label);
+                let (all, range) = (get("All pages"), get("Page range"));
+                assert!((all.center().y - range.center().y).abs() < 1.0, "{at}");
+                assert!(range.left() > all.right(), "{at}");
+                assert!(named(&tree, "Pages to print").is_none(), "{at}");
+                let (copies, sides) = (get("Copies"), get("Print on"));
+                if size.0 >= 800.0 {
+                    assert!((copies.top() - sides.top()).abs() < 1.0, "{at}");
+                    assert!(sides.left() > copies.right(), "{at}");
+                } else {
+                    assert!(sides.top() > copies.bottom(), "{at}");
+                }
+                // The insets and the footer's buttons.
+                let window = w.window();
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size.into());
+                assert!(screen.expand(0.5).contains_rect(window), "{at}: {window:?}");
+                // Inside the window's outline.
+                let edge = w.ctx.global_style().visuals.window_stroke.width;
+                let side = edge + if size.0 < NARROW { 16.0 } else { SIDE };
+                let title = text(&tree, "Print").expect("the title");
+                assert!(
+                    (title.left() - window.left() - side).abs() < 1.0,
+                    "{at}: {title:?} in {window:?}"
+                );
+                assert!((get("Printer").left() - window.left() - side).abs() < 1.0);
+                let cancel = get("Cancel");
+                assert!(cancel.height() >= theme::DIALOG_CONTROL - 0.5, "{at}");
+                assert!(window.contains_rect(cancel), "{at}");
+
+                let tree = w.click("Page range");
+                assert!(!w.s.all, "{at}");
+                let field = named(&tree, "Pages to print").expect("the pages to print");
+                let row = named(&tree, "Page range").unwrap();
+                assert!(field.top() > row.bottom(), "{at}");
+                assert!(
+                    field.bottom() < named(&tree, "Copies").unwrap().top(),
+                    "{at}"
+                );
+                assert!(focused(&tree, "Pages to print"), "{at}");
+                assert!(field.height() >= theme::DIALOG_CONTROL - 0.5, "{at}");
+                w.frame(vec![egui::Event::Text("2-3".into())]);
+                assert_eq!(w.s.pages, "2-3", "{at}");
+
+                let tree = w.click("All pages");
+                assert!(w.s.all && named(&tree, "Pages to print").is_none(), "{at}");
+                let tree = w.click("Page range");
+                assert!(text(&tree, "2-3").is_some(), "{at}: typing lost");
+                assert_eq!(w.s.range(), "2-3");
+                let enter = egui::Event::Key {
+                    key: Key::Enter,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                };
+                w.frame(vec![enter]);
+                assert!(w.out == Outcome::Apply, "{at}: Enter didn't print");
+            }
+        }
+    }
+
+    /// Print fits a short screen, its buttons in view, with the pages to print shown.
+    #[test]
+    fn print_fits_a_short_screen() {
+        for size in [(1200.0, 300.0), (400.0, 300.0)] {
+            let mut w = PrintWin::new(size, 1.0);
+            w.s.all = false;
+            w.s.pages = "1-3".into();
+            let tree = w.settled();
+            let window = w.window();
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size.into());
+            assert!(
+                screen.expand(0.5).contains_rect(window),
+                "{size:?}: {window:?}"
+            );
+            for b in ["Print", "Cancel"] {
+                let r = named(&tree, b).expect(b);
+                assert!(window.contains_rect(r), "{size:?}: {b} {r:?}");
+            }
+        }
+    }
+
+    /// Print on is a list, as in the mockup, and picking from it sets the sides.
+    #[test]
+    fn print_on_is_picked_from_a_list() {
+        let mut w = PrintWin::new((1200.0, 800.0), 1.0);
+        w.click("Print on");
+        w.click("Both sides, flip on long edge");
+        assert_eq!(w.s.sides, Sides::LongEdge);
+        let tree = w.settled();
+        assert!(named(&tree, "Both sides, flip on short edge").is_none());
+    }
+
+    /// A page range that can't be printed is reported under it, above Copies.
+    #[test]
+    fn a_wrong_page_range_is_reported_under_it() {
+        let mut w = PrintWin::new((1200.0, 800.0), 1.0);
+        w.s.all = false;
+        w.s.pages = "9".into();
+        w.s.error = Some("There is no page 9.".into());
+        let tree = w.settled();
+        let e = text(&tree, "There is no page 9.").expect("the error");
+        assert!(e.top() > named(&tree, "Pages to print").unwrap().bottom());
+        assert!(e.bottom() < named(&tree, "Copies").unwrap().top());
     }
 
     /// G02: a dialog drawn on a tall screen fits again when the screen gets shorter (its

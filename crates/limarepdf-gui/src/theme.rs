@@ -2,7 +2,7 @@
 //! mode. Light or dark follows the system unless chosen in View > Theme.
 //!
 //! Spacing uses a 4/8 px scale, corners are 6 px (8 px on windows), widgets are flat (no
-//! borders), and there is one accent colour.
+//! borders; dialogs outline theirs, [`dialog_style`]), and there is one accent colour.
 
 use eframe::egui::{
     self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Margin, RichText,
@@ -32,6 +32,8 @@ struct Palette {
     widget_active: Color32,
     /// Separators and window outlines.
     border: Color32,
+    /// Outlines of fields and buttons in dialogs.
+    edge: Color32,
     text: Color32,
     text_strong: Color32,
     shadow: Color32,
@@ -47,6 +49,7 @@ const LIGHT: Palette = Palette {
     widget_hover: Color32::from_rgb(230, 232, 236),
     widget_active: Color32::from_rgb(218, 221, 227),
     border: Color32::from_rgb(222, 224, 228),
+    edge: Color32::from_rgb(206, 209, 216),
     text: Color32::from_rgb(55, 58, 64),
     text_strong: Color32::from_rgb(20, 22, 26),
     shadow: Color32::from_black_alpha(28),
@@ -62,6 +65,7 @@ const DARK: Palette = Palette {
     widget_hover: Color32::from_rgb(58, 60, 65),
     widget_active: Color32::from_rgb(70, 72, 78),
     border: Color32::from_rgb(56, 58, 63),
+    edge: Color32::from_rgb(74, 77, 85),
     text: Color32::from_rgb(208, 210, 214),
     text_strong: Color32::from_rgb(240, 241, 243),
     shadow: Color32::from_black_alpha(110),
@@ -78,6 +82,11 @@ fn palette(dark: bool) -> &'static Palette {
 /// Font family for headings and the document name (Inter SemiBold).
 pub fn semibold() -> FontFamily {
     FontFamily::Name("semibold".into())
+}
+
+/// Font family for dialog titles and the headings in dialogs (Inter Medium).
+pub fn medium() -> FontFamily {
+    FontFamily::Name("medium".into())
 }
 
 /// Font family for icons: Phosphor first. Inter has its own glyphs at many of the
@@ -119,19 +128,25 @@ fn fonts() -> FontDefinitions {
     let mut f = FontDefinitions::default();
     let regular = include_bytes!("../assets/fonts/Inter-Regular.ttf");
     let semi = include_bytes!("../assets/fonts/Inter-SemiBold.ttf");
+    let mid = include_bytes!("../assets/fonts/Inter-Medium.ttf");
     f.font_data
         .insert("Inter".into(), FontData::from_static(regular).into());
     f.font_data
         .insert("Inter-SemiBold".into(), FontData::from_static(semi).into());
+    f.font_data
+        .insert("Inter-Medium".into(), FontData::from_static(mid).into());
     f.families
         .entry(FontFamily::Proportional)
         .or_default()
         .insert(0, "Inter".into());
     egui_phosphor::add_to_fonts(&mut f, egui_phosphor::Variant::Regular);
-    // The same list with SemiBold in front, so icons and symbols still resolve.
+    // The same list with SemiBold or Medium in front, so icons and symbols still resolve.
     let mut bold = f.families[&FontFamily::Proportional].clone();
     bold.insert(0, "Inter-SemiBold".into());
     f.families.insert(semibold(), bold);
+    let mut medium_list = f.families[&FontFamily::Proportional].clone();
+    medium_list.insert(0, "Inter-Medium".into());
+    f.families.insert(medium(), medium_list);
     let mut icons_list = f.families[&FontFamily::Proportional].clone();
     icons_list.retain(|n| n != "phosphor");
     icons_list.insert(0, "phosphor".into());
@@ -219,6 +234,32 @@ fn style(dark: bool) -> Style {
     };
     v.slider_trailing_fill = true;
     s
+}
+
+/// The height of fields, lists and buttons in dialogs.
+pub const DIALOG_CONTROL: f32 = 32.0;
+
+/// The look inside dialogs: fields, lists and buttons outlined, on the dialog's
+/// background, and [`DIALOG_CONTROL`] tall. Radio buttons and checkboxes keep their rows.
+pub fn dialog_style(s: &mut Style) {
+    let p = palette(s.visuals.dark_mode);
+    let w = &mut s.visuals.widgets;
+    w.inactive.weak_bg_fill = p.surface;
+    for wv in [&mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+        wv.bg_stroke = Stroke::new(1.0, p.edge);
+    }
+    // Buttons, lists and number boxes are their text's height plus this padding.
+    s.spacing.button_padding = Vec2::new(12.0, 8.0);
+    // A scroll bar beside the fields, not over their outlines.
+    s.spacing.scroll = egui::style::ScrollStyle::solid();
+}
+
+/// `edit` as a field in a dialog: as tall as the dialog's other controls, its text
+/// centred in it.
+pub fn field(edit: egui::TextEdit<'_>) -> egui::TextEdit<'_> {
+    edit.margin(Margin::symmetric(12, 0))
+        .min_size(Vec2::new(0.0, DIALOG_CONTROL))
+        .vertical_align(egui::Align::Center)
 }
 
 /// The accent colour.

@@ -36,7 +36,9 @@ breaks signatures; on Windows and Linux it comes before Cancel, on macOS after. 
 holding work you would lose (a signature drawn, typed or chosen; a digital ID form; a signing form with something
 typed), where only Cancel closes it. A message's Copy button copies what it says, to pass on an error. Reasons and
 technical lists in a question are under Details. A dialog fits the window, also as it is resized: narrower in a
-narrow one, and in a short one its content scrolls while its buttons stay in view.
+narrow one, with smaller margins under 600 points wide, and in a short one its content scrolls while its buttons
+stay in view. Fields, lists and buttons in dialogs are outlined; labels go above the fields in Print and Create
+signature, and beside them in the digital ID forms.
 
 A question about a document (Flatten, Apply redactions, Discard changes and the others) acts on the document it was
 asked about, even if another tab has come to the front meanwhile, and brings it back to the front. If that document

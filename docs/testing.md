@@ -103,7 +103,10 @@ of the test files needed about 10 GB of memory before pages were drawn in bands 
 
 Its commands, selection rules and page moves are unit-tested, and the operations behind it are covered by the core
 tests and the command line. A few app tests draw the whole window without a screen and read what a screen reader
-would see: every control has a name at five window widths, Tab reaches the bars and the Print and Create signature
+would see: every control has a name at five window widths, and a name that says what it is (not an icon or a
+symbol alone) in each tool's inspector, the inspector's sections, the side views, Fill and sign, Create signature,
+the digital ID windows and open lists and menus, with Bold, Italic and picked choices saying whether they are on
+(not yet tried with a real screen reader); Tab reaches the bars and the Print and Create signature
 dialogs in the order shown, docked controls stay docked through resizing, Esc closes the inspector's pop-out and
 returns to its button, and dialog buttons are clicked as a user would (confirmations act on their own document). The redesigned window
 (top bar, inspector, command palette, right-click menus, floating toolbar, thumbnail dragging, collapsing inspector)

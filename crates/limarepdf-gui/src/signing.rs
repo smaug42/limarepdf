@@ -8,6 +8,7 @@
 
 use crate::actions::Act;
 use crate::dialogs::{self, Btn, Shell};
+use crate::theme;
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Vec2};
 use limarepdf_core::{
     typed_signature, DateStyle, InkColor, Mark, SignArt, SignRole, SignStyle, Stamp, StampPlace,
@@ -405,7 +406,9 @@ impl Create {
             SignRole::Initials => ("Create initials", "Use initials"),
         };
         let mut out = Outcome::Open;
-        let shell = Shell::new(title).width(PAD.x + 40.0).esc(!self.staged());
+        let shell = Shell::new(title)
+            .width(PAD.x + 2.0 * dialogs::SIDE)
+            .esc(!self.staged());
         let (_, esc) = shell.show(ctx, |ui| {
             dialogs::content(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -418,7 +421,7 @@ impl Create {
                     let w = (ui.available_width() - 2.0 * gap) / 3.0;
                     for (way, label) in ways {
                         let b = egui::Button::new(label).selected(self.way == way);
-                        if ui.add_sized([w, 28.0], b).clicked() {
+                        if ui.add_sized([w, theme::DIALOG_CONTROL], b).clicked() {
                             self.way = way;
                             self.error = None;
                         }
@@ -474,6 +477,9 @@ impl Create {
         let k = rect.width() / PAD.x;
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 4.0, Color32::WHITE);
+        // Outlined as the dialog's fields are, to show on a white dialog.
+        let edge = ui.visuals().widgets.inactive.bg_stroke;
+        painter.rect_stroke(rect, 4.0, edge, egui::StrokeKind::Inside);
         let base = rect.top() + rect.height() * 0.72;
         painter.line_segment(
             [
@@ -537,12 +543,10 @@ impl Create {
             SignRole::Signature => "Your name",
             SignRole::Initials => "Your initials",
         };
-        let r = ui.add(
-            egui::TextEdit::singleline(&mut self.text)
-                .hint_text(name)
-                .desired_width(ui.available_width()),
-        );
-        dialogs::set_name(&r, name);
+        dialogs::field(ui, name, |ui| {
+            let edit = egui::TextEdit::singleline(&mut self.text).desired_width(f32::INFINITY);
+            ui.add(theme::field(edit))
+        });
         ui.add_space(4.0);
         let room = ui.available_width() - 2.0 * ui.spacing().button_padding.x;
         for style in SignStyle::ALL {
@@ -1274,11 +1278,12 @@ mod tests {
                     assert!(screen.contains_rect(done), "{at}: Use signature {done:?}");
                     if way == Way::Draw {
                         // As wide as the window allows, and no taller than the content
-                        // that shows at once (dialogs::content), at the pad's shape.
+                        // that shows at once (dialogs::content): whole, above the
+                        // buttons, at the pad's shape.
                         let pad = bounds(&tree, DRAWING);
                         let wide = pad.left() >= window.left() - 0.5
                             && pad.right() <= window.right() + 0.5;
-                        let tall = pad.height() <= (size.y - 200.0).max(120.0);
+                        let tall = pad.top() >= window.top() && pad.bottom() <= done.top();
                         assert!(wide && tall, "{at}: pad {pad:?}");
                         let shape = pad.width() / pad.height();
                         assert!((shape - 3.0).abs() < 0.05, "{at}: pad {pad:?}");
@@ -1329,7 +1334,8 @@ mod tests {
     #[test]
     fn strokes_keep_their_place_as_the_pad_resizes() {
         let c = Create::new(SignRole::Signature, "Sam Lee");
-        let mut w = Win::new(c, Vec2::new(1000.0, 450.0), 1.0);
+        // Tall enough not to scroll: a scroll bar takes some of the pad's width.
+        let mut w = Win::new(c, Vec2::new(1000.0, 600.0), 1.0);
         let pad = bounds(&w.settled(), DRAWING);
         assert_eq!(pad.size(), PAD);
         let at = |t: f32| pad.lerp_inside(Vec2::new(t, 0.5));
@@ -1355,7 +1361,7 @@ mod tests {
         assert_eq!(w.c.strokes.len(), 2, "{:?}", w.c.strokes);
         assert!(near(dot[0], (360.0, 40.0)), "{dot:?}");
 
-        w.size = Vec2::new(1000.0, 450.0);
+        w.size = Vec2::new(1000.0, 600.0);
         w.settled();
         let Ok(Entry {
             saved: Saved::Drawn { strokes, width },

@@ -10,6 +10,7 @@
 
 use crate::dialogs::{self, Btn, Shell};
 use crate::signing::Saved;
+use crate::theme;
 use eframe::egui::{self, Context, RichText, Ui};
 use limarepdf_core::{
     display_line, DigitalId, DisallowedChanges, IdList, IdStore, NewId, Pdf, Permissions,
@@ -83,12 +84,12 @@ pub struct Secret(String);
 
 impl Secret {
     fn edit(&mut self, ui: &mut Ui, hint: &str) -> egui::Response {
-        ui.add(
+        ui.add(theme::field(
             egui::TextEdit::singleline(&mut self.0)
                 .password(true)
                 .hint_text(hint)
                 .desired_width(240.0),
-        )
+        ))
     }
 }
 
@@ -197,6 +198,13 @@ fn form_row(
     }
 }
 
+/// A field in a form that may be left empty.
+fn optional(ui: &mut Ui, text: &mut String) -> egui::Response {
+    ui.add(theme::field(
+        egui::TextEdit::singleline(text).hint_text("Optional"),
+    ))
+}
+
 /// A form's error about no one field, shown at the form's end.
 fn form_error(ui: &mut Ui, error: &Option<(Field, String)>) {
     let e = error.as_ref().filter(|(f, _)| *f == Field::Form);
@@ -209,7 +217,7 @@ fn sentence(e: &anyhow::Error) -> String {
 }
 
 fn window<'a>(title: &'a str, id: &str) -> Shell<'a> {
-    Shell::new(title).id(id).width(WIDTH + 40.0)
+    Shell::new(title).id(id).width(WIDTH + 2.0 * dialogs::SIDE)
 }
 
 fn busy_ui(ui: &mut Ui, what: &str) {
@@ -626,13 +634,13 @@ impl IdsWindow {
             egui::Grid::new("new id").num_columns(2).show(ui, |ui| {
                 let (e, focus) = (&f.error, &mut f.focus);
                 form_row(ui, "Name", Field::Name, e, focus, |ui| {
-                    ui.text_edit_singleline(&mut f.name)
+                    ui.add(theme::field(egui::TextEdit::singleline(&mut f.name)))
                 });
                 form_row(ui, "Organisation", Field::Organisation, e, focus, |ui| {
-                    ui.add(egui::TextEdit::singleline(&mut f.organisation).hint_text("Optional"))
+                    optional(ui, &mut f.organisation)
                 });
                 form_row(ui, "Email", Field::Email, e, focus, |ui| {
-                    ui.add(egui::TextEdit::singleline(&mut f.email).hint_text("Optional"))
+                    optional(ui, &mut f.email)
                 });
                 let at_least = format!("At least {} characters", limarepdf_core::MIN_PASSWORD);
                 form_row(ui, "Password", Field::Password, e, focus, |ui| {
@@ -1310,10 +1318,10 @@ impl SignWindow {
                     r
                 });
                 form_row(ui, "Reason", Field::Reason, e, focus, |ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.reason).hint_text("Optional"))
+                    optional(ui, &mut self.reason)
                 });
                 form_row(ui, "Location", Field::Location, e, focus, |ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.location).hint_text("Optional"))
+                    optional(ui, &mut self.location)
                 });
             });
         }
