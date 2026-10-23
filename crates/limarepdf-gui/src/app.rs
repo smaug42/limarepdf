@@ -3183,13 +3183,17 @@ impl App {
             .tabs
             .get(self.active)
             .is_some_and(|t| t.ed.typing_on_page());
+        // Esc with a list, menu or colour picker open only closes it (a note being typed
+        // stays open while its colour is picked).
+        let picking = egui::Popup::is_any_open(ctx);
         let mut acts = Vec::new();
         ctx.input_mut(|i| {
             for (a, k) in actions::shortcuts() {
                 let page_only = matches!(a.act, Act::Copy | Act::SelectAllText);
                 let global = k.modifiers.command && !page_only;
                 let in_box = line && typing && matches!(a.act, Act::Undo | Act::Redo);
-                if (typing && !global) || in_box || !(a.enabled)(&c) {
+                let closes = picking && a.act == Act::Escape;
+                if (typing && !global) || in_box || closes || !(a.enabled)(&c) {
                     continue;
                 }
                 let hit = if a.act == Act::Copy {
@@ -5221,10 +5225,16 @@ mod tests {
         assert!(matches!(ed.selection, Selection::Annot { page: 0, .. }));
         app.act(&ctx, Act::Undo);
         assert!(comments(&app).is_empty());
-        // With the tool kept active, a click outside the note keeps it and puts down
-        // nothing else; Ctrl+Enter keeps the next.
-        app.settings.keep_tools = vec![Tool::Note];
+        // A click on the page outside the note keeps it and puts down nothing else; the
+        // read tool comes back. Empty, the same click adds nothing and starts no note.
+        // Ctrl+Enter keeps the next.
         note(&mut app, 100.0, 100.0, "Seal");
+        window(&mut app, &ctx, 1400.0, click_at(at(300.0, 400.0)));
+        settle(&mut app);
+        assert_eq!(comments(&app), ["Seal"]);
+        assert!(app.tabs[0].ed.writing.is_none(), "the click started a note");
+        assert_eq!(app.tabs[0].ed.tool, Tool::Read);
+        note(&mut app, 100.0, 100.0, "");
         window(&mut app, &ctx, 1400.0, click_at(at(300.0, 400.0)));
         settle(&mut app);
         assert_eq!(comments(&app), ["Seal"]);
@@ -5247,12 +5257,105 @@ mod tests {
         assert_eq!(comments(&app).len(), 2);
         assert!(app.tabs[0].ed.writing.is_none());
         // Finished by choosing another tool: the note is kept and that tool stays.
-        app.settings.keep_tools.clear();
         note(&mut app, 400.0, 400.0, "Krill");
         app.act(&ctx, Act::Tool(Tool::Rect));
         settle(&mut app);
         assert_eq!(comments(&app), ["Seal", "Puffin", "Krill"]);
         assert_eq!(app.tabs[0].ed.tool, Tool::Rect);
+    }
+
+    /// The colour picked in the inspector while a note is typed colours that note, which
+    /// stays open (clicks in the inspector and in the picker, even over the pages, are not
+    /// outside it) and gets the keyboard back. The Note tool has no pin.
+    #[test]
+    fn the_colour_picked_while_typing_a_note_colours_it() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let (min, k) = page_on_screen(&mut app, &ctx);
+        let at = |x: f32, y: f32| min + egui::vec2(x, y) * k;
+        let draw = |app: &mut App, events| window(app, &ctx, 1400.0, events);
+        let typing = || ctx.memory(|m| m.has_focus(egui::Id::new(("note-text", 0usize))));
+        let picker = || egui::Popup::is_any_open(&ctx);
+        let open = |app: &App| app.tabs[0].ed.writing.is_some();
+        let settle = |app: &mut App| {
+            for _ in 0..2 {
+                draw(app, vec![]);
+            }
+        };
+        let rect = |b: egui::accesskit::Rect| {
+            let (x0, y0, x1, y1) = (b.x0 as f32, b.y0 as f32, b.x1 as f32, b.y1 as f32);
+            egui::Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1))
+        };
+        // The inspector's colour button.
+        let well = |tree: &egui::accesskit::TreeUpdate| {
+            let role = egui::accesskit::Role::ColorWell;
+            let (_, n) = tree.nodes.iter().find(|(_, n)| n.role() == role).unwrap();
+            rect(n.bounds().unwrap())
+        };
+        // The document keeps colours rounded.
+        let same_color =
+            |a: [f32; 3], b: [f32; 3]| a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 0.01);
+        let pin = "Keep tool active";
+        app.act(&ctx, Act::Tool(Tool::TextBox));
+        let tree = draw(&mut app, vec![]);
+        assert!(node(&tree, pin).is_some(), "no pin on the text box");
+        app.act(&ctx, Act::Tool(Tool::Note));
+        let tree = draw(&mut app, vec![]);
+        assert!(node(&tree, pin).is_none(), "a pin on the Note tool");
+        draw(&mut app, click_at(at(100.0, 100.0)));
+        draw(&mut app, vec![]);
+        draw(&mut app, vec![egui::Event::Text("Walrus".into())]);
+        let tree = draw(&mut app, vec![]);
+        let was = app.tabs[0].ed.note_color;
+        // The colour button opens the picker; the note stays open.
+        draw(&mut app, click_at(well(&tree).center()));
+        let tree = draw(&mut app, vec![]);
+        assert!(picker(), "no colour picker");
+        assert!(open(&app), "the colour button closed the note");
+        // A click in the picker's colour square, over the page view, changes the colour.
+        let square = tree
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.role() == egui::accesskit::Role::Unknown && n.label().is_none())
+            .filter_map(|(_, n)| n.bounds().map(rect))
+            .find(|r| (r.width() - r.height()).abs() < 1.0 && r.width() > 100.0)
+            .expect("the colour square");
+        let page = egui::Rect::from_min_max(at(0.0, 0.0), at(612.0, 792.0));
+        let p = square.left_top() + square.size() * 0.2;
+        assert!(page.contains(p), "the square isn't over the page");
+        draw(&mut app, click_at(p));
+        draw(&mut app, vec![]);
+        let picked = app.tabs[0].ed.note_color;
+        assert!(!same_color(picked, was), "the colour didn't change");
+        assert!(open(&app), "the picker closed the note");
+        // Esc closes the picker only; the note gets the keyboard back for more typing.
+        draw(&mut app, vec![key_with(Key::Escape, egui::Modifiers::NONE)]);
+        settle(&mut app);
+        assert!(!picker());
+        assert!(open(&app), "Esc in the picker closed the note");
+        assert!(typing(), "the note didn't get the keyboard back");
+        draw(&mut app, vec![egui::Event::Text(" pod".into())]);
+        // A click on the page that only closes the picker keeps the note open too.
+        let tree = draw(&mut app, vec![]);
+        draw(&mut app, click_at(well(&tree).center()));
+        draw(&mut app, vec![]);
+        assert!(picker(), "no colour picker");
+        draw(&mut app, click_at(at(300.0, 400.0)));
+        settle(&mut app);
+        assert!(!picker());
+        assert!(comments(&app).is_empty(), "the note was added");
+        assert!(open(&app), "closing the picker closed the note");
+        // The note is added in the colour picked.
+        draw(&mut app, click_at(at(300.0, 400.0)));
+        settle(&mut app);
+        let annots = app.tabs[0].pdf.annotations();
+        assert_eq!(comments(&app), ["Walrus pod"]);
+        let color = annots[0].color.expect("the note's colour");
+        assert!(same_color(color, picked), "{color:?} isn't {picked:?}");
+        assert!(app.tabs[0].ed.writing.is_none(), "the click started a note");
+        assert_eq!(app.tabs[0].ed.tool, Tool::Read);
     }
 
     /// Esc keeps a text box being typed and an existing note's changed comment; a text box

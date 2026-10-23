@@ -164,9 +164,11 @@ the pen and stamps (also in ☰ > Tools > Commenting). It shows the one you used
 lists them all. The inspector sets the note colour, or the text box's text size and colour,
 background (none at first) and border, before you start.
 
-- **Note:** click on the page. A comment box opens beside the note; type, then click outside it or press Esc or
-  Ctrl+Enter to keep the comment (that click doesn't put down another note). With nothing typed, no note is added.
-  Ctrl+Z takes a note back. Hovering over a note shows its comment. Notes
+- **Note:** click on the page. A comment box opens beside the note; type, then click on the page outside it or
+  press Esc or Ctrl+Enter to keep the comment (that click doesn't put down another note). With nothing typed, no
+  note is added. While you type, the colour in the inspector changes the note's colour: clicks in the inspector and
+  its colour picker leave the note open, Esc or a click that closes the picker closes only the picker, and you
+  carry on typing. Ctrl+Z takes a note back. Hovering over a note shows its comment. Notes
   show at the same size on screen whatever the zoom, in the note's colour and shaped like its icon: one of the
   seven standard ones (Comment, which LimarePDF's notes use, Key, Note, Help, New paragraph, Paragraph and Insert),
   or Note for any other; printed, they keep their own drawing, or LimarePDF's, 20 points across.
@@ -177,8 +179,9 @@ background (none at first) and border, before you start.
   beyond Western European (Greek, Cyrillic, Chinese and so on) come out as `?`. When you finish, the box grows downward to fit its text, keeping its width; it
   stops at the bottom of the page, and it never shrinks (resize it with the arrow).
 
-When a note or text box is finished, the read tool comes back with it selected, so it can be moved straight away
-(see [Keep tool active](#keep-tool-active)). Double-click a note or text
+When a note or text box is finished, the read tool comes back with it selected, so it can be moved straight away.
+The Text box tool can be kept on (see [Keep tool active](#keep-tool-active)); the Note tool can't, so after each
+note the read tool is back to select, move or open notes. Double-click a note or text
 box (with the read tool or the arrow) to change its text. Ctrl+click selects an annotation while an annotate tool
 is on. The inspector for a selected text box also changes its text, size, colours, background and border.
 
@@ -615,8 +618,9 @@ The tools that put something down (Add text, Add image, the note, text box, rect
 Redact and Fill and sign) go back to the read tool once they have put one thing down. The pin at the top right of a
 tool's options, Keep tool active, keeps that tool on instead, so you can put down several in a row; Esc or another
 tool leaves it. Each tool's pin is its own (pinning Redact doesn't pin Fill and sign) and is remembered between
-runs. The pen always stays on until Esc or another tool, since a drawing takes several strokes. LimarePDF always
-starts with the read tool.
+runs. The Note tool has no pin: kept on, every click would put down a note, so existing notes couldn't be opened
+or deleted. The pen always stays on until Esc or another tool, since a drawing takes several strokes. LimarePDF
+always starts with the read tool.
 
 Everything that changes the document can be undone with Ctrl+Z, up to 20 steps back. Each step keeps a whole copy
 of the document, and a document's steps are limited to 1 GB together, so undo goes back fewer steps on very large
@@ -670,7 +674,7 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Ctrl+Shift+H | Highlight the selected text |
 | Arrow keys (Shift for 10 points) | Move the selected object |
 | Ctrl+A, Ctrl+C | Select all text on the page, copy it (read tool) |
-| Esc | Cancel: finish (and keep) new text, a line, a note, a text box or a form field being typed, clear the selection, or leave a tool for the read tool |
+| Esc | Cancel: close an open list, menu or colour picker (only that), finish (and keep) new text, a line, a note, a text box or a form field being typed, clear the selection, or leave a tool for the read tool |
 | Ctrl+B, Ctrl+I | Bold, Italic for new text being typed (Add text), or for the whole line being edited on the page |
 | Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |
 | Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the top bar, tabs, bottom bar and panels left to right; inside a dialog, its fields and then its buttons. Space or Enter presses the button. In a form, Tab moves between its fields; Ctrl+K reaches every command |

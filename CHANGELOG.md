@@ -36,8 +36,9 @@
 - The font size is a box showing the exact size, with a list of the usual sizes beside it.
 - The tools that put something down (text, images, notes, text boxes, shapes, stamps, redaction marks, fill and
   sign) go back to the read tool afterwards, with the new item selected. A pin in each tool's options, Keep tool
-  active, keeps that tool on for several in a row; each tool's pin is separate and remembered between runs. Esc
-  leaves any tool for the read tool. The pen stays on until Esc or another tool.
+  active, keeps that tool on for several in a row (all but the Note tool, where every click would put down a note
+  and existing ones couldn't be opened); each tool's pin is separate and remembered between runs. Esc leaves any
+  tool for the read tool. The pen stays on until Esc or another tool.
 - The Fill and sign button has a menu: Signature and Initials (the saved ones and Create…), Date, Your name, Text,
   Tick, Cross and Dot. The Create signature window also opens with the inspector folded away.
 - Form fields are highlighted from the start, in a lighter tint; the form banner's Highlight fields is a switch, and
@@ -78,9 +79,12 @@
   lines show in the colours the page will give them, with a caret that shows on dark paper.
 - Esc keeps what you typed instead of throwing it away, in a text box, a note and a form's text field, as it
   already did for new text and edited lines; Ctrl+Z takes it back. A note's comment box has no Done or Cancel
-  button: a click outside it, Esc or Ctrl+Enter closes it, keeping the comment (a note with nothing typed isn't
-  added), and a click outside it on the page doesn't put down another note. A list that allows several choices has
-  no Done button: each click applies, and a click outside it, Esc or Enter closes it.
+  button: a click on the page outside it, Esc or Ctrl+Enter closes it, keeping the comment (a note with nothing
+  typed isn't added), and that click doesn't put down another note. While a new note is typed, the colour picked in
+  the inspector colours it, and the note stays open and gets the keyboard back. A list that allows several choices
+  has no Done button: each click applies, and a click outside it, Esc or Enter closes it.
+- Esc with a list, menu or colour picker open closes only that, instead of also leaving the tool or finishing what
+  is being typed.
 - Finishing a note or text box by choosing another tool keeps that tool, as Add text does, instead of going back
   to the read tool. While typing in a note or text box, Ctrl+Z and Ctrl+Y undo and redo the typing, not the
   document.
