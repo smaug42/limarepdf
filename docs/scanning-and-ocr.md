@@ -1,10 +1,26 @@
-# Scanning and OCR
+[User guide](README.md) › Everyday tasks
 
-LimarePDF turns scans and photos into PDFs, shrinks and straightens scanned pages, and adds a searchable text layer with
-built-in OCR. It does not drive scanners: scan with your system's own tool and import the images. (The usual scanner
-and OCR libraries, SANE and Tesseract, are C/C++, which LimarePDF does not use.)
+# Scans and OCR
 
-The usual order is: import the images, optimise the pages, then recognise the text.
+LimarePDF turns scans and photos into PDFs, shrinks and straightens scanned pages, and adds a searchable text layer
+with built-in text recognition (OCR). It doesn't drive scanners: scan with your system's own scanning app, and open
+the pictures in LimarePDF.
+
+## Turn scans into a searchable PDF
+
+1. Scan the pages with your system's scanning app, or take photos of them, as PNG, JPEG or TIFF files.
+2. Choose **Make a PDF from images…** on the start screen (or ☰ > File) and pick the files. They open as a new
+   document, one page per picture.
+3. Optional: open **Optimise scanned pages** in the inspector and press **Optimise**, to make the file smaller and
+   straighten tilted pages.
+4. Open **Recognise text (OCR)** in the inspector and press **Recognise**. The pages look the same, but their text
+   can now be searched, selected and copied.
+5. Save.
+
+A PDF that is already a scan works the same way: start at step 3. When a document's pages are scans without text,
+a notice above the pages says so, with a **Recognise text** button.
+
+Optimise before recognising text: pages with text over them, such as recognised text, aren't straightened.
 
 ## Importing images
 
@@ -86,3 +102,7 @@ The recognition model (`crates/limarepdf-core/models/text-recognition.rten`) is 
 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) and included unmodified. See
 `crates/limarepdf-core/models/README.md`, shipped as `OCR-MODEL.md` in release archives. With its inference code, OCR adds
 about 14 MB to each binary.
+
+---
+
+[← Headers, footers, watermarks and stamps](headers-footers-watermarks.md) · [User guide](README.md) · [Export and printing →](export-and-printing.md)

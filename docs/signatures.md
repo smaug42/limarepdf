@@ -1,3 +1,5 @@
+[User guide](README.md) › Everyday tasks
+
 # Digital signatures
 
 LimarePDF does all of this in the app and from the command line: **checking** the signatures in a PDF (`limarepdf-cli verify`),
@@ -7,13 +9,33 @@ exporting your **digital IDs** (`limarepdf-cli id`), **signing and certifying** 
 documents without breaking their signatures. It follows Adobe Acrobat's rules so signed documents can go back and
 forth between them; round trips with Acrobat itself are still to be tested (see [compatibility](#compatibility)).
 
+## Check a signed document
+
+1. Open it. LimarePDF checks its signatures by itself, and a banner above the pages gives the result: green
+   (valid, and you trust every signer), amber (nothing broken, but LimarePDF can't confirm who signed, or there are
+   warnings), grey (a signature can't be checked) or red (broken, or changed in ways a signer didn't allow).
+2. Press **Signatures** in the banner to see each signature, what changed after it, and **Details…**.
+3. To see a signer as trusted, check their certificate's fingerprint with them, then use **Trust this signer…** in
+   Details (see [Trusting signers](#trusting-signers)).
+
+## Sign with a digital ID
+
+1. The first time, make a digital ID: ☰ > Document > Digital signatures > **Digital IDs…**, then **Create…** (or
+   **Import…** one you have). See [Digital IDs](#digital-ids).
+2. Choose ☰ > Document > Digital signatures > **Sign with digital ID…**.
+3. Click an empty signature field, or drag a box where the signature goes.
+4. Pick your digital ID, type its password, and press **Sign…**.
+5. Choose where to save the signed copy. It opens in place of the document.
+
+The details, and certifying, are in [Signing](#signing).
+
 ## What a digital signature is and isn't
 
 A digital signature proves that the signed bytes of a document haven't changed since a particular key signed them.
 It doesn't by itself say who owns that key: the signature carries a certificate naming someone, and anyone can make
 a certificate with any name. Whether to believe the name is a separate question, called trust.
 
-It is not the same as [fill and sign](gui.md#filling-and-signing), which puts a picture of your signature on the
+It is not the same as [fill and sign](fill-and-sign.md), which puts a picture of your signature on the
 page. Anyone can copy a picture; a digital signature breaks if the document is changed.
 
 ## Requirements
@@ -313,7 +335,8 @@ have an exported copy. Signatures already made with it stay valid.
    import one.
 4. **Sign…** (or **Certify…**) asks where to save the signed document, suggesting `NAME-signed.pdf` beside the
    original, then signs in the background. The signed document opens in place of the one you signed, and is checked
-   as any signed document is. A missing or wrong password is said under the password, where the keyboard goes;
+   as any signed document is. If the document changes while it is being signed (an edit, a password set, text
+   being typed), it stays open as it is, and the signed copy opens in a new tab. A missing or wrong password is said under the password, where the keyboard goes;
    any other problem is said at the end of the window. The password is cleared once used, so after a failure you
    type it again; the reason, location and other choices stay.
 
@@ -833,3 +856,7 @@ certificates a document carries never become trusted by being there.
 - **"uses the older mixed (hybrid) layout, and LimarePDF can't add to it reliably"**: the file was saved by a program
   (often an older Acrobat) in a way LimarePDF's PDF library misreads once anything is added. Ask for a copy saved by a
   current version, or add your changes in another editor.
+
+---
+
+[← Redaction](redaction.md) · [User guide](README.md) · [The desktop app →](gui.md)

@@ -24,6 +24,12 @@
   can be typed in an installed font that has them; typed in Helvetica, Times or Courier, they get a note naming
   that font and asking for an installed font that has them. An edited line from a font that is installed is
   written in that font again rather than in Helvetica, Times or Courier.
+- A user guide for new users, starting at [docs/README.md](docs/README.md): installing, a guided first session,
+  what works and what doesn't yet, then a page for each everyday task (reading and finding, organising pages,
+  comments and markup, editing text and pictures, forms, fill and sign, headers, footers, watermarks and stamps,
+  scans and OCR, export and printing, password protection, redaction, digital signatures), each opening with
+  short steps; then the desktop app and command-line references, troubleshooting and a glossary. Every page links
+  to the one before and after. The developer docs moved to `docs/developer/`.
 
 ### Changed
 
@@ -748,22 +754,22 @@ follow links and bookmarks, and select text without changing tools.
 
 - A Comments tab beside Bookmarks lists the document's annotations (comments, notes, highlights, drawings) page by
   page, with replies under what they answer. Click one to go to it; right-click to delete it. ☰ > Document >
-  Flatten annotations… makes them part of the pages. See [Comments and markup](docs/gui.md#comments-and-markup).
+  Flatten annotations… makes them part of the pages. See [Comments and markup](docs/comments-and-markup.md).
 - Highlight selected text (the Highlight button above the selection, right-click, or Ctrl+Shift+H), or underline,
   strike it out or squiggly-underline it, in colours that are remembered. The marks are standard annotations that
   other readers show. Click a mark or comment to select it; the inspector changes its colour, opacity and comment,
   and Delete removes it. Marks carry your name, the computer's user name unless set under ☰ > Edit > Your name for
-  comments…. See [Marking text](docs/gui.md#marking-text).
+  comments…. See [Highlight text](docs/comments-and-markup.md#highlight-text).
 - Sticky notes and text boxes: the new Annotate button in the top bar holds both tools. Click to place a note and
   type its comment beside it; drag a text box and type straight onto the page. Double-click either to change its
-  text. Text boxes on turned pages read upright. See [Notes and text boxes](docs/gui.md#notes-and-text-boxes).
+  text. Text boxes on turned pages read upright. See [Notes and text boxes](docs/comments-and-markup.md#add-a-note-or-a-text-box).
 - The arrow tool selects, moves and resizes annotations (notes keep their size; text markup stays on its text), and
   the arrow keys nudge them.
 - The rectangle, ellipse and line tools now add annotations, and have moved into the Annotate button's menu
   with a new pen for freehand drawing (strokes made in quick succession form one drawing). Lines can have an
   arrowhead, and Shift keeps squares, circles and 45° lines. "Draw on page (permanent)" in the inspector keeps
   the old behaviour of drawing into the page content. A selected shape, line or drawing has its width, fill and
-  arrowhead in the inspector. See [Shapes, lines and drawings](docs/gui.md#shapes-lines-and-drawings).
+  arrowhead in the inspector. See [Shapes, lines and drawings](docs/comments-and-markup.md#draw-shapes-lines-and-freehand).
 - A selected line or arrow has handles on its two ends instead of a box, so it can be turned and pointed
   elsewhere with the arrow tool. A selected freehand drawing has a rotate handle.
 - Reply to an annotation from the Comments tab (right-click > Reply…) or the inspector, which also lists the
@@ -778,7 +784,7 @@ follow links and bookmarks, and select text without changing tools.
   options; Tab moves between fields. Each change is one undo step. ☰ > View > Highlight fields shows every field,
   and the inspector's Form section has Clear field, Reset form and Flatten form…, which makes the fields part of
   the pages so the values can't be changed (Undo brings them back). Fields with a value but no drawing of their own
-  now show their value. See [Filling in forms](docs/gui.md#filling-in-forms).
+  now show their value. See [Filling in forms](docs/forms.md).
 - Forms made only for Adobe Reader (XFA forms, which show a "Please wait..." page) get a notice explaining that
   only Adobe software can show or fill them; `mpe form list` and `mpe form fill` say the same.
 - Links work: click one with the read tool (dragging still selects text), or Ctrl+click with the editing tools.
@@ -789,13 +795,13 @@ follow links and bookmarks, and select text without changing tools.
 - Select text without changing tools: the hand tool and the text cursor are now one read tool, which every
   document opens with. Dragging anywhere on a page selects text from the nearest word; dragging past the edge of
   the view scrolls it, so a selection can run across pages. Triple-click selects a line and Shift+click extends
-  the selection. See [Copying text](docs/gui.md#copying-text).
+  the selection. See [Copying text](docs/reading-and-finding.md#copy-text).
 - Print or save just the selected text: right-click it, or use ☰ > Edit. Choose the pages as they look, full width but
   cut down to the selected lines, or the words alone as plain text; saving also offers a text file. See
-  [Copying text](docs/gui.md#copying-text).
+  [Copying text](docs/reading-and-finding.md#copy-text).
 - Selecting, copying and exporting text follow the order on the page, not the order the file draws it in, so a
   selection no longer jumps when it reaches a block drawn out of place (common in forms), and exported text comes
-  out in reading order. See [Text extraction](docs/search-and-text.md#text-extraction).
+  out in reading order. See [How text is read](docs/reading-and-finding.md#how-text-is-read).
 
 ### Desktop app
 

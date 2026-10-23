@@ -1,3 +1,5 @@
+[User guide](README.md) › Reference
+
 # Licence
 
 LimarePDF is dual-licensed under MIT or Apache-2.0, at your option. See [LICENSE-MIT](../LICENSE-MIT) and
@@ -68,3 +70,7 @@ permissive option applies.
 
 If you redistribute binaries, keep the dependencies' licence texts with them (`cargo about` or `cargo license` can
 generate the list).
+
+---
+
+[← Rendering](rendering.md) · [User guide](README.md) · [Troubleshooting →](troubleshooting.md)

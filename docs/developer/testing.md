@@ -300,7 +300,7 @@ differences found to be LimarePDF's are the gaps under [Known to be wrong](../re
 - Optimising: `crates/limarepdf-core/tests/scan.rs`, and by hand on ImageMagick-made 300 dpi scans (5.3 MB down to 0.5 MB, a
   1.2° tilt corrected). The black-and-white or greyscale choice is a heuristic not yet tried on real scanner output.
 - OCR: `crates/limarepdf-core/tests/ocr.rs`, the measurements in
-  [Scanning and OCR](../scanning-and-ocr.md#accuracy-and-speed), and one real scan. Correcting recognised text was
+  [Scans and OCR](../scanning-and-ocr.md#accuracy-and-speed), and one real scan. Correcting recognised text was
   tested in code.
 - The GUI's inspector sections for these were not clicked through in testing.
 
