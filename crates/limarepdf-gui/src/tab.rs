@@ -2977,6 +2977,7 @@ mod tests {
                 font: None,
                 size,
                 color: None,
+                parts: Vec::new(),
             };
             t.ed.actions.push(Action::EditText(0, id, te));
             t.apply_actions(&ctx);

@@ -3479,10 +3479,16 @@ fn run(cmd: Cmd) -> Result<()> {
                         o.text
                             .as_deref()
                             .map(|t| format!(
-                                "{:?} ({} {:.1}pt)",
+                                "{:?} ({} {:.1}pt{})",
                                 t,
                                 shown(o.font_name.as_deref().unwrap_or_default()),
-                                o.font_size.unwrap_or(0.0)
+                                o.font_size.unwrap_or(0.0),
+                                // A line in more than one style: its first part's.
+                                if o.spans.iter().any(|s| !s.looks_like(&o.spans[0])) {
+                                    ", mixed"
+                                } else {
+                                    ""
+                                }
                             ))
                             .unwrap_or_default()
                     );

@@ -167,6 +167,10 @@
   inspector are cut to a short line or a tooltip (Bates numbering's), or removed where the panel shows it already
   (page labels, crop, opening view, form fields). Signing with a digital ID loses its Cancel button: Esc or
   another tool stops it, as for every tool. A selected group of content is called "Group".
+- A line of text with a word in another font, size or colour in it (a bold word, a superscript) is one object,
+  as it looks, rather than one per style: it is selected, moved, deleted and edited whole. Search, selection and
+  copying read it as one line. `limarepdf-cli objects` lists it once, with its first part's font and size,
+  marked "mixed".
 
 ### Fixed
 

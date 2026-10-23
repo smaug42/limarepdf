@@ -69,7 +69,7 @@ pub use blank::BLANK_TOLERANCE;
 pub use cms_check::CertInfo;
 pub use display::{display_line, display_text, local_date, local_time, quoted_list};
 pub use doc::{part_file_name, write_file, Info, Pdf, SplitBy};
-pub use edit::{PathStyle, Shape, TextEdit};
+pub use edit::{PartFont, PathStyle, Shape, TextEdit, TextPart};
 pub use embed::{bundled_face, installed_could_write, liberation, refusal, writable, LIBERATION};
 pub use fonts::{winansi_byte, Family, FontChoice};
 pub use forms::{Field, FieldKind, FieldValue, Widget};
@@ -79,7 +79,7 @@ pub use ids::{
 pub use imgs::{image_dimensions, picture_preview, ImageImport};
 pub use labels::{LabelRange, LabelStyle};
 pub use links::{Link, LinkTarget};
-pub use objects::{words_text, ObjectKind, PageObject, PageWord};
+pub use objects::{words_text, ObjectKind, PageObject, PageWord, TextSpan};
 pub use ocr::{Ocr, OcrLine, OcrResult, OcrWord};
 pub use outline::{BookmarkPlace, OutlineItem};
 pub use overlay::{

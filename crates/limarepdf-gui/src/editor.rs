@@ -531,6 +531,7 @@ fn text_change(insp: &Insp) -> TextEdit {
         font: (insp.font != insp.orig_font).then_some(insp.font),
         size: (insp.size != insp.orig_size).then_some(insp.size),
         color: (!same_color(insp.color, insp.orig_color)).then_some(insp.color),
+        parts: Vec::new(),
     }
 }
 

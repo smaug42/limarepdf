@@ -4,13 +4,13 @@ use crate::embed::Pen;
 use crate::fonts::FontChoice;
 use crate::inline::Inline;
 use crate::matrix::{self as mx, mul, M};
-use crate::objects::{Obj, ObjectKind, Parsed, Show};
-use crate::{Pdf, Result};
+use crate::objects::{Obj, ObjectKind, Parsed, Show, Span, TextData};
+use crate::{PageObject, Pdf, Result};
 use anyhow::{anyhow, bail};
 use lopdf::content::{Content, Operation};
 use lopdf::{Dictionary, Object, ObjectId, Stream, StringFormat};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TextEdit {
     pub text: String,
     /// `None` keeps the current font (when it can be reused, else the installed family it is
@@ -19,17 +19,209 @@ pub struct TextEdit {
     pub font: Option<FontChoice>,
     pub size: Option<f32>,
     pub color: Option<[f32; 3]>,
+    /// The line in parts of different styles, `text` shared out among them in order. When
+    /// empty, the whole of `text` is in the one style above; otherwise `font`, `size` and
+    /// `color` aren't used.
+    pub parts: Vec<TextPart>,
+}
+
+/// A part of a line of text in one style: [`TextEdit::parts`], [`Pdf::add_text_parts`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextPart {
+    pub text: String,
+    pub font: PartFont,
+    pub size: f32,
+    pub color: [f32; 3],
+    /// How far the part is raised above the line's baseline, in points (lowered when
+    /// below zero).
+    pub rise: f32,
+}
+
+/// The font a part of a line is written in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PartFont {
+    /// The font of the line's part with this index ([`crate::PageObject::spans`]), kept
+    /// when [`crate::PageObject::keeps_font`] says so, else the installed family it is from
+    /// or the nearest standard font ([`FontChoice::of_font`]).
+    Span(usize),
+    /// A standard font or an installed family's face.
+    Choice(FontChoice),
 }
 
 impl TextEdit {
     /// Whether [`Pdf::edit_text`] keeps the line's own font for this change: the font can
     /// be reused ([`crate::PageObject::font_reusable`]), the new text is plain ASCII and no
-    /// style changes. Otherwise the line is written anew.
+    /// style changes. Otherwise the line is written anew. For a line in one style changed
+    /// in one style; [`crate::PageObject::keeps_font`] tells for each of `parts`.
     pub fn keeps_font(&self, reusable: bool) -> bool {
-        let ascii = self.text.chars().all(|c| (' '..='~').contains(&c));
         let keep_style = self.font.is_none() && self.size.is_none() && self.color.is_none();
-        reusable && ascii && keep_style
+        reusable && ascii(&self.text) && keep_style
     }
+
+    /// The line as `parts`, in their styles.
+    pub fn in_parts(parts: Vec<TextPart>) -> Self {
+        Self {
+            text: parts.iter().map(|p| p.text.as_str()).collect(),
+            font: None,
+            size: None,
+            color: None,
+            parts,
+        }
+    }
+
+    /// This edit in one style, written as before parts were: an edit given in one style, or
+    /// one in parts that only changes the words of a line in one style, in its font when
+    /// that can be kept, which is changed in place. `None` when it is written in parts.
+    fn one_style(&self, t: &TextData) -> Option<TextEdit> {
+        if self.parts.is_empty() {
+            return Some(self.clone());
+        }
+        let [s] = &t.spans[..] else {
+            return None;
+        };
+        let unchanged = |q: &TextPart| {
+            q.font == PartFont::Span(0)
+                && q.size == s.size
+                && q.color == s.fill.unwrap_or([0.0; 3])
+                && q.rise == s.rise
+        };
+        let words = TextEdit {
+            text: self.text.clone(),
+            font: None,
+            size: None,
+            color: None,
+            parts: Vec::new(),
+        };
+        (self.parts.iter().all(unchanged) && words.keeps_font(s.reuse)).then_some(words)
+    }
+}
+
+impl PageObject {
+    /// Whether [`Pdf::edit_text`] writes `part` of this line in the font of the line's
+    /// part it names ([`PartFont::Span`]): its text is that part's own, unchanged (its
+    /// shows are kept as they were), or the font can be reused and the text is plain
+    /// ASCII. Otherwise it is written in the installed family the font is from or the
+    /// nearest standard font.
+    pub fn keeps_font(&self, part: &TextPart) -> bool {
+        let PartFont::Span(i) = part.font else {
+            return false;
+        };
+        let (Some(s), Some(text)) = (self.spans.get(i), &self.text) else {
+            return false;
+        };
+        let line: Vec<char> = text.chars().collect();
+        kept(&line, s.chars, s.font_reusable, self.vertical, &part.text).is_some()
+    }
+}
+
+fn ascii(text: &str) -> bool {
+    text.chars().all(|c| (' '..='~').contains(&c))
+}
+
+/// How a part of a line keeps the font of the line's part it is from.
+#[derive(Clone, Copy, PartialEq)]
+enum Kept {
+    /// Its text is that part's own: written with its shows as they were.
+    AsItWas,
+    /// Plain ASCII in a font that can be reused.
+    Ascii,
+}
+
+/// Whether text `text` keeps the font of the part of `line` at `chars`, whose font is
+/// `reusable`, and how. Not in vertical writing, which the line is written across.
+fn kept(
+    line: &[char],
+    chars: (usize, usize),
+    reusable: bool,
+    vertical: bool,
+    text: &str,
+) -> Option<Kept> {
+    let own = line
+        .get(chars.0..chars.1)
+        .is_some_and(|c| c.iter().copied().eq(text.chars()));
+    if own && !vertical {
+        Some(Kept::AsItWas)
+    } else if reusable && ascii(text) {
+        Some(Kept::Ascii)
+    } else {
+        None
+    }
+}
+
+/// A part of a line as it is written by [`line_ops`]: the font's name in the page's
+/// resources, its size, colour and rise, and its shows, each with the character spacing,
+/// word spacing and horizontal scaling (1 is none) it is drawn with.
+struct Written {
+    font: Vec<u8>,
+    size: f32,
+    color: [f32; 3],
+    rise: f32,
+    shows: Vec<([f32; 3], Operation)>,
+}
+
+/// A line of text in parts, from `BT` to `ET`, starting at text matrix `tm`: each part's
+/// font, colour, rise and spacing set where they change, then its shows.
+fn line_ops(tm: M, parts: &[Written]) -> Vec<Operation> {
+    let mut v = vec![op("BT", vec![])];
+    let mut font: Option<(&[u8], f32)> = None;
+    let mut color = None;
+    let (mut rise, mut spacing) = (0.0, [0.0, 0.0, 1.0]);
+    for (k, p) in parts.iter().enumerate() {
+        if font != Some((&p.font, p.size)) {
+            v.push(op("Tf", vec![Object::Name(p.font.clone()), r(p.size)]));
+            font = Some((&p.font, p.size));
+        }
+        if color != Some(p.color) {
+            v.push(rgb("rg", p.color));
+            color = Some(p.color);
+        }
+        if p.rise != rise {
+            v.push(op("Ts", vec![r(p.rise)]));
+            rise = p.rise;
+        }
+        if k == 0 {
+            v.push(op("Tm", tm.iter().map(|&x| r(x)).collect()));
+        }
+        for (s, show) in &p.shows {
+            for (i, name) in ["Tc", "Tw", "Tz"].into_iter().enumerate() {
+                if s[i] != spacing[i] {
+                    let x = if i == 2 { s[i] * 100.0 } else { s[i] };
+                    v.push(op(name, vec![r(x)]));
+                }
+            }
+            spacing = *s;
+            v.push(show.clone());
+        }
+    }
+    v.push(op("ET", vec![]));
+    v
+}
+
+/// The shows of part `s` of line `t` as they were, from the page's operators `ops`, each
+/// with its spacing. A gap read as a space after a show is put back as the same gap.
+fn shows_as_they_were(ops: &[Operation], t: &TextData, s: &Span) -> Vec<([f32; 3], Operation)> {
+    t.runs[s.runs.0..s.runs.1]
+        .iter()
+        .map(|run| {
+            let o = &ops[run.op];
+            let mut items: Vec<Object> = match run.show {
+                Show::TJ => o
+                    .operands
+                    .first()
+                    .and_then(|a| a.as_array().ok())
+                    .cloned()
+                    .unwrap_or_default(),
+                Show::Tj | Show::Quote => o.operands.clone(),
+                Show::DQuote { .. } => o.operands.iter().skip(2).cloned().collect(),
+            };
+            if run.gap > 0.0 {
+                // In thousandths of the text size, as TJ moves.
+                let size = (s.size * run.spacing[2]).max(1e-3);
+                items.push(r(-run.gap * 1000.0 / size));
+            }
+            (run.spacing, op("TJ", vec![Object::Array(items)]))
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -193,6 +385,12 @@ impl Following {
     }
 }
 
+/// Operators that set the graphics or text state, which stays set after them.
+const SETS_STATE: [&str; 25] = [
+    "Tf", "Tc", "Tw", "Tz", "TL", "Ts", "Tr", "g", "rg", "k", "G", "RG", "K", "cs", "CS", "sc",
+    "scn", "SC", "SCN", "gs", "w", "J", "j", "M", "d",
+];
+
 /// The same text shown with a plain Tj/TJ (no line move), for use after an explicit Tm.
 fn plain_show(o: &Operation, show: Show) -> Operation {
     match show {
@@ -340,23 +538,35 @@ impl Pdf {
             }
             if let (Some(t), true) = (&obj.text, i == obj.first) {
                 out.extend([op("ET", vec![]), op("q", vec![]), cm(m), op("BT", vec![])]);
+                // What the line's operators set besides its text and where it goes (the
+                // font and colour of each of its parts, for one) is set again after the
+                // Q, so the content after the line is drawn as before.
+                let mut state = Vec::new();
                 for j in obj.first..=obj.last {
                     let o2 = &parsed.ops[j];
                     if let Some(run) = t.runs.iter().find(|r| r.op == j) {
+                        if let Show::DQuote { aw, ac } = run.show {
+                            let set = [op("Tw", vec![r(aw)]), op("Tc", vec![r(ac)])];
+                            out.extend(set.clone());
+                            state.extend(set);
+                        }
                         out.push(op("Tm", run.tm.iter().map(|&x| r(x)).collect()));
                         out.push(plain_show(o2, run.show));
                     } else {
                         match o2.operator.as_str() {
                             "Td" | "Tm" | "T*" => {}
-                            "TD" => out.push(op(
-                                "TL",
-                                vec![r(-o2
-                                    .operands
-                                    .get(1)
-                                    .and_then(|x| x.as_float().ok())
-                                    .unwrap_or(0.0))],
-                            )),
-                            _ => out.push(o2.clone()),
+                            "TD" => {
+                                let tl = o2.operands.get(1).and_then(|x| x.as_float().ok());
+                                let o3 = op("TL", vec![r(-tl.unwrap_or(0.0))]);
+                                out.push(o3.clone());
+                                state.push(o3);
+                            }
+                            name => {
+                                out.push(o2.clone());
+                                if SETS_STATE.contains(&name) {
+                                    state.push(o2.clone());
+                                }
+                            }
                         }
                     }
                 }
@@ -366,9 +576,9 @@ impl Pdf {
                     Some(_) => t.tm_end,
                     None => t.tlm_end,
                 };
+                out.extend([op("ET", vec![]), op("Q", vec![])]);
+                out.extend(state);
                 out.extend([
-                    op("ET", vec![]),
-                    op("Q", vec![]),
                     op("BT", vec![]),
                     op("Tm", tm.iter().map(|&x| r(x)).collect()),
                 ]);
@@ -421,8 +631,13 @@ impl Pdf {
 
     /// Change the text of a text object. Keeps the original font when it can be reused for plain ASCII;
     /// otherwise the line is replaced by new text in a standard font at the same position, or its
-    /// embedded face for characters the standard font lacks.
+    /// embedded face for characters the standard font lacks. A line in parts
+    /// ([`TextEdit::parts`]) is written as one line on top, each part in its style.
     pub fn edit_text(&mut self, page_index: usize, id: usize, e: &TextEdit) -> Result<()> {
+        let joined: String = e.parts.iter().map(|p| p.text.as_str()).collect();
+        if !e.parts.is_empty() && joined != e.text {
+            bail!("the parts of the edit don't make up its text");
+        }
         let (page, parsed) = self.load_edit(page_index)?;
         let obj = Self::pick(&parsed, id)?.clone();
         let t = obj
@@ -431,11 +646,9 @@ impl Pdf {
             .ok_or_else(|| anyhow!("object {id} is not text"))?;
         let following = Following::of(&parsed.ops, &obj);
         let mut out = Vec::with_capacity(parsed.ops.len() + 8);
-        if t.hidden {
-            // Invisible text (an OCR layer): replace the line with one invisible show of
-            // the new text, stretched over the line's original extent, so that it stays
-            // invisible and lines up with the image. Style changes do not apply. Empty text
-            // removes the line.
+        // The page without the line's shows, ready for the line to be written on top.
+        let without = |following: &Following| {
+            let mut out = Vec::with_capacity(parsed.ops.len() + 8);
             for (i, o) in parsed.ops.iter().enumerate() {
                 out.extend(following.before(i));
                 match t.runs.iter().find(|r| r.op == i) {
@@ -443,7 +656,14 @@ impl Pdf {
                     None => out.push(o.clone()),
                 }
             }
-            let mut out = closed(out, parsed.depth_left);
+            closed(out, parsed.depth_left)
+        };
+        if t.hidden {
+            // Invisible text (an OCR layer): replace the line with one invisible show of
+            // the new text, stretched over the line's original extent, so that it stays
+            // invisible and lines up with the image. Style changes do not apply. Empty text
+            // removes the line.
+            let mut out = without(&following);
             if !e.text.trim().is_empty() {
                 let (first, last) = (&t.pieces[0], &t.pieces[t.pieces.len() - 1]);
                 let (s, f) = (first.corners[0], last.corners[1]);
@@ -472,8 +692,25 @@ impl Pdf {
             }
             return self.commit(page, out, 0, &parsed.inline);
         }
+        let Some(e) = e.one_style(&t) else {
+            // In parts: the old shows taken out, the parts written on top as one line.
+            let mut out = without(&following);
+            let parts = self.written(page, Some((&parsed.ops, &t)), &e.parts)?;
+            if !parts.is_empty() {
+                let (dx, dy) = t.dir;
+                out.push(op("q", vec![]));
+                out.extend(line_ops([dx, dy, -dy, dx, t.origin.0, t.origin.1], &parts));
+                out.push(op("Q", vec![]));
+            }
+            return self.commit(page, out, 0, &parsed.inline);
+        };
         if e.keeps_font(t.reuse) {
-            let first_run = t.runs[0].op;
+            // In place of the first show with characters, which is in the line's font.
+            let first_run = t
+                .pieces
+                .iter()
+                .position(|p| p.chars.1 > p.chars.0)
+                .map_or(t.runs[0].op, |k| t.runs[k].op);
             for (i, o) in parsed.ops.iter().enumerate() {
                 out.extend(following.before(i));
                 match t.runs.iter().find(|r| r.op == i) {
@@ -488,14 +725,7 @@ impl Pdf {
             return self.commit(page, out, parsed.depth_left, &parsed.inline);
         }
         // Replacement: remove the old shows, append the new text on top.
-        for (i, o) in parsed.ops.iter().enumerate() {
-            out.extend(following.before(i));
-            match t.runs.iter().find(|r| r.op == i) {
-                Some(run) => out.extend(move_only(run.show)),
-                None => out.push(o.clone()),
-            }
-        }
-        let mut out = closed(out, parsed.depth_left);
+        let mut out = without(&following);
         let font = e.font.unwrap_or_else(|| FontChoice::of_font(&t.base));
         let size = e.size.unwrap_or(t.size).max(1.0);
         let color = e.color.or(t.fill).unwrap_or([0.0; 3]);
@@ -518,6 +748,84 @@ impl Pdf {
             op("Q", vec![]),
         ]);
         self.commit(page, out, 0, &parsed.inline)
+    }
+
+    /// `parts` as they are written, with the fonts they need added to the page's
+    /// resources. The parts of an edited line, `line` (the page's operators and the line),
+    /// keep the font of the line's part they name when they can
+    /// ([`PageObject::keeps_font`]); new text has none to name. Empty parts are left out.
+    fn written(
+        &mut self,
+        page: ObjectId,
+        line: Option<(&[Operation], &TextData)>,
+        parts: &[TextPart],
+    ) -> Result<Vec<Written>> {
+        // A part keeps its font, written with these shows, or is written in a font added.
+        enum How {
+            Own(Vec<u8>, Vec<([f32; 3], Operation)>),
+            New(FontChoice),
+        }
+        let chars: Vec<char> = line.map_or(Vec::new(), |(_, t)| t.text.chars().collect());
+        let mut hows = Vec::new();
+        for p in parts.iter().filter(|p| !p.text.is_empty()) {
+            let how = match (p.font, line) {
+                (PartFont::Choice(c), _) => How::New(c),
+                (PartFont::Span(i), Some((ops, t))) => {
+                    let s = t
+                        .spans
+                        .get(i)
+                        .ok_or_else(|| anyhow!("the line has no part {i} (the page changed)"))?;
+                    match kept(&chars, s.chars, s.reuse, t.vertical, &p.text) {
+                        Some(Kept::AsItWas) => {
+                            How::Own(s.font.clone(), shows_as_they_were(ops, t, s))
+                        }
+                        Some(Kept::Ascii) => {
+                            let spacing = t.runs[s.runs.0].spacing;
+                            let show = op("Tj", vec![lit(p.text.clone().into_bytes())]);
+                            How::Own(s.font.clone(), vec![(spacing, show)])
+                        }
+                        None => How::New(FontChoice::of_font(&s.base)),
+                    }
+                }
+                (PartFont::Span(_), None) => bail!("new text has no font of its own to keep"),
+            };
+            hows.push((p, how));
+        }
+        // One font added for each one chosen, holding all the text written in it.
+        let mut texts: Vec<(FontChoice, String)> = Vec::new();
+        for (p, how) in &hows {
+            if let How::New(c) = how {
+                match texts.iter_mut().find(|(f, _)| f == c) {
+                    Some((_, text)) => text.push_str(&p.text),
+                    None => texts.push((*c, p.text.clone())),
+                }
+            }
+        }
+        let mut fonts = Vec::new();
+        for (c, text) in texts {
+            let (name, pen) = self.text_font(page, c, &text)?;
+            fonts.push((c, name, pen));
+        }
+        Ok(hows
+            .into_iter()
+            .map(|(p, how)| {
+                let (font, shows) = match how {
+                    How::Own(font, shows) => (font, shows),
+                    How::New(c) => {
+                        let (_, name, pen) = fonts.iter().find(|(f, ..)| *f == c).expect("added");
+                        let show = op("Tj", vec![pen.string(&p.text)]);
+                        (name.as_bytes().to_vec(), vec![([0.0, 0.0, 1.0], show)])
+                    }
+                };
+                Written {
+                    font,
+                    size: p.size.max(1.0),
+                    color: p.color,
+                    rise: p.rise,
+                    shows,
+                }
+            })
+            .collect())
     }
 
     pub fn set_path_style(&mut self, page_index: usize, id: usize, st: &PathStyle) -> Result<()> {
@@ -635,26 +943,31 @@ impl Pdf {
         size: f32,
         color: [f32; 3],
     ) -> Result<()> {
-        if text.is_empty() {
+        let part = TextPart {
+            text: text.to_string(),
+            font: PartFont::Choice(font),
+            size,
+            color,
+            rise: 0.0,
+        };
+        self.add_text_parts(page_index, pos, &[part])
+    }
+
+    /// Add a line of text in parts of different styles, at `pos` as [`Pdf::add_text`] adds
+    /// one. Each part names its font with [`PartFont::Choice`].
+    pub fn add_text_parts(
+        &mut self,
+        page_index: usize,
+        pos: (f32, f32),
+        parts: &[TextPart],
+    ) -> Result<()> {
+        if parts.iter().all(|p| p.text.is_empty()) {
             bail!("empty text");
         }
-        let text = text.to_string();
+        let parts = parts.to_vec();
         self.append_layer(page_index, move |s, page| {
-            let (f, pen) = s.text_font(page, font, &text)?;
-            Ok(vec![
-                op("BT", vec![]),
-                op("Tf", vec![name(&f), r(size.max(1.0))]),
-                rgb("rg", color),
-                op(
-                    "Tm",
-                    [1.0, 0.0, 0.0, -1.0, pos.0, pos.1]
-                        .iter()
-                        .map(|&x| r(x))
-                        .collect(),
-                ),
-                op("Tj", vec![pen.string(&text)]),
-                op("ET", vec![]),
-            ])
+            let written = s.written(page, None, &parts)?;
+            Ok(line_ops([1.0, 0.0, 0.0, -1.0, pos.0, pos.1], &written))
         })
     }
 

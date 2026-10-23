@@ -30,6 +30,7 @@ fn main() {
                         font: None,
                         size: None,
                         color: None,
+                        parts: Vec::new(),
                     },
                 )
                 .map(|_| ())

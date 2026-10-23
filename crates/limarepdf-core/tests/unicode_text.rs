@@ -150,6 +150,7 @@ fn an_edited_line_is_set_in_the_embedded_face_of_its_kind() {
         font: None,
         size: None,
         color: None,
+        parts: Vec::new(),
     };
     p.edit_text(0, 0, &edit(GREEK)).unwrap();
     let hidden = p
@@ -214,6 +215,7 @@ fn lines_in_installed_fonts_keep_their_family_when_edited() {
         font: None,
         size: None,
         color: None,
+        parts: Vec::new(),
     };
     let id = |p: &Pdf, text: &str| {
         let objs = p.page_objects(0).unwrap();

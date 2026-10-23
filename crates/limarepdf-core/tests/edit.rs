@@ -477,6 +477,31 @@ fn move_text_with_tj_array_and_quote() {
     assert!((after[1].bbox[1] - before[1].bbox[1]).abs() < 0.5);
 }
 
+#[test]
+fn moved_text_keeps_the_spacing_its_double_quote_set() {
+    // `"` sets word and character spacing as it shows: moved, the line keeps them.
+    let mut p = make("BT /F1 14 Tf 16 TL 20 150 Td (Above) Tj 6 2 (W x) \" ET\n");
+    let before = p.page_objects(0).unwrap();
+    let o = before
+        .iter()
+        .find(|o| o.text.as_deref() == Some("W x"))
+        .unwrap();
+    let b = o.bbox;
+    p.set_object_bbox(0, o.id, [b[0] + 30.0, b[1], b[2] + 30.0, b[3]])
+        .unwrap();
+    let after = p.page_objects(0).unwrap();
+    let moved = after
+        .iter()
+        .find(|o| o.text.as_deref() == Some("W x"))
+        .unwrap()
+        .bbox;
+    assert!((moved[0] - b[0] - 30.0).abs() < 0.05, "{moved:?}");
+    assert!(
+        (moved[2] - moved[0] - (b[2] - b[0])).abs() < 0.05,
+        "{moved:?} was {b:?}"
+    );
+}
+
 /// Where the ink of colour `c` starts: its leftmost column and lowest row.
 fn ink(s: &Shot, c: [u8; 3]) -> Option<(usize, usize)> {
     let mut at: Option<(usize, usize)> = None;
@@ -492,9 +517,10 @@ fn ink(s: &Shot, c: [u8; 3]) -> Option<(usize, usize)> {
 
 #[test]
 fn removing_or_changing_text_keeps_the_text_after_it_in_place() {
-    // "World" carries on from where "Hello" ends, and "Next" starts a line below
-    // "Hello"'s, so where both are drawn depends on what is done to "Hello".
-    const LINE: &str = "BT /F1 20 Tf 20 100 Td (Hello) Tj 1 0 0 rg (World) Tj \
+    // "World" carries on from where "Hello" ends (after a gap too wide to be one line),
+    // and "Next" starts a line below "Hello"'s, so where both are drawn depends on what is
+    // done to "Hello".
+    const LINE: &str = "BT /F1 20 Tf 20 100 Td (Hello) Tj 1 0 0 rg [-3000 (World)] TJ \
                         0 -30 Td 0 0.6 0 rg (Next) Tj ET\n";
     const HIDDEN: &str = "BT /F1 20 Tf 20 100 Td 3 Tr (Hello) Tj 0 Tr 1 0 0 rg (World) Tj \
                           0 -30 Td 0 0.6 0 rg (Next) Tj ET\n";
@@ -505,6 +531,7 @@ fn removing_or_changing_text_keeps_the_text_after_it_in_place() {
             font: font.map(FontChoice::from_name),
             size: None,
             color: None,
+            parts: Vec::new(),
         }
     }
     type Change = fn(&mut Pdf, usize);
@@ -563,7 +590,7 @@ fn removing_or_changing_text_keeps_the_text_after_it_in_place() {
 fn text_after_vertical_writing_is_left_as_it_was() {
     // A font writing downwards: LimarePDF measures its text as if it ran across, so it
     // doesn't know where the line ends, and leaves the text after it as it was.
-    let mut p = make("BT /F2 20 Tf 150 180 Td <00410042> Tj 1 0 0 rg <0043> Tj ET\n");
+    let mut p = make("BT /F2 20 Tf 150 180 Td <00410042> Tj 1 0 0 rg [-5000 <0043>] TJ ET\n");
     let desc = p.doc.add_object(dictionary! {
         "Type" => "Font", "Subtype" => "CIDFontType2", "BaseFont" => "V", "DW" => 1000,
     });
@@ -584,7 +611,7 @@ fn text_after_vertical_writing_is_left_as_it_was() {
         .unwrap()
         .operations;
     let names: Vec<&str> = ops.iter().map(|o| o.operator.as_str()).collect();
-    assert_eq!(names, ["BT", "Tf", "Td", "rg", "Tj", "ET"]);
+    assert_eq!(names, ["BT", "Tf", "Td", "rg", "TJ", "ET"]);
 }
 
 #[test]
@@ -598,6 +625,7 @@ fn edit_text_in_place_and_with_new_font() {
             font: None,
             size: None,
             color: None,
+            parts: Vec::new(),
         },
     )
     .unwrap();
@@ -612,6 +640,7 @@ fn edit_text_in_place_and_with_new_font() {
             font: Some(FontChoice::from_name("Courier-Bold")),
             size: Some(30.0),
             color: Some([0.0, 0.5, 0.0]),
+            parts: Vec::new(),
         },
     )
     .unwrap();
@@ -636,6 +665,7 @@ fn keeps_font_says_which_font_an_edit_writes() {
         font: None,
         size,
         color: None,
+        parts: Vec::new(),
     };
     for (base, e, kept) in [
         ("Arial", edit("Walrus 42", None), true),
@@ -914,12 +944,14 @@ fn new_text_ignores_an_unsaved_page_matrix() {
             font: None,
             size: None,
             color: Some([0.0, 0.0, 1.0]),
+            parts: Vec::new(),
         },
         TextEdit {
             text: "Hello again".into(),
             font: Some(FontChoice::from_name("Courier")),
             size: None,
             color: None,
+            parts: Vec::new(),
         },
     ] {
         let mut p = make(content);
@@ -952,6 +984,7 @@ fn new_text_ignores_an_unsaved_page_matrix() {
             font: None,
             size: None,
             color: None,
+            parts: Vec::new(),
         },
     )
     .unwrap();
@@ -994,7 +1027,8 @@ fn bad_input_is_an_error_not_a_panic() {
                 text: "x".into(),
                 font: None,
                 size: None,
-                color: None
+                color: None,
+                parts: Vec::new(),
             }
         )
         .is_err());
@@ -1099,6 +1133,7 @@ fn inline_images_survive_edits() {
             font: None,
             size: None,
             color: None,
+            parts: Vec::new(),
         },
     )
     .unwrap();
