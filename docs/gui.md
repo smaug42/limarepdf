@@ -739,8 +739,8 @@ The app follows the system's light or dark theme. ☰ > View > Theme chooses Sys
 remembered between runs, in `settings.txt` in the same folder as the recent-files list, along with the markup
 colours and your name for comments. The app uses the Inter font
 and Phosphor icons. It also includes the Liberation fonts, which have the widths of Helvetica, Times and Courier,
-to show text in its own look while it is typed on the page; they are only drawn on screen, never written into
-PDFs, and don't add to the fonts you can choose.
+to show text in its own look while it is typed on the page and to write characters Helvetica, Times and Courier
+lack; they don't add to the fonts you can choose.
 
 The window opens at the size it had when the app last closed, and maximized if it was; a maximized window keeps
 the size it had before, for when you restore it. A size kept on a larger monitor is shrunk to fit a smaller one.

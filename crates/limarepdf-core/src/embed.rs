@@ -31,6 +31,7 @@ use skrifa::prelude::{FontRef, LocationRef, MetadataProvider, Size};
 use skrifa::{GlyphId, Tag};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use subsetter::GlyphRemapper;
@@ -38,67 +39,79 @@ use unicode_normalization::UnicodeNormalization;
 
 /// The bundled Liberation faces (see `assets/fonts/README.md`): sans, serif and mono, each
 /// regular, bold, italic and bold italic, by name. They have the widths of Helvetica, Times
-/// and Courier. A static, so the app, which draws typed text in them, uses this one copy.
-pub static LIBERATION: [[(&str, &[u8]); 4]; 3] = [
+/// and Courier. Their files are given by [`bundled_face`], which the app, drawing typed text
+/// in them, uses too, so there is one copy.
+pub static LIBERATION: [[&str; 4]; 3] = [
     [
-        (
-            "Liberation Sans",
-            include_bytes!("../assets/fonts/LiberationSans-Regular.ttf"),
-        ),
-        (
-            "Liberation Sans Bold",
-            include_bytes!("../assets/fonts/LiberationSans-Bold.ttf"),
-        ),
-        (
-            "Liberation Sans Italic",
-            include_bytes!("../assets/fonts/LiberationSans-Italic.ttf"),
-        ),
-        (
-            "Liberation Sans Bold Italic",
-            include_bytes!("../assets/fonts/LiberationSans-BoldItalic.ttf"),
-        ),
+        "Liberation Sans",
+        "Liberation Sans Bold",
+        "Liberation Sans Italic",
+        "Liberation Sans Bold Italic",
     ],
     [
-        (
-            "Liberation Serif",
-            include_bytes!("../assets/fonts/LiberationSerif-Regular.ttf"),
-        ),
-        (
-            "Liberation Serif Bold",
-            include_bytes!("../assets/fonts/LiberationSerif-Bold.ttf"),
-        ),
-        (
-            "Liberation Serif Italic",
-            include_bytes!("../assets/fonts/LiberationSerif-Italic.ttf"),
-        ),
-        (
-            "Liberation Serif Bold Italic",
-            include_bytes!("../assets/fonts/LiberationSerif-BoldItalic.ttf"),
-        ),
+        "Liberation Serif",
+        "Liberation Serif Bold",
+        "Liberation Serif Italic",
+        "Liberation Serif Bold Italic",
     ],
     [
-        (
-            "Liberation Mono",
-            include_bytes!("../assets/fonts/LiberationMono-Regular.ttf"),
-        ),
-        (
-            "Liberation Mono Bold",
-            include_bytes!("../assets/fonts/LiberationMono-Bold.ttf"),
-        ),
-        (
-            "Liberation Mono Italic",
-            include_bytes!("../assets/fonts/LiberationMono-Italic.ttf"),
-        ),
-        (
-            "Liberation Mono Bold Italic",
-            include_bytes!("../assets/fonts/LiberationMono-BoldItalic.ttf"),
-        ),
+        "Liberation Mono",
+        "Liberation Mono Bold",
+        "Liberation Mono Italic",
+        "Liberation Mono Bold Italic",
     ],
 ];
 
-/// The bundled face for a standard font, by name and file: Helvetica is Liberation Sans,
-/// and so on. For an installed family, its standard stand-in's ([`FontChoice::standard`]).
-pub fn liberation(f: FontChoice) -> (&'static str, &'static [u8]) {
+/// A bundled face's file name, and the file as stored: packed with zlib by `build.rs`.
+macro_rules! packed {
+    ($file:literal) => {
+        (
+            $file,
+            include_bytes!(concat!(env!("OUT_DIR"), "/", $file, ".z")),
+        )
+    };
+}
+
+/// The files of the faces in [`LIBERATION`], in its order, as stored.
+static PACKED: [(&str, &[u8]); 12] = [
+    packed!("LiberationSans-Regular.ttf"),
+    packed!("LiberationSans-Bold.ttf"),
+    packed!("LiberationSans-Italic.ttf"),
+    packed!("LiberationSans-BoldItalic.ttf"),
+    packed!("LiberationSerif-Regular.ttf"),
+    packed!("LiberationSerif-Bold.ttf"),
+    packed!("LiberationSerif-Italic.ttf"),
+    packed!("LiberationSerif-BoldItalic.ttf"),
+    packed!("LiberationMono-Regular.ttf"),
+    packed!("LiberationMono-Bold.ttf"),
+    packed!("LiberationMono-Italic.ttf"),
+    packed!("LiberationMono-BoldItalic.ttf"),
+];
+
+/// The bundled faces' files, each unpacked the first time it is used.
+static UNPACKED: [OnceLock<Vec<u8>>; 12] = [const { OnceLock::new() }; 12];
+
+/// The file of the bundled face `name` (one of [`LIBERATION`]), unpacked the first time it is
+/// asked for and kept for the rest of the run; `None` for other names.
+pub fn bundled_face(name: &str) -> Option<&'static [u8]> {
+    let n = LIBERATION.iter().flatten().position(|l| *l == name)?;
+    Some(unpacked(n))
+}
+
+/// The file of the `n`th bundled face, unpacked: byte for byte the file in `assets/fonts`.
+fn unpacked(n: usize) -> &'static [u8] {
+    UNPACKED[n].get_or_init(|| {
+        let mut data = Vec::new();
+        flate2::read::ZlibDecoder::new(PACKED[n].1)
+            .read_to_end(&mut data)
+            .expect("a bundled face unpacks");
+        data
+    })
+}
+
+/// The bundled face for a standard font, by name: Helvetica is Liberation Sans, and so on.
+/// For an installed family, its standard stand-in's ([`FontChoice::standard`]).
+pub fn liberation(f: FontChoice) -> &'static str {
     let (family, style) = place(f);
     LIBERATION[family][style]
 }
@@ -165,7 +178,7 @@ impl Face {
     pub(crate) fn liberation(f: FontChoice) -> &'static Face {
         let (family, style) = place(f);
         FACES[4 * family + style].get_or_init(|| {
-            Face::read(LIBERATION[family][style].1, 0, Vec::new(), None)
+            Face::read(unpacked(4 * family + style), 0, Vec::new(), None)
                 .expect("a bundled face reads")
         })
     }
@@ -977,6 +990,41 @@ mod tests {
             .collect();
         ids.sort();
         ids
+    }
+
+    #[test]
+    fn bundled_faces_unpack_byte_for_byte_as_released() {
+        // Stored compressed, but the Reserved Font Name needs the faces unmodified: each
+        // unpacks to the file with the checksum the fonts README gives it.
+        let readme = include_str!("../assets/fonts/README.md");
+        let (mut stored, mut whole) = (0, 0);
+        for (n, (file, packed)) in PACKED.iter().enumerate() {
+            let row = readme
+                .lines()
+                .find(|l| l.starts_with(&format!("| {file} |")))
+                .unwrap_or_else(|| panic!("{file} isn't in the README"));
+            let want = row.split('`').nth(1).unwrap();
+            let data = bundled_face(LIBERATION[n / 4][n % 4]).unwrap();
+            let mut got = String::new();
+            for b in Sha256::digest(data) {
+                write!(got, "{b:02x}").unwrap();
+            }
+            assert_eq!(got, want, "{file}");
+            // Named as the file is: "Liberation Serif Bold Italic" is
+            // LiberationSerif-BoldItalic.ttf.
+            let mut words = LIBERATION[n / 4][n % 4].split(' ');
+            let family: String = words.by_ref().take(2).collect();
+            let style = match words.collect::<String>() {
+                s if s.is_empty() => "Regular".to_string(),
+                s => s,
+            };
+            assert_eq!(*file, format!("{family}-{style}.ttf"));
+            stored += packed.len();
+            whole += data.len();
+        }
+        assert!(bundled_face("Helvetica").is_none());
+        // About half the size as stored.
+        assert!(stored * 10 < whole * 6, "{stored} of {whole} bytes");
     }
 
     #[test]

@@ -44,4 +44,7 @@ redistribution do not apply").
 | LiberationSerif-Regular.ttf | `058ea80864aef09a23f45cbec2bb5400bc3dfbdea01c3f10538a21fcb497fb74` |
 
 All are embedded in `limarepdf-core` with `include_bytes!` (the handwriting fonts in `src/sign.rs`,
-Liberation in `src/embed.rs`).
+Liberation in `src/embed.rs`). The Liberation files are stored compressed (about 2.4 MB instead of
+4.4 MB): `build.rs` packs each with zlib, and `src/embed.rs` unpacks it the first time it is used,
+byte for byte as it is here; a test checks each unpacked face against the checksum above. The files
+here stay as released.

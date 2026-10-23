@@ -13,8 +13,9 @@ LimarePDF is dual-licensed under MIT or Apache-2.0, at your option. See [LICENSE
   each) by Red Hat, Inc., with digitized data by Google Corporation, SIL Open Font License 1.1 with the Reserved
   Font Name "Liberation", included unmodified; see `crates/limarepdf-core/assets/fonts/`. They draw text while it
   is typed, and are embedded in PDFs, cut down to the characters used, for text the standard PDF fonts can't
-  write; the licence allows embedding in documents, whole or as a subset. Release archives include the licence
-  as `FONT-LICENSE-Liberation.txt`.
+  write; the licence allows embedding in documents, whole or as a subset. The programs store them compressed and
+  unpack them, unchanged byte for byte, when first used (a test checks each against its released checksum).
+  Release archives include the licence as `FONT-LICENSE-Liberation.txt`.
 - **Handwriting fonts** for typed signatures, included unmodified; see `crates/limarepdf-core/assets/fonts/`: Caveat by
   The Caveat Project Authors, Cedarville Cursive and Zeyada by Kimberly Geswein (SIL Open Font License 1.1), and
   Homemade Apple by Font Diner (Apache License 2.0). They are drawn as shapes and never embedded in PDFs. Release

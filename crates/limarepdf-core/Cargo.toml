@@ -56,6 +56,10 @@ rc2 = "0.9.0"
 zeroize = "1.9"
 subtle = "2.6"
 
+# The bundled Liberation fonts stored compressed (build.rs); the same crate as above.
+[build-dependencies]
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
+
 # Printing through the Windows print spooler and GDI (system DLLs; no C code is built), and
 # a disk's free space for crash recovery copies (disk.rs).
 [target.'cfg(windows)'.dependencies]

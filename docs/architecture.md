@@ -77,8 +77,9 @@ covered in the colour the page worker (`worker.rs`, `Worker::sample`) finds arou
 part of the page in the current page colours.
 
 Text the standard fonts can't write goes into an embedded font (`crates/limarepdf-core/src/embed.rs`,
-`Pdf::embed_codes`): the bundled Liberation face of the standard font (`LIBERATION`, in core's `assets/fonts/`; the
-app's `typing_fonts.rs` draws with the same copy) as a Type 0 font with a CIDFontType2 descendant, `Identity-H`,
+`Pdf::embed_codes`): the bundled Liberation face of the standard font (`LIBERATION`, in core's `assets/fonts/`,
+stored compressed by core's `build.rs` and unpacked by `bundled_face` the first time each is used; the app's
+`typing_fonts.rs` draws with the same copy, added to egui then too) as a Type 0 font with a CIDFontType2 descendant, `Identity-H`,
 `/W` widths and a ToUnicode map. The font file is cut down to the glyphs used by the `subsetter` crate. There is
 one such font per face per document, rewritten in place as text is added: the old glyphs are given to the
 subsetter first, so they keep their numbers and earlier text stays valid. The font dictionary's `/LimarePDF` entry
