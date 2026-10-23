@@ -44,8 +44,8 @@ this list once it works. The feature table below has the details.
   Helvetica, Times or Courier (typed in those, a note at the caret asks for an installed font that has them).
   Hebrew and Arabic (written right to left), the scripts whose letters join or change shape (Devanagari and the
   other Indic scripts, Thai) and emoji can't, in any font: when adding text, editing a line or typing a header,
-  footer or watermark, a note at the caret says so; form values and stamp wording with them are refused; a plain-text page of selected text, and text boxes another app made without a
-  drawing, show them as `?`.
+  footer or watermark, a note at the caret says so; form values and stamp wording with them are refused; text boxes (typed in LimarePDF, or made by another app without a drawing) and
+  a plain-text page of selected text show them as `?`.
   Typed signatures show what their handwriting has: Caveat has Cyrillic, the other three Latin only.
 - Installed fonts are offered only when their licence allows embedding and they have the Latin letters; a
   family's missing bold or italic can't be made up (the button is off), and one line can't mix fonts, so a

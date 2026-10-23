@@ -11,9 +11,10 @@
   in the app and on the command line. Text the standard fonts can write is written as before; other text is set
   in the bundled Liberation face of the same font (same widths), embedded in the file and cut down to the
   characters used, and reads back in search, copy and other apps. Form fields keep naming their own font.
-  Hebrew, Arabic, the Indic scripts, Thai, Chinese, Japanese, Korean and emoji aren't supported yet: they can't
-  be typed (the note at the caret says which scripts work), and are refused elsewhere, naming them, instead of
-  coming out as `?` (a stamp leaves such a name off its line; a plain page of selected text still shows `?`).
+  Hebrew, Arabic, the Indic scripts, Thai and emoji aren't supported yet, nor Chinese, Japanese and Korean
+  outside installed fonts (below): they can't be typed (the note at the caret says so), and are refused
+  elsewhere, naming them, instead of coming out as `?` (a stamp leaves such a name off its line; text boxes and
+  a plain page of selected text still show `?`).
 - A typed signature a handwriting style can't show names the styles that can (Caveat has Cyrillic).
 - Installed fonts for new and edited text: the inspector's font list has Helvetica, Times and Courier, then the
   fonts installed on the computer whose licence allows embedding (TrueType, OpenType and variable fonts), each
@@ -21,8 +22,8 @@
   characters used, so it looks the same anywhere; Bold and Italic use the family's own faces (off when it has
   none), and a character the font lacks is refused with a note naming the font. Chinese, Japanese and Korean
   can be typed in an installed font that has them; typed in Helvetica, Times or Courier, they get a note naming
-  that font and asking for an installed font that has them. An edited line from a font that is installed is written in
-  that font again rather than in Helvetica, Times or Courier.
+  that font and asking for an installed font that has them. An edited line from a font that is installed is
+  written in that font again rather than in Helvetica, Times or Courier.
 
 ### Changed
 
