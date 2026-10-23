@@ -552,6 +552,7 @@ impl App {
     ) -> Self {
         theme::install(&cc.egui_ctx);
         cc.egui_ctx.set_theme(settings.theme);
+        crate::font_list::warm(&cc.egui_ctx);
         let mut app = Self::with(settings, Recent::load());
         app.start_recovery(&cc.egui_ctx, files, page);
         app
@@ -5087,6 +5088,79 @@ mod tests {
         // One step: Undo takes both lines back.
         app.act(&ctx, Act::Undo);
         assert!(lines(&app).is_empty());
+    }
+
+    /// The Unicode text design, section 7: an installed family is found by searching the
+    /// font list, Bold and Italic are off for faces it lacks, and text typed in it is
+    /// written in it, refusing what it lacks with a note naming it.
+    #[test]
+    fn installed_fonts_are_chosen_from_the_list_and_written_in() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let serif = crate::font_list::test_family("Source Serif 4");
+        // The installed fonts read, as at start.
+        limarepdf_core::typefaces();
+        let mut app = app_with(&ctx, 1);
+        app.act(&ctx, Act::Tool(Tool::Text));
+        click_named(&mut app, &ctx, "Font");
+        settled_at(&mut app, &ctx, 1400.0);
+        assert!(egui::Popup::is_any_open(&ctx), "the list isn't open");
+        let enter = key_with(Key::Enter, egui::Modifiers::NONE);
+        window(
+            &mut app,
+            &ctx,
+            1400.0,
+            vec![egui::Event::Text("source serif".into())],
+        );
+        window(&mut app, &ctx, 1400.0, vec![enter]);
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert_eq!(app.tabs[0].ed.tfont.family, serif);
+        assert!(!egui::Popup::is_any_open(&ctx), "the list stays open");
+        let font = tree.nodes.iter().find(|(_, n)| n.label() == Some("Font"));
+        assert_eq!(font.and_then(|(_, n)| n.value()), Some("Source Serif 4"));
+        // Source Serif 4 here is regular only.
+        for name in ["Bold", "Italic"] {
+            let n = tree.nodes.iter().find(|(_, n)| n.label() == Some(name));
+            assert!(n.is_some_and(|(_, n)| n.is_disabled()), "{name} is on");
+        }
+
+        // Typed on the page: what it has is written in it, embedded.
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        let k = page.width() / 612.0;
+        let at = |x: f32, y: f32| page.min + egui::vec2(x, y) * k;
+        let click = |p: egui::Pos2| {
+            let press = |pressed| egui::Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            vec![egui::Event::PointerMoved(p), press(true), press(false)]
+        };
+        window(&mut app, &ctx, 1400.0, click(at(100.0, 200.0)));
+        settled_at(&mut app, &ctx, 1400.0);
+        window(
+            &mut app,
+            &ctx,
+            1400.0,
+            vec![egui::Event::Text("Zażółć 中".into())],
+        );
+        let tree = window(&mut app, &ctx, 1400.0, vec![]);
+        let note = limarepdf_core::refusal(app.tabs[0].ed.tfont, "中");
+        assert!(note.starts_with("Source Serif 4 has no"), "{note}");
+        assert!(
+            tree.nodes
+                .iter()
+                .any(|(_, n)| n.value() == Some(note.as_str())),
+            "no note naming the font"
+        );
+        window(&mut app, &ctx, 1400.0, click(at(300.0, 300.0)));
+        settled_at(&mut app, &ctx, 1400.0);
+        let objs = app.tabs[0].pdf.page_objects(0).unwrap();
+        let line = objs.iter().find(|o| o.text.as_deref() == Some("Zażółć"));
+        let font = line.and_then(|o| o.font_name.clone()).unwrap_or_default();
+        assert!(font.ends_with("+SourceSerif4-Regular"), "{font:?}");
     }
 
     #[test]

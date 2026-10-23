@@ -592,8 +592,8 @@ edits:
 
 - **Page text:** double-click a line to edit it there. The word you double-clicked is selected, so typing replaces
   it. The line is drawn as it will be written: in its own font when LimarePDF can keep it, otherwise in the
-  Helvetica, Times or Courier that replaces it (which switches as you type a character the line's font can't
-  take), at its size and in its colour, with a thin outline around it and the old line hidden underneath in the
+  installed font it came from (when LimarePDF can embed it) or the Helvetica, Times or Courier that replaces it
+  (which switches as you type a character the line's font can't take), at its size and in its colour, with a thin outline around it and the old line hidden underneath in the
   colour around it. Enter, Esc, Tab or a click elsewhere keeps the change. While you type, Ctrl+Z and Ctrl+Y undo
   and redo typing in the line, and Ctrl+B and Ctrl+I switch the whole line to Bold or Italic; once the change is
   kept, Undo takes the whole edit back. Editing the same line again within a few seconds, with nothing else
@@ -633,10 +633,16 @@ selected so you can adjust it (see [Keep tool active](#keep-tool-active)):
   undo step; nothing typed adds nothing. While you type, the inspector's font, Bold, Italic, size and colour
   change the text (the keyboard comes back to it afterwards), Ctrl+B and Ctrl+I switch Bold and Italic, and
   dragging the outline moves the text. A click on page text with this tool edits that line instead (see Page
-  text above), with the caret where you clicked, and a drag selects text, as with the read tool. The font is Helvetica, Times or Courier, with Bold and Italic, and Latin
-  (Vietnamese included), Greek and Cyrillic characters can be added; those the standard fonts lack are written in
-  their Liberation face, embedded in the file. Others (Hebrew, Arabic, Chinese and so on) can't be typed or
-  pasted, and a note at the caret says so (see [What doesn't work yet](features.md#what-doesnt-work-yet)). Each line becomes its own line of page text, so
+  text above), with the caret where you clicked, and a drag selects text, as with the read tool. The font list
+  has Helvetica, Times and Courier first, then the fonts installed on the computer whose licence allows
+  embedding them, each name drawn in its own font; type in its search field to narrow it, and Enter picks the
+  first. Bold and Italic are off for a family that has no such face. Latin (Vietnamese included), Greek and
+  Cyrillic characters can be added; those the standard fonts lack are written in their Liberation face, and text
+  in an installed font is written in that font, both embedded in the file (cut down to the characters used).
+  Chinese, Japanese and Korean can be typed in an installed font that has them. Others (Hebrew, Arabic,
+  Devanagari, Thai and so on), and characters the chosen font doesn't have, can't be typed or pasted, and a note
+  at the caret says so, naming the font when it is an installed one (see
+  [What doesn't work yet](features.md#what-doesnt-work-yet)). Each line becomes its own line of page text, so
   it moves and is edited line by line afterwards.
 - **Image:** choose a PNG, JPEG or TIFF, then drag a box.
 - **Comment:** sticky notes, text boxes, rectangles, ellipses, lines and the pen, saved as annotations rather

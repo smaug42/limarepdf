@@ -52,6 +52,9 @@ These are in the source repository only, never in release archives:
   from them in `crates/limarepdf-core/tests/data/signatures/ids/`, made with OpenSSL by
   `crates/limarepdf-core/tools/make-signature-keys.sh`, are LimarePDF's own, with made-up identities; the keys and passwords are
   public and for tests only.
+- **Test fonts** in `crates/limarepdf-core/tests/data/fonts/`, for the tests of installed fonts written into
+  PDFs: Source Serif 4 by Adobe (with Reserved Font Name "Source") and Cantarell by The Cantarell Authors, SIL Open
+  Font License 1.1, included unmodified with their licences; the folder's README says where each is from.
 - The EU DSS project's samples (LGPL-2.1) are not included: `crates/limarepdf-core/tools/fetch-dss-samples.sh`
   downloads them for an optional test.
 

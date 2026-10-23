@@ -22,9 +22,10 @@ png = "0.18"
 skrifa = "0.46"
 # Installed fonts, for fonts a PDF names but doesn't embed (installed_fonts.rs).
 fontdb = "0.24"
-# Fonts embedded in PDFs for text beyond Western European (embed.rs): cut down to the glyphs
-# used. Without variable fonts, so it brings no further crates.
-subsetter = { version = "0.2.6", default-features = false }
+# Fonts embedded in PDFs for text beyond Western European and in installed fonts (embed.rs):
+# cut down to the glyphs used. `variable-fonts` sets a variable font at the chosen weight; it
+# brings `write-fonts` and its own `skrifa` and `read-fonts` versions.
+subsetter = "0.2.6"
 # Accents typed as separate marks put together (NFC) before text is embedded; lopdf already
 # uses it.
 unicode-normalization = "0.1.25"

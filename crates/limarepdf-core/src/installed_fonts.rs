@@ -301,6 +301,11 @@ impl InstalledFonts {
         InstalledFonts::new(db)
     }
 
+    /// The fonts, to offer for writing text (`typefaces.rs`).
+    pub(crate) fn database(&self) -> &Database {
+        &self.db
+    }
+
     /// No fonts at all, so every font that isn't embedded gets hayro's stand-in.
     pub fn none() -> Self {
         InstalledFonts::new(Database::new())

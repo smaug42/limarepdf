@@ -71,7 +71,8 @@ app, new text is typed on the page in `crates/limarepdf-gui/src/page_text.rs`, d
 Liberation fonts that `typing_fonts.rs` picks (same widths as Helvetica, Times and Courier), then written line by
 line with `Pdf::add_text` as one undo step. A line being edited (`editor.rs`'s line editor, sharing `page_text`'s
 drawing) sits on `PageObject::baseline` and is drawn in the font `TextEdit::keeps_font` says `Pdf::edit_text` will
-write: the line's own (installed, else its Liberation look-alike) or a standard one. The line underneath is
+write: the line's own (installed, else its Liberation look-alike), the installed family it is from, or a
+standard one. The line underneath is
 covered in the colour the page worker (`worker.rs`, `Worker::sample`) finds around it, from a drawing of that
 part of the page in the current page colours.
 
@@ -85,6 +86,19 @@ records the face, the glyphs with their characters and a checksum of the font fi
 changed since is left alone and a new one started. In a signed document only fonts made since it was opened
 (`Pdf::made_fonts`) are grown, as growing one a signed revision holds would show as a change to it. Characters
 are put together (NFC) first; right-to-left scripts are refused (Liberation has Hebrew).
+
+Installed fonts for writing text are listed by `crates/limarepdf-core/src/typefaces.rs`: the families in
+`InstalledFonts::system()`'s `fontdb` database whose fonts allow embedding and have the Latin letters, each with
+up to four faces (`FaceFile`: file, index, variation settings, PostScript name), read once (`typefaces()`; the
+app starts it on another thread at launch, `font_list::warm`). The list only grows, so `Family::Installed(n)`,
+its number, stays valid; `FontChoice` stays `Copy`. `embed::Face::of` reads an installed face from its file
+the first time and keeps it, and the same embedding applies: always embedded (no WinAnsi path), static CFF fonts
+as CIDFontType0 with `/FontFile3 /OpenType`, variable fonts set at their weight by `subsetter`'s `variable-fonts`
+feature (TrueType out, CFF2 included). `FontChoice::of_font` finds the family a PDF font is from by its
+PostScript name, for edited lines; the standard fonts' own names never match an installed font. In the app,
+`font_list.rs` is the inspector's searchable list (names drawn in their own fonts through `typing_fonts::preview`,
+files over 4 MB left in the interface font), and `typing_fonts.rs` draws typed text from the family's file with
+egui's variation coordinates (`typing_fonts::coords`).
 
 Redaction (`crates/limarepdf-core/src/redact.rs`) has its own pass over the page content rather than editing the
 parser's objects: it rewrites each text-showing operator character by character, keeping the rest in place with

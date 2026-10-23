@@ -13,9 +13,12 @@ pub enum Family {
     Helvetica,
     Times,
     Courier,
+    /// An installed family LimarePDF embeds, by its number in [`crate::typefaces()`].
+    Installed(u16),
 }
 
-/// One of the 12 standard PDF fonts (no embedding needed).
+/// The font text is written in: one of the 12 standard PDF fonts (no embedding needed), or
+/// an installed family's face (embedded).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FontChoice {
     pub family: Family,
@@ -34,22 +37,31 @@ impl Default for FontChoice {
 }
 
 impl FontChoice {
+    /// The standard font's name; for an installed family, its standard stand-in's
+    /// ([`FontChoice::standard`]).
     pub fn base_font(&self) -> &'static str {
-        use Family::*;
-        match (self.family, self.bold, self.italic) {
-            (Helvetica, false, false) => "Helvetica",
-            (Helvetica, true, false) => "Helvetica-Bold",
-            (Helvetica, false, true) => "Helvetica-Oblique",
-            (Helvetica, true, true) => "Helvetica-BoldOblique",
-            (Times, false, false) => "Times-Roman",
-            (Times, true, false) => "Times-Bold",
-            (Times, false, true) => "Times-Italic",
-            (Times, true, true) => "Times-BoldItalic",
-            (Courier, false, false) => "Courier",
-            (Courier, true, false) => "Courier-Bold",
-            (Courier, false, true) => "Courier-Oblique",
-            (Courier, true, true) => "Courier-BoldOblique",
-        }
+        let f = self.standard();
+        let names = match f.family {
+            Family::Times => [
+                "Times-Roman",
+                "Times-Bold",
+                "Times-Italic",
+                "Times-BoldItalic",
+            ],
+            Family::Courier => [
+                "Courier",
+                "Courier-Bold",
+                "Courier-Oblique",
+                "Courier-BoldOblique",
+            ],
+            Family::Helvetica | Family::Installed(_) => [
+                "Helvetica",
+                "Helvetica-Bold",
+                "Helvetica-Oblique",
+                "Helvetica-BoldOblique",
+            ],
+        };
+        names[f.bold as usize + 2 * f.italic as usize]
     }
 
     /// Best standard-font match for an arbitrary font name.

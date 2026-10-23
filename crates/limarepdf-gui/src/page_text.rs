@@ -5,6 +5,7 @@
 //! that can't be written.
 
 use crate::{dialogs, typing_fonts};
+use eframe::egui::epaint::text::VariationCoords;
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::{writable, FontChoice};
@@ -51,16 +52,16 @@ pub struct Shown {
 }
 
 /// Whether `c` can be typed in `font`: line breaks, and what LimarePDF can write in it (the
-/// standard font, or its embedded face).
+/// standard font or its embedded face, or the installed family's face).
 fn typable(c: char, font: FontChoice) -> bool {
     c == '\n' || writable(font, c)
 }
 
 /// `s` without the characters that can't be typed in `font` (tabs become spaces, carriage
-/// returns go, and in a `single` line, line breaks become spaces), and whether any was
+/// returns go, and in a `single` line, line breaks become spaces), and the first one
 /// refused.
-fn keep_typable(s: &str, single: bool, font: FontChoice) -> (String, bool) {
-    let mut refused = false;
+fn keep_typable(s: &str, single: bool, font: FontChoice) -> (String, Option<char>) {
+    let mut refused = None;
     let kept = s
         .chars()
         .filter_map(|c| match c {
@@ -69,7 +70,7 @@ fn keep_typable(s: &str, single: bool, font: FontChoice) -> (String, bool) {
             '\n' if single => Some(' '),
             c if typable(c, font) => Some(c),
             _ => {
-                refused = true;
+                refused = refused.or(Some(c));
                 None
             }
         })
@@ -77,13 +78,41 @@ fn keep_typable(s: &str, single: bool, font: FontChoice) -> (String, bool) {
     (kept, refused)
 }
 
+/// The note at the caret for `c`, refused in `font`: an installed family that lacks it is
+/// named, as another font may have it.
+pub fn note(font: FontChoice, c: char) -> String {
+    if font.is_standard() {
+        REFUSED.to_string()
+    } else {
+        limarepdf_core::refusal(font, &c.to_string())
+    }
+}
+
+/// `f` with Bold switched when `bold` and Italic when `italic` (Ctrl+B, Ctrl+I), each only
+/// to a face the family has.
+pub fn switched(mut f: FontChoice, bold: bool, italic: bool) -> FontChoice {
+    let has = |f: FontChoice| f.typeface().is_none_or(|t| t.has(f.bold, f.italic));
+    for (on, flip) in [(bold, true), (italic, false)] {
+        let mut g = f;
+        if flip {
+            g.bold ^= on;
+        } else {
+            g.italic ^= on;
+        }
+        if has(g) {
+            f = g;
+        }
+    }
+    f
+}
+
 /// What this frame's typing asked of an editor, taken before the editor saw it.
 #[derive(Default)]
 pub struct Taken {
     pub bold: bool,
     pub italic: bool,
-    /// A character that can't be written was typed or pasted, and left out.
-    pub refused: bool,
+    /// A character that can't be written was typed or pasted, and left out: the first.
+    pub refused: Option<char>,
 }
 
 /// Take this frame's typing in hand before the editor with the keyboard sees it: what
@@ -105,20 +134,21 @@ pub fn take_typing(ui: &egui::Ui, single: bool, styles: bool, font: FontChoice) 
             };
             let (kept, gone) = keep_typable(s, single, font);
             *s = kept;
-            t.refused |= gone;
+            t.refused = t.refused.or(gone);
         }
     });
     t
 }
 
-/// The note at the caret about a refused character, for a few seconds after.
-#[derive(Clone, Copy, Default)]
-pub struct Refused(Option<f64>);
+/// The note at the caret about a refused character, for a few seconds after: since when,
+/// and what it says.
+#[derive(Clone, Default)]
+pub struct Refused(Option<(f64, String)>);
 
 impl Refused {
-    /// A character was refused just now.
-    pub fn mark(&mut self, ctx: &egui::Context) {
-        self.0 = Some(ctx.input(|i| i.time));
+    /// A character was refused just now; `note` says why.
+    pub fn mark(&mut self, ctx: &egui::Context, note: String) {
+        self.0 = Some((ctx.input(|i| i.time), note));
     }
 
     /// Show the note under the caret of `out` (the editor `id`) while it lasts.
@@ -128,7 +158,7 @@ impl Refused {
         out: &egui::text_edit::TextEditOutput,
         id: egui::Id,
     ) {
-        let Some(at) = self.0 else {
+        let Some((at, note)) = self.0.clone() else {
             return;
         };
         let left = NOTE_SECS - (ctx.input(|i| i.time) - at);
@@ -148,7 +178,7 @@ impl Refused {
             .interactable(false)
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.label(REFUSED);
+                    ui.label(note);
                 });
             });
     }
@@ -163,6 +193,8 @@ pub fn shown(mode: PageColours, c: [f32; 3]) -> Color32 {
 /// How text being typed on the page is drawn this frame.
 pub struct Style {
     pub font: egui::FontId,
+    /// The weight of a variable font, as it will be written.
+    pub coords: VariationCoords,
     pub color: Color32,
     /// The page colour mode, for the caret and selection: light on dark paper.
     pub mode: PageColours,
@@ -178,13 +210,15 @@ pub struct Field {
     pub outline: Rect,
 }
 
-/// `text` laid out as it is drawn: one row per line, `line` pixels apart, never wrapped.
-fn job(text: &str, font: &egui::FontId, color: Color32, line: f32) -> egui::text::LayoutJob {
+/// `text` laid out as it is drawn in `style`: one row per line, `line` pixels apart, never
+/// wrapped.
+fn job(text: &str, style: &Style, line: f32) -> egui::text::LayoutJob {
     egui::text::LayoutJob::single_section(
         text.to_string(),
         egui::TextFormat {
-            font_id: font.clone(),
-            color,
+            font_id: style.font.clone(),
+            coords: style.coords.clone(),
+            color: style.color,
             line_height: Some(line),
             ..Default::default()
         },
@@ -209,7 +243,7 @@ pub fn field(
     let (font, color) = (&style.font, style.color);
     let px = font.size;
     let line = LEADING * px;
-    let layout = |text: &str| ctx.fonts_mut(|f| f.layout_job(job(text, font, color, line)));
+    let layout = |text: &str| ctx.fonts_mut(|f| f.layout_job(job(text, style, line)));
     // The first row's baseline sits on the origin: its top is the font's ascent above.
     let probe = layout("M");
     let ascent = probe
@@ -254,7 +288,7 @@ pub fn field(
             );
             let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, _: f32| {
                 ui.ctx()
-                    .fonts_mut(|f| f.layout_job(job(text.as_str(), font, color, line)))
+                    .fonts_mut(|f| f.layout_job(job(text.as_str(), style, line)))
             };
             let te = if multiline {
                 egui::TextEdit::multiline(text)
@@ -324,15 +358,15 @@ impl PageText {
         if ctx.memory(|m| m.has_focus(id)) {
             // Before the editor sees the keys: what can't be written isn't typed.
             let t = take_typing(ui, false, true, look.font);
-            look.font.bold ^= t.bold;
-            look.font.italic ^= t.italic;
-            if t.refused {
-                self.refused.mark(&ctx);
+            look.font = switched(look.font, t.bold, t.italic);
+            if let Some(c) = t.refused {
+                self.refused.mark(&ctx, note(look.font, c));
             }
         }
-        let family = typing_fonts::family(&ctx, typing_fonts::Wanted::Standard(look.font));
+        let wanted = typing_fonts::Wanted::Standard(look.font);
         let style = Style {
-            font: egui::FontId::new((look.size * k).max(1.0), family),
+            font: egui::FontId::new((look.size * k).max(1.0), typing_fonts::family(&ctx, wanted)),
+            coords: typing_fonts::coords(wanted),
             color: shown(mode, look.color),
             mode,
             accent,
@@ -407,25 +441,61 @@ mod tests {
         let sans = FontChoice::default();
         assert_eq!(
             keep_typable("Walrus Š œ €", false, sans),
-            ("Walrus Š œ €".into(), false)
+            ("Walrus Š œ €".into(), None)
         );
         // Latin, Greek and Cyrillic beyond WinAnsi, in the embedded face.
         assert_eq!(
             keep_typable("Łódź Ωmega Жук", false, sans),
-            ("Łódź Ωmega Жук".into(), false)
+            ("Łódź Ωmega Жук".into(), None)
         );
         assert_eq!(
             keep_typable("Seal\r\n中\tfish", false, sans),
-            ("Seal\n fish".into(), true)
+            ("Seal\n fish".into(), Some('中'))
         );
-        assert_eq!(keep_typable("中文", false, sans), (String::new(), true));
+        assert_eq!(
+            keep_typable("中文", false, sans),
+            (String::new(), Some('中'))
+        );
         // Right-to-left scripts aren't written yet, though the face has Hebrew.
-        assert_eq!(keep_typable("שלום", false, sans), (String::new(), true));
+        assert_eq!(
+            keep_typable("שלום", false, sans),
+            (String::new(), Some('ש'))
+        );
         // In a single line, line breaks become spaces.
         assert_eq!(
             keep_typable("Seal\r\nfish", true, sans),
-            ("Seal fish".into(), false)
+            ("Seal fish".into(), None)
         );
+        assert_eq!(note(sans, '中'), REFUSED);
+    }
+
+    fn installed(name: &str) -> FontChoice {
+        FontChoice {
+            family: crate::font_list::test_family(name),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn installed_fonts_type_what_they_have() {
+        let caveat = installed("Caveat");
+        assert_eq!(
+            keep_typable("Жук Ωmega", false, caveat),
+            ("Жук mega".into(), Some('Ω'))
+        );
+        assert_eq!(
+            note(caveat, 'Ω'),
+            "Caveat has no \"Ω\"; choose another font"
+        );
+        // Ctrl+B and Ctrl+I switch only to faces the family has.
+        let bold = switched(caveat, true, false);
+        assert!(bold.bold && !bold.italic);
+        assert_eq!(switched(caveat, false, true), caveat, "no italic");
+        let serif = installed("Source Serif 4");
+        assert_eq!(switched(serif, true, true), serif);
+        let helvetica = FontChoice::default();
+        let both = switched(helvetica, true, true);
+        assert!(both.bold && both.italic);
     }
 
     #[test]

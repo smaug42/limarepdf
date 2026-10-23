@@ -60,6 +60,7 @@ mod text;
 mod tounicode;
 mod trees;
 mod trust;
+mod typefaces;
 mod viewprefs;
 
 pub use annots::{Annot, AnnotKind, ShapeLook, TextStyle, MAX_ANNOTS};
@@ -69,7 +70,7 @@ pub use cms_check::CertInfo;
 pub use display::{display_line, display_text, local_date, local_time, quoted_list};
 pub use doc::{part_file_name, write_file, Info, Pdf, SplitBy};
 pub use edit::{PathStyle, Shape, TextEdit};
-pub use embed::{liberation, writable, LIBERATION};
+pub use embed::{liberation, refusal, writable, LIBERATION};
 pub use fonts::{winansi_byte, Family, FontChoice};
 pub use forms::{Field, FieldKind, FieldValue, Widget};
 pub use ids::{
@@ -104,6 +105,7 @@ pub use sign::{
 pub use stamps::{stamp_wording, Stamp, StampColor, StampKind, StampPlace};
 pub use text::SearchHit;
 pub use trust::{is_authority, read_certificates, Added, Trust, TrustEntry, TrustList, TrustRole};
+pub use typefaces::{add_font_files, typeface, typefaces, typefaces_ready, FaceFile, Typeface};
 pub use viewprefs::{OpenLayout, OpenPanel, ViewPrefs};
 
 pub type Result<T> = anyhow::Result<T>;

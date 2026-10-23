@@ -15,6 +15,13 @@
   be typed (the note at the caret says which scripts work), and are refused elsewhere, naming them, instead of
   coming out as `?` (a stamp leaves such a name off its line; a plain page of selected text still shows `?`).
 - A typed signature a handwriting style can't show names the styles that can (Caveat has Cyrillic).
+- Installed fonts for new and edited text: the inspector's font list has Helvetica, Times and Courier, then the
+  fonts installed on the computer whose licence allows embedding (TrueType, OpenType and variable fonts), each
+  name drawn in its own font, with a search field. Text in one is embedded in the file, cut down to the
+  characters used, so it looks the same anywhere; Bold and Italic use the family's own faces (off when it has
+  none), and a character the font lacks is refused with a note naming the font. Chinese, Japanese and Korean
+  can be typed in an installed font that has them. An edited line from a font that is installed is written in
+  that font again rather than in Helvetica, Times or Courier.
 
 ### Changed
 

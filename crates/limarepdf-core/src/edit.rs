@@ -13,7 +13,9 @@ use lopdf::{Dictionary, Object, ObjectId, Stream, StringFormat};
 #[derive(Clone, Debug)]
 pub struct TextEdit {
     pub text: String,
-    /// `None` keeps the current font (when it can be reused), otherwise one of the 12 standard fonts.
+    /// `None` keeps the current font (when it can be reused, else the installed family it is
+    /// from or the nearest standard font: [`FontChoice::of_font`]), otherwise a standard font
+    /// or an installed family's face.
     pub font: Option<FontChoice>,
     pub size: Option<f32>,
     pub color: Option<[f32; 3]>,
@@ -22,7 +24,7 @@ pub struct TextEdit {
 impl TextEdit {
     /// Whether [`Pdf::edit_text`] keeps the line's own font for this change: the font can
     /// be reused ([`crate::PageObject::font_reusable`]), the new text is plain ASCII and no
-    /// style changes. Otherwise the line is written anew in a standard font.
+    /// style changes. Otherwise the line is written anew.
     pub fn keeps_font(&self, reusable: bool) -> bool {
         let ascii = self.text.chars().all(|c| (' '..='~').contains(&c));
         let keep_style = self.font.is_none() && self.size.is_none() && self.color.is_none();
@@ -494,7 +496,7 @@ impl Pdf {
             }
         }
         let mut out = closed(out, parsed.depth_left);
-        let font = e.font.unwrap_or_else(|| FontChoice::from_name(&t.base));
+        let font = e.font.unwrap_or_else(|| FontChoice::of_font(&t.base));
         let size = e.size.unwrap_or(t.size).max(1.0);
         let color = e.color.or(t.fill).unwrap_or([0.0; 3]);
         let (fname, pen) = self.text_font(page, font, &e.text)?;

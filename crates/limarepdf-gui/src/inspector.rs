@@ -1230,8 +1230,11 @@ fn stamp_text(ui: &mut Ui, label: &str, text: &mut String, p: &mut Press) {
     let mut refused: page_text::Refused = ctx.data(|d| d.get_temp(note)).unwrap_or_default();
     let helvetica = limarepdf_core::FontChoice::default();
     let focused = ctx.memory(|m| m.has_focus(id));
-    if focused && page_text::take_typing(ui, true, false, helvetica).refused {
-        refused.mark(&ctx);
+    if let Some(c) = focused
+        .then(|| page_text::take_typing(ui, true, false, helvetica).refused)
+        .flatten()
+    {
+        refused.mark(&ctx, page_text::note(helvetica, c));
     }
     let field = egui::TextEdit::singleline(text)
         .id(id)

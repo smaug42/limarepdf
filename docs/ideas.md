@@ -46,8 +46,13 @@ Small or medium additions that build on what LimarePDF already has:
 
 - Find and replace text (M); spell check (L, needs a dictionary)
 - Layers: add, merge, reorder, flatten (L)
-- Unicode, CJK and right-to-left text with embedded fonts (L: font subsetting, text shaping and bidirectional
-  layout, likely new crates)
+- Right-to-left (Hebrew, Arabic) and shaped (Indic, Thai) text, beyond the Latin, Greek and Cyrillic written
+  today, and Chinese, Japanese and Korean outside installed fonts that have them (L: text shaping and
+  bidirectional layout, likely new crates)
+- Bold and italic made up for an installed family that lacks them, as word processors do: thicker strokes and a
+  slant (M: the writers and the drawing while typing)
+- An installed font's characters filled in from another font when it lacks them, within one line (M: a line
+  written in several fonts)
 - Background images (S: a picture watermark at 100%, opaque and behind the content comes close; filling the page
   edge to edge is what's missing)
 - QR codes and barcodes stamped onto pages (S–M, needs a crate)
@@ -56,8 +61,6 @@ Small or medium additions that build on what LimarePDF already has:
 ## Annotations and review
 
 - Stamps made from selected content (S–M)
-- Stamp wording (and the name-and-date line) in scripts beyond Western European: Greek, Cyrillic, CJK and so on
-  (needs an embedded font, like the Unicode text item under Content editing)
 - Callouts, clouds, polylines, carets, typewriter text, file attachments, an eraser for pen strokes (M each)
 - Measurement tools with scale calibration and CSV export (L)
 - Comment summary and export, saved comment styles (M)

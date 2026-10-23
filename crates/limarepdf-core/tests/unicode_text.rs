@@ -174,6 +174,69 @@ fn an_edited_line_is_set_in_the_embedded_face_of_its_kind() {
         .any(|o| o.hidden && o.text.as_deref() == Some(RUSSIAN)));
 }
 
+/// A test font as an installed family, by name: Source Serif 4 (OpenType CFF) or Cantarell
+/// (variable).
+fn installed(name: &str) -> Family {
+    static NUMBERS: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
+    let numbers = NUMBERS.get_or_init(|| {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/fonts");
+        let files = [
+            dir.join("SourceSerif4-Regular.otf"),
+            dir.join("Cantarell-VF.otf"),
+        ];
+        limarepdf_core::add_font_files(&files.iter().map(|p| p.as_path()).collect::<Vec<_>>())
+    });
+    let n = numbers
+        .iter()
+        .copied()
+        .find(|&n| limarepdf_core::typeface(n).unwrap().name == name)
+        .unwrap();
+    Family::Installed(n)
+}
+
+#[test]
+fn lines_in_installed_fonts_keep_their_family_when_edited() {
+    let serif = font(installed("Source Serif 4"), false, false);
+    let bold = font(installed("Cantarell"), true, false);
+    let mut p = page();
+    p.add_text(0, (20.0, 40.0), "Plain words", serif, 14.0, [0.0; 3])
+        .unwrap();
+    p.add_text(0, (20.0, 80.0), POLISH, bold, 14.0, [0.0; 3])
+        .unwrap();
+    let mut back = reopened(&mut p);
+    let fonts = ["Cantarell-Bold", "SourceSerif4-Regular"];
+    assert_eq!(embedded(&back), fonts);
+
+    // Edited with other text, ASCII or not, each line stays in its family, and the fonts
+    // grow rather than new ones being made.
+    let edit = |text: &str| TextEdit {
+        text: text.into(),
+        font: None,
+        size: None,
+        color: None,
+    };
+    let id = |p: &Pdf, text: &str| {
+        let objs = p.page_objects(0).unwrap();
+        objs.iter()
+            .find(|o| o.text.as_deref() == Some(text))
+            .unwrap()
+            .id
+    };
+    let plain = id(&back, "Plain words");
+    back.edit_text(0, plain, &edit(GREEK)).unwrap();
+    let polish = id(&back, POLISH);
+    back.edit_text(0, polish, &edit("Other words")).unwrap();
+    let mut again = reopened(&mut back);
+    assert_eq!(embedded(&again), fonts);
+    let text = again.page_text(0);
+    assert!(
+        text.contains(GREEK) && text.contains("Other words"),
+        "{text:?}"
+    );
+    assert!(ink(&mut again, [20, 25, 200, 45]) > 50);
+    assert!(ink(&mut again, [20, 65, 200, 85]) > 50);
+}
+
 #[test]
 fn text_boxes_and_fill_and_sign_text_draw_in_the_embedded_face() {
     let mut p = page();

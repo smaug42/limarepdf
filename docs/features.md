@@ -39,15 +39,19 @@ this list once it works. The feature table below has the details.
 **Typing and editing text**
 
 - Only Latin (Vietnamese included), Greek and Cyrillic characters can be added: in new or edited text, text
-  boxes, headers, footers, Bates numbers, watermarks, stamps, form values and fill-and-sign text. Hebrew and
-  Arabic (written right to left), the scripts whose letters join or change shape (Devanagari and the other Indic
-  scripts, Thai), Chinese, Japanese, Korean and emoji can't: when adding text, editing a line or typing a
-  header, footer or watermark, a note at the caret says so; form values and stamp wording with them are refused;
-  a plain-text page of selected text, and text boxes another app made without a drawing, show them as `?`.
+  boxes, headers, footers, Bates numbers, watermarks, stamps, form values and fill-and-sign text. New and edited
+  text can also be Chinese, Japanese or Korean in an installed font that has them (Noto Sans CJK, say), not in
+  Helvetica, Times or Courier. Hebrew and Arabic (written right to left), the scripts whose letters join or
+  change shape (Devanagari and the other Indic scripts, Thai) and emoji can't, in any font: when adding text,
+  editing a line or typing a header, footer or watermark, a note at the caret says so; form values and stamp
+  wording with them are refused; a plain-text page of selected text, and text boxes another app made without a
+  drawing, show them as `?`.
   Typed signatures show what their handwriting has: Caveat has Cyrillic, the other three Latin only.
-- New text uses Helvetica, Times or Courier only (with Bold and Italic): other fonts, installed or bundled, can't
-  be chosen yet, as using them means embedding them in the PDF. Editing a line keeps its font only when the
-  file's font allows it (not for most embedded fonts); otherwise the line becomes Helvetica, Times or Courier
+- Installed fonts are offered only when their licence allows embedding and they have the Latin letters; a
+  family's missing bold or italic can't be made up (the button is off), and one line can't mix fonts, so a
+  character the chosen font lacks is refused rather than taken from another font. Editing a line keeps its font
+  only when the file's font allows it (not for most embedded fonts); otherwise the line is written in the
+  installed family it came from, when LimarePDF can embed it, or else in Helvetica, Times or Courier
   ([details](content-editing.md#limits)).
 - Text is edited one line at a time: a paragraph doesn't rewrap as you type, so a longer line can run into
   whatever is beside it.
@@ -113,7 +117,7 @@ available.
 | Document properties | Done | Title, author, subject, keywords, creator, producer; each kept as you type it (Enter or leaving the field), one undo step each |
 | Password security | Done | All four ciphers and permission flags. [Things to know](security.md) |
 | Opening protected files | Done | With the open (user) password; files with an empty one (only a permissions password) open without asking, including RC4 files with a shortened password entry that other readers accept, and their notice says so |
-| Content editing | Partial | New text is typed on the page where you click, in the font, size and colour it will have, several lines added as one undo step. Double-click a line with the read tool, or click it with the Text tool, to edit it on the page, drawn in the font, size and colour it will have over the line; pictures, shapes and comments are selected, moved and resized with the read tool too, page text after Move or resize text on its toolbar (the read tool stays on) or with the arrow. Changes in the inspector apply at once, each an undo step; typing into one line again soon joins one step. Works on lines, not paragraphs; some fonts are replaced when edited; the text after a deleted, edited or moved line stays where it was (except in vertical writing). [Details](content-editing.md) |
+| Content editing | Partial | New text is typed on the page where you click, in the font, size and colour it will have, several lines added as one undo step. The font list offers Helvetica, Times and Courier and the installed fonts that allow embedding, searchable, each name in its own font. Double-click a line with the read tool, or click it with the Text tool, to edit it on the page, drawn in the font, size and colour it will have over the line; pictures, shapes and comments are selected, moved and resized with the read tool too, page text after Move or resize text on its toolbar (the read tool stays on) or with the arrow. Changes in the inspector apply at once, each an undo step; typing into one line again soon joins one step. Works on lines, not paragraphs; some fonts are replaced when edited; the text after a deleted, edited or moved line stays where it was (except in vertical writing). [Details](content-editing.md) |
 | Importing images as pages | Done | PNG, JPEG, TIFF. [Details](scanning-and-ocr.md#importing-images) |
 | Optimising scanned pages | Partial | Pages that are one image; only the pages chosen change, also when they share a picture with others. [Details](scanning-and-ocr.md#optimising-scanned-pages) |
 | OCR | Partial | Latin script; built-in recognition model. [Details](scanning-and-ocr.md#recognising-text-ocr) |
@@ -149,7 +153,8 @@ available.
 - Text with characters the standard fonts lack (beyond Western European) is written in Liberation Sans, Serif or
   Mono, which have the same widths as Helvetica, Times and Courier, embedded in the file and cut down to the
   characters used (a few KB). One font per face grows as text is added; in a signed document, each save adds
-  fonts of its own instead, so the signed part stays as it was.
+  fonts of its own instead, so the signed part stays as it was. Text in an installed font is always embedded
+  the same way (OpenType CFF fonts as such; a variable font at the weight chosen).
 - `limarepdf-cli render` leaves a filled form field empty when the field has no drawing of its own; the app's
   exports and all printing draw it. To be fixed ([details](export-and-printing.md#pages-as-images)).
 - Headers, footers and watermarks are added to the page content. They are not annotations and cannot be removed one

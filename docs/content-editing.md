@@ -11,10 +11,12 @@ per inline image.
 - **Moving or resizing** wraps the object's drawing operators in `q <matrix> cm … Q`.
 - **Editing text** rewrites the string in place when the font is a plain, non-subset, standard-encoded simple font
   and the new text is ASCII, with no font, size or colour change. Otherwise the old line is removed and the new
-  text is added in one of the 12 standard fonts, at the same position, size and colour. While a line is edited on
-  the page, the app makes the same test as it goes (`TextEdit::keeps_font`) and draws the line in the font it will
-  have: the line's own font installed on the computer, or else the Liberation face of its kind, when the font is
-  kept; the Liberation face of the standard font replacing it otherwise. The old line is covered with the most
+  text is added at the same position, size and colour, in the font chosen, else in the installed family the
+  line's font is from (found by its PostScript name, the subset tag left off; `FontChoice::of_font`), else in the
+  nearest of the 12 standard fonts. While a line is edited on the page, the app makes the same test as it goes
+  (`TextEdit::keeps_font`) and draws the line in the font it will have: the line's own font installed on the
+  computer, or else the Liberation face of its kind, when the font is kept; the installed family's font, or the
+  Liberation face of the standard font replacing it, otherwise. The old line is covered with the most
   common colour in a 3-point ring around its box, from a separate drawing of that part of the page in the current
   page colours.
 - **Adding** text, shapes or images draws them on top of the page. New text of several lines is written as one
@@ -24,6 +26,13 @@ per inline image.
   characters used; one font object per face grows as more is typed. Characters Liberation can't write (right-to-left
   and joined scripts, Chinese, Japanese, Korean) can't be typed. While it is typed, the app draws the text in the
   Liberation face, which has the standard font's widths, so the caret and line length match the written result.
+- **Installed fonts** (the inspector's font list after the three standard ones) are the families whose fonts
+  allow embedding (`OS/2 fsType`: not restricted, subsetting allowed, not bitmaps only), have outlines and the
+  Latin letters; up to four faces each (regular, bold, italic, bold italic), a variable font set at weight 400 or
+  700 (and its `ital` or `slnt` axis for italic). Text in one is always embedded, cut down to the characters used,
+  the same way: TrueType fonts and variable fonts (set at the weight, which makes them TrueType) as
+  CIDFontType2 with `/FontFile2`, OpenType CFF fonts as CIDFontType0 with `/FontFile3 /OpenType`. The app draws
+  the text in the font's own file, at that weight.
 - **Invisible text** from OCR is edited as invisible text and stays in place.
 - **Text after a changed line** stays where it was. Text on the same line can carry on from where the line ended
   (a show operator with no line move before it); when the line is deleted, edited or moved, its end is set again
@@ -40,10 +49,18 @@ An edit that fails leaves the document unchanged.
 
 - Text objects are lines recovered from the content stream by heuristics, not paragraphs. There is no reflow and no
   multi-line editing. Text boxes are estimated from font metrics, so they can be slightly off for unusual fonts.
-- Text in embedded subset fonts, and in CID (Type 0) fonts, cannot keep its font when edited: it becomes Helvetica,
-  Times or Courier (or their Liberation face, as new text is), and the inspector says so. Text written anew is
-  limited to Latin, Greek and Cyrillic: the app doesn't let others be typed, and a line that already has them
-  (Chinese, say) can't be written anew; the change is refused with a message naming them.
+- Text in embedded subset fonts, and in CID (Type 0) fonts, cannot keep its font when edited: it is written in the
+  installed family the font is from when LimarePDF can embed it, else it becomes Helvetica, Times or Courier (or
+  their Liberation face, as new text is), and the inspector says so. Text written anew is limited to Latin, Greek
+  and Cyrillic, and Chinese, Japanese and Korean in an installed font that has them: the app doesn't let others
+  be typed, and a line that already has them (Chinese in a line that becomes Helvetica, say) can't be written
+  anew; the change is refused with a message naming them. Right-to-left and shaped scripts (Hebrew, Arabic,
+  Devanagari, Thai and the rest) are refused in every font, as they would come out wrong without reordering and
+  shaping. An installed font lacking a character refuses it too, naming the font: one line is set in one font,
+  with no fallback to another.
+- Installed fonts whose licence restricts embedding, or that have no Latin letters, aren't offered; a family's
+  missing bold or italic isn't made up. The list is read once, when the app starts (about a second, on another
+  thread): fonts installed while it runs show after a restart.
 - While a line that keeps its font is edited, its character and word spacing and horizontal scaling (`Tc`, `Tw`,
   `Tz`) aren't drawn, and an embedded font is drawn from the installed or Liberation look-alike rather than its own
   data, so the line can look slightly different until you finish. Turned lines and invisible text are edited in a

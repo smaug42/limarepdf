@@ -15,17 +15,24 @@
 //! checksum of the font file. A font object whose font file has changed since (another app
 //! rewrote it), or that was made from another version of the face, isn't grown: a new one
 //! is started.
+//!
+//! Installed fonts (`typefaces.rs`) are written the same way, always embedded. An OpenType
+//! font with CFF outlines is written as a CIDFontType0 font with a `/FontFile3 /OpenType`
+//! font file; a variable font is set at the chosen weight as it is cut down, which gives a
+//! TrueType font whatever its outlines.
 
 use crate::fonts::{winansi_byte, winansi_bytes};
-use crate::{FontChoice, Pdf, Result};
+use crate::{Family, FontChoice, Pdf, Result};
 use anyhow::{anyhow, bail};
 use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream};
 use sha2::{Digest, Sha256};
+use skrifa::instance::Location;
 use skrifa::prelude::{FontRef, LocationRef, MetadataProvider, Size};
-use skrifa::GlyphId;
+use skrifa::{GlyphId, Tag};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
-use std::sync::OnceLock;
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use subsetter::GlyphRemapper;
 use unicode_normalization::UnicodeNormalization;
 
@@ -90,18 +97,20 @@ pub static LIBERATION: [[(&str, &[u8]); 4]; 3] = [
 ];
 
 /// The bundled face for a standard font, by name and file: Helvetica is Liberation Sans,
-/// and so on.
+/// and so on. For an installed family, its standard stand-in's ([`FontChoice::standard`]).
 pub fn liberation(f: FontChoice) -> (&'static str, &'static [u8]) {
     let (family, style) = place(f);
     LIBERATION[family][style]
 }
 
-/// Where the face of `f` is in [`LIBERATION`]: its family, and its style in that.
+/// Where the face of the standard font nearest `f` is in [`LIBERATION`]: its family, and its
+/// style in that.
 fn place(f: FontChoice) -> (usize, usize) {
+    let f = f.standard();
     let family = match f.family {
-        crate::Family::Helvetica => 0,
-        crate::Family::Times => 1,
-        crate::Family::Courier => 2,
+        Family::Times => 1,
+        Family::Courier => 2,
+        Family::Helvetica | Family::Installed(_) => 0,
     };
     (family, f.bold as usize + 2 * f.italic as usize)
 }
@@ -117,8 +126,18 @@ pub(crate) struct Face {
     /// Its PostScript name ("LiberationSans-Bold"), as PDF names it.
     ps: String,
     data: &'static [u8],
-    /// The first bytes of the face file's checksum, so a font object made from another
-    /// version of the face is told apart.
+    /// Its index in the font file (a collection holds several).
+    index: u32,
+    /// The variation settings of a variable font set at a weight; empty for others.
+    coords: Vec<([u8; 4], f32)>,
+    /// Where in the font's design space it is set (the default for a static font).
+    location: Location,
+    /// Whether it is written as an OpenType CFF font (`/FontFile3`): one with CFF outlines.
+    /// TrueType, and variable fonts (made TrueType when set at a weight), are `/FontFile2`.
+    cff: bool,
+    /// The first bytes of the face file's checksum (with its index and settings, when it
+    /// has any), so a font object made from another version or weight of the face is told
+    /// apart.
     source: [u8; 8],
     /// Each glyph's width, in thousandths of an em, rounded as `/W` gives it.
     widths: Vec<i64>,
@@ -126,25 +145,83 @@ pub(crate) struct Face {
 
 /// Largest embedded font file read back to grow it, once decompressed.
 const MAX_FILE: usize = 32 << 20;
+/// Largest installed font file read (collections of Chinese, Japanese and Korean fonts run to
+/// tens of megabytes).
+const MAX_INSTALLED: u64 = 256 << 20;
 
 /// The bundled faces, each read the first time it is needed.
 static FACES: [OnceLock<Face>; 12] = [const { OnceLock::new() }; 12];
 
+/// An installed face's font file, index in it and PostScript name.
+type FaceKey = (PathBuf, u32, String);
+
+/// The installed faces read: each is read once and kept for the rest of the run, as the
+/// bundled ones are.
+static INSTALLED: Mutex<Vec<(FaceKey, &'static Face)>> = Mutex::new(Vec::new());
+
 impl Face {
-    /// The bundled face of the standard font `f`.
+    /// The bundled face of the standard font `f` (for an installed family, its standard
+    /// stand-in's).
     pub(crate) fn liberation(f: FontChoice) -> &'static Face {
         let (family, style) = place(f);
-        FACES[4 * family + style]
-            .get_or_init(|| Face::read(LIBERATION[family][style].1).expect("a bundled face reads"))
+        FACES[4 * family + style].get_or_init(|| {
+            Face::read(LIBERATION[family][style].1, 0, Vec::new(), None)
+                .expect("a bundled face reads")
+        })
     }
 
-    fn read(data: &'static [u8]) -> Result<Self> {
-        let font = FontRef::new(data).map_err(|e| anyhow!("can't read the font: {e}"))?;
-        let ps = font
-            .localized_strings(skrifa::string::StringId::POSTSCRIPT_NAME)
-            .english_or_first()
-            .map(|s| s.to_string())
-            .unwrap_or_default();
+    /// The face text in `f` is written in when it is embedded: a standard font's bundled
+    /// face, or the installed family's face, read from its file the first time.
+    pub(crate) fn of(f: FontChoice) -> Result<&'static Face> {
+        let Family::Installed(n) = f.family else {
+            return Ok(Face::liberation(f));
+        };
+        let t = crate::typeface(n).ok_or_else(|| anyhow!("that font isn't available"))?;
+        let file = t.face(f.bold, f.italic).ok_or_else(|| {
+            let style = match (f.bold, f.italic) {
+                (true, true) => "bold italic",
+                (true, false) => "bold",
+                (false, true) => "italic",
+                (false, false) => "regular",
+            };
+            anyhow!("{} has no {style} face", t.name)
+        })?;
+        let key = (file.path.clone(), file.index, file.ps.clone());
+        let mut read = INSTALLED.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, face)) = read.iter().find(|(k, _)| *k == key) {
+            return Ok(face);
+        }
+        let cant = |e: &dyn std::fmt::Display| anyhow!("can't read the font {}: {e}", t.name);
+        let size = std::fs::metadata(&file.path).map_err(|e| cant(&e))?.len();
+        if size > MAX_INSTALLED {
+            bail!("the font {} is too large to embed", t.name);
+        }
+        let data: &'static [u8] = std::fs::read(&file.path).map_err(|e| cant(&e))?.leak();
+        let face = Face::read(data, file.index, file.coords.clone(), Some(&file.ps))
+            .map_err(|e| cant(&e))?;
+        let face: &'static Face = Box::leak(Box::new(face));
+        read.push((key, face));
+        Ok(face)
+    }
+
+    /// The face at `index` in the font file `data`, set at `coords`, named `ps` (else by
+    /// the font's own PostScript name).
+    fn read(
+        data: &'static [u8],
+        index: u32,
+        coords: Vec<([u8; 4], f32)>,
+        ps: Option<&str>,
+    ) -> Result<Self> {
+        let font =
+            FontRef::from_index(data, index).map_err(|e| anyhow!("can't read the font: {e}"))?;
+        let ps = match ps {
+            Some(ps) => ps.to_string(),
+            None => font
+                .localized_strings(skrifa::string::StringId::POSTSCRIPT_NAME)
+                .english_or_first()
+                .map(|s| s.to_string())
+                .unwrap_or_default(),
+        };
         // A PDF name of the usual kind: letters, digits and hyphens.
         let ps: String = ps
             .chars()
@@ -153,38 +230,68 @@ impl Face {
         if ps.is_empty() {
             bail!("the font has no PostScript name");
         }
-        let m = font.metrics(Size::unscaled(), LocationRef::default());
+        let has = |t: &[u8; 4]| font.table_data(Tag::new(t)).is_some();
+        let cff = has(b"CFF ") && !has(b"glyf");
+        if !cff && !has(b"glyf") && !has(b"CFF2") {
+            bail!("the font has no outlines");
+        }
+        let location = font
+            .axes()
+            .location(coords.iter().map(|(t, v)| (Tag::new(t), *v)));
+        let at = LocationRef::from(&location);
+        let m = font.metrics(Size::unscaled(), at);
         let em = 1000.0 / m.units_per_em.max(1) as f32;
-        let gm = font.glyph_metrics(Size::unscaled(), LocationRef::default());
+        let gm = font.glyph_metrics(Size::unscaled(), at);
         let widths = (0..m.glyph_count as u32)
             .map(|g| (gm.advance_width(GlyphId::new(g)).unwrap_or(0.0) * em).round() as i64)
             .collect();
+        let mut sum = Sha256::new();
+        sum.update(data);
+        if index != 0 || !coords.is_empty() {
+            sum.update(index.to_be_bytes());
+            for (t, v) in &coords {
+                sum.update(t);
+                sum.update(v.to_be_bytes());
+            }
+        }
         let mut source = [0; 8];
-        source.copy_from_slice(&Sha256::digest(data)[..8]);
+        source.copy_from_slice(&sum.finalize()[..8]);
         Ok(Self {
             ps,
             data,
+            index,
+            coords,
+            location,
+            cff,
             source,
             widths,
         })
     }
 
     fn font(&self) -> FontRef<'static> {
-        FontRef::new(self.data).expect("read when the face was")
+        FontRef::from_index(self.data, self.index).expect("read when the face was")
+    }
+
+    /// Its weight: the weight it is set at, else the font's own.
+    fn weight(&self) -> f32 {
+        self.coords
+            .iter()
+            .find(|(t, _)| t == b"wght")
+            .map_or_else(|| self.font().attributes().weight.value(), |(_, v)| *v)
     }
 
     /// The face's glyph for `c`; `None` for characters it lacks, control characters and
-    /// those of right-to-left scripts.
+    /// those of right-to-left and shaped scripts.
     fn glyph(&self, c: char) -> Option<u16> {
-        if c.is_control() || right_to_left(c) {
+        if c.is_control() || right_to_left(c) || shaped(c) {
             return None;
         }
         let g = self.font().charmap().map(c)?.to_u32();
         (g != 0).then_some(g as u16)
     }
 
-    /// Whether the face has a glyph for `c` that LimarePDF can write (control characters
-    /// and right-to-left scripts never).
+    /// Whether the face has a glyph for `c` that LimarePDF can write (control characters,
+    /// right-to-left and shaped scripts never).
     pub(crate) fn covers(&self, c: char) -> bool {
         self.glyph(c).is_some()
     }
@@ -232,10 +339,13 @@ impl Face {
     }
 }
 
-/// Whether LimarePDF can write `c` in the standard font `f`: in the font itself, or in its
-/// embedded face. Control characters never.
+/// Whether LimarePDF can write `c` in `f`: a standard font itself or its embedded face, or
+/// an installed family's face (read the first time). Control characters never.
 pub fn writable(f: FontChoice, c: char) -> bool {
-    winansi_byte(c).is_some() || Face::liberation(f).covers(c)
+    match f.family {
+        Family::Installed(_) => Face::of(f).is_ok_and(|face| face.covers(c)),
+        _ => winansi_byte(c).is_some() || Face::liberation(f).covers(c),
+    }
 }
 
 /// The message refusing text with the characters `missing`.
@@ -246,13 +356,40 @@ pub(crate) fn cant_write(missing: &str) -> String {
     )
 }
 
-/// The characters of `text` LimarePDF can't write in the standard font `f` or its embedded
-/// face, each once (as [`Pdf::pen`] writes it; control characters included).
+/// The message refusing text in `f` with the characters `missing`: an installed family
+/// lacking them is named, as another font may have them.
+pub fn refusal(f: FontChoice, missing: &str) -> String {
+    match f.typeface() {
+        Some(t)
+            if missing
+                .chars()
+                .any(|c| !c.is_control() && !right_to_left(c) && !shaped(c)) =>
+        {
+            format!("{} has no \"{missing}\"; choose another font", t.name)
+        }
+        _ => cant_write(missing),
+    }
+}
+
+/// The characters of `text` LimarePDF can't write in `f` (a standard font or its embedded
+/// face, or an installed family's face), each once (as [`Pdf::pen`] writes it; control
+/// characters included). All of them when the installed face can't be read.
 pub(crate) fn unwritable(f: FontChoice, text: &str) -> String {
-    if text.chars().all(|c| winansi_byte(c).is_some()) {
+    if f.is_standard() && text.chars().all(|c| winansi_byte(c).is_some()) {
         return String::new();
     }
-    Face::liberation(f).spelled(text).1
+    match Face::of(f) {
+        Ok(face) => face.spelled(text).1,
+        Err(_) => {
+            let mut all = String::new();
+            for c in text.chars() {
+                if !all.contains(c) {
+                    all.push(c);
+                }
+            }
+            all
+        }
+    }
 }
 
 /// Text set in an embedded font: the font object to name in the resources, and the bytes
@@ -294,9 +431,11 @@ impl Codes {
 }
 
 /// The font a writer sets text in: the standard font, with nothing embedded, while the
-/// text fits WinAnsi, else its embedded face (the Unicode text design, question 2).
+/// text fits WinAnsi, else its embedded face (the Unicode text design, question 2); an
+/// installed family always embedded.
 #[derive(Clone)]
 pub(crate) enum Pen {
+    /// Only ever a standard font.
     Standard(FontChoice),
     Embedded(Codes),
 }
@@ -388,18 +527,18 @@ impl Pdf {
         })
     }
 
-    /// The pen to write `text`, and any part of it, in the standard font `f`: the font
-    /// itself while every character fits WinAnsi, else its embedded face, grown to hold
-    /// them ([`Pdf::embed_codes`]). Control characters don't count: line breaks, for one,
-    /// as lines are shown one by one.
+    /// The pen to write `text`, and any part of it, in `f`: a standard font itself while
+    /// every character fits WinAnsi, else its embedded face, grown to hold them
+    /// ([`Pdf::embed_codes`]); an installed family's face always. Control characters don't
+    /// count: line breaks, for one, as lines are shown one by one.
     pub(crate) fn pen(&mut self, f: FontChoice, text: &str) -> Result<Pen> {
         let text: String = text.chars().filter(|c| !c.is_control()).collect();
-        if text.chars().all(|c| winansi_byte(c).is_some()) {
+        if f.is_standard() && text.chars().all(|c| winansi_byte(c).is_some()) {
             return Ok(Pen::Standard(f));
         }
-        let missing = unwritable(f, &text);
+        let missing = Face::of(f)?.spelled(&text).1;
         if !missing.is_empty() {
-            bail!("{}", cant_write(&missing));
+            bail!("{}", refusal(f, &missing));
         }
         Ok(Pen::Embedded(self.embed_codes(f, &text)?))
     }
@@ -412,13 +551,13 @@ impl Pdf {
         }
     }
 
-    /// The embedded face of the standard font `f`: the face's font object in this
-    /// document, grown to hold the glyphs `text` needs (made the first time), and the codes
-    /// to write that text. Accents typed as separate marks are put together first (NFC)
-    /// where the face has the combined letter, and a letter it has only in parts is written
-    /// in them. Refused, with nothing changed, when the face lacks a character.
+    /// The embedded face of `f` ([`Face::of`]): the face's font object in this document,
+    /// grown to hold the glyphs `text` needs (made the first time), and the codes to write
+    /// that text. Accents typed as separate marks are put together first (NFC) where the
+    /// face has the combined letter, and a letter it has only in parts is written in them.
+    /// Refused, with nothing changed, when the face lacks a character.
     pub(crate) fn embed_codes(&mut self, f: FontChoice, text: &str) -> Result<Codes> {
-        let face = Face::liberation(f);
+        let face = Face::of(f)?;
         let (font, cids) = self.embed_in(face, text)?;
         Ok(Codes { font, face, cids })
     }
@@ -516,7 +655,8 @@ impl Pdf {
         let descendant = descendants.first()?.as_reference().ok()?;
         let cid_font = self.doc.get_dictionary(descendant).ok()?;
         let descriptor = reference(cid_font, b"FontDescriptor")?;
-        let file = reference(self.doc.get_dictionary(descriptor).ok()?, b"FontFile2")?;
+        let descriptor_dict = self.doc.get_dictionary(descriptor).ok()?;
+        let file = reference(descriptor_dict, file_key(face).as_bytes())?;
         let data = self.doc.get_object(file).ok()?.as_stream().ok()?;
         let data = data.get_plain_content_with_limit(MAX_FILE).ok()?;
         if Sha256::digest(&data)[..] != *s(b"Sum")? {
@@ -550,65 +690,72 @@ impl Pdf {
         if !numbered {
             bail!("the font's glyphs were numbered unexpectedly; nothing was changed");
         }
-        let sub = subsetter::subset(face.data, 0, &mapper)
+        let coords: Vec<(subsetter::Tag, f32)> = face
+            .coords
+            .iter()
+            .map(|(t, v)| (subsetter::Tag::new(t), *v))
+            .collect();
+        let sub = subsetter::subset_with_variations(face.data, face.index, &coords, &mapper)
             .map_err(|e| anyhow!("can't cut down {}: {e}", face.ps))?;
         let sum = Sha256::digest(&sub);
         let base = format!("{}+{}", tag(&sum), face.ps);
 
         let font = face.font();
-        let m = font.metrics(Size::unscaled(), LocationRef::default());
+        let m = font.metrics(Size::unscaled(), LocationRef::from(&face.location));
         let em = 1000.0 / m.units_per_em.max(1) as f32;
         let scaled = |v: f32| Object::Integer((v * em).round() as i64);
         let bbox = m
             .bounds
             .map_or([0.0; 4], |b| [b.x_min, b.y_min, b.x_max, b.y_max]);
-        let weight = font.attributes().weight.value();
+        let weight = face.weight();
         let italic = m.italic_angle != 0.0;
         // Symbolic: the glyphs aren't only the standard Latin set.
         let flags = 4 | m.is_monospace as i64 | (64 * italic as i64) | (2 * serif(&face.ps) as i64);
 
-        let mut file = Stream::new(dictionary! { "Length1" => sub.len() as i64 }, sub);
+        let mut file = if face.cff {
+            Stream::new(dictionary! { "Subtype" => "OpenType" }, sub)
+        } else {
+            Stream::new(dictionary! { "Length1" => sub.len() as i64 }, sub)
+        };
         file.allows_compression = true;
         let file = self.put(parts.file, file.into());
-        let descriptor = self.put(
-            parts.descriptor,
-            dictionary! {
-                "Type" => "FontDescriptor",
-                "FontName" => Object::Name(base.clone().into_bytes()),
-                "Flags" => flags,
-                "FontBBox" => bbox.iter().map(|&v| scaled(v)).collect::<Vec<_>>(),
-                "ItalicAngle" => m.italic_angle,
-                "Ascent" => scaled(m.ascent),
-                "Descent" => scaled(m.descent),
-                "CapHeight" => scaled(m.cap_height.unwrap_or(m.ascent)),
-                // Estimated from the weight, as PDF writers commonly do.
-                "StemV" => (10.0 + 0.244 * (weight - 50.0)).round() as i64,
-                "FontFile2" => file,
-            }
-            .into(),
-        );
+        let mut descriptor = dictionary! {
+            "Type" => "FontDescriptor",
+            "FontName" => Object::Name(base.clone().into_bytes()),
+            "Flags" => flags,
+            "FontBBox" => bbox.iter().map(|&v| scaled(v)).collect::<Vec<_>>(),
+            "ItalicAngle" => m.italic_angle,
+            "Ascent" => scaled(m.ascent),
+            "Descent" => scaled(m.descent),
+            "CapHeight" => scaled(m.cap_height.unwrap_or(m.ascent)),
+            // Estimated from the weight, as PDF writers commonly do.
+            "StemV" => (10.0 + 0.244 * (weight - 50.0)).round() as i64,
+        };
+        descriptor.set(file_key(face), file);
+        let descriptor = self.put(parts.descriptor, descriptor.into());
         let widths: Vec<Object> = std::iter::once(0)
             .chain(gids.iter().copied())
             .map(|g| Object::Integer(face.widths[g as usize]))
             .collect();
-        let descendant = self.put(
-            parts.descendant,
-            dictionary! {
-                "Type" => "Font",
-                "Subtype" => "CIDFontType2",
-                "BaseFont" => Object::Name(base.clone().into_bytes()),
-                "CIDSystemInfo" => dictionary! {
-                    "Registry" => Object::string_literal("Adobe"),
-                    "Ordering" => Object::string_literal("Identity"),
-                    "Supplement" => 0,
-                },
-                "FontDescriptor" => descriptor,
-                "DW" => face.widths[0],
-                "W" => vec![0.into(), widths.into()],
-                "CIDToGIDMap" => "Identity",
-            }
-            .into(),
-        );
+        let mut descendant = dictionary! {
+            "Type" => "Font",
+            "Subtype" => if face.cff { "CIDFontType0" } else { "CIDFontType2" },
+            "BaseFont" => Object::Name(base.clone().into_bytes()),
+            "CIDSystemInfo" => dictionary! {
+                "Registry" => Object::string_literal("Adobe"),
+                "Ordering" => Object::string_literal("Identity"),
+                "Supplement" => 0,
+            },
+            "FontDescriptor" => descriptor,
+            "DW" => face.widths[0],
+            "W" => vec![0.into(), widths.into()],
+        };
+        // A CFF font's glyphs are found by CID through its own charset, which the subset
+        // makes the glyph numbers; only TrueType fonts take a map.
+        if !face.cff {
+            descendant.set("CIDToGIDMap", "Identity");
+        }
+        let descendant = self.put(parts.descendant, descendant.into());
         let to_unicode = self.put(
             parts.to_unicode,
             Stream::new(Dictionary::new(), to_unicode(&record.glyphs).into_bytes()).into(),
@@ -660,6 +807,37 @@ fn right_to_left(c: char) -> bool {
             | '\u{10800}'..='\u{10FFF}'
             | '\u{1E800}'..='\u{1EFFF}'
     )
+}
+
+/// Whether `c` is of a script whose letters change shape or combine around each other
+/// (Devanagari and the other Indic scripts, Thai, Lao, Tibetan, Myanmar, Khmer, Mongolian,
+/// conjoining Hangul jamo and the rest): written one glyph per character, without a shaping
+/// engine, they would come out wrong (the Unicode text design, section 6). Installed fonts
+/// may have them; Liberation doesn't.
+fn shaped(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0900}'..='\u{0DFF}'
+            | '\u{0E00}'..='\u{0FFF}'
+            | '\u{1000}'..='\u{109F}'
+            | '\u{1100}'..='\u{11FF}'
+            | '\u{1780}'..='\u{18AF}'
+            | '\u{1A00}'..='\u{1BFF}'
+            | '\u{A800}'..='\u{AAFF}'
+            | '\u{ABC0}'..='\u{ABFF}'
+            | '\u{D7B0}'..='\u{D7FF}'
+            | '\u{11000}'..='\u{11FFF}'
+    )
+}
+
+/// The font descriptor's key for a face's font file: `/FontFile3` (with `/Subtype
+/// /OpenType`) for a CFF font, `/FontFile2` for TrueType.
+fn file_key(face: &Face) -> &'static str {
+    if face.cff {
+        "FontFile3"
+    } else {
+        "FontFile2"
+    }
 }
 
 /// Whether a face is a serif one, by its name (the Serif flag of its font descriptor).
@@ -965,14 +1143,251 @@ mod tests {
         let cid = p.doc.get_dictionary(cid).unwrap();
         let desc = cid.get(b"FontDescriptor").unwrap().as_reference().unwrap();
         let desc = p.doc.get_dictionary(desc).unwrap();
-        let file = desc.get(b"FontFile2").unwrap().as_reference().unwrap();
+        let cff = cid.get(b"Subtype").unwrap().as_name().unwrap() == b"CIDFontType0";
+        let key: &[u8] = if cff { b"FontFile3" } else { b"FontFile2" };
+        let file = desc.get(key).unwrap().as_reference().unwrap();
         let file = p.doc.get_object(file).unwrap().as_stream().unwrap();
         let data = file.get_plain_content().unwrap();
-        assert_eq!(
-            file.dict.get(b"Length1").unwrap().as_i64().unwrap(),
-            data.len() as i64
-        );
+        if cff {
+            assert_eq!(
+                file.dict.get(b"Subtype").unwrap().as_name().unwrap(),
+                b"OpenType"
+            );
+            assert!(!cid.has(b"CIDToGIDMap"));
+        } else {
+            assert_eq!(
+                file.dict.get(b"Length1").unwrap().as_i64().unwrap(),
+                data.len() as i64
+            );
+        }
         data
+    }
+
+    /// A test font as an installed family's face, by the family's name: Source Serif 4
+    /// (OpenType CFF), Cantarell (CFF2, variable, weights 100 to 800) or Caveat (TrueType,
+    /// variable, weights 400 to 700).
+    fn installed(name: &str, bold: bool) -> FontChoice {
+        static NUMBERS: OnceLock<Vec<u16>> = OnceLock::new();
+        let numbers = NUMBERS.get_or_init(|| {
+            let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+            let files = [
+                dir.join("tests/data/fonts/SourceSerif4-Regular.otf"),
+                dir.join("tests/data/fonts/Cantarell-VF.otf"),
+                dir.join("assets/fonts/Caveat.ttf"),
+            ];
+            crate::add_font_files(&files.iter().map(|p| p.as_path()).collect::<Vec<_>>())
+        });
+        let n = numbers
+            .iter()
+            .copied()
+            .find(|&n| crate::typeface(n).unwrap().name == name)
+            .unwrap();
+        choice(Family::Installed(n), bold, false)
+    }
+
+    /// The descendant font's subtype and the font file's key of the font object `id`.
+    fn kind(p: &Pdf, id: ObjectId) -> (String, String) {
+        let font = p.doc.get_dictionary(id).unwrap();
+        let cid = font.get(b"DescendantFonts").unwrap().as_array().unwrap()[0]
+            .as_reference()
+            .unwrap();
+        let cid = p.doc.get_dictionary(cid).unwrap();
+        let subtype = cid.get(b"Subtype").unwrap().as_name().unwrap();
+        let desc = cid.get(b"FontDescriptor").unwrap().as_reference().unwrap();
+        let desc = p.doc.get_dictionary(desc).unwrap();
+        let file = ["FontFile2", "FontFile3"]
+            .into_iter()
+            .find(|k| desc.has(k.as_bytes()))
+            .unwrap();
+        (String::from_utf8_lossy(subtype).into(), file.into())
+    }
+
+    #[test]
+    fn installed_fonts_are_embedded_read_back_and_drawn() {
+        let serif = installed("Source Serif 4", false);
+        let cantarell = installed("Cantarell", false);
+        let heavy = installed("Cantarell", true);
+        let caveat = installed("Caveat", true);
+        let lines = [
+            (serif, "Zażółć gęślą jaźń"),
+            (serif, "Ελληνικά γράμματα"),
+            (cantarell, "Příliš žluťoučký kůň"),
+            (heavy, "Съешь же ещё этих"),
+            (caveat, "Iğdır şehrinde ılık"),
+            (serif, "Plain words"),
+        ];
+        let mut p = blank();
+        show(&mut p, &lines);
+        // One font per face: the static CFF font as one, the variable ones made TrueType.
+        let fonts = own_fonts(&p);
+        assert_eq!(fonts.len(), 4);
+        let mut kinds: Vec<(String, String)> = fonts.iter().map(|&id| kind(&p, id)).collect();
+        kinds.sort();
+        let cff = ("CIDFontType0".to_string(), "FontFile3".to_string());
+        let truetype = ("CIDFontType2".to_string(), "FontFile2".to_string());
+        assert_eq!(kinds, [cff, truetype.clone(), truetype.clone(), truetype]);
+        // Text in an installed font is embedded even when it fits WinAnsi.
+        assert!(matches!(
+            p.pen(serif, "Plain words"),
+            Ok(super::Pen::Embedded(_))
+        ));
+
+        let mut back = reopened(&mut p);
+        let text = back.page_text(0);
+        for (_, line) in lines {
+            assert!(text.contains(line), "{line:?} in {text:?}");
+        }
+        let h = render::load(back.to_bytes().unwrap(), None).unwrap();
+        let r = Renderer::new(&h);
+        let b = r.render(0, 2.0).unwrap();
+        assert!(r.take_missing().is_empty());
+        let inked = b.rgba.chunks(4).filter(|px| px[0] < 128).count();
+        assert!(inked > 2000, "the text is drawn ({inked} dark pixels)");
+    }
+
+    #[test]
+    fn installed_subsets_draw_each_glyph_as_the_face_does() {
+        let text = "Zażółć Ελληνικά";
+        let serif = installed("Source Serif 4", false);
+        let mut p = blank();
+        let set = p.embed_text(serif, text).unwrap();
+        let face = Face::of(serif).unwrap();
+        let full = face.font();
+        let data = font_file(&p, set.font);
+        let sub = FontRef::new(&data).unwrap();
+        for (code, c) in set.bytes.chunks(2).zip(text.nfc()) {
+            let cid = u16::from_be_bytes(code.try_into().unwrap()) as u32;
+            let g = face.glyph(c).unwrap() as u32;
+            assert_eq!(outline(&sub, cid), outline(&full, g), "{c:?}");
+        }
+        assert!(data.len() < 40_000, "{} bytes", data.len());
+    }
+
+    #[test]
+    fn variable_fonts_are_set_at_the_weight_chosen() {
+        let text = "Zażółć жёлтый";
+        for name in ["Cantarell", "Caveat"] {
+            let (regular, bold) = (installed(name, false), installed(name, true));
+            let mut p = blank();
+            let thin = p.embed_text(regular, text).unwrap();
+            let heavy = p.embed_text(bold, text).unwrap();
+            assert_ne!(thin.font, heavy.font, "{name}: each weight its own font");
+            let (thin_face, heavy_face) = (Face::of(regular).unwrap(), Face::of(bold).unwrap());
+            assert_ne!(thin_face.source, heavy_face.source);
+            assert_eq!(thin_face.weight(), 400.0);
+            assert_eq!(heavy_face.weight(), 700.0);
+
+            // The embedded font is the face at that weight: its widths, and its strokes
+            // (the subset's outlines are wider where the letters are bolder).
+            let mut wider = 0;
+            for (set, face) in [(&thin, thin_face), (&heavy, heavy_face)] {
+                let data = font_file(&p, set.font);
+                let sub = FontRef::new(&data).unwrap();
+                assert!(
+                    sub.axes().is_empty(),
+                    "{name}: set at a weight, not variable"
+                );
+                let sub_widths = sub.glyph_metrics(Size::unscaled(), LocationRef::default());
+                let em = 1000.0
+                    / sub
+                        .metrics(Size::unscaled(), LocationRef::default())
+                        .units_per_em as f32;
+                for (code, c) in set.bytes.chunks(2).zip(text.nfc()) {
+                    let cid = u16::from_be_bytes(code.try_into().unwrap()) as u32;
+                    let w = sub_widths.advance_width(GlyphId::new(cid)).unwrap() * em;
+                    let want = face.width(&c.to_string(), 1000.0);
+                    assert!((w - want).abs() <= 0.5, "{name} {c:?}: {w} and {want}");
+                }
+            }
+            let ink = |set: &Set| {
+                let data = font_file(&p, set.font);
+                let sub = FontRef::new(&data).unwrap();
+                let first = u16::from_be_bytes(set.bytes[..2].try_into().unwrap()) as u32;
+                let bounds = |pen: Pen| {
+                    let xs: Vec<f32> = pen.0.iter().map(|(_, a)| a[0]).collect();
+                    xs.iter().cloned().fold(f32::MIN, f32::max)
+                        - xs.iter().cloned().fold(f32::MAX, f32::min)
+                };
+                bounds(outline(&sub, first))
+            };
+            if ink(&heavy) > ink(&thin) {
+                wider += 1;
+            }
+            assert_eq!(wider, 1, "{name}: the bold Z is wider");
+        }
+    }
+
+    #[test]
+    fn installed_fonts_grow_in_place_after_reopening() {
+        for name in ["Source Serif 4", "Cantarell"] {
+            let f = installed(name, false);
+            let mut p = blank();
+            let first = p.embed_text(f, "Zażółć").unwrap();
+            let page = p.page_ids()[0];
+            p.add_resource(page, "Font", "LimareEm", first.font.into())
+                .unwrap();
+            let mut back = reopened(&mut p);
+            let font = own_fonts(&back)[0];
+            let more = back.embed_text(f, "Zażółć gęślą").unwrap();
+            assert_eq!(more.font, font, "{name}: the font grows");
+            assert_eq!(more.bytes[..first.bytes.len()], first.bytes[..], "{name}");
+            assert_eq!(own_fonts(&back).len(), 1);
+        }
+    }
+
+    #[test]
+    fn chinese_japanese_and_korean_in_an_installed_font_that_has_them() {
+        // Only meaningful where Noto Sans CJK is installed; passes trivially otherwise.
+        let Some((n, _)) = crate::typefaces()
+            .into_iter()
+            .find(|(_, t)| t.name.starts_with("Noto Sans CJK"))
+        else {
+            return;
+        };
+        let f = choice(Family::Installed(n), false, false);
+        let lines = ["日本語のテキスト", "中文字体 한국어"];
+        let mut p = blank();
+        show(&mut p, &lines.map(|l| (f, l)));
+        let back = reopened(&mut p);
+        let text = back.page_text(0);
+        for line in lines {
+            assert!(text.contains(line), "{line:?} in {text:?}");
+        }
+        let fonts = own_fonts(&back);
+        assert_eq!(fonts.len(), 1);
+        assert_eq!(kind(&back, fonts[0]).0, "CIDFontType0");
+        // Not in the standard fonts' faces.
+        assert!(!writable(SANS, '中'));
+    }
+
+    #[test]
+    fn installed_fonts_name_what_they_lack() {
+        // Caveat has Latin and Cyrillic, but no Greek.
+        let caveat = installed("Caveat", false);
+        assert!(writable(caveat, 'ж') && writable(caveat, 'A'));
+        assert!(!writable(caveat, 'Ω') && !writable(caveat, '\n'));
+        let mut p = blank();
+        let before = p.doc.objects.len();
+        let err = p.pen(caveat, "Ωmega and Ψ").err().unwrap().to_string();
+        assert_eq!(err, "Caveat has no \"ΩΨ\"; choose another font");
+        assert_eq!(p.doc.objects.len(), before, "nothing changed");
+        assert_eq!(unwritable(caveat, "Ωж"), "Ω");
+        // Scripts LimarePDF can't write in any font aren't put on the font.
+        assert_eq!(refusal(caveat, "क"), cant_write("क"));
+        assert!(refusal(caveat, "שΩ").starts_with("Caveat has no"));
+        for c in ['क', 'ก', 'ᄀ', 'ក', 'ꦄ', '𑀅'] {
+            assert!(shaped(c), "{c:?}");
+        }
+        for c in ['A', 'Ω', 'ж', '中', 'あ', '한', 'ẫ'] {
+            assert!(!shaped(c), "{c:?}");
+        }
+
+        // A face the family lacks.
+        let bold_serif = installed("Source Serif 4", true);
+        let err = p.pen(bold_serif, "Bold").err().unwrap().to_string();
+        assert_eq!(err, "Source Serif 4 has no bold face");
+        assert!(!writable(bold_serif, 'A'));
+        assert_eq!(p.doc.objects.len(), before);
     }
 
     #[test]
@@ -1212,9 +1627,12 @@ mod tests {
     /// Runs an installed tool on `bytes`, for the opt-in cross-checks; `{}` in `args` is the
     /// file. Its standard output and error.
     fn tool(name: &str, args: &[&str], bytes: &[u8]) -> (String, String) {
+        // A file of its own for each run, as the cross-checks run side by side.
+        static RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let run = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!("limarepdf-embed-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("{name}.pdf"));
+        let path = dir.join(format!("{name}-{run}.pdf"));
         std::fs::write(&path, bytes).unwrap();
         let args: Vec<String> = args
             .iter()
@@ -1281,6 +1699,69 @@ mod tests {
         }
 
         // Ghostscript draws it without complaint.
+        let draw = [
+            "-q",
+            "-dNOPAUSE",
+            "-dBATCH",
+            "-dSAFER",
+            "-sDEVICE=nullpage",
+            "{}",
+        ];
+        let (out, errors) = tool("gs", &draw, &bytes);
+        assert!(
+            (out + &errors).trim().is_empty(),
+            "Ghostscript drawing: {errors}"
+        );
+    }
+
+    /// The same for installed fonts: the OpenType CFF one listed as a CID Type 0C font, the
+    /// variable ones set at a weight as CID TrueType fonts:
+    /// `cargo test -p limarepdf-core embed -- --ignored cross_check`.
+    #[test]
+    #[ignore]
+    fn cross_check_installed_fonts_with_poppler_and_ghostscript() {
+        let lines = [
+            (installed("Source Serif 4", false), "Zażółć gęślą jaźń"),
+            (installed("Source Serif 4", false), "Ελληνικά γράμματα"),
+            (installed("Cantarell", false), "Příliš žluťoučký kůň"),
+            (installed("Cantarell", true), "Съешь же ещё этих"),
+            (installed("Caveat", true), "Iğdır şehrinde ılık"),
+        ];
+        let mut p = blank();
+        show(&mut p, &lines);
+        let bytes = p.to_bytes().unwrap();
+        let (text, _) = tool("pdftotext", &["{}", "-"], &bytes);
+        let gs = [
+            "-q",
+            "-dNOPAUSE",
+            "-dBATCH",
+            "-dSAFER",
+            "-sDEVICE=txtwrite",
+            "-sOutputFile=-",
+            "{}",
+        ];
+        let (gs_text, gs_errors) = tool("gs", &gs, &bytes);
+        for (_, w) in lines {
+            assert!(text.contains(w), "poppler: {w:?} in {text:?}");
+            assert!(gs_text.contains(w), "Ghostscript: {w:?} in {gs_text:?}");
+        }
+        assert!(gs_errors.trim().is_empty(), "Ghostscript: {gs_errors}");
+
+        let (fonts, errors) = tool("pdffonts", &["{}"], &bytes);
+        assert!(errors.trim().is_empty(), "pdffonts: {errors}");
+        let rows: Vec<&str> = fonts.lines().skip(2).collect();
+        assert_eq!(rows.len(), 4, "{fonts}");
+        for row in &rows {
+            let kind = if row.contains("SourceSerif4") {
+                "CID Type 0C"
+            } else {
+                "CID TrueType"
+            };
+            assert!(row.contains(kind) && row.contains("Identity-H"), "{row}");
+            let flags: Vec<&str> = row.split_whitespace().rev().skip(2).take(3).collect();
+            assert_eq!(flags, ["yes", "yes", "yes"], "{row}");
+        }
+
         let draw = [
             "-q",
             "-dNOPAUSE",
