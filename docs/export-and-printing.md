@@ -41,7 +41,7 @@ form.
 
 A filled field with no drawing of its own is drawn by LimarePDF when printed, however the pages are sent (as a PDF,
 as images, or on Windows). On every system, a filled field meant for printing that has no drawing of its own, and
-whose text LimarePDF can't draw (characters beyond Western European, filled in by an app that left the drawing to the reader), would come out
+whose text LimarePDF can't draw (characters beyond Latin, Greek and Cyrillic, filled in by an app that left the drawing to the reader), would come out
 empty. Print names those fields and asks first (Print anyway); `limarepdf-cli print` names them and sends nothing
 (it has no way to print anyway: open the file in the app for that).
 

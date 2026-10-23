@@ -1,12 +1,12 @@
 //! New documents made from part of a document: its pages cropped to a selection, or a
 //! text laid out afresh. Used to print or save selected text.
 
-use crate::fonts::winansi_bytes;
+use crate::embed::writable;
 use crate::overlay::text_width;
-use crate::{Pdf, Result};
+use crate::{FontChoice, Pdf, Result};
 use anyhow::bail;
 use lopdf::content::{Content, Operation};
-use lopdf::{dictionary, Object, Stream, StringFormat};
+use lopdf::{dictionary, Stream};
 use std::collections::HashSet;
 
 /// Font size and line spacing of [`Pdf::from_text`], in points.
@@ -37,12 +37,21 @@ impl Pdf {
     }
 
     /// A new document with `text` set in 11-point Helvetica on pages of `size` (width and
-    /// height in points), wrapped within the margins. Line breaks are kept. Characters
-    /// Helvetica's WinAnsi encoding lacks come out as `?`.
+    /// height in points), wrapped within the margins, or in its embedded face when the text
+    /// needs it. Line breaks are kept. Characters neither can write (beyond Latin, Greek
+    /// and Cyrillic) come out as `?`.
     pub fn from_text(text: &str, size: (f32, f32)) -> Result<Pdf> {
         if text.trim().is_empty() {
             bail!("there is no text");
         }
+        let helvetica = FontChoice::default();
+        let text: String = text
+            .chars()
+            .map(|c| match c {
+                c if c.is_whitespace() || writable(helvetica, c) => c,
+                _ => '?',
+            })
+            .collect();
         let (w, h) = size;
         let margin = (w.min(h) / 8.5).clamp(18.0, 72.0);
         let width = w - 2.0 * margin;
@@ -53,10 +62,8 @@ impl Pdf {
         let lines: Vec<String> = text.lines().flat_map(|l| wrap(l, width)).collect();
 
         let mut out = Pdf::new();
-        let font = out.doc.add_object(dictionary! {
-            "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
-            "Encoding" => "WinAnsiEncoding",
-        });
+        let pen = out.pen(helvetica, &lines.concat())?;
+        let font = out.pen_font(&pen);
         for (n, chunk) in lines.chunks(per_page).enumerate() {
             let mut ops = vec![
                 Operation::new("BT", vec![]),
@@ -65,8 +72,7 @@ impl Pdf {
                 Operation::new("Td", vec![margin.into(), (h - margin - TEXT_SIZE).into()]),
             ];
             for line in chunk {
-                let s = Object::String(winansi_bytes(line), StringFormat::Literal);
-                ops.push(Operation::new("Tj", vec![s]));
+                ops.push(Operation::new("Tj", vec![pen.string(line)]));
                 ops.push(Operation::new("T*", vec![]));
             }
             ops.push(Operation::new("ET", vec![]));

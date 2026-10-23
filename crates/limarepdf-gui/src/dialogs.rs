@@ -740,7 +740,7 @@ impl Layout {
             }
             Layout::Plain => {
                 "Just the selected words, set in Helvetica. Fonts and pictures are lost, and \
-                 characters outside Western European alphabets come out as ?."
+                 characters outside Latin, Greek and Cyrillic come out as ?."
             }
             Layout::TextFile => "Just the selected words, as plain text.",
         }

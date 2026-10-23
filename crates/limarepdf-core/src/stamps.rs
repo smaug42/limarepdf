@@ -4,13 +4,13 @@
 //! change `/Rect`. Opacity is set in an outer drawing around the artwork, so changing it
 //! leaves the artwork alone.
 
-use crate::fonts::winansi_byte;
+use crate::embed::{unwritable, Face};
 use crate::form_ap::nums;
 use crate::imgs::{decode_upright_size, orient_matrix};
 use crate::matrix as mx;
-use crate::overlay::{escape, utc_now};
+use crate::overlay::utc_now;
 use crate::sign::{mark_art, sign_label, signature_art, InkColor, Mark, SignArt, SignRole};
-use crate::{std14, Pdf, Result};
+use crate::{std14, Family, FontChoice, Pdf, Result};
 use anyhow::{anyhow, bail};
 use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream};
 
@@ -21,6 +21,12 @@ const ART: &str = "LimareStamp";
 const GS: &str = "LimareGs";
 const FONT: &str = "LimareB";
 const IMAGE: &str = "LimareIm";
+/// The font of a stamp's wording: Helvetica Bold.
+pub(crate) const BOLD: FontChoice = FontChoice {
+    family: Family::Helvetica,
+    bold: true,
+    italic: false,
+};
 /// A text stamp's word size, its name-and-date line's size, the space inside its frame,
 /// and the frame's width and corner radius, in points.
 const WORD: f32 = 22.0;
@@ -144,21 +150,16 @@ impl StampColor {
 }
 
 /// Your own wording as a stamp shows it: trimmed and in capitals. Fails when it is
-/// empty or has characters the stamp's font can't show (it covers Western European
-/// languages only).
+/// empty or has characters the stamp's font can't show (it covers Latin, Greek and
+/// Cyrillic).
 pub fn stamp_wording(text: &str) -> Result<String> {
     let word = text.trim().to_uppercase();
     if word.is_empty() {
         bail!("the stamp needs some wording");
     }
-    let mut bad = String::new();
-    for c in word.chars() {
-        if winansi_byte(c).is_none() && !bad.contains(c) {
-            bad.push(c);
-        }
-    }
+    let bad = unwritable(BOLD, &word);
     if !bad.is_empty() {
-        bail!("a stamp can't show {bad:?} yet: its font covers Western European languages only");
+        bail!("a stamp can't show {bad:?} yet: Latin, Greek and Cyrillic characters are supported");
     }
     Ok(word)
 }
@@ -211,19 +212,32 @@ struct TextStamp {
     name: Option<&'static str>,
 }
 
-/// The name-and-date line.
+/// The name-and-date line. A name with characters the stamp's font can't show is left
+/// out rather than shown wrongly.
 fn name_and_date_line(author: &str) -> String {
     let [y, m, d, ..] = utc_now();
     let date = format!("{y:04}-{m:02}-{d:02}");
     match author.trim() {
         "" => date,
+        name if !unwritable(BOLD, name).is_empty() => date,
         name => format!("{name}, {date}"),
     }
 }
 
+/// Width in points of `s` in Helvetica Bold at `size`; characters it lacks are measured in
+/// its embedded face.
 pub(crate) fn bold_width(s: &str, size: f32) -> f32 {
     s.chars()
-        .map(|c| std14::width("Helvetica-Bold", c).unwrap_or(611.0))
+        .map(|c| {
+            std14::width("Helvetica-Bold", c).unwrap_or_else(|| {
+                let face = Face::liberation(BOLD);
+                if face.covers(c) {
+                    face.width(&c.to_string(), 1000.0)
+                } else {
+                    611.0
+                }
+            })
+        })
         .sum::<f32>()
         * size
         / 1000.0
@@ -354,7 +368,7 @@ impl Pdf {
         let (art, (w, h)) = match (&text, stamp) {
             (Some(t), _) => {
                 let size = text_size(&t.word, t.line.as_deref());
-                (self.text_art(t, size), size)
+                (self.text_art(t, size)?, size)
             }
             (None, Stamp::Picture(bytes)) => self.picture_art(bytes)?,
             (
@@ -420,9 +434,11 @@ impl Pdf {
     }
 
     /// A text stamp's artwork: its word in bold capitals in a rounded frame, with the
-    /// name-and-date line under it.
-    fn text_art(&mut self, t: &TextStamp, (w, h): (f32, f32)) -> ObjectId {
+    /// name-and-date line under it, in Helvetica Bold or, for characters it lacks, its
+    /// embedded face.
+    fn text_art(&mut self, t: &TextStamp, (w, h): (f32, f32)) -> Result<ObjectId> {
         let (word, line) = (t.word.as_str(), t.line.as_deref());
+        let pen = self.pen(BOLD, &format!("{word}{}", line.unwrap_or("")))?;
         let [r, g, b] = t.color.rgb();
         let half = FRAME / 2.0;
         let mut s = format!(
@@ -433,25 +449,22 @@ impl Pdf {
         let mut y = base;
         if let Some(l) = line {
             let x = (w - bold_width(l, SMALL)) / 2.0;
-            s += &format!("BT /{FONT} {SMALL} Tf {x} {y} Td ({}) Tj ET\n", escape(l));
+            s += &format!("BT /{FONT} {SMALL} Tf {x} {y} Td {} Tj ET\n", pen.token(l));
             y += SMALL * CAP + 5.0;
         }
         let x = (w - bold_width(word, WORD)) / 2.0;
         s += &format!(
-            "BT /{FONT} {WORD} Tf {x} {y} Td ({}) Tj ET\nQ\n",
-            escape(word)
+            "BT /{FONT} {WORD} Tf {x} {y} Td {} Tj ET\nQ\n",
+            pen.token(word)
         );
-        let font = self.doc.add_object(dictionary! {
-            "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica-Bold",
-            "Encoding" => "WinAnsiEncoding",
-        });
+        let font = self.pen_font(&pen);
         let form = dictionary! {
             "Type" => "XObject",
             "Subtype" => "Form",
             "BBox" => nums(&[0.0, 0.0, w, h]),
             "Resources" => dictionary! { "Font" => dictionary! { FONT => font } },
         };
-        self.doc.add_object(Stream::new(form, s.into_bytes()))
+        Ok(self.doc.add_object(Stream::new(form, s.into_bytes())))
     }
 
     /// A picture stamp's artwork and its size.
@@ -563,14 +576,18 @@ mod tests {
     }
 
     #[test]
-    fn own_wording_is_trimmed_in_capitals_and_western_european_only() {
+    fn own_wording_is_trimmed_in_capitals_in_latin_greek_and_cyrillic() {
         assert_eq!(stamp_wording("  paid in full ").unwrap(), "PAID IN FULL");
         assert_eq!(stamp_wording("reçu").unwrap(), "REÇU");
         // WinAnsi beyond Latin-1: ÿ in capitals is Ÿ.
         assert_eq!(stamp_wording("œuvre ÿ").unwrap(), "ŒUVRE Ÿ");
+        assert_eq!(stamp_wording("zapłacono").unwrap(), "ZAPŁACONO");
+        assert_eq!(stamp_wording("Ωmega").unwrap(), "ΩMEGA");
+        assert_eq!(stamp_wording("оплачено").unwrap(), "ОПЛАЧЕНО");
         assert!(stamp_wording("  ").is_err());
-        let e = stamp_wording("Ωmega Ω 你").unwrap_err().to_string();
-        assert!(e.contains("Ω你"), "{e}");
+        let e = stamp_wording("Ωmega 你 好 你").unwrap_err().to_string();
+        assert!(e.contains("你好"), "{e}");
+        assert!(!e.contains('Ω'), "{e}");
     }
 
     #[test]

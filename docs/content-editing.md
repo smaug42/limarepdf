@@ -19,8 +19,11 @@ per inline image.
   page colours.
 - **Adding** text, shapes or images draws them on top of the page. New text of several lines is written as one
   text line each, their baselines 1.2 times the size apart (Acrobat's spacing), in one of the 12 standard fonts
-  with the WinAnsi encoding; characters outside it can't be typed. While it is typed, the app draws it in the
-  bundled Liberation font with the same widths, so the caret and line length match the written result.
+  with the WinAnsi encoding. A line with characters WinAnsi lacks (Polish, Czech, Vietnamese, Greek, Cyrillic and
+  so on) is written in the bundled Liberation face of that font instead, embedded in the file and cut down to the
+  characters used; one font object per face grows as more is typed. Characters Liberation can't write (right-to-left
+  and joined scripts, Chinese, Japanese, Korean) can't be typed. While it is typed, the app draws the text in the
+  Liberation face, which has the standard font's widths, so the caret and line length match the written result.
 - **Invisible text** from OCR is edited as invisible text and stays in place.
 - **Text after a changed line** stays where it was. Text on the same line can carry on from where the line ended
   (a show operator with no line move before it); when the line is deleted, edited or moved, its end is set again
@@ -38,8 +41,9 @@ An edit that fails leaves the document unchanged.
 - Text objects are lines recovered from the content stream by heuristics, not paragraphs. There is no reflow and no
   multi-line editing. Text boxes are estimated from font metrics, so they can be slightly off for unusual fonts.
 - Text in embedded subset fonts, and in CID (Type 0) fonts, cannot keep its font when edited: it becomes Helvetica,
-  Times or Courier, and the inspector says so. Text edited into a new font is limited to WinAnsi characters; the
-  app doesn't let others be typed, and any already in a line that is written anew print as `?`.
+  Times or Courier (or their Liberation face, as new text is), and the inspector says so. Text written anew is
+  limited to Latin, Greek and Cyrillic: the app doesn't let others be typed, and a line that already has them
+  (Chinese, say) can't be written anew; the change is refused with a message naming them.
 - While a line that keeps its font is edited, its character and word spacing and horizontal scaling (`Tc`, `Tw`,
   `Tz`) aren't drawn, and an embedded font is drawn from the installed or Liberation look-alike rather than its own
   data, so the line can look slightly different until you finish. Turned lines and invisible text are edited in a

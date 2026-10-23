@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Added
+
+- Text beyond Western European: Polish, Czech, Turkish, Romanian, Vietnamese, Greek, Russian, Ukrainian and the
+  other languages written in Latin, Greek and Cyrillic, in new and edited text, text boxes, fill-and-sign text,
+  form values (flattening them too), headers, footers, Bates numbers, watermarks, stamp wording and the
+  name-and-date line, the name in a digital signature's look, and selected text printed or saved as a plain page,
+  in the app and on the command line. Text the standard fonts can write is written as before; other text is set
+  in the bundled Liberation face of the same font (same widths), embedded in the file and cut down to the
+  characters used, and reads back in search, copy and other apps. Form fields keep naming their own font.
+  Hebrew, Arabic, the Indic scripts, Thai, Chinese, Japanese, Korean and emoji aren't supported yet: they can't
+  be typed (the note at the caret says which scripts work), and are refused elsewhere, naming them, instead of
+  coming out as `?` (a stamp leaves such a name off its line; a plain page of selected text still shows `?`).
+- A typed signature a handwriting style can't show names the styles that can (Caveat has Cyrillic).
+
 ### Changed
 
 - The main window is rearranged. The top bar holds Open, Save and Export; Undo and Redo; the everyday tools (Read

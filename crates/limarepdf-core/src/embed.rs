@@ -16,6 +16,7 @@
 //! rewrote it), or that was made from another version of the face, isn't grown: a new one
 //! is started.
 
+use crate::fonts::{winansi_byte, winansi_bytes};
 use crate::{FontChoice, Pdf, Result};
 use anyhow::{anyhow, bail};
 use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream};
@@ -189,9 +190,9 @@ impl Face {
     }
 
     /// The characters `text` is written with in the face: put together (NFC) where the face
-    /// has the combined letter, else apart where it has the parts. Those it can't write, each
-    /// once, when there are any.
-    fn spell(&self, text: &str) -> std::result::Result<Vec<char>, String> {
+    /// has the combined letter, else apart where it has the parts; and those it can't write,
+    /// each once.
+    fn spelled(&self, text: &str) -> (Vec<char>, String) {
         let (mut out, mut missing) = (Vec::new(), String::new());
         for c in text.nfc() {
             if self.covers(c) {
@@ -205,19 +206,25 @@ impl Face {
                 missing.push(c);
             }
         }
-        if missing.is_empty() {
-            Ok(out)
-        } else {
-            Err(missing)
+        (out, missing)
+    }
+
+    /// The characters `text` is written with in the face ([`Face::spelled`]), or those it
+    /// can't write, when there are any.
+    fn spell(&self, text: &str) -> std::result::Result<Vec<char>, String> {
+        match self.spelled(text) {
+            (out, missing) if missing.is_empty() => Ok(out),
+            (_, missing) => Err(missing),
         }
     }
 
     /// The width of `text` set in the face at `size`, in points, as readers space it (from
     /// the widths `/W` gives). Characters the face can't write count as nothing.
     pub(crate) fn width(&self, text: &str, size: f32) -> f32 {
-        let units: i64 = text
-            .nfc()
-            .flat_map(|c| self.spell(&c.to_string()).unwrap_or_default())
+        let units: i64 = self
+            .spelled(text)
+            .0
+            .into_iter()
             .filter_map(|c| self.glyph(c))
             .map(|g| self.widths[g as usize])
             .sum();
@@ -225,12 +232,131 @@ impl Face {
     }
 }
 
+/// Whether LimarePDF can write `c` in the standard font `f`: in the font itself, or in its
+/// embedded face. Control characters never.
+pub fn writable(f: FontChoice, c: char) -> bool {
+    winansi_byte(c).is_some() || Face::liberation(f).covers(c)
+}
+
+/// The message refusing text with the characters `missing`.
+pub(crate) fn cant_write(missing: &str) -> String {
+    format!(
+        "LimarePDF can't write \"{missing}\" yet; Latin, Greek and Cyrillic characters are \
+         supported"
+    )
+}
+
+/// The characters of `text` LimarePDF can't write in the standard font `f` or its embedded
+/// face, each once (as [`Pdf::pen`] writes it; control characters included).
+pub(crate) fn unwritable(f: FontChoice, text: &str) -> String {
+    if text.chars().all(|c| winansi_byte(c).is_some()) {
+        return String::new();
+    }
+    Face::liberation(f).spelled(text).1
+}
+
 /// Text set in an embedded font: the font object to name in the resources, and the bytes
 /// to show with `Tj`.
+#[cfg(test)]
 #[derive(Debug)]
 pub(crate) struct Set {
     pub font: ObjectId,
     pub bytes: Vec<u8>,
+}
+
+/// An embedded font grown for some text: the font object, and the code of each glyph it
+/// holds, to write that text or any part of it.
+#[derive(Clone)]
+pub(crate) struct Codes {
+    pub font: ObjectId,
+    face: &'static Face,
+    /// The code of each glyph of the face the font holds.
+    cids: HashMap<u16, u16>,
+}
+
+impl Codes {
+    /// The bytes that show `text`, two for each character. Characters the font doesn't
+    /// hold are left out.
+    pub(crate) fn bytes(&self, text: &str) -> Vec<u8> {
+        self.face
+            .spelled(text)
+            .0
+            .into_iter()
+            .filter_map(|c| self.cids.get(&self.face.glyph(c)?))
+            .flat_map(|n| n.to_be_bytes())
+            .collect()
+    }
+
+    /// The width of `text` at `size`, in points.
+    pub(crate) fn width(&self, text: &str, size: f32) -> f32 {
+        self.face.width(text, size)
+    }
+}
+
+/// The font a writer sets text in: the standard font, with nothing embedded, while the
+/// text fits WinAnsi, else its embedded face (the Unicode text design, question 2).
+#[derive(Clone)]
+pub(crate) enum Pen {
+    Standard(FontChoice),
+    Embedded(Codes),
+}
+
+impl Pen {
+    /// The font to name in the resources: a standard font's dictionary, or a reference to
+    /// the embedded font.
+    pub(crate) fn font(&self) -> Object {
+        match self {
+            Pen::Standard(f) => dictionary! {
+                "Type" => "Font", "Subtype" => "Type1", "BaseFont" => f.base_font(),
+                "Encoding" => "WinAnsiEncoding",
+            }
+            .into(),
+            Pen::Embedded(c) => Object::Reference(c.font),
+        }
+    }
+
+    /// The bytes that show `text` (part of the text the pen was made for).
+    pub(crate) fn bytes(&self, text: &str) -> Vec<u8> {
+        match self {
+            Pen::Standard(_) => winansi_bytes(text),
+            Pen::Embedded(c) => c.bytes(text),
+        }
+    }
+
+    /// `text` as a string object to show with `Tj`.
+    pub(crate) fn string(&self, text: &str) -> Object {
+        let format = match self {
+            Pen::Standard(_) => lopdf::StringFormat::Literal,
+            Pen::Embedded(_) => lopdf::StringFormat::Hexadecimal,
+        };
+        Object::String(self.bytes(text), format)
+    }
+
+    /// `text` as a string written in a content stream: `(…)` in a standard font, `<…>` in
+    /// an embedded one.
+    pub(crate) fn token(&self, text: &str) -> String {
+        match self {
+            Pen::Standard(_) => format!("({})", crate::overlay::escape(text)),
+            Pen::Embedded(c) => {
+                let hex: String = c.bytes(text).iter().map(|b| format!("{b:02X}")).collect();
+                format!("<{hex}>")
+            }
+        }
+    }
+
+    /// The width of `text` at `size`, in points.
+    pub(crate) fn width(&self, text: &str, size: f32) -> f32 {
+        match self {
+            Pen::Standard(f) => {
+                let units: f32 = text
+                    .chars()
+                    .map(|c| crate::std14::width(f.base_font(), c).unwrap_or(0.0))
+                    .sum();
+                units * size / 1000.0
+            }
+            Pen::Embedded(c) => c.width(text, size),
+        }
+    }
 }
 
 /// What LimarePDF keeps in a font it wrote, to grow it.
@@ -251,16 +377,53 @@ struct Parts {
 }
 
 impl Pdf {
-    /// `text` set in the embedded face of the standard font `f`: the face's font object in
-    /// this document, grown to hold the glyphs `text` needs (made the first time), and the
-    /// bytes that show it. Accents typed as separate marks are put together first (NFC)
-    /// where the face has the combined letter, and a letter it has only in parts is written
-    /// in them. Refused, with nothing changed, when the face lacks a character.
+    /// `text` set in the embedded face of `f` ([`Pdf::embed_codes`]), and the bytes that
+    /// show it.
+    #[cfg(test)]
     pub(crate) fn embed_text(&mut self, f: FontChoice, text: &str) -> Result<Set> {
-        self.embed_in(Face::liberation(f), text)
+        let codes = self.embed_codes(f, text)?;
+        Ok(Set {
+            font: codes.font,
+            bytes: codes.bytes(text),
+        })
     }
 
-    fn embed_in(&mut self, face: &Face, text: &str) -> Result<Set> {
+    /// The pen to write `text`, and any part of it, in the standard font `f`: the font
+    /// itself while every character fits WinAnsi, else its embedded face, grown to hold
+    /// them ([`Pdf::embed_codes`]). Control characters don't count: line breaks, for one,
+    /// as lines are shown one by one.
+    pub(crate) fn pen(&mut self, f: FontChoice, text: &str) -> Result<Pen> {
+        let text: String = text.chars().filter(|c| !c.is_control()).collect();
+        if text.chars().all(|c| winansi_byte(c).is_some()) {
+            return Ok(Pen::Standard(f));
+        }
+        let missing = unwritable(f, &text);
+        if !missing.is_empty() {
+            bail!("{}", cant_write(&missing));
+        }
+        Ok(Pen::Embedded(self.embed_codes(f, &text)?))
+    }
+
+    /// The font object a pen writes with: a new standard font object, or the embedded font.
+    pub(crate) fn pen_font(&mut self, pen: &Pen) -> ObjectId {
+        match pen {
+            Pen::Standard(_) => self.doc.add_object(pen.font()),
+            Pen::Embedded(c) => c.font,
+        }
+    }
+
+    /// The embedded face of the standard font `f`: the face's font object in this
+    /// document, grown to hold the glyphs `text` needs (made the first time), and the codes
+    /// to write that text. Accents typed as separate marks are put together first (NFC)
+    /// where the face has the combined letter, and a letter it has only in parts is written
+    /// in them. Refused, with nothing changed, when the face lacks a character.
+    pub(crate) fn embed_codes(&mut self, f: FontChoice, text: &str) -> Result<Codes> {
+        let face = Face::liberation(f);
+        let (font, cids) = self.embed_in(face, text)?;
+        Ok(Codes { font, face, cids })
+    }
+
+    fn embed_in(&mut self, face: &Face, text: &str) -> Result<(ObjectId, HashMap<u16, u16>)> {
         let chars = face
             .spell(text)
             .map_err(|missing| anyhow!("{} has no characters for \"{missing}\"", face.ps))?;
@@ -276,42 +439,49 @@ impl Pdf {
             .enumerate()
             .map(|(i, &(g, _))| (g, i as u16 + 1))
             .collect();
-        let mut bytes = Vec::with_capacity(2 * chars.len());
         for c in chars {
             let g = face.glyph(c).expect("checked above");
-            let n = match cid.get(&g) {
-                Some(&n) => n,
-                None => {
-                    if record.glyphs.len() >= MAX_GLYPHS {
-                        bail!("too many different characters in one font");
-                    }
-                    record.glyphs.push((g, c));
-                    let n = record.glyphs.len() as u16;
-                    cid.insert(g, n);
-                    n
+            if let std::collections::hash_map::Entry::Vacant(e) = cid.entry(g) {
+                if record.glyphs.len() >= MAX_GLYPHS {
+                    bail!("too many different characters in one font");
                 }
-            };
-            bytes.extend(n.to_be_bytes());
+                record.glyphs.push((g, c));
+                e.insert(record.glyphs.len() as u16);
+            }
         }
         let font = match at {
             Some((id, _)) if record.glyphs.len() == before => id,
             Some((id, parts)) => self.write_font(face, &record, Some(id), parts)?,
             None => self.write_font(face, &record, None, Parts::default())?,
         };
-        Ok(Set { font, bytes })
+        self.made_fonts.insert(font);
+        Ok((font, cid))
     }
 
     /// This document's font object for `face` that LimarePDF wrote and can grow, with what
-    /// it holds and its other objects.
+    /// it holds and its other objects. In a signed document, only one made since it was
+    /// opened: growing rewrites objects, and in one a signed revision holds, checking the
+    /// signature would see a change.
     fn embedded(&self, face: &Face) -> Option<(ObjectId, Record, Parts)> {
+        let signed = self.holds_signature();
         self.doc
             .objects
             .iter()
+            .filter(|(id, _)| !signed || self.made_fonts.contains(id))
             .filter_map(|(&id, o)| Some((id, o.as_dict().ok()?)))
             .find_map(|(id, d)| {
                 let (record, parts) = self.grows(face, d)?;
                 Some((id, record, parts))
             })
+    }
+
+    /// Whether the document holds a signature dictionary (one with a `/ByteRange`), signed
+    /// or being signed.
+    fn holds_signature(&self) -> bool {
+        self.doc
+            .objects
+            .values()
+            .any(|o| o.as_dict().is_ok_and(|d| d.has(b"ByteRange")))
     }
 
     /// What the font dictionary `d` holds when it is one LimarePDF wrote for `face` and its

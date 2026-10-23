@@ -62,8 +62,11 @@ fonts' character maps, and Adobe's tables from character numbers to Unicode, are
 (`hayro_cmap`, reached through hayro, which carries the predefined maps); the predefined ones are read once per
 process (`fonts::predefined`).
 
-Text LimarePDF writes in the standard fonts (new and edited text, headers, footers, stamps, text boxes, form values)
-is WinAnsi-encoded through `fonts::winansi_byte`, which also tells the app which characters can be typed. In the
+Text LimarePDF writes (new and edited text, headers, footers, watermarks, stamps, text boxes, form values, the
+signature look, selected text as a plain page) goes through a pen (`embed::Pen`, from `Pdf::pen`): the standard
+font, WinAnsi-encoded through `fonts::winansi_byte`, while the text fits it, else the embedded font below.
+`writable` (core) tells the app which characters can be typed. Form appearances measure and encode through
+`form_ap::Metrics`, which is one-byte widths or an embedded font's codes. In the
 app, new text is typed on the page in `crates/limarepdf-gui/src/page_text.rs`, drawn while typing in the bundled
 Liberation fonts that `typing_fonts.rs` picks (same widths as Helvetica, Times and Courier), then written line by
 line with `Pdf::add_text` as one undo step. A line being edited (`editor.rs`'s line editor, sharing `page_text`'s
@@ -73,14 +76,15 @@ covered in the colour the page worker (`worker.rs`, `Worker::sample`) finds arou
 part of the page in the current page colours.
 
 Text the standard fonts can't write goes into an embedded font (`crates/limarepdf-core/src/embed.rs`,
-`Pdf::embed_text`): the bundled Liberation face of the standard font (`LIBERATION`, in core's `assets/fonts/`; the
+`Pdf::embed_codes`): the bundled Liberation face of the standard font (`LIBERATION`, in core's `assets/fonts/`; the
 app's `typing_fonts.rs` draws with the same copy) as a Type 0 font with a CIDFontType2 descendant, `Identity-H`,
 `/W` widths and a ToUnicode map. The font file is cut down to the glyphs used by the `subsetter` crate. There is
 one such font per face per document, rewritten in place as text is added: the old glyphs are given to the
 subsetter first, so they keep their numbers and earlier text stays valid. The font dictionary's `/LimarePDF` entry
 records the face, the glyphs with their characters and a checksum of the font file; a font another app has
-changed since is left alone and a new one started. Characters are put together (NFC) first; right-to-left
-scripts are refused (Liberation has Hebrew). The writers move onto it in the Unicode text work's second batch.
+changed since is left alone and a new one started. In a signed document only fonts made since it was opened
+(`Pdf::made_fonts`) are grown, as growing one a signed revision holds would show as a change to it. Characters
+are put together (NFC) first; right-to-left scripts are refused (Liberation has Hebrew).
 
 Redaction (`crates/limarepdf-core/src/redact.rs`) has its own pass over the page content rather than editing the
 parser's objects: it rewrites each text-showing operator character by character, keeping the rest in place with

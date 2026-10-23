@@ -1207,7 +1207,13 @@ impl Editor {
         if ctx.memory(|m| m.has_focus(id)) {
             // Before the editor sees the keys: what can't be written isn't typed, and
             // Ctrl+B and Ctrl+I switch the whole line, as the inspector's buttons do.
-            let t = page_text::take_typing(ui, true, !o.hidden);
+            // Hidden (OCR) text is written in Helvetica.
+            let font = if o.hidden {
+                FontChoice::default()
+            } else {
+                insp.font
+            };
+            let t = page_text::take_typing(ui, true, !o.hidden, font);
             insp.font.bold ^= t.bold;
             insp.font.italic ^= t.italic;
             if t.refused {
@@ -3675,7 +3681,7 @@ impl Editor {
                     let id = egui::Id::new(("text-object", page, id));
                     // What can't be written isn't typed, as on the page.
                     if ui.ctx().memory(|m| m.has_focus(id)) {
-                        let t = page_text::take_typing(ui, true, false);
+                        let t = page_text::take_typing(ui, true, false, insp.font);
                         if t.refused {
                             self.text_refused.mark(ui.ctx());
                         }

@@ -1,7 +1,8 @@
 //! Writing form values, and the appearance streams that show them.
 
 use crate::doc::encode_text;
-use crate::fonts::{winansi_bytes, FontChoice, FontCtx};
+use crate::embed::{cant_write, unwritable, Pen};
+use crate::fonts::{winansi_byte, winansi_bytes, FontChoice, FontCtx};
 use crate::form_ap::{self, Body, Border, Look, Metrics};
 use crate::forms::{button_export, Node, MAX_DEPTH};
 use crate::{std14, Field, FieldKind, FieldValue, Pdf, Result};
@@ -11,13 +12,15 @@ use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream, StringFormat};
 
 /// The check mark in ZapfDingbats, drawn when a checkbox has no appearance of its own.
 const CHECK: u8 = b'4';
+/// The name of an embedded font in the appearances that use one.
+const EMBEDDED: &[u8] = b"LimareEm";
 
 impl Pdf {
     /// Set a field's value and redraw it. The value must suit the field: text for a text
     /// field, `Check` for a checkbox, and for radio groups and choices the export value of
     /// an option (a choice's shown text is accepted too). Read-only fields, push buttons
     /// and signature fields can't be set, and text LimarePDF can't write (characters outside
-    /// the standard fonts' WinAnsi set) is refused rather than saved wrongly.
+    /// Latin, Greek and Cyrillic) is refused rather than saved wrongly.
     pub fn set_field(&mut self, name: &str, value: FieldValue) -> Result<()> {
         let (field, node) = self
             .form_nodes()
@@ -496,9 +499,9 @@ impl Pdf {
         look.font = b"ZaDb".to_vec();
         look.size = size;
         look.color = color;
-        let zapf = Metrics(std::array::from_fn(|c| {
+        let zapf = Metrics::Bytes(Box::new(std::array::from_fn(|c| {
             std14::symbolic_width("ZapfDingbats", c as u32).unwrap_or(0.0)
-        }));
+        })));
         let resources = || dictionary! { "Font" => dictionary! { "ZaDb" => font_ref } };
         let on_content = form_ap::draw(&look, &Body::Mark(mark), &zapf);
         let off_content = form_ap::draw(&look, &Body::Empty, &zapf);
@@ -618,8 +621,10 @@ impl Pdf {
     }
 
     /// The font to draw `text` with: the one `/DA` names when LimarePDF can write with it,
-    /// else the closest standard font, added to the form's resources. Returns its name,
-    /// a reference to it, its widths, and whether it replaced the named one.
+    /// else the closest standard font, added to the form's resources, or for characters
+    /// the standard font lacks, its embedded face, named only in the appearance's own
+    /// resources (`/DA` keeps the field's font: the Unicode text design, question 8).
+    /// Returns its name, a reference to it, its widths, and whether `/DA` should name it.
     fn pick_font(
         &mut self,
         name: Option<&[u8]>,
@@ -640,21 +645,30 @@ impl Pdf {
                     .ok()
                     .and_then(|o| o.as_name().ok())
                     .is_some_and(|n| n == b"WinAnsiEncoding");
-                let metrics = Metrics(std::array::from_fn(|c| ctx.width(c as u32, 1)));
+                let widths: [f32; 256] = std::array::from_fn(|c| ctx.width(c as u32, 1));
                 // A zero width is how some makers (LibreOffice, for one) mark a character
                 // the font in the file doesn't have.
-                let has_all = winansi_bytes(text)
-                    .iter()
-                    .all(|&b| b <= b' ' || metrics.0[b as usize] > 0.0);
+                let has_all = text.chars().filter(|c| !c.is_control()).all(|c| {
+                    winansi_byte(c).is_some_and(|b| b <= b' ' || widths[b as usize] > 0.0)
+                });
                 if ctx.reusable() && (text.is_ascii() || winansi) && has_all {
                     let dict = dict.clone();
                     let id = id.unwrap_or_else(|| self.doc.add_object(dict));
-                    return Ok((name.clone(), id, metrics, false));
+                    return Ok((name.clone(), id, Metrics::Bytes(Box::new(widths)), false));
                 }
                 base = ctx.base.clone();
             }
         }
-        let base = FontChoice::from_name(&base).base_font();
+        let choice = FontChoice::from_name(&base);
+        if let Pen::Embedded(codes) = self.pen(choice, text)? {
+            return Ok((
+                EMBEDDED.to_vec(),
+                codes.font,
+                Metrics::Embedded(codes),
+                false,
+            ));
+        }
+        let base = choice.base_font();
         let name = format!("Limare{}", base.replace('-', "")).into_bytes();
         let id = match self.dr_font(&name) {
             Some(Object::Reference(id)) => id,
@@ -747,16 +761,12 @@ fn empty(kind: &FieldKind) -> FieldValue {
 fn check_value(field: &Field, value: FieldValue) -> Result<FieldValue> {
     let name = &field.name;
     let writable = |s: &str| -> Result<()> {
-        let bad = s
-            .chars()
-            .find(|&c| !matches!(c, '\n' | '\r' | '?') && winansi_bytes(&c.to_string()) == b"?");
-        match bad {
-            Some(c) => bail!(
-                "LimarePDF can't write \"{c}\" in a form field yet; only Western European \
-                 characters are supported"
-            ),
-            None => Ok(()),
+        let s: String = s.chars().filter(|c| !matches!(c, '\n' | '\r')).collect();
+        let bad = unwritable(FontChoice::default(), &s);
+        if bad.is_empty() {
+            return Ok(());
         }
+        bail!("{}", cant_write(&bad))
     };
     let exports = || -> Vec<&str> { field.options.iter().map(|o| o.0.as_str()).collect() };
     match (&field.kind, value) {
@@ -862,5 +872,5 @@ pub(crate) fn standard_metrics(base: &str) -> Metrics {
             w[b as usize] = std14::width(base, c).unwrap_or(556.0);
         }
     }
-    Metrics(w)
+    Metrics::Bytes(Box::new(w))
 }

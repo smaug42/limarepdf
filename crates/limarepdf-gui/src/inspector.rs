@@ -16,6 +16,7 @@ use crate::actions::{self, Act, Ctx};
 use crate::app::IMAGE_EXTS;
 use crate::dialogs::{set_name, slider};
 use crate::fields::{self, FormUi};
+use crate::page_text;
 use crate::selection::Selection;
 use crate::tab::{Side, Stamp, StampForm, Tab};
 use crate::theme;
@@ -1221,11 +1222,32 @@ struct Press {
 }
 
 /// A text field of a stamp section, which notes in `p` when it is left; a grid row named
-/// `label`.
+/// `label`. What Helvetica (or its embedded face) can't write isn't typed, as on the page.
 fn stamp_text(ui: &mut Ui, label: &str, text: &mut String, p: &mut Press) {
-    let field = egui::TextEdit::singleline(text).desired_width(f32::INFINITY);
-    let r = row(ui, label, |ui| ui.add(field));
+    let id = egui::Id::new(("stamp-text", label));
+    let note = id.with("refused");
+    let ctx = ui.ctx().clone();
+    let mut refused: page_text::Refused = ctx.data(|d| d.get_temp(note)).unwrap_or_default();
+    let helvetica = limarepdf_core::FontChoice::default();
+    let focused = ctx.memory(|m| m.has_focus(id));
+    if focused && page_text::take_typing(ui, true, false, helvetica).refused {
+        refused.mark(&ctx);
+    }
+    let field = egui::TextEdit::singleline(text)
+        .id(id)
+        .desired_width(f32::INFINITY);
+    let mut out = None;
+    let r = row(ui, label, |ui| {
+        let o = field.show(ui);
+        let r = o.response.response.clone();
+        out = Some(o);
+        r
+    });
     p.left |= r.lost_focus();
+    if let Some(out) = &out {
+        refused.show(&ctx, out, id);
+    }
+    ctx.data_mut(|d| d.insert_temp(note, refused));
 }
 
 /// The button of a stamp section. Before one is added, it is shown on the pages and Add

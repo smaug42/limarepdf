@@ -12,16 +12,17 @@
 use crate::cms_check::CertInfo;
 use crate::cms_write;
 use crate::doc::encode_text;
+use crate::embed::unwritable;
 use crate::form_ap::nums;
 use crate::forms::FieldKind;
 use crate::ids::UnlockedId;
 use crate::incremental;
 use crate::matrix as mx;
-use crate::overlay::{escape, text_width};
+use crate::overlay::text_width;
 use crate::sig_verify::{Lexer, Tok};
 use crate::sign::{signature_art, typed_signature};
 use crate::{
-    verify_signatures, winansi_byte, InkColor, LockAction, Pdf, Permissions, Result, SigKind,
+    verify_signatures, FontChoice, InkColor, LockAction, Pdf, Permissions, Result, SigKind,
     SigStatus, SignArt, SignRole, SignStyle, SignatureReport, TrustList,
 };
 use anyhow::{anyhow, bail, Context};
@@ -613,11 +614,12 @@ fn zone(t: DateTime<FixedOffset>) -> String {
 }
 
 /// The signer's name as the appearance writes it, or `None` when it has characters the
-/// appearance's font (Helvetica, WinAnsi) can't show: the line then leaves the name out
-/// rather than show it wrongly. Readers show the full name from the certificate.
+/// appearance's font (Helvetica, or its embedded face) can't show: the line then leaves
+/// the name out rather than show it wrongly. Readers show the full name from the
+/// certificate.
 fn shown_name(cert: &CertInfo) -> Option<String> {
     let n = cert.display_name().trim();
-    let shows = n.chars().all(|c| winansi_byte(c).is_some());
+    let shows = unwritable(FontChoice::default(), n).is_empty();
     (shows && !n.is_empty()).then(|| n.to_string())
 }
 
@@ -715,13 +717,14 @@ fn appearance(
         let lead = size * LEADING;
         let block = lead * lines.len() as f32;
         let mut y = y0 + (th + block) / 2.0 - size * ASCENT;
+        let pen = pdf.pen(FontChoice::default(), &format!("{first}{date}"))?;
         ops += &format!("0 g BT /{FONT} {} Tf\n", f(size));
         for l in &lines {
-            ops += &format!("1 0 0 1 {} {} Tm ({}) Tj\n", f(x0), f(y), escape(l));
+            ops += &format!("1 0 0 1 {} {} Tm {} Tj\n", f(x0), f(y), pen.token(l));
             y -= lead;
         }
         ops += "ET\n";
-        let font = pdf.make_font();
+        let font = pdf.pen_font(&pen);
         res.set("Font", dictionary! { FONT => font });
     }
     form.set("Resources", res);
@@ -1030,14 +1033,16 @@ mod tests {
             shown_name(&cert("Zoë Müller")).as_deref(),
             Some("Zoë Müller")
         );
-        // WinAnsi beyond Latin-1, as the appearance's font writes it.
+        // Beyond WinAnsi, in the embedded face.
         assert_eq!(
             shown_name(&cert("Šárka Dvořák")).as_deref(),
-            None,
-            "ř isn't WinAnsi"
+            Some("Šárka Dvořák")
         );
-        assert_eq!(shown_name(&cert("Šárka Žák")).as_deref(), Some("Šárka Žák"));
-        assert_eq!(shown_name(&cert("Ζωή")), None);
+        assert_eq!(shown_name(&cert("Ζωή")).as_deref(), Some("Ζωή"));
+        assert_eq!(shown_name(&cert("Юлия")).as_deref(), Some("Юлия"));
+        // Scripts the face can't write, and control characters.
+        assert_eq!(shown_name(&cert("山田")), None);
+        assert_eq!(shown_name(&cert("שרה")), None);
         assert_eq!(shown_name(&cert("Jo\u{7}e")), None);
     }
 

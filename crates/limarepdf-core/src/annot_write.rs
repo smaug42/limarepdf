@@ -6,8 +6,8 @@
 use crate::annot_ap::{arrow_size, DRAWN, NOTE_SIZE};
 use crate::annots::NO_VIEW;
 use crate::doc::encode_text;
-use crate::form_ap::{lines_height, nums};
-use crate::form_write::{parse_da, standard_metrics};
+use crate::form_ap::{lines_height, nums, Metrics};
+use crate::form_write::parse_da;
 use crate::matrix as mx;
 use crate::overlay::utc_now;
 use crate::{AnnotKind, Pdf, Result, Shape, ShapeLook, TextStyle};
@@ -500,13 +500,7 @@ impl Pdf {
         let rect = self
             .rect(d.get(b"Rect")?)
             .ok_or_else(|| anyhow!("the annotation has no box"))?;
-        let text = d
-            .get(b"Contents")
-            .ok()
-            .and_then(|o| self.text_value(o))
-            .unwrap_or_default()
-            .replace("\r\n", "\n")
-            .replace('\r', "\n");
+        let text = self.box_text(d);
         let da = d
             .get(b"DA")
             .ok()
@@ -524,7 +518,10 @@ impl Pdf {
         let sideways = matches!(turn, 90 | 270);
         let (w, h) = (rect[2] - rect[0], rect[3] - rect[1]);
         let (w, h) = if sideways { (h, w) } else { (w, h) };
-        let need = lines_height(&text, w, size, border, &standard_metrics("Helvetica"));
+        let pen = self
+            .box_pen(id)
+            .ok_or_else(|| anyhow!("the annotation isn't a text box"))?;
+        let need = lines_height(&text, w, size, border, &Metrics::of(pen));
         if need <= h + 0.01 {
             return Ok(());
         }

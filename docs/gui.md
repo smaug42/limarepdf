@@ -183,8 +183,9 @@ background (none at first) and border, before you start.
 - **Text box:** drag a box, or click for a default size, then type straight onto the page. Enter starts a new
   line. Click outside the box or press Esc or Ctrl+Enter to finish; with nothing typed, no box is added. While you
   type in a note or text box, Ctrl+Z and Ctrl+Y undo and redo the typing. Finishing either by choosing another
-  tool keeps that tool. Text boxes use Helvetica, so characters
-  beyond Western European (Greek, Cyrillic, Chinese and so on) come out as `?`. When you finish, the box grows downward to fit its text, keeping its width; it
+  tool keeps that tool. Text boxes use Helvetica, and for Polish, Czech, Vietnamese, Greek, Cyrillic and other
+  characters it lacks, its Liberation Sans face, embedded in the file; others (Chinese, Hebrew and so on) come
+  out as `?`. When you finish, the box grows downward to fit its text, keeping its width; it
   stops at the bottom of the page, and it never shrinks (resize it with the arrow).
 
 When a note or text box is finished, the read tool comes back with it selected, so it can be moved straight away.
@@ -244,15 +245,16 @@ then comes back with the stamp selected, to move or resize (see [Keep tool activ
   on the page; what you type is the stamp to put down. It is shown in capitals and goes into the list above when
   you leave the box (Enter or a click elsewhere). Picking a colour also recolours the picked wording of your own.
   The last five wordings are remembered with their colours (right-click one to take it off the list). The stamp's font covers
-  Western European languages only, so wording with other characters (Greek, Cyrillic, Chinese and so on) can't
-  be used yet; the pane says which characters.
+  Latin, Greek and Cyrillic, so wording with other characters (Chinese, Hebrew and so on) can't be used yet; the
+  pane says which characters.
 - **Pictures:** Choose a picture… takes a PNG or JPEG file; it is put down with its longer side 160 points. The
   last five pictures are remembered by path (right-click one to take it off the list). Transparent parts of a PNG
   stay transparent.
 
 Stamps are annotations: other readers list them as comments. Select one to change its opacity and comment;
-its colours are part of the stamp. A stamp reads upright on a turned page. The text is Helvetica Bold, Western
-European characters only, so a name in other scripts shows as `?`.
+its colours are part of the stamp. A stamp reads upright on a turned page. The text is Helvetica Bold, or its Liberation
+face, embedded in the file, for characters it lacks; a name it can't show (in Chinese, say) is left off the
+name-and-date line.
 
 ## Redaction
 
@@ -312,8 +314,9 @@ and buttons (they run scripts, which LimarePDF doesn't) can't be filled in; hove
 field puts your signature in it (see [Filling and signing](#filling-and-signing)); clicking a digitally signed one
 shows its signature's details (see [Digital signatures](#digital-signatures)).
 
-LimarePDF draws the filled fields itself, so the values show the same in other readers. Text must be Western European for
-now; anything else is refused with a message rather than saved wrongly. Fields that have a value but
+LimarePDF draws the filled fields itself, so the values show the same in other readers. Text must be Latin, Greek
+or Cyrillic for now; anything else is refused with a message rather than saved wrongly. A value the field's own
+font can't show is drawn in the Liberation face of its kind, embedded in the file. Fields that have a value but
 no drawing of their own are drawn when the file opens. A value filled in by another app in other characters (Japanese,
 for example) shows only if that app drew it: if it didn't, LimarePDF can't either, so Flatten form… stops and names
 the fields rather than lose their values, and Print asks whether to print without them, since they would come out
@@ -335,7 +338,8 @@ signature… (or New… beside Signatures), opens a window with three ways to ma
   into curves and stay sharp at any zoom. In a narrow or short window the pad is smaller, at the same shape; what
   is drawn keeps its shape and comes out the same size on the page, also when the window is resized while drawing.
 - **Type:** type your name (it starts as your name for comments) and pick one of four handwriting styles (Caveat,
-  Cedarville Cursive, Homemade Apple and Zeyada), shown as they will look. Western European characters only; for other scripts, draw or use an image.
+  Cedarville Cursive, Homemade Apple and Zeyada), shown as they will look. Each has Latin characters, and Caveat
+  Cyrillic too; for a name a style can't show, the message names the styles that can, or draw or use an image.
 - **Image:** choose a photo or scan of your signature on paper (PNG, JPEG or TIFF). "Make the paper transparent"
   (on by default) keeps only the ink and cuts off the empty margins, so the signature sits on the page like ink.
 
@@ -627,9 +631,10 @@ selected so you can adjust it (see [Keep tool active](#keep-tool-active)):
   undo step; nothing typed adds nothing. While you type, the inspector's font, Bold, Italic, size and colour
   change the text (the keyboard comes back to it afterwards), Ctrl+B and Ctrl+I switch Bold and Italic, and
   dragging the outline moves the text. A click on page text with this tool edits that line instead (see Page
-  text above), with the caret where you clicked, and a drag selects text, as with the read tool. The font is Helvetica, Times or Courier, with Bold and Italic, and only Western
-  European characters can be added: others can't be typed or pasted, and a note at the caret says so (see
-  [What doesn't work yet](features.md#what-doesnt-work-yet)). Each line becomes its own line of page text, so
+  text above), with the caret where you clicked, and a drag selects text, as with the read tool. The font is Helvetica, Times or Courier, with Bold and Italic, and Latin
+  (Vietnamese included), Greek and Cyrillic characters can be added; those the standard fonts lack are written in
+  their Liberation face, embedded in the file. Others (Hebrew, Arabic, Chinese and so on) can't be typed or
+  pasted, and a note at the caret says so (see [What doesn't work yet](features.md#what-doesnt-work-yet)). Each line becomes its own line of page text, so
   it moves and is edited line by line afterwards.
 - **Image:** choose a PNG, JPEG or TIFF, then drag a box.
 - **Comment:** sticky notes, text boxes, rectangles, ellipses, lines and the pen, saved as annotations rather
@@ -674,7 +679,7 @@ under ☰ > Edit). Both offer two layouts:
   from the top and bottom to the selected lines. Fonts, pictures and layout stay as they are, but anything else
   beside those lines shows too, such as the start of the first line, another column or a picture.
 - **Plain text (PDF):** only the selected words, set in 11-point Helvetica on pages the size of the first selected
-  page, keeping the line breaks. Characters outside Western European alphabets come out as `?`.
+  page, keeping the line breaks. Characters outside Latin, Greek and Cyrillic come out as `?`.
 
 Saving also offers **Text file (.txt)**, the same text that Ctrl+C copies.
 

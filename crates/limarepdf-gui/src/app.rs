@@ -4995,7 +4995,7 @@ mod tests {
         let typed = vec![
             egui::Event::Text("Walrus".into()),
             key(Key::Enter, none),
-            egui::Event::Text("Seal Ω".into()),
+            egui::Event::Text("Seal 中".into()),
             key(Key::B, egui::Modifiers::COMMAND),
         ];
         window(&mut app, &ctx, 1400.0, typed);
@@ -5271,7 +5271,7 @@ mod tests {
         assert!(c.r() < 8 && c.g() < 8 && c.b() > 247, "{c:?}");
         // Typing, a character that can't be written, and Ctrl+B for the whole line.
         let typed = vec![
-            egui::Event::Text("XΩ".into()),
+            egui::Event::Text("X中".into()),
             key(Key::B, egui::Modifiers::COMMAND),
         ];
         window(&mut app, &ctx, 1400.0, typed);

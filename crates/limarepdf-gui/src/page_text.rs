@@ -7,12 +7,13 @@
 use crate::{dialogs, typing_fonts};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use limarepdf_core::page_colours::PageColours;
-use limarepdf_core::{winansi_byte, FontChoice};
+use limarepdf_core::{writable, FontChoice};
 
 /// The space from one line's baseline to the next, as a multiple of the size (Acrobat's).
 pub const LEADING: f32 = 1.2;
 /// Shown at the caret when a character typed or pasted can't be written.
-pub const REFUSED: &str = "LimarePDF can't add this character yet";
+pub const REFUSED: &str =
+    "LimarePDF can't add this character yet: Latin, Greek and Cyrillic characters work";
 /// How long that note shows, in seconds.
 const NOTE_SECS: f64 = 3.0;
 /// The name screen readers give the editor.
@@ -49,14 +50,16 @@ pub struct Shown {
     pub done: bool,
 }
 
-/// Whether `c` can be typed: line breaks, and what the standard fonts can write.
-fn typable(c: char) -> bool {
-    c == '\n' || winansi_byte(c).is_some()
+/// Whether `c` can be typed in `font`: line breaks, and what LimarePDF can write in it (the
+/// standard font, or its embedded face).
+fn typable(c: char, font: FontChoice) -> bool {
+    c == '\n' || writable(font, c)
 }
 
-/// `s` without the characters that can't be typed (tabs become spaces, carriage returns
-/// go, and in a `single` line, line breaks become spaces), and whether any was refused.
-fn keep_typable(s: &str, single: bool) -> (String, bool) {
+/// `s` without the characters that can't be typed in `font` (tabs become spaces, carriage
+/// returns go, and in a `single` line, line breaks become spaces), and whether any was
+/// refused.
+fn keep_typable(s: &str, single: bool, font: FontChoice) -> (String, bool) {
     let mut refused = false;
     let kept = s
         .chars()
@@ -64,7 +67,7 @@ fn keep_typable(s: &str, single: bool) -> (String, bool) {
             '\r' => None,
             '\t' => Some(' '),
             '\n' if single => Some(' '),
-            c if typable(c) => Some(c),
+            c if typable(c, font) => Some(c),
             _ => {
                 refused = true;
                 None
@@ -84,9 +87,9 @@ pub struct Taken {
 }
 
 /// Take this frame's typing in hand before the editor with the keyboard sees it: what
-/// can't be written goes (see [`keep_typable`]), and with `styles`, Ctrl+B and Ctrl+I
-/// are taken to switch Bold and Italic.
-pub fn take_typing(ui: &egui::Ui, single: bool, styles: bool) -> Taken {
+/// can't be written in `font` goes (see [`keep_typable`]), and with `styles`, Ctrl+B and
+/// Ctrl+I are taken to switch Bold and Italic.
+pub fn take_typing(ui: &egui::Ui, single: bool, styles: bool, font: FontChoice) -> Taken {
     let mut t = Taken::default();
     ui.input_mut(|i| {
         if styles {
@@ -100,7 +103,7 @@ pub fn take_typing(ui: &egui::Ui, single: bool, styles: bool) -> Taken {
                 | egui::Event::Ime(egui::ImeEvent::Commit(s)) => s,
                 _ => continue,
             };
-            let (kept, gone) = keep_typable(s, single);
+            let (kept, gone) = keep_typable(s, single, font);
             *s = kept;
             t.refused |= gone;
         }
@@ -109,7 +112,7 @@ pub fn take_typing(ui: &egui::Ui, single: bool, styles: bool) -> Taken {
 }
 
 /// The note at the caret about a refused character, for a few seconds after.
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub struct Refused(Option<f64>);
 
 impl Refused {
@@ -320,7 +323,7 @@ impl PageText {
         let id = egui::Id::new(("page-text", self.page));
         if ctx.memory(|m| m.has_focus(id)) {
             // Before the editor sees the keys: what can't be written isn't typed.
-            let t = take_typing(ui, false, true);
+            let t = take_typing(ui, false, true, look.font);
             look.font.bold ^= t.bold;
             look.font.italic ^= t.italic;
             if t.refused {
@@ -401,18 +404,26 @@ mod tests {
 
     #[test]
     fn only_what_can_be_written_is_typed() {
+        let sans = FontChoice::default();
         assert_eq!(
-            keep_typable("Walrus Š œ €", false),
+            keep_typable("Walrus Š œ €", false, sans),
             ("Walrus Š œ €".into(), false)
         );
+        // Latin, Greek and Cyrillic beyond WinAnsi, in the embedded face.
         assert_eq!(
-            keep_typable("Seal\r\nΩ\tfish", false),
+            keep_typable("Łódź Ωmega Жук", false, sans),
+            ("Łódź Ωmega Жук".into(), false)
+        );
+        assert_eq!(
+            keep_typable("Seal\r\n中\tfish", false, sans),
             ("Seal\n fish".into(), true)
         );
-        assert_eq!(keep_typable("中文", false), (String::new(), true));
+        assert_eq!(keep_typable("中文", false, sans), (String::new(), true));
+        // Right-to-left scripts aren't written yet, though the face has Hebrew.
+        assert_eq!(keep_typable("שלום", false, sans), (String::new(), true));
         // In a single line, line breaks become spaces.
         assert_eq!(
-            keep_typable("Seal\r\nfish", true),
+            keep_typable("Seal\r\nfish", true, sans),
             ("Seal fish".into(), false)
         );
     }
