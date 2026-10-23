@@ -899,11 +899,10 @@ impl Tab {
                 Action::ReplaceImage(p, id, bytes) => {
                     self.edit_pages(ctx, &[p], |pdf| pdf.replace_image(p, id, &bytes));
                 }
-                Action::EditText(p, id, te) => {
+                Action::EditText(p, id, te, words_only) => {
                     let want = te.text.clone();
                     // Typing into the same line again soon joins the last undo step; each
                     // change of font, size or colour is a step of its own.
-                    let words_only = te.font.is_none() && te.size.is_none() && te.color.is_none();
                     let now = ctx.input(|i| i.time);
                     let merge = words_only
                         && self.last_line.is_some_and(|(line, rev, depth, at)| {
@@ -2979,7 +2978,8 @@ mod tests {
                 color: None,
                 parts: Vec::new(),
             };
-            t.ed.actions.push(Action::EditText(0, id, te));
+            t.ed.actions
+                .push(Action::EditText(0, id, te, size.is_none()));
             t.apply_actions(&ctx);
         };
         // Three edits of the first line's words: one step.

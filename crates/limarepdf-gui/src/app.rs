@@ -5483,7 +5483,8 @@ mod tests {
             assert!(!text_box(&tree), "the inspector's text box appeared");
         }
         assert_eq!(editing(&tree), Some(true), "the keyboard didn't come back");
-        // Typing goes on; Esc keeps the text and the style together.
+        // Typing goes on, in the style set at the caret; Esc keeps the text and the
+        // styles together.
         frame(&mut app, vec![egui::Event::Text("s".into())]);
         let esc = egui::Event::Key {
             key: Key::Escape,
@@ -5499,9 +5500,130 @@ mod tests {
         let objs = app.tabs[0].pdf.page_objects(0).unwrap();
         let line = objs
             .into_iter()
-            .find_map(|o| Some((o.text?, o.font_name?)))
+            .find(|o| o.text.is_some())
             .expect("the line");
-        assert_eq!((line.0.as_str(), line.1.as_str()), ("Seals", "Times-Bold"));
+        assert_eq!(line.text.as_deref(), Some("Seals"));
+        let parts: Vec<(usize, usize, &str)> = line
+            .spans
+            .iter()
+            .map(|s| (s.chars.0, s.chars.1, s.font_name.as_str()))
+            .collect();
+        assert_eq!(parts, [(0, 4, "Courier"), (4, 5, "Times-Bold")]);
+    }
+
+    /// Ctrl+B on a word selected in the line editor makes that word bold, not the line; a
+    /// line in parts edited again keeps its parts as they were.
+    #[test]
+    fn a_word_selected_in_a_line_is_styled_alone() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let sans = FontChoice::default();
+        assert!(app.tabs[0].edit(&ctx, |p| {
+            p.add_text(0, (100.0, 200.0), "Walrus ate fish", sans, 40.0, [0.0; 3])
+        }));
+        let time = std::cell::Cell::new(10.0);
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            time.set(time.get() + 0.05);
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 800.0),
+                )),
+                time: Some(time.get()),
+                events,
+                ..Default::default()
+            };
+            let mut f = eframe::Frame::_new_kittest();
+            let mut out = ctx.run_ui(raw, |ui| eframe::App::ui(app, ui, &mut f));
+            out.textures_delta.clear();
+            out.platform_output.accesskit_update.expect("the window")
+        };
+        let key = |key: Key, modifiers: egui::Modifiers| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        let mut tree = frame(&mut app, vec![]);
+        for _ in 0..4 {
+            tree = frame(&mut app, vec![]);
+        }
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        let k = page.width() / 612.0;
+        // Double-click a word (page points) to edit its line with the word selected, wait
+        // for the keyboard, then press `keys`, Esc, and read the line back.
+        let edit_word = |app: &mut App, x: f32, events: Vec<egui::Event>| {
+            for _ in 0..25 {
+                frame(app, vec![]);
+            }
+            let p = page.min + egui::vec2(x, 190.0) * k;
+            frame(app, vec![egui::Event::PointerMoved(p)]);
+            for _ in 0..2 {
+                frame(app, vec![press(p, true)]);
+                frame(app, vec![press(p, false)]);
+            }
+            for _ in 0..3 {
+                frame(app, vec![]);
+            }
+            for e in events {
+                frame(app, vec![e]);
+            }
+            frame(app, vec![key(Key::Escape, egui::Modifiers::NONE)]);
+            for _ in 0..2 {
+                frame(app, vec![]);
+            }
+            let objs = app.tabs[0].pdf.page_objects(0).unwrap();
+            let line = objs
+                .into_iter()
+                .find(|o| o.text.is_some())
+                .expect("the line");
+            let parts: Vec<(String, String)> = line
+                .spans
+                .iter()
+                .map(|s| {
+                    let text: String = line
+                        .text
+                        .as_deref()
+                        .unwrap_or("")
+                        .chars()
+                        .skip(s.chars.0)
+                        .take(s.chars.1 - s.chars.0)
+                        .collect();
+                    (text, s.font_name.clone())
+                })
+                .collect();
+            parts
+        };
+        let owned = |v: &[(&str, &str)]| -> Vec<(String, String)> {
+            v.iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect()
+        };
+        // "ate" is from about 236 to 291 points.
+        let bold = key(Key::B, egui::Modifiers::COMMAND);
+        let parts = edit_word(&mut app, 260.0, vec![bold]);
+        assert_eq!(
+            parts,
+            owned(&[
+                ("Walrus ", "Helvetica"),
+                ("ate", "Helvetica-Bold"),
+                (" fish", "Helvetica")
+            ])
+        );
+        // "fish", from about 302 to 364, typed over: the bold word stays as it was.
+        let typed = egui::Event::Text("seals".into());
+        let parts = edit_word(&mut app, 330.0, vec![typed]);
+        assert_eq!(
+            parts,
+            owned(&[
+                ("Walrus ", "Helvetica"),
+                ("ate", "Helvetica-Bold"),
+                (" seals", "Helvetica")
+            ])
+        );
     }
 
     #[test]

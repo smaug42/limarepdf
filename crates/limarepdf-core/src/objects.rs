@@ -73,6 +73,14 @@ impl TextSpan {
     /// are one), size, colour and rise. Parts can look the same and still be apart, in
     /// two font objects of one font, for one.
     pub fn looks_like(&self, other: &TextSpan) -> bool {
+        self.same_font(other)
+            && (self.font_size - other.font_size).abs() < 0.01 * self.font_size.max(0.01)
+            && self.fill == other.fill
+            && (self.rise - other.rise).abs() < 0.01
+    }
+
+    /// Whether two parts of a line are in the same font, two subsets of one font being one.
+    pub fn same_font(&self, other: &TextSpan) -> bool {
         let untagged = |name: &str| match name.split_once('+') {
             Some((tag, rest)) if tag.len() == 6 && tag.bytes().all(|b| b.is_ascii_uppercase()) => {
                 rest.to_string()
@@ -80,9 +88,6 @@ impl TextSpan {
             _ => name.to_string(),
         };
         untagged(&self.font_name) == untagged(&other.font_name)
-            && (self.font_size - other.font_size).abs() < 0.01 * self.font_size.max(0.01)
-            && self.fill == other.fill
-            && (self.rise - other.rise).abs() < 0.01
     }
 }
 

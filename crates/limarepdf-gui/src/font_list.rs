@@ -53,7 +53,7 @@ fn offered(search: &str) -> (Vec<Offer>, bool) {
 }
 
 /// `f` set in `family`, in the style nearest its own that the family has.
-fn choose(f: &mut FontChoice, family: Family) {
+pub fn choose(f: &mut FontChoice, family: Family) {
     f.family = family;
     if let Some(t) = f.typeface() {
         (f.bold, f.italic) = t.nearest(f.bold, f.italic);
