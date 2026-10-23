@@ -11,4 +11,4 @@ user docs, one folder up ([the list](../../README.md#documentation)).
 - [Releasing](releasing.md): the release steps, what CI builds, the package repositories and the signing key.
 - [Ideas pool](ideas.md): features other PDF tools have, to pick from as LimarePDF grows.
 
-Building from source is in [Install and build](../install.md#build-from-source).
+Building from source is in [Install LimarePDF](../install.md#build-from-source).

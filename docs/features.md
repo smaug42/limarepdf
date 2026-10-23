@@ -1,3 +1,5 @@
+[User guide](README.md) › Getting started
+
 # Features and status
 
 **Status: 0.8, for testing.** Most testing has been on Linux. Annotations can be viewed, moved, deleted and flattened;
@@ -320,3 +322,7 @@ archives stay.
 - **Standards output.** PDF/A for archiving, and PDF/UA tagging for accessibility.
 - **Revocation checked offline.** Use the revocation answers a signed document carries to tell whether a signer's
   certificate was withdrawn, without going online.
+
+---
+
+[← First steps](first-steps.md) · [User guide](README.md) · [Everyday tasks →](README.md#everyday-tasks)

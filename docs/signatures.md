@@ -785,8 +785,8 @@ certificates a document carries never become trusted by being there.
 - **"the later additions are malformed"**: the file was saved by a program that wrote it incorrectly, or tampered
   with. The signed version is still available.
 - **"Can't check"**: try another reader, or ask the signer which algorithm they used; see the limitations above.
-- **"not confirmed"** (amber in the app) for someone you know: compare the SHA-256 fingerprint in Details or `limarepdf
-  verify` with them, then trust them (Trust this signer…, or `limarepdf-cli trust add FILE --signature N`), or trust their
+- **"not confirmed"** (amber in the app) for someone you know: compare the SHA-256 fingerprint in Details or
+  `limarepdf-cli verify` with them, then trust them (Trust this signer…, or `limarepdf-cli trust add FILE --signature N`), or trust their
   organisation's authority.
 - **"LimarePDF doesn't have the certificate of …"**: the signature doesn't carry its whole chain. Ask the signer's
   organisation for its authority's certificate and add it with `--authority`.
