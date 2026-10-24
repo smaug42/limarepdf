@@ -31,6 +31,13 @@
   short steps; then the desktop app and command-line references, troubleshooting and a glossary. Every page links
   to the one before and after. Screenshots show the parts of the window, the inspector, the Create signature
   window and the signatures view. The developer docs moved to `docs/developer/`.
+- Styles within a line, as in a word processor: select words in a line being edited, or in new text, and press
+  Ctrl+B or Ctrl+I, or pick a font, size or colour in the inspector, to change those words only. With nothing
+  selected, the word the caret is in changes, or, between words, what is typed next. Typed text takes the style
+  of the text before it. Where the selection mixes fonts, sizes or colours, the inspector shows them blank (the
+  colour button shows the colours side by side). Ctrl+Z and Ctrl+Y undo and redo typing and style changes in the
+  line, never the document. New text's lines are spaced by their sizes, and the next new text starts in the
+  style the last one ended in. A line turned on the page is edited in a box showing its fonts, sizes and colours.
 
 ### Changed
 
@@ -124,15 +131,16 @@
   archives and packages include their licence as `FONT-LICENSE-Liberation.txt`.
 - Add text is typed on the page, where you click, in the font, size and colour it will have, instead of in a box
   in the inspector with Add and Cancel. Enter starts a new line; Esc, a click elsewhere or another tool finishes,
-  and the lines are added as one undo step. The inspector's font, Bold, Italic, size and colour change the text
-  as you type, as do Ctrl+B and Ctrl+I; drag the text's outline to move it. Characters LimarePDF can't write yet
-  can't be typed or pasted there, and a note at the caret says so, instead of turning into `?`. With the Add
-  text tool, a click on page text edits that line, the caret where you clicked, and a drag selects text.
-- A line of page text being edited is drawn as it will be written, in the font it will have (its own when it can
-  be kept, else the Helvetica, Times or Courier replacing it, switching as you type), its size and its colour,
-  over the line, which is hidden underneath in the colour around it. Ctrl+B and Ctrl+I switch the whole line to
-  Bold or Italic. Characters LimarePDF can't write yet can't be typed there or in the inspector's text box, and a
-  note says so. Turned lines and invisible recognised text are still edited in a plain box.
+  and the lines are added as one undo step. The inspector's font, Bold, Italic, size and colour style the text
+  as you type, as do Ctrl+B and Ctrl+I (see Added); drag the text's outline to move it. Characters LimarePDF
+  can't write yet can't be typed or pasted there, and a note at the caret says so, instead of turning into `?`.
+  With the Add text tool, a click on page text edits that line, the caret where you clicked, and a drag selects
+  text.
+- A line of page text being edited is drawn as it will be written, in the fonts it will have (its own when they
+  can be kept, else the Helvetica, Times or Courier replacing them, switching as you type), its sizes and its
+  colours, over the line, which is hidden underneath in the colour around it. Characters LimarePDF can't write
+  yet can't be typed there or in the inspector's text box, and a note says so. Turned lines and invisible
+  recognised text are still edited in a box over the line.
 - Text being typed on the page matches the page colours: in Dark, Sepia and High contrast, new text and edited
   lines show in the colours the page will give them, with a caret that shows on dark paper.
 - Esc keeps what you typed instead of throwing it away, in a text box, a note and a form's text field, as it
@@ -167,6 +175,10 @@
   inspector are cut to a short line or a tooltip (Bates numbering's), or removed where the panel shows it already
   (page labels, crop, opening view, form fields). Signing with a digital ID loses its Cancel button: Esc or
   another tool stops it, as for every tool. A selected group of content is called "Group".
+- A line of text with a word in another font, size or colour in it (a bold word, a superscript) is one object,
+  as it looks, rather than one per style: it is selected, moved, deleted and edited whole. Search, selection and
+  copying read it as one line. `limarepdf-cli objects` lists it once, with its first part's font and size,
+  marked "mixed".
 
 ### Fixed
 
@@ -176,6 +188,11 @@
 - Choosing a font, Bold, Italic, a size or a colour in the inspector while editing a line on the page ended the
   editing and showed a text box of the line's text above the font list, moving it down. The line now stays in
   editing, shows the change, and takes the keyboard back.
+- Ctrl+Z while typing in the inspector's text box for a line undid the document's last change instead of the
+  typing.
+- Double-clicking a word in a turned line selected the line's first word, and the box it was edited in took its
+  font size from the line's length (a very large font in a box running off the screen); the word is selected,
+  and the box is the line's size, kept in view.
 - Going into the font size box and out again, or pressing Enter in it, without typing rounded an unusual size such
   as 10.126 to 10.13; it now changes nothing, and the box shows the exact size. A change of size smaller than a
   hundredth of a point was also lost.

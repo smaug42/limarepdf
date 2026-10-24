@@ -53,6 +53,8 @@ Small or medium additions that build on what LimarePDF already has:
   slant (M: the writers and the drawing while typing)
 - An installed font's characters filled in from another font when it lacks them, within one line (M: a line
   written in several fonts)
+- Underline and strike-through (Ctrl+U), as word processors have (M: PDF text has none, so it is a drawn line that
+  has to move, stretch and go with the words it marks)
 - Background images (S: a picture watermark at 100%, opaque and behind the content comes close; filling the page
   edge to edge is what's missing)
 - QR codes and barcodes stamped onto pages (S–M, needs a crate)

@@ -20,6 +20,7 @@ mod selection;
 mod settings;
 mod signatures;
 mod signing;
+mod styled;
 mod tab;
 mod theme;
 mod typing_fonts;

@@ -70,10 +70,14 @@ font, WinAnsi-encoded through `fonts::winansi_byte`, while the text fits it, els
 `form_ap::Metrics`, which is one-byte widths or an embedded font's codes. In the
 app, new text is typed on the page in `crates/limarepdf-gui/src/page_text.rs`, drawn while typing in the bundled
 Liberation fonts that `typing_fonts.rs` picks (same widths as Helvetica, Times and Courier), then written line by
-line with `Pdf::add_text` as one undo step. A line being edited (`editor.rs`'s line editor, sharing `page_text`'s
-drawing) sits on `PageObject::baseline` and is drawn in the font `TextEdit::keeps_font` says `Pdf::edit_text` will
-write: the line's own (installed, else its Liberation look-alike), the installed family it is from, or a
-standard one. The line underneath is
+line with `Pdf::add_text_parts` as one undo step. A line being edited (`editor.rs`'s line editor, sharing
+`page_text`'s drawing) sits on `PageObject::baseline` and each part is drawn in the font
+`PageObject::keeps_font` says `Pdf::edit_text` will write it in: the part's own (installed, else its Liberation
+look-alike), the installed family it is from, or a standard one. Both edit a `styled::Styled`, the text with a
+style per character: it keeps the styles through egui's plain-string `TextEdit` by comparing each frame's text
+with the last, applies Word's rules for style commands, gives the inspector its values (`None` where the
+selection mixes them), and hands core the line as `TextPart`s; `styled::History` is the undo inside the line,
+which takes Ctrl+Z and Ctrl+Y before the `TextEdit` does. The line underneath is
 covered in the colour the page worker (`worker.rs`, `Worker::sample`) finds around it, from a drawing of that
 part of the page in the current page colours.
 
@@ -210,12 +214,26 @@ How editing works in the page content (moved from [Editing text and pictures](..
 plain words). The page's content stream is split into objects: one per text line, per painted path, per image or
 form XObject, and per inline image.
 
-- **Moving or resizing** wraps the object's drawing operators in `q <matrix> cm … Q`.
+- **A text line** is the show operators of one `BT … ET` block that sit next to each other on one baseline
+  (`objects.rs`, `group_runs`): less than 0.3 of the larger text's size apart across the line, and from 0.3 back
+  to 0.7 forward along it. Font, size and colour don't split a line: its parts in one style each are its spans
+  (`PageObject::spans`: characters, font, size, colour, and rise, how far a part such as a superscript sits above
+  the baseline of the line's largest text). A gap wider than 0.18 of the smaller text's size reads as a space,
+  which belongs to the part before it.
+- **Moving or resizing** wraps the object's drawing operators in `q <matrix> cm … Q`. What a text line's
+  operators set between its shows (the font and colour of its parts) is set again after the `Q`, so the text
+  after the line is drawn as before.
 - **Editing text** rewrites the string in place when the font is a plain, non-subset, standard-encoded simple font
   and the new text is ASCII, with no font, size or colour change. Otherwise the old line is removed and the new
   text is added at the same position, size and colour, in the font chosen, else in the installed family the
   line's font is from (found by its PostScript name, the subset tag left off; `FontChoice::of_font`), else in the
-  nearest of the 12 standard fonts. While a line is edited on the page, the app makes the same test as it goes
+  nearest of the 12 standard fonts. A line in parts (`TextEdit::parts`, each part text and a style) is written
+  that way too, as one `BT … ET` with each part's font, colour, rise (`Ts`) and spacing set where they change. A
+  part keeps the font of the span it names when its text is that span's, unchanged (its shows are copied as they
+  were, with their character spacing, word spacing and scaling, and a gap read as a space put back as the same
+  move), or when the font can be reused and the text is ASCII (`PageObject::keeps_font`); otherwise it is written
+  as above, the parts in one font sharing one font object. A line in one style whose words alone change, in a
+  font that can be reused, is still changed in place. While a line is edited on the page, the app makes the same test as it goes
   (`TextEdit::keeps_font`) and draws the line in the font it will have: the line's own font installed on the
   computer, or else the Liberation face of its kind, when the font is kept; the installed family's font, or the
   Liberation face of the standard font replacing it, otherwise. The old line is covered with the most

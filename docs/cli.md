@@ -45,7 +45,7 @@ with the status it would have had otherwise.
 | `limarepdf-cli info file.pdf` | Page count, page sizes and document information |
 | `limarepdf-cli text in.pdf --pages 1-2` | Print the text of pages |
 | `limarepdf-cli search in.pdf "invoice"` | Find text; `--boxes` also prints where each match is on its page |
-| `limarepdf-cli objects in.pdf --pages 1` | List the editable objects (text lines, images, paths) with their boxes; OCR text is marked "(hidden)" |
+| `limarepdf-cli objects in.pdf --pages 1` | List the editable objects (text lines, images, paths) with their boxes; OCR text is marked "(hidden)", and a line in more than one font, size or colour shows its first part's, marked "mixed" |
 | `limarepdf-cli render in.pdf --dpi 150 --out-dir pngs` | Save pages as images, as the app shows them; `--format jpeg --quality 85` for JPEG. Known limit: a filled form field with no drawing of its own comes out empty ([details](export-and-printing.md#pages-as-images)) |
 | `limarepdf-cli annot list in.pdf` | List the annotations (comments, notes, highlights, drawings): number, page, type, author, date and comment, and which one a reply answers. `--pages 2-3` for some pages; links and form fields are left out |
 | `limarepdf-cli annot list in.pdf --json` | The same as a JSON array, with each annotation's colour, opacity and box on the page (points from the top left) |

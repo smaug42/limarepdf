@@ -3,18 +3,19 @@
 
 use crate::dialogs;
 use crate::fields::FormUi;
-use crate::page_text::{self, PageText};
+use crate::page_text::{self, selection, PageText};
 use crate::selection::{ObjKind, Selection, WordAt};
 use crate::signing::{SignKit, SignPane, SignPick};
+use crate::styled::{History, Styled};
 use crate::theme;
-use crate::typing_fonts::{self, Wanted};
+use crate::typing_fonts::Wanted;
 use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use egui_phosphor::regular as icon;
 use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::{
     words_text, Annot, AnnotKind, FieldValue, FontChoice, Link, LinkTarget, ObjectKind, PageObject,
-    PageWord, PathStyle, Shape, ShapeLook, SignPlace, StampColor, StampKind, StampPlace, TextEdit,
-    TextStyle, MIN_SIGNATURE_BOX,
+    PageWord, PartFont, PathStyle, Shape, ShapeLook, SignPlace, StampColor, StampKind, StampPlace,
+    TextEdit, TextPart, TextStyle, MIN_SIGNATURE_BOX,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -201,11 +202,13 @@ pub enum Action {
     Delete(usize, usize),
     AddShape(usize, Shape, [f32; 4]),
     /// New text, its lines separated by `\n`, from the first line's baseline at the point
-    /// given, set as typed.
-    AddText(usize, (f32, f32), String, page_text::Look),
+    /// given, in the styles it was typed in.
+    AddText(usize, (f32, f32), Styled),
     AddImage(usize, [f32; 4]),
     ReplaceImage(usize, usize, Vec<u8>),
-    EditText(usize, usize, TextEdit),
+    /// A line's change; true when only its words changed, not their styles, so it can join
+    /// a recent change of the same line.
+    EditText(usize, usize, TextEdit, bool),
     PathStyle(usize, usize, PathStyle),
     /// Set the named form field, drawn on these pages.
     SetField(Vec<usize>, String, FieldValue),
@@ -367,46 +370,39 @@ struct Draw {
 /// Working copy of the selected object's properties shown in the inspector.
 struct Insp {
     key: (usize, usize),
-    text: String,
-    font: FontChoice,
-    size: f32,
-    color: [f32; 3],
+    /// A line's text, a style for each character.
+    text: Styled,
     fill_on: bool,
     fill: [f32; 3],
     stroke_on: bool,
     stroke: [f32; 3],
     width: f32,
     geom: [f32; 4],
-    orig_font: FontChoice,
-    orig_size: f32,
-    orig_color: [f32; 3],
+    /// The line as it is in the document.
+    orig: Styled,
+    /// Undo and redo inside the line, until the change is kept.
+    history: History,
 }
 
 impl Insp {
     /// The properties of object `o`, at `key`, as they are.
     fn of(key: (usize, usize), o: &PageObject) -> Self {
-        let font = font_of(o.font_name.as_deref().unwrap_or(""));
-        let size = o.font_size.unwrap_or(12.0);
-        let color = if o.kind == ObjectKind::Text {
-            o.fill.unwrap_or([0.0; 3])
+        let text = if o.kind == ObjectKind::Text {
+            Styled::of(o, font_of)
         } else {
-            [0.0; 3]
+            Styled::default()
         };
         Insp {
             key,
-            text: o.text.clone().unwrap_or_default(),
-            font,
-            size,
-            color,
+            orig: text.clone(),
+            history: History::new(&text),
+            text,
             fill_on: o.has_fill,
             fill: o.fill.unwrap_or([0.8, 0.8, 0.8]),
             stroke_on: o.has_stroke,
             stroke: o.stroke.unwrap_or([0.0; 3]),
             width: o.line_width.unwrap_or(1.0),
             geom: o.bbox,
-            orig_font: font,
-            orig_size: size,
-            orig_color: color,
         }
     }
 }
@@ -433,10 +429,26 @@ fn parse_size(s: &str, range: &std::ops::RangeInclusive<f32>) -> Option<f32> {
 /// Going into the box and out again without typing changes nothing; text that isn't a
 /// number leaves the size as it was.
 fn size_ui(ui: &mut egui::Ui, size: &mut f32, range: std::ops::RangeInclusive<f32>) -> bool {
+    let chosen = size_box(ui, Some(*size), range);
+    if let Some(v) = chosen {
+        *size = v;
+    }
+    chosen.is_some()
+}
+
+/// The font size as [`size_ui`] shows it, for `size`, or empty for text in several sizes,
+/// where any size chosen counts. Returns the size chosen.
+fn size_box(
+    ui: &mut egui::Ui,
+    size: Option<f32>,
+    range: std::ops::RangeInclusive<f32>,
+) -> Option<f32> {
     let id = ui.id().with("size-box");
     // What was typed, kept only once something has been.
     let typed = ui.data(|d| d.get_temp::<String>(id));
-    let mut text = typed.clone().unwrap_or_else(|| size_text(*size));
+    let mut text = typed
+        .clone()
+        .unwrap_or_else(|| size.map(size_text).unwrap_or_default());
     let r = ui.add(
         egui::TextEdit::singleline(&mut text)
             .id(id)
@@ -444,12 +456,9 @@ fn size_ui(ui: &mut egui::Ui, size: &mut f32, range: std::ops::RangeInclusive<f3
     );
     r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Font size"));
     let edited = typed.is_some() || r.changed();
-    let mut chosen = false;
+    let mut chosen = None;
     if r.lost_focus() && edited {
-        if let Some(v) = parse_size(&text, &range).filter(|v| *v != *size) {
-            chosen = true;
-            *size = v;
-        }
+        chosen = parse_size(&text, &range).filter(|v| Some(*v) != size);
     }
     // While typing, the box keeps what is typed; otherwise it shows the size.
     if r.has_focus() && edited {
@@ -462,12 +471,13 @@ fn size_ui(ui: &mut egui::Ui, size: &mut f32, range: std::ops::RangeInclusive<f3
     egui::containers::menu::MenuButton::from_button(list)
         .ui(ui, |ui| {
             for v in SIZES.into_iter().filter(|v| range.contains(v)) {
-                let on = v == *size;
+                let on = Some(v) == size;
                 let r = ui.selectable_label(on, size_text(v));
                 dialogs::set_name(&r, &format!("{} pt", size_text(v)));
                 if r.clicked() {
-                    chosen |= !on;
-                    *size = v;
+                    if !on {
+                        chosen = Some(v);
+                    }
                     ui.close();
                 }
             }
@@ -486,9 +496,41 @@ pub fn color_button(ui: &mut egui::Ui, c: &mut [f32; 3], name: &str) -> egui::Re
     r
 }
 
+/// The colour button for text in `colors` (each once, the first the picker starts from):
+/// with more than one, it shows them side by side and says the colour is mixed. Returns
+/// the colour picked.
+fn text_color_button(ui: &mut egui::Ui, colors: &[[f32; 3]]) -> Option<[f32; 3]> {
+    let was = colors.first().copied().unwrap_or([0.0; 3]);
+    let mut c = was;
+    let mixed = colors.len() > 1;
+    let r = color_button(
+        ui,
+        &mut c,
+        if mixed {
+            "Text colour (mixed)"
+        } else {
+            "Text colour"
+        },
+    );
+    if mixed {
+        // Over the swatch, inside the button's border.
+        let swatch = r.rect.shrink(2.0);
+        let w = swatch.width() / colors.len() as f32;
+        for (i, &c) in colors.iter().enumerate() {
+            let x = swatch.min.x + w * i as f32;
+            let band =
+                Rect::from_min_max(Pos2::new(x, swatch.min.y), Pos2::new(x + w, swatch.max.y));
+            let [r, g, b] = c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+            ui.painter()
+                .rect_filled(band, 0.0, Color32::from_rgb(r, g, b));
+        }
+    }
+    (!same_color(c, was)).then_some(c)
+}
+
 /// Whether two colours are the same to the eye. The colour buttons store a colour back
 /// slightly changed by converting it, so exact comparison would see a change never made.
-fn same_color(a: [f32; 3], b: [f32; 3]) -> bool {
+pub fn same_color(a: [f32; 3], b: [f32; 3]) -> bool {
     a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 1.0 / 512.0)
 }
 
@@ -524,25 +566,83 @@ enum Pick {
     At(Pos2, bool),
 }
 
-/// The change the inspector's working copy makes to its line of text, as core is asked it.
-fn text_change(insp: &Insp) -> TextEdit {
-    TextEdit {
-        text: insp.text.replace(['\n', '\r'], " "),
-        font: (insp.font != insp.orig_font).then_some(insp.font),
-        size: (insp.size != insp.orig_size).then_some(insp.size),
-        color: (!same_color(insp.color, insp.orig_color)).then_some(insp.color),
+/// The change `text` makes to line `o`, as core is asked it: in parts, each in its style;
+/// invisible (OCR) text, which has no styles, and an emptied line, in one.
+fn text_change(text: &Styled, o: &PageObject) -> TextEdit {
+    let flat = |s: &str| s.replace(['\n', '\r'], " ");
+    if o.hidden || text.text().is_empty() {
+        return TextEdit {
+            text: flat(text.text()),
+            font: None,
+            size: None,
+            color: None,
+            parts: Vec::new(),
+        };
     }
+    let mut parts = text.parts();
+    for p in &mut parts {
+        p.text = flat(&p.text);
+    }
+    TextEdit::in_parts(parts)
 }
 
-/// The font line `o` changed by `te` is written in, as core decides it: its own when it
-/// can be kept, else the one chosen, else `own`, the line's font as the inspector found it
-/// (the installed family it is from, or the nearest standard font).
-fn line_font<'a>(o: &'a PageObject, te: &TextEdit, own: FontChoice) -> Wanted<'a> {
-    let name = o.font_name.as_deref().unwrap_or("");
-    if te.keeps_font(o.font_reusable) {
-        Wanted::Kept(name)
+/// The font list, Bold, Italic, size (within `sizes`) and colour for what a style command
+/// with `sel` selected changes in `text`: each shows blank where that mixes values.
+/// Returns whether one was used.
+fn styles_ui(
+    ui: &mut egui::Ui,
+    text: &mut Styled,
+    sel: (usize, usize),
+    sizes: std::ops::RangeInclusive<f32>,
+) -> bool {
+    let shown = text.shown(sel);
+    let first = text.first(sel);
+    let was = FontChoice {
+        bold: shown.bold,
+        italic: shown.italic,
+        ..shown.font.unwrap_or(first.font)
+    };
+    let mut font = was;
+    let mut used = false;
+    if crate::font_list::ui(ui, &mut font, shown.font.is_none()) {
+        // Each character takes the family's face nearest its own.
+        if shown.font.is_none() || font.family != was.family {
+            text.set_family(sel, font.family);
+            used = true;
+        }
     } else {
-        Wanted::Standard(te.font.unwrap_or(own))
+        if font.bold != was.bold {
+            text.bold(sel);
+            used = true;
+        }
+        if font.italic != was.italic {
+            text.italic(sel);
+            used = true;
+        }
+    }
+    ui.horizontal(|ui| {
+        ui.label("Size");
+        if let Some(size) = size_box(ui, shown.size, sizes) {
+            text.set_size(sel, size);
+            used = true;
+        }
+        if let Some(c) = text_color_button(ui, &text.colors(sel)) {
+            text.set_color(sel, c);
+            used = true;
+        }
+    });
+    used
+}
+
+/// The font `part` of line `o`, as `text` has it, is written in, as core decides it: its
+/// part's own when it can be kept, else the installed family that font is from or the
+/// nearest standard font, or the font chosen.
+fn part_font<'a>(o: &'a PageObject, text: &Styled, part: &TextPart) -> Wanted<'a> {
+    match part.font {
+        PartFont::Span(i) if o.keeps_font(part) => {
+            Wanted::Kept(o.spans.get(i).map_or("", |s| s.font_name.as_str()))
+        }
+        _ => Wanted::Standard(text.font_of(part)),
     }
 }
 
@@ -577,7 +677,7 @@ fn cover_box(o: &PageObject) -> [f32; 4] {
 }
 
 /// The characters (from, to) of the word at character `i` of `s`; empty between words.
-fn word_around(s: &str, i: usize) -> (usize, usize) {
+pub fn word_around(s: &str, i: usize) -> (usize, usize) {
     let chars: Vec<char> = s.chars().collect();
     let i = i.min(chars.len());
     let word = |c: &char| !c.is_whitespace();
@@ -1029,13 +1129,14 @@ impl Editor {
         let Some(a) = self.adding.take().filter(PageText::has_text) else {
             return;
         };
-        let look = self.new_look();
-        self.actions
-            .push(Action::AddText(a.page, a.at, a.text, look));
+        // The next new text carries on in the style this one ended in, as typing would.
+        let end = page_text::Look::of(a.text.end_style());
+        (self.tfont, self.tsize, self.tcolor) = (end.font, end.size, end.color);
+        self.actions.push(Action::AddText(a.page, a.at, a.text));
     }
 
     /// How new text is set, from the inspector.
-    fn new_look(&self) -> page_text::Look {
+    pub fn new_look(&self) -> page_text::Look {
         page_text::Look {
             font: self.tfont,
             size: self.tsize,
@@ -1089,12 +1190,10 @@ impl Editor {
         let obj = self.objs.get(&page)?.get(id)?;
         match obj.kind {
             ObjectKind::Text => {
-                let te = text_change(insp);
-                let same = obj.text.as_deref() == Some(te.text.as_str())
-                    && te.font.is_none()
-                    && te.size.is_none()
-                    && te.color.is_none();
-                (!same).then_some(Action::EditText(page, id, te))
+                let te = text_change(&insp.text, obj);
+                let words_only = !insp.text.restyled();
+                (!insp.text.same_as(&insp.orig))
+                    .then_some(Action::EditText(page, id, te, words_only))
             }
             ObjectKind::Path => {
                 let was = Insp::of(insp.key, obj);
@@ -1156,6 +1255,22 @@ impl Editor {
             .collect();
         on.sort_by(|v, w| v.bbox[0].total_cmp(&w.bbox[0]));
         let spans = word_spans(text);
+        if !o.upright {
+            // A turned line's words don't run left to right on the page: the word under
+            // `p`, found by its text when the line has it once.
+            let inside = |w: &PageWord| {
+                let b = w.bbox;
+                p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3]
+            };
+            let text_of =
+                |(a, b): (usize, usize)| text.chars().skip(a).take(b - a).collect::<String>();
+            let found = on.iter().find(|w| inside(w)).and_then(|w| {
+                let mut same = spans.iter().filter(|s| text_of(**s) == w.text);
+                let first = same.next()?;
+                same.next().is_none().then_some(*first)
+            });
+            return found.map_or(Pick::At(p, true), |(a, b)| Pick::Chars(a, b));
+        }
         let under = on.iter().position(|w| p.x >= w.bbox[0] && p.x <= w.bbox[2]);
         match under.filter(|_| on.len() == spans.len()) {
             Some(j) => Pick::Chars(spans[j].0, spans[j].1),
@@ -1167,6 +1282,16 @@ impl Editor {
     /// typed, on the page.
     pub fn typing_on_page(&self) -> bool {
         self.line_edit.is_some() || self.adding.is_some() || self.writing.is_some()
+    }
+
+    /// Whether text is typed on the page ([`Self::typing_on_page`]) or a line's text in the
+    /// inspector: Undo and Redo there take back the typing.
+    pub fn typing_text(&self, ctx: &egui::Context) -> bool {
+        self.typing_on_page()
+            || self.insp.as_ref().is_some_and(|i| {
+                let id = egui::Id::new(("text-object", i.key.0, i.key.1));
+                ctx.memory(|m| m.has_focus(id))
+            })
     }
 
     /// The line being edited drawn in place, as its page and the box to hide (page
@@ -1183,13 +1308,10 @@ impl Editor {
     fn adding_ui(&mut self, ui: &mut egui::Ui, page: usize, r: Rect, k: f32) -> bool {
         let accent = ui.visuals().selection.stroke.color;
         let settled = settled(ui.ctx());
-        let mut look = self.new_look();
         let Some(a) = self.adding.as_mut().filter(|a| a.page == page) else {
             return false;
         };
-        let shown = a.ui(ui, r, k, &mut look, self.page_colours, accent, settled);
-        // Ctrl+B and Ctrl+I change the inspector's choice, as its buttons do.
-        self.tfont = look.font;
+        let shown = a.ui(ui, r, k, self.page_colours, accent, settled);
         if shown.done {
             self.finish_adding();
         }
@@ -1223,31 +1345,42 @@ impl Editor {
         let id = egui::Id::new(("line-edit", page));
         let drawn = drawn_in_place(&o);
         if ctx.memory(|m| m.has_focus(id)) {
-            // Before the editor sees the keys: what can't be written isn't typed, and
-            // Ctrl+B and Ctrl+I switch the whole line, as the inspector's buttons do.
-            // Hidden (OCR) text is written in Helvetica.
+            // Before the editor sees the keys: what can't be written in the font it goes
+            // into isn't typed, and Ctrl+B and Ctrl+I switch what is selected, as the
+            // inspector's buttons do. Hidden (OCR) text is written in Helvetica.
+            let sel = selection(&ctx, id).unwrap_or((0, 0));
             let font = if o.hidden {
                 FontChoice::default()
             } else {
-                insp.font
+                insp.text.typing_font(sel)
             };
             let t = page_text::take_typing(ui, true, !o.hidden, font);
-            insp.font = page_text::switched(insp.font, t.bold, t.italic);
+            page_text::undo_redo(&ctx, id, &t, &mut insp.history, &mut insp.text);
+            if t.bold {
+                insp.text.bold(sel);
+            }
+            if t.italic {
+                insp.text.italic(sel);
+            }
             if let Some(c) = t.refused {
                 le.refused.mark(&ctx, page_text::note(font, c));
             }
         }
         let b = o.bbox;
+        let mut typed = insp.text.text().to_string();
+        let mode = self.page_colours;
+        // The text as egui has it this frame, in parts at `k` pixels per point, coloured
+        // by `color`.
+        let runs = |t: &str, k: f32, color: &dyn Fn([f32; 3]) -> Color32| {
+            let text = insp.text.preview(t);
+            let font = |p: &TextPart| part_font(&o, &text, p);
+            page_text::runs(&ctx, &text.drawn_parts(), k, color, font)
+        };
         let (out, area) = if drawn {
-            let wanted = line_font(&o, &text_change(insp), insp.orig_font);
+            let runs = |t: &str| runs(t, k, &|c| page_text::shown(mode, c));
             let style = page_text::Style {
-                font: egui::FontId::new(
-                    (insp.size * k).max(1.0),
-                    typing_fonts::family(&ctx, wanted),
-                ),
-                coords: typing_fonts::coords(wanted),
-                color: page_text::shown(self.page_colours, insp.color),
-                mode: self.page_colours,
+                runs: &runs,
+                mode,
                 accent: ui.visuals().selection.stroke.color,
             };
             let (x, y) = o.baseline.unwrap_or((b[0], b[3]));
@@ -1259,7 +1392,7 @@ impl Editor {
             let f = page_text::field(
                 &ctx,
                 id,
-                &mut insp.text,
+                &mut typed,
                 to_screen(x, y),
                 &style,
                 false,
@@ -1269,25 +1402,65 @@ impl Editor {
             (f.out, f.outline)
         } else {
             let area = Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3])).expand(2.0);
-            // Light colours in either theme, as for text boxes: the text sits on the paper.
-            let font = egui::FontId::proportional((area.height() * 0.75).clamp(6.0, 96.0));
+            // A turned line shows its styles too, at its size on the page, in a box as long
+            // as the line and one line high; invisible (OCR) text has no styles, and is
+            // shown at its box's height.
+            let parts = insp.text.drawn_parts();
+            let largest = parts.iter().map(|p| p.size).fold(0.0, f32::max);
+            let px = if o.hidden {
+                area.height() * 0.75
+            } else {
+                largest * k
+            };
+            let font = egui::FontId::proportional(px.clamp(6.0, 96.0));
+            let scale = font.size / largest.max(0.01);
+            let size = if o.hidden {
+                area.size()
+            } else {
+                egui::vec2(area.width().max(area.height()), font.size * 1.4)
+            };
+            let mut layouter = |_: &egui::Ui, t: &dyn egui::TextBuffer, _: f32| {
+                let paper = |c| page_text::shown(PageColours::Normal, c);
+                page_text::galley(&ctx, t.as_str(), &runs(t.as_str(), scale, &paper)).0
+            };
+            // At the line, moved left as far as it must to stay in view.
+            let view = ui.clip_rect();
+            let x = area.min.x.min(view.max.x - size.x).max(view.min.x);
             let out = egui::Area::new(id.with("area"))
-                .fixed_pos(area.min)
+                .fixed_pos(Pos2::new(x, area.min.y))
                 .order(egui::Order::Foreground)
                 .show(&ctx, |ui| {
+                    // Light colours in either theme, as for text boxes: the text sits on
+                    // the paper.
                     *ui.visuals_mut() = egui::Visuals::light();
-                    egui::TextEdit::singleline(&mut insp.text)
+                    let te = egui::TextEdit::singleline(&mut typed)
                         .id(id)
                         .font(font)
-                        .min_size(area.size())
-                        .desired_width(area.width())
+                        .min_size(size)
+                        .desired_width(size.x)
                         .clip_text(false)
-                        .margin(egui::Margin::same(2))
-                        .show(ui)
+                        .margin(egui::Margin::same(2));
+                    if o.hidden {
+                        te.show(ui)
+                    } else {
+                        te.layouter(&mut layouter).show(ui)
+                    }
                 })
                 .inner;
             (out, area)
         };
+        // The styles follow what was typed.
+        let sel = out
+            .cursor_range
+            .map(|c| (c.secondary.index.0, c.primary.index.0));
+        if insp.text.sync(&typed, sel.map(|s| s.1)) {
+            ctx.request_repaint();
+        }
+        if let Some(sel) = sel {
+            insp.text.caret_at(sel);
+        }
+        let now = ctx.input(|i| i.time);
+        insp.history.observe(&insp.text, sel, now, settled(&ctx));
         let edit = &out.response.response;
         let name = format!("Editing text: {}", o.text.as_deref().unwrap_or(""));
         dialogs::set_name(edit, &name);
@@ -1302,26 +1475,20 @@ impl Editor {
                         let at = to_screen(p.x, p.y) - out.galley_pos;
                         out.galley.cursor_from_pos(at).index.0
                     } else {
-                        let n = insp.text.chars().count();
+                        let n = insp.text.text().chars().count();
                         let at = ((p.x - b[0]) / (b[2] - b[0]).max(0.01)).clamp(0.0, 1.0);
                         (at * n as f32).round() as usize
                     };
                     if word {
-                        word_around(&insp.text, i)
+                        word_around(insp.text.text(), i)
                     } else {
                         (i, i)
                     }
                 }
             };
-            if let Some(mut st) = egui::TextEdit::load_state(&ctx, id) {
-                let range = egui::text::CCursorRange::two(
-                    egui::text::CCursor::new(from),
-                    egui::text::CCursor::new(to),
-                );
-                st.cursor.set_char_range(Some(range));
-                st.clear_undoer();
-                st.store(&ctx, id);
-            }
+            page_text::select(&ctx, id, (from, to));
+            insp.history
+                .observe(&insp.text, Some((from, to)), now, true);
             edit.request_focus();
             le.fresh = false;
             return true;
@@ -2383,7 +2550,8 @@ impl Editor {
                         self.start_line_edit(page, i, Pick::At(p, false));
                     } else {
                         // New text there; with nothing typed yet, it moves there.
-                        self.adding = Some(PageText::new(page, (p.x, p.y)));
+                        let look = self.new_look();
+                        self.adding = Some(PageText::new(page, (p.x, p.y), look));
                     }
                 }
             }
@@ -3140,7 +3308,7 @@ impl Editor {
     // ------------------------------------------------------------ inspector
 
     fn font_ui(ui: &mut egui::Ui, f: &mut FontChoice) {
-        crate::font_list::ui(ui, f);
+        crate::font_list::ui(ui, f, false);
     }
 
     /// Keep the working copy on the selected object. When another object (or none) is
@@ -3483,18 +3651,24 @@ impl Editor {
         self.keep_ui(ui);
         match self.tool {
             Tool::Text => {
-                let was = self.new_look();
                 ui.strong("New text");
-                Self::font_ui(ui, &mut self.tfont);
-                ui.horizontal(|ui| {
-                    ui.label("Size");
-                    size_ui(ui, &mut self.tsize, 4.0..=200.0);
-                    color_button(ui, &mut self.tcolor, "Text colour");
-                });
-                // Changes apply to the text being typed, which then takes the keyboard back.
-                if self.new_look() != was {
-                    if let Some(a) = self.adding.as_mut() {
-                        a.refocus = true;
+                match self.adding.as_mut() {
+                    // Changes apply to what is selected in the text being typed, as in the
+                    // line editor, which then takes the keyboard back.
+                    Some(a) => {
+                        let end = a.text.text().chars().count();
+                        let sel = selection(ui.ctx(), a.id()).unwrap_or((end, end));
+                        if styles_ui(ui, &mut a.text, sel, 4.0..=200.0) {
+                            a.refocus = true;
+                        }
+                    }
+                    None => {
+                        Self::font_ui(ui, &mut self.tfont);
+                        ui.horizontal(|ui| {
+                            ui.label("Size");
+                            size_ui(ui, &mut self.tsize, 4.0..=200.0);
+                            color_button(ui, &mut self.tcolor, "Text colour");
+                        });
                     }
                 }
                 ui.separator();
@@ -3704,16 +3878,24 @@ impl Editor {
                     let id = egui::Id::new(("text-object", page, id));
                     // What can't be written isn't typed, as on the page.
                     if ui.ctx().memory(|m| m.has_focus(id)) {
-                        let t = page_text::take_typing(ui, true, false, insp.font);
+                        let sel = selection(ui.ctx(), id).unwrap_or((0, 0));
+                        let font = insp.text.typing_font(sel);
+                        let t = page_text::take_typing(ui, true, false, font);
+                        let (history, text) = (&mut insp.history, &mut insp.text);
+                        page_text::undo_redo(ui.ctx(), id, &t, history, text);
                         if let Some(c) = t.refused {
-                            self.text_refused
-                                .mark(ui.ctx(), page_text::note(insp.font, c));
+                            self.text_refused.mark(ui.ctx(), page_text::note(font, c));
                         }
                     }
-                    let out = egui::TextEdit::singleline(&mut insp.text)
+                    let mut typed = insp.text.text().to_string();
+                    let out = egui::TextEdit::singleline(&mut typed)
                         .id(id)
                         .desired_width(f32::INFINITY)
                         .show(ui);
+                    let sel = out
+                        .cursor_range
+                        .map(|c| (c.secondary.index.0, c.primary.index.0));
+                    insp.text.sync(&typed, sel.map(|s| s.1));
                     let r = &out.response.response;
                     r.widget_info(|| {
                         egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Text")
@@ -3727,15 +3909,25 @@ impl Editor {
                 if obj.hidden {
                     ui.weak("Used by search and copy. Clear it to remove the line.");
                 } else {
-                    Self::font_ui(ui, &mut insp.font);
-                    ui.horizontal(|ui| {
-                        ui.label("Size");
-                        size_ui(ui, &mut insp.size, 1.0..=400.0);
-                        color_button(ui, &mut insp.color, "Text colour");
-                    });
+                    // What is selected in the line being edited on the page, else all of it.
+                    let sel = match self.line_edit.as_ref() {
+                        Some(le) => selection(ui.ctx(), egui::Id::new(("line-edit", le.page)))
+                            .unwrap_or((0, 0)),
+                        None => (0, insp.text.text().chars().count()),
+                    };
+                    styles_ui(ui, &mut insp.text, sel, 1.0..=400.0);
+                }
+                if self.line_edit.is_none() {
+                    // The line being edited on the page watches its own changes.
+                    let id = egui::Id::new(("text-object", page, id));
+                    let sel = selection(ui.ctx(), id);
+                    let now = ui.input(|i| i.time);
+                    let settled = settled(ui.ctx());
+                    insp.history.observe(&insp.text, sel, now, settled);
                 }
                 // A line in an installed family is written in that family.
-                if !obj.font_reusable && !obj.hidden && insp.orig_font.is_standard() {
+                let own = insp.orig.styles().first().map(|s| s.font);
+                if !obj.font_reusable && !obj.hidden && own.is_none_or(|f| f.is_standard()) {
                     ui.weak("Non-standard font: edits use the nearest standard one.")
                         .on_hover_text(obj.font_name.as_deref().unwrap_or("?"));
                 }
@@ -3999,18 +4191,18 @@ mod tests {
     #[test]
     fn an_unusual_size_is_kept_exactly() {
         let (_, mut ed) = page_with_objects();
+        let o = &mut ed.objs.get_mut(&0).unwrap()[2];
+        o.font_size = Some(10.126);
+        o.spans[0].font_size = 10.126;
         ed.select_object(0, 2);
         ed.sync_insp();
-        let insp = ed.insp.as_mut().unwrap();
-        insp.orig_size = 10.126;
-        insp.size = 10.126;
         assert!(!ed.pending());
         // A change smaller than a hundredth is still a change.
-        ed.insp.as_mut().unwrap().size = 10.13;
+        ed.insp.as_mut().unwrap().text.set_size((0, 22), 10.13);
         ed.keep_pending();
         assert!(matches!(
             ed.actions.as_slice(),
-            [Action::EditText(0, 2, te)] if te.size == Some(10.13)
+            [Action::EditText(0, 2, te, false)] if te.parts[0].size == 10.13
         ));
     }
 
@@ -4102,17 +4294,25 @@ mod tests {
         ed.sync_insp();
         assert!(!ed.pending());
         // A colour stored back a hair off by the colour button isn't a change.
-        ed.insp.as_mut().unwrap().color[0] += 1e-6;
+        ed.insp
+            .as_mut()
+            .unwrap()
+            .text
+            .set_color((0, 22), [1e-6, 0.0, 0.0]);
         assert!(!ed.pending());
         // Typed words: kept as one edit of the line when another object is selected.
-        ed.insp.as_mut().unwrap().text = "Walruses".into();
+        ed.selection = Selection::None;
+        ed.sync_insp();
+        ed.select_object(0, 2);
+        ed.sync_insp();
+        ed.insp.as_mut().unwrap().text.sync("Walruses", None);
         assert!(ed.pending());
         ed.select_object(0, 1);
         ed.sync_insp();
         assert!(matches!(
             ed.actions.as_slice(),
-            [Action::EditText(0, 2, te)]
-                if te.text == "Walruses" && te.font.is_none() && te.size.is_none()
+            [Action::EditText(0, 2, te, true)]
+                if te.text == "Walruses" && te.parts[0].font == PartFont::Span(0)
         ));
         // A shape's new outline, kept when nothing is selected any more.
         ed.actions.clear();
@@ -4128,12 +4328,15 @@ mod tests {
         ed.actions.clear();
         ed.select_object(0, 2);
         ed.sync_insp();
-        ed.insp.as_mut().unwrap().size = 18.0;
+        ed.insp.as_mut().unwrap().text.set_size((0, 22), 18.0);
         ed.keep_pending();
         assert!(matches!(
             ed.actions.as_slice(),
-            [Action::EditText(0, 2, te)]
-                if te.text == "Walrus like cold water" && te.size == Some(18.0) && te.color.is_none()
+            [Action::EditText(0, 2, te, false)]
+                if te.text == "Walrus like cold water"
+                    && te.parts.len() == 1
+                    && te.parts[0].size == 18.0
+                    && te.parts[0].color == [0.0; 3]
         ));
     }
 
@@ -4142,12 +4345,12 @@ mod tests {
         let (_, mut ed) = page_with_objects();
         ed.start_line_edit(0, 2, Pick::Chars(0, 6));
         assert!(ed.typing_on_page());
-        ed.insp.as_mut().unwrap().text = "Seal".into();
+        ed.insp.as_mut().unwrap().text.sync("Seal", None);
         ed.escape();
         assert!(!ed.typing_on_page() && !ed.pending());
         assert!(matches!(
             ed.actions.as_slice(),
-            [Action::EditText(0, 2, te)] if te.text == "Seal"
+            [Action::EditText(0, 2, te, true)] if te.text == "Seal"
         ));
         // The line stays selected; Esc again clears it.
         assert_eq!(ed.sel(), Some((0, 2)));
@@ -4176,43 +4379,45 @@ mod tests {
     #[test]
     fn a_line_is_edited_in_the_font_it_will_be_written_in() {
         let (_, mut ed) = page_with_objects();
+        let o = ed.objs[&0][2].clone();
+        let mut kept = o.clone();
+        kept.font_name = Some("Arial,Bold".into());
+        kept.font_reusable = true;
+        kept.spans[0].font_name = "Arial,Bold".into();
+        kept.spans[0].font_reusable = true;
+        ed.objs.get_mut(&0).unwrap()[2] = kept.clone();
         ed.select_object(0, 2);
         ed.sync_insp();
-        let o = ed.objs[&0][2].clone();
         let font = |ed: &Editor, o: &PageObject| {
-            let te = text_change(ed.insp.as_ref().unwrap());
-            let own = font_of(o.font_name.as_deref().unwrap_or(""));
-            format!("{:?}", line_font(o, &te, own))
+            let text = &ed.insp.as_ref().unwrap().text;
+            format!("{:?}", part_font(o, text, &text.drawn_parts()[0]))
         };
-        // Its own font, when core can keep it: plain ASCII and no style changed.
-        let kept = PageObject {
-            font_name: Some("Arial,Bold".into()),
-            font_reusable: true,
-            ..o.clone()
-        };
+        // Its own font, when core can keep it: its own text, or plain ASCII.
         assert_eq!(font(&ed, &kept), "Kept(\"Arial,Bold\")");
-        ed.insp.as_mut().unwrap().text = "Walrus 42".into();
+        fn text(ed: &mut Editor) -> &mut Styled {
+            &mut ed.insp.as_mut().unwrap().text
+        }
+        text(&mut ed).sync("Walrus 42", None);
         assert_eq!(font(&ed, &kept), "Kept(\"Arial,Bold\")");
-        // A character beyond ASCII, a style change, or a font that can't be kept: the
+        // A size or colour changed: still its own, as each part has its size and colour.
+        text(&mut ed).set_size((0, 9), 20.0);
+        assert_eq!(font(&ed, &kept), "Kept(\"Arial,Bold\")");
+        // A character beyond ASCII, a font that can't be kept, or another font chosen: the
         // standard font nearest it, or the one chosen.
         let arial_bold = format!("Standard({:?})", FontChoice::from_name("Arial,Bold"));
-        ed.insp.as_mut().unwrap().text = "Café".into();
+        text(&mut ed).sync("Café", None);
         assert_eq!(font(&ed, &kept), arial_bold);
-        ed.insp.as_mut().unwrap().text = "Walrus".into();
-        ed.insp.as_mut().unwrap().size = 20.0;
-        assert_eq!(font(&ed, &kept), arial_bold);
-        ed.insp.as_mut().unwrap().size = ed.insp.as_ref().unwrap().orig_size;
-        let not_kept = PageObject {
-            font_reusable: false,
-            ..kept.clone()
-        };
+        text(&mut ed).sync("Walrus", None);
+        let mut not_kept = kept.clone();
+        not_kept.spans[0].font_reusable = false;
         assert_eq!(font(&ed, &not_kept), arial_bold);
-        ed.insp.as_mut().unwrap().font.italic = true;
+        text(&mut ed).italic((0, 6));
+        text(&mut ed).set_family((0, 6), Family::Courier);
         let courier = FontChoice {
             family: Family::Courier,
-            ..ed.insp.as_ref().unwrap().font
+            bold: true,
+            italic: true,
         };
-        ed.insp.as_mut().unwrap().font = courier;
         assert_eq!(font(&ed, &kept), format!("Standard({courier:?})"));
         // Turned and invisible lines are edited in a plain box, and nothing hides them.
         assert!(drawn_in_place(&o));

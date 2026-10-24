@@ -53,27 +53,35 @@ fn offered(search: &str) -> (Vec<Offer>, bool) {
 }
 
 /// `f` set in `family`, in the style nearest its own that the family has.
-fn choose(f: &mut FontChoice, family: Family) {
+pub fn choose(f: &mut FontChoice, family: Family) {
     f.family = family;
     if let Some(t) = f.typeface() {
         (f.bold, f.italic) = t.nearest(f.bold, f.italic);
     }
 }
 
-/// The font list and the Bold and Italic buttons, for the font `f`.
-pub fn ui(ui: &mut egui::Ui, f: &mut FontChoice) {
+/// The font list and the Bold and Italic buttons, for the font `f`; with `blank`, the
+/// list shows no name, as for text in several families. Returns whether a family was
+/// picked in the list, even `f`'s own.
+pub fn ui(ui: &mut egui::Ui, f: &mut FontChoice, blank: bool) -> bool {
     let id = ui.id().with("fam");
     let search_id = id.with("search");
+    let name = if blank {
+        String::new()
+    } else {
+        f.family_name()
+    };
     let r = egui::ComboBox::from_id_salt(id)
-        .selected_text(f.family_name())
+        .selected_text(name)
         .height(320.0)
         .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
-        .show_ui(ui, |ui| list(ui, search_id, f));
+        .show_ui(ui, |ui| list(ui, search_id, f, blank));
     dialogs::set_name(&r.response, "Font");
     if r.inner.is_none() {
         // Closed: the next opening starts with an empty search.
         ui.data_mut(|d| d.remove::<String>(search_id));
     }
+    let picked = r.inner.unwrap_or(false);
     let t = f.typeface();
     let has = |bold: bool, italic: bool| t.as_ref().is_none_or(|t| t.has(bold, italic));
     ui.horizontal(|ui| {
@@ -92,10 +100,12 @@ pub fn ui(ui: &mut egui::Ui, f: &mut FontChoice) {
         dialogs::set_name(&r, "Italic");
         f.bold = bold;
     });
+    picked
 }
 
-/// The open list: the search field, then the families that fit it. Enter picks the first.
-fn list(ui: &mut egui::Ui, search_id: egui::Id, f: &mut FontChoice) {
+/// The open list: the search field, then the families that fit it, `f`'s marked unless
+/// `blank`. Enter picks the first. Returns whether one was picked.
+fn list(ui: &mut egui::Ui, search_id: egui::Id, f: &mut FontChoice, blank: bool) -> bool {
     let ctx = ui.ctx().clone();
     let mut search = ui.data(|d| d.get_temp::<String>(search_id));
     let fresh = search.is_none();
@@ -116,9 +126,10 @@ fn list(ui: &mut egui::Ui, search_id: egui::Id, f: &mut FontChoice) {
         if let Some((family, _, _)) = families.first() {
             choose(f, *family);
             ui.close();
-            return;
+            return true;
         }
     }
+    let mut picked = false;
     egui::ScrollArea::vertical()
         .max_height(280.0)
         .auto_shrink([false, true])
@@ -155,13 +166,14 @@ fn list(ui: &mut egui::Ui, search_id: egui::Id, f: &mut FontChoice) {
                     }
                     None => name.clone().into(),
                 };
-                let selected = f.family == *family;
+                let selected = !blank && f.family == *family;
                 let r = ui.add(egui::Button::selectable(selected, label));
                 if selected && fresh {
                     r.scroll_to_me(Some(egui::Align::Center));
                 }
                 if r.clicked() {
                     choose(f, *family);
+                    picked = true;
                     ui.close();
                 }
             }
@@ -169,6 +181,7 @@ fn list(ui: &mut egui::Ui, search_id: egui::Id, f: &mut FontChoice) {
                 ui.weak("Finding installed fonts…");
             }
         });
+    picked
 }
 
 /// A test font as an installed family, by name: Source Serif 4 (OpenType CFF, regular

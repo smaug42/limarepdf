@@ -212,6 +212,7 @@ fn correcting_recognised_text_keeps_it_invisible_and_in_place() {
         font: None,
         size: None,
         color: None,
+        parts: Vec::new(),
     };
     p.edit_text(0, line.id, &edit).unwrap();
     let after = gray(&mut p, 1.0);

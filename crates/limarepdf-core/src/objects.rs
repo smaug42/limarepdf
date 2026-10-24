@@ -45,6 +45,50 @@ pub struct PageObject {
     /// For text: the line runs left to right across the displayed page, letters upright,
     /// and is not in vertical writing.
     pub upright: bool,
+    /// For text: some of the line is in vertical writing (measured as if it ran across).
+    pub vertical: bool,
+    /// For text: the parts of the line in one style each, in order. `font_name`,
+    /// `font_size`, `fill` and `font_reusable` are the first part's.
+    pub spans: Vec<TextSpan>,
+}
+
+/// A part of a line of text in one style: [`PageObject::spans`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextSpan {
+    /// Its characters in the line's text, from and to.
+    pub chars: (usize, usize),
+    /// The PDF font's name.
+    pub font_name: String,
+    pub font_size: f32,
+    pub fill: Option<[f32; 3]>,
+    /// The font can be reused for plain ASCII edits ([`PageObject::font_reusable`]).
+    pub font_reusable: bool,
+    /// How far the part is raised above the line's baseline, in points (lowered when
+    /// below zero), as a superscript is.
+    pub rise: f32,
+}
+
+impl TextSpan {
+    /// Whether two parts of a line look the same: the same font (two subsets of one font
+    /// are one), size, colour and rise. Parts can look the same and still be apart, in
+    /// two font objects of one font, for one.
+    pub fn looks_like(&self, other: &TextSpan) -> bool {
+        self.same_font(other)
+            && (self.font_size - other.font_size).abs() < 0.01 * self.font_size.max(0.01)
+            && self.fill == other.fill
+            && (self.rise - other.rise).abs() < 0.01
+    }
+
+    /// Whether two parts of a line are in the same font, two subsets of one font being one.
+    pub fn same_font(&self, other: &TextSpan) -> bool {
+        let untagged = |name: &str| match name.split_once('+') {
+            Some((tag, rest)) if tag.len() == 6 && tag.bytes().all(|b| b.is_ascii_uppercase()) => {
+                rest.to_string()
+            }
+            _ => name.to_string(),
+        };
+        untagged(&self.font_name) == untagged(&other.font_name)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -61,6 +105,11 @@ pub(crate) struct Run {
     pub show: Show,
     /// Text matrix at the start of the show (after any line move of ' and ").
     pub tm: M,
+    /// Character and word spacing in points, and horizontal scaling (1 is none), as the
+    /// show was drawn with them.
+    pub spacing: [f32; 3],
+    /// The gap in points before the next show of the line, when it was read as a space.
+    pub gap: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -81,6 +130,23 @@ pub(crate) struct TextData {
     pub vertical: bool,
     /// Where each show's characters are, for locating matches within the line.
     pub pieces: Vec<Piece>,
+    /// The parts of the line in one style each ([`PageObject::spans`]).
+    pub spans: Vec<Span>,
+}
+
+/// Shows `runs.0..runs.1` of a line, its characters `chars.0..chars.1`, in one font, size,
+/// fill and rise.
+#[derive(Clone, Debug)]
+pub(crate) struct Span {
+    pub chars: (usize, usize),
+    pub runs: (usize, usize),
+    /// The font's name in the page's resources.
+    pub font: Vec<u8>,
+    pub base: String,
+    pub reuse: bool,
+    pub size: f32,
+    pub fill: Option<[f32; 3]>,
+    pub rise: f32,
 }
 
 /// The characters `chars.0..chars.1` of a line's text, shown by one operator, and the
@@ -471,6 +537,8 @@ impl Pdf {
                             op: i,
                             show,
                             tm: start_tm,
+                            spacing: [gs.tc * lin, gs.tw * lin, th],
+                            gap: 0.0,
                         },
                         text,
                         font: gs.font.clone(),
@@ -706,6 +774,8 @@ impl Pdf {
                     hidden: false,
                     baseline: None,
                     upright: false,
+                    vertical: false,
+                    spans: Vec::new(),
                 };
                 if let Some(t) = &o.text {
                     po.hidden = t.hidden;
@@ -715,6 +785,19 @@ impl Pdf {
                     po.fill = t.fill;
                     po.font_reusable = t.reuse;
                     po.baseline = Some(apply(to_vis, t.origin.0, t.origin.1));
+                    po.vertical = t.vertical;
+                    po.spans = t
+                        .spans
+                        .iter()
+                        .map(|s| TextSpan {
+                            chars: s.chars,
+                            font_name: s.base.clone(),
+                            font_size: s.size,
+                            fill: s.fill,
+                            font_reusable: s.reuse,
+                            rise: s.rise,
+                        })
+                        .collect();
                     // The text's own across and up directions, on the displayed page (y down).
                     let m = mul(mul(t.runs[0].tm, o.ctm), to_vis);
                     let (across, up) = ((m[0], m[1]), (m[2], m[3]));
@@ -965,7 +1048,7 @@ fn group_runs(runs: Vec<RunInfo>, out: &mut Vec<Obj>) {
             return;
         }
         let mut at = 0;
-        let pieces = group
+        let pieces: Vec<Piece> = group
             .iter()
             .map(|r| {
                 let n = r.text.chars().count();
@@ -986,6 +1069,23 @@ fn group_runs(runs: Vec<RunInfo>, out: &mut Vec<Obj>) {
             })
             .collect();
         let first = &group[0];
+        // The line's baseline is its largest text's (raised and lowered parts are smaller),
+        // and each part's rise is how far above it the part starts; float noise isn't one.
+        let main = group
+            .iter()
+            .fold(first, |m, r| if r.size > m.size * 1.01 { r } else { m });
+        let up = (-first.dir.1, first.dir.0);
+        let rise = |r: &RunInfo| {
+            let h = (r.start.0 - main.start.0) * up.0 + (r.start.1 - main.start.1) * up.1;
+            if h.abs() < 0.02 * main.size {
+                0.0
+            } else {
+                h
+            }
+        };
+        let lift = rise(first);
+        let origin = (first.start.0 - lift * up.0, first.start.1 - lift * up.1);
+        let spans = styled_spans(&group, &pieces, rise, main.size);
         let bb = mx::aabb(group.iter().flat_map(|r| r.corners));
         out.push(Obj {
             kind: ObjectKind::Text,
@@ -998,44 +1098,47 @@ fn group_runs(runs: Vec<RunInfo>, out: &mut Vec<Obj>) {
                 tm_end: group.last().unwrap().tm_after,
                 tlm_end: group.last().unwrap().tlm_after,
                 text,
-                base: first.base.clone(),
-                size: first.size,
-                origin: first.start,
+                base: spans[0].base.clone(),
+                size: spans[0].size,
+                origin,
                 dir: first.dir,
-                fill: first.fill,
-                reuse: first.reuse,
+                fill: spans[0].fill,
+                reuse: spans[0].reuse,
                 hidden: !group.iter().any(|r| r.visible),
                 vertical: group.iter().any(|r| r.vertical),
                 pieces,
+                spans,
             }),
             path: None,
             inline: false,
         });
     };
     for r in runs {
+        // Shows join into a line whatever their font, size and colour, when they are next
+        // to each other on one baseline, measured against the larger text of the two.
         let join = match cur.last() {
             None => true,
             Some(p) => {
-                let same = p.font == r.font
-                    && (p.size - r.size).abs() < 0.01 * p.size.max(0.01)
-                    && p.fill == r.fill
-                    && p.visible == r.visible
-                    && p.dir.0 * r.dir.0 + p.dir.1 * r.dir.1 > 0.9999;
+                let same = p.visible == r.visible && p.dir.0 * r.dir.0 + p.dir.1 * r.dir.1 > 0.9999;
                 let (dx, dy) = (r.start.0 - p.end.0, r.start.1 - p.end.1);
                 let along = dx * p.dir.0 + dy * p.dir.1 + r.lead;
                 let perp = (-dx * p.dir.1 + dy * p.dir.0).abs();
-                same && perp < 0.3 * p.size && along > -0.3 * p.size && along < 0.7 * p.size
+                let size = p.size.max(r.size);
+                same && perp < 0.3 * size && along > -0.3 * size && along < 0.7 * size
             }
         };
         if !join {
             flush(&mut cur, out);
         }
         if let Some(p) = cur.last_mut() {
-            // From the end of the last piece to this piece's first character.
+            // From the end of the last piece to this piece's first character. A space
+            // between words is measured against the smaller text of the two.
             let (dx, dy) = (r.start.0 - p.end.0, r.start.1 - p.end.1);
             let along = dx * p.dir.0 + dy * p.dir.1 + r.lead;
-            if along > 0.18 * p.size && !p.text.ends_with(' ') && !r.text.starts_with(' ') {
+            let size = p.size.min(r.size);
+            if along > 0.18 * size && !p.text.ends_with(' ') && !r.text.starts_with(' ') {
                 p.text.push(' ');
+                p.run.gap = along;
                 // The space covers the gap, measured in the run's own units.
                 let c = p.corners;
                 let len = (c[1].0 - c[0].0).hypot(c[1].1 - c[0].1);
@@ -1048,6 +1151,47 @@ fn group_runs(runs: Vec<RunInfo>, out: &mut Vec<Obj>) {
         cur.push(r);
     }
     flush(&mut cur, out);
+}
+
+/// The parts of a line in one style each: shows next to each other in the same font,
+/// size, fill and rise are one part. A show with no characters goes with the part
+/// before it, or takes the style of the one after it at the start of the line.
+fn styled_spans(
+    group: &[RunInfo],
+    pieces: &[Piece],
+    rise: impl Fn(&RunInfo) -> f32,
+    size: f32,
+) -> Vec<Span> {
+    let mut spans: Vec<Span> = Vec::new();
+    for (k, (r, p)) in group.iter().zip(pieces).enumerate() {
+        let lift = rise(r);
+        let own = |runs_from: usize| Span {
+            chars: p.chars,
+            runs: (runs_from, k + 1),
+            font: r.font.clone(),
+            base: r.base.clone(),
+            reuse: r.reuse,
+            size: r.size,
+            fill: r.fill,
+            rise: lift,
+        };
+        let empty = p.chars.0 == p.chars.1;
+        match spans.last_mut() {
+            Some(s)
+                if empty
+                    || (s.font == r.font
+                        && (s.size - r.size).abs() < 0.01 * s.size.max(0.01)
+                        && s.fill == r.fill
+                        && (s.rise - lift).abs() < 0.02 * size) =>
+            {
+                s.chars.1 = p.chars.1;
+                s.runs.1 = k + 1;
+            }
+            Some(s) if s.chars.0 == s.chars.1 => *s = own(s.runs.0),
+            _ => spans.push(own(k)),
+        }
+    }
+    spans
 }
 
 #[allow(dead_code)]

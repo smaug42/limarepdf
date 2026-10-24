@@ -238,7 +238,7 @@ What you select decides what the inspector, the right-click menu and the floatin
 | --- | --- |
 | Nothing | The document: properties, opening view, password security, the form (when there is one), crop, watermark, headers/footers/Bates, OCR, optimise scanned pages, export pages as images, split into files, and buttons for export text, print and append PDFs |
 | Pages (click thumbnails; Shift for a range, Ctrl for one more) | Rotate, delete, extract to a new tab, insert images or a blank page after them, page labels from the first selected page, and the crop, watermark, headers/footers, OCR and optimise tools with the pages filled in ([Organising pages](organising-pages.md)) |
-| An object, a comment, or a tool that adds content | That object's or tool's options |
+| An object, a comment, or a tool that adds content | That object's or tool's options. For a line of text being edited, or new text being typed, the font, Bold, Italic, size and colour of the words selected in it, blank where they mix values ([Style words in a line](content-editing.md#style-words-in-a-line)) |
 | Words | Nothing of their own: the inspector stays on the document or pages. Copy, highlight, redact, print and save the selection from the floating toolbar (or the docked buttons) and the right-click menu |
 
 The inspector holds controls, with at most a short line about state (such as how many areas are marked); how to
@@ -301,7 +301,8 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Arrow keys (Shift for 10 points) | Move the selected object |
 | Ctrl+A, Ctrl+C | Select all text on the page, copy it (read tool) |
 | Esc | Cancel: close an open list, menu or colour picker (only that), finish (and keep) new text, a line, a note, a text box or a form field being typed, clear the selection, or leave a tool for the read tool |
-| Ctrl+B, Ctrl+I | Bold, Italic for new text being typed (Add text), or for the whole line being edited on the page |
+| Ctrl+B, Ctrl+I | Bold, Italic for the words selected in new text being typed (Add text) or a line being edited on the page; with nothing selected, the word at the caret, or what is typed next between words |
+| Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) while typing new text, a line, a note, a text box or the inspector's text | Undo, redo the typing there (and the styles, in new text and lines), not the document |
 | Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |
 | Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the top bar, tabs, bottom bar and panels left to right; inside a dialog, its fields and then its buttons. Space or Enter presses the button. In a form, Tab moves between its fields; Ctrl+K reaches every command |
 

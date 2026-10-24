@@ -16,17 +16,40 @@ with Ctrl; on a Mac, use ⌘ (Command) instead.
 While you type:
 
 - The line is drawn as it will be written, with a thin outline around it and the old line hidden underneath in the
-  colour around it. It keeps its own font when LimarePDF can keep it; otherwise it is written in the installed font
-  it came from (when LimarePDF can embed it), or in the Helvetica, Times or Courier that replaces it, which switches
-  as you type a character the line's font can't take. Its size and colour stay the same.
-- Ctrl+Z and Ctrl+Y undo and redo typing in the line, and Ctrl+B and Ctrl+I switch the whole line to Bold or
-  Italic. Once the change is kept, Undo takes the whole edit back. Editing the same line again within a few seconds,
-  with nothing else changed in between, joins the same undo step.
-- The inspector shows the line's font, size and colour. A change there shows on the line at once, the line stays
-  in editing, and the keyboard comes back to it; the change is kept with the typing.
+  colour around it. A line with words in other fonts, sizes or colours (a bold word, a superscript) is edited
+  whole, each word in its own style. Each keeps its own font when LimarePDF can keep it; otherwise it is written
+  in the installed font it came from (when LimarePDF can embed it), or in the Helvetica, Times or Courier that
+  replaces it, which switches as you type a character its font can't take.
+- What you type takes the style of the character before it (at the start of the line, the one after it).
+- Ctrl+Z and Ctrl+Y undo and redo typing and style changes in the line, in order. Once the change is kept, Undo
+  takes the whole edit back. Typing into the same line again within a few seconds, with nothing else changed in
+  between, joins the same undo step.
+- The inspector shows the font, size and colour of what is selected, or of the character before the caret.
 
-A line turned on the page (not running left to right on screen), and invisible recognised (OCR) text, are edited
-in a plain box over the line instead.
+A line turned on the page (not running left to right on screen) is edited in a box over the line instead, showing
+its fonts, sizes and colours; invisible recognised (OCR) text is edited in a plain box.
+
+## Style words in a line
+
+1. Double-click the line, then select the words: drag over them, or hold Shift and use the arrow keys. A
+   double-click selects one word.
+2. Press Ctrl+B for Bold or Ctrl+I for Italic, or pick a font, size or colour in the inspector.
+3. Press Enter, Esc or Tab, or click elsewhere, to keep it.
+
+As in a word processor:
+
+- With nothing selected, the caret inside a word changes that word. Between words, or at either end of a word,
+  the change applies to what you type next there.
+- Bold over words that are partly bold makes them all bold; over words that are all bold, it takes the bold off.
+  Italic works the same way. Words in a family without a bold or italic face stay as they are.
+- Where the selection mixes fonts, sizes or colours, the inspector shows that one blank: the font list with no
+  name, the size box empty, the colour button with the colours side by side. Bold and Italic show on only when all
+  of it is bold or italic. Picking a value there sets all of it.
+- A change in the inspector shows on the line at once, the line stays in editing, and the keyboard comes back to
+  it; the change is kept with the typing.
+
+A line selected as a whole (with the arrow, or after editing it) takes the inspector's font, size and colour as a
+whole, with the same blanks for what it mixes.
 
 ## Add text
 
@@ -38,10 +61,12 @@ The text appears as you type, in the font, size and colour it will have, with a 
 is added as one undo step, and nothing typed adds nothing. Each line becomes its own line of page text, so
 afterwards it moves and is edited line by line.
 
-While you type, the inspector's font, Bold, Italic, size and colour change the text (the keyboard comes back to it
-afterwards), Ctrl+B and Ctrl+I switch Bold and Italic, and dragging the outline moves the text. With this tool, a
-click on text already on the page edits that line instead, with the caret where you clicked, and a drag selects
-text, as with the read tool.
+While you type, Ctrl+B, Ctrl+I and the inspector's font, size and colour style what is selected, or what you type
+next, as when [styling words in a line](#style-words-in-a-line) (the keyboard comes back to the text afterwards).
+Ctrl+Z and Ctrl+Y undo and redo typing and styles, and dragging the outline moves the text. The next text you add
+starts in the style this one ended in. A line with larger text in it sits further below the one before, as in a
+word processor. With this tool, a click on text already on the page edits that line instead, with the caret where
+you clicked, and a drag selects text, as with the read tool.
 
 **Fonts:** the font list has Helvetica, Times and Courier first, then the fonts installed on the computer whose
 licence allows embedding them, each name drawn in its own font. Type in its search field to narrow it; Enter picks
@@ -104,15 +129,18 @@ LimarePDF splits a page's content into objects, one per line of text, drawn shap
 the page itself.
 
 - **Moving or resizing** places the object anew, leaving its drawing as it is.
-- **Editing text** keeps the line's own font when it can: a plain standard font, with plain text and no change of
-  font, size or colour. Otherwise the line is written again in the same place, size and colour, in the font you
-  chose, else in the installed family the line's font comes from, else in the nearest of Helvetica, Times and
-  Courier. While you edit a line it is drawn in the font it will have, and the old line underneath is hidden in
-  the colour around it.
+- **A line of text** is one object whatever its styles: a bold word or a superscript in it is a part of the line,
+  not an object of its own.
+- **Editing text** keeps each part's own font when it can: a part left as it was is written exactly as it was,
+  and a changed part in a plain standard font keeps it for plain text. Otherwise that part is written again in its
+  size and colour, in the font you chose, else in the installed family its font comes from, else in the nearest of
+  Helvetica, Times and Courier, the line staying in place. While you edit a line it is drawn in the fonts it will
+  have, and the old line underneath is hidden in the colour around it.
 - **Adding** text, shapes or pictures draws them over the page. Each typed line becomes its own line of page text,
-  spaced 1.2 times the size apart (as Acrobat does). Text in Helvetica, Times or Courier with characters those
-  fonts lack (Polish, Czech, Vietnamese, Greek, Cyrillic and so on) is written in the bundled Liberation face of
-  that font, which has the same widths, embedded in the file and cut down to the characters used.
+  1.2 times the size below the one before (as Acrobat does); with sizes that differ, 1.2 times a quarter of the
+  line above's largest size and three quarters of its own. Text in Helvetica, Times or Courier with characters
+  those fonts lack (Polish, Czech, Vietnamese, Greek, Cyrillic and so on) is written in the bundled Liberation
+  face of that font, which has the same widths, embedded in the file and cut down to the characters used.
 - **Installed fonts** (the inspector's font list after the three standard ones) are the families whose licence
   allows embedding, with up to four styles each. Text in one is always embedded in the file, cut down to the
   characters used, so it looks the same on any computer.
@@ -133,15 +161,20 @@ detail is in [How it is built](developer/architecture.md#content-editing).
   be typed, and a line that already has them (Chinese in a line that becomes Helvetica, say) can't be written
   anew; the change is refused with a message naming them. Right-to-left and shaped scripts (Hebrew, Arabic,
   Devanagari, Thai and the rest) are refused in every font, as they would come out wrong without reordering and
-  shaping. An installed font lacking a character refuses it too, naming the font: one line is set in one font,
-  with no fallback to another.
+  shaping. An installed font lacking a character refuses it too, naming the font: a typed character goes in the
+  font of the words around it, with no fallback to another.
 - Installed fonts whose licence restricts embedding, or that have no Latin letters, aren't offered; a family's
   missing bold or italic isn't made up. The list is read once, when the app starts (about a second, on another
   thread): fonts installed while it runs show after a restart.
 - While a line that keeps its font is edited, its character and word spacing and horizontal scaling (`Tc`, `Tw`,
   `Tz`) aren't drawn, and an embedded font is drawn from the installed or Liberation look-alike rather than its own
-  data, so the line can look slightly different until you finish. Turned lines and invisible text are edited in a
-  plain box.
+  data, so the line can look slightly different until you finish. A part raised high above the line (a large
+  superscript) is drawn lower while you type, within the line, and is written where it was. Turned lines are
+  edited in a box over the line, and invisible text in a plain box.
+- A part of a line written again (changed text in a font LimarePDF can't keep, or another font chosen) loses its
+  own character and word spacing and horizontal scaling; parts left as they were keep theirs.
+- Words can be styled only in a line being edited, not by selecting them with the read tool. There is no
+  underline or strike-through for page text.
 - Editing text does not change its width: longer text can overlap its neighbours.
 - Where the text after a changed line starts is worked out from the font's character widths. Where a file doesn't
   give them for a font that isn't one of the standard 14, or a CID font's characters can't be told apart, they are
