@@ -27,6 +27,18 @@
   changed while the question was open"). The field is now kept before the Print dialog opens, so the job holds
   the typed value; the same goes for the other commands that ask a question first. A field being typed in when a
   dialog opens keeps its typing, and gets the keyboard back when the dialog closes.
+- The Undo button on a notice such as "Deleted page 1" undid whatever came last in the tab in front: after going
+  to another document, it took back that document's edit and left the page deleted; after another change in the
+  same document, it took back that change. A notice's Undo now takes back only its own change in its own
+  document, and the notice goes as soon as something comes after that change. Going to another tab hides it, and
+  it shows again on coming back within 30 seconds. Notices that only tell you something ("There are no redaction
+  marks", say) no longer have an Undo button, and "Reset the form" no longer shows when the reset was refused.
+- Closing a tab behind the one in front, with its close button, switched to another document. The tab in front
+  now stays in front, and a tab with unsaved changes asks about them without coming to the front; closing the tab
+  in front still moves to the next one.
+- A form value LimarePDF can't write (right-to-left text, say), typed and then left by clicking elsewhere, Tab,
+  Enter or Esc, was lost once the reason was shown. It now stays typed in the field, which gets the keyboard back
+  when the message closes, and Tab doesn't move on to the next field.
 
 ## [0.9.0] - 2026-10-23
 

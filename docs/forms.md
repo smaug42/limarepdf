@@ -62,7 +62,8 @@ whether it is required. It also has:
 ## How values are written
 
 LimarePDF draws the filled fields itself, so the values show the same in other readers. Text must be Latin, Greek
-or Cyrillic for now; anything else is refused with a message rather than saved wrongly. A value the field's own
+or Cyrillic for now; anything else is refused with a message rather than saved wrongly, and stays typed in the
+field, which gets the keyboard back once you close the message, so you can change it. A value the field's own
 font can't show is drawn in the Liberation face of its kind, embedded in the file. Fields that have a value but no
 drawing of their own are drawn when the file opens.
 

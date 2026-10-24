@@ -33,6 +33,15 @@ enum Edit {
     Options { text: String, fresh: bool },
 }
 
+/// The typing a text box kept as its field was left, until the change is made: given
+/// back if it is refused ([`FormUi::kept`]).
+struct Left {
+    name: String,
+    widget: usize,
+    text: String,
+    original: String,
+}
+
 pub struct FormUi {
     /// The document's fields, read again after every change.
     fields: Option<Vec<Field>>,
@@ -41,6 +50,7 @@ pub struct FormUi {
     /// Tint every field, and outline the required ones.
     pub highlight: bool,
     focus: Option<Focus>,
+    left: Option<Left>,
     /// Bring the focused field into view: set when the keyboard moves to it.
     scroll: bool,
     /// The tab's editor ids ([`crate::editor::Editor::scope`]): a text box's id is this
@@ -55,6 +65,7 @@ impl Default for FormUi {
             order: Vec::new(),
             highlight: false,
             focus: None,
+            left: None,
             scroll: false,
             scope: egui::Id::new("form"),
         }
@@ -257,6 +268,25 @@ impl FormUi {
         {
             *o = original;
         }
+    }
+
+    /// The change queued for field `name` was made, or refused when not `ok`. Typing its
+    /// text box kept as the field was left and then refused goes back into the box, which
+    /// takes the keyboard back once the reason has been read (BUG-37).
+    pub fn kept(&mut self, name: &str, ok: bool) {
+        let Some(l) = self.left.take().filter(|l| !ok && l.name == name) else {
+            return;
+        };
+        self.focus = Some(Focus {
+            name: l.name,
+            widget: l.widget,
+            edit: Edit::Text {
+                text: l.text,
+                original: l.original,
+                fresh: false,
+                back: true,
+            },
+        });
     }
 
     /// What a click on (or Space over) a field does.
@@ -487,7 +517,12 @@ impl FormUi {
             )
         });
         if text != original {
-            *original = text.clone();
+            self.left = Some(Left {
+                name: field.name.clone(),
+                widget: *widget,
+                text: text.clone(),
+                original: std::mem::replace(original, text.clone()),
+            });
             acts.push(set(&field, FieldValue::Text(text.clone())));
         }
         if tab {

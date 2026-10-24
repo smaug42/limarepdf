@@ -269,6 +269,8 @@ pub struct Tab {
     pub forms: Forms,
     /// Something undoable just happened, for the undo toast.
     pub notice: Option<String>,
+    /// Something to say with nothing done, for a toast with no Undo.
+    pub info: Option<String>,
     /// A link to a web address (or anything outside the document) was clicked; the app
     /// asks before opening it.
     pub open_link: Option<String>,
@@ -405,6 +407,7 @@ impl Tab {
             requested: Vec::new(),
             forms: Forms::default(),
             notice: None,
+            info: None,
             open_link: None,
             thumb_drag: None,
             stale: HashSet::new(),
@@ -566,6 +569,12 @@ impl Tab {
             path: self.path.clone(),
             pages: self.page_count(),
         }
+    }
+
+    /// Where the tab's undo history is: the revision and the undo and redo depths. Any
+    /// change, Undo or Redo moves it.
+    pub fn history(&self) -> (u64, usize, usize) {
+        (self.revision, self.undo.len(), self.redo.len())
     }
 
     /// After a command failed part way: nothing selected, dragged or half made, the Read
@@ -962,7 +971,8 @@ impl Tab {
                     self.edit_pages(ctx, &[p], |pdf| pdf.set_path_style(p, id, &st));
                 }
                 Action::SetField(pages, name, v) => {
-                    self.edit_pages(ctx, &pages, |pdf| pdf.set_field(&name, v));
+                    let ok = self.edit_pages(ctx, &pages, |pdf| pdf.set_field(&name, v));
+                    self.ed.form.kept(&name, ok);
                 }
                 Action::SetAnnot(p, id, e) => {
                     self.edit_pages(ctx, &[p], |pdf| {
@@ -1244,7 +1254,7 @@ impl Tab {
             .filter(|(_, b): &(usize, Vec<[f32; 4]>)| !b.is_empty())
             .collect();
         if marks.is_empty() {
-            self.notice = Some("Search first: there are no results to mark".into());
+            self.info = Some("Search first: there are no results to mark".into());
             return;
         }
         let pages: Vec<usize> = marks.iter().map(|(p, _)| *p).collect();

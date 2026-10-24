@@ -96,8 +96,15 @@ after it) and before a job's result replaces the document (typing since the job 
 `Tab::keep_typing` adds the forms and runs in `App::act` for every command `Act::uses_document` names (an
 exhaustive match: a new command must be classed), so a command's question (`App::asked`) is about the document
 with the typing in it. A form field that loses the keyboard to a dialog keeps its typing and takes the keyboard
-back when the dialog closes (`Edit::Text`'s `back`). Panel Apply buttons that redraw only some pages or nothing
-don't commit first: they lose nothing, and their forms join their own undo steps.
+back when the dialog closes (`Edit::Text`'s `back`); one whose own change is refused as it is left gets its typing
+back the same way (`FormUi::kept`). Panel Apply buttons that redraw only some pages or nothing don't commit first:
+they lose nothing, and their forms join their own undo steps.
+
+Toasts (`App::toasts`, at most one per tab) belong to a tab by its id. One for an undoable change (`Tab::notice`)
+records the tab's `Tab::history` (revision, undo and redo depths) and goes once that moves or typing starts, so its
+Undo runs only while the change is the last thing in the tab; `Tab::info` notices have no Undo. A tab's toast waits
+while the tab is behind (`TOAST_AWAY`). Tabs are closed by index through `App::close_tab`, which keeps the tab in
+front, and `App::close_asking`; a confirmation names its tab by id (`Asked`).
 
 Text the standard fonts can't write goes into an embedded font (`crates/limarepdf-core/src/embed.rs`,
 `Pdf::embed_codes`): the bundled Liberation face of the standard font (`LIBERATION`, in core's `assets/fonts/`,

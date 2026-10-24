@@ -92,6 +92,9 @@ comment or text box on the page, a form field, the selected comment's changes in
 added. Saving keeps that text first, as clicking away would, and so do printing and the other commands that
 change or use the document ([Undo](#undo)).
 
+Closing a tab behind the one you are reading leaves you where you are, also when it asks about unsaved changes
+first; closing the tab in front takes you to the next one, or the one before when it was the last.
+
 If a damaged file makes LimarePDF fail while showing a document, that tab shows an error page with Save a copy and
 Close this tab; other tabs carry on.
 
@@ -119,7 +122,13 @@ signed original.
 Everything that changes the document can be undone with Ctrl+Z, and redone with Ctrl+Y (or Ctrl+Shift+Z), up to 20
 steps back. Each step keeps a whole copy of the document, and a document's steps are limited to 1 GB together, so
 undo goes back fewer steps on very large documents (about 7 on a 139 MB scan); the latest change can always be
-undone. Deleting shows a notice with an Undo button.
+undone.
+
+Deleting pages, comments, objects or bookmarks, marking text for redaction, flattening, resetting a form and changing password settings show a
+notice at the bottom of the window with an Undo button, which takes back that change in that document only. The
+notice goes as soon as something comes after the change there (another change, Undo, Redo or typing). Going to
+another tab hides it; come back within 30 seconds and it shows again. Notices that only tell you something (there
+are no redaction marks to apply, say) have no Undo button.
 
 While you type in a line, a note, a text box, a form field or any of the inspector's boxes, Ctrl+Z and Ctrl+Y undo
 and redo the typing there and nothing else; with nothing left to undo there, they do nothing. Once it is kept (when

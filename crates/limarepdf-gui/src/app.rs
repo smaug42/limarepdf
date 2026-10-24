@@ -482,12 +482,23 @@ fn name_resize_handle(ctx: &egui::Context, panel: &str, name: &str) {
 
 /// How long the undo toast stays, in seconds.
 const TOAST_SECONDS: f64 = 6.0;
+/// How long a toast waits while its tab is behind another, in seconds, and the least it
+/// shows for when that tab comes back to the front within the wait.
+const TOAST_AWAY: f64 = 30.0;
+const TOAST_BACK: f64 = 3.0;
 
-/// A brief notice at the bottom of the window with an Undo button.
+/// A brief notice at the bottom of the window about something that happened in one tab,
+/// shown while that tab is in front. Undo takes back the change it tells of, and goes as
+/// soon as that change isn't the last thing in the tab (BUG-02).
 struct Toast {
+    tab: u64,
     text: String,
-    /// When it goes away (egui input time).
+    /// The tab's [`Tab::history`] just after the change, for a change Undo takes back.
+    undo: Option<(u64, usize, usize)>,
+    /// When it goes away (egui input time), while its tab is in front.
     until: f64,
+    /// While its tab is behind another: since when, and the seconds it had left.
+    away: Option<(f64, f64)>,
 }
 
 /// The command palette (Ctrl+K) while it is open.
@@ -527,7 +538,8 @@ pub struct App {
     fitted: bool,
     /// The control that had the keyboard last frame (see [`page_text::fresh_history`]).
     keyboard: Option<egui::Id>,
-    toast: Option<Toast>,
+    /// At most one for each tab.
+    toasts: Vec<Toast>,
     /// Recently opened files, kept between runs.
     recent: Recent,
     /// Settings kept between runs (the theme).
@@ -596,7 +608,7 @@ impl App {
             bar_widths: BarWidths::default(),
             fitted: false,
             keyboard: None,
-            toast: None,
+            toasts: Vec::new(),
             recent,
             settings,
             sig_details: None,
@@ -1753,7 +1765,7 @@ impl App {
             Act::ApplyRedactions if has => {
                 let n = self.tabs[self.active].pdf.redaction_marks().len();
                 if n == 0 {
-                    self.tabs[self.active].notice = Some(
+                    self.tabs[self.active].info = Some(
                         "There are no redaction marks: mark areas with Annotate > Mark areas for \
                          redaction, or mark selected text or search results"
                             .into(),
@@ -1765,7 +1777,7 @@ impl App {
             Act::FinishSigning if has => {
                 let n = self.tabs[self.active].pdf.sign_items();
                 if n == 0 {
-                    self.tabs[self.active].notice = Some(
+                    self.tabs[self.active].info = Some(
                         "There is nothing to finish: put down a signature, the date or a tick \
                          with the Sign tool first"
                             .into(),
@@ -1813,13 +1825,7 @@ impl App {
                     self.ids_window = Some(IdsWindow::new());
                 }
             }
-            Act::CloseTab if has => {
-                if self.tabs[self.active].unsaved() {
-                    self.dialog = Dialog::ConfirmClose(self.asked());
-                } else {
-                    self.close_tab(self.active);
-                }
-            }
+            Act::CloseTab if has => self.close_asking(self.active),
             Act::ToggleRecovery => self.toggle_recovery(),
             Act::ShowRecoveryFile => self.show_leftover(),
             Act::Quit => {
@@ -1894,8 +1900,9 @@ impl App {
             Act::ResetForm => {
                 let t = &mut self.tabs[self.active];
                 t.ed.form.clear_focus();
-                t.edit(ctx, |p| p.reset_form());
-                t.notice = Some("Reset the form".into());
+                if t.edit(ctx, |p| p.reset_form()) {
+                    t.notice = Some("Reset the form".into());
+                }
             }
             Act::FlattenForm => self.dialog = Dialog::ConfirmFlatten(self.asked()),
             Act::FlattenAnnots => {
@@ -2019,7 +2026,7 @@ impl App {
                     } else {
                         format!("{n} pages")
                     };
-                    self.notify(ctx, format!("Deleted {what}"));
+                    self.notify(ctx, self.active, format!("Deleted {what}"), true);
                 }
             }
             Act::RemoveBlank => self.spawn_job(ctx, "Remove blank pages", |p| {
@@ -2166,19 +2173,40 @@ impl App {
         self.tabs[self.active].forms.reveal = Some(s);
     }
 
-    /// The undo toast, bottom centre above the status bar, until it times out, is
-    /// dismissed, or Undo is pressed.
-    fn toast_ui(&mut self, ctx: &egui::Context, acts: &mut Vec<Act>) {
-        let Some(toast) = &self.toast else {
+    /// The front tab's toast, bottom centre above the status bar, until it times out, is
+    /// dismissed, or Undo is pressed. The toasts of tabs behind wait, for a while.
+    fn toast_ui(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        let front = self.tabs.get(self.active).map(|t| t.id);
+        let tabs = &self.tabs;
+        self.toasts.retain_mut(|toast| {
+            let Some(t) = tabs.iter().find(|t| t.id == toast.tab) else {
+                return false;
+            };
+            // Something came after its change: another change, Undo, Redo, or typing.
+            let later = |h| h != t.history() || t.ed.pending() || t.typing_in_forms();
+            if toast.undo.is_some_and(later) {
+                return false;
+            }
+            match (Some(t.id) == front, toast.away) {
+                (true, None) => now < toast.until,
+                (true, Some((since, left))) => {
+                    toast.until = now + left.max(TOAST_BACK);
+                    toast.away = None;
+                    now - since < TOAST_AWAY
+                }
+                (false, None) => {
+                    toast.away = Some((now, toast.until - now));
+                    now < toast.until
+                }
+                (false, Some((since, _))) => now - since < TOAST_AWAY,
+            }
+        });
+        let Some(toast) = self.toasts.iter().find(|t| Some(t.tab) == front) else {
             return;
         };
-        let now = ctx.input(|i| i.time);
-        if now >= toast.until || self.tabs.is_empty() {
-            self.toast = None;
-            return;
-        }
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(toast.until - now));
-        let mut close = false;
+        let (mut undo, mut close) = (false, false);
         egui::Area::new(egui::Id::new("toast"))
             .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -40.0])
             .order(egui::Order::Foreground)
@@ -2189,30 +2217,46 @@ impl App {
                         ui.horizontal(|ui| {
                             ui.label(&toast.text);
                             ui.add_space(8.0);
-                            let undo = actions::get(Act::Undo);
-                            let b = egui::Button::new(egui::RichText::new("Undo").strong());
-                            let tip = tooltip(ctx, undo);
-                            if ui.add(b).on_hover_text(tip).clicked() {
-                                acts.push(Act::Undo);
-                                close = true;
+                            if toast.undo.is_some() {
+                                let b = egui::Button::new(egui::RichText::new("Undo").strong());
+                                let tip = tooltip(ctx, actions::get(Act::Undo));
+                                if ui.add(b).on_hover_text(tip).clicked() {
+                                    (undo, close) = (true, true);
+                                }
                             }
                             let x = egui::Button::new(theme::icon(icon::X));
-                            let x = x.frame_when_inactive(false);
-                            if ui.add(x).on_hover_text("Dismiss").clicked() {
+                            let x = ui.add(x.frame_when_inactive(false));
+                            x.widget_info(|| named("Dismiss"));
+                            if x.on_hover_text("Dismiss").clicked() {
                                 close = true;
                             }
                         });
                     });
             });
         if close {
-            self.toast = None;
+            self.toasts.retain(|t| Some(t.tab) != front);
+        }
+        // At once, while its change is still the last thing in the tab, as checked above.
+        if undo {
+            self.run_command(ctx, actions::name(Act::Undo), |app, ctx| {
+                app.act(ctx, Act::Undo)
+            });
         }
     }
 
-    /// Show the undo toast for something that just happened.
-    fn notify(&mut self, ctx: &egui::Context, text: String) {
-        let until = ctx.input(|i| i.time) + TOAST_SECONDS;
-        self.toast = Some(Toast { text, until });
+    /// Show a toast about something that just happened in tab `i`, replacing the tab's
+    /// earlier one; `undo` for a change Undo takes back.
+    fn notify(&mut self, ctx: &egui::Context, i: usize, text: String, undo: bool) {
+        let t = &self.tabs[i];
+        let toast = Toast {
+            tab: t.id,
+            text,
+            undo: undo.then(|| t.history()),
+            until: ctx.input(|i| i.time) + TOAST_SECONDS,
+            away: None,
+        };
+        self.toasts.retain(|x| x.tab != toast.tab);
+        self.toasts.push(toast);
     }
 
     /// Insert a blank page of `size` points after page `after` (0-based) and go to it.
@@ -2354,7 +2398,7 @@ impl App {
                 t.banners.retain(|b| b.kind != BannerKind::Protected);
                 t.set_encryption(encryption);
                 self.status = "Security settings apply when you save.".into();
-                self.notify(ctx, "Changed password security".into());
+                self.notify(ctx, active, "Changed password security".into(), true);
             }
             Apply::Crop(joins) => {
                 let t = &mut self.tabs[active];
@@ -2486,9 +2530,23 @@ impl App {
         false
     }
 
+    /// Close tab `i`, asking first when it has unsaved work.
+    fn close_asking(&mut self, i: usize) {
+        if self.tabs[i].unsaved() {
+            self.dialog = Dialog::ConfirmClose(Asked::of(&self.tabs[i]));
+        } else {
+            self.close_tab(i);
+        }
+    }
+
+    /// Close tab `i`. The tab in front stays there; closing it brings the next one, or the
+    /// one before when it was the last (BUG-09).
     fn close_tab(&mut self, i: usize) {
         if i < self.tabs.len() {
             let tab = self.tabs.remove(i);
+            if i < self.active {
+                self.active -= 1;
+            }
             self.active = self.active.min(self.tabs.len().saturating_sub(1));
             self.closed_copy(&tab);
             // Dropped last (stopping its render worker), with the app's state already valid.
@@ -2546,8 +2604,13 @@ impl App {
                 .file(file),
             ) {
                 Outcome::Apply => {
+                    // A tab asked about from behind another closes there.
+                    let front = self.tabs.get(self.active).map(|t| t.id);
                     if self.still(asked) {
                         self.close_tab(self.active);
+                        if let Some(i) = self.tabs.iter().position(|t| Some(t.id) == front) {
+                            self.active = i;
+                        }
                     }
                     done = true;
                 }
@@ -3975,9 +4038,9 @@ impl eframe::App for App {
         }
 
         if has {
+            let mut close = None;
             egui::Panel::top("tabs").show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    let mut close = None;
                     for i in 0..self.tabs.len() {
                         let (pick, x) = tab_button(ui, &self.tabs[i].title(), i == self.active);
                         if pick {
@@ -3987,12 +4050,14 @@ impl eframe::App for App {
                             close = Some(i);
                         }
                     }
-                    if let Some(i) = close {
-                        self.active = i;
-                        acts.push(Act::CloseTab);
-                    }
                 });
             });
+            // The tab in front stays there, unless it is the one closed.
+            if let Some(i) = close {
+                self.run_command(&ctx, actions::name(Act::CloseTab), |app, _| {
+                    app.close_asking(i)
+                });
+            }
         }
 
         // The status bar: the page and messages at the left; the page layout, Fit width
@@ -4308,7 +4373,7 @@ impl eframe::App for App {
 
         // Commands chosen from right-click menus on pages and thumbnails, and undoable
         // changes the editor reports.
-        let mut notice = None;
+        let (mut notice, mut info) = (None, None);
         if let Some(t) = self.tabs.get_mut(self.active) {
             // The digital signature tool lists the empty signature fields, and opens the
             // signing window once its place is chosen.
@@ -4327,12 +4392,15 @@ impl eframe::App for App {
                 }
             }
             acts.append(&mut t.requested);
-            notice = t.notice.take();
+            (notice, info) = (t.notice.take(), t.info.take());
         }
         if let Some(text) = notice {
-            self.notify(&ctx, text);
+            self.notify(&ctx, self.active, text, true);
         }
-        self.toast_ui(&ctx, &mut acts);
+        if let Some(text) = info {
+            self.notify(&ctx, self.active, text, false);
+        }
+        self.toast_ui(&ctx);
         self.palette_ui(&ctx, &c, &mut acts);
         for a in acts {
             self.run_command(&ctx, actions::name(a), |app, ctx| app.act(ctx, a));
@@ -8446,5 +8514,357 @@ mod tests {
                 _ => "no message",
             }
         );
+    }
+
+    /// Add a tab of `n` blank pages, with nothing unsaved, and bring it to the front.
+    fn pages_tab(app: &mut App, ctx: &egui::Context, n: usize) {
+        let mut pdf = Pdf::new();
+        for i in 0..n {
+            pdf.insert_blank(i, 612.0, 792.0).unwrap();
+        }
+        assert!(app.add_tab(ctx, pdf, None, None, false));
+    }
+
+    /// Where the undo toast's Undo button is, when one is shown: the button called Undo in
+    /// the window's lower half (the toolbar's is at the top).
+    fn toast_undo(tree: &egui::accesskit::TreeUpdate) -> Option<egui::Pos2> {
+        tree.nodes
+            .iter()
+            .filter(|(_, n)| n.role() == egui::accesskit::Role::Button && n.label() == Some("Undo"))
+            .filter_map(|(_, n)| n.bounds())
+            .find(|b| b.y0 > 400.0)
+            .map(|b| egui::pos2(((b.x0 + b.x1) / 2.0) as f32, ((b.y0 + b.y1) / 2.0) as f32))
+    }
+
+    /// Whether a label in the window starts with `text`.
+    fn shows(tree: &egui::accesskit::TreeUpdate, text: &str) -> bool {
+        tree.nodes
+            .iter()
+            .any(|(_, n)| n.value().is_some_and(|v| v.starts_with(text)))
+    }
+
+    /// A notice's Undo takes back its own change only: after a page is deleted in one
+    /// document, the other offers no Undo that would take back its own edit; back in the
+    /// first soon after, the notice and its Undo are there again. Both files saved and read
+    /// back hold what was done (BUG-02, audit A19).
+    #[test]
+    fn a_notice_undoes_its_own_change_in_its_own_tab() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        pages_tab(&mut app, &ctx, 12);
+        pages_tab(&mut app, &ctx, 12);
+        let ty = Typist::new(&ctx);
+        // In the second document the first page turned; in the first, page 1 deleted.
+        ty.frame(&mut app, vec![]);
+        app.act(&ctx, Act::RotR);
+        app.active = 0;
+        app.act(&ctx, Act::Delete);
+        let tree = ty.pause(&mut app);
+        assert!(shows(&tree, "Deleted page 1"), "no notice");
+        assert!(toast_undo(&tree).is_some(), "no Undo in the notice");
+        assert!(node(&tree, "Dismiss").is_some(), "Dismiss has no name");
+        // In the second document, no Undo there takes back its turn.
+        app.active = 1;
+        let tree = ty.pause(&mut app);
+        if let Some(undo) = toast_undo(&tree) {
+            ty.click(&mut app, undo);
+        }
+        assert_eq!(saved_rotation(&app.tabs[1]), 90, "the turn was undone");
+        assert_eq!(app.tabs[0].page_count(), 11);
+        // Back in the first: the notice's Undo brings the page back.
+        app.active = 0;
+        let tree = ty.pause(&mut app);
+        assert!(shows(&tree, "Deleted page 1"), "the notice is gone");
+        ty.click(&mut app, toast_undo(&tree).expect("no Undo in the notice"));
+        assert_eq!(app.tabs[0].page_count(), 12);
+        let dir = std::env::temp_dir();
+        let paths = ["a", "b"].map(|n| {
+            dir.join(format!(
+                "limarepdf-app-{}-notice-{n}.pdf",
+                std::process::id()
+            ))
+        });
+        for (i, path) in paths.iter().enumerate() {
+            app.active = i;
+            app.tabs[i].path = Some(path.clone());
+            app.act(&ctx, Act::Save);
+        }
+        let back = paths.map(|p| {
+            let pdf = Pdf::open(&p, None).unwrap();
+            let _ = std::fs::remove_file(&p);
+            pdf
+        });
+        assert_eq!(back[0].page_ids().len(), 12);
+        assert_eq!(back[1].page_ids().len(), 12);
+        let page = back[1].doc.get_dictionary(back[1].page_ids()[0]).unwrap();
+        let turn = page.get(b"Rotate").and_then(|o| o.as_i64()).unwrap_or(0);
+        assert_eq!(turn, 90, "the saved turn");
+    }
+
+    /// The notice and its Undo go once its change isn't the last thing in its tab: after
+    /// another edit, Undo, Undo and Redo, starting to type, or the tab closing; also after
+    /// too long in another tab (BUG-02, audit A19).
+    #[test]
+    fn a_notice_goes_once_its_change_is_not_the_last() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        type Then = fn(&mut App, &egui::Context, &Typist);
+        let cases: [(&str, Then); 6] = [
+            ("another edit", |app, ctx, _| app.act(ctx, Act::RotR)),
+            ("Undo", |app, ctx, _| app.act(ctx, Act::Undo)),
+            ("Undo and Redo", |app, ctx, _| {
+                app.act(ctx, Act::Undo);
+                app.act(ctx, Act::Redo);
+            }),
+            ("typing", |app, ctx, ty| {
+                app.act(ctx, Act::Tool(Tool::Text));
+                let tree = ty.frame(app, vec![]);
+                let (page, _) = node(&tree, "Page 1").expect("the page");
+                ty.click(app, page.center());
+                ty.text(app, "Walrus");
+                assert!(app.tabs[1].ed.pending(), "nothing typed");
+            }),
+            ("closing the tab", |app, _, _| app.close_tab(1)),
+            ("a long wait in another tab", |app, _, ty| {
+                app.active = 0;
+                ty.frame(app, vec![]);
+                ty.time.set(ty.time.get() + 40.0);
+                ty.frame(app, vec![]);
+                app.active = 1;
+            }),
+        ];
+        let ty = Typist::new(&ctx);
+        for (case, then) in cases {
+            let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+            pages_tab(&mut app, &ctx, 3);
+            pages_tab(&mut app, &ctx, 3);
+            ty.frame(&mut app, vec![]);
+            app.act(&ctx, Act::Delete);
+            let tree = ty.frame(&mut app, vec![]);
+            assert!(toast_undo(&tree).is_some(), "{case}: no notice");
+            then(&mut app, &ctx, &ty);
+            let tree = ty.frame(&mut app, vec![]);
+            let tree = match toast_undo(&tree) {
+                Some(_) => tree,
+                None => ty.frame(&mut app, vec![]),
+            };
+            assert!(!shows(&tree, "Deleted page"), "{case}: the notice stayed");
+            assert!(toast_undo(&tree).is_none(), "{case}: Undo still offered");
+        }
+    }
+
+    /// A notice waits while its tab is behind another: back within the wait, it shows for
+    /// what it had left, at least a few seconds, then goes (BUG-02).
+    #[test]
+    fn a_notice_waits_while_its_tab_is_behind() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        pages_tab(&mut app, &ctx, 3);
+        pages_tab(&mut app, &ctx, 3);
+        let ty = Typist::new(&ctx);
+        let shown = |app: &mut App| toast_undo(&ty.frame(app, vec![])).is_some();
+        ty.frame(&mut app, vec![]);
+        app.act(&ctx, Act::Delete);
+        ty.frame(&mut app, vec![]);
+        app.active = 0;
+        ty.frame(&mut app, vec![]);
+        ty.time.set(ty.time.get() + 20.0);
+        assert!(!shown(&mut app), "shown in the other tab");
+        app.active = 1;
+        assert!(shown(&mut app), "gone after 20 seconds");
+        ty.time.set(ty.time.get() + 2.0);
+        assert!(shown(&mut app), "gone at once");
+        ty.time.set(ty.time.get() + 5.0);
+        assert!(!shown(&mut app), "never goes");
+    }
+
+    /// A notice about nothing done offers no Undo, which would take back the change before
+    /// it (audit A19).
+    #[test]
+    fn a_notice_about_nothing_done_offers_no_undo() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let ty = Typist::new(&ctx);
+        for act in [Act::ApplyRedactions, Act::FinishSigning] {
+            // A tab with a change to undo.
+            let mut app = app_with(&ctx, 1);
+            app.act(&ctx, act);
+            let tree = ty.frame(&mut app, vec![]);
+            assert!(shows(&tree, "There "), "{act:?}: no notice");
+            assert!(toast_undo(&tree).is_none(), "{act:?}: Undo offered");
+        }
+    }
+
+    /// Three tabs of one page, a.pdf, b.pdf and c.pdf, with nothing unsaved; their ids.
+    fn named_tabs(app: &mut App, ctx: &egui::Context) -> Vec<u64> {
+        for n in ["a", "b", "c"] {
+            pages_tab(app, ctx, 1);
+            let path = PathBuf::from(format!("/nonexistent/{n}.pdf"));
+            app.tabs.last_mut().unwrap().path = Some(path);
+        }
+        app.tabs.iter().map(|t| t.id).collect()
+    }
+
+    /// Click the close button on the tab called `title`, as a user would.
+    fn close_by_button(app: &mut App, ctx: &egui::Context, title: &str) {
+        let tree = settle(app, ctx);
+        let (r, _) = node(&tree, &format!("Close {title}")).expect("the close button");
+        window(app, ctx, 1400.0, click_at(r.center()));
+        settle(app, ctx);
+    }
+
+    /// Closing a tab behind the one in front leaves that one in front; closing the one in
+    /// front brings the next, or the one before when it was the last (BUG-09, audit A02).
+    #[test]
+    fn closing_a_tab_keeps_the_one_in_front() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let names = ["a.pdf", "b.pdf", "c.pdf"];
+        // The tab in front, the one closed, and the one in front then.
+        let cases = [
+            (0, 2, 0),
+            (2, 0, 2),
+            (1, 2, 1),
+            (1, 0, 1),
+            (1, 1, 2),
+            (2, 2, 1),
+        ];
+        for (front, closed, then) in cases {
+            let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+            let ids = named_tabs(&mut app, &ctx);
+            app.active = front;
+            close_by_button(&mut app, &ctx, names[closed]);
+            let case = format!("{} in front, {} closed", names[front], names[closed]);
+            let gone = app.tabs.iter().all(|t| t.id != ids[closed]);
+            assert!(gone, "{case}: not closed");
+            assert_eq!(app.tabs.len(), 2, "{case}");
+            assert_eq!(app.tabs[app.active].id, ids[then], "{case}");
+        }
+    }
+
+    /// Closing an unsaved tab behind the one in front asks about it from there, and the
+    /// one in front stays: Cancel changes nothing, Discard closes it, also when another
+    /// file finished opening meanwhile (BUG-09, audit A02).
+    #[test]
+    fn closing_an_unsaved_tab_behind_asks_and_keeps_the_one_in_front() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let ids = named_tabs(&mut app, &ctx);
+        app.tabs[2].dirty = true;
+        app.active = 0;
+        close_by_button(&mut app, &ctx, "c.pdf *");
+        assert!(matches!(app.dialog, Dialog::ConfirmClose(..)), "didn't ask");
+        assert_eq!(app.active, 0, "the tab asked about came to the front");
+        click(&mut app, &ctx, "Cancel");
+        assert!(matches!(app.dialog, Dialog::None));
+        assert_eq!(app.tabs.len(), 3, "Cancel closed a tab");
+        assert_eq!(app.active, 0, "Cancel changed the tab in front");
+        close_by_button(&mut app, &ctx, "c.pdf *");
+        click(&mut app, &ctx, "Discard changes");
+        let left: Vec<u64> = app.tabs.iter().map(|t| t.id).collect();
+        assert_eq!(left, ids[..2]);
+        assert_eq!(app.active, 0, "Discard changed the tab in front");
+        // A file finishes opening while the question is open: it comes to the front, and
+        // stays there.
+        app.tabs[1].dirty = true;
+        close_by_button(&mut app, &ctx, "b.pdf *");
+        assert!(matches!(app.dialog, Dialog::ConfirmClose(..)), "didn't ask");
+        pages_tab(&mut app, &ctx, 1);
+        let opened = app.tabs[2].id;
+        click(&mut app, &ctx, "Discard changes");
+        let left: Vec<u64> = app.tabs.iter().map(|t| t.id).collect();
+        assert_eq!(left, [ids[0], opened]);
+        assert_eq!(app.active, 1, "the opened tab left the front");
+    }
+
+    /// A value a field can't take, typed and then left by a click elsewhere, Tab, Enter or
+    /// Esc, stays in the field with the keyboard once the reason is read, and nothing is
+    /// kept; Tab doesn't move on. A value it can take is kept as before (BUG-37).
+    #[test]
+    fn a_refused_field_value_stays_in_the_field_when_left() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        type Leave = fn(&Typist, &mut App);
+        let cases: [(&str, Leave); 4] = [
+            ("a click away", |ty, app| {
+                let (min, k) = ty.page(app);
+                ty.click(app, min + egui::vec2(500.0, 300.0) * k);
+            }),
+            ("Tab", |ty, app| {
+                ty.key(app, Key::Tab, egui::Modifiers::NONE);
+                ty.pause(app);
+            }),
+            ("Enter", |ty, app| {
+                ty.key(app, Key::Enter, egui::Modifiers::NONE);
+                ty.pause(app);
+            }),
+            ("Esc", |ty, app| {
+                ty.key(app, Key::Escape, egui::Modifiers::NONE);
+                ty.pause(app);
+            }),
+        ];
+        let ty = Typist::new(&ctx);
+        for (case, leave) in cases {
+            let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+            let pdf = form_doc(&[("a", 1), ("b", 1)]);
+            assert!(app.add_tab(&ctx, pdf, None, None, false));
+            ty.click_field(&mut app, "a", 0);
+            ty.text(&mut app, "مرحبا");
+            leave(&ty, &mut app);
+            let why = matches!(app.dialog, Dialog::Message(..));
+            assert!(why, "{case}: no reason given");
+            let t = &app.tabs[0];
+            assert!(!t.dirty && saved_field(t, "a").is_empty(), "{case}: kept");
+            app.dialog = Dialog::None;
+            let tree = ty.pause(&mut app);
+            assert_eq!(
+                focused_text(&tree).as_deref(),
+                Some("مرحبا"),
+                "{case}: the typing was lost"
+            );
+            assert!(app.tabs[0].ed.pending(), "{case}: not still being typed");
+            // Typed over, and left the same way: kept.
+            ty.key(&mut app, Key::A, CTRL);
+            ty.text(&mut app, "Walrus");
+            leave(&ty, &mut app);
+            assert!(matches!(app.dialog, Dialog::None), "{case}: refused");
+            assert_eq!(saved_field(&app.tabs[0], "a"), "Walrus", "{case}");
+            assert!(!app.tabs[0].ed.pending(), "{case}: still being typed");
+        }
+    }
+
+    /// A new note or text box with nothing typed in it closes at toolbar Undo and at a page
+    /// command, as the page under it may move or go (BUG-37).
+    #[test]
+    fn an_empty_new_box_closes_at_undo_and_page_commands() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let ty = Typist::new(&ctx);
+        for tool in [Tool::Note, Tool::Text] {
+            for act in [Act::Undo, Act::RotR, Act::Delete] {
+                let mut app = app_with(&ctx, 1);
+                app.act(&ctx, Act::Tool(tool));
+                let (min, k) = ty.page(&mut app);
+                ty.click(&mut app, min + egui::vec2(300.0, 300.0) * k);
+                let ed = &app.tabs[0].ed;
+                assert!(ed.typing_on_page(), "{tool:?}: no box opened");
+                assert!(!ed.pending(), "{tool:?}: something typed");
+                app.act(&ctx, act);
+                ty.pause(&mut app);
+                let open = app.tabs[0].ed.typing_on_page();
+                assert!(!open, "{tool:?}, {act:?}: the box stayed open");
+            }
+        }
     }
 }
