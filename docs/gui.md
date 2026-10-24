@@ -89,7 +89,8 @@ Each document gets a tab. The tab shows its name, with `*` while it has unsaved 
 
 Closing a document or quitting asks first when there are unsaved changes, including text still being typed: a
 comment or text box on the page, a form field, the selected comment's changes in the inspector, or a reply not yet
-added. Saving keeps that text first, as clicking away would (Undo takes it back).
+added. Saving keeps that text first, as clicking away would, and so do printing and the other commands that
+change or use the document ([Undo](#undo)).
 
 If a damaged file makes LimarePDF fail while showing a document, that tab shows an error page with Save a copy and
 Close this tab; other tabs carry on.
@@ -124,6 +125,13 @@ While you type in a line, a note, a text box, a form field or any of the inspect
 and redo the typing there and nothing else; with nothing left to undo there, they do nothing. Once it is kept (when
 you leave the box), Undo takes the whole change back, and the box starts with nothing to undo when you come back to
 it.
+
+A command that changes or uses the document (rotating or deleting a page, removing blank pages, saving, printing,
+exporting, signing, Undo itself) keeps what you are typing first, as clicking away would: a step of its own, which
+Undo takes back, before the command's step. So Undo clicked on the toolbar while you type takes back what you
+typed. Text that can't be kept (a form value LimarePDF can't write) stays as typed, with the reason shown, and the
+command doesn't run. Commands that only show something (zoom, moving between pages, opening a section of the
+inspector) leave your typing as it is.
 
 ## Dialogs
 
@@ -183,8 +191,8 @@ copies are not autosave: **your own files are never written by them.**
 
 - A copy is made about a minute after you change a document, then at most once a minute while you go on changing it.
   It holds the document as it was then, so changes made in the last minute or so before a crash can be lost. Text
-  still being typed (a comment, a form field, a reply) isn't in a copy until it is kept, by clicking away or
-  applying it.
+  still being typed (a comment, a form field, a reply) isn't in a copy until it is kept, by clicking away,
+  applying it, or a command that keeps it first (saving, printing, a page command).
 - Saving or closing a document deletes its copy, and quitting normally deletes them all.
 - Password-protected documents get no copies: not one opened with a password, not one you set a password on (its
   copy is deleted first), not pages taken from one, and not a document you add a protected document's pages to
@@ -249,7 +257,7 @@ settings open the matching section of the inspector.
 
 The page and document settings apply as you set them, with no Apply button, each change one undo step: typed
 text when you press Enter or leave the field, a choice at once, a number when you stop dragging it or leave its
-box. Saving or closing keeps a field you are still typing in. Password security is the exception: its Apply button
+box. Saving, printing and other commands keep a field you are still typing in. Password security is the exception: its Apply button
 sets the passwords, which take effect when you save.
 
 Right-click a page, an object, selected words or a thumbnail for a short menu of what applies there.

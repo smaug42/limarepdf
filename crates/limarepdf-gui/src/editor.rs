@@ -130,6 +130,48 @@ struct PenStroke {
     join: Option<(u32, u16)>,
 }
 
+/// A kind of typing that isn't in the document yet (see [`Editor::pending`]), in the
+/// order they are kept before a command ([`Editor::keep`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Typed {
+    /// New text on a page.
+    Text,
+    /// A note or text box.
+    Writing,
+    /// The selected object's changes, in the inspector or typed over its line.
+    Object,
+    /// A form field.
+    Field,
+    /// The selected comment's changes in the inspector.
+    Comment,
+    /// A reply to it.
+    Reply,
+}
+
+impl Typed {
+    pub const ALL: [Typed; 6] = [
+        Typed::Text,
+        Typed::Writing,
+        Typed::Object,
+        Typed::Field,
+        Typed::Comment,
+        Typed::Reply,
+    ];
+}
+
+/// What [`Editor::keep`] took from the editor to keep, to put back if keeping it fails.
+pub struct Held(Kept);
+
+enum Kept {
+    Text(Box<PageText>),
+    Writing(Writing),
+    Object(Box<(Insp, Option<LineEdit>)>),
+    /// The value the field had before.
+    Field(String),
+    Comment,
+    Reply(String),
+}
+
 /// A note or text box being typed: a new one at `rect` (displayed-page points), or the
 /// existing one `id`.
 pub struct Writing {
@@ -1150,28 +1192,81 @@ impl Editor {
 
     /// Keep what was typed: a new note or text box with some text, or changed text.
     pub fn finish_writing(&mut self) {
-        let Some(w) = self.writing.take().filter(Writing::changed) else {
-            return;
-        };
-        let r = w.rect;
-        self.actions.push(match w.id {
-            Some(id) => Action::AnnotText(w.page, id, w.text),
-            None if w.note => {
-                Action::AddNote(w.page, ((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0), w.text)
-            }
-            None => Action::AddTextBox(w.page, r, w.text),
-        });
+        self.keep(Typed::Writing);
     }
 
     /// Keep the new text being typed, if any: added as one undo step.
     pub fn finish_adding(&mut self) {
-        let Some(a) = self.adding.take().filter(PageText::has_text) else {
-            return;
+        if let Some(held) = self.keep(Typed::Text) {
+            self.done(held);
+        }
+    }
+
+    /// Queue the change that keeps `piece` and stop typing it, as clicking away does.
+    /// Returns what was being typed, for [`Self::put_back`] if the change fails or
+    /// [`Self::done`] once it is made; `None` when there was nothing to keep (a new note
+    /// or text left empty goes).
+    pub fn keep(&mut self, piece: Typed) -> Option<Held> {
+        let (action, held) = match piece {
+            Typed::Text => {
+                let a = self.adding.take().filter(PageText::has_text)?;
+                let add = Action::AddText(a.page, a.at, a.text.clone());
+                (add, Kept::Text(Box::new(a)))
+            }
+            Typed::Writing => {
+                let w = self.writing.take().filter(Writing::changed)?;
+                let (r, text) = (w.rect, w.text.clone());
+                let a = match w.id {
+                    Some(id) => Action::AnnotText(w.page, id, text),
+                    None if w.note => {
+                        Action::AddNote(w.page, ((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0), text)
+                    }
+                    None => Action::AddTextBox(w.page, r, text),
+                };
+                (a, Kept::Writing(w))
+            }
+            Typed::Object => {
+                let a = self.insp_change()?;
+                let held = (self.insp.take()?, self.line_edit.take());
+                (a, Kept::Object(Box::new(held)))
+            }
+            Typed::Field => {
+                let mut acts = Vec::new();
+                let original = self.form.commit_typing(&mut acts)?;
+                (acts.pop()?, Kept::Field(original))
+            }
+            Typed::Comment => (self.annot_changes()?, Kept::Comment),
+            Typed::Reply => {
+                let a = self.reply_to()?;
+                (a, Kept::Reply(std::mem::take(&mut self.reply)))
+            }
         };
+        self.actions.push(action);
+        Some(Held(held))
+    }
+
+    /// Go on typing what [`Self::keep`] took, its change not made.
+    pub fn put_back(&mut self, held: Held) {
+        match held.0 {
+            Kept::Text(a) => self.adding = Some(*a),
+            Kept::Writing(w) => self.writing = Some(w),
+            Kept::Object(o) => {
+                let (insp, line) = *o;
+                (self.insp, self.line_edit) = (Some(insp), line);
+            }
+            Kept::Field(original) => self.form.uncommit(original),
+            Kept::Comment => {}
+            Kept::Reply(r) => self.reply = r,
+        }
+    }
+
+    /// What [`Self::keep`] took is in the document now.
+    pub fn done(&mut self, held: Held) {
         // The next new text carries on in the style this one ended in, as typing would.
-        let end = page_text::Look::of(a.text.end_style());
-        (self.tfont, self.tsize, self.tcolor) = (end.font, end.size, end.color);
-        self.actions.push(Action::AddText(a.page, a.at, a.text));
+        if let Kept::Text(a) = held.0 {
+            let end = page_text::Look::of(a.text.end_style());
+            (self.tfont, self.tsize, self.tcolor) = (end.font, end.size, end.color);
+        }
     }
 
     /// How new text is set, from the inspector.
@@ -1194,22 +1289,6 @@ impl Editor {
             || self.annot_changes().is_some()
             || self.reply_to().is_some()
             || self.insp_change().is_some()
-    }
-
-    /// Queue the changes that keep what [`Self::pending`] finds, as clicking away and Add
-    /// reply would.
-    pub fn keep_pending(&mut self) {
-        self.finish_adding();
-        self.finish_writing();
-        self.commit_insp();
-        self.form.commit_typing(&mut self.actions);
-        if let Some(a) = self.annot_changes() {
-            self.actions.push(a);
-        }
-        if let Some(a) = self.reply_to() {
-            self.reply.clear();
-            self.actions.push(a);
-        }
     }
 
     /// The selected comment's changes in the inspector, as the change that applies them.
@@ -1254,11 +1333,7 @@ impl Editor {
     /// Keep the selected object's changes (see [`Self::insp_change`]) as one undo step. The
     /// working copy starts again from the object.
     fn commit_insp(&mut self) {
-        if let Some(a) = self.insp_change() {
-            self.actions.push(a);
-            self.insp = None;
-            self.line_edit = None;
-        }
+        self.keep(Typed::Object);
     }
 
     /// Edit a line of page text on the page, with `pick` selected.
@@ -4053,6 +4128,16 @@ mod tests {
     use super::*;
     use limarepdf_core::Family;
 
+    /// Queue the changes that keep what [`Editor::pending`] finds, as the tab does before a
+    /// command, and stop typing them.
+    fn keep_all(ed: &mut Editor) {
+        for piece in Typed::ALL {
+            if let Some(held) = ed.keep(piece) {
+                ed.done(held);
+            }
+        }
+    }
+
     #[test]
     fn comment_changes_and_replies_not_yet_kept_are_pending() {
         let mut pdf = limarepdf_core::Pdf::new();
@@ -4082,7 +4167,7 @@ mod tests {
         if let Some((_, e)) = ed.annot_insp.as_mut() {
             e.contents = "Walrus comment".into();
         }
-        ed.keep_pending();
+        keep_all(&mut ed);
         assert!(matches!(
             ed.actions.as_slice(),
             [Action::SetAnnot(0, i, e), Action::Reply(0, j, r)]
@@ -4233,7 +4318,7 @@ mod tests {
         assert!(!ed.pending());
         // A change smaller than a hundredth is still a change.
         ed.insp.as_mut().unwrap().text.set_size((0, 22), 10.13);
-        ed.keep_pending();
+        keep_all(&mut ed);
         assert!(matches!(
             ed.actions.as_slice(),
             [Action::EditText(0, 2, te, false)] if te.parts[0].size == 10.13
@@ -4363,7 +4448,7 @@ mod tests {
         ed.select_object(0, 2);
         ed.sync_insp();
         ed.insp.as_mut().unwrap().text.set_size((0, 22), 18.0);
-        ed.keep_pending();
+        keep_all(&mut ed);
         assert!(matches!(
             ed.actions.as_slice(),
             [Action::EditText(0, 2, te, false)]

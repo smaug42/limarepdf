@@ -14,8 +14,10 @@ When a document has a form, a notice above the pages says so, and its fields are
 Each kind of field:
 
 - **Text fields:** a click opens a text box over the field. Enter (in a one-line field), Esc, Tab or clicking
-  elsewhere keeps what you typed. While you type, Ctrl+Z and Ctrl+Y undo and redo the typing in that field only;
-  once it is kept, Ctrl+Z takes it back. Password fields show dots, and their value isn't kept in the file.
+  elsewhere keeps what you typed, and so do saving, printing and other commands, so you can print or save straight
+  from the field. While you type, Ctrl+Z and Ctrl+Y undo and redo the typing in that field only; once it is kept,
+  Ctrl+Z takes it back. A value LimarePDF can't write (right-to-left text, say) stays in the field, with the
+  reason shown, and the command doesn't run. Password fields show dots, and their value isn't kept in the file.
 - **Checkboxes and radio buttons:** a click ticks or chooses. With the keyboard, Space ticks.
 - **Drop-downs and lists:** a click opens the options (so do Space and Enter). In a list that allows several
   choices, each click adds or removes one at once; a click outside the list, Esc or Enter closes it. A drop-down

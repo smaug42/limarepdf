@@ -86,6 +86,19 @@ the keyboard back mid-typing (`page_text::hand_back`, a note after its colour is
 covered in the colour the page worker (`worker.rs`, `Worker::sample`) finds around it, from a drawing of that
 part of the page in the current page colours.
 
+Typing not yet in the document (`Editor::pending`: new text, a note or text box, a line or the inspector's
+object changes, a form field, a comment's changes or a reply; the inspector's forms) goes in before anything uses
+the document. `Tab::keep_page_typing` keeps each kind (`editor::Typed`) as its own undo step through
+`Editor::keep`, which takes it out of the editor and queues its change; if the change fails, `Editor::put_back`
+returns it, as it was, and the caller stops. It runs in `Tab::edit`, `Tab::edit_removing`, `Tab::undo` and
+`Tab::redo`, before Crop shows the pages whole, in `App::spawn_job` (Print, exports, OCR and scans take their copy
+after it) and before a job's result replaces the document (typing since the job started discards the result).
+`Tab::keep_typing` adds the forms and runs in `App::act` for every command `Act::uses_document` names (an
+exhaustive match: a new command must be classed), so a command's question (`App::asked`) is about the document
+with the typing in it. A form field that loses the keyboard to a dialog keeps its typing and takes the keyboard
+back when the dialog closes (`Edit::Text`'s `back`). Panel Apply buttons that redraw only some pages or nothing
+don't commit first: they lose nothing, and their forms join their own undo steps.
+
 Text the standard fonts can't write goes into an embedded font (`crates/limarepdf-core/src/embed.rs`,
 `Pdf::embed_codes`): the bundled Liberation face of the standard font (`LIBERATION`, in core's `assets/fonts/`,
 stored compressed by core's `build.rs` and unpacked by `bundled_face` the first time each is used; the app's

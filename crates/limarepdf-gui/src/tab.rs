@@ -1,6 +1,6 @@
 use crate::actions::{self, Act, Ctx};
 use crate::banners::{self, Banner};
-use crate::editor::{annot_tip, Action, Editor, StampPick, Tool};
+use crate::editor::{annot_tip, Action, Editor, StampPick, Tool, Typed};
 use crate::inspector::{Forms, Hf, Sec, Wm};
 use crate::markup::Mark;
 use crate::recovery::schedule::Schedule;
@@ -525,12 +525,34 @@ impl Tab {
         self.dirty || self.ed.pending() || self.typing_in_forms()
     }
 
-    /// Put what has been typed but not yet kept into the document, as clicking away
-    /// would: one edit for each, which Undo takes back.
-    pub fn keep_typing(&mut self, ctx: &egui::Context) {
-        self.ed.keep_pending();
+    /// Put what has been typed but not yet kept into the document, on the pages and in
+    /// the inspector's forms, before a command uses the document (saving, printing, a page
+    /// command); see [`Tab::keep_page_typing`].
+    pub fn keep_typing(&mut self, ctx: &egui::Context) -> bool {
+        self.keep_page_typing(ctx) && self.keep_forms(ctx)
+    }
+
+    /// Put what is being typed on the pages into the document, as clicking away would,
+    /// before a change that uses, draws again or replaces the document (BUG-01): one edit
+    /// for each, which Undo takes back. Typing that can't be kept stays as it is, with the
+    /// reason shown, and false says the change mustn't go ahead.
+    pub fn keep_page_typing(&mut self, ctx: &egui::Context) -> bool {
+        // Changes queued before go in first, as they would at the end of the frame.
         self.apply_actions(ctx);
-        self.keep_forms(ctx);
+        let earlier = self.error.take();
+        for piece in Typed::ALL {
+            let Some(held) = self.ed.keep(piece) else {
+                continue;
+            };
+            self.apply_actions(ctx);
+            if self.error.is_some() {
+                self.ed.put_back(held);
+                return false;
+            }
+            self.ed.done(held);
+        }
+        self.error = earlier;
+        true
     }
 
     pub fn state(&self) -> State {
@@ -553,14 +575,15 @@ impl Tab {
         self.requested.clear();
     }
 
-    /// Run an edit with undo support. On failure the document is left unchanged, and
-    /// false is returned.
+    /// Run an edit with undo support, after what is being typed on the pages is kept
+    /// ([`Tab::keep_page_typing`]). On failure the document is left unchanged, and false is
+    /// returned.
     pub fn edit(
         &mut self,
         ctx: &egui::Context,
         f: impl FnOnce(&mut Pdf) -> limarepdf_core::Result<()>,
     ) -> bool {
-        self.edit_inner(ctx, Redraw::All, false, false, f)
+        self.keep_page_typing(ctx) && self.edit_inner(ctx, Redraw::All, false, false, f)
     }
 
     /// Like [`Tab::edit`], for a change that removes content for good (redaction, removing hidden
@@ -571,7 +594,7 @@ impl Tab {
         ctx: &egui::Context,
         f: impl FnOnce(&mut Pdf) -> limarepdf_core::Result<()>,
     ) -> bool {
-        self.edit_inner(ctx, Redraw::All, true, false, f)
+        self.keep_page_typing(ctx) && self.edit_inner(ctx, Redraw::All, true, false, f)
     }
 
     /// Like [`Tab::edit`], for a document setting that doesn't show on the pages (properties,
@@ -816,6 +839,12 @@ impl Tab {
     /// Show every page whole, with its crop box on it, or as cropped again.
     pub fn set_crop_view(&mut self, ctx: &egui::Context, on: bool) {
         if self.crop_view.is_some() == on {
+            return;
+        }
+        // The pages are drawn again: what is being typed on them goes in first, or the
+        // Crop section closes.
+        if on && !self.keep_page_typing(ctx) {
+            self.forms.close = Some(crate::inspector::Section::Crop);
             return;
         }
         self.crop_view = on.then(Vec::new);
@@ -1296,7 +1325,12 @@ impl Tab {
         self.redo.last().is_some_and(|s| s.removal)
     }
 
+    /// Undo the last change. What is being typed on the pages is kept first, as its own
+    /// change, so that is what Undo takes back.
     pub fn undo(&mut self, ctx: &egui::Context) {
+        if !self.keep_page_typing(ctx) {
+            return;
+        }
         if let Some(step) = self.undo.pop() {
             if let Some(back) = self.restore(ctx, step) {
                 self.redo.push(back);
@@ -1305,8 +1339,12 @@ impl Tab {
     }
 
     /// Redo the last undone change. The app withdraws the recovery copies first when
-    /// [`Tab::redo_removes`].
+    /// [`Tab::redo_removes`]. What is being typed on the pages is kept first, as for any
+    /// change, which leaves nothing to redo.
     pub fn redo(&mut self, ctx: &egui::Context) {
+        if !self.keep_page_typing(ctx) {
+            return;
+        }
         if let Some(step) = self.redo.pop() {
             if let Some(back) = self.restore(ctx, step) {
                 self.undo.push(back);

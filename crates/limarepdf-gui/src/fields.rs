@@ -20,11 +20,13 @@ struct Focus {
 enum Edit {
     /// Shown with a ring; Space or Enter acts on it.
     Ring,
-    /// A text box over the field. `fresh` until it has taken the keyboard.
+    /// A text box over the field. `fresh` until it has taken the keyboard; `back` while a
+    /// dialog has it, to take it back when the dialog closes.
     Text {
         text: String,
         original: String,
         fresh: bool,
+        back: bool,
     },
     /// A choice's options in a list below the field; `text` is what's typed in an
     /// editable drop-down.
@@ -154,6 +156,7 @@ impl FormUi {
                 text: t.clone(),
                 original: t.clone(),
                 fresh: true,
+                back: false,
             },
             (FieldKind::Choice { .. }, v) if open => Edit::Options {
                 text: match v {
@@ -224,21 +227,35 @@ impl FormUi {
     }
 
     /// Keep what was typed in the field being left, when the keyboard moves on before its
-    /// text box has noticed, or before saving.
-    pub fn commit_typing(&mut self, acts: &mut Vec<Action>) {
-        let Some((fi, _)) = self.focused() else {
-            return;
-        };
-        if let Some(Focus {
+    /// text box has noticed, or before saving. Returns the value the field had, for
+    /// [`Self::uncommit`].
+    pub fn commit_typing(&mut self, acts: &mut Vec<Action>) -> Option<String> {
+        let (fi, _) = self.focused()?;
+        let Some(Focus {
             edit: Edit::Text { text, original, .. },
             ..
         }) = &mut self.focus
+        else {
+            return None;
+        };
+        if text == original {
+            return None;
+        }
+        let was = std::mem::replace(original, text.clone());
+        let v = FieldValue::Text(text.clone());
+        acts.push(set(&self.fields.as_ref().unwrap()[fi], v));
+        Some(was)
+    }
+
+    /// The field's typing is still to keep: what [`Self::commit_typing`] queued wasn't
+    /// made, and `original` is the value the field has.
+    pub fn uncommit(&mut self, original: String) {
+        if let Some(Focus {
+            edit: Edit::Text { original: o, .. },
+            ..
+        }) = &mut self.focus
         {
-            if text != original {
-                *original = text.clone();
-                let v = FieldValue::Text(text.clone());
-                acts.push(set(&self.fields.as_ref().unwrap()[fi], v));
-            }
+            *o = original;
         }
     }
 
@@ -400,6 +417,7 @@ impl FormUi {
                     text,
                     original,
                     fresh,
+                    back,
                 },
             ..
         }) = &mut self.focus
@@ -443,7 +461,19 @@ impl FormUi {
             *fresh = false;
             return;
         }
+        let dialog = crate::dialogs::any_open(ui.ctx());
+        if *back && !dialog {
+            crate::page_text::hand_back(ui.ctx(), id);
+            *back = false;
+            return;
+        }
         if !out.lost_focus() {
+            return;
+        }
+        // A dialog took the keyboard (a command's question, or why the typing couldn't be
+        // kept): the typing stays until it closes.
+        if dialog {
+            *back = true;
             return;
         }
         // Tab is taken here, or `keys` would see it too and move on a second field. Esc,

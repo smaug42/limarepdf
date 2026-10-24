@@ -12,6 +12,21 @@
   text and the inspector's other boxes acted on the whole document (taking back another field's value, say)
   instead of the typing there. They now undo and redo only the typing in the box with the keyboard, and do
   nothing there once it has nothing left to undo; the document's Undo works as before outside the boxes.
+- Text still being typed was lost by a command run before clicking away: new text typed and then Rotate clockwise
+  from the command palette disappeared, and Undo couldn't bring it back. Undo or Redo clicked on the toolbar while
+  a new note was typed acted on the change before it, and the note was added afterwards. Removing blank pages,
+  recognising text and optimising scans left out text typed before they started, and wiped text typed while they
+  ran. Now every command that changes or uses the document (page commands, Undo and Redo, saving, printing,
+  exporting, signing, flattening, redaction, page drags in the thumbnails, bookmarks, opening Crop) first keeps
+  what is being typed (new text, a line, a note or text box, a form field, a comment or reply, the inspector's
+  boxes), as clicking away would, as an undo step of its own; Undo clicked while typing takes the typing back. A
+  result that comes back after typing started is discarded, saying so. Text that can't be kept (a form value
+  LimarePDF can't write) stays as typed with the reason shown, and the command doesn't run; Save no longer saves
+  without it.
+- Print pressed straight after typing in a form field, without leaving it, refused to print ("The document
+  changed while the question was open"). The field is now kept before the Print dialog opens, so the job holds
+  the typed value; the same goes for the other commands that ask a question first. A field being typed in when a
+  dialog opens keeps its typing, and gets the keyboard back when the dialog closes.
 
 ## [0.9.0] - 2026-10-23
 

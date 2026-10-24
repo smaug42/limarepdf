@@ -584,18 +584,30 @@ impl Tab {
     }
 
     /// Keep what is being typed in the forms, as leaving the field would (before saving or
-    /// closing), and a linked stamp's changes not yet in it.
-    pub fn keep_forms(&mut self, ctx: &egui::Context) {
-        match self.forms.typing.take() {
+    /// closing), and a linked stamp's changes not yet in it. Returns false when something
+    /// couldn't be kept, with the reason shown; a field typed in is still being typed in.
+    pub fn keep_forms(&mut self, ctx: &egui::Context) -> bool {
+        let earlier = self.error.take();
+        let typing = self.forms.typing.take();
+        match typing {
             Some(LABEL_PREFIX) => self.keep_label(ctx, None),
             Some(_) => self.keep_props(ctx),
             None => {}
         }
+        if self.error.is_some() {
+            self.forms.typing = typing;
+            return false;
+        }
         for kind in [Stamp::Watermark, Stamp::HeaderFooter] {
             if self.stamp_behind(kind) {
                 self.stamp_from_form(ctx, kind, true);
+                if self.error.is_some() {
+                    return false;
+                }
             }
         }
+        self.error = earlier;
+        true
     }
 
     /// Whether the form for `kind` is linked to a stamp and says something else, that it

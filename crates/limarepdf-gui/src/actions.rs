@@ -163,6 +163,111 @@ pub enum Act {
     About,
 }
 
+impl Act {
+    /// Whether the command uses the document as it is: changes, saves, prints, exports or
+    /// signs it, or asks a question about it. What is being typed goes into the document
+    /// first (BUG-01). Commands that only show something, open a section of the inspector
+    /// or choose a tool leave the typing as it is; closing asks about it.
+    pub fn uses_document(self) -> bool {
+        match self {
+            Act::Save
+            | Act::SaveAs
+            | Act::ExportText
+            | Act::Print
+            | Act::PrintSelection
+            | Act::SaveSelection
+            | Act::Undo
+            | Act::Redo
+            | Act::Mark(_)
+            | Act::MarkRedact
+            | Act::MarkResultsRedact
+            | Act::ApplyRedactions
+            | Act::FinishSigning
+            | Act::RemoveHidden
+            | Act::DeleteSelection
+            | Act::MoveText
+            | Act::ReplaceImage
+            | Act::DeleteObject
+            | Act::Nudge(..)
+            | Act::SignDigital
+            | Act::Certify
+            | Act::DigitalPlaced
+            | Act::FlattenAnnots
+            | Act::ResetForm
+            | Act::FlattenForm
+            | Act::RotR
+            | Act::RotL
+            | Act::Delete
+            | Act::RemoveBlank
+            | Act::Extract
+            | Act::Blank
+            | Act::InsertImages
+            | Act::Merge => true,
+            Act::Open
+            | Act::OpenRecent(_)
+            | Act::ClearRecent
+            | Act::NewFromImages
+            | Act::ExportImages
+            | Act::CloseTab
+            | Act::ToggleRecovery
+            | Act::ShowRecoveryFile
+            | Act::Quit
+            | Act::Copy
+            | Act::SelectAllText
+            | Act::MarkColor { .. }
+            | Act::CommentName
+            | Act::CopyObjectText
+            | Act::EditObjectText
+            | Act::SignWith(_)
+            | Act::CreateSign(_)
+            | Act::Escape
+            | Act::Find
+            | Act::ZoomIn
+            | Act::ZoomOut
+            | Act::FitWidth
+            | Act::Actual
+            | Act::NextPage
+            | Act::PrevPage
+            | Act::FirstPage
+            | Act::LastPage
+            | Act::Layout(_)
+            | Act::ToggleCover
+            | Act::ToggleSide
+            | Act::PagesView
+            | Act::SearchView
+            | Act::Bookmarks
+            | Act::Comments
+            | Act::Signatures
+            | Act::SignatureDetails(_)
+            | Act::SignedVersion(_)
+            | Act::TrustedCertificates
+            | Act::DigitalIds
+            | Act::ToggleInspector
+            | Act::ToggleDock
+            | Act::ToggleHidden
+            | Act::ToggleFields
+            | Act::NextField
+            | Act::PrevField
+            | Act::ClearField
+            | Act::Theme(_)
+            | Act::PageColours(_)
+            | Act::TogglePicturesToo
+            | Act::Palette
+            | Act::Tool(_)
+            | Act::Crop
+            | Act::Split
+            | Act::PageLabels
+            | Act::HeaderFooter
+            | Act::Watermark
+            | Act::Props
+            | Act::Security
+            | Act::Scans
+            | Act::Ocr
+            | Act::About => false,
+        }
+    }
+}
+
 /// Where a command is listed in the menu and the palette.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Group {

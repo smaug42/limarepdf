@@ -1241,7 +1241,9 @@ impl App {
                             continue;
                         }
                     };
-                    if changed && t.revision != revision {
+                    // Typing since the job started is a change too: it goes in, and the
+                    // result, made without it, is discarded.
+                    if changed && (!t.keep_page_typing(ctx) || t.revision != revision) {
                         self.dialog = Dialog::Message(
                             title.into(),
                             "The document changed while this was running, so the result \
@@ -1297,14 +1299,18 @@ impl App {
         Some(out)
     }
 
-    /// Run `work` on a copy of the active document on a background thread. The result is
-    /// applied (undoably) when it arrives, if the document has not changed meanwhile.
+    /// Run `work` on a copy of the active document on a background thread, what is being
+    /// typed on its pages kept first. The result is applied (undoably) when it arrives, if
+    /// the document has not changed meanwhile.
     fn spawn_job(
         &mut self,
         ctx: &egui::Context,
         title: &'static str,
         work: impl FnOnce(&mut Pdf) -> limarepdf_core::Result<(bool, String)> + Send + 'static,
     ) {
+        if !self.tabs[self.active].keep_page_typing(ctx) {
+            return;
+        }
         let t = &self.tabs[self.active];
         let (tab, revision, mut pdf) = (t.id, t.revision, t.pdf.clone());
         let (tx, ctx) = (self.tx.clone(), ctx.clone());
@@ -1430,12 +1436,14 @@ impl App {
         }
     }
 
-    /// Saves, with what is being typed kept first. Saving over a file that was repaired to
-    /// open it asks first, offering Save as instead: the original is only replaced when the
-    /// user says so.
+    /// Saves, with what is being typed kept first; if it can't be, nothing is saved.
+    /// Saving over a file that was repaired to open it asks first, offering Save as
+    /// instead: the original is only replaced when the user says so.
     fn save(&mut self, ctx: &egui::Context, as_new: bool) {
         if let Some(t) = self.tabs.get_mut(self.active) {
-            t.keep_typing(ctx);
+            if !t.keep_typing(ctx) {
+                return;
+            }
         }
         let over_repaired = self
             .tabs
@@ -1655,6 +1663,12 @@ impl App {
 
     fn act(&mut self, ctx: &egui::Context, a: Act) {
         let has = !self.tabs.is_empty();
+        // What is being typed goes into the document before a command uses it, or the
+        // command doesn't run (BUG-01). A question the command asks is then about the
+        // document with the typing in it (BUG-10).
+        if has && a.uses_document() && !self.tabs[self.active].keep_typing(ctx) {
+            return;
+        }
         match a {
             Act::Open => {
                 if let Some(files) = Self::pdf_dialog().pick_files() {
@@ -7970,6 +7984,84 @@ mod tests {
         }
     }
 
+    /// A tab of a page with the empty field "name", the note "Walrus" at (100, 400), the
+    /// line "Otter" at (450, 300) and the title "Seal", set as an undoable change: a
+    /// document with history to undo and one of each kind of thing typed in. Returns the
+    /// note's id.
+    fn typing_doc(app: &mut App, ctx: &egui::Context) -> (u32, u16) {
+        let mut pdf = form_doc(&[("name", 1)]);
+        let note = pdf.add_note(0, (100.0, 400.0), [1.0, 1.0, 0.0], "Walrus", "Tester");
+        let font = FontChoice::default();
+        pdf.add_text(0, (450.0, 300.0), "Otter", font, 20.0, [0.0; 3])
+            .unwrap();
+        assert!(app.add_tab(ctx, pdf, None, None, false));
+        let info = limarepdf_core::Info {
+            title: Some("Seal".into()),
+            ..Default::default()
+        };
+        assert!(app.tabs[0].edit(ctx, |p| p.set_info(&info)));
+        note.unwrap()
+    }
+
+    /// Give the keyboard to the box `case` names in [`typing_doc`]'s tab, with the read
+    /// tool and nothing selected first.
+    fn start_typing(app: &mut App, ty: &Typist, case: &str, note: (u32, u16)) {
+        let ctx = ty.ctx;
+        app.act(ctx, Act::Tool(Tool::Read));
+        app.tabs[0].ed.selection = Selection::None;
+        let (min, k) = ty.page(app);
+        let at = |x: f32, y: f32| min + egui::vec2(x, y) * k;
+        match case {
+            "form field" => ty.click_field(app, "name", 0),
+            "new note" | "new text box" | "new text" => {
+                // Within the window, clear of the field, the note and the line.
+                let (tool, y) = match case {
+                    "new note" => (Tool::Note, 150.0),
+                    "new text box" => (Tool::TextBox, 220.0),
+                    _ => (Tool::Text, 330.0),
+                };
+                app.act(ctx, Act::Tool(tool));
+                ty.click(app, at(300.0, y));
+            }
+            "line on the page" => {
+                // A double-click on it with the read tool.
+                let p = at(470.0, 295.0);
+                ty.frame(app, vec![egui::Event::PointerMoved(p), press(p, true)]);
+                ty.frame(app, vec![press(p, false)]);
+                ty.frame(app, vec![press(p, true)]);
+                ty.frame(app, vec![press(p, false)]);
+                ty.pause(app);
+            }
+            "comment in the inspector" => {
+                let t = &mut app.tabs[0];
+                t.ed.annots(&t.pdf, 0);
+                t.ed.selection = Selection::Annot { page: 0, id: note };
+                let tree = ty.pause(app);
+                ty.click(app, middle(&tree, "Comment"));
+            }
+            "document title" => {
+                app.tabs[0].forms.reveal = Some(inspector::Section::Properties);
+                let tree = ty.pause(app);
+                let (_, n) = tree
+                    .nodes
+                    .iter()
+                    .find(|(_, n)| n.value() == Some("Seal"))
+                    .expect("the title");
+                let b = n.bounds().unwrap();
+                let p = egui::pos2(((b.x0 + b.x1) / 2.0) as f32, ((b.y0 + b.y1) / 2.0) as f32);
+                ty.click(app, p);
+            }
+            "watermark text" => {
+                app.tabs[0].forms.reveal = Some(inspector::Section::Watermark);
+                ty.pause(app);
+                let id = app.tabs[0].ed.scope().with(("stamp-text", "Text"));
+                ctx.memory_mut(|m| m.request_focus(id));
+                ty.pause(app);
+            }
+            _ => panic!("no case {case}"),
+        }
+    }
+
     /// The undo keys in each kind of text box, in a document with history to undo: Ctrl+Z,
     /// Ctrl+Shift+Z and Ctrl+Y take back and redo the box's own typing, Ctrl+Z with nothing
     /// left there does nothing, and the document is never touched (BUG-04).
@@ -7979,18 +8071,8 @@ mod tests {
         ctx.enable_accesskit();
         theme::install(&ctx);
         let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
-        let mut pdf = form_doc(&[("name", 1)]);
-        let note = pdf.add_note(0, (100.0, 400.0), [1.0, 1.0, 0.0], "Walrus", "Tester");
-        let note = note.unwrap();
-        assert!(app.add_tab(&ctx, pdf, None, None, false));
-        let info = limarepdf_core::Info {
-            title: Some("Seal".into()),
-            ..Default::default()
-        };
-        assert!(app.tabs[0].edit(&ctx, |p| p.set_info(&info)));
+        let note = typing_doc(&mut app, &ctx);
         let ty = Typist::new(&ctx);
-        let (min, k) = ty.page(&mut app);
-        let at = |x: f32, y: f32| min + egui::vec2(x, y) * k;
         let cases = [
             "form field",
             "new note",
@@ -8001,48 +8083,7 @@ mod tests {
             "watermark text",
         ];
         for case in cases {
-            app.act(&ctx, Act::Tool(Tool::Read));
-            app.tabs[0].ed.selection = Selection::None;
-            ty.pause(&mut app);
-            match case {
-                "form field" => ty.click_field(&mut app, "name", 0),
-                "new note" | "new text box" | "new text" => {
-                    // Within the window, clear of the field and the note.
-                    let (tool, y) = match case {
-                        "new note" => (Tool::Note, 150.0),
-                        "new text box" => (Tool::TextBox, 220.0),
-                        _ => (Tool::Text, 330.0),
-                    };
-                    app.act(&ctx, Act::Tool(tool));
-                    ty.click(&mut app, at(300.0, y));
-                }
-                "comment in the inspector" => {
-                    let t = &mut app.tabs[0];
-                    t.ed.annots(&t.pdf, 0);
-                    t.ed.selection = Selection::Annot { page: 0, id: note };
-                    let tree = ty.pause(&mut app);
-                    ty.click(&mut app, middle(&tree, "Comment"));
-                }
-                "document title" => {
-                    app.tabs[0].forms.reveal = Some(inspector::Section::Properties);
-                    let tree = ty.pause(&mut app);
-                    let (_, n) = tree
-                        .nodes
-                        .iter()
-                        .find(|(_, n)| n.value() == Some("Seal"))
-                        .expect("the title");
-                    let b = n.bounds().unwrap();
-                    let p = egui::pos2(((b.x0 + b.x1) / 2.0) as f32, ((b.y0 + b.y1) / 2.0) as f32);
-                    ty.click(&mut app, p);
-                }
-                _ => {
-                    app.tabs[0].forms.reveal = Some(inspector::Section::Watermark);
-                    ty.pause(&mut app);
-                    let id = app.tabs[0].ed.scope().with(("stamp-text", "Text"));
-                    ctx.memory_mut(|m| m.request_focus(id));
-                    ty.pause(&mut app);
-                }
-            }
+            start_typing(&mut app, &ty, case, note);
             let tree = ty.key(&mut app, Key::End, egui::Modifiers::NONE);
             let start = focused_text(&tree).unwrap_or_else(|| panic!("{case}: no keyboard"));
             let state = app.tabs[0].state();
@@ -8066,5 +8107,344 @@ mod tests {
             ty.pause(&mut app);
             assert!(app.tabs[0].state() == state, "{case}: something was kept");
         }
+    }
+
+    /// The tab's document as it would be saved now, read back from its bytes.
+    fn saved_pdf(t: &Tab) -> Pdf {
+        Pdf::from_bytes(&t.pdf.clone().snapshot().unwrap(), None).unwrap()
+    }
+
+    /// The first page's rotation in the tab's document as it would be saved now.
+    fn saved_rotation(t: &Tab) -> i64 {
+        let pdf = saved_pdf(t);
+        let page = pdf.doc.get_dictionary(pdf.page_ids()[0]).unwrap();
+        page.get(b"Rotate").and_then(|o| o.as_i64()).unwrap_or(0)
+    }
+
+    /// Run the command `name` from the command palette, typed there.
+    fn from_palette(app: &mut App, ty: &Typist, name: &str) {
+        ty.key(app, Key::K, CTRL);
+        ty.text(app, name);
+        ty.key(app, Key::Enter, egui::Modifiers::NONE);
+        ty.pause(app);
+    }
+
+    /// Add text, type, Rotate clockwise from the palette: the text goes into the document
+    /// first, a step of its own, so the page turns with it on; Undo turns the page back
+    /// and keeps the text, and Undo again takes the text back (BUG-01, audit A20).
+    #[test]
+    fn new_text_is_kept_before_the_page_is_rotated() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let ty = Typist::new(&ctx);
+        let (min, k) = ty.page(&mut app);
+        app.act(&ctx, Act::Tool(Tool::Text));
+        ty.click(&mut app, min + egui::vec2(100.0, 200.0) * k);
+        ty.text(&mut app, "PendingAuditText");
+        from_palette(&mut app, &ty, "Rotate clockwise");
+        let typed = |app: &App| {
+            saved_pdf(&app.tabs[0])
+                .page_text(0)
+                .contains("PendingAuditText")
+        };
+        let t = &app.tabs[0];
+        assert_eq!(saved_rotation(t), 90);
+        assert!(typed(&app), "the text was lost");
+        assert!(t.ed.adding.is_none() && !t.ed.pending());
+        app.act(&ctx, Act::Undo);
+        assert_eq!(saved_rotation(&app.tabs[0]), 0);
+        assert!(typed(&app), "Undo took the text back with the rotation");
+        app.act(&ctx, Act::Undo);
+        assert!(!typed(&app));
+        // The change before the text is still there.
+        assert_eq!(app.tabs[0].page_count(), 2);
+        app.act(&ctx, Act::Redo);
+        app.act(&ctx, Act::Redo);
+        assert_eq!(saved_rotation(&app.tabs[0]), 90);
+        assert!(typed(&app));
+    }
+
+    /// Each kind of typing goes into the document before a page command run from the
+    /// palette, and the command is a step of its own after it: Undo turns the page back and
+    /// keeps the typing (BUG-01).
+    #[test]
+    fn every_kind_of_typing_is_kept_before_a_page_command() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let note = typing_doc(&mut app, &ctx);
+        let ty = Typist::new(&ctx);
+        let cases = [
+            "form field",
+            "new note",
+            "new text box",
+            "new text",
+            "line on the page",
+            "comment in the inspector",
+            "document title",
+        ];
+        for case in cases {
+            start_typing(&mut app, &ty, case, note);
+            ty.key(&mut app, Key::End, egui::Modifiers::NONE);
+            ty.text(&mut app, "typed");
+            from_palette(&mut app, &ty, "Rotate clockwise");
+            let kept = |app: &App| {
+                let pdf = saved_pdf(&app.tabs[0]);
+                let comment = |text: &str| pdf.annotations().iter().any(|a| a.contents == text);
+                let line = |text: &str| {
+                    let objs = pdf.page_objects(0).unwrap();
+                    objs.iter().any(|o| o.text.as_deref() == Some(text))
+                };
+                match case {
+                    "form field" => saved_field(&app.tabs[0], "name") == "typed",
+                    "new note" | "new text box" => comment("typed"),
+                    "new text" => line("typed"),
+                    "line on the page" => line("Ottertyped"),
+                    "comment in the inspector" => comment("Walrustyped"),
+                    _ => pdf.info().title.as_deref() == Some("Sealtyped"),
+                }
+            };
+            let t = &app.tabs[0];
+            assert_eq!(saved_rotation(t), 90, "{case}: not rotated");
+            assert!(kept(&app), "{case}: the typing was lost");
+            assert!(
+                !t.ed.pending() && !t.typing_in_forms(),
+                "{case}: still pending"
+            );
+            app.act(&ctx, Act::Undo);
+            assert_eq!(saved_rotation(&app.tabs[0]), 0, "{case}: Undo");
+            assert!(
+                kept(&app),
+                "{case}: Undo took the typing back with the rotation"
+            );
+        }
+    }
+
+    /// Text being added goes into the document before a change made on the tab itself
+    /// (pages reordered by dragging their thumbnails, a bookmark), and before the Crop
+    /// section shows the pages whole: each is drawn again without the text being typed.
+    #[test]
+    fn typing_is_kept_before_the_tab_changes_or_redraws_its_pages() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let ty = Typist::new(&ctx);
+        let type_at = |app: &mut App, y: f32, text: &str| {
+            let (min, k) = ty.page(app);
+            app.act(&ctx, Act::Tool(Tool::Text));
+            ty.click(app, min + egui::vec2(100.0, y) * k);
+            ty.text(app, text);
+        };
+        let lines = |app: &App, page: usize| saved_pdf(&app.tabs[0]).page_text(page);
+        type_at(&mut app, 200.0, "Walrus");
+        assert!(app.tabs[0].edit(&ctx, |p| p.reorder(&[1, 0])));
+        assert!(lines(&app, 1).contains("Walrus"), "the text was lost");
+        // Steps of their own: Undo puts the pages back with the text on.
+        app.act(&ctx, Act::Undo);
+        assert!(lines(&app, 0).contains("Walrus"));
+        type_at(&mut app, 300.0, "Seal");
+        app.act(&ctx, Act::Crop);
+        ty.pause(&mut app);
+        assert!(app.tabs[0].crop_view());
+        assert!(lines(&app, 0).contains("Seal"), "the text was lost");
+    }
+
+    /// Undo clicked on the toolbar while a new note is typed takes the note back, not the
+    /// change before it, and Redo brings the note back (BUG-01, seen in batch 1).
+    #[test]
+    fn undo_on_the_toolbar_takes_back_a_note_being_typed() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let ty = Typist::new(&ctx);
+        let (min, k) = ty.page(&mut app);
+        app.act(&ctx, Act::Tool(Tool::Note));
+        ty.click(&mut app, min + egui::vec2(100.0, 100.0) * k);
+        ty.text(&mut app, "Walrus");
+        let tree = ty.pause(&mut app);
+        ty.click(&mut app, middle(&tree, "Undo"));
+        let t = &app.tabs[0];
+        assert_eq!(
+            t.page_count(),
+            2,
+            "Undo took back the change before the note"
+        );
+        assert!(comments(&app).is_empty() && t.ed.writing.is_none());
+        let tree = ty.pause(&mut app);
+        ty.click(&mut app, middle(&tree, "Redo"));
+        assert_eq!(comments(&app), ["Walrus"]);
+        assert_eq!(app.tabs[0].page_count(), 2);
+    }
+
+    /// Remove blank pages run while text is being added: the text goes into the document
+    /// before the job takes its copy, so the result has it. A result arriving while text is
+    /// typed is for a document that has changed since: the typing is kept and the result
+    /// is discarded, saying so (BUG-01).
+    #[test]
+    fn background_results_keep_what_is_being_typed() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let mut pdf = Pdf::new();
+        for i in 0..3 {
+            pdf.insert_blank(i, 612.0, 792.0).unwrap();
+        }
+        let font = FontChoice::default();
+        pdf.add_text(0, (100.0, 100.0), "Walrus", font, 20.0, [0.0; 3])
+            .unwrap();
+        assert!(app.add_tab(&ctx, pdf, None, None, false));
+        let ty = Typist::new(&ctx);
+        let type_at = |app: &mut App, y: f32, text: &str| {
+            let (min, k) = ty.page(app);
+            app.act(&ctx, Act::Tool(Tool::Text));
+            ty.click(app, min + egui::vec2(100.0, y) * k);
+            ty.text(app, text);
+        };
+        let page_text = |app: &App| saved_pdf(&app.tabs[0]).page_text(0);
+        type_at(&mut app, 300.0, "Seal");
+        from_palette(&mut app, &ty, "Remove blank pages");
+        for _ in 0..500 {
+            if !app.busy {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            ty.frame(&mut app, vec![]);
+        }
+        assert!(!app.busy, "the job didn't finish");
+        assert_eq!(app.tabs[0].page_count(), 1);
+        assert!(page_text(&app).contains("Seal"), "the text was lost");
+        app.dialog = Dialog::None;
+        // A result for the document as it is now, arriving while text is typed.
+        let t = &app.tabs[0];
+        let (tab, revision) = (t.id, t.revision);
+        let mut other = saved_pdf(t);
+        other.insert_blank(1, 612.0, 792.0).unwrap();
+        type_at(&mut app, 400.0, "Otter");
+        let result = Ok((other, true, "Done.".to_string()));
+        let title = "Remove blank pages";
+        let job = Loaded::Job {
+            tab,
+            revision,
+            title,
+            result,
+        };
+        app.tx.send(job).unwrap();
+        ty.pause(&mut app);
+        assert_eq!(app.tabs[0].page_count(), 1, "the result was applied");
+        assert!(page_text(&app).contains("Otter"), "the text was lost");
+        assert!(
+            matches!(&app.dialog, Dialog::Message(_, m) if m.contains("changed while")),
+            "nothing said"
+        );
+    }
+
+    /// Names the folder of stand-ins for CUPS, for [`print_with_stand_in_cups`].
+    #[cfg(not(windows))]
+    const STAND_IN_CUPS: &str = "LIMAREPDF_TEST_STAND_IN_CUPS";
+
+    /// Print right after typing in a field prints what was typed, by the whole route: Ctrl+P
+    /// with the field still being typed in, the printers listed, Print pressed. A value the
+    /// field can't take stops Print first, with the typing kept. Run in a copy of the tests
+    /// with stand-ins for `lpstat` and `lp` first on its PATH, so no job reaches a real
+    /// printer and the rest of the tests keep their PATH (BUG-10, audit A08).
+    #[cfg(not(windows))]
+    #[test]
+    fn print_right_after_typing_prints_the_typed_value() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("limarepdf-print-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let job = dir.join("job.pdf");
+        let lpstat = "#!/bin/sh\ncase \"$1\" in\n  -e) echo limarepdf-test ;;\n  \
+                      -d) echo 'system default destination: limarepdf-test' ;;\nesac\n";
+        let lp = format!(
+            "#!/bin/sh\ncat > '{}'\necho 'request id is limarepdf-test-1 (1 file(s))'\n",
+            job.display()
+        );
+        for (name, script) in [
+            ("lpstat", lpstat),
+            ("lp", &lp),
+            ("lpoptions", "#!/bin/sh\n"),
+        ] {
+            let path = dir.join(name);
+            std::fs::write(&path, script).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = std::env::var("PATH").unwrap_or_default();
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "app::tests::print_with_stand_in_cups"])
+            .args(["--ignored", "--test-threads=1", "--nocapture"])
+            .env("PATH", format!("{}:{path}", dir.display()))
+            .env(STAND_IN_CUPS, &dir)
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&out.stdout).to_string()
+            + &String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success() && said.contains("1 passed"), "{said}");
+        let printed = Pdf::open(&job, None).expect("the job sent to lp");
+        let text = printed.page_text(0);
+        assert!(text.contains("Walrus"), "the job holds {text:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The part of [`print_right_after_typing_prints_the_typed_value`] run with the
+    /// stand-ins first on PATH; without them it does nothing.
+    #[cfg(not(windows))]
+    #[test]
+    #[ignore = "run by print_right_after_typing_prints_the_typed_value"]
+    fn print_with_stand_in_cups() {
+        if std::env::var_os(STAND_IN_CUPS).is_none() {
+            return;
+        }
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        assert!(app.add_tab(&ctx, form_doc(&[("name", 1)]), None, None, false));
+        let ty = Typist::new(&ctx);
+        // Right-to-left text, which a field can't hold: Print stops, with the typing kept
+        // in the field and the reason shown.
+        ty.click_field(&mut app, "name", 0);
+        ty.text(&mut app, "مرحبا");
+        ty.key(&mut app, Key::P, CTRL);
+        assert!(!matches!(app.dialog, Dialog::Print(..)), "Print opened");
+        assert!(matches!(app.dialog, Dialog::Message(..)), "no reason given");
+        let t = &app.tabs[0];
+        assert!(t.ed.pending() && !t.dirty, "the typing wasn't kept");
+        assert_eq!(saved_field(t, "name"), "");
+        app.dialog = Dialog::None;
+        let tree = ty.pause(&mut app);
+        assert_eq!(focused_text(&tree).as_deref(), Some("مرحبا"));
+        // Typed over, and Ctrl+P with the field still being typed in.
+        ty.key(&mut app, Key::A, CTRL);
+        ty.text(&mut app, "Walrus");
+        ty.key(&mut app, Key::P, CTRL);
+        assert!(matches!(app.dialog, Dialog::Print(..)), "Print didn't open");
+        assert_eq!(saved_field(&app.tabs[0], "name"), "Walrus");
+        click(&mut app, &ctx, "Print");
+        // Its frames moved the clock on.
+        ty.time.set(ty.time.get() + 10.0);
+        for _ in 0..500 {
+            if !app.busy {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            ty.frame(&mut app, vec![]);
+        }
+        let sent = "Sent 1 page(s) to limarepdf-test.";
+        assert!(
+            matches!(&app.dialog, Dialog::Message(_, m) if m.starts_with(sent)),
+            "{}",
+            match &app.dialog {
+                Dialog::Message(_, m) => m.as_str(),
+                _ => "no message",
+            }
+        );
     }
 }
