@@ -2366,7 +2366,7 @@ dependencies = [
 
 [[package]]
 name = "limarepdf-cli"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2379,7 +2379,7 @@ dependencies = [
 
 [[package]]
 name = "limarepdf-core"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "aes",
  "anyhow",
@@ -2424,7 +2424,7 @@ dependencies = [
 
 [[package]]
 name = "limarepdf-gui"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "eframe",
