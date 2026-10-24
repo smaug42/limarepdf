@@ -780,10 +780,26 @@ impl Pdf {
         }
     }
 
-    /// Split into files, part `n` (from 1) written to `path(n, title)`. Each part is
-    /// written and dropped as soon as it is made, so no more parts are held at once than
-    /// are being made. Returns how many files were written. When every file was written but
-    /// one wasn't confirmed on disk, the error is that file's [`crate::NotConfirmed`].
+    /// The files [`Pdf::split`] writes, in order: part `n` (from 1) at `path(n, title)`.
+    /// Callers check them with [`existing`] before splitting, as a split replaces files.
+    pub fn split_files(
+        &self,
+        by: SplitBy,
+        path: impl Fn(usize, Option<&str>) -> std::path::PathBuf,
+    ) -> Result<Vec<std::path::PathBuf>> {
+        let parts = self.split_parts(by)?;
+        Ok(parts
+            .iter()
+            .enumerate()
+            .map(|(i, (title, _))| path(i + 1, title.as_deref()))
+            .collect())
+    }
+
+    /// Split into files, part `n` (from 1) written to `path(n, title)`, replacing files of
+    /// the same name ([`Pdf::split_files`] lists them). Each part is written and dropped as
+    /// soon as it is made, so no more parts are held at once than are being made. Returns
+    /// how many files were written. When every file was written but one wasn't confirmed on
+    /// disk, the error is that file's [`crate::NotConfirmed`].
     pub fn split(
         &self,
         by: SplitBy,
@@ -1071,6 +1087,16 @@ pub fn write_file(path: impl AsRef<Path>, bytes: &[u8]) -> Result<()> {
     })
 }
 
+/// Those of `paths` that something is at already: a file, a folder or a link (a broken
+/// one too), which writing there would replace or fail on.
+pub fn existing(paths: &[std::path::PathBuf]) -> Vec<&Path> {
+    paths
+        .iter()
+        .filter(|p| std::fs::symlink_metadata(p).is_ok())
+        .map(|p| p.as_path())
+        .collect()
+}
+
 pub(crate) fn encode_text(s: &str) -> Vec<u8> {
     if s.is_ascii() {
         s.as_bytes().to_vec()
@@ -1189,6 +1215,60 @@ mod tests {
             vec![2, 2, 1]
         );
         assert!(re.split_parts(SplitBy::Every(0)).is_err());
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("limarepdf-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The files a split is checked against are the ones it writes, and [`existing`] finds
+    /// the ones already there, a broken link among them (BUG-05).
+    #[test]
+    fn split_files_are_the_files_written() {
+        let dir = scratch("split-files");
+        let p = sample(5);
+        let name = |n, t: Option<&str>| dir.join(part_file_name("doc", n, t));
+        let files = p.split_files(SplitBy::Every(2), name).unwrap();
+        assert!(existing(&files).is_empty());
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.join("gone"), &files[2]).unwrap();
+        assert_eq!(p.split(SplitBy::Every(2), name).unwrap(), 3);
+        let mut written: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        written.sort();
+        assert_eq!(written, files);
+        assert_eq!(
+            existing(&files),
+            files.iter().map(|f| f.as_path()).collect::<Vec<_>>()
+        );
+        assert!(p.split_files(SplitBy::Every(0), name).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A part that can't be written fails the split; every other part is whole or not there,
+    /// and no temporary file is left (BUG-05's mid-run error).
+    #[test]
+    fn a_failed_part_leaves_no_cut_files() {
+        let dir = scratch("split-fails");
+        let p = sample(3);
+        let name = |n, t: Option<&str>| match n {
+            2 => dir.join("missing").join(part_file_name("doc", n, t)),
+            _ => dir.join(part_file_name("doc", n, t)),
+        };
+        let e = p.split(SplitBy::Every(1), name).unwrap_err();
+        assert!(format!("{e:#}").contains("missing"), "{e:#}");
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let n = path.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(["doc-001.pdf", "doc-003.pdf"].contains(&n.as_str()), "{n}");
+            assert_eq!(Pdf::open(&path, None).unwrap().page_count(), 1, "{n}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

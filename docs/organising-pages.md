@@ -54,8 +54,8 @@ bookmark too, such as `book-002 Introduction.pdf`, and the pages before the firs
 own. Each file is written as soon as its part is made, so a large document split into many files needs little
 more memory than the document itself. Splitting doesn't change the document.
 
-Files with the same names already in the folder are replaced without asking, so choose an empty folder (to be
-fixed).
+If files with the same names are already in the folder, LimarePDF asks once, saying how many, before writing
+anything: **Replace** replaces them, **Cancel** writes no files at all.
 
 ## Remove blank pages
 

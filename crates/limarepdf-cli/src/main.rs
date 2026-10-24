@@ -95,6 +95,9 @@ enum Cmd {
         bookmarks: Option<usize>,
         #[arg(long)]
         out_dir: PathBuf,
+        /// Replace files already at the parts' names; without it nothing is written then
+        #[arg(long)]
+        overwrite: bool,
         #[arg(long)]
         password: Option<String>,
     },
@@ -533,8 +536,7 @@ enum Cmd {
         #[arg(long)]
         password: Option<String>,
     },
-    /// Render pages to image files: out-dir/<stem>-<page>.png (or .jpg), replacing files
-    /// of the same name
+    /// Render pages to image files: out-dir/<stem>-<page>.png (or .jpg)
     Render {
         input: PathBuf,
         #[arg(long, default_value = "all")]
@@ -549,6 +551,9 @@ enum Cmd {
         quality: u8,
         #[arg(long)]
         out_dir: PathBuf,
+        /// Replace files already at the images' names; without it nothing is written then
+        #[arg(long)]
+        overwrite: bool,
         #[arg(long)]
         password: Option<String>,
     },
@@ -2343,7 +2348,7 @@ fn run_id(cmd: IdCmd) -> Result<()> {
                 }
                 "cer" | "crt" | "der" => {
                     saved(
-                        std::fs::write(&output, &id.cert.der)
+                        limarepdf_core::write_file(&output, &id.cert.der)
                             .with_context(|| format!("writing {}", output.display())),
                     )?;
                     out!(
@@ -2436,6 +2441,33 @@ fn not_an_input(inputs: &[impl AsRef<Path>], output: &Path) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// A command writing several files never replaces one silently (BUG-05): with anything at
+/// one of `files` already, it is refused before anything is written, unless `overwrite`.
+fn not_taken(files: &[PathBuf], overwrite: bool) -> Result<()> {
+    const SHOWN: usize = 5;
+    let taken = limarepdf_core::existing(files);
+    if overwrite || taken.is_empty() {
+        return Ok(());
+    }
+    let mut names: Vec<String> = taken
+        .iter()
+        .take(SHOWN)
+        .map(|p| display_line(&p.display().to_string(), 300))
+        .collect();
+    if taken.len() > SHOWN {
+        names.push(format!("and {} more", taken.len() - SHOWN));
+    }
+    let (what, it) = match taken.len() {
+        1 => ("a file is".to_string(), "it"),
+        n => (format!("{n} files are"), "them"),
+    };
+    bail!(
+        "{what} already there: {}. Nothing was written; choose another --out-dir, or add \
+         --overwrite to replace {it}",
+        names.join(", ")
+    );
 }
 
 fn trust_for_checking(explicit: &Option<PathBuf>) -> Result<TrustList> {
@@ -2782,6 +2814,7 @@ fn run(cmd: Cmd) -> Result<()> {
             every,
             bookmarks,
             out_dir,
+            overwrite,
             password,
         } => {
             let p = open(&input, &password)?;
@@ -2794,10 +2827,11 @@ fn run(cmd: Cmd) -> Result<()> {
                 Some(level) => SplitBy::Bookmarks(level),
                 None => SplitBy::Every(every),
             };
+            let name = |n, title: Option<&str>| out_dir.join(part_file_name(&stem, n, title));
             // Asked first, so that nothing is written when the document can't be split.
-            p.split_parts(by)?;
+            not_taken(&p.split_files(by, name)?, overwrite)?;
             std::fs::create_dir_all(&out_dir)?;
-            let n = saved(p.split(by, |n, title| out_dir.join(part_file_name(&stem, n, title))))?;
+            let n = saved(p.split(by, name))?;
             out!("split into {n} files in {}", out_dir.display());
         }
         Cmd::Extract { io, pages } => run_edit(&io, |p| {
@@ -3784,6 +3818,7 @@ fn run(cmd: Cmd) -> Result<()> {
             format,
             quality,
             out_dir,
+            overwrite,
             password,
         } => {
             // As the app shows it (NoView annotations hidden, missing annotation drawings
@@ -3803,6 +3838,11 @@ fn run(cmd: Cmd) -> Result<()> {
                 FormatArg::Png => render::ImageFormat::Png,
                 FormatArg::Jpeg => render::ImageFormat::Jpeg(quality),
             };
+            let files: Vec<PathBuf> = render::image_names(&idx, &stem, format)
+                .iter()
+                .map(|n| out_dir.join(n))
+                .collect();
+            not_taken(&files, overwrite)?;
             let t = std::time::Instant::now();
             saved(render::write_images(
                 &hp, &idx, dpi, format, &out_dir, &stem,

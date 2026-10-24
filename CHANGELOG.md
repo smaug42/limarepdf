@@ -39,6 +39,14 @@
 - A form value LimarePDF can't write (right-to-left text, say), typed and then left by clicking elsewhere, Tab,
   Enter or Esc, was lost once the reason was shown. It now stays typed in the field, which gets the keyboard back
   when the message closes, and Tab doesn't move on to the next field.
+- Split into files replaced files of the same names in the chosen folder without asking. It now asks once, saying
+  how many, before writing anything, as exporting pages as images does; Cancel writes no files. On the command
+  line, `limarepdf-cli split` and `limarepdf-cli render` refuse to replace files, write nothing and list them;
+  add `--overwrite` to replace them.
+- Page images (in the app and with `limarepdf-cli render`), certificates exported with `limarepdf-cli id export`,
+  exported text and selected text saved as a text file were written in place: a failure part way (a full disk,
+  say) left a cut-off file, and a file linked to another one changed that other file too. Each is now written
+  whole or not at all, as documents are, and a write the system couldn't confirm on disk is reported as such.
 
 ## [0.9.0] - 2026-10-23
 

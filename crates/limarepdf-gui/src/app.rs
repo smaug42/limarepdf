@@ -203,6 +203,30 @@ struct ImageExport {
     stem: String,
 }
 
+/// The document in front split into files in `dir`, named from `stem`.
+#[derive(Clone)]
+struct SplitFiles {
+    by: SplitBy,
+    dir: PathBuf,
+    stem: String,
+}
+
+/// Files about to be written, replacing files of the same names.
+#[derive(Clone)]
+enum Replacing {
+    Images(ImageExport),
+    Split(SplitFiles),
+}
+
+impl Replacing {
+    fn dir(&self) -> &Path {
+        match self {
+            Replacing::Images(e) => &e.dir,
+            Replacing::Split(s) => &s.dir,
+        }
+    }
+}
+
 /// The tab a question is about, as it was when asked. The answer acts on that tab only
 /// while it is open and unchanged ([`App::still`]): work in the background, such as a file
 /// finishing opening, goes on while a question is open.
@@ -228,8 +252,8 @@ enum Dialog {
     Message(String, String),
     ConfirmClose(Asked),
     ConfirmQuit,
-    /// Export would replace this many files.
-    ConfirmReplace(Asked, ImageExport, usize),
+    /// Export or split would replace this many files.
+    ConfirmReplace(Asked, Replacing, usize),
     ConfirmFlatten(Asked),
     ConfirmFlattenAnnots(Asked),
     /// Save (`true`: as a new file) by writing the whole file, which breaks the
@@ -375,6 +399,9 @@ impl Excerpt {
 
 /// Title of the OCR background job, also used to recognise its result.
 const OCR_JOB: &str = "Recognise text";
+
+/// Title of the split background job and its messages.
+const SPLIT_JOB: &str = "Split into files";
 
 /// Width of the inspector panel, and of its rail when collapsed.
 const INSPECTOR_WIDTH: f32 = 250.0;
@@ -1355,9 +1382,21 @@ impl App {
     /// Write page images on a background thread; the document is not changed.
     fn start_export(&mut self, ctx: &egui::Context, e: ImageExport) {
         self.spawn_job(ctx, "Export pages as images", move |p| {
-            let files = p.export_images(&e.pages, e.dpi, e.format, &e.dir, &e.stem)?;
-            let n = files.len();
-            Ok((false, format!("Wrote {n} image(s) to {}.", e.dir.display())))
+            match p.export_images(&e.pages, e.dpi, e.format, &e.dir, &e.stem) {
+                Ok(files) => {
+                    let n = files.len();
+                    Ok((false, format!("Wrote {n} image(s) to {}.", e.dir.display())))
+                }
+                Err(err) if not_confirmed(&err) => Ok((
+                    false,
+                    format!(
+                        "Wrote the images to {}, but your system couldn't confirm they are \
+                         safely on disk. If the computer lost power just now, export them again.",
+                        e.dir.display()
+                    ),
+                )),
+                Err(err) => Err(err),
+            }
         });
     }
 
@@ -1385,11 +1424,14 @@ impl App {
         if path.extension().is_none() {
             path.set_extension("txt");
         }
-        match std::fs::write(&path, text) {
+        match limarepdf_core::write_file(&path, text.as_bytes()) {
             Ok(()) => self.status = format!("Wrote the text to {}", path.display()),
+            Err(e) if not_confirmed(&e) => {
+                self.dialog = Dialog::Message("Saved, not confirmed".into(), NOT_CONFIRMED.into())
+            }
             Err(e) => {
                 self.dialog =
-                    Dialog::Message("Export failed".into(), format!("{}: {e}", path.display()))
+                    Dialog::Message("Export failed".into(), format!("{}: {e:#}", path.display()))
             }
         }
     }
@@ -1415,7 +1457,7 @@ impl App {
             path.set_extension(ext);
         }
         let result: limarepdf_core::Result<()> = match layout {
-            dlg::Layout::TextFile => std::fs::write(&path, text).map_err(Into::into),
+            dlg::Layout::TextFile => limarepdf_core::write_file(&path, text.as_bytes()),
             _ => crate::guard(|| {
                 Excerpt::new(t, layout)
                     .build(&t.pdf)
@@ -2456,21 +2498,25 @@ impl App {
                     pages,
                     dir,
                 };
-                let existing = image_names(&e.pages, &e.stem, e.format)
+                let files: Vec<PathBuf> = image_names(&e.pages, &e.stem, e.format)
                     .iter()
-                    .filter(|n| e.dir.join(n).exists())
-                    .count();
-                if existing > 0 {
-                    self.dialog =
-                        Dialog::ConfirmReplace(Asked::of(&self.tabs[active]), e, existing);
-                } else {
-                    self.start_export(ctx, e);
+                    .map(|n| e.dir.join(n))
+                    .collect();
+                match limarepdf_core::existing(&files).len() {
+                    0 => self.start_export(ctx, e),
+                    n => {
+                        let asked = Asked::of(&self.tabs[active]);
+                        self.dialog = Dialog::ConfirmReplace(asked, Replacing::Images(e), n);
+                    }
                 }
             }
             Apply::Split => {
                 let f = &self.tabs[active].forms;
-                let level = f.split_at_marks.then_some(f.split_level.max(1));
-                let every = f.split.max(1);
+                let by = if f.split_at_marks {
+                    SplitBy::Bookmarks(f.split_level.max(1))
+                } else {
+                    SplitBy::Every(f.split.max(1))
+                };
                 let Some(dir) = rfd::FileDialog::new()
                     .set_title("Choose output folder")
                     .pick_folder()
@@ -2478,27 +2524,47 @@ impl App {
                     return;
                 };
                 let stem = self.tabs[active].stem("part");
-                self.spawn_job(ctx, "Split into files", move |p| {
-                    let by = match level {
-                        Some(level) => SplitBy::Bookmarks(level),
-                        None => SplitBy::Every(every),
-                    };
-                    match p.split(by, |n, title| dir.join(part_file_name(&stem, n, title))) {
-                        Ok(n) => Ok((false, format!("Wrote {n} files to {}.", dir.display()))),
-                        Err(e) if not_confirmed(&e) => Ok((
-                            false,
-                            format!(
-                                "Wrote the files to {}, but your system couldn't confirm they \
-                                 are safely on disk. If the computer lost power just now, \
-                                 split the document again.",
-                                dir.display()
-                            ),
-                        )),
-                        Err(e) => Err(e),
-                    }
-                });
+                self.split_into(ctx, SplitFiles { by, dir, stem });
             }
         }
+    }
+
+    /// Split the document in front into files, asking first when any of them would replace
+    /// a file, so that nothing is replaced unasked and nothing is written on Cancel.
+    fn split_into(&mut self, ctx: &egui::Context, s: SplitFiles) {
+        let t = &self.tabs[self.active];
+        let name = |n, title: Option<&str>| s.dir.join(part_file_name(&s.stem, n, title));
+        let files = match t.pdf.split_files(s.by, name) {
+            Ok(files) => files,
+            Err(e) => {
+                self.dialog = Dialog::Message(SPLIT_JOB.into(), format!("{e:#}"));
+                return;
+            }
+        };
+        match limarepdf_core::existing(&files).len() {
+            0 => self.start_split(ctx, s),
+            n => self.dialog = Dialog::ConfirmReplace(Asked::of(t), Replacing::Split(s), n),
+        }
+    }
+
+    /// Write the split's files on a background thread; the document is not changed.
+    fn start_split(&mut self, ctx: &egui::Context, s: SplitFiles) {
+        self.spawn_job(ctx, SPLIT_JOB, move |p| {
+            let name = |n, title: Option<&str>| s.dir.join(part_file_name(&s.stem, n, title));
+            match p.split(s.by, name) {
+                Ok(n) => Ok((false, format!("Wrote {n} files to {}.", s.dir.display()))),
+                Err(e) if not_confirmed(&e) => Ok((
+                    false,
+                    format!(
+                        "Wrote the files to {}, but your system couldn't confirm they \
+                         are safely on disk. If the computer lost power just now, \
+                         split the document again.",
+                        s.dir.display()
+                    ),
+                )),
+                Err(e) => Err(e),
+            }
+        });
     }
 
     /// What a question about the tab in front is tied to.
@@ -2653,16 +2719,20 @@ impl App {
                 }
             }
             _ if self.tabs.is_empty() => done = true,
-            Dialog::ConfirmReplace(asked, e, n) => match dlg::confirm(
+            Dialog::ConfirmReplace(asked, r, n) => match dlg::confirm(
                 ctx,
                 Ask::new(
                     "Replace files?",
                     &format!(
-                        "{} in {} already {} the names these images would get. Replacing \
-                         {} can't be undone.",
+                        "{} in {} already {} the names {} would get. Replacing {} can't be \
+                         undone.",
                         plural(*n, "A file", "{n} files"),
-                        e.dir.display(),
+                        r.dir().display(),
                         if *n == 1 { "has" } else { "have" },
+                        match r {
+                            Replacing::Images(_) => "these images",
+                            Replacing::Split(_) => "the split's files",
+                        },
                         if *n == 1 { "it" } else { "them" },
                     ),
                     Btn::danger("Replace"),
@@ -2671,7 +2741,10 @@ impl App {
             ) {
                 Outcome::Apply => {
                     if self.still(asked) {
-                        self.start_export(ctx, e.clone());
+                        match r.clone() {
+                            Replacing::Images(e) => self.start_export(ctx, e),
+                            Replacing::Split(s) => self.start_split(ctx, s),
+                        }
                     }
                     done = true;
                 }
@@ -6649,13 +6722,13 @@ mod tests {
                 two("Replace"),
                 Dialog::ConfirmReplace(
                     app.asked(),
-                    ImageExport {
+                    Replacing::Images(ImageExport {
                         pages: vec![0, 1],
                         dpi: 150.0,
                         format: ImageFormat::Png,
                         dir: PathBuf::from(format!("/home/sam/{long}")),
                         stem: long.into(),
-                    },
+                    }),
                     2,
                 ),
             ),
@@ -6786,6 +6859,19 @@ mod tests {
                     error: Some(format!("That isn't the password. {long}")),
                 }),
             ),
+            22 => (
+                "Replace files?".into(),
+                two("Replace"),
+                Dialog::ConfirmReplace(
+                    app.asked(),
+                    Replacing::Split(SplitFiles {
+                        by: SplitBy::Bookmarks(1),
+                        dir: PathBuf::from(format!("/home/sam/{long}")),
+                        stem: long.into(),
+                    }),
+                    12,
+                ),
+            ),
             _ => return None,
         };
         Some(q)
@@ -6857,7 +6943,7 @@ mod tests {
         ];
         for i in 0.. {
             let Some((title, _, _)) = question(&app, &long, i) else {
-                assert_eq!(i, 22, "a question was left out");
+                assert_eq!(i, 23, "a question was left out");
                 break;
             };
             for (size, scale) in sizes
@@ -8866,5 +8952,95 @@ mod tests {
                 assert!(!open, "{tool:?}, {act:?}: the box stayed open");
             }
         }
+    }
+
+    /// Split asks once before replacing files: Cancel writes nothing and leaves the file
+    /// there as it was, Replace writes every part, and with nothing in the way it splits
+    /// without asking. A folder that can't be written to is reported (BUG-05, audit A07).
+    #[test]
+    fn split_asks_before_replacing_files() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        pages_tab(&mut app, &ctx, 3);
+        let dir = std::env::temp_dir().join(format!("limarepdf-app-{}-split", std::process::id()));
+        let fresh = || {
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+        };
+        let split = |app: &mut App| {
+            app.dialog = Dialog::None;
+            let s = SplitFiles {
+                by: SplitBy::Every(1),
+                dir: dir.clone(),
+                stem: "doc".into(),
+            };
+            app.split_into(&ctx, s);
+        };
+        let finish = |app: &mut App| {
+            for _ in 0..500 {
+                app.poll_loads(&ctx);
+                if !app.busy {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert!(!app.busy, "the split didn't finish");
+            match &app.dialog {
+                Dialog::Message(_, m) => m.clone(),
+                _ => panic!("no message"),
+            }
+        };
+        let files = |dir: &Path| {
+            let mut v: Vec<String> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            v.sort();
+            v
+        };
+        let parts = ["doc-001.pdf", "doc-002.pdf", "doc-003.pdf"];
+        fresh();
+        split(&mut app);
+        assert!(app.busy, "it asked with nothing in the way");
+        assert!(finish(&mut app).starts_with("Wrote 3 files"));
+        assert_eq!(files(&dir), parts);
+
+        fresh();
+        std::fs::write(dir.join("doc-002.pdf"), "keep").unwrap();
+        split(&mut app);
+        assert!(!app.busy, "it started before asking");
+        assert!(matches!(
+            app.dialog,
+            Dialog::ConfirmReplace(_, Replacing::Split(_), 1)
+        ));
+        click(&mut app, &ctx, "Cancel");
+        assert!(matches!(app.dialog, Dialog::None));
+        assert!(!app.busy, "it split on Cancel");
+        assert_eq!(files(&dir), ["doc-002.pdf"]);
+        assert_eq!(std::fs::read(dir.join("doc-002.pdf")).unwrap(), b"keep");
+
+        split(&mut app);
+        click(&mut app, &ctx, "Replace");
+        assert!(finish(&mut app).starts_with("Wrote 3 files"));
+        assert_eq!(files(&dir), parts);
+        for p in parts {
+            assert_eq!(Pdf::open(dir.join(p), None).unwrap().page_count(), 1, "{p}");
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fresh();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            // Root can write anywhere; there's nothing to check then.
+            if std::fs::write(dir.join("probe"), "").is_err() {
+                split(&mut app);
+                let message = finish(&mut app);
+                assert!(!message.starts_with("Wrote"), "{message}");
+                assert!(matches!(&app.dialog, Dialog::Message(t, _) if t == SPLIT_JOB));
+            }
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

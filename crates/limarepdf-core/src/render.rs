@@ -483,9 +483,10 @@ pub fn image_names(pages: &[usize], stem: &str, format: ImageFormat) -> Vec<Stri
 }
 
 /// Render `pages` at `dpi` (at most [`MAX_DPI`]) and write them to `dir` with the names
-/// from [`image_names`], replacing files of the same name. Pages are rendered in
-/// parallel, in batches that keep the bitmaps in memory to about 1 GB. Returns the files
-/// written.
+/// from [`image_names`], each whole or not at all, replacing files of the same name. Pages
+/// are rendered in parallel, in batches that keep the bitmaps in memory to about 1 GB.
+/// Returns the files written. When every file was written but one wasn't confirmed on
+/// disk, the error is that file's [`crate::NotConfirmed`].
 pub fn write_images(
     pdf: &HPdf,
     pages: &[usize],
@@ -499,11 +500,21 @@ pub fn write_images(
         .into_iter()
         .map(|n| dir.join(n))
         .collect();
+    let unconfirmed = std::sync::Mutex::new(None);
     encode_batched(pdf, pages, dpi, format, |k, bytes| {
         let path = &paths[k];
-        std::fs::write(path, bytes).with_context(|| format!("writing {}", path.display()))
+        match crate::write_file(path, &bytes) {
+            // Written: the other pages go on.
+            Err(e) if e.is::<crate::NotConfirmed>() => {
+                let mut u = unconfirmed.lock().unwrap_or_else(|e| e.into_inner());
+                u.get_or_insert(e);
+                Ok(())
+            }
+            r => r.with_context(|| format!("writing {}", path.display())),
+        }
     })?;
-    Ok(paths)
+    let unconfirmed = unconfirmed.into_inner().unwrap_or_else(|e| e.into_inner());
+    unconfirmed.map_or(Ok(paths), Err)
 }
 
 /// Render `pages` at `dpi` (at most [`MAX_DPI`]) and encode each as an image file, in

@@ -236,6 +236,20 @@ fn splits_at_bookmarks() {
             (s("Part two"), 1)
         ]
     );
+    let files = p
+        .split_files(SplitBy::Bookmarks(1), |n, t| {
+            limarepdf_core::part_file_name("book", n, t).into()
+        })
+        .unwrap();
+    assert_eq!(
+        files,
+        [
+            "book-001.pdf",
+            "book-002 Part one.pdf",
+            "book-003 Part two.pdf"
+        ]
+        .map(std::path::PathBuf::from)
+    );
 }
 
 /// The outline's titles with their depths, and each `Count` from the root down.
