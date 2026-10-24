@@ -1329,6 +1329,8 @@ pub static ACTIONS: &[Action] = &[
         sep: true,
         label: "Append PDFs…",
         icon: icon::STACK_PLUS,
+        // Files are read in the background, one append at a time.
+        enabled: idle,
         ..BASE
     },
     Action {

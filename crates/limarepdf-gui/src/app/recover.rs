@@ -829,8 +829,16 @@ mod tests {
         let mut app = app_on(&ctx, f.clone());
         let t0 = Instant::now();
         copy_all(&mut app, &ctx, t0);
+        // The files are read in the background.
+        let merge = |app: &mut App, files: &[PathBuf]| {
+            app.merge_files(&ctx, files);
+            while app.busy {
+                app.poll_loads(&ctx);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
         // An unprotected document: copies go on.
-        app.merge_files(&ctx, std::slice::from_ref(&plain));
+        merge(&mut app, std::slice::from_ref(&plain));
         assert_eq!(app.tabs[0].page_count(), 3);
         assert!(!app.tabs[0].copy.protected);
         assert!(!files(&m, &app).is_empty());
@@ -838,13 +846,13 @@ mod tests {
         // A copy that could still be offered stops the merge.
         f.fail(Kind::Remove, "t1.txt");
         f.fail(Kind::Rename, "t1.txt");
-        app.merge_files(&ctx, &[plain.clone(), locked.clone()]);
+        merge(&mut app, &[plain.clone(), locked.clone()]);
         assert_eq!(app.tabs[0].page_count(), 3);
         assert!(matches!(&app.dialog, Dialog::RecoveryFile { .. }));
         f.clear();
         app.dialog = Dialog::None;
 
-        app.merge_files(&ctx, &[plain.clone(), locked.clone()]);
+        merge(&mut app, &[plain.clone(), locked.clone()]);
         let _ = std::fs::remove_file(&locked);
         let _ = std::fs::remove_file(&plain);
         assert_eq!(app.tabs[0].page_count(), 5);

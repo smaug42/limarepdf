@@ -23,6 +23,7 @@ use limarepdf_core::{
     parse_page_range, part_file_name, print, ImageImport, OcrResult, OpenPanel, Pdf, ScanResult,
     SplitBy, TrustRole,
 };
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
@@ -55,6 +56,46 @@ fn insert_images(
 /// isn't replaced.
 type Reloading = Option<(u64, u64)>;
 
+/// What a file's password is asked for.
+enum Unlock {
+    /// To open the file in a tab of its own, at this page if given, or (`Reloading`) to
+    /// read it again into a tab.
+    Tab(Option<usize>, Reloading),
+    /// To add its pages to a tab's document, with the files after it (BUG-20).
+    Append(Box<Appending>),
+}
+
+/// PDFs whose pages are being added to the end of a tab's document, read in the background
+/// one after another (BUG-20).
+struct Appending {
+    /// The tab they go to.
+    tab: u64,
+    /// The files, in order.
+    files: Vec<PathBuf>,
+    /// The documents read so far, one per file in order; `None` for a file left out.
+    read: Vec<Option<Pdf>>,
+}
+
+/// Why reading the files to append stopped at the next one.
+enum AppendStop {
+    /// It needs a password, or (the message) the one given was wrong.
+    Password(Option<String>),
+    /// It can't be read: why.
+    Failed(String),
+}
+
+/// Whether opening a file failed for want of the right password.
+fn needs_password(e: &str) -> bool {
+    e.to_lowercase().contains("password")
+}
+
+/// What a password prompt says when asked again.
+const INCORRECT_PASSWORD: &str = "Incorrect password.";
+
+/// The title of the message about a file that can't be opened, and of several together.
+const CANNOT_OPEN: &str = "Cannot open file";
+const CANNOT_OPEN_SEVERAL: &str = "Cannot open files";
+
 enum Loaded {
     Ok {
         path: PathBuf,
@@ -78,10 +119,13 @@ enum Loaded {
     NeedPassword {
         path: PathBuf,
         error: Option<String>,
+        page: Option<usize>,
         into: Reloading,
     },
     /// The file at the path couldn't be opened: why.
     Err(PathBuf, String),
+    /// Files to append were read: all of them, or as far as one that stopped the reading.
+    Append(Box<Appending>, Option<AppendStop>),
     /// A background job on a copy of tab `tab` at `revision` finished. On success: the
     /// changed document, whether anything changed, and a summary for the user.
     Job {
@@ -261,8 +305,8 @@ impl Asked {
 /// The dialogs left: settings live in the inspector.
 enum Dialog {
     None,
-    /// The password for a file being opened, or reloaded into a tab.
-    Password(dlg::Password, Reloading),
+    /// The password for a file being opened, reloaded into a tab, or appended to one.
+    Password(dlg::Password, Unlock),
     Message(String, String),
     ConfirmClose(Asked),
     ConfirmQuit,
@@ -613,6 +657,11 @@ pub struct App {
     /// The window had the keyboard last frame: getting it back, the tabs' files are
     /// checked for changes made meanwhile.
     focused: bool,
+    /// Dialogs waiting, in turn, for the one open to be answered (BUG-07).
+    waiting: VecDeque<Dialog>,
+    /// A file being read again with the password given for it: the dialogs waiting wait
+    /// for the result, so that a wrong password is asked for again first.
+    retrying: Option<PathBuf>,
 }
 
 impl App {
@@ -677,6 +726,8 @@ impl App {
             opening: Vec::new(),
             replace_ok: None,
             focused: true,
+            waiting: VecDeque::new(),
+            retrying: None,
         }
     }
 
@@ -698,8 +749,64 @@ impl App {
             self.check_disk(ctx, Some(self.tabs[i].id));
             return;
         }
-        if !self.opening.iter().any(|p| disk::same_file(p, &path)) {
+        if !self.reading(&path) {
             self.read_file(ctx, path, password, page, None);
+        }
+    }
+
+    /// Whether the file at `path`, by any path or link to it, is being read for a tab, or
+    /// its password is asked for to read it.
+    fn reading(&self, path: &Path) -> bool {
+        let asks = |d: &Dialog| match d {
+            Dialog::Password(s, Unlock::Tab(..)) => disk::same_file(&s.path, path),
+            _ => false,
+        };
+        let asking = std::iter::once(&self.dialog).chain(&self.waiting).any(asks);
+        asking || self.opening.iter().any(|p| disk::same_file(p, path))
+    }
+
+    /// Shows `d` once the dialog open now, and those waiting before it, are answered: a
+    /// result coming in the background never replaces a question (BUG-07). Files that
+    /// can't be opened, waiting together, are told about in one message.
+    fn show(&mut self, d: Dialog) {
+        if let Dialog::Message(title, text) = &d {
+            if title == CANNOT_OPEN {
+                let same = self.waiting.iter_mut().find_map(|w| match w {
+                    Dialog::Message(t, x) if t == CANNOT_OPEN || t == CANNOT_OPEN_SEVERAL => {
+                        Some((t, x))
+                    }
+                    _ => None,
+                });
+                if let Some((t, x)) = same {
+                    *t = CANNOT_OPEN_SEVERAL.into();
+                    x.push_str("\n\n");
+                    x.push_str(text);
+                    return;
+                }
+            }
+        }
+        self.waiting.push_back(d);
+        self.next_dialog();
+    }
+
+    /// Asks for a password, `again` (after a wrong one, or the file skipped before it)
+    /// ahead of the dialogs waiting.
+    fn ask_password(&mut self, d: Dialog, again: bool) {
+        if again {
+            self.waiting.push_front(d);
+            self.next_dialog();
+        } else {
+            self.show(d);
+        }
+    }
+
+    /// Opens the next dialog waiting, once none is open and no password given is being
+    /// tried.
+    fn next_dialog(&mut self) {
+        if matches!(self.dialog, Dialog::None) && self.retrying.is_none() {
+            if let Some(d) = self.waiting.pop_front() {
+                self.dialog = d;
+            }
         }
     }
 
@@ -714,6 +821,9 @@ impl App {
     fn opened(&mut self, path: &Path) {
         if let Some(i) = self.opening.iter().position(|p| p == path) {
             self.opening.remove(i);
+        }
+        if self.retrying.as_deref() == Some(path) {
+            self.retrying = None;
         }
     }
 
@@ -755,10 +865,11 @@ impl App {
                 },
                 Err(e) => {
                     let s = format!("{e:#}");
-                    if s.to_lowercase().contains("password") {
+                    if needs_password(&s) {
                         Loaded::NeedPassword {
                             path,
-                            error: password.map(|_| "Incorrect password.".to_string()),
+                            error: password.map(|_| INCORRECT_PASSWORD.to_string()),
+                            page,
                             into,
                         }
                     } else {
@@ -780,7 +891,7 @@ impl App {
         let (Some(path), into) = (t.path.clone(), Some((t.id, t.revision))) else {
             return;
         };
-        if !self.opening.iter().any(|p| disk::same_file(p, &path)) {
+        if !self.reading(&path) {
             self.read_file(ctx, path, None, None, into);
         }
     }
@@ -855,7 +966,7 @@ impl App {
                 true
             }
             Err(e) => {
-                self.dialog = Dialog::Message("Cannot open".into(), format!("{e:#}"));
+                self.show(Dialog::Message("Cannot open".into(), format!("{e:#}")));
                 false
             }
         }
@@ -1361,7 +1472,7 @@ impl App {
             }
             Err(e) => text.push_str(&format!("\n\nLimarePDF can't open the signed file: {e:#}")),
         }
-        self.dialog = Dialog::Message(what.into(), text);
+        self.show(Dialog::Message(what.into(), text));
     }
 
     fn poll_loads(&mut self, ctx: &egui::Context) {
@@ -1386,12 +1497,12 @@ impl App {
                                 t.revision == revision && !t.ed.pending()
                             });
                             if ready.is_none() {
-                                self.dialog = Dialog::Message(
+                                self.show(Dialog::Message(
                                     "Not reloaded".into(),
                                     "The document changed or was closed while its file was \
                                      read again, so it wasn't reloaded."
                                         .into(),
-                                );
+                                ));
                                 continue;
                             }
                             ready
@@ -1459,18 +1570,47 @@ impl App {
                         t.sig_checked(generation, check);
                     }
                 }
-                Loaded::NeedPassword { path, error, into } => {
+                Loaded::NeedPassword {
+                    path,
+                    error,
+                    page,
+                    into,
+                } => {
+                    let again = self.retrying.as_ref() == Some(&path);
                     self.opened(&path);
                     let ask = dlg::Password {
                         path,
                         input: String::new(),
                         error,
                     };
-                    self.dialog = Dialog::Password(ask, into);
+                    self.ask_password(Dialog::Password(ask, Unlock::Tab(page, into)), again);
                 }
                 Loaded::Err(path, e) => {
                     self.opened(&path);
-                    self.dialog = Dialog::Message("Cannot open file".into(), e);
+                    self.show(Dialog::Message(CANNOT_OPEN.into(), e));
+                }
+                Loaded::Append(a, stop) => {
+                    self.busy = false;
+                    self.status.clear();
+                    let again = a.files.iter().any(|f| self.retrying.as_ref() == Some(f));
+                    if again {
+                        self.retrying = None;
+                    }
+                    match stop {
+                        None => self.append_read(ctx, *a),
+                        Some(AppendStop::Password(error)) => {
+                            let ask = dlg::Password {
+                                path: a.files[a.read.len()].clone(),
+                                input: String::new(),
+                                error,
+                            };
+                            self.ask_password(Dialog::Password(ask, Unlock::Append(a)), again);
+                        }
+                        Some(AppendStop::Failed(why)) => self.show(Dialog::Message(
+                            "Append failed".into(),
+                            format!("{why}\n\nNothing was added."),
+                        )),
+                    }
                 }
                 Loaded::Job {
                     tab,
@@ -1486,19 +1626,19 @@ impl App {
                     let (pdf, changed, text) = match result {
                         Ok(r) => r,
                         Err(e) => {
-                            self.dialog = Dialog::Message(title.into(), e);
+                            self.show(Dialog::Message(title.into(), e));
                             continue;
                         }
                     };
                     // Typing since the job started is a change too: it goes in, and the
                     // result, made without it, is discarded.
                     if changed && (!t.keep_page_typing(ctx) || t.revision != revision) {
-                        self.dialog = Dialog::Message(
+                        self.show(Dialog::Message(
                             title.into(),
                             "The document changed while this was running, so the result \
                              was discarded. Run it again."
                                 .into(),
-                        );
+                        ));
                         continue;
                     }
                     if changed {
@@ -1511,10 +1651,11 @@ impl App {
                             t.banners.retain(|b| b.kind != BannerKind::Scanned);
                         }
                     }
-                    self.dialog = Dialog::Message(title.into(), text);
+                    self.show(Dialog::Message(title.into(), text));
                 }
             }
         }
+        self.next_dialog();
     }
 
     fn pdf_dialog() -> rfd::FileDialog {
@@ -1537,10 +1678,10 @@ impl App {
             match std::fs::read(f) {
                 Ok(b) => out.push((f.clone(), b)),
                 Err(e) => {
-                    self.dialog = Dialog::Message(
+                    self.show(Dialog::Message(
                         "Cannot read image".into(),
                         format!("{}: {e}", f.display()),
-                    );
+                    ));
                     return None;
                 }
             }
@@ -1703,9 +1844,10 @@ impl App {
             Ok(()) => {
                 self.add_tab(ctx, pdf, None, None, true);
             }
-            Err(e) => {
-                self.dialog = Dialog::Message("Cannot import images".into(), format!("{e:#}"))
-            }
+            Err(e) => self.show(Dialog::Message(
+                "Cannot import images".into(),
+                format!("{e:#}"),
+            )),
         }
     }
 
@@ -2649,30 +2791,74 @@ impl App {
         self.tabs[self.active].redo(ctx);
     }
 
-    /// Adds the pages of `files` to the end of the active tab. Pages from a
-    /// password-protected document (one that opens without asking) make the tab protected:
-    /// its recovery copies are withdrawn first, as for a password, and it gets no more.
+    /// Adds the pages of `files` to the end of the active tab, reading them in the
+    /// background; a file that needs a password asks for it (BUG-20).
     fn merge_files(&mut self, ctx: &egui::Context, files: &[PathBuf]) {
-        let mut docs = Vec::new();
-        for f in files {
-            match crate::guard(|| Pdf::open(f, None)) {
-                Ok(d) => docs.push(d),
-                Err(e) => {
-                    self.dialog =
-                        Dialog::Message("Merge failed".into(), format!("{}: {e:#}", f.display()));
-                    return;
+        let a = Appending {
+            tab: self.tabs[self.active].id,
+            files: files.to_vec(),
+            read: Vec::new(),
+        };
+        self.read_appending(ctx, Box::new(a), None);
+    }
+
+    /// Reads the files of `a` in the background from the first not yet read, that one with
+    /// `password` if given, as far as one that needs a password or can't be read.
+    fn read_appending(
+        &mut self,
+        ctx: &egui::Context,
+        mut a: Box<Appending>,
+        mut password: Option<String>,
+    ) {
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let mut stop = None;
+            while let Some(f) = a.files.get(a.read.len()).cloned() {
+                let given = password.take();
+                match crate::guard(|| Pdf::open(&f, given.as_deref())) {
+                    Ok(d) => a.read.push(Some(d)),
+                    Err(e) => {
+                        let s = format!("{e:#}");
+                        stop = Some(if needs_password(&s) {
+                            AppendStop::Password(given.map(|_| INCORRECT_PASSWORD.into()))
+                        } else {
+                            AppendStop::Failed(format!("{}: {s}", f.display()))
+                        });
+                        break;
+                    }
                 }
             }
+            let _ = tx.send(Loaded::Append(a, stop));
+            ctx.request_repaint();
+        });
+        self.busy = true;
+        self.status = "Append PDFs…".into();
+    }
+
+    /// Adds the pages of the files read for `a` to the end of its tab, in one step. Pages
+    /// from a password-protected document make the tab protected: its recovery copies are
+    /// withdrawn first, as for a password, and it gets no more.
+    fn append_read(&mut self, ctx: &egui::Context, a: Appending) {
+        let Some(i) = self.tabs.iter().position(|t| t.id == a.tab) else {
+            self.show(Dialog::Message(
+                "Pages not added".into(),
+                "The document was closed while the files were read, so nothing was added.".into(),
+            ));
+            return;
+        };
+        let docs: Vec<Pdf> = a.read.into_iter().flatten().collect();
+        if docs.is_empty() {
+            return;
         }
         let protected = docs.iter().any(Pdf::encrypted);
         if protected {
             let done = "added the pages of the password-protected document";
-            if let Err(stop) = self.withdraw_copies(self.active, done) {
-                self.dialog = stop;
+            if let Err(stop) = self.withdraw_copies(i, done) {
+                self.show(stop);
                 return;
             }
         }
-        let t = &mut self.tabs[self.active];
+        let t = &mut self.tabs[i];
         if t.edit(ctx, |p| p.append(docs)) && protected {
             t.copy.protected = true;
         }
@@ -2921,6 +3107,7 @@ impl App {
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
+        self.next_dialog();
         let mut dialog = std::mem::replace(&mut self.dialog, Dialog::None);
         let mut done = false;
         // The document a question is about, named under its title.
@@ -2999,18 +3186,35 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
-            Dialog::Password(s, into) => match dlg::password(ctx, s) {
-                Outcome::Apply => {
-                    let (path, password) = (s.path.clone(), Some(s.input.clone()));
-                    match into {
-                        Some(_) => self.read_file(ctx, path, password, None, *into),
-                        None => self.spawn_open(ctx, path, password, None),
+            Dialog::Password(s, unlock) => {
+                let appending = matches!(unlock, Unlock::Append(_));
+                let answer = dlg::password(ctx, s, appending);
+                if matches!(answer, Choice::First | Choice::Second) {
+                    let path = s.path.clone();
+                    let password = (answer == Choice::First).then(|| s.input.clone());
+                    match std::mem::replace(unlock, Unlock::Tab(None, None)) {
+                        Unlock::Tab(page, None) => {
+                            self.spawn_open(ctx, path.clone(), password, page)
+                        }
+                        Unlock::Tab(page, into) => {
+                            self.read_file(ctx, path.clone(), password, page, into)
+                        }
+                        Unlock::Append(mut a) => {
+                            // Skip this file: on to the next.
+                            if password.is_none() {
+                                a.read.push(None);
+                            }
+                            self.read_appending(ctx, a, password);
+                        }
                     }
-                    done = true;
+                    // Until it is read, the dialogs waiting wait: a wrong password is
+                    // asked for again first.
+                    if appending || self.opening.contains(&path) {
+                        self.retrying = Some(path);
+                    }
                 }
-                Outcome::Cancel => done = true,
-                Outcome::Open => {}
-            },
+                done = answer != Choice::Open;
+            }
             Dialog::RecoveryFile { title, text, file } => {
                 let (ok, show) = (Btn::primary("OK"), Btn::plain("Show file"));
                 match dlg::choose(ctx, Shell::new(title), text, ok, show, false) {
@@ -3458,6 +3662,7 @@ impl App {
         if !done {
             self.dialog = dialog;
         }
+        self.next_dialog();
     }
 
     /// The colours pages are drawn in on screen now.
@@ -4235,7 +4440,11 @@ impl eframe::App for App {
             && self.tabs.iter().any(Tab::unsaved)
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.dialog = Dialog::ConfirmQuit;
+            // Asked first: a question open comes back after Cancel.
+            let open = std::mem::replace(&mut self.dialog, Dialog::ConfirmQuit);
+            if !matches!(open, Dialog::None | Dialog::ConfirmQuit) {
+                self.waiting.push_front(open);
+            }
         }
 
         // The window's size, saved when the app closes; not while minimized or full screen.
@@ -7225,7 +7434,7 @@ mod tests {
                         input: String::new(),
                         error: Some(format!("That isn't the password. {long}")),
                     },
-                    None,
+                    Unlock::Tab(None, None),
                 ),
             ),
             22 => (
@@ -7250,6 +7459,22 @@ mod tests {
                 "Reload without your changes?".into(),
                 two("Discard and reload"),
                 Dialog::ConfirmReload(app.asked()),
+            ),
+            25 => (
+                "Password required".into(),
+                vec!["Add pages", "Skip this file", "Cancel"],
+                Dialog::Password(
+                    dlg::Password {
+                        path: PathBuf::from(format!("/home/sam/{long}.pdf")),
+                        input: String::new(),
+                        error: Some(format!("That isn't the password. {long}")),
+                    },
+                    Unlock::Append(Box::new(Appending {
+                        tab: app.tabs[0].id,
+                        files: vec![PathBuf::from(format!("/home/sam/{long}.pdf"))],
+                        read: Vec::new(),
+                    })),
+                ),
             ),
             _ => return None,
         };
@@ -7322,7 +7547,7 @@ mod tests {
         ];
         for i in 0.. {
             let Some((title, _, _)) = question(&app, &long, i) else {
-                assert_eq!(i, 25, "a question was left out");
+                assert_eq!(i, 26, "a question was left out");
                 break;
             };
             for (size, scale) in sizes
@@ -9728,6 +9953,356 @@ mod tests {
         form_file(&a, "Changed");
         assert!(app.stale(0, &alias).is_some(), "by another path");
         assert!(app.stale(1, &alias).is_none(), "not tab b's file");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A document of `pages` blank pages `width` points wide, saved at `path`, locked with
+    /// `password` when given.
+    fn pages_file(path: &Path, width: f32, pages: usize, password: Option<&str>) {
+        let mut pdf = Pdf::new();
+        for i in 0..pages {
+            pdf.insert_blank(i, width, 500.0).unwrap();
+        }
+        pdf.set_encryption(password.map(|p| Encryption {
+            user_password: p.into(),
+            owner_password: format!("{p}-owner"),
+            cipher: Cipher::Aes128,
+            restrictions: Restrictions::default(),
+        }));
+        pdf.save(path).unwrap();
+    }
+
+    /// The file whose password is asked for, if one is.
+    fn asked_password(app: &App) -> Option<PathBuf> {
+        match &app.dialog {
+            Dialog::Password(s, ..) => Some(s.path.clone()),
+            _ => None,
+        }
+    }
+
+    /// Puts `password` in the password asked for, and clicks `button`.
+    fn answer(app: &mut App, ctx: &egui::Context, password: &str, button: &str) {
+        match &mut app.dialog {
+            Dialog::Password(s, ..) => s.input = password.into(),
+            _ => panic!("no password asked for"),
+        }
+        click(app, ctx, button);
+    }
+
+    /// The widths of the pages of tab `i`.
+    fn widths(app: &App, i: usize) -> Vec<f32> {
+        let p = &app.tabs[i].pdf;
+        (0..p.page_count())
+            .map(|n| p.page_size(n).unwrap().0)
+            .collect()
+    }
+
+    /// The audit's A01 (BUG-07): two protected files opened together each ask for their
+    /// password in turn, a wrong password asks again before anything else, and both open.
+    #[test]
+    fn every_protected_file_opened_together_asks_for_its_password() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("two-locked");
+        let (a, b) = (dir.join("a.pdf"), dir.join("b.pdf"));
+        pages_file(&a, 100.0, 1, Some("walrus-a"));
+        pages_file(&b, 200.0, 1, Some("walrus-b"));
+        let pass = |p: &Path| if p == a { "walrus-a" } else { "walrus-b" };
+        app.spawn_open(&ctx, a.clone(), None, None);
+        app.spawn_open(&ctx, b.clone(), None, None);
+        wait_for(&mut app, &ctx, |a| a.opening.is_empty());
+        let first = asked_password(&app).expect("no password asked for");
+        answer(&mut app, &ctx, "wrong", "Open");
+        wait_for(&mut app, &ctx, |a| a.opening.is_empty());
+        assert_eq!(
+            asked_password(&app).as_ref(),
+            Some(&first),
+            "not asked again"
+        );
+        assert!(matches!(&app.dialog, Dialog::Password(s, ..) if s.error.is_some()));
+        answer(&mut app, &ctx, pass(&first), "Open");
+        wait_for(&mut app, &ctx, |a| a.tabs.len() == 1);
+        let second = asked_password(&app).expect("the second file's request was lost");
+        assert_ne!(second, first);
+        answer(&mut app, &ctx, pass(&second), "Open");
+        wait_for(&mut app, &ctx, |a| a.tabs.len() == 2);
+        let mut opened = [widths(&app, 0)[0], widths(&app, 1)[0]];
+        opened.sort_by(f32::total_cmp);
+        assert_eq!(opened, [100.0, 200.0]);
+        assert!(matches!(app.dialog, Dialog::None));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// BUG-07: what comes in while a password is being typed waits for it, the typing kept;
+    /// Cancel leaves only its own file unopened; files that can't be opened are told about
+    /// in one message.
+    #[test]
+    fn results_wait_for_the_password_being_typed() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("mixed");
+        let (locked, plain) = (dir.join("locked.pdf"), dir.join("plain.pdf"));
+        let (bad1, bad2) = (dir.join("bad1.pdf"), dir.join("bad2.pdf"));
+        pages_file(&locked, 100.0, 1, Some("walrus"));
+        pages_file(&plain, 200.0, 1, None);
+        std::fs::write(&bad1, "not a PDF").unwrap();
+        std::fs::write(&bad2, "not a PDF either").unwrap();
+        app.spawn_open(&ctx, locked.clone(), None, None);
+        wait_for(&mut app, &ctx, |a| asked_password(a).is_some());
+        match &mut app.dialog {
+            Dialog::Password(s, ..) => s.input = "wal".into(),
+            _ => unreachable!(),
+        }
+        for p in [&bad1, &plain, &bad2] {
+            app.spawn_open(&ctx, p.clone(), None, None);
+        }
+        wait_for(&mut app, &ctx, |a| {
+            a.opening.is_empty() && a.tabs.len() == 1
+        });
+        match &app.dialog {
+            Dialog::Password(s, ..) => assert_eq!((&s.path, s.input.as_str()), (&locked, "wal")),
+            _ => panic!("the password being typed was replaced"),
+        }
+        click(&mut app, &ctx, "Cancel");
+        let (title, text) = message(&app);
+        assert_eq!(title, "Cannot open files");
+        assert!(
+            text.contains("bad1.pdf") && text.contains("bad2.pdf"),
+            "{text}"
+        );
+        click(&mut app, &ctx, "OK");
+        assert!(matches!(app.dialog, Dialog::None));
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(app.tabs[0].path.as_ref(), Some(&plain));
+        // Cancelled, it asks again when opened again.
+        app.spawn_open(&ctx, locked.clone(), None, None);
+        wait_for(&mut app, &ctx, |a| asked_password(a).is_some());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// BUG-07: a password asked for to reload a tab and one to open a file each wait their
+    /// turn and go where they were asked for, the page asked for kept.
+    #[test]
+    fn reload_and_open_passwords_each_go_to_their_own_place() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("reload-locked");
+        let (a, b) = (dir.join("a.pdf"), dir.join("b.pdf"));
+        pages_file(&a, 100.0, 1, None);
+        pages_file(&b, 200.0, 3, Some("walrus-b"));
+        let pass = |p: &Path| if p == a { "walrus-a" } else { "walrus-b" };
+        open_and_wait(&mut app, &ctx, &a, 1);
+        let old = app.tabs[0].id;
+        // Another app puts a password on it.
+        pages_file(&a, 150.0, 1, Some("walrus-a"));
+        app.act(&ctx, Act::Reload);
+        app.spawn_open(&ctx, b.clone(), None, Some(3));
+        wait_for(&mut app, &ctx, |a| a.opening.is_empty());
+        for _ in 0..2 {
+            let p = asked_password(&app).expect("a request was lost");
+            answer(&mut app, &ctx, pass(&p), "Open");
+            wait_for(&mut app, &ctx, |a| a.opening.is_empty());
+        }
+        assert!(matches!(app.dialog, Dialog::None));
+        assert_eq!(app.tabs.len(), 2);
+        assert_ne!(app.tabs[0].id, old, "not reloaded");
+        assert_eq!(widths(&app, 0), [150.0]);
+        assert_eq!(widths(&app, 1), [200.0; 3]);
+        assert_eq!(app.tabs[1].current, 2, "the page asked for");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The audit's A09 (BUG-08): Enter, pressed and released as a keyboard does, answers the
+    /// password field (a wrong password asks again) and the name field; Esc cancels; Tab
+    /// goes from the field to the buttons.
+    #[test]
+    fn enter_in_the_password_and_name_fields_answers_them() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        ctx.enable_accesskit();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("enter");
+        let (locked, other) = (dir.join("locked.pdf"), dir.join("other.pdf"));
+        pages_file(&locked, 100.0, 1, Some("walrus"));
+        pages_file(&other, 200.0, 1, Some("walrus"));
+        let ty = Typist::new(&ctx);
+        let release = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let press = |app: &mut App, key| {
+            ty.frame(app, vec![key_with(key, egui::Modifiers::NONE)]);
+            ty.frame(app, vec![release(key)])
+        };
+        let until = |app: &mut App, done: &dyn Fn(&App) -> bool| {
+            for _ in 0..300 {
+                if done(app) {
+                    ty.pause(app);
+                    return;
+                }
+                ty.frame(app, vec![]);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("nothing came");
+        };
+        app.spawn_open(&ctx, locked.clone(), None, None);
+        until(&mut app, &|a| asked_password(a).is_some());
+        ty.text(&mut app, "wrong");
+        press(&mut app, Key::Enter);
+        until(
+            &mut app,
+            &|a| matches!(&a.dialog, Dialog::Password(s, ..) if s.error.is_some()),
+        );
+        ty.text(&mut app, "walrus");
+        press(&mut app, Key::Enter);
+        until(&mut app, &|a| a.tabs.len() == 1);
+        assert!(matches!(app.dialog, Dialog::None));
+
+        app.spawn_open(&ctx, other.clone(), None, None);
+        until(&mut app, &|a| asked_password(a).is_some());
+        let mut reached = Vec::new();
+        for _ in 0..2 {
+            let tree = press(&mut app, Key::Tab);
+            let focus = tree.nodes.iter().find(|(id, _)| *id == tree.focus);
+            reached.extend(focus.and_then(|(_, n)| n.label()).map(str::to_string));
+        }
+        let mut want = ["Open", "Cancel"];
+        if !dlg::ACTION_FIRST {
+            want.reverse();
+        }
+        assert_eq!(reached, want);
+        ty.text(&mut app, "walrus");
+        press(&mut app, Key::Escape);
+        ty.pause(&mut app);
+        assert!(matches!(app.dialog, Dialog::None), "Esc");
+        assert!(
+            app.opening.is_empty() && app.tabs.len() == 1,
+            "Esc opened it"
+        );
+
+        app.act(&ctx, Act::CommentName);
+        ty.pause(&mut app);
+        ty.key(&mut app, Key::A, egui::Modifiers::COMMAND);
+        ty.text(&mut app, "Pat Example");
+        press(&mut app, Key::Enter);
+        ty.pause(&mut app);
+        assert!(
+            matches!(app.dialog, Dialog::None),
+            "Enter left the name open"
+        );
+        assert_eq!(app.settings.author.as_deref(), Some("Pat Example"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The window, drawn once as the system asks it to close.
+    fn close_window(app: &mut App, ctx: &egui::Context) {
+        let mut raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1000.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let viewport = raw.viewports.entry(egui::ViewportId::ROOT).or_default();
+        viewport.events.push(egui::ViewportEvent::Close);
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut out = ctx.run_ui(raw, |ui| eframe::App::ui(app, ui, &mut frame));
+        out.textures_delta.clear();
+    }
+
+    /// BUG-07: closing the window with unsaved changes asks first, and a password being
+    /// typed comes back, typing kept, after Cancel.
+    #[test]
+    fn closing_the_window_keeps_the_question_it_interrupts() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let dir = test_dir("close-asking");
+        let locked = dir.join("locked.pdf");
+        pages_file(&locked, 100.0, 1, Some("walrus"));
+        app.spawn_open(&ctx, locked.clone(), None, None);
+        wait_for(&mut app, &ctx, |a| asked_password(a).is_some());
+        match &mut app.dialog {
+            Dialog::Password(s, ..) => s.input = "wal".into(),
+            _ => unreachable!(),
+        }
+        close_window(&mut app, &ctx);
+        assert!(matches!(app.dialog, Dialog::ConfirmQuit));
+        click(&mut app, &ctx, "Cancel");
+        assert!(!app.quit_ok);
+        match &app.dialog {
+            Dialog::Password(s, ..) => assert_eq!(s.input, "wal"),
+            _ => panic!("the password being typed was lost"),
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The audit's A17 (BUG-20): Append PDFs asks for a protected file's password (again
+    /// when wrong) and adds every file's pages in order in one step; Skip this file leaves
+    /// that one out; Cancel, or a file that can't be read, adds nothing.
+    #[test]
+    fn append_asks_for_a_protected_files_password() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, 1);
+        let dir = test_dir("append");
+        let (one, locked) = (dir.join("one.pdf"), dir.join("locked.pdf"));
+        let (three, broken) = (dir.join("three.pdf"), dir.join("broken.pdf"));
+        pages_file(&one, 100.0, 1, None);
+        pages_file(&locked, 200.0, 2, Some("walrus"));
+        pages_file(&three, 300.0, 1, None);
+        std::fs::write(&broken, "not a PDF").unwrap();
+        let files = [one.clone(), locked.clone(), three.clone()];
+        let before = widths(&app, 0);
+        assert_eq!(before, [612.0, 612.0]);
+
+        app.merge_files(&ctx, &files);
+        wait_for(&mut app, &ctx, |a| !a.busy);
+        assert_eq!(asked_password(&app).as_ref(), Some(&locked), "not asked");
+        answer(&mut app, &ctx, "wrong", "Add pages");
+        wait_for(&mut app, &ctx, |a| !a.busy);
+        assert!(matches!(&app.dialog, Dialog::Password(s, ..) if s.error.is_some()));
+        assert_eq!(widths(&app, 0), before);
+        answer(&mut app, &ctx, "walrus", "Add pages");
+        wait_for(&mut app, &ctx, |a| !a.busy);
+        assert!(matches!(app.dialog, Dialog::None));
+        assert_eq!(widths(&app, 0), [612.0, 612.0, 100.0, 200.0, 200.0, 300.0]);
+        assert!(app.tabs[0].copy.protected, "pages of a protected file");
+        app.act(&ctx, Act::Undo);
+        assert_eq!(widths(&app, 0), before, "not one step");
+
+        app.merge_files(&ctx, &files);
+        wait_for(&mut app, &ctx, |a| !a.busy);
+        click(&mut app, &ctx, "Skip this file");
+        wait_for(&mut app, &ctx, |a| !a.busy);
+        assert_eq!(widths(&app, 0), [612.0, 612.0, 100.0, 300.0]);
+        app.act(&ctx, Act::Undo);
+
+        let state = app.tabs[0].state();
+        app.merge_files(&ctx, &files);
+        wait_for(&mut app, &ctx, |a| !a.busy);
+        click(&mut app, &ctx, "Cancel");
+        assert!(matches!(app.dialog, Dialog::None));
+        assert!(app.tabs[0].state() == state, "Cancel changed it");
+
+        app.merge_files(&ctx, &[one.clone(), broken.clone()]);
+        wait_for(&mut app, &ctx, |a| !a.busy);
+        let (title, text) = message(&app);
+        assert_eq!(title, "Append failed");
+        assert!(
+            text.contains("broken.pdf") && text.ends_with("Nothing was added."),
+            "{text}"
+        );
+        assert!(app.tabs[0].state() == state);
+        click(&mut app, &ctx, "OK");
+
+        // Its tab closed while the files are read.
+        app.merge_files(&ctx, std::slice::from_ref(&one));
+        app.close_tab(0);
+        wait_for(&mut app, &ctx, |a| !a.busy);
+        assert_eq!(message(&app).0, "Pages not added");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -202,6 +202,18 @@ new version (`Tab::changed_on_disk`). Reload (`Act::Reload`, asking with unsaved
 same path as Open, with the tab's id and revision, and swaps the new tab into the old one's place unless the
 document changed meanwhile. A change made between the check and the write is still replaced; there is no locking.
 
+The app shows one dialog at a time (`App::dialog`), and nothing that arrives while one is open replaces it (BUG-07,
+the fourth audit's A01). Results from threads (reads, jobs, signing, files dropped on the window) go through
+`App::show`, which queues them in `App::waiting`; `App::next_dialog` opens the next once the dialog is answered.
+Waiting "Cannot open file" messages are joined into one. A password sent from `Dialog::Password` sets
+`App::retrying` until that file's result comes back, so a wrong password is asked again (`App::ask_password`) before
+anything waiting. Closing the window with unsaved work puts the open dialog back at the front of the queue and asks
+`Dialog::ConfirmQuit` first. A password prompt says what it unlocks (`Unlock`): a tab's file to open (with its page)
+or reload, or the next file of an Append PDFs (`Appending`, BUG-20), whose files `App::read_appending` reads in
+order on a thread until one needs a password or fails; `App::append_read` adds them in one step if the tab is still
+open. A file with a prompt open or waiting counts as being read (`App::reading`), so opening it again asks nothing
+more. Commands the user starts set `App::dialog` directly: the modal dialog blocks them while one is open.
+
 Crash recovery copies are kept by `crates/limarepdf-gui/src/recovery.rs`, in a private
 per-user state folder with one subfolder per running app, which holds a locked `lock` file while the app runs. A tab's
 copy is a PDF and a description naming it (length, SHA-256, title, original path), published in an order that leaves

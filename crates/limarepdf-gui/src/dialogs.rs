@@ -684,12 +684,14 @@ fn modal(
 }
 
 /// Whether Enter was pressed in the field `r`, a dialog's only field: it takes the keyboard
-/// when nothing has it, as the dialog opens.
+/// when nothing has it, as the dialog opens. Enter is seen first, as the field gives up the
+/// keyboard for it: taking the keyboard back hides that (BUG-08).
 fn entered(ui: &Ui, r: &egui::Response) -> bool {
-    if ui.memory(|m| m.focused().is_none()) {
+    let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+    if !enter && ui.memory(|m| m.focused().is_none()) {
         r.request_focus();
     }
-    r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter))
+    enter
 }
 
 /// A box for a page range, such as `1-3,5,8-` or `all`, `width` wide if given. Going into
@@ -1024,27 +1026,51 @@ pub struct Password {
     pub input: String,
     pub error: Option<String>,
 }
-pub fn password(ctx: &Context, s: &mut Password) -> Outcome {
+/// The password of a file to open (Open: [`Choice::First`]), or (`appending`) of a file
+/// whose pages are being added, with Skip this file ([`Choice::Second`]) as well.
+pub fn password(ctx: &Context, s: &mut Password, appending: bool) -> Choice {
     // Cut short as the tab's title is.
     let name = s.path.file_name();
     let name = name.map(|n| limarepdf_core::display_line(&n.to_string_lossy(), 120));
     let shell = Shell::new("Password required").file(name.as_deref());
-    modal(ctx, shell, Btn::primary("Open"), true, |ui| {
-        ui.add(
-            egui::Label::new("This document is protected. Type its password to open it.").wrap(),
-        );
-        ui.add_space(GAP);
-        let r = field(ui, "Password", |ui| {
-            let edit = egui::TextEdit::singleline(&mut s.input)
-                .password(true)
-                .desired_width(f32::INFINITY);
-            ui.add(theme::field(edit))
+    let (text, action) = match appending {
+        false => ("open it", "Open"),
+        true => ("add its pages", "Add pages"),
+    };
+    let (out, esc) = shell.show(ctx, |ui| {
+        let enter = content(ui, |ui| {
+            let text = format!("This document is protected. Type its password to {text}.");
+            ui.add(egui::Label::new(text).wrap());
+            ui.add_space(GAP);
+            let r = field(ui, "Password", |ui| {
+                let edit = egui::TextEdit::singleline(&mut s.input)
+                    .password(true)
+                    .desired_width(f32::INFINITY);
+                ui.add(theme::field(edit))
+            });
+            if let Some(e) = &s.error {
+                let e = RichText::new(e).color(ui.visuals().error_fg_color);
+                ui.add(egui::Label::new(e).wrap());
+            }
+            entered(ui, &r)
         });
-        if let Some(e) = &s.error {
-            ui.add(egui::Label::new(RichText::new(e).color(ui.visuals().error_fg_color)).wrap());
+        let mut buttons = vec![Btn::primary(action)];
+        if appending {
+            buttons.push(Btn::plain("Skip this file"));
         }
-        entered(ui, &r)
-    })
+        buttons.push(Btn::cancel());
+        match footer(ui, None, &buttons) {
+            Some(0) => Choice::First,
+            Some(i) if i + 1 < buttons.len() => Choice::Second,
+            Some(_) => Choice::Cancel,
+            None if enter => Choice::First,
+            None => Choice::Open,
+        }
+    });
+    if esc {
+        return Choice::Cancel;
+    }
+    out
 }
 
 /// The name written into comments and markup; empty for none.
@@ -1631,7 +1657,7 @@ mod tests {
                 error: Some("That isn't the password.".into()),
             };
             let tree = drawn(size, |ctx| {
-                password(ctx, &mut s);
+                password(ctx, &mut s, false);
             });
             label_above(&tree, "Password").unwrap();
             let field = named(&tree, "Password").unwrap();

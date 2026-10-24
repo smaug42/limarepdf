@@ -53,6 +53,18 @@
   first that the file still holds what LimarePDF last read or saved there: when another app or tab changed it,
   Save asks, offering Save as… or Replace, and Cancel keeps both the file and your changes. Save as, saving
   selected text and signing refuse to write over a file that is open in another tab.
+- Opening several password-protected files at once asked for only one password: the other files were dropped
+  without a word. A message or another result arriving while a password was typed (a file that couldn't be
+  opened, say) replaced the prompt and what was typed, and closing the window replaced any open question with
+  "Quit without saving?". Now each question and message waits its turn: every file asks for its password, a wrong
+  password asks again before anything else, Cancel leaves only that file unopened, files that can't be opened are
+  told about in one message, and a question interrupted by closing the window comes back after Cancel. A page
+  asked for on the command line is kept through the password.
+- Enter in the password field didn't open the document, and Enter in Your name for comments didn't save the name;
+  only clicking the button did. Enter now answers both.
+- Append PDFs couldn't add a password-protected file's pages: it stopped with "Merge failed". It now asks for the
+  password (again when it is wrong), with Skip this file to go on without it; Cancel, or a file that can't be read,
+  adds nothing. The files are read in the background, so the window doesn't stop while large files are read.
 
 ### Added
 

@@ -37,6 +37,10 @@ Select the pages, then in the inspector:
   selected) adds the pages of the PDFs you choose at the end of the document. To merge documents, open the first
   one and append the others; drag thumbnails afterwards to put the pages elsewhere.
 
+The files are added in the order chosen, in one step that Ctrl+Z takes back. A password-protected file asks for its
+password: **Add pages** adds its pages, **Skip this file** leaves it out and adds the others, and **Cancel** adds
+nothing. A file that can't be read adds nothing either, and a message names it.
+
 Appending adds the pages only: the bookmarks, form fields and named destinations of the files added aren't carried
 over. Pages from a password-protected file make the whole document count as protected, so it gets no
 [recovery copies](gui.md#recovery-copies).
