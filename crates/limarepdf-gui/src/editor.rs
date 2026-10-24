@@ -542,6 +542,17 @@ fn settled(ctx: &egui::Context) -> bool {
         && !ctx.egui_wants_keyboard_input()
 }
 
+/// The text box of the line being edited on `page`, in the tab's `scope`
+/// ([`Editor::scope`]).
+fn line_edit_id(scope: egui::Id, page: usize) -> egui::Id {
+    scope.with(("line-edit", page))
+}
+
+/// The inspector's text box for text object `id` on `page`, in the tab's `scope`.
+fn text_object_id(scope: egui::Id, page: usize, id: usize) -> egui::Id {
+    scope.with(("text-object", page, id))
+}
+
 /// A line of page text being edited in place: its page and object index. The text being
 /// typed is the inspector's working copy.
 struct LineEdit {
@@ -828,6 +839,9 @@ pub struct Editor {
     /// The colour around the line being edited (found by the tab), which hides the line
     /// under the editor; `None` until known.
     pub cover: Option<Color32>,
+    /// What the ids of the tab's text boxes are made from, so that no two documents share
+    /// one, nor their typing.
+    scope: egui::Id,
 }
 
 impl Default for Editor {
@@ -903,6 +917,7 @@ impl Default for Editor {
             digital_error: None,
             page_colours: PageColours::Normal,
             cover: None,
+            scope: egui::Id::new("editor"),
         }
     }
 }
@@ -1036,6 +1051,30 @@ fn resize(orig: [f32; 4], h: usize, dx: f32, dy: f32, keep_aspect: bool) -> [f32
 }
 
 impl Editor {
+    /// The editor of tab `tab` (its [`crate::tab::Tab::id`]).
+    pub fn for_tab(tab: u64) -> Self {
+        let scope = egui::Id::new(("tab", tab));
+        let mut ed = Self {
+            scope,
+            ..Self::default()
+        };
+        ed.form.scope = scope;
+        ed
+    }
+
+    /// What the ids of the tab's text boxes are made from: each is this with what the box
+    /// edits.
+    pub fn scope(&self) -> egui::Id {
+        self.scope
+    }
+
+    /// The text box of the note or text box being typed.
+    pub fn writing_id(&self) -> Option<egui::Id> {
+        let w = self.writing.as_ref()?;
+        let kind = if w.note { "note-text" } else { "box-text" };
+        Some(self.scope.with((kind, w.page, w.id)))
+    }
+
     /// Forget cached object lists (after any change to the document).
     pub fn invalidate(&mut self) {
         self.objs.clear();
@@ -1280,18 +1319,9 @@ impl Editor {
 
     /// Whether a line of page text is being edited, or new text, a note or a text box
     /// typed, on the page.
+    #[cfg(test)]
     pub fn typing_on_page(&self) -> bool {
         self.line_edit.is_some() || self.adding.is_some() || self.writing.is_some()
-    }
-
-    /// Whether text is typed on the page ([`Self::typing_on_page`]) or a line's text in the
-    /// inspector: Undo and Redo there take back the typing.
-    pub fn typing_text(&self, ctx: &egui::Context) -> bool {
-        self.typing_on_page()
-            || self.insp.as_ref().is_some_and(|i| {
-                let id = egui::Id::new(("text-object", i.key.0, i.key.1));
-                ctx.memory(|m| m.has_focus(id))
-            })
     }
 
     /// The line being edited drawn in place, as its page and the box to hide (page
@@ -1342,7 +1372,7 @@ impl Editor {
         };
         let ctx = ui.ctx().clone();
         let to_screen = |x: f32, y: f32| Pos2::new(r.min.x + x * k, r.min.y + y * k);
-        let id = egui::Id::new(("line-edit", page));
+        let id = line_edit_id(self.scope, page);
         let drawn = drawn_in_place(&o);
         if ctx.memory(|m| m.has_focus(id)) {
             // Before the editor sees the keys: what can't be written in the font it goes
@@ -1543,6 +1573,9 @@ impl Editor {
     /// page should not take the pointer this frame: it is over the text box, or the typing
     /// just ended.
     fn writing_ui(&mut self, ui: &mut egui::Ui, page: usize, r: Rect, k: f32) -> bool {
+        let (Some(id), scope) = (self.writing_id(), self.scope) else {
+            return false;
+        };
         let Some(w) = self.writing.as_mut().filter(|w| w.page == page) else {
             return false;
         };
@@ -1558,7 +1591,7 @@ impl Editor {
                 ui.painter()
                     .rect_filled(area, 2.0, Color32::from_rgb(cr, cg, cb));
             }
-            let inner = egui::Area::new(ui.id().with(("note-writing", page)))
+            let inner = egui::Area::new(scope.with(("note-writing", page)))
                 .fixed_pos(area.right_top() + Vec2::new(6.0, 0.0))
                 .order(egui::Order::Foreground)
                 .show(ui.ctx(), |ui| {
@@ -1567,7 +1600,7 @@ impl Editor {
                             ui.set_width(240.0);
                             ui.add(
                                 egui::TextEdit::multiline(&mut w.text)
-                                    .id(egui::Id::new(("note-text", page)))
+                                    .id(id)
                                     .hint_text("Comment")
                                     .desired_rows(4)
                                     .desired_width(f32::INFINITY),
@@ -1595,7 +1628,7 @@ impl Editor {
             }
         } else {
             let te = egui::TextEdit::multiline(&mut w.text)
-                .id(egui::Id::new(("box-text", page)))
+                .id(id)
                 .font(egui::FontId::proportional((w.size * k).clamp(6.0, 96.0)))
                 .desired_rows(1)
                 .min_size(area.size())
@@ -1632,7 +1665,7 @@ impl Editor {
         }
         // After the keys, so the Esc that closed the colour picker doesn't also end it.
         if w.refocus && settled(ui.ctx()) && !out.has_focus() {
-            out.request_focus();
+            page_text::hand_back(ui.ctx(), out.id);
             w.refocus = false;
         }
         held || (!w.note && out.hovered())
@@ -2551,7 +2584,7 @@ impl Editor {
                     } else {
                         // New text there; with nothing typed yet, it moves there.
                         let look = self.new_look();
-                        self.adding = Some(PageText::new(page, (p.x, p.y), look));
+                        self.adding = Some(PageText::new(self.scope, page, (p.x, p.y), look));
                     }
                 }
             }
@@ -3875,7 +3908,7 @@ impl Editor {
                 ui.add_space(4.0);
                 // While the line is edited on the page, the text is typed there.
                 if self.line_edit.is_none() {
-                    let id = egui::Id::new(("text-object", page, id));
+                    let id = text_object_id(self.scope, page, id);
                     // What can't be written isn't typed, as on the page.
                     if ui.ctx().memory(|m| m.has_focus(id)) {
                         let sel = selection(ui.ctx(), id).unwrap_or((0, 0));
@@ -3911,15 +3944,16 @@ impl Editor {
                 } else {
                     // What is selected in the line being edited on the page, else all of it.
                     let sel = match self.line_edit.as_ref() {
-                        Some(le) => selection(ui.ctx(), egui::Id::new(("line-edit", le.page)))
-                            .unwrap_or((0, 0)),
+                        Some(le) => {
+                            selection(ui.ctx(), line_edit_id(self.scope, le.page)).unwrap_or((0, 0))
+                        }
                         None => (0, insp.text.text().chars().count()),
                     };
                     styles_ui(ui, &mut insp.text, sel, 1.0..=400.0);
                 }
                 if self.line_edit.is_none() {
                     // The line being edited on the page watches its own changes.
-                    let id = egui::Id::new(("text-object", page, id));
+                    let id = text_object_id(self.scope, page, id);
                     let sel = selection(ui.ctx(), id);
                     let now = ui.input(|i| i.time);
                     let settled = settled(ui.ctx());

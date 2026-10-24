@@ -6,6 +6,7 @@ use crate::digital::{self, IdsWindow, SignOut, SignWindow};
 use crate::editor::{Action as EdAction, Tool};
 use crate::inspector::{self, Apply, Section};
 use crate::markup;
+use crate::page_text;
 use crate::panels::Panel;
 use crate::recent::Recent;
 use crate::selection::Selection;
@@ -524,6 +525,8 @@ pub struct App {
     bar_widths: BarWidths,
     /// The window has been fitted to its monitor, at the first frame the monitor's size was known.
     fitted: bool,
+    /// The control that had the keyboard last frame (see [`page_text::fresh_history`]).
+    keyboard: Option<egui::Id>,
     toast: Option<Toast>,
     /// Recently opened files, kept between runs.
     recent: Recent,
@@ -592,6 +595,7 @@ impl App {
             fold: 0,
             bar_widths: BarWidths::default(),
             fitted: false,
+            keyboard: None,
             toast: None,
             recent,
             settings,
@@ -3140,14 +3144,10 @@ impl App {
             return;
         }
         let c = self.state(ctx);
+        // Undo and Redo in a text box take back and redo the typing there, and nothing
+        // else, even with nothing left to undo there (form fields, comments and the
+        // inspector's boxes too); Undo takes back the whole edit once it is kept.
         let typing = ctx.egui_wants_keyboard_input();
-        // Undo and Redo while a line of page text is edited, or new text typed, on the page
-        // or in the inspector take back typing there; Undo takes back the whole edit once
-        // it is kept.
-        let line = self
-            .tabs
-            .get(self.active)
-            .is_some_and(|t| t.ed.typing_text(ctx));
         // Esc with a list, menu or colour picker open only closes it (a note being typed
         // stays open while its colour is picked).
         let picking = egui::Popup::is_any_open(ctx);
@@ -3156,7 +3156,7 @@ impl App {
             for (a, k) in actions::shortcuts() {
                 let page_only = matches!(a.act, Act::Copy | Act::SelectAllText);
                 let global = k.modifiers.command && !page_only;
-                let in_box = line && typing && matches!(a.act, Act::Undo | Act::Redo);
+                let in_box = typing && matches!(a.act, Act::Undo | Act::Redo);
                 let closes = picking && a.act == Act::Escape;
                 if (typing && !global) || in_box || closes || !(a.enabled)(&c) {
                     continue;
@@ -3444,9 +3444,12 @@ fn inspector_popout(
                 ui.set_width(INSPECTOR_WIDTH);
                 ui.heading(inspector::title(t));
                 ui.add_space(4.0);
+                let scope = t.ed.scope();
                 egui::ScrollArea::vertical()
                     .max_height(height)
-                    .show(ui, |ui| apply = inspector_body(s, t, ui, c));
+                    .show(ui, |ui| {
+                        apply = ui.push_id(scope, |ui| inspector_body(s, t, ui, c)).inner;
+                    });
             });
         });
     let clicked_outside = ctx.input(|i| {
@@ -3754,6 +3757,9 @@ impl eframe::App for App {
         self.side.set_narrow(width < SIDE_NARROW_WIDTH);
         self.inspector.set_narrow(width < NARROW_WIDTH);
 
+        // Before anything sees this frame's keys: a text box that has just got the keyboard
+        // starts with nothing to undo.
+        self.keyboard = page_text::fresh_history(&ctx, self.keyboard);
         self.shortcuts(&ctx);
 
         let mut acts: Vec<Act> = Vec::new();
@@ -4209,9 +4215,13 @@ impl eframe::App for App {
                     ui.separator();
                 }
                 ui.add_space(4.0);
+                // In the tab's own ids, so that no two documents share a box's state.
+                let scope = t.ed.scope();
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
-                    .show(ui, |ui| panel_apply = inspector_body(s, t, ui, &c));
+                    .show(ui, |ui| {
+                        panel_apply = ui.push_id(scope, |ui| inspector_body(s, t, ui, &c)).inner;
+                    });
             });
             name_resize_handle(&ctx, "inspector", "Inspector width");
             if toggle {
@@ -4935,8 +4945,18 @@ mod tests {
     }
 
     /// The screen bounds of the node named `name` in `tree`, and whether it has the keyboard.
+    /// The place of the control called `name`, and whether it has the keyboard. Of several,
+    /// the biggest: a page rather than its thumbnail, whatever their order in the tree.
     fn node(tree: &egui::accesskit::TreeUpdate, name: &str) -> Option<(egui::Rect, bool)> {
-        let (id, n) = tree.nodes.iter().find(|(_, n)| n.label() == Some(name))?;
+        let (id, n) = tree
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.label() == Some(name))
+            .max_by(|(_, a), (_, b)| {
+                let area =
+                    |n: &egui::accesskit::Node| n.bounds().map_or(0.0, |b| b.width() * b.height());
+                area(a).total_cmp(&area(b))
+            })?;
         let b = n.bounds()?;
         let r = egui::Rect::from_min_max(
             egui::pos2(b.x0 as f32, b.y0 as f32),
@@ -5194,8 +5214,9 @@ mod tests {
         app.act(&ctx, Act::Tool(Tool::Text));
         let ed = &mut app.tabs[0].ed;
         // Nothing typed: Esc closes the editor, adding nothing; Esc again leaves the tool.
-        let new =
-            |ed: &crate::editor::Editor, at| Some(page_text::PageText::new(0, at, ed.new_look()));
+        let new = |ed: &crate::editor::Editor, at| {
+            Some(page_text::PageText::new(ed.scope(), 0, at, ed.new_look()))
+        };
         ed.adding = new(ed, (72.0, 72.0));
         ed.escape();
         assert!(ed.adding.is_none() && ed.actions.is_empty());
@@ -5350,7 +5371,7 @@ mod tests {
             r.min.y < at(100.0, 200.0).y && r.max.y > at(100.0, 200.0).y,
             "{r:?}"
         );
-        let id = egui::Id::new(("line-edit", 0));
+        let id = app.tabs[0].ed.scope().with(("line-edit", 0usize));
         let caret = egui::TextEdit::load_state(&ctx, id)
             .and_then(|s| s.cursor.char_range())
             .map(|c| c.primary.index.0);
@@ -5858,6 +5879,8 @@ mod tests {
             ),
             (vec![key(Key::Z, ctrl)], "fish"),
             (vec![key(Key::Y, ctrl)], "fish too"),
+            (vec![key(Key::Z, ctrl)], "fish"),
+            (vec![key(Key::Z, ctrl | egui::Modifiers::SHIFT)], "fish too"),
         ];
         for (events, end) in steps {
             frame(&mut app, events);
@@ -5989,7 +6012,7 @@ mod tests {
         let (_, focused) = node(&tree, name).expect("the line editor");
         assert!(focused, "the line editor doesn't have the keyboard");
         // The word double-clicked is selected.
-        let id = egui::Id::new(("line-edit", 0));
+        let id = app.tabs[0].ed.scope().with(("line-edit", 0usize));
         let picked = egui::TextEdit::load_state(&ctx, id)
             .and_then(|s| s.cursor.char_range())
             .map(|c| c.as_sorted_char_range())
@@ -6189,14 +6212,16 @@ mod tests {
         let mut app = app_with(&ctx, 1);
         let (min, k) = page_on_screen(&mut app, &ctx);
         let at = |x: f32, y: f32| min + egui::vec2(x, y) * k;
-        let typing =
-            |ctx: &egui::Context| ctx.memory(|m| m.has_focus(egui::Id::new(("note-text", 0usize))));
+        let typing = |app: &App| {
+            let id = app.tabs[0].ed.writing_id();
+            id.is_some_and(|id| ctx.memory(|m| m.has_focus(id)))
+        };
         // Put a note down at (x, y) with the Note tool and type `text` into it.
         let note = |app: &mut App, x: f32, y: f32, text: &str| {
             app.act(&ctx, Act::Tool(Tool::Note));
             window(app, &ctx, 1400.0, click_at(at(x, y)));
             let tree = window(app, &ctx, 1400.0, vec![]);
-            assert!(typing(&ctx), "the note doesn't have the keyboard");
+            assert!(typing(app), "the note doesn't have the keyboard");
             for name in ["Done", "Cancel"] {
                 assert!(node(&tree, name).is_none(), "the note has {name}");
             }
@@ -6274,7 +6299,10 @@ mod tests {
         let (min, k) = page_on_screen(&mut app, &ctx);
         let at = |x: f32, y: f32| min + egui::vec2(x, y) * k;
         let draw = |app: &mut App, events| window(app, &ctx, 1400.0, events);
-        let typing = || ctx.memory(|m| m.has_focus(egui::Id::new(("note-text", 0usize))));
+        let typing = |app: &App| {
+            let id = app.tabs[0].ed.writing_id();
+            id.is_some_and(|id| ctx.memory(|m| m.has_focus(id)))
+        };
         let picker = || egui::Popup::is_any_open(&ctx);
         let open = |app: &App| app.tabs[0].ed.writing.is_some();
         let settle = |app: &mut App| {
@@ -6333,7 +6361,7 @@ mod tests {
         settle(&mut app);
         assert!(!picker());
         assert!(open(&app), "Esc in the picker closed the note");
-        assert!(typing(), "the note didn't get the keyboard back");
+        assert!(typing(&app), "the note didn't get the keyboard back");
         draw(&mut app, vec![egui::Event::Text(" pod".into())]);
         // A click on the page that only closes the picker keeps the note open too.
         let tree = draw(&mut app, vec![]);
@@ -6373,7 +6401,7 @@ mod tests {
             app.act(&ctx, Act::Tool(Tool::TextBox));
             window(app, &ctx, 1400.0, click_at(at(x, y)));
             window(app, &ctx, 1400.0, vec![]);
-            let id = egui::Id::new(("box-text", 0usize));
+            let id = app.tabs[0].ed.writing_id().expect("the box");
             assert!(ctx.memory(|m| m.has_focus(id)), "the box has no keyboard");
             window(app, &ctx, 1400.0, vec![egui::Event::Text(text.into())]);
         };
@@ -7403,7 +7431,7 @@ mod tests {
         assert!(lines(&app).is_empty());
         // A character Helvetica can't write isn't typed, and as a watermark can't be set
         // in an installed font, the note doesn't point to one.
-        let field = egui::Id::new(("stamp-text", "Text"));
+        let field = app.tabs[0].ed.scope().with(("stamp-text", "Text"));
         ctx.memory_mut(|m| m.request_focus(field));
         window(&mut app, &ctx, 1400.0, vec![]);
         window(&mut app, &ctx, 1400.0, vec![egui::Event::Text("中".into())]);
@@ -7634,5 +7662,409 @@ mod tests {
         assert_eq!((app.tabs.len(), app.active), (1, 0));
         app.close_tab(0);
         assert_eq!((app.tabs.len(), app.active), (0, 0));
+    }
+
+    /// A one-page document with empty text fields: for each of `fields`, its name and how
+    /// many widgets show it, each widget a row of its own from the top of the page.
+    fn form_doc(fields: &[(&str, usize)]) -> Pdf {
+        use lopdf::{dictionary, Object};
+        let mut p = Pdf::new();
+        p.insert_blank(0, 612.0, 792.0).unwrap();
+        let page = p.page_ids()[0];
+        let (mut annots, mut tops) = (Vec::new(), Vec::new());
+        let mut row = 0;
+        for &(name, n) in fields {
+            let parent = p.doc.new_object_id();
+            let mut kids = Vec::new();
+            for _ in 0..n {
+                let top = 740 - 60 * row;
+                row += 1;
+                let rect: Vec<Object> = [72, top - 24, 400, top].map(Object::from).to_vec();
+                kids.push(Object::Reference(p.doc.add_object(dictionary! {
+                    "Type" => "Annot", "Subtype" => "Widget", "F" => 4, "Rect" => rect,
+                    "P" => page, "Parent" => parent,
+                })));
+            }
+            annots.extend(kids.iter().cloned());
+            let field = dictionary! {
+                "FT" => "Tx", "T" => Object::string_literal(name), "Kids" => kids,
+            };
+            p.doc.objects.insert(parent, Object::Dictionary(field));
+            tops.push(Object::Reference(parent));
+        }
+        p.doc
+            .get_dictionary_mut(page)
+            .unwrap()
+            .set("Annots", annots);
+        let form = dictionary! { "Fields" => tops };
+        p.doc.catalog_mut().unwrap().set("AcroForm", form);
+        p
+    }
+
+    /// The text of field `name` in the tab's document as it would be saved now, read back
+    /// from its bytes.
+    fn saved_field(t: &Tab, name: &str) -> String {
+        let bytes = t.pdf.clone().snapshot().unwrap();
+        let pdf = Pdf::from_bytes(&bytes, None).unwrap();
+        let f = pdf.form_fields().into_iter().find(|f| f.name == name);
+        match f.map(|f| f.value) {
+            Some(limarepdf_core::FieldValue::Text(t)) => t,
+            v => panic!("{name}: {v:?}"),
+        }
+    }
+
+    /// The text in the control with the keyboard.
+    fn focused_text(tree: &egui::accesskit::TreeUpdate) -> Option<String> {
+        let (_, n) = tree.nodes.iter().find(|(id, _)| *id == tree.focus)?;
+        n.value().map(str::to_string)
+    }
+
+    /// Drives the window as someone typing: each frame moves the clock on, so typing
+    /// settles into a step of a text box's own undo after a pause, as it does for people.
+    struct Typist<'a> {
+        ctx: &'a egui::Context,
+        time: std::cell::Cell<f64>,
+    }
+
+    impl<'a> Typist<'a> {
+        fn new(ctx: &'a egui::Context) -> Self {
+            Self {
+                ctx,
+                time: std::cell::Cell::new(10.0),
+            }
+        }
+
+        fn frame(&self, app: &mut App, events: Vec<egui::Event>) -> egui::accesskit::TreeUpdate {
+            timed_frame(app, self.ctx, &self.time, events)
+        }
+
+        /// A second and a half with no input.
+        fn pause(&self, app: &mut App) -> egui::accesskit::TreeUpdate {
+            for _ in 0..30 {
+                self.frame(app, vec![]);
+            }
+            self.frame(app, vec![])
+        }
+
+        /// Press `key` with `modifiers`; the window as it then is.
+        fn key(
+            &self,
+            app: &mut App,
+            key: Key,
+            modifiers: egui::Modifiers,
+        ) -> egui::accesskit::TreeUpdate {
+            self.frame(app, vec![key_with(key, modifiers)]);
+            self.frame(app, vec![])
+        }
+
+        /// Type `text`, then pause.
+        fn text(&self, app: &mut App, text: &str) {
+            self.frame(app, vec![egui::Event::Text(text.into())]);
+            self.pause(app);
+        }
+
+        fn click(&self, app: &mut App, p: egui::Pos2) {
+            self.frame(app, click_at(p));
+            self.pause(app);
+        }
+
+        /// Where the active tab's first page is on screen, and the size of its points.
+        fn page(&self, app: &mut App) -> (egui::Pos2, f32) {
+            let tree = self.pause(app);
+            let (page, _) = node(&tree, "Page 1").expect("the page");
+            (page.min, page.width() / 612.0)
+        }
+
+        /// Click the middle of widget `widget` of field `name` on the active tab's first
+        /// page.
+        fn click_field(&self, app: &mut App, name: &str, widget: usize) {
+            let (min, k) = self.page(app);
+            let t = &app.tabs[app.active];
+            let f = t.pdf.form_fields().into_iter().find(|f| f.name == name);
+            let b = f.expect("the field").widgets[widget].bbox;
+            let at = egui::vec2((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0);
+            self.click(app, min + at * k);
+        }
+    }
+
+    const CTRL: egui::Modifiers = egui::Modifiers::COMMAND;
+    const CTRL_SHIFT: egui::Modifiers = egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT);
+
+    /// Two documents with a field of the same name keep their typing apart: Ctrl+Z in the
+    /// second one's field, with nothing typed there and no document history, leaves it as it
+    /// was, and each saved value is its own (BUG-03, audit A10).
+    #[test]
+    fn same_named_fields_in_two_documents_keep_their_typing_apart() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        for _ in 0..2 {
+            assert!(app.add_tab(&ctx, form_doc(&[("name", 1)]), None, None, false));
+        }
+        let ty = Typist::new(&ctx);
+        app.active = 0;
+        ty.click_field(&mut app, "name", 0);
+        ty.text(&mut app, "Alpha");
+        ty.key(&mut app, Key::Escape, egui::Modifiers::NONE);
+        ty.pause(&mut app);
+        assert_eq!(saved_field(&app.tabs[0], "name"), "Alpha");
+        // The other document, as a click on its tab brings it to the front.
+        app.active = 1;
+        ty.click_field(&mut app, "name", 0);
+        for (key, modifiers) in [(Key::Z, CTRL), (Key::Z, CTRL_SHIFT), (Key::Y, CTRL)] {
+            let tree = ty.key(&mut app, key, modifiers);
+            let typed = focused_text(&tree);
+            assert_eq!(typed.as_deref(), Some(""), "{key:?} {modifiers:?}");
+        }
+        ty.key(&mut app, Key::Escape, egui::Modifiers::NONE);
+        ty.pause(&mut app);
+        assert!(!app.tabs[1].dirty);
+        assert_eq!(saved_field(&app.tabs[1], "name"), "");
+        assert_eq!(saved_field(&app.tabs[0], "name"), "Alpha");
+        // The first document closed and opened again as saved: nothing to undo in its field.
+        let bytes = app.tabs[0].pdf.clone().snapshot().unwrap();
+        app.close_tab(0);
+        let pdf = Pdf::from_bytes(&bytes, None).unwrap();
+        assert!(app.add_tab(&ctx, pdf, None, None, false));
+        ty.click_field(&mut app, "name", 0);
+        let tree = ty.key(&mut app, Key::Z, CTRL);
+        assert_eq!(focused_text(&tree).as_deref(), Some("Alpha"));
+        ty.key(&mut app, Key::Escape, egui::Modifiers::NONE);
+        ty.pause(&mut app);
+        assert_eq!(saved_field(&app.tabs[1], "name"), "Alpha");
+    }
+
+    /// A field shown twice keeps one value, and the box over its second widget starts with
+    /// nothing to undo: Ctrl+Z there doesn't take back what was typed in the first.
+    #[test]
+    fn a_field_shown_twice_starts_each_box_with_nothing_to_undo() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        assert!(app.add_tab(&ctx, form_doc(&[("name", 2)]), None, None, false));
+        let ty = Typist::new(&ctx);
+        ty.click_field(&mut app, "name", 0);
+        ty.text(&mut app, "Alpha");
+        ty.key(&mut app, Key::Escape, egui::Modifiers::NONE);
+        ty.pause(&mut app);
+        assert_eq!(saved_field(&app.tabs[0], "name"), "Alpha");
+        ty.click_field(&mut app, "name", 1);
+        let tree = ty.key(&mut app, Key::Z, CTRL);
+        assert_eq!(focused_text(&tree).as_deref(), Some("Alpha"));
+        ty.key(&mut app, Key::Escape, egui::Modifiers::NONE);
+        ty.pause(&mut app);
+        assert_eq!(saved_field(&app.tabs[0], "name"), "Alpha");
+    }
+
+    /// A second note on a page starts with nothing to undo: Ctrl+Z in it doesn't bring
+    /// back another note's text, whether it is new or an existing one opened for typing
+    /// (BUG-03, audit A10).
+    #[test]
+    fn a_second_note_on_a_page_does_not_undo_into_the_first() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let ty = Typist::new(&ctx);
+        let (min, k) = ty.page(&mut app);
+        let at = |x: f32, y: f32| min + egui::vec2(x, y) * k;
+        let typed = |app: &App| app.tabs[0].ed.writing.as_ref().map(|w| w.text.clone());
+        let esc = |app: &mut App| {
+            ty.key(app, Key::Escape, egui::Modifiers::NONE);
+            ty.pause(app);
+        };
+        for (x, text) in [(100.0, "Walrus"), (300.0, "")] {
+            app.act(&ctx, Act::Tool(Tool::Note));
+            ty.click(&mut app, at(x, 100.0));
+            ty.text(&mut app, text);
+            ty.key(&mut app, Key::Z, CTRL);
+            ty.key(&mut app, Key::Z, CTRL);
+            assert_eq!(typed(&app).as_deref(), Some(""));
+            ty.key(&mut app, Key::Y, CTRL);
+            assert_eq!(typed(&app).as_deref(), Some(text));
+            esc(&mut app);
+        }
+        assert_eq!(comments(&app), ["Walrus"]);
+        // Existing notes opened for typing: one changed, then the other.
+        app.act(&ctx, Act::Tool(Tool::Note));
+        ty.click(&mut app, at(300.0, 100.0));
+        ty.text(&mut app, "Seal");
+        esc(&mut app);
+        assert_eq!(comments(&app), ["Walrus", "Seal"]);
+        let open = |app: &mut App, text: &str| {
+            let t = &mut app.tabs[0];
+            let annots = t.pdf.annotations();
+            let a = annots
+                .iter()
+                .find(|a| a.contents == text)
+                .expect("the note");
+            t.ed.annots(&t.pdf, 0);
+            t.ed.selection = Selection::Annot { page: 0, id: a.id };
+            t.ed.write_selected();
+            ty.pause(app);
+        };
+        open(&mut app, "Walrus");
+        ty.key(&mut app, Key::End, egui::Modifiers::NONE);
+        ty.text(&mut app, " typed");
+        esc(&mut app);
+        assert_eq!(comments(&app), ["Walrus typed", "Seal"]);
+        open(&mut app, "Seal");
+        ty.key(&mut app, Key::Z, CTRL);
+        assert_eq!(typed(&app).as_deref(), Some("Seal"));
+        esc(&mut app);
+        assert_eq!(comments(&app), ["Walrus typed", "Seal"]);
+    }
+
+    /// Undo keys in a form field act on its typing only: with Name kept and Notes being
+    /// typed, they take back and redo Notes' typing, never Name, and with nothing left to
+    /// undo there they do nothing. Out of the fields, Undo and Redo are the document's
+    /// again (BUG-04, audit A03).
+    #[test]
+    fn undo_in_a_form_field_stays_in_the_field() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let pdf = form_doc(&[("Name", 1), ("Notes", 1)]);
+        assert!(app.add_tab(&ctx, pdf, None, None, false));
+        let ty = Typist::new(&ctx);
+        ty.click_field(&mut app, "Name", 0);
+        ty.text(&mut app, "Ann");
+        // Tab keeps Name and moves on to Notes.
+        ty.key(&mut app, Key::Tab, egui::Modifiers::NONE);
+        ty.pause(&mut app);
+        assert_eq!(saved_field(&app.tabs[0], "Name"), "Ann");
+        ty.text(&mut app, "Hello");
+        let steps = [
+            (Key::Z, CTRL, ""),
+            (Key::Z, CTRL, ""),
+            (Key::Z, CTRL_SHIFT, "Hello"),
+            (Key::Z, CTRL, ""),
+            (Key::Y, CTRL, "Hello"),
+        ];
+        for (key, modifiers, want) in steps {
+            let tree = ty.key(&mut app, key, modifiers);
+            let typed = focused_text(&tree);
+            assert_eq!(typed.as_deref(), Some(want), "{key:?} {modifiers:?}");
+            assert_eq!(saved_field(&app.tabs[0], "Name"), "Ann");
+        }
+        ty.key(&mut app, Key::Escape, egui::Modifiers::NONE);
+        ty.pause(&mut app);
+        let saved = |app: &App| {
+            let t = &app.tabs[0];
+            (saved_field(t, "Name"), saved_field(t, "Notes"))
+        };
+        assert_eq!(saved(&app), ("Ann".into(), "Hello".into()));
+        let steps = [
+            (Key::Z, CTRL, ("Ann", "")),
+            (Key::Z, CTRL, ("", "")),
+            (Key::Y, CTRL, ("Ann", "")),
+            (Key::Z, CTRL_SHIFT, ("Ann", "Hello")),
+        ];
+        for (key, modifiers, (name, notes)) in steps {
+            ty.key(&mut app, key, modifiers);
+            let want = (name.to_string(), notes.to_string());
+            assert_eq!(saved(&app), want, "{key:?} {modifiers:?}");
+        }
+    }
+
+    /// The undo keys in each kind of text box, in a document with history to undo: Ctrl+Z,
+    /// Ctrl+Shift+Z and Ctrl+Y take back and redo the box's own typing, Ctrl+Z with nothing
+    /// left there does nothing, and the document is never touched (BUG-04).
+    #[test]
+    fn undo_keys_in_every_text_box_act_on_its_typing_only() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let mut pdf = form_doc(&[("name", 1)]);
+        let note = pdf.add_note(0, (100.0, 400.0), [1.0, 1.0, 0.0], "Walrus", "Tester");
+        let note = note.unwrap();
+        assert!(app.add_tab(&ctx, pdf, None, None, false));
+        let info = limarepdf_core::Info {
+            title: Some("Seal".into()),
+            ..Default::default()
+        };
+        assert!(app.tabs[0].edit(&ctx, |p| p.set_info(&info)));
+        let ty = Typist::new(&ctx);
+        let (min, k) = ty.page(&mut app);
+        let at = |x: f32, y: f32| min + egui::vec2(x, y) * k;
+        let cases = [
+            "form field",
+            "new note",
+            "new text box",
+            "new text",
+            "comment in the inspector",
+            "document title",
+            "watermark text",
+        ];
+        for case in cases {
+            app.act(&ctx, Act::Tool(Tool::Read));
+            app.tabs[0].ed.selection = Selection::None;
+            ty.pause(&mut app);
+            match case {
+                "form field" => ty.click_field(&mut app, "name", 0),
+                "new note" | "new text box" | "new text" => {
+                    // Within the window, clear of the field and the note.
+                    let (tool, y) = match case {
+                        "new note" => (Tool::Note, 150.0),
+                        "new text box" => (Tool::TextBox, 220.0),
+                        _ => (Tool::Text, 330.0),
+                    };
+                    app.act(&ctx, Act::Tool(tool));
+                    ty.click(&mut app, at(300.0, y));
+                }
+                "comment in the inspector" => {
+                    let t = &mut app.tabs[0];
+                    t.ed.annots(&t.pdf, 0);
+                    t.ed.selection = Selection::Annot { page: 0, id: note };
+                    let tree = ty.pause(&mut app);
+                    ty.click(&mut app, middle(&tree, "Comment"));
+                }
+                "document title" => {
+                    app.tabs[0].forms.reveal = Some(inspector::Section::Properties);
+                    let tree = ty.pause(&mut app);
+                    let (_, n) = tree
+                        .nodes
+                        .iter()
+                        .find(|(_, n)| n.value() == Some("Seal"))
+                        .expect("the title");
+                    let b = n.bounds().unwrap();
+                    let p = egui::pos2(((b.x0 + b.x1) / 2.0) as f32, ((b.y0 + b.y1) / 2.0) as f32);
+                    ty.click(&mut app, p);
+                }
+                _ => {
+                    app.tabs[0].forms.reveal = Some(inspector::Section::Watermark);
+                    ty.pause(&mut app);
+                    let id = app.tabs[0].ed.scope().with(("stamp-text", "Text"));
+                    ctx.memory_mut(|m| m.request_focus(id));
+                    ty.pause(&mut app);
+                }
+            }
+            let tree = ty.key(&mut app, Key::End, egui::Modifiers::NONE);
+            let start = focused_text(&tree).unwrap_or_else(|| panic!("{case}: no keyboard"));
+            let state = app.tabs[0].state();
+            ty.text(&mut app, "typed");
+            let typed = format!("{start}typed");
+            let steps = [
+                (Key::Z, CTRL, &start),
+                (Key::Z, CTRL_SHIFT, &typed),
+                (Key::Z, CTRL, &start),
+                (Key::Y, CTRL, &typed),
+                (Key::Z, CTRL, &start),
+                (Key::Z, CTRL, &start),
+            ];
+            for (key, modifiers, want) in steps {
+                let tree = ty.key(&mut app, key, modifiers);
+                let now = focused_text(&tree);
+                assert_eq!(now.as_ref(), Some(want), "{case}: {key:?} {modifiers:?}");
+                assert!(app.tabs[0].state() == state, "{case}: the document changed");
+            }
+            ty.key(&mut app, Key::Escape, egui::Modifiers::NONE);
+            ty.pause(&mut app);
+            assert!(app.tabs[0].state() == state, "{case}: something was kept");
+        }
     }
 }

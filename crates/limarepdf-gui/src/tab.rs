@@ -401,7 +401,7 @@ impl Tab {
             goto_y: None,
             error: None,
             broken: None,
-            ed: Editor::default(),
+            ed: Editor::for_tab(id),
             requested: Vec::new(),
             forms: Forms::default(),
             notice: None,
@@ -3053,7 +3053,12 @@ mod tests {
         // New page text: selected, and movable with the read tool until something else is.
         t.ed.set_tool(Tool::Text);
         let look = t.ed.new_look();
-        t.ed.adding = Some(page_text::PageText::new(0, (72.0, 72.0), look));
+        t.ed.adding = Some(page_text::PageText::new(
+            t.ed.scope(),
+            0,
+            (72.0, 72.0),
+            look,
+        ));
         if let Some(a) = t.ed.adding.as_mut() {
             a.text.sync("Walrus", None);
         }

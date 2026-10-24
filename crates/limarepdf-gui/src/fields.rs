@@ -31,7 +31,6 @@ enum Edit {
     Options { text: String, fresh: bool },
 }
 
-#[derive(Default)]
 pub struct FormUi {
     /// The document's fields, read again after every change.
     fields: Option<Vec<Field>>,
@@ -42,6 +41,22 @@ pub struct FormUi {
     focus: Option<Focus>,
     /// Bring the focused field into view: set when the keyboard moves to it.
     scroll: bool,
+    /// The tab's editor ids ([`crate::editor::Editor::scope`]): a text box's id is this
+    /// with its field and widget.
+    pub scope: egui::Id,
+}
+
+impl Default for FormUi {
+    fn default() -> Self {
+        Self {
+            fields: None,
+            order: Vec::new(),
+            highlight: false,
+            focus: None,
+            scroll: false,
+            scope: egui::Id::new("form"),
+        }
+    }
 }
 
 impl FormUi {
@@ -379,6 +394,7 @@ impl FormUi {
         };
         let field = f.clone();
         let Some(Focus {
+            widget,
             edit:
                 Edit::Text {
                     text,
@@ -390,6 +406,7 @@ impl FormUi {
         else {
             return;
         };
+        let id = self.scope.with(("field-text", &field.name, *widget));
         // The size the field is saved with, so typing looks like the result; a field that
         // fits its text to the box gets about what that gives.
         let size = if field.text_size > 0.0 {
@@ -408,7 +425,7 @@ impl FormUi {
         } else {
             egui::TextEdit::singleline(text)
         }
-        .id(egui::Id::new(("field-text", &field.name)))
+        .id(id)
         .font(egui::FontId::proportional(size))
         .desired_width(rect.width())
         .margin(egui::Margin::same(2))
@@ -479,7 +496,7 @@ impl FormUi {
         // keyboard would take it as a click (Space chooses one).
         let mut close =
             multi && !*fresh && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter));
-        let area = egui::Area::new(egui::Id::new(("field-options", &f.name)))
+        let area = egui::Area::new(self.scope.with(("field-options", &f.name)))
             .order(egui::Order::Foreground)
             .fixed_pos(rect.left_bottom())
             .show(ui.ctx(), |ui| {

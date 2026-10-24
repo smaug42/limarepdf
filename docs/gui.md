@@ -120,8 +120,10 @@ steps back. Each step keeps a whole copy of the document, and a document's steps
 undo goes back fewer steps on very large documents (about 7 on a 139 MB scan); the latest change can always be
 undone. Deleting shows a notice with an Undo button.
 
-While you type in a line, a note, a text box or a form field, Ctrl+Z and Ctrl+Y undo and redo the typing; once it
-is kept, Undo takes the whole change back.
+While you type in a line, a note, a text box, a form field or any of the inspector's boxes, Ctrl+Z and Ctrl+Y undo
+and redo the typing there and nothing else; with nothing left to undo there, they do nothing. Once it is kept (when
+you leave the box), Undo takes the whole change back, and the box starts with nothing to undo when you come back to
+it.
 
 ## Dialogs
 
@@ -302,7 +304,7 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Ctrl+A, Ctrl+C | Select all text on the page, copy it (read tool) |
 | Esc | Cancel: close an open list, menu or colour picker (only that), finish (and keep) new text, a line, a note, a text box or a form field being typed, clear the selection, or leave a tool for the read tool |
 | Ctrl+B, Ctrl+I | Bold, Italic for the words selected in new text being typed (Add text) or a line being edited on the page; with nothing selected, the word at the caret, or what is typed next between words |
-| Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) while typing new text, a line, a note, a text box or the inspector's text | Undo, redo the typing there (and the styles, in new text and lines), not the document |
+| Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) while typing new text, a line, a note, a text box, a form field or in any box of the inspector | Undo, redo the typing there (and the styles, in new text and lines), not the document |
 | Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |
 | Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the top bar, tabs, bottom bar and panels left to right; inside a dialog, its fields and then its buttons. Space or Enter presses the button. In a form, Tab moves between its fields; Ctrl+K reaches every command |
 

@@ -77,7 +77,12 @@ look-alike), the installed family it is from, or a standard one. Both edit a `st
 style per character: it keeps the styles through egui's plain-string `TextEdit` by comparing each frame's text
 with the last, applies Word's rules for style commands, gives the inspector its values (`None` where the
 selection mixes them), and hands core the line as `TextPart`s; `styled::History` is the undo inside the line,
-which takes Ctrl+Z and Ctrl+Y before the `TextEdit` does. The line underneath is
+which takes Ctrl+Z and Ctrl+Y before the `TextEdit` does. Every other text box uses egui's own undo. While any
+text box has the keyboard, `App::shortcuts` leaves the undo keys to it, so the document's Undo never runs from
+inside a box. Each tab's text boxes take their ids from `Editor::scope` (the tab's id) and what they edit, and
+the inspector is drawn inside that id, so no two documents share a box's state. `page_text::fresh_history`, run
+before each frame's keys, starts a box's undo afresh whenever it gets the keyboard, except when an editor hands
+the keyboard back mid-typing (`page_text::hand_back`, a note after its colour is picked). The line underneath is
 covered in the colour the page worker (`worker.rs`, `Worker::sample`) finds around it, from a drawing of that
 part of the page in the current page colours.
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Ctrl+Z in a form field could bring back text typed in another document's field of the same name, and a new
+  note could take back the text of the note typed before it on the page, both then saved. Each document's text
+  boxes now keep their typing apart, and a box's own undo starts empty each time it gets the keyboard: what was
+  typed before was kept when it was left, and Undo takes it back from there.
+- Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y in a form field, a comment, a document property, a watermark, header or footer
+  text and the inspector's other boxes acted on the whole document (taking back another field's value, say)
+  instead of the typing there. They now undo and redo only the typing in the box with the keyboard, and do
+  nothing there once it has nothing left to undo; the document's Undo works as before outside the boxes.
+
 ## [0.9.0] - 2026-10-23
 
 ### Added

@@ -62,6 +62,8 @@ impl Look {
 
 /// New text being typed on the page (the Add text tool).
 pub struct PageText {
+    /// The tab's editor ids ([`crate::editor::Editor::scope`]).
+    scope: egui::Id,
     pub page: usize,
     /// The left end of the first line's baseline, in displayed-page points (y down).
     pub at: (f32, f32),
@@ -174,6 +176,17 @@ pub fn take_typing(ui: &egui::Ui, single: bool, styles: bool, font: FontChoice) 
             t.bold = i.consume_key(egui::Modifiers::COMMAND, egui::Key::B);
             t.italic = i.consume_key(egui::Modifiers::COMMAND, egui::Key::I);
         }
+    });
+    t.refused = leave_out_untypable(ui, single, font);
+    t
+}
+
+/// Leave what can't be written in `font` out of this frame's typing, before the editor
+/// with the keyboard sees it (see [`keep_typable`]). Returns the first character left out.
+/// The editor keeps its own Ctrl+Z, for plain text with no styles.
+pub fn leave_out_untypable(ui: &egui::Ui, single: bool, font: FontChoice) -> Option<char> {
+    let mut refused = None;
+    ui.input_mut(|i| {
         for e in &mut i.events {
             let s = match e {
                 egui::Event::Text(s)
@@ -183,10 +196,10 @@ pub fn take_typing(ui: &egui::Ui, single: bool, styles: bool, font: FontChoice) 
             };
             let (kept, gone) = keep_typable(s, single, font);
             *s = kept;
-            t.refused = t.refused.or(gone);
+            refused = refused.or(gone);
         }
     });
-    t
+    refused
 }
 
 /// Take `text`, typed in the editor `id`, back or forward a step of `history` when `t`
@@ -226,6 +239,38 @@ pub fn select(ctx: &egui::Context, id: egui::Id, sel: (usize, usize)) {
         st.cursor.set_char_range(Some(range));
         st.store(ctx, id);
     }
+}
+
+/// Where the text box given the keyboard back by [`hand_back`] is noted, for a frame.
+const HANDED_BACK: &str = "typing-handed-back";
+
+/// Give the text box `id` the keyboard back in the middle of its typing (after a change
+/// in the inspector, say), keeping what Ctrl+Z can take back there.
+pub fn hand_back(ctx: &egui::Context, id: egui::Id) {
+    ctx.memory_mut(|m| m.request_focus(id));
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(HANDED_BACK), id));
+}
+
+/// Start the typing history of a text box that has just got the keyboard afresh, unless
+/// it was handed back ([`hand_back`]); `before` had the keyboard last frame. Returns what
+/// has it now. What was typed in a box before was kept in the document when the box was
+/// left, where Undo takes it back, so Ctrl+Z in a box never brings back text typed in
+/// another document, field or comment, or text the document has since undone.
+pub fn fresh_history(ctx: &egui::Context, before: Option<egui::Id>) -> Option<egui::Id> {
+    let now = ctx.memory(|m| m.focused());
+    let note = egui::Id::new(HANDED_BACK);
+    let handed = ctx.data_mut(|d| {
+        let id = d.get_temp::<egui::Id>(note);
+        d.remove::<egui::Id>(note);
+        id
+    });
+    if let Some(id) = now.filter(|&id| now != before && handed != Some(id)) {
+        if let Some(mut st) = egui::TextEdit::load_state(ctx, id) {
+            st.clear_undoer();
+            st.store(ctx, id);
+        }
+    }
+    now
 }
 
 /// The note at the caret about a refused character, for a few seconds after: since when,
@@ -544,9 +589,10 @@ pub fn field(
 impl PageText {
     /// New text starting at `at` (the baseline's left end, page points) on `page`, typed
     /// in `look`.
-    pub fn new(page: usize, at: (f32, f32), look: Look) -> Self {
+    pub fn new(scope: egui::Id, page: usize, at: (f32, f32), look: Look) -> Self {
         let text = Styled::plain("", look.style());
         Self {
+            scope,
             page,
             at,
             history: History::new(&text),
@@ -560,7 +606,7 @@ impl PageText {
 
     /// The editor's id.
     pub fn id(&self) -> egui::Id {
-        egui::Id::new(("page-text", self.page))
+        self.scope.with(("page-text", self.page))
     }
 
     /// Whether there is anything to add.
