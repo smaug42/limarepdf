@@ -11,10 +11,11 @@
 
 use crate::render::{self, ImageFormat};
 use crate::{ImageImport, Pdf, Result};
-use anyhow::{anyhow, bail, Context};
+use anyhow::{anyhow, bail};
 use std::ffi::OsStr;
-use std::io::Write;
-use std::process::{Command, Stdio};
+use std::io::{Read, Write};
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 /// Resolution of pages printed as images.
 pub const IMAGE_DPI: f32 = 300.0;
@@ -73,14 +74,117 @@ impl Default for PrintOptions {
     }
 }
 
-/// Run a CUPS command with untranslated output, explaining a missing command.
+/// How long a CUPS command asking about the printers (`lpstat`, `lpoptions`) may take. A
+/// working printing service answers at once.
+pub const ASK_WITHIN: Duration = Duration::from_secs(10);
+
+/// How long `lp` may take to take the document, and then to confirm the job.
+pub const SEND_WITHIN: Duration = Duration::from_secs(120);
+
+/// A command run by [`run_within`] that finished in time.
+struct Ran {
+    out: Output,
+    /// Whether it took all of its input.
+    written: std::io::Result<()>,
+}
+
+/// Run `cmd`, writing `input` to its standard input, and wait for it, as long as `limit`
+/// from its start and again from its taking all of the input. One that takes longer is
+/// stopped, with any commands it started itself, and gives `None`.
+fn run_within(cmd: &mut Command, input: &[u8], limit: Duration) -> std::io::Result<Option<Ran>> {
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(cmd, 0);
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let (mut stdin, stdout, stderr) =
+        (child.stdin.take(), child.stdout.take(), child.stderr.take());
+    std::thread::scope(|s| {
+        // Written and read from threads of their own, so that a full pipe can't block.
+        let writer = s.spawn(move || match &mut stdin {
+            Some(w) => w.write_all(input),
+            None => Err(std::io::Error::other("no stdin")),
+        });
+        let (stdout, stderr) = (read_all(s, stdout), read_all(s, stderr));
+        let mut deadline = Instant::now() + limit;
+        let mut writing = true;
+        let status = loop {
+            if writing && writer.is_finished() {
+                writing = false;
+                deadline = Instant::now() + limit;
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if Instant::now() < deadline => {}
+                Ok(None) => {
+                    stop(&mut child);
+                    return Ok(None);
+                }
+                Err(e) => {
+                    stop(&mut child);
+                    return Err(e);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let written = writer
+            .join()
+            .unwrap_or_else(|_| Err(std::io::Error::other("panicked")));
+        let out = Output {
+            status,
+            stdout: stdout.join().unwrap_or_default(),
+            stderr: stderr.join().unwrap_or_default(),
+        };
+        Ok(Some(Ran { out, written }))
+    })
+}
+
+/// Read all of `pipe` on a thread of scope `s`.
+fn read_all<'scope>(
+    s: &'scope std::thread::Scope<'scope, '_>,
+    pipe: Option<impl Read + Send + 'scope>,
+) -> std::thread::ScopedJoinHandle<'scope, Vec<u8>> {
+    s.spawn(move || {
+        let mut v = Vec::new();
+        if let Some(mut p) = pipe {
+            let _ = p.read_to_end(&mut v);
+        }
+        v
+    })
+}
+
+/// Stop `child` and every command it started in its process group, and wait for it.
+fn stop(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    let _ = rustix::process::kill_process_group(
+        rustix::process::Pid::from_child(child),
+        rustix::process::Signal::KILL,
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Why a command was stopped by [`run_within`] after `limit`.
+fn too_slow(program: &str, limit: Duration) -> anyhow::Error {
+    anyhow!(
+        "the printing service didn't answer within {} seconds ({program})",
+        limit.as_secs()
+    )
+}
+
+/// Run a CUPS command with untranslated output, explaining a missing command, stopping it
+/// after [`ASK_WITHIN`].
 #[cfg(not(windows))]
 fn cups(program: &str, args: &[&str]) -> Result<String> {
-    let out = Command::new(program)
-        .args(args)
-        .env("LC_ALL", "C")
-        .output()
-        .map_err(|e| not_found(program, e))?;
+    let ran = run_within(
+        Command::new(program).args(args).env("LC_ALL", "C"),
+        &[],
+        ASK_WITHIN,
+    )
+    .map_err(|e| not_found(program, e))?;
+    let out = ran.ok_or_else(|| too_slow(program, ASK_WITHIN))?.out;
     if !out.status.success() {
         return Err(failed(program, &out));
     }
@@ -108,10 +212,23 @@ fn not_found(program: &str, e: std::io::Error) -> anyhow::Error {
     }
 }
 
-/// The printers the system knows, default first.
+/// The printers the system knows, default first, if the printing service lists them within
+/// [`ASK_WITHIN`] (for each `lpstat` it is asked with).
 pub fn printers() -> Result<Vec<Printer>> {
     #[cfg(windows)]
-    return crate::print_win::printers();
+    {
+        // The spooler's call can't be stopped: it is left to finish on its own thread.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::print_win::printers());
+        });
+        rx.recv_timeout(ASK_WITHIN).unwrap_or_else(|e| match e {
+            std::sync::mpsc::RecvTimeoutError::Timeout => {
+                Err(too_slow("the print spooler", ASK_WITHIN))
+            }
+            std::sync::mpsc::RecvTimeoutError::Disconnected => bail!("listing the printers failed"),
+        })
+    }
     #[cfg(not(windows))]
     cups_printers()
 }
@@ -184,34 +301,36 @@ pub fn lp_args(o: &PrintOptions, paper: Option<&str>) -> Vec<String> {
 }
 
 /// Run `program` (normally `lp`) with `args`, writing `data` to its standard input.
-/// Returns what it printed, such as "request id is Office-42 (1 file(s))".
+/// Returns what it printed, such as "request id is Office-42 (1 file(s))". It is stopped
+/// if it takes longer than [`SEND_WITHIN`] to take the document, or then to answer.
 pub fn send(program: impl AsRef<OsStr>, args: &[String], data: &[u8]) -> Result<String> {
+    send_within(program, args, data, SEND_WITHIN)
+}
+
+fn send_within(
+    program: impl AsRef<OsStr>,
+    args: &[String],
+    data: &[u8],
+    limit: Duration,
+) -> Result<String> {
     let program = program.as_ref();
     let name = program.to_string_lossy().into_owned();
-    let mut child = Command::new(program)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+    let ran = run_within(Command::new(program).args(args), data, limit)
         .map_err(|e| not_found(&name, e))?;
-    let mut stdin = child.stdin.take().context("no stdin")?;
-    // Write from another thread so a full output pipe cannot block the copy.
-    let out = std::thread::scope(|s| {
-        let writer = s.spawn(move || stdin.write_all(data));
-        let out = child.wait_with_output();
-        (writer.join(), out)
-    });
-    let (written, out) = out;
-    let out = out.with_context(|| format!("running {name}"))?;
+    let Some(Ran { out, written }) = ran else {
+        bail!(
+            "the printing service didn't confirm the job within {} seconds, so LimarePDF \
+             stopped waiting. Check the printer's queue before printing again: the job may \
+             have been sent",
+            limit.as_secs()
+        );
+    };
     if !out.status.success() {
         let base = std::path::Path::new(program).file_name().unwrap_or(program);
         return Err(failed(&base.to_string_lossy(), &out));
     }
-    match written {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => bail!("{name} did not take the whole document: {e}"),
-        Err(_) => bail!("sending the document to {name} failed"),
+    if let Err(e) = written {
+        bail!("{name} did not take the whole document: {e}");
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
@@ -418,5 +537,54 @@ mod tests {
         let (out, w, h) = to_bgra(&rgba, 2, 1, false);
         assert_eq!((w, h), (2, 1));
         assert_eq!(out, [0, 0, 255, 255, 0, 255, 0, 255]);
+    }
+
+    fn sh(script: &str) -> Command {
+        let mut c = Command::new("sh");
+        c.args(["-c", script]);
+        c
+    }
+
+    /// A command that never answers is stopped at the limit, with the commands it started:
+    /// their open output would otherwise keep it waiting (BUG-11).
+    #[cfg(unix)]
+    #[test]
+    fn a_command_that_never_answers_is_stopped() {
+        let start = Instant::now();
+        // `; true` keeps the shell from becoming `sleep`: sleep is its own command.
+        let ran = run_within(&mut sh("sleep 30; true"), &[], Duration::from_millis(300)).unwrap();
+        assert!(ran.is_none());
+        let took = start.elapsed();
+        assert!(took < Duration::from_secs(5), "{took:?}");
+    }
+
+    /// `lp` taking neither the document nor answering is stopped, and the user told the
+    /// job may have been sent.
+    #[cfg(unix)]
+    #[test]
+    fn lp_that_never_takes_the_document_is_stopped() {
+        // More than a pipe holds, so writing it waits on the command.
+        let data = vec![b'x'; 1 << 20];
+        let start = Instant::now();
+        let args = ["-c".into(), "sleep 30; true".into()];
+        let e = send_within("sh", &args, &data, Duration::from_millis(300)).unwrap_err();
+        let took = start.elapsed();
+        assert!(took < Duration::from_secs(5), "{took:?}");
+        let e = e.to_string();
+        let told = e.contains("didn't confirm the job") && e.contains("queue");
+        assert!(told, "{e}");
+    }
+
+    /// The limit applies to taking the document, and again to answering after it, so a
+    /// large job taken slowly isn't cut short.
+    #[cfg(unix)]
+    #[test]
+    fn the_limit_starts_again_once_the_document_is_taken() {
+        let data = vec![b'x'; 1 << 20];
+        let script = "sleep 0.6; cat > /dev/null; sleep 0.6; echo queued";
+        let ran = run_within(&mut sh(script), &data, Duration::from_secs(1)).unwrap();
+        let ran = ran.expect("stopped while within the limits");
+        assert!(ran.written.is_ok() && ran.out.status.success());
+        assert_eq!(String::from_utf8_lossy(&ran.out.stdout), "queued\n");
     }
 }

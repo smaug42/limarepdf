@@ -757,8 +757,20 @@ fn layout_choice(ui: &mut Ui, layout: &mut Layout, choices: &[Layout]) {
     });
 }
 
+/// Looking for the printers, which the Print dialog does once open (BUG-11).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Search {
+    /// Search number `.0` is running.
+    Running(u64),
+    /// Done: [`Print::printers`] has the printers, perhaps none.
+    Done,
+    /// The printers couldn't be listed: why.
+    Failed(String),
+}
+
 pub struct Print {
     pub printers: Vec<Printer>,
+    pub search: Search,
     pub printer: usize,
     /// The document printed, shown under the title.
     pub file: String,
@@ -778,6 +790,7 @@ impl Print {
     pub fn new(printers: Vec<Printer>, file: String) -> Self {
         Self {
             printers,
+            search: Search::Done,
             printer: 0,
             file,
             all: true,
@@ -789,6 +802,26 @@ impl Print {
             selection: None,
         }
     }
+    /// Looking for the printers, by search number `search`.
+    pub fn looking(search: u64, file: String) -> Self {
+        Self {
+            search: Search::Running(search),
+            ..Self::new(Vec::new(), file)
+        }
+    }
+    /// The printers found by `search`, or why they couldn't be listed: shown, with the
+    /// default chosen.
+    pub fn found(&mut self, found: Result<Vec<Printer>, String>) {
+        (self.printers, self.search) = match found {
+            Ok(list) => (list, Search::Done),
+            Err(why) => (Vec::new(), Search::Failed(why)),
+        };
+        self.printer = 0;
+    }
+    /// Whether Print can print: the printers are found, and there is one.
+    pub fn ready(&self) -> bool {
+        self.search == Search::Done && !self.printers.is_empty()
+    }
     /// The pages asked for, as a page range.
     pub fn range(&self) -> &str {
         if self.all {
@@ -798,6 +831,8 @@ impl Print {
         }
     }
 }
+/// The Print dialog. [`Outcome::Apply`] is Print once [`Print::ready`], and Try again
+/// before.
 pub fn print(ctx: &Context, s: &mut Print) -> Outcome {
     let title = match s.selection {
         Some(_) => "Print selected text",
@@ -805,11 +840,31 @@ pub fn print(ctx: &Context, s: &mut Print) -> Outcome {
     };
     let file = s.file.clone();
     let (out, esc) = Shell::new(title).file(Some(&file)).show(ctx, |ui| {
-        if s.printers.is_empty() {
-            content(ui, |ui| {
-                ui.label("No printers are set up. Add one in the system's printer settings.")
-            });
-            return match footer(ui, None, &[Btn::primary("OK")]) {
+        let why = match &s.search {
+            Search::Running(_) => {
+                content(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Looking for printers…");
+                    })
+                });
+                let print = Btn::primary("Print").enabled(false);
+                return match footer(ui, None, &[print, Btn::cancel()]) {
+                    Some(_) => Outcome::Cancel,
+                    None => Outcome::Open,
+                };
+            }
+            Search::Failed(why) => Some(format!("LimarePDF couldn't list the printers: {why}.")),
+            Search::Done if s.printers.is_empty() => Some(
+                "No printers are set up. Add one in the system's printer settings, then try again."
+                    .into(),
+            ),
+            Search::Done => None,
+        };
+        if let Some(why) = why {
+            content(ui, |ui| ui.label(why));
+            return match footer(ui, None, &[Btn::primary("Try again"), Btn::cancel()]) {
+                Some(0) => Outcome::Apply,
                 Some(_) => Outcome::Cancel,
                 None => Outcome::Open,
             };

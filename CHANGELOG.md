@@ -65,6 +65,13 @@
 - Append PDFs couldn't add a password-protected file's pages: it stopped with "Merge failed". It now asks for the
   password (again when it is wrong), with Skip this file to go on without it; Cancel, or a file that can't be read,
   adds nothing. The files are read in the background, so the window doesn't stop while large files are read.
+- Print froze the window until the printing system had listed the printers, which could take as long as it
+  liked when the printing service was slow or stuck, with no way to cancel. The Print dialog now opens at once,
+  says it is looking for printers, and can be cancelled; the printers fill it in when found. A printing service
+  that doesn't answer within 10 seconds, or can't list the printers, is reported in the dialog with Try again, as
+  is having no printers set up. On Linux and macOS a print job that the printing service doesn't take, or doesn't
+  confirm, within 2 minutes is stopped, saying the job may have been sent and to check the printer's queue; until
+  now it could keep other background work (Append PDFs, OCR, exports) from starting until LimarePDF was closed.
 
 ### Added
 

@@ -126,6 +126,9 @@ enum Loaded {
     Err(PathBuf, String),
     /// Files to append were read: all of them, or as far as one that stopped the reading.
     Append(Box<Appending>, Option<AppendStop>),
+    /// Search number `.0` for the printers finished: the printers, default first, or why
+    /// they couldn't be listed.
+    Printers(u64, Result<Vec<print::Printer>, String>),
     /// A background job on a copy of tab `tab` at `revision` finished. On success: the
     /// changed document, whether anything changed, and a summary for the user.
     Job {
@@ -662,6 +665,8 @@ pub struct App {
     /// A file being read again with the password given for it: the dialogs waiting wait
     /// for the result, so that a wrong password is asked for again first.
     retrying: Option<PathBuf>,
+    /// The number of the last search for printers started (see [`dlg::Search`]).
+    searches: u64,
 }
 
 impl App {
@@ -728,6 +733,7 @@ impl App {
             focused: true,
             waiting: VecDeque::new(),
             retrying: None,
+            searches: 0,
         }
     }
 
@@ -1589,6 +1595,16 @@ impl App {
                     self.opened(&path);
                     self.show(Dialog::Message(CANNOT_OPEN.into(), e));
                 }
+                Loaded::Printers(search, found) => {
+                    let mut dialogs = std::iter::once(&mut self.dialog).chain(&mut self.waiting);
+                    let looking = dialogs.find_map(|d| match d {
+                        Dialog::Print(_, s) if s.search == dlg::Search::Running(search) => Some(s),
+                        _ => None,
+                    });
+                    if let Some(s) = looking {
+                        s.found(found);
+                    }
+                }
                 Loaded::Append(a, stop) => {
                     self.busy = false;
                     self.status.clear();
@@ -1718,6 +1734,20 @@ impl App {
         });
         self.busy = true;
         self.status = format!("{title}…");
+    }
+
+    /// Looks for the printers on a background thread, returning the search's number. Its
+    /// result fills in the Print dialog looking for it, open or waiting, or is dropped:
+    /// one closed meanwhile isn't opened again (BUG-11).
+    fn find_printers(&mut self, ctx: &egui::Context) -> u64 {
+        self.searches += 1;
+        let (search, tx, ctx) = (self.searches, self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let found = crate::guard(print::printers).map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Loaded::Printers(search, found));
+            ctx.request_repaint();
+        });
+        search
     }
 
     /// Send `pages` (zero-based) of the active tab to the printer on a background thread.
@@ -2189,22 +2219,21 @@ impl App {
             Act::ExportImages if has => self.reveal(Section::Export),
             Act::ExportText if has => self.export_text(),
             Act::Print | Act::PrintSelection if has && !self.busy => {
+                // Open at once, with the printers looked for meanwhile (BUG-11).
+                let search = self.find_printers(ctx);
                 let t = &self.tabs[self.active];
                 let selected = t.ed.selection.pages();
                 let file = t.title();
                 let selection = (a == Act::PrintSelection).then_some(dlg::Layout::Original);
-                self.dialog = match print::printers() {
-                    Ok(list) => Dialog::Print(
-                        self.asked(),
-                        Box::new(dlg::Print {
-                            all: selected.is_none(),
-                            pages: selected.map(inspector::range_text).unwrap_or_default(),
-                            selection,
-                            ..dlg::Print::new(list, file)
-                        }),
-                    ),
-                    Err(e) => Dialog::Message("Print".into(), format!("{e:#}")),
-                }
+                self.dialog = Dialog::Print(
+                    self.asked(),
+                    Box::new(dlg::Print {
+                        all: selected.is_none(),
+                        pages: selected.map(inspector::range_text).unwrap_or_default(),
+                        selection,
+                        ..dlg::Print::looking(search, file)
+                    }),
+                );
             }
             Act::SaveSelection if has => {
                 self.dialog = Dialog::SaveSelection(self.asked(), dlg::Layout::Original);
@@ -3549,7 +3578,10 @@ impl App {
                 }
             }
             Dialog::Print(asked, s) => match dlg::print(ctx, s) {
-                Outcome::Apply if s.printers.is_empty() => done = true,
+                // Try again.
+                Outcome::Apply if !s.ready() => {
+                    s.search = dlg::Search::Running(self.find_printers(ctx));
+                }
                 Outcome::Apply if !self.still(asked) => done = true,
                 Outcome::Apply => {
                     let t = &mut self.tabs[self.active];
@@ -7476,6 +7508,30 @@ mod tests {
                     })),
                 ),
             ),
+            // Print looking for the printers (Print shown, not yet enabled), unable to list
+            // them, and finding none (BUG-11).
+            26 => (
+                "Print".into(),
+                vec!["Cancel"],
+                Dialog::Print(
+                    app.asked(),
+                    Box::new(dlg::Print::looking(1, "test.pdf".into())),
+                ),
+            ),
+            27 => {
+                let mut print = dlg::Print::looking(1, "test.pdf".into());
+                print.found(Err(format!("lpstat: {long}")));
+                let print = Dialog::Print(app.asked(), Box::new(print));
+                ("Print".into(), two("Try again"), print)
+            }
+            28 => (
+                "Print".into(),
+                two("Try again"),
+                Dialog::Print(
+                    app.asked(),
+                    Box::new(dlg::Print::new(Vec::new(), "test.pdf".into())),
+                ),
+            ),
             _ => return None,
         };
         Some(q)
@@ -7547,7 +7603,7 @@ mod tests {
         ];
         for i in 0.. {
             let Some((title, _, _)) = question(&app, &long, i) else {
-                assert_eq!(i, 26, "a question was left out");
+                assert_eq!(i, 29, "a question was left out");
                 break;
             };
             for (size, scale) in sizes
@@ -9102,49 +9158,60 @@ mod tests {
         );
     }
 
-    /// Names the folder of stand-ins for CUPS, for [`print_with_stand_in_cups`].
+    /// Names the folder of stand-ins for CUPS, for the tests run by [`rerun_with_cups`].
     #[cfg(not(windows))]
     const STAND_IN_CUPS: &str = "LIMAREPDF_TEST_STAND_IN_CUPS";
 
-    /// Print right after typing in a field prints what was typed, by the whole route: Ctrl+P
-    /// with the field still being typed in, the printers listed, Print pressed. A value the
-    /// field can't take stops Print first, with the typing kept. Run in a copy of the tests
-    /// with stand-ins for `lpstat` and `lp` first on its PATH, so no job reaches a real
-    /// printer and the rest of the tests keep their PATH (BUG-10, audit A08).
+    /// A new folder `name` holding the stand-in commands `scripts` (name, shell script).
     #[cfg(not(windows))]
-    #[test]
-    fn print_right_after_typing_prints_the_typed_value() {
+    fn stand_in_cups(name: &str, scripts: &[(&str, &str)]) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("limarepdf-print-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("limarepdf-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let job = dir.join("job.pdf");
-        let lpstat = "#!/bin/sh\ncase \"$1\" in\n  -e) echo limarepdf-test ;;\n  \
-                      -d) echo 'system default destination: limarepdf-test' ;;\nesac\n";
-        let lp = format!(
-            "#!/bin/sh\ncat > '{}'\necho 'request id is limarepdf-test-1 (1 file(s))'\n",
-            job.display()
-        );
-        for (name, script) in [
-            ("lpstat", lpstat),
-            ("lp", &lp),
-            ("lpoptions", "#!/bin/sh\n"),
-        ] {
+        for (name, script) in scripts {
             let path = dir.join(name);
             std::fs::write(&path, script).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
+        dir
+    }
+
+    /// Runs the ignored test `test` in a copy of the tests with the stand-ins in `dir` first
+    /// on its PATH, so no job reaches a real printer and the rest of the tests keep their
+    /// PATH.
+    #[cfg(not(windows))]
+    fn rerun_with_cups(dir: &Path, test: &str) {
         let path = std::env::var("PATH").unwrap_or_default();
         let out = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "app::tests::print_with_stand_in_cups"])
+            .args(["--exact", test])
             .args(["--ignored", "--test-threads=1", "--nocapture"])
             .env("PATH", format!("{}:{path}", dir.display()))
-            .env(STAND_IN_CUPS, &dir)
+            .env(STAND_IN_CUPS, dir)
             .output()
             .unwrap();
         let said = String::from_utf8_lossy(&out.stdout).to_string()
             + &String::from_utf8_lossy(&out.stderr);
         assert!(out.status.success() && said.contains("1 passed"), "{said}");
+    }
+
+    /// Print right after typing in a field prints what was typed, by the whole route: Ctrl+P
+    /// with the field still being typed in, the printers listed, Print pressed. A value the
+    /// field can't take stops Print first, with the typing kept. Run with stand-ins for
+    /// `lpstat` and `lp` (BUG-10, audit A08).
+    #[cfg(not(windows))]
+    #[test]
+    fn print_right_after_typing_prints_the_typed_value() {
+        let lpstat = "#!/bin/sh\ncase \"$1\" in\n  -e) echo limarepdf-test ;;\n  \
+                      -d) echo 'system default destination: limarepdf-test' ;;\nesac\n";
+        let lp = "#!/bin/sh\ncat > \"$(dirname \"$0\")/job.pdf\"\n\
+                  echo 'request id is limarepdf-test-1 (1 file(s))'\n";
+        let dir = stand_in_cups(
+            "print",
+            &[("lpstat", lpstat), ("lp", lp), ("lpoptions", "#!/bin/sh\n")],
+        );
+        let job = dir.join("job.pdf");
+        rerun_with_cups(&dir, "app::tests::print_with_stand_in_cups");
         let printed = Pdf::open(&job, None).expect("the job sent to lp");
         let text = printed.page_text(0);
         assert!(text.contains("Walrus"), "the job holds {text:?}");
@@ -9185,6 +9252,7 @@ mod tests {
         ty.key(&mut app, Key::P, CTRL);
         assert!(matches!(app.dialog, Dialog::Print(..)), "Print didn't open");
         assert_eq!(saved_field(&app.tabs[0], "name"), "Walrus");
+        wait_for(&mut app, &ctx, print_ready);
         click(&mut app, &ctx, "Print");
         // Its frames moved the clock on.
         ty.time.set(ty.time.get() + 10.0);
@@ -9204,6 +9272,176 @@ mod tests {
                 _ => "no message",
             }
         );
+    }
+
+    /// Whether Print is open with the printers found, ready to print.
+    #[cfg(not(windows))]
+    fn print_ready(app: &App) -> bool {
+        matches!(&app.dialog, Dialog::Print(_, s) if s.ready())
+    }
+
+    /// A stand-in `lpstat`. Listing the printers (`-e`), it waits the seconds in the file
+    /// `delay` beside it, if there is one, then fails if there is a file `fail`, or lists
+    /// the printers in `printers`. Naming the default (`-d`, asked last) it names the first,
+    /// and leaves a file `answered`.
+    #[cfg(not(windows))]
+    const SLOW_LPSTAT: &str = "#!/bin/sh\nd=$(dirname \"$0\")\ncase \"$1\" in\n  -e)\n    \
+        [ -f \"$d/delay\" ] && sleep \"$(cat \"$d/delay\")\"\n    \
+        [ -f \"$d/fail\" ] && { echo 'lpstat: scheduler is not running' >&2; exit 1; }\n    \
+        cat \"$d/printers\" ;;\n  -d)\n    \
+        echo \"system default destination: $(head -n 1 \"$d/printers\")\"\n    \
+        touch \"$d/answered\" ;;\nesac\n";
+
+    /// Print opens at once while the printing service is slow to list the printers, and the
+    /// printers fill it in when found; a dialog closed meanwhile isn't opened again, and a
+    /// failure or no printers can be tried again (BUG-11, audit A04). Run with a stand-in
+    /// `lpstat`.
+    #[cfg(not(windows))]
+    #[test]
+    fn print_opens_while_printers_are_looked_for() {
+        let dir = stand_in_cups("discovery", &[("lpstat", SLOW_LPSTAT)]);
+        std::fs::write(dir.join("printers"), "limarepdf-test\n").unwrap();
+        rerun_with_cups(&dir, "app::tests::print_discovery_with_stand_in_cups");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The part of [`print_opens_while_printers_are_looked_for`] run with the stand-in
+    /// first on PATH; without it it does nothing.
+    #[cfg(not(windows))]
+    #[test]
+    #[ignore = "run by print_opens_while_printers_are_looked_for"]
+    fn print_discovery_with_stand_in_cups() {
+        use std::time::{Duration, Instant};
+        let Some(dir) = std::env::var_os(STAND_IN_CUPS).map(PathBuf::from) else {
+            return;
+        };
+        let set = |name: &str, text: Option<&str>| match text {
+            Some(t) => std::fs::write(dir.join(name), t).unwrap(),
+            None => {
+                let _ = std::fs::remove_file(dir.join(name));
+            }
+        };
+        // Waits for the search running to finish, and takes in its result.
+        let answered = |app: &mut App, ctx: &egui::Context| {
+            let marker = dir.join("answered");
+            let start = Instant::now();
+            while !marker.exists() {
+                let late = start.elapsed() > Duration::from_secs(15);
+                assert!(!late, "lpstat never answered");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            std::fs::remove_file(&marker).unwrap();
+            for _ in 0..30 {
+                std::thread::sleep(Duration::from_millis(10));
+                app.poll_loads(ctx);
+            }
+        };
+        let search = |app: &App| match &app.dialog {
+            Dialog::Print(_, s) => s.search.clone(),
+            _ => panic!("Print isn't open"),
+        };
+        let done = |a: &App| match &a.dialog {
+            Dialog::Print(_, s) => !matches!(s.search, dlg::Search::Running(_)),
+            _ => false,
+        };
+        let found = |app: &App| -> Vec<String> {
+            match &app.dialog {
+                Dialog::Print(_, s) => s.printers.iter().map(|p| p.name.clone()).collect(),
+                _ => panic!("Print isn't open"),
+            }
+        };
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+
+        // A service taking 4 s to list the printers: the dialog opens at once, looking.
+        set("delay", Some("4"));
+        let start = Instant::now();
+        app.act(&ctx, Act::Print);
+        let waited = start.elapsed();
+        let quick = waited < Duration::from_secs(1);
+        assert!(quick, "the window waited {waited:?} for printers");
+        assert!(matches!(search(&app), dlg::Search::Running(_)));
+        // Cancelled while looking: the printers found later open nothing.
+        click(&mut app, &ctx, "Cancel");
+        assert!(matches!(app.dialog, Dialog::None));
+        answered(&mut app, &ctx);
+        let reopened = !matches!(app.dialog, Dialog::None) || !app.waiting.is_empty();
+        assert!(!reopened, "the printers found reopened Print");
+
+        // Opened again: the printers fill the dialog in, the default chosen.
+        set("delay", Some("1"));
+        app.act(&ctx, Act::Print);
+        wait_for(&mut app, &ctx, done);
+        match &app.dialog {
+            Dialog::Print(_, s) => {
+                assert!(s.ready());
+                let p = &s.printers[s.printer];
+                assert!(p.name == "limarepdf-test" && p.default, "{p:?}");
+            }
+            _ => unreachable!(),
+        }
+        set("answered", None);
+        click(&mut app, &ctx, "Cancel");
+
+        // A search cancelled, and Print opened again: the first one's result, coming last,
+        // leaves the new dialog as it is.
+        set("delay", Some("3"));
+        app.act(&ctx, Act::Print);
+        click(&mut app, &ctx, "Cancel");
+        // Started, the first search waits its 3 s.
+        std::thread::sleep(Duration::from_millis(300));
+        set("delay", None);
+        app.act(&ctx, Act::Print);
+        wait_for(&mut app, &ctx, done);
+        assert_eq!(found(&app), ["limarepdf-test"]);
+        set("answered", None);
+        set("printers", Some("stale\n"));
+        answered(&mut app, &ctx);
+        let stale = found(&app) != ["limarepdf-test"];
+        assert!(!stale, "an earlier search filled the dialog");
+        set("printers", Some("limarepdf-test\n"));
+        click(&mut app, &ctx, "Cancel");
+
+        // A service that fails: why, and Try again lists the printers.
+        set("fail", Some(""));
+        app.act(&ctx, Act::Print);
+        wait_for(&mut app, &ctx, done);
+        match search(&app) {
+            dlg::Search::Failed(why) => assert!(why.contains("scheduler is not running"), "{why}"),
+            s => panic!("{s:?}"),
+        }
+        set("fail", None);
+        click(&mut app, &ctx, "Try again");
+        assert!(matches!(search(&app), dlg::Search::Running(_)));
+        wait_for(&mut app, &ctx, done);
+        assert_eq!(found(&app), ["limarepdf-test"]);
+        set("answered", None);
+        click(&mut app, &ctx, "Cancel");
+
+        // No printers set up: said, and Try again finds one added meanwhile.
+        set("printers", Some(""));
+        app.act(&ctx, Act::Print);
+        wait_for(&mut app, &ctx, done);
+        assert!(found(&app).is_empty() && search(&app) == dlg::Search::Done);
+        set("printers", Some("limarepdf-test\n"));
+        click(&mut app, &ctx, "Try again");
+        wait_for(&mut app, &ctx, done);
+        assert_eq!(found(&app), ["limarepdf-test"]);
+        set("answered", None);
+        click(&mut app, &ctx, "Cancel");
+
+        // The window closed while looking: Quit is asked first, the printers fill in the
+        // dialog waiting, and it is back after Cancel.
+        set("delay", Some("1"));
+        app.act(&ctx, Act::Print);
+        close_window(&mut app, &ctx);
+        assert!(matches!(app.dialog, Dialog::ConfirmQuit));
+        let waits_ready =
+            |a: &App| matches!(a.waiting.front(), Some(Dialog::Print(_, s)) if s.ready());
+        wait_for(&mut app, &ctx, waits_ready);
+        click(&mut app, &ctx, "Cancel");
+        assert!(print_ready(&app), "Print isn't back");
     }
 
     /// Add a tab of `n` blank pages, with nothing unsaved, and bring it to the front.

@@ -127,7 +127,12 @@ under Advanced in Print, to send the pages as LimarePDF draws them.
 ### No printers are listed
 
 On Linux and macOS, LimarePDF prints through CUPS (macOS includes it): add your printer in the system's printer
-settings. Printing on paper has only been tried on Linux so far.
+settings, then press Try again in Print. Printing on paper has only been tried on Linux so far.
+
+### Print says the printing service didn't answer
+
+LimarePDF waits 10 seconds for the system to list the printers. On Linux, check that CUPS is running (for example
+with `systemctl status cups`), then press Try again.
 
 ## Digital signatures
 
