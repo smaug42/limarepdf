@@ -2409,29 +2409,10 @@ fn trust_path(explicit: &Option<PathBuf>) -> Result<PathBuf> {
     )
 }
 
-/// The trust list for checking: an explicit file must load; LimarePDF's own may be missing or
-/// unusable, which leaves every signer unconfirmed, with a warning.
-/// Whether `a` and `b` name the same file: the same path once links are followed, or on Unix
-/// the same device and inode, as a hard link is.
-fn same_file(a: &Path, b: &Path) -> bool {
-    if a.canonicalize()
-        .is_ok_and(|a| b.canonicalize().is_ok_and(|b| a == b))
-    {
-        return true;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if let (Ok(a), Ok(b)) = (std::fs::metadata(a), std::fs::metadata(b)) {
-            return a.dev() == b.dev() && a.ino() == b.ino();
-        }
-    }
-    false
-}
-
 /// Refuses an `output` that is one of the `inputs`, by any path or link to it, so the input is
 /// never changed.
 fn not_an_input(inputs: &[impl AsRef<Path>], output: &Path) -> Result<()> {
+    use limarepdf_core::disk::same_file;
     if let Some(input) = inputs.iter().find(|i| same_file(i.as_ref(), output)) {
         bail!(
             "{} is the input {}; the result must be saved to another file, as the input is never \
@@ -2470,6 +2451,8 @@ fn not_taken(files: &[PathBuf], overwrite: bool) -> Result<()> {
     );
 }
 
+/// The trust list for checking: an explicit file must load; LimarePDF's own may be missing or
+/// unusable, which leaves every signer unconfirmed, with a warning.
 fn trust_for_checking(explicit: &Option<PathBuf>) -> Result<TrustList> {
     let list = match (explicit, TrustList::default_path()) {
         (Some(p), _) if !p.exists() => bail!("there is no trust list at {}", p.display()),

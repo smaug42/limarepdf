@@ -47,6 +47,18 @@
   exported text and selected text saved as a text file were written in place: a failure part way (a full disk,
   say) left a cut-off file, and a file linked to another one changed that other file too. Each is now written
   whole or not at all, as documents are, and a write the system couldn't confirm on disk is reported as such.
+- The same file opened twice gave two tabs that saved over each other's changes without a word: a Name saved in
+  one tab went back to the old one when the other tab saved its Notes. Opening a file that is already open (by
+  any path to it, a link too, or while it is still being opened) now brings its tab to the front. Save checks
+  first that the file still holds what LimarePDF last read or saved there: when another app or tab changed it,
+  Save asks, offering Save as… or Replace, and Cancel keeps both the file and your changes. Save as, saving
+  selected text and signing refuse to write over a file that is open in another tab.
+
+### Added
+
+- When you come back to LimarePDF after another app changed a file open here, its tab shows a notice with
+  Reload. ☰ > File > Reload from disk reads the file again as it now is, after asking when there are unsaved
+  changes, which it loses.
 
 ## [0.9.0] - 2026-10-23
 

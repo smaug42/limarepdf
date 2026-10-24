@@ -13,6 +13,7 @@ use crate::theme;
 use crate::worker::{Colours, Key, Sample, Worker, TILE};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptions, Vec2};
 use egui_phosphor::regular as icon;
+use limarepdf_core::disk;
 use limarepdf_core::render::{Missing, MAX_REGION_SCALE};
 use limarepdf_core::{
     Annot, BookmarkPlace, Encryption, ImageWatermark, LinkTarget, OutlineItem, Pdf, SearchHit,
@@ -176,6 +177,12 @@ pub struct Tab {
     pub id: u64,
     pub pdf: Pdf,
     pub path: Option<PathBuf>,
+    /// The file at `path` as LimarePDF last read or saved it, which saving checks it is
+    /// still before replacing it (BUG-06); `None` when not known.
+    pub disk: Option<disk::Version>,
+    /// The newer file another app or tab put at `path`, once noticed: the banner about it
+    /// shows once for each.
+    pub changed_on_disk: Option<disk::Version>,
     pub dirty: bool,
     /// Bumped on every change to `pdf`, so background work can tell whether its input
     /// is still current.
@@ -362,6 +369,8 @@ impl Tab {
             id,
             pdf,
             path,
+            disk: None,
+            changed_on_disk: None,
             dirty: false,
             revision: 0,
             encryption: None,
@@ -1766,6 +1775,14 @@ impl Tab {
         self.banners.insert(at, b);
     }
 
+    /// The document was just written to `path`, which becomes its file, as it now is there.
+    pub fn wrote(&mut self, path: PathBuf) {
+        self.disk = disk::version(&path).ok();
+        self.changed_on_disk = None;
+        self.drop_banner(banners::Kind::ChangedOnDisk);
+        self.path = Some(path);
+    }
+
     pub fn drop_banner(&mut self, kind: banners::Kind) {
         self.banners.retain(|b| b.kind != kind);
     }
@@ -2044,6 +2061,7 @@ impl Tab {
     /// The command state for this tab's part: document, undo, selection and tool.
     pub fn fill_ctx(&self, c: &mut Ctx) {
         c.doc = true;
+        c.file = self.path.is_some();
         c.layout = self.layout;
         c.cover = self.cover;
         c.can_undo = self.can_undo();

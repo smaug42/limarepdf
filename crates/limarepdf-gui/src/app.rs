@@ -17,6 +17,7 @@ use crate::theme;
 use crate::worker::Colours;
 use eframe::egui::{self, AtomExt as _, Key};
 use egui_phosphor::regular as icon;
+use limarepdf_core::disk::{self, OnDisk};
 use limarepdf_core::render::{image_names, ImageFormat};
 use limarepdf_core::{
     parse_page_range, part_file_name, print, ImageImport, OcrResult, OpenPanel, Pdf, ScanResult,
@@ -50,6 +51,10 @@ fn insert_images(
     Ok(())
 }
 
+/// A tab to reload: its id, and its revision when asked, so a document changed meanwhile
+/// isn't replaced.
+type Reloading = Option<(u64, u64)>;
+
 enum Loaded {
     Ok {
         path: PathBuf,
@@ -57,7 +62,13 @@ enum Loaded {
         page: Option<usize>,
         /// For a file with signature fields: its bytes and password, to check them.
         signed: Option<(Arc<[u8]>, Option<String>)>,
+        /// The file as it was read.
+        version: disk::Version,
+        into: Reloading,
     },
+    /// How the files of tabs compare with the versions they last read or saved, each
+    /// tab's id with that version.
+    Disk(Vec<(u64, disk::Version, OnDisk)>),
     /// The signature check of tab `tab` (its `generation`th) finished.
     Signatures {
         tab: u64,
@@ -67,8 +78,10 @@ enum Loaded {
     NeedPassword {
         path: PathBuf,
         error: Option<String>,
+        into: Reloading,
     },
-    Err(String),
+    /// The file at the path couldn't be opened: why.
+    Err(PathBuf, String),
     /// A background job on a copy of tab `tab` at `revision` finished. On success: the
     /// changed document, whether anything changed, and a summary for the user.
     Job {
@@ -248,7 +261,8 @@ impl Asked {
 /// The dialogs left: settings live in the inspector.
 enum Dialog {
     None,
-    Password(dlg::Password),
+    /// The password for a file being opened, or reloaded into a tab.
+    Password(dlg::Password, Reloading),
     Message(String, String),
     ConfirmClose(Asked),
     ConfirmQuit,
@@ -287,6 +301,11 @@ enum Dialog {
     },
     /// Sign a recovered copy of a signed document, which writes the whole file?
     ConfirmSignRecovered(Asked),
+    /// Saving would replace a file another app or tab changed since the tab read or saved
+    /// it, now as this version: Save as, reload, or replace it (BUG-06)?
+    ConfirmStale(Asked, Box<disk::Version>),
+    /// Reload the file, losing the unsaved changes?
+    ConfirmReload(Asked),
 }
 
 impl Dialog {
@@ -305,7 +324,9 @@ impl Dialog {
             | Dialog::ConfirmSaveMarks(a, ..)
             | Dialog::Print(a, _)
             | Dialog::SaveSelection(a, _)
-            | Dialog::ConfirmSignRecovered(a) => Some(a),
+            | Dialog::ConfirmSignRecovered(a)
+            | Dialog::ConfirmStale(a, _)
+            | Dialog::ConfirmReload(a) => Some(a),
             Dialog::ConfirmSaveDisallowed(s) => Some(&s.asked),
             Dialog::ConfirmPrintFields(q) => Some(&q.asked),
             _ => None,
@@ -583,6 +604,15 @@ pub struct App {
     sign_window: Option<SignWindow>,
     /// Crash recovery: this run's copies, and the copies an earlier run left.
     rescue: recover::Rescue,
+    /// The files being read for tabs, so that opening one again while it is read doesn't
+    /// give it a second tab.
+    opening: Vec<PathBuf>,
+    /// The user said to replace this version of the tab's file, which another app or tab
+    /// changed (see [`Dialog::ConfirmStale`]).
+    replace_ok: Option<(u64, disk::Version)>,
+    /// The window had the keyboard last frame: getting it back, the tabs' files are
+    /// checked for changes made meanwhile.
+    focused: bool,
 }
 
 impl App {
@@ -644,23 +674,67 @@ impl App {
             ids_window: None,
             sign_window: None,
             rescue: recover::Rescue::default(),
+            opening: Vec::new(),
+            replace_ok: None,
+            focused: true,
         }
     }
 
+    /// Opens the PDF at `path` in a tab of its own. A file open already, by any path or
+    /// link to it, or being opened, isn't opened again: its tab comes to the front, and its
+    /// file is checked for changes made since it was read (BUG-06).
     fn spawn_open(
-        &self,
+        &mut self,
         ctx: &egui::Context,
         path: PathBuf,
         password: Option<String>,
         page: Option<usize>,
     ) {
+        if let Some(i) = self.tab_of(&path) {
+            self.active = i;
+            if let Some(p) = page {
+                self.tabs[i].go_to(p.saturating_sub(1));
+            }
+            self.check_disk(ctx, Some(self.tabs[i].id));
+            return;
+        }
+        if !self.opening.iter().any(|p| disk::same_file(p, &path)) {
+            self.read_file(ctx, path, password, page, None);
+        }
+    }
+
+    /// The tab whose file is at `path`, by any path or link to it.
+    fn tab_of(&self, path: &Path) -> Option<usize> {
+        self.tabs
+            .iter()
+            .position(|t| t.path.as_deref().is_some_and(|p| disk::same_file(p, path)))
+    }
+
+    /// The file at `path` was read, or couldn't be: it isn't being opened any more.
+    fn opened(&mut self, path: &Path) {
+        if let Some(i) = self.opening.iter().position(|p| p == path) {
+            self.opening.remove(i);
+        }
+    }
+
+    /// Reads the PDF at `path` in the background, for a new tab or (`into`) to reload one.
+    fn read_file(
+        &mut self,
+        ctx: &egui::Context,
+        path: PathBuf,
+        password: Option<String>,
+        page: Option<usize>,
+        into: Reloading,
+    ) {
+        self.opening.push(path.clone());
         let tx = self.tx.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let open = || -> limarepdf_core::Result<(Pdf, Option<Arc<[u8]>>)> {
+            type Read = (Pdf, Option<Arc<[u8]>>, disk::Version);
+            let open = || -> limarepdf_core::Result<Read> {
                 use anyhow::Context as _;
-                let bytes =
-                    std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+                let (bytes, version) =
+                    disk::read(&path).with_context(|| format!("reading {}", path.display()))?;
                 let pdf = Pdf::from_bytes(&bytes, password.as_deref())?;
                 // Signed files keep their bytes, to check and for View signed version.
                 let fields = pdf.form_fields();
@@ -668,14 +742,16 @@ impl App {
                     .iter()
                     .any(|f| f.kind == limarepdf_core::FieldKind::Signature)
                     .then(|| Arc::from(bytes));
-                Ok((pdf, signed))
+                Ok((pdf, signed, version))
             };
             let msg = match crate::guard(open) {
-                Ok((pdf, signed)) => Loaded::Ok {
+                Ok((pdf, signed, version)) => Loaded::Ok {
                     path,
                     pdf,
                     page,
                     signed: signed.map(|b| (b, password)),
+                    version,
+                    into,
                 },
                 Err(e) => {
                     let s = format!("{e:#}");
@@ -683,13 +759,55 @@ impl App {
                         Loaded::NeedPassword {
                             path,
                             error: password.map(|_| "Incorrect password.".to_string()),
+                            into,
                         }
                     } else {
-                        Loaded::Err(format!("{}: {s}", path.display()))
+                        let text = format!("{}: {s}", path.display());
+                        Loaded::Err(path, text)
                     }
                 }
             };
             let _ = tx.send(msg);
+            ctx.request_repaint();
+        });
+    }
+
+    /// Reads tab `i`'s file again into it, as it now is.
+    fn reload(&mut self, ctx: &egui::Context, i: usize) {
+        let Some(t) = self.tabs.get(i) else {
+            return;
+        };
+        let (Some(path), into) = (t.path.clone(), Some((t.id, t.revision))) else {
+            return;
+        };
+        if !self.opening.iter().any(|p| disk::same_file(p, &path)) {
+            self.read_file(ctx, path, None, None, into);
+        }
+    }
+
+    /// Checks in the background whether the files of the tabs (or of tab `only`) still hold
+    /// what the tabs last read or saved; a tab whose file another app or tab changed shows
+    /// a banner about it.
+    fn check_disk(&self, ctx: &egui::Context, only: Option<u64>) {
+        let files: Vec<_> = self
+            .tabs
+            .iter()
+            .filter(|t| only.is_none_or(|id| id == t.id))
+            .filter_map(|t| Some((t.id, t.path.clone()?, t.disk.clone()?)))
+            .collect();
+        if files.is_empty() {
+            return;
+        }
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let found = files
+                .into_iter()
+                .filter_map(|(id, path, known)| {
+                    let now = disk::compare(&path, &known).ok()?;
+                    Some((id, known, now))
+                })
+                .collect();
+            let _ = tx.send(Loaded::Disk(found));
             ctx.request_repaint();
         });
     }
@@ -1144,6 +1262,21 @@ impl App {
         if out.extension().is_none() {
             out.set_extension("pdf");
         }
+        // Never over another tab's file, nor over this tab's own when something else
+        // changed it since (BUG-06).
+        if let Some(why) = self.in_other_tab(&out, Some(w.tab)) {
+            w.error = Some(why);
+            return;
+        }
+        let i = self.tabs.iter().position(|t| t.id == w.tab);
+        if i.and_then(|i| self.stale(i, &out)).is_some() {
+            w.error = Some(
+                "Another app or tab changed this file since LimarePDF opened or saved it. \
+                 Reload it first, or choose another name."
+                    .into(),
+            );
+            return;
+        }
         w.start(
             ctx,
             digital::Input {
@@ -1213,8 +1346,10 @@ impl App {
                     if let Some(p) = page {
                         self.tabs[self.active].go_to(p);
                     }
+                    let t = &mut self.tabs[self.active];
                     // Saving again is one click (decision D7).
-                    self.tabs[self.active].dirty = !s.confirmed;
+                    t.dirty = !s.confirmed;
+                    t.disk = t.path.as_deref().and_then(|p| disk::version(p).ok());
                     self.check_signatures(ctx, self.active, bytes, None);
                 }
                 if replace.is_none() {
@@ -1237,11 +1372,81 @@ impl App {
                     pdf,
                     page,
                     signed,
+                    version,
+                    into,
                 } => {
+                    self.opened(&path);
                     self.recent.add(&path);
+                    // Reloading: the tab, as it was when asked, is still there.
+                    let reload = match into {
+                        Some((id, revision)) => {
+                            let i = self.tabs.iter().position(|t| t.id == id);
+                            let ready = i.filter(|&i| {
+                                let t = &self.tabs[i];
+                                t.revision == revision && !t.ed.pending()
+                            });
+                            if ready.is_none() {
+                                self.dialog = Dialog::Message(
+                                    "Not reloaded".into(),
+                                    "The document changed or was closed while its file was \
+                                     read again, so it wasn't reloaded."
+                                        .into(),
+                                );
+                                continue;
+                            }
+                            ready
+                        }
+                        // A tab got the file meanwhile (its Save as, say): that one is shown.
+                        None => match self.tab_of(&path) {
+                            Some(i) => {
+                                self.active = i;
+                                continue;
+                            }
+                            None => None,
+                        },
+                    };
                     if self.add_tab(ctx, pdf, Some(path), page, false) {
+                        self.tabs[self.active].disk = Some(version);
+                        if let Some(i) = reload {
+                            // add_tab put it last: it takes the old tab's place there.
+                            if let Some(new) = self.tabs.pop() {
+                                let old = std::mem::replace(&mut self.tabs[i], new);
+                                self.active = i;
+                                if page.is_none() {
+                                    self.tabs[i].go_to(old.current);
+                                }
+                                self.closed_copy(&old);
+                            }
+                        }
                         if let Some((bytes, password)) = signed {
                             self.check_signatures(ctx, self.active, bytes, password);
+                        }
+                    }
+                }
+                Loaded::Disk(found) => {
+                    for (id, known, now) in found {
+                        let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
+                            continue;
+                        };
+                        // Saved or reloaded since the check started.
+                        if t.disk.as_ref() != Some(&known) {
+                            continue;
+                        }
+                        match now {
+                            OnDisk::Same(v) => {
+                                t.disk = Some(v);
+                                t.changed_on_disk = None;
+                                t.drop_banner(BannerKind::ChangedOnDisk);
+                            }
+                            OnDisk::Changed(v) => {
+                                let seen = t.changed_on_disk.as_ref();
+                                if !seen.is_some_and(|s| s.same_bytes(&v)) {
+                                    t.show_banner(crate::banners::changed_on_disk());
+                                    t.changed_on_disk = Some(v);
+                                }
+                            }
+                            // Saving puts it back.
+                            OnDisk::Gone => {}
                         }
                     }
                 }
@@ -1254,14 +1459,19 @@ impl App {
                         t.sig_checked(generation, check);
                     }
                 }
-                Loaded::NeedPassword { path, error } => {
-                    self.dialog = Dialog::Password(dlg::Password {
+                Loaded::NeedPassword { path, error, into } => {
+                    self.opened(&path);
+                    let ask = dlg::Password {
                         path,
                         input: String::new(),
                         error,
-                    });
+                    };
+                    self.dialog = Dialog::Password(ask, into);
                 }
-                Loaded::Err(e) => self.dialog = Dialog::Message("Cannot open file".into(), e),
+                Loaded::Err(path, e) => {
+                    self.opened(&path);
+                    self.dialog = Dialog::Message("Cannot open file".into(), e);
+                }
                 Loaded::Job {
                     tab,
                     revision,
@@ -1424,6 +1634,10 @@ impl App {
         if path.extension().is_none() {
             path.set_extension("txt");
         }
+        if let Some(why) = self.in_other_tab(&path, None) {
+            self.dialog = Dialog::Message("Open in a tab".into(), why);
+            return;
+        }
         match limarepdf_core::write_file(&path, text.as_bytes()) {
             Ok(()) => self.status = format!("Wrote the text to {}", path.display()),
             Err(e) if not_confirmed(&e) => {
@@ -1456,6 +1670,11 @@ impl App {
         if path.extension().is_none() {
             path.set_extension(ext);
         }
+        if let Some(why) = self.in_other_tab(&path, None) {
+            self.dialog = Dialog::Message("Open in a tab".into(), why);
+            return;
+        }
+        let t = &self.tabs[self.active];
         let result: limarepdf_core::Result<()> = match layout {
             dlg::Layout::TextFile => limarepdf_core::write_file(&path, text.as_bytes()),
             _ => crate::guard(|| {
@@ -1498,6 +1717,10 @@ impl App {
             if !t.keep_typing(ctx) {
                 return;
             }
+        }
+        // Before the other questions, which are about what is saved: where it goes.
+        if !as_new && self.asked_stale(None) {
+            return;
         }
         let over_repaired = self
             .tabs
@@ -1589,15 +1812,84 @@ impl App {
         Some(p)
     }
 
+    /// Where to save the active tab (see [`Self::save_path`]); `None`, saying why, for a
+    /// file open in another tab, or one another app or tab changed since this tab last
+    /// read or saved it, until the user says to replace it (BUG-06).
+    fn save_target(&mut self, as_new: bool) -> Option<PathBuf> {
+        let t = self.tabs.get(self.active)?;
+        let path = Self::save_path(t, as_new)?;
+        if let Some(why) = self.in_other_tab(&path, Some(t.id)) {
+            self.dialog = Dialog::Message("Open in another tab".into(), why);
+            return None;
+        }
+        if self.asked_stale(Some(&path)) {
+            return None;
+        }
+        Some(path)
+    }
+
+    /// Why nothing is written to `path` when it is the file of a tab other than `except`:
+    /// that tab would be left with an older copy, to save back over it.
+    fn in_other_tab(&self, path: &Path, except: Option<u64>) -> Option<String> {
+        let t = self.tabs.iter().find(|t| {
+            Some(t.id) != except && t.path.as_deref().is_some_and(|p| disk::same_file(p, path))
+        })?;
+        let which = if except.is_some() {
+            "another tab"
+        } else {
+            "a tab"
+        };
+        Some(format!(
+            "\"{}\" is open in {which}. Close that tab first, or choose another name. Nothing \
+             was saved.",
+            t.title()
+        ))
+    }
+
+    /// The file at `path` as it now is, when it is tab `i`'s own file and another app or
+    /// tab changed it since the tab last read or saved it, unless the user said to replace
+    /// that version.
+    fn stale(&self, i: usize, path: &Path) -> Option<disk::Version> {
+        let t = self.tabs.get(i)?;
+        let (own, known) = (t.path.as_deref()?, t.disk.as_ref()?);
+        if !disk::same_file(own, path) {
+            return None;
+        }
+        let Ok(OnDisk::Changed(now)) = disk::compare(path, known) else {
+            return None;
+        };
+        let ok = self.replace_ok.as_ref();
+        let ok = ok.is_some_and(|(id, v)| *id == t.id && v.same_bytes(&now));
+        (!ok).then_some(now)
+    }
+
+    /// Asks before the active tab replaces its file (or the one at `path`) when another
+    /// app or tab changed it; true when it asked.
+    fn asked_stale(&mut self, path: Option<&Path>) -> bool {
+        let Some(t) = self.tabs.get(self.active) else {
+            return false;
+        };
+        let Some(path) = path.or(t.path.as_deref()) else {
+            return false;
+        };
+        let Some(now) = self.stale(self.active, path) else {
+            return false;
+        };
+        let t = &mut self.tabs[self.active];
+        // With Reload, which the question has no room for.
+        t.show_banner(crate::banners::changed_on_disk());
+        t.changed_on_disk = Some(now.clone());
+        self.dialog = Dialog::ConfirmStale(Asked::of(t), Box::new(now));
+        true
+    }
+
     /// Writes a signed document whose edits were added after what was signed (`bytes`).
     /// The signatures stay, and the saved file becomes what later saves add to.
     fn save_appended(&mut self, ctx: &egui::Context, as_new: bool, bytes: Vec<u8>) {
-        let Some(tab) = self.tabs.get_mut(self.active) else {
+        let Some(path) = self.save_target(as_new) else {
             return;
         };
-        let Some(path) = Self::save_path(tab, as_new) else {
-            return;
-        };
+        let tab = &mut self.tabs[self.active];
         let confirmed = match limarepdf_core::write_file(&path, &bytes) {
             Ok(()) => true,
             Err(e) if not_confirmed(&e) => false,
@@ -1611,9 +1903,10 @@ impl App {
             path.display()
         );
         self.recent.add(&path);
+        self.replace_ok = None;
         tab.dirty = !confirmed;
         tab.scrubbed = false;
-        tab.path = Some(path);
+        tab.wrote(path);
         self.check_signatures(ctx, self.active, Arc::from(bytes), None);
         self.saved_copy(self.active, confirmed);
         if !confirmed {
@@ -1622,12 +1915,10 @@ impl App {
     }
 
     fn save_now(&mut self, ctx: &egui::Context, as_new: bool) {
-        let Some(tab) = self.tabs.get_mut(self.active) else {
+        let Some(path) = self.save_target(as_new) else {
             return;
         };
-        let Some(path) = Self::save_path(tab, as_new) else {
-            return;
-        };
+        let tab = &mut self.tabs[self.active];
         tab.pdf.set_encryption(tab.encryption.clone());
         let confirmed = match crate::guard(|| tab.pdf.save(&path)) {
             Ok(()) => true,
@@ -1639,6 +1930,7 @@ impl App {
         };
         self.status = format!("Saved {}", path.display());
         self.recent.add(&path);
+        self.replace_ok = None;
         tab.dirty = !confirmed;
         tab.scrubbed = false;
         // The saved file is the repaired copy, with nothing left to repair, and it reads the
@@ -1654,7 +1946,7 @@ impl App {
         let recheck =
             tab.sigs.is_some() || (tab.recovered.is_some() && tab.pdf.signature_count() > 0);
         let saved = recheck.then(|| std::fs::read(&path));
-        tab.path = Some(path);
+        tab.wrote(path);
         match saved {
             Some(Ok(bytes)) => self.check_signatures(ctx, self.active, Arc::from(bytes), password),
             Some(Err(e)) => {
@@ -1744,6 +2036,14 @@ impl App {
             }
             Act::Save => self.save(ctx, false),
             Act::SaveAs => self.save(ctx, true),
+            Act::Reload if has => {
+                let t = &self.tabs[self.active];
+                if t.unsaved() {
+                    self.dialog = Dialog::ConfirmReload(Asked::of(t));
+                } else {
+                    self.reload(ctx, self.active);
+                }
+            }
             Act::ExportImages if has => self.reveal(Section::Export),
             Act::ExportText if has => self.export_text(),
             Act::Print | Act::PrintSelection if has && !self.busy => {
@@ -2699,9 +2999,13 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
-            Dialog::Password(s) => match dlg::password(ctx, s) {
+            Dialog::Password(s, into) => match dlg::password(ctx, s) {
                 Outcome::Apply => {
-                    self.spawn_open(ctx, s.path.clone(), Some(s.input.clone()), None);
+                    let (path, password) = (s.path.clone(), Some(s.input.clone()));
+                    match into {
+                        Some(_) => self.read_file(ctx, path, password, None, *into),
+                        None => self.spawn_open(ctx, path, password, None),
+                    }
                     done = true;
                 }
                 Outcome::Cancel => done = true,
@@ -2900,6 +3204,53 @@ impl App {
                     Outcome::Open => {}
                 }
             }
+            // Three answers and Cancel don't fit a narrow window: Reload is the banner's.
+            Dialog::ConfirmStale(asked, now) => match dlg::choose(
+                ctx,
+                Shell::new("Replace the changed file?").file(file),
+                "Another app or tab changed this file after LimarePDF opened or last saved it. \
+                 Replace puts this document in its place, and those changes are lost. Save as \
+                 a new file to keep both, or cancel and choose Reload above the pages to see \
+                 the file as it now is.",
+                Btn::primary("Save as…"),
+                Btn::danger("Replace"),
+                true,
+            ) {
+                Choice::First => {
+                    if self.still(asked) {
+                        self.save(ctx, true);
+                    }
+                    done = true;
+                }
+                Choice::Second => {
+                    if self.still(asked) {
+                        self.replace_ok = Some((asked.tab, (**now).clone()));
+                        self.save(ctx, false);
+                    }
+                    done = true;
+                }
+                Choice::Cancel => done = true,
+                Choice::Open => {}
+            },
+            Dialog::ConfirmReload(asked) => match dlg::confirm(
+                ctx,
+                Ask::new(
+                    "Reload without your changes?",
+                    "This document has changes that aren't saved. Reloading shows the file as \
+                     it now is, and loses them.",
+                    Btn::danger("Discard and reload"),
+                )
+                .file(file),
+            ) {
+                Outcome::Apply => {
+                    if self.still(asked) {
+                        self.reload(ctx, self.active);
+                    }
+                    done = true;
+                }
+                Outcome::Cancel => done = true,
+                Outcome::Open => {}
+            },
             Dialog::ConfirmSaveRepaired(asked) => match dlg::choose(
                 ctx,
                 Shell::new("Replace the damaged original?").file(file),
@@ -3848,6 +4199,12 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll_loads(&ctx);
+        // Back from another app, which may have changed the files open here.
+        let focused = ctx.input(|i| i.focused);
+        if focused && !self.focused {
+            self.check_disk(&ctx, None);
+        }
+        self.focused = focused;
         self.recovery_tick(&ctx);
         // Page colours follow the setting and, when automatic, the app's theme.
         let colours = self.colours(&ctx);
@@ -6690,6 +7047,15 @@ mod tests {
             .expect("the dialog's widgets")
     }
 
+    /// The version of a small file, for questions that show one.
+    fn some_version() -> disk::Version {
+        let p = std::env::temp_dir().join(format!("limarepdf-app-{}-v", std::process::id()));
+        std::fs::write(&p, "v").unwrap();
+        let v = disk::version(&p).unwrap();
+        let _ = std::fs::remove_file(&p);
+        v
+    }
+
     /// The `i`th of the app's questions and messages, with long texts where they can come
     /// from the document or the system: its title, the buttons it shows, and the dialog.
     fn question(app: &App, long: &str, i: usize) -> Option<(String, Vec<&'static str>, Dialog)> {
@@ -6853,11 +7219,14 @@ mod tests {
             21 => (
                 "Password required".into(),
                 two("Open"),
-                Dialog::Password(dlg::Password {
-                    path: PathBuf::from(format!("/home/sam/{long}.pdf")),
-                    input: String::new(),
-                    error: Some(format!("That isn't the password. {long}")),
-                }),
+                Dialog::Password(
+                    dlg::Password {
+                        path: PathBuf::from(format!("/home/sam/{long}.pdf")),
+                        input: String::new(),
+                        error: Some(format!("That isn't the password. {long}")),
+                    },
+                    None,
+                ),
             ),
             22 => (
                 "Replace files?".into(),
@@ -6871,6 +7240,16 @@ mod tests {
                     }),
                     12,
                 ),
+            ),
+            23 => (
+                "Replace the changed file?".into(),
+                vec!["Save as…", "Replace", "Cancel"],
+                Dialog::ConfirmStale(app.asked(), Box::new(some_version())),
+            ),
+            24 => (
+                "Reload without your changes?".into(),
+                two("Discard and reload"),
+                Dialog::ConfirmReload(app.asked()),
             ),
             _ => return None,
         };
@@ -6943,7 +7322,7 @@ mod tests {
         ];
         for i in 0.. {
             let Some((title, _, _)) = question(&app, &long, i) else {
-                assert_eq!(i, 23, "a question was left out");
+                assert_eq!(i, 25, "a question was left out");
                 break;
             };
             for (size, scale) in sizes
@@ -6956,7 +7335,7 @@ mod tests {
                     ctx.memory_mut(|m| m.surrender_focus(id));
                 }
                 app.dialog = dialog;
-                let one_field = matches!(app.dialog, Dialog::Password(_) | Dialog::CommentName(_));
+                let one_field = matches!(app.dialog, Dialog::Password(..) | Dialog::CommentName(_));
                 let mut tree = dialog_frame(&mut app, &ctx, size, scale, vec![]);
                 for _ in 0..4 {
                     tree = dialog_frame(&mut app, &ctx, size, scale, vec![]);
@@ -9041,6 +9420,314 @@ mod tests {
             }
             std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A fresh folder of its own for test `name`.
+    fn test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("limarepdf-app-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A form with the fields Name and Notes, saved at `path`.
+    fn form_file(path: &Path, name: &str) {
+        let mut pdf = form_doc(&[("Name", 1), ("Notes", 1)]);
+        pdf.set_field("Name", limarepdf_core::FieldValue::Text(name.into()))
+            .unwrap();
+        pdf.save(path).unwrap();
+    }
+
+    /// The text of field `name` in the file at `path`.
+    fn field_in(path: &Path, name: &str) -> String {
+        let pdf = Pdf::open(path, None).unwrap();
+        let f = pdf.form_fields().into_iter().find(|f| f.name == name);
+        match f.map(|f| f.value) {
+            Some(limarepdf_core::FieldValue::Text(t)) => t,
+            v => panic!("{name}: {v:?}"),
+        }
+    }
+
+    /// Opens `path` as Open does, and takes in the results until there are `tabs` tabs, or
+    /// for a few tenths of a second when that many are open already.
+    fn open_and_wait(app: &mut App, ctx: &egui::Context, path: &Path, tabs: usize) {
+        app.spawn_open(ctx, path.to_path_buf(), None, None);
+        let mut quiet = 0;
+        for _ in 0..500 {
+            app.poll_loads(ctx);
+            if app.tabs.len() >= tabs {
+                quiet += 1;
+                if quiet > 30 {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(app.tabs.len() >= tabs, "the file didn't open");
+    }
+
+    /// Sets field `name` of the active tab's document to `value`, as a change.
+    fn fill(app: &mut App, ctx: &egui::Context, name: &str, value: &str) {
+        let t = &mut app.tabs[app.active];
+        let v = limarepdf_core::FieldValue::Text(value.into());
+        assert!(t.edit(ctx, |p| p.set_field(name, v)));
+    }
+
+    /// The audit's A13 (BUG-06): the same file opened twice, its Name changed and saved in
+    /// the first tab, then its Notes in the second. The saved file keeps both changes,
+    /// where the second save used to put the old Name back without a word.
+    #[test]
+    fn opening_a_file_twice_never_loses_a_saved_change() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("twice");
+        let path = dir.join("form.pdf");
+        form_file(&path, "AlphaUnique");
+        open_and_wait(&mut app, &ctx, &path, 1);
+        let first = app.tabs[app.active].id;
+        // A second tab came here before.
+        open_and_wait(&mut app, &ctx, &path, 1);
+        app.active = 0;
+        fill(&mut app, &ctx, "Name", "First tab saved");
+        app.act(&ctx, Act::Save);
+        assert_eq!(field_in(&path, "Name"), "First tab saved");
+        app.active = app.tabs.len() - 1;
+        fill(&mut app, &ctx, "Notes", "Second tab saved");
+        app.act(&ctx, Act::Save);
+        assert_eq!(field_in(&path, "Name"), "First tab saved");
+        assert_eq!(app.tabs.len(), 1, "a second tab of the file");
+        assert_eq!(app.tabs[app.active].id, first);
+        assert_eq!(field_in(&path, "Notes"), "Second tab saved");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A file another app changed after it was opened isn't replaced by Save without
+    /// asking first (BUG-06).
+    #[test]
+    fn saving_never_silently_replaces_a_file_changed_since_it_was_read() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("changed");
+        let path = dir.join("form.pdf");
+        form_file(&path, "AlphaUnique");
+        open_and_wait(&mut app, &ctx, &path, 1);
+        // Another app saves its own change.
+        form_file(&path, "Other app");
+        fill(&mut app, &ctx, "Notes", "Ours");
+        app.act(&ctx, Act::Save);
+        assert_eq!(field_in(&path, "Name"), "Other app", "replaced");
+        assert!(app.tabs[0].dirty, "the change counts as saved");
+        assert_eq!(saved_field(&app.tabs[0], "Notes"), "Ours", "lost");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Takes in background results until `done`, for a few seconds at most.
+    fn wait_for(app: &mut App, ctx: &egui::Context, done: impl Fn(&App) -> bool) {
+        for _ in 0..500 {
+            app.poll_loads(ctx);
+            if done(app) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("nothing came");
+    }
+
+    /// One file opened by several paths at once, while the first is still being read, and
+    /// again once open: one tab, which comes to the front (BUG-06).
+    #[test]
+    fn a_file_is_opened_once_by_any_path_to_it() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("aliases");
+        let path = dir.join("form.pdf");
+        form_file(&path, "AlphaUnique");
+        let other = dir.join("other.pdf");
+        form_file(&other, "Other");
+        std::fs::create_dir(dir.join("sub")).unwrap();
+        let mut paths = vec![path.clone(), dir.join("sub/../form.pdf")];
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&path, dir.join("link.pdf")).unwrap();
+            std::fs::hard_link(&path, dir.join("hard.pdf")).unwrap();
+            paths.extend([dir.join("link.pdf"), dir.join("hard.pdf")]);
+        }
+        for p in &paths {
+            app.spawn_open(&ctx, p.clone(), None, None);
+        }
+        app.spawn_open(&ctx, other.clone(), None, None);
+        wait_for(&mut app, &ctx, |a| a.opening.is_empty());
+        assert_eq!(app.tabs.len(), 2);
+        // The two came in either order.
+        let at = |app: &App, p: &PathBuf| app.tabs.iter().position(|t| t.path.as_ref() == Some(p));
+        let (i, j) = (at(&app, &path).unwrap(), at(&app, &other).unwrap());
+        for p in &paths {
+            app.active = j;
+            app.spawn_open(&ctx, p.clone(), None, None);
+            assert!(app.opening.is_empty(), "{p:?} read again");
+            assert_eq!(app.active, i, "{p:?}");
+        }
+        app.spawn_open(&ctx, other.clone(), None, None);
+        assert_eq!((app.tabs.len(), app.active), (2, j));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Saving over a file another app changed asks: Cancel keeps both the file and the
+    /// unsaved changes, and shows the notice with Reload; Replace saves; after that, Save
+    /// doesn't ask again. A file only touched isn't a change (BUG-06).
+    #[test]
+    fn save_asks_before_replacing_a_changed_file() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("replace");
+        let path = dir.join("form.pdf");
+        form_file(&path, "AlphaUnique");
+        open_and_wait(&mut app, &ctx, &path, 1);
+        // The same bytes written again, as a sync tool might.
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::write(dir.join("copy"), &bytes).unwrap();
+        std::fs::rename(dir.join("copy"), &path).unwrap();
+        fill(&mut app, &ctx, "Notes", "Ours");
+        app.act(&ctx, Act::Save);
+        assert!(matches!(app.dialog, Dialog::None), "the same bytes");
+        assert_eq!(field_in(&path, "Notes"), "Ours");
+
+        form_file(&path, "Other app");
+        let theirs = std::fs::read(&path).unwrap();
+        fill(&mut app, &ctx, "Notes", "Ours again");
+        app.act(&ctx, Act::Save);
+        assert!(matches!(app.dialog, Dialog::ConfirmStale(..)));
+        let banner = |app: &App| {
+            let b = app.tabs[0].banners.iter();
+            b.filter(|b| b.kind == BannerKind::ChangedOnDisk).count()
+        };
+        assert_eq!(banner(&app), 1, "no Reload offered");
+        click(&mut app, &ctx, "Cancel");
+        assert!(matches!(app.dialog, Dialog::None));
+        assert_eq!(std::fs::read(&path).unwrap(), theirs);
+        assert!(app.tabs[0].dirty);
+        assert_eq!(saved_field(&app.tabs[0], "Notes"), "Ours again");
+
+        app.act(&ctx, Act::Save);
+        click(&mut app, &ctx, "Replace");
+        assert_eq!(field_in(&path, "Name"), "AlphaUnique");
+        assert_eq!(field_in(&path, "Notes"), "Ours again");
+        assert!(!app.tabs[0].dirty);
+        assert_eq!(banner(&app), 0);
+        fill(&mut app, &ctx, "Notes", "Third");
+        app.act(&ctx, Act::Save);
+        assert!(matches!(app.dialog, Dialog::None), "its own save");
+        assert_eq!(field_in(&path, "Notes"), "Third");
+
+        // A file deleted meanwhile is saved again without asking.
+        std::fs::remove_file(&path).unwrap();
+        fill(&mut app, &ctx, "Notes", "Fourth");
+        app.act(&ctx, Act::Save);
+        assert!(matches!(app.dialog, Dialog::None));
+        assert_eq!(field_in(&path, "Notes"), "Fourth");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Back in the window after another app changed a file open here, its tab says so,
+    /// once; Reload asks first when there are unsaved changes, then shows the file as it
+    /// now is, in the same place among the tabs (BUG-06).
+    #[test]
+    fn a_file_changed_elsewhere_is_noticed_and_reloaded() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        ctx.enable_accesskit();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("reload");
+        let path = dir.join("form.pdf");
+        form_file(&path, "AlphaUnique");
+        let other = dir.join("other.pdf");
+        form_file(&other, "Other");
+        open_and_wait(&mut app, &ctx, &path, 1);
+        open_and_wait(&mut app, &ctx, &other, 2);
+        app.active = 0;
+        let changed = |app: &App| {
+            let mut b = app.tabs[0].banners.iter();
+            b.any(|b| b.kind == BannerKind::ChangedOnDisk)
+        };
+        // Back from another app with nothing changed.
+        app.focused = false;
+        window(&mut app, &ctx, 1000.0, vec![]);
+        assert!(app.focused);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        app.poll_loads(&ctx);
+        assert!(!changed(&app));
+
+        form_file(&path, "Other app");
+        app.focused = false;
+        window(&mut app, &ctx, 1000.0, vec![]);
+        wait_for(&mut app, &ctx, changed);
+        let mut others = app.tabs[1].banners.iter();
+        assert!(!others.any(|b| b.kind == BannerKind::ChangedOnDisk));
+        // Dismissed, it doesn't come back for the same change.
+        app.tabs[0].drop_banner(BannerKind::ChangedOnDisk);
+        app.check_disk(&ctx, None);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        app.poll_loads(&ctx);
+        assert!(!changed(&app));
+
+        fill(&mut app, &ctx, "Notes", "Ours");
+        app.act(&ctx, Act::Reload);
+        assert!(matches!(app.dialog, Dialog::ConfirmReload(_)));
+        click(&mut app, &ctx, "Cancel");
+        assert_eq!(saved_field(&app.tabs[0], "Notes"), "Ours");
+        app.act(&ctx, Act::Reload);
+        let old = app.tabs[0].id;
+        click(&mut app, &ctx, "Discard and reload");
+        wait_for(&mut app, &ctx, |a| a.tabs[0].id != old);
+        assert_eq!((app.tabs.len(), app.active), (2, 0));
+        let t = &app.tabs[0];
+        assert_eq!(saved_field(t, "Name"), "Other app");
+        assert_eq!(saved_field(t, "Notes"), "");
+        assert!(!t.dirty && !changed(&app));
+        // Its Save replaces the file without asking: it is what was read.
+        fill(&mut app, &ctx, "Notes", "After reload");
+        app.act(&ctx, Act::Save);
+        assert!(matches!(app.dialog, Dialog::None));
+        assert_eq!(field_in(&path, "Notes"), "After reload");
+
+        // Unchanged, it reloads without asking; changed while being read, it doesn't.
+        let old = app.tabs[0].id;
+        app.act(&ctx, Act::Reload);
+        assert!(matches!(app.dialog, Dialog::None));
+        wait_for(&mut app, &ctx, |a| a.tabs[0].id != old);
+        app.act(&ctx, Act::Reload);
+        fill(&mut app, &ctx, "Notes", "Typed meanwhile");
+        wait_for(&mut app, &ctx, |a| a.opening.is_empty());
+        assert!(matches!(&app.dialog, Dialog::Message(t, _) if t == "Not reloaded"));
+        assert_eq!(saved_field(&app.tabs[0], "Notes"), "Typed meanwhile");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Nothing is saved over the file of another tab, by any path to it; a tab's own file
+    /// by another path to it is still checked for changes made elsewhere (BUG-06).
+    #[test]
+    fn nothing_is_saved_over_another_tabs_file() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("other-tab");
+        let (a, b) = (dir.join("a.pdf"), dir.join("b.pdf"));
+        form_file(&a, "A");
+        form_file(&b, "B");
+        open_and_wait(&mut app, &ctx, &a, 1);
+        open_and_wait(&mut app, &ctx, &b, 2);
+        let (ta, tb) = (app.tabs[0].id, app.tabs[1].id);
+        let alias = dir.join("sub/../a.pdf");
+        std::fs::create_dir(dir.join("sub")).unwrap();
+        let why = app.in_other_tab(&alias, Some(tb)).expect("refused");
+        assert!(why.contains("\"a.pdf\" is open in another tab"), "{why}");
+        assert!(app.in_other_tab(&alias, Some(ta)).is_none(), "its own file");
+        assert!(app.in_other_tab(&dir.join("c.pdf"), Some(tb)).is_none());
+        assert!(app.in_other_tab(&b, None).is_some());
+        assert!(app.stale(0, &alias).is_none());
+        form_file(&a, "Changed");
+        assert!(app.stale(0, &alias).is_some(), "by another path");
+        assert!(app.stale(1, &alias).is_none(), "not tab b's file");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

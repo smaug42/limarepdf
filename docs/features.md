@@ -100,6 +100,7 @@ available.
 | --- | --- | --- |
 | Tabs, thumbnails, opening by drag and drop | Done | Dropping files doesn't work in Linux Wayland sessions yet ([workaround](troubleshooting.md#dropping-files-on-the-window-does-nothing)) |
 | Recent files | Done | Start screen and ☰ > File > Open recent; 10 files, kept on your computer only |
+| A file open in one tab; changes made elsewhere | Done | Opening an open file again (by any path or link) shows its tab. Save asks before replacing a file another app or tab changed (Save as… or Replace); a notice with Reload shows when you come back to the window after such a change; ☰ > File > Reload from disk. Not checked while LimarePDF has the keyboard, only on coming back, opening and saving. [Details](gui.md#saving) |
 | Notices about the document | Done | Password-protected, scanned pages, form fields, large files. [Details](gui.md#notices-about-the-document) |
 | Zoom, fit width, continuous scrolling, page navigation | Done | Pages fit the window's width by default and follow resizing; zooming turns that off. Zoom from 10% to 6400%, drawn in tiles at high zoom so pages stay sharp. Single-page and facing-page layouts (the layout button at the bottom right or View > Page layout; cover page alone or paired), per document, following the document's own preference when it has one. [Details](reading-and-finding.md#move-around-the-pages) |
 | Open at a page from the command line | Done | `limarepdf file.pdf --page N` |

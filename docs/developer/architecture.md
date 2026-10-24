@@ -182,6 +182,26 @@ replace one unasked: the whole list is worked out first (`Pdf::split_files`, `re
 `Replacing` kind) and the CLI refuses without `--overwrite`. A file that appears at one of the names between that
 check and the write is still replaced.
 
+A file is open in one tab at a time, and a save never replaces changes it didn't read (BUG-06, the fourth audit's
+A13). `limarepdf_core::disk::same_file` says whether two paths name one file (the same path, or the same once
+canonicalised; on Unix also the same device and inode, so a hard link counts; the CLI's input checks use it too).
+`App::spawn_open` brings an open tab of the file to the front, and skips a file in `App::opening`, the reads in
+flight; a result checks again, for a tab that got the file meanwhile. Each tab keeps `Tab::disk`, the
+`disk::Version` of its file as last read (`disk::read`, the bytes and their metadata through one handle) or
+written (`Tab::wrote`): size, modified time, the Unix inode (saving renames a new file over the old one, so it has
+a new inode) and the SHA-256 of the bytes. `disk::compare` reads the file only when size, time or inode differ, and
+then calls it changed only when the bytes differ, so a touched or synced copy isn't a change. `App::save` checks
+before its other questions, and `App::save_target` again just before writing (Save, a signed document's appended
+save, Save as onto the tab's own file by any path); a changed file asks `Dialog::ConfirmStale` (Save as… or Replace;
+Replace stores that version in `App::replace_ok`, so the save then goes ahead unless the file changes again), and
+shows the `ChangedOnDisk` notice, whose Reload the question has no room for (three answers and Cancel don't fit a
+400-point window). Save as, saving selected text, exporting text and signing refuse a file another tab has open
+(`App::in_other_tab`). When the window gets the keyboard back (`egui`'s `focused`) and when an open file is opened
+again, `App::check_disk` compares the files on a thread, and a tab whose file changed shows the notice, once per
+new version (`Tab::changed_on_disk`). Reload (`Act::Reload`, asking with unsaved changes) reads the file through the
+same path as Open, with the tab's id and revision, and swaps the new tab into the old one's place unless the
+document changed meanwhile. A change made between the check and the write is still replaced; there is no locking.
+
 Crash recovery copies are kept by `crates/limarepdf-gui/src/recovery.rs`, in a private
 per-user state folder with one subfolder per running app, which holds a locked `lock` file while the app runs. A tab's
 copy is a PDF and a description naming it (length, SHA-256, title, original path), published in an order that leaves

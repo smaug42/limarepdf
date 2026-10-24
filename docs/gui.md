@@ -103,6 +103,17 @@ Close this tab; other tabs carry on.
 Save (Ctrl+S) writes the document over its file; Save As (Ctrl+Shift+S) writes a new file and leaves the original
 as it was. Your file is only changed when you save.
 
+A file is open in one tab at a time: opening it again, by any path or link to it, brings its tab to the front.
+Before saving over the file, LimarePDF checks it still holds what LimarePDF last read or saved there. If another
+app (or another LimarePDF window) changed it since, Save asks first: **Save as…** writes your version to a new
+file and keeps theirs, **Replace** puts your version in its place, and Cancel keeps both the file and your
+changes. Save As, saving selected text and signing don't write over a file that is open in another tab: close
+that tab first, or choose another name.
+
+When you come back to LimarePDF after another app changed a file open here, its tab shows a notice with
+**Reload**. ☰ > File > **Reload from disk** reads the file again as it now is; with unsaved changes it asks
+first, as they are lost. Reloading keeps the page you were on.
+
 Saving writes a temporary file beside the document and then replaces the document with it, so a save that fails
 part way leaves the original as it was. On Linux and macOS, the temporary file is readable only by you while it is
 written, and the saved document keeps the original's permissions; afterwards LimarePDF asks the system to confirm
@@ -173,6 +184,7 @@ something to do and × to dismiss it. At most two show at a time.
 | Notice | Button |
 | --- | --- |
 | Its digital signatures are being checked, and then how they checked, coloured green, amber, grey or red (always first; see [Digital signatures](signatures.md#checking-a-signed-pdf)) | Signatures |
+| Another app or tab changed its file since LimarePDF opened or saved it: checked when you come back to the window, when you open the file again and when you save ([Saving](#saving)) | Reload |
 | It was restored from a recovery copy, as it was at the time shown, and isn't saved; a signed document's signatures aren't checked ([Recovery copies](#recovery-copies)) | Save as… |
 | An earlier recovery copy, made before content was removed, couldn't be deleted, and where it is | Show file |
 | Recovery copies of it can't be kept right now, and why | Save |

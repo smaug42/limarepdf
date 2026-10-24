@@ -24,6 +24,9 @@ pub enum Act {
     NewFromImages,
     Save,
     SaveAs,
+    /// Read the document's file again, as it now is on disk, after asking when there are
+    /// unsaved changes.
+    Reload,
     ExportImages,
     ExportText,
     Print,
@@ -172,6 +175,7 @@ impl Act {
         match self {
             Act::Save
             | Act::SaveAs
+            | Act::Reload
             | Act::ExportText
             | Act::Print
             | Act::PrintSelection
@@ -309,6 +313,8 @@ impl Group {
 pub struct Ctx {
     /// A document is open.
     pub doc: bool,
+    /// The document was opened from or saved to a file.
+    pub file: bool,
     /// A background job (OCR, optimising, exporting, printing) is running.
     pub busy: bool,
     pub can_undo: bool,
@@ -388,6 +394,9 @@ fn doc(c: &Ctx) -> bool {
 }
 fn idle(c: &Ctx) -> bool {
     c.doc && !c.busy
+}
+fn file(c: &Ctx) -> bool {
+    c.file && !c.busy
 }
 fn undo(c: &Ctx) -> bool {
     c.can_undo
@@ -488,6 +497,16 @@ pub static ACTIONS: &[Action] = &[
         group: Group::File,
         label: "Save As…",
         keys: &[k(CS, Key::S)],
+        ..BASE
+    },
+    Action {
+        act: Act::Reload,
+        group: Group::File,
+        label: "Reload from disk",
+        icon: icon::ARROWS_CLOCKWISE,
+        enabled: file,
+        hint: "Reads the file again as it now is, after asking when there are unsaved \
+               changes, which reloading loses",
         ..BASE
     },
     Action {
