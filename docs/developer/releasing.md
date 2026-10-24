@@ -40,7 +40,10 @@ release already there and fails.
 
 ## What CI builds
 
-`.github/workflows/ci.yml` runs on pull requests, pushes to `main`, and `v*` tags. Each platform job packages
+`.github/workflows/ci.yml` runs on pull requests, pushes to `main`, and `v*` tags. Each platform job runs the tests
+in the `ci-test` profile (`Cargo.toml`: optimised with overflow checks, as released, but without link-time
+optimisation, which every test executable would otherwise go through on its own), then builds the binaries with
+`--release` and packages
 `limarepdf-<version>-<platform>.tar.gz` (`.zip` on Windows), holding the binaries, the README, `CHANGELOG.md`, `docs/` and
 the licences. The archives are made on the runner because Actions artifacts lose Unix file permissions; on the
 Actions page each artifact therefore downloads as a zip with the archive inside.
