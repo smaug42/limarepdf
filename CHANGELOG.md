@@ -75,6 +75,13 @@
 
 ### Added
 
+- Closing a document with unsaved changes, or quitting, now offers Save (Save as… for a document with no file
+  yet, such as a new or recovered one), Discard or Cancel, instead of only discarding the changes. Saving asks the
+  usual questions first (a file changed by another app, a repaired original, redactions not applied, digital
+  signatures), and the document closes once it is saved. Quitting with several documents unsaved offers Review…,
+  which asks about each in turn, or Discard all. A save that is cancelled, fails or can't be confirmed on disk
+  keeps the document open with its changes and stops closing or quitting; nothing closes until the app quits, so
+  cancelling part way keeps every document open.
 - When you come back to LimarePDF after another app changed a file open here, its tab shows a notice with
   Reload. ☰ > File > Reload from disk reads the file again as it now is, after asking when there are unsaved
   changes, which it loses.

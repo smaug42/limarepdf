@@ -92,6 +92,16 @@ comment or text box on the page, a form field, the selected comment's changes in
 added. Saving keeps that text first, as clicking away would, and so do printing and the other commands that
 change or use the document ([Undo](#undo)).
 
+The question, Save changes?, offers **Save** (**Save as…** for a document with no file yet, such as a new or
+recovered one), **Discard** or **Cancel**. Save asks the same questions as saving does at other times (a file
+another app changed, a repaired original, redactions not applied, digital signatures), and the document closes once
+it is saved. If the save is cancelled, fails, or can't be confirmed on disk, the document stays open with its
+changes.
+
+Quitting with one document unsaved asks about it the same way. With several, it offers **Review…**, which asks
+about each in turn, or **Discard all**, which quits. Nothing closes until LimarePDF quits: cancelling part way, or
+a save that fails, leaves every document open, the ones already saved saved and the rest with their changes.
+
 Closing a tab behind the one you are reading leaves you where you are, also when it asks about unsaved changes
 first; closing the tab in front takes you to the next one, or the one before when it was the last.
 
@@ -172,7 +182,7 @@ there is room (Copies and Print on, a signature's Reason and Location) and go on
 of documents or certificates are an outlined box with each row's buttons on its right (under it in a narrow
 window); facts to read, such as a certificate's, have their names in a column on the left.
 
-A question about a document (Flatten, Apply redactions, Discard changes and the others) acts on the document it was
+A question about a document (Flatten, Apply redactions, Save changes and the others) acts on the document it was
 asked about, even if another tab has come to the front meanwhile, and brings it back to the front. If that document
 changed or was closed while the question was open, nothing is done, and a message says so.
 

@@ -305,13 +305,31 @@ impl Asked {
     }
 }
 
+/// Closing a tab, or quitting, with Save chosen for a document (ENH-01): what happens once
+/// its save is done ([`App::close_step`]). A save cancelled, refused or failed, or not
+/// confirmed on disk, leaves the document open with its changes, and closing or quitting
+/// stops.
+enum Closing {
+    /// Tab `tab` closes once saved, and the tab `front` was in front comes back.
+    Tab { tab: u64, front: Option<u64> },
+    /// Quitting: once `saving` is saved, each of `rest` still unsaved is asked about in
+    /// turn, and then the app quits. Nothing closes before that, so stopping keeps every
+    /// document open.
+    Quit {
+        saving: Option<u64>,
+        rest: VecDeque<u64>,
+    },
+}
+
 /// The dialogs left: settings live in the inspector.
 enum Dialog {
     None,
     /// The password for a file being opened, reloaded into a tab, or appended to one.
     Password(dlg::Password, Unlock),
     Message(String, String),
-    ConfirmClose(Asked),
+    /// Save, or discard, a document's changes before closing it (`true`: before quitting)?
+    ConfirmClose(Asked, bool),
+    /// Quit with several documents unsaved: go through them, or discard them all?
     ConfirmQuit,
     /// Export or split would replace this many files.
     ConfirmReplace(Asked, Replacing, usize),
@@ -359,7 +377,7 @@ impl Dialog {
     /// The tab the dialog is about, if it is about one.
     fn asked(&self) -> Option<&Asked> {
         match self {
-            Dialog::ConfirmClose(a)
+            Dialog::ConfirmClose(a, _)
             | Dialog::ConfirmReplace(a, ..)
             | Dialog::ConfirmFlatten(a)
             | Dialog::ConfirmFlattenAnnots(a)
@@ -378,6 +396,25 @@ impl Dialog {
             Dialog::ConfirmPrintFields(q) => Some(&q.asked),
             _ => None,
         }
+    }
+
+    /// Whether it is a question about saving a document, so one waiting while the window's
+    /// close request is asked about: closing goes on only once it is answered.
+    fn saving(&self) -> bool {
+        matches!(
+            self,
+            Dialog::ConfirmClose(..)
+                | Dialog::ConfirmStale(..)
+                | Dialog::ConfirmSaveRepaired(_)
+                | Dialog::ConfirmSaveMarks(..)
+                | Dialog::ConfirmSaveSigned(..)
+                | Dialog::ConfirmSaveDisallowed(_)
+        )
+    }
+
+    /// Whether it is the question quitting asks.
+    fn quitting(&self) -> bool {
+        matches!(self, Dialog::ConfirmQuit | Dialog::ConfirmClose(_, true))
     }
 }
 
@@ -667,6 +704,8 @@ pub struct App {
     retrying: Option<PathBuf>,
     /// The number of the last search for printers started (see [`dlg::Search`]).
     searches: u64,
+    /// Closing a tab or quitting, once a document is saved (ENH-01).
+    closing: Option<Closing>,
 }
 
 impl App {
@@ -734,6 +773,7 @@ impl App {
             waiting: VecDeque::new(),
             retrying: None,
             searches: 0,
+            closing: None,
         }
     }
 
@@ -1977,11 +2017,24 @@ impl App {
         if let Some(dir) = original.and_then(|p| p.parent()).filter(|d| d.is_dir()) {
             d = d.set_directory(dir);
         }
-        let mut p = d.save_file()?;
+        let mut p = Self::save_as(d)?;
         if p.extension().is_none() {
             p.set_extension("pdf");
         }
         Some(p)
+    }
+
+    /// The file the user picks in the save chooser `d`, if any.
+    #[cfg(not(test))]
+    fn save_as(d: rfd::FileDialog) -> Option<PathBuf> {
+        d.save_file()
+    }
+
+    /// Tests never open the chooser, which would show on the desktop: they get the file
+    /// [`tests::SAVE_AS`] holds, or nothing, as when the chooser is cancelled.
+    #[cfg(test)]
+    fn save_as(_: rfd::FileDialog) -> Option<PathBuf> {
+        tests::SAVE_AS.with(std::cell::Cell::take)
     }
 
     /// Where to save the active tab (see [`Self::save_path`]); `None`, saying why, for a
@@ -2342,8 +2395,8 @@ impl App {
             Act::ToggleRecovery => self.toggle_recovery(),
             Act::ShowRecoveryFile => self.show_leftover(),
             Act::Quit => {
-                if self.tabs.iter().any(Tab::unsaved) {
-                    self.dialog = Dialog::ConfirmQuit;
+                if let Some(q) = self.quit_question() {
+                    self.dialog = q;
                 } else {
                     self.quit_ok = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -3114,9 +3167,66 @@ impl App {
     /// Close tab `i`, asking first when it has unsaved work.
     fn close_asking(&mut self, i: usize) {
         if self.tabs[i].unsaved() {
-            self.dialog = Dialog::ConfirmClose(Asked::of(&self.tabs[i]));
+            self.dialog = Dialog::ConfirmClose(Asked::of(&self.tabs[i]), false);
         } else {
             self.close_tab(i);
+        }
+    }
+
+    /// The question quitting asks when there is unsaved work: about the one document, or,
+    /// with several, whether to go through them.
+    fn quit_question(&self) -> Option<Dialog> {
+        let mut unsaved = self.tabs.iter().filter(|t| t.unsaved());
+        let first = unsaved.next()?;
+        Some(match unsaved.next() {
+            None => Dialog::ConfirmClose(Asked::of(first), true),
+            Some(_) => Dialog::ConfirmQuit,
+        })
+    }
+
+    /// Quitting goes on from an answer to its question: the documents still to ask about.
+    /// A question waiting about a save is dropped, since quitting asks about each unsaved
+    /// document anyway, and so is a tab's closing it was for.
+    fn go_on_quitting(&mut self) -> VecDeque<u64> {
+        self.waiting.retain(|d| !d.saving());
+        match self.closing.take() {
+            Some(Closing::Quit { rest, .. }) => rest,
+            _ => VecDeque::new(),
+        }
+    }
+
+    /// Goes on closing a tab or quitting once no question is open (see [`Closing`]): the
+    /// saved tab closes, the next document is asked about, or the app quits. A document
+    /// still unsaved stops it.
+    fn close_step(&mut self, ctx: &egui::Context) {
+        let unsaved = |app: &Self, id| app.tabs.iter().any(|t| t.id == id && t.unsaved());
+        match self.closing.take() {
+            None => {}
+            Some(Closing::Tab { tab, front }) => {
+                if unsaved(self, tab) {
+                    return;
+                }
+                if let Some(i) = self.tabs.iter().position(|t| t.id == tab) {
+                    self.close_tab(i);
+                }
+                if let Some(i) = self.tabs.iter().position(|t| Some(t.id) == front) {
+                    self.active = i;
+                }
+            }
+            Some(Closing::Quit { saving, mut rest }) => {
+                if saving.is_some_and(|id| unsaved(self, id)) {
+                    return;
+                }
+                while let Some(id) = rest.pop_front() {
+                    if let Some(t) = self.tabs.iter().find(|t| t.id == id && t.unsaved()) {
+                        self.dialog = Dialog::ConfirmClose(Asked::of(t), true);
+                        self.closing = Some(Closing::Quit { saving: None, rest });
+                        return;
+                    }
+                }
+                self.quit_ok = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
         }
     }
 
@@ -3176,45 +3286,113 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
-            Dialog::ConfirmClose(asked) => match dlg::confirm(
-                ctx,
-                Ask::new(
-                    "Close without saving?",
-                    "This document has changes that aren't saved. Closing it loses them.",
-                    Btn::danger("Discard changes"),
-                )
-                .file(file),
-            ) {
-                Outcome::Apply => {
-                    // A tab asked about from behind another closes there.
-                    let front = self.tabs.get(self.active).map(|t| t.id);
-                    if self.still(asked) {
-                        self.close_tab(self.active);
-                        if let Some(i) = self.tabs.iter().position(|t| Some(t.id) == front) {
-                            self.active = i;
+            Dialog::ConfirmClose(asked, quitting) => {
+                let quitting = *quitting;
+                // A document with no file yet (new, or recovered) is saved as one.
+                let tab = self.tabs.iter().find(|t| t.id == asked.tab);
+                let save = if tab.is_some_and(|t| t.path.is_none()) {
+                    "Save as…"
+                } else {
+                    "Save"
+                };
+                let text = if quitting {
+                    "This document has changes that aren't saved. Save them before quitting, \
+                     or discard them."
+                } else {
+                    "This document has changes that aren't saved. Save them before closing \
+                     it, or discard them."
+                };
+                match dlg::choose(
+                    ctx,
+                    Shell::new("Save changes?").file(file),
+                    text,
+                    Btn::primary(save),
+                    Btn::danger("Discard"),
+                    true,
+                ) {
+                    Choice::First => {
+                        let front = self.tabs.get(self.active).map(|t| t.id);
+                        let rest = quitting.then(|| self.go_on_quitting());
+                        // The tab saved comes to the front for its save's questions.
+                        if self.still(asked) {
+                            self.closing = Some(match rest {
+                                Some(rest) => Closing::Quit {
+                                    saving: Some(asked.tab),
+                                    rest,
+                                },
+                                None => Closing::Tab {
+                                    tab: asked.tab,
+                                    front,
+                                },
+                            });
+                            self.save(ctx, false);
                         }
+                        done = true;
                     }
-                    done = true;
+                    Choice::Second if quitting => {
+                        let rest = self.go_on_quitting();
+                        if self.still(asked) {
+                            self.closing = Some(Closing::Quit { saving: None, rest });
+                        }
+                        done = true;
+                    }
+                    Choice::Second => {
+                        // A tab asked about from behind another closes there.
+                        let front = self.tabs.get(self.active).map(|t| t.id);
+                        if self.still(asked) {
+                            self.close_tab(self.active);
+                            if let Some(i) = self.tabs.iter().position(|t| Some(t.id) == front) {
+                                self.active = i;
+                            }
+                        }
+                        done = true;
+                    }
+                    Choice::Cancel => {
+                        if quitting {
+                            self.closing = None;
+                        }
+                        done = true;
+                    }
+                    Choice::Open => {}
                 }
-                Outcome::Cancel => done = true,
-                Outcome::Open => {}
-            },
-            Dialog::ConfirmQuit => match dlg::confirm(
-                ctx,
-                Ask::new(
-                    "Quit without saving?",
-                    "Some documents have changes that aren't saved. Quitting loses them.",
-                    Btn::danger("Quit without saving"),
-                ),
-            ) {
-                Outcome::Apply => {
-                    self.quit_ok = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    done = true;
+            }
+            Dialog::ConfirmQuit => {
+                let n = self.tabs.iter().filter(|t| t.unsaved()).count();
+                match dlg::choose(
+                    ctx,
+                    Shell::new("Quit with unsaved changes?"),
+                    &format!(
+                        "{} changes that aren't saved. Review them to save or discard each \
+                         one's changes, or discard all the changes and quit.",
+                        plural(n, "A document has", "{n} documents have")
+                    ),
+                    Btn::primary("Review…"),
+                    Btn::danger("Discard all"),
+                    true,
+                ) {
+                    Choice::First => {
+                        self.go_on_quitting();
+                        let rest = self.tabs.iter().filter(|t| t.unsaved()).map(|t| t.id);
+                        self.closing = Some(Closing::Quit {
+                            saving: None,
+                            rest: rest.collect(),
+                        });
+                        done = true;
+                    }
+                    Choice::Second => {
+                        self.quit_ok = true;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        done = true;
+                    }
+                    Choice::Cancel => {
+                        if matches!(self.closing, Some(Closing::Quit { .. })) {
+                            self.closing = None;
+                        }
+                        done = true;
+                    }
+                    Choice::Open => {}
                 }
-                Outcome::Cancel => done = true,
-                Outcome::Open => {}
-            },
+            }
             Dialog::Password(s, unlock) => {
                 let appending = matches!(unlock, Unlock::Append(_));
                 let answer = dlg::password(ctx, s, appending);
@@ -3693,6 +3871,12 @@ impl App {
         }
         if !done {
             self.dialog = dialog;
+        }
+        // Not while a question about a save waits behind the quit question, which was
+        // cancelled: that save goes on first.
+        if matches!(self.dialog, Dialog::None) && !self.waiting.front().is_some_and(Dialog::saving)
+        {
+            self.close_step(ctx);
         }
         self.next_dialog();
     }
@@ -4467,14 +4651,12 @@ impl eframe::App for App {
         }
 
         // Guard against closing the window with unsaved work.
-        if ctx.input(|i| i.viewport().close_requested())
-            && !self.quit_ok
-            && self.tabs.iter().any(Tab::unsaved)
-        {
+        let quit = ctx.input(|i| i.viewport().close_requested()) && !self.quit_ok;
+        if let Some(q) = quit.then(|| self.quit_question()).flatten() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             // Asked first: a question open comes back after Cancel.
-            let open = std::mem::replace(&mut self.dialog, Dialog::ConfirmQuit);
-            if !matches!(open, Dialog::None | Dialog::ConfirmQuit) {
+            let open = std::mem::replace(&mut self.dialog, q);
+            if !matches!(open, Dialog::None) && !open.quitting() {
                 self.waiting.push_front(open);
             }
         }
@@ -5165,6 +5347,12 @@ mod tests {
     use super::*;
     use crate::page_text;
     use limarepdf_core::{Cipher, Encryption, FontChoice, Restrictions, SignPlace};
+
+    thread_local! {
+        /// The file the save chooser gives next, once (see [`App::save_as`]).
+        pub(super) static SAVE_AS: std::cell::Cell<Option<PathBuf>> =
+            const { std::cell::Cell::new(None) };
+    }
 
     #[test]
     fn window_size_is_known_without_its_position() {
@@ -7315,13 +7503,13 @@ mod tests {
                 ),
             ),
             1 => (
-                "Close without saving?".into(),
-                two("Discard changes"),
-                Dialog::ConfirmClose(app.asked()),
+                "Save changes?".into(),
+                vec!["Save", "Discard", "Cancel"],
+                Dialog::ConfirmClose(app.asked(), false),
             ),
             2 => (
-                "Quit without saving?".into(),
-                two("Quit without saving"),
+                "Quit with unsaved changes?".into(),
+                vec!["Review…", "Discard all", "Cancel"],
                 Dialog::ConfirmQuit,
             ),
             3 => (
@@ -7532,6 +7720,12 @@ mod tests {
                     Box::new(dlg::Print::new(Vec::new(), "test.pdf".into())),
                 ),
             ),
+            // Quitting, about one document (ENH-01).
+            29 => (
+                "Save changes?".into(),
+                vec!["Save", "Discard", "Cancel"],
+                Dialog::ConfirmClose(app.asked(), true),
+            ),
             _ => return None,
         };
         Some(q)
@@ -7603,7 +7797,7 @@ mod tests {
         ];
         for i in 0.. {
             let Some((title, _, _)) = question(&app, &long, i) else {
-                assert_eq!(i, 29, "a question was left out");
+                assert_eq!(i, 30, "a question was left out");
                 break;
             };
             for (size, scale) in sizes
@@ -8032,7 +8226,7 @@ mod tests {
         assert!(matches!(app.dialog, Dialog::ConfirmClose(..)));
         // The first tab, with nothing unsaved, is closed while the question is open.
         app.close_tab(0);
-        click(&mut app, &ctx, "Discard changes");
+        click(&mut app, &ctx, "Discard");
         let left: Vec<u64> = app.tabs.iter().map(|t| t.id).collect();
         assert_eq!(left, [ids[2]], "the wrong tab was closed");
     }
@@ -8074,11 +8268,11 @@ mod tests {
         );
         app.act(&ctx, Act::Quit);
         assert!(!app.quit_ok, "quit, and the typed text lost");
-        assert!(matches!(app.dialog, Dialog::ConfirmQuit));
+        assert!(matches!(app.dialog, Dialog::ConfirmClose(_, true)));
         // Discard drops it.
         app.dialog = Dialog::None;
         app.act(&ctx, Act::CloseTab);
-        click(&mut app, &ctx, "Discard changes");
+        click(&mut app, &ctx, "Discard");
         assert!(app.tabs.is_empty());
     }
 
@@ -9436,7 +9630,7 @@ mod tests {
         set("delay", Some("1"));
         app.act(&ctx, Act::Print);
         close_window(&mut app, &ctx);
-        assert!(matches!(app.dialog, Dialog::ConfirmQuit));
+        assert!(matches!(app.dialog, Dialog::ConfirmClose(_, true)));
         let waits_ready =
             |a: &App| matches!(a.waiting.front(), Some(Dialog::Print(_, s)) if s.ready());
         wait_for(&mut app, &ctx, waits_ready);
@@ -9697,7 +9891,7 @@ mod tests {
         assert_eq!(app.tabs.len(), 3, "Cancel closed a tab");
         assert_eq!(app.active, 0, "Cancel changed the tab in front");
         close_by_button(&mut app, &ctx, "c.pdf *");
-        click(&mut app, &ctx, "Discard changes");
+        click(&mut app, &ctx, "Discard");
         let left: Vec<u64> = app.tabs.iter().map(|t| t.id).collect();
         assert_eq!(left, ids[..2]);
         assert_eq!(app.active, 0, "Discard changed the tab in front");
@@ -9708,7 +9902,7 @@ mod tests {
         assert!(matches!(app.dialog, Dialog::ConfirmClose(..)), "didn't ask");
         pages_tab(&mut app, &ctx, 1);
         let opened = app.tabs[2].id;
-        click(&mut app, &ctx, "Discard changes");
+        click(&mut app, &ctx, "Discard");
         let left: Vec<u64> = app.tabs.iter().map(|t| t.id).collect();
         assert_eq!(left, [ids[0], opened]);
         assert_eq!(app.active, 1, "the opened tab left the front");
@@ -10468,13 +10662,255 @@ mod tests {
             _ => unreachable!(),
         }
         close_window(&mut app, &ctx);
-        assert!(matches!(app.dialog, Dialog::ConfirmQuit));
+        assert!(matches!(app.dialog, Dialog::ConfirmClose(_, true)));
         click(&mut app, &ctx, "Cancel");
         assert!(!app.quit_ok);
         match &app.dialog {
             Dialog::Password(s, ..) => assert_eq!(s.input, "wal"),
             _ => panic!("the password being typed was lost"),
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Add a tab of one blank page, its file at `path` (not written yet), with a page
+    /// added and not saved, and bring it to the front.
+    fn unsaved_tab(app: &mut App, ctx: &egui::Context, path: Option<PathBuf>) -> u64 {
+        pages_tab(app, ctx, 1);
+        let t = app.tabs.last_mut().unwrap();
+        t.path = path;
+        assert!(t.edit(ctx, |p| p.insert_blank(1, 300.0, 500.0)));
+        t.id
+    }
+
+    /// The number of pages in the PDF at `path`.
+    fn pages_in(path: &Path) -> usize {
+        Pdf::from_bytes(&std::fs::read(path).unwrap(), None)
+            .unwrap()
+            .page_count()
+    }
+
+    fn ids(app: &App) -> Vec<u64> {
+        app.tabs.iter().map(|t| t.id).collect()
+    }
+
+    /// ENH-01: Save when closing a tab saves it, then closes it, and the tab in front
+    /// stays; a document with no file yet is saved as one, and cancelling the chooser
+    /// keeps it open with its changes.
+    #[test]
+    fn closing_with_save_saves_the_document_then_closes_it() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("close-save");
+        let (a, c) = (dir.join("a.pdf"), dir.join("c.pdf"));
+        let front = unsaved_tab(&mut app, &ctx, Some(a.clone()));
+        let new = unsaved_tab(&mut app, &ctx, None);
+        let behind = unsaved_tab(&mut app, &ctx, Some(c.clone()));
+        app.active = 0;
+        // Cancel changes nothing.
+        app.close_asking(2);
+        click(&mut app, &ctx, "Cancel");
+        assert_eq!(ids(&app), [front, new, behind]);
+        assert!(!c.exists() && app.closing.is_none());
+        // Save, about a tab behind the one in front.
+        app.close_asking(2);
+        click(&mut app, &ctx, "Save");
+        assert_eq!(pages_in(&c), 2, "not saved");
+        assert_eq!(ids(&app), [front, new], "the saved tab wasn't closed");
+        assert_eq!(app.tabs[app.active].id, front, "the tab in front changed");
+        // A new document: Save as…, with the chooser cancelled, then a file chosen.
+        app.close_asking(1);
+        click(&mut app, &ctx, "Save as…");
+        assert_eq!(ids(&app), [front, new], "closed without saving");
+        assert!(app.tabs[1].dirty && app.closing.is_none());
+        SAVE_AS.with(|s| s.set(Some(dir.join("new"))));
+        app.close_asking(1);
+        click(&mut app, &ctx, "Save as…");
+        assert_eq!(pages_in(&dir.join("new.pdf")), 2, "not saved as a file");
+        assert_eq!(ids(&app), [front]);
+        assert!(app.tabs[0].dirty && !a.exists(), "the tab left changed");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// ENH-01: a save that fails, or is cancelled at one of its questions, keeps the
+    /// document open with its changes, and nothing closes later on its own.
+    #[test]
+    fn closing_keeps_a_document_whose_save_fails_or_is_cancelled() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("close-kept");
+        let kept = |app: &App, id| app.tabs.iter().any(|t| t.id == id && t.dirty);
+        // Written into a folder that isn't there: Save failed.
+        let failing = unsaved_tab(&mut app, &ctx, Some(dir.join("gone").join("a.pdf")));
+        app.close_asking(0);
+        click(&mut app, &ctx, "Save");
+        assert!(matches!(&app.dialog, Dialog::Message(t, _) if t == "Save failed"));
+        click(&mut app, &ctx, "OK");
+        assert!(
+            kept(&app, failing),
+            "a document that failed to save was closed"
+        );
+        assert!(app.closing.is_none());
+        // Repaired: Cancel at Replace the damaged original?
+        let repaired = unsaved_tab(&mut app, &ctx, Some(dir.join("repaired.pdf")));
+        app.tabs[1].repaired = true;
+        app.close_asking(1);
+        click(&mut app, &ctx, "Save");
+        assert!(matches!(app.dialog, Dialog::ConfirmSaveRepaired(_)));
+        click(&mut app, &ctx, "Cancel");
+        assert!(kept(&app, repaired) && app.closing.is_none());
+        // Changed by another app: Cancel at Replace the changed file?, and Save as… there
+        // with the chooser cancelled.
+        let changed = dir.join("changed.pdf");
+        pages_file(&changed, 100.0, 1, None);
+        open_and_wait(&mut app, &ctx, &changed, 3);
+        let stale = app.tabs[2].id;
+        assert!(app.tabs[2].edit(&ctx, |p| p.insert_blank(1, 300.0, 500.0)));
+        pages_file(&changed, 200.0, 3, None);
+        for answer in ["Cancel", "Save as…"] {
+            app.close_asking(2);
+            click(&mut app, &ctx, "Save");
+            assert!(matches!(app.dialog, Dialog::ConfirmStale(..)));
+            click(&mut app, &ctx, answer);
+            assert!(kept(&app, stale), "closed after {answer}");
+            assert!(app.closing.is_none() && pages_in(&changed) == 3);
+        }
+        // Nothing closes later either.
+        for _ in 0..3 {
+            let out = ctx.run_ui(egui::RawInput::default(), |ui| app.dialogs(ui.ctx()));
+            drop(out);
+        }
+        assert_eq!(ids(&app), [failing, repaired, stale]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// ENH-01: quitting with several documents unsaved asks about each in turn; Cancel part
+    /// way quits nothing and closes nothing, the documents saved stay saved and the rest
+    /// keep their changes; once every one is saved or discarded, the app quits. Discard all
+    /// quits at once.
+    #[test]
+    fn quitting_asks_about_each_unsaved_document_in_turn() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("quit-each");
+        let files: Vec<PathBuf> = ["a", "b", "c"]
+            .iter()
+            .map(|n| dir.join(format!("{n}.pdf")))
+            .collect();
+        pages_tab(&mut app, &ctx, 1);
+        for f in &files {
+            unsaved_tab(&mut app, &ctx, Some(f.clone()));
+        }
+        let all = ids(&app);
+        let asked = |app: &App| match &app.dialog {
+            Dialog::ConfirmClose(a, true) => app.tabs.iter().position(|t| t.id == a.tab),
+            _ => None,
+        };
+        app.act(&ctx, Act::Quit);
+        assert!(matches!(app.dialog, Dialog::ConfirmQuit));
+        click(&mut app, &ctx, "Review…");
+        assert_eq!(asked(&app), Some(1));
+        click(&mut app, &ctx, "Save");
+        assert_eq!(pages_in(&files[0]), 2, "not saved");
+        assert_eq!(asked(&app), Some(2), "didn't go on to the next");
+        click(&mut app, &ctx, "Cancel");
+        assert!(!app.quit_ok && app.closing.is_none());
+        assert_eq!(ids(&app), all, "a document was closed");
+        let dirty: Vec<bool> = app.tabs.iter().map(|t| t.dirty).collect();
+        assert_eq!(dirty, [false, false, true, true]);
+        assert!(!files[1].exists() && !files[2].exists());
+        // Again: the first is saved now; Discard the second, Save the third, and quit.
+        app.act(&ctx, Act::Quit);
+        click(&mut app, &ctx, "Review…");
+        assert_eq!(asked(&app), Some(2));
+        click(&mut app, &ctx, "Discard");
+        assert_eq!(asked(&app), Some(3));
+        assert!(!app.quit_ok, "quit with a document not yet asked about");
+        click(&mut app, &ctx, "Save");
+        assert_eq!(pages_in(&files[2]), 2);
+        assert!(app.quit_ok, "didn't quit");
+        assert!(!files[1].exists(), "the discarded document was saved");
+        // Discard all.
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        unsaved_tab(&mut app, &ctx, None);
+        unsaved_tab(&mut app, &ctx, None);
+        app.act(&ctx, Act::Quit);
+        click(&mut app, &ctx, "Discard all");
+        assert!(app.quit_ok);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// ENH-01: a save failing while quitting stops quitting, with every document open.
+    #[test]
+    fn quitting_stops_when_a_save_fails() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("quit-fails");
+        let (a, gone) = (dir.join("a.pdf"), dir.join("gone").join("b.pdf"));
+        unsaved_tab(&mut app, &ctx, Some(a.clone()));
+        unsaved_tab(&mut app, &ctx, Some(gone));
+        let all = ids(&app);
+        close_window(&mut app, &ctx);
+        click(&mut app, &ctx, "Review…");
+        click(&mut app, &ctx, "Save");
+        click(&mut app, &ctx, "Save");
+        assert!(matches!(&app.dialog, Dialog::Message(t, _) if t == "Save failed"));
+        click(&mut app, &ctx, "OK");
+        assert!(!app.quit_ok, "quit with a document that failed to save");
+        assert!(app.closing.is_none() && matches!(app.dialog, Dialog::None));
+        assert_eq!(ids(&app), all);
+        assert!(!app.tabs[0].dirty && app.tabs[1].dirty);
+        assert_eq!(pages_in(&a), 2);
+        // With one document unsaved, quitting asks about it alone, and Discard quits.
+        close_window(&mut app, &ctx);
+        assert!(matches!(app.dialog, Dialog::ConfirmClose(_, true)));
+        click(&mut app, &ctx, "Discard");
+        assert!(app.quit_ok);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// ENH-01: closing the window while a tab's save asks a question asks Quit first;
+    /// after Cancel the save's question is back, and once answered the tab is saved and
+    /// closed. Going on to quit instead asks about that document again, once.
+    #[test]
+    fn closing_the_window_during_a_save_keeps_the_save() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("close-during-save");
+        let path = dir.join("repaired.pdf");
+        let front = unsaved_tab(&mut app, &ctx, None);
+        unsaved_tab(&mut app, &ctx, Some(path.clone()));
+        app.tabs[1].repaired = true;
+        app.active = 0;
+        app.close_asking(1);
+        click(&mut app, &ctx, "Save");
+        assert!(matches!(app.dialog, Dialog::ConfirmSaveRepaired(_)));
+        close_window(&mut app, &ctx);
+        assert!(matches!(app.dialog, Dialog::ConfirmQuit));
+        click(&mut app, &ctx, "Cancel");
+        assert!(
+            matches!(app.dialog, Dialog::ConfirmSaveRepaired(_)),
+            "the save's question is gone"
+        );
+        click(&mut app, &ctx, "Replace original");
+        assert_eq!(pages_in(&path), 2);
+        assert_eq!(ids(&app), [front], "the saved tab wasn't closed");
+        // Quitting from the middle of a save: Review asks about each document once.
+        let other = unsaved_tab(&mut app, &ctx, Some(path.clone()));
+        app.tabs[1].repaired = true;
+        app.close_asking(1);
+        click(&mut app, &ctx, "Save");
+        close_window(&mut app, &ctx);
+        click(&mut app, &ctx, "Review…");
+        assert!(app.waiting.is_empty(), "the save's question still waits");
+        let mut asked = Vec::new();
+        while let Dialog::ConfirmClose(a, true) = &app.dialog {
+            asked.push(a.tab);
+            click(&mut app, &ctx, "Discard");
+        }
+        assert_eq!(asked, [front, other]);
+        assert!(app.quit_ok);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
