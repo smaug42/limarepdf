@@ -51,8 +51,9 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # Optimised as released, without link-time optimisation (Cargo.toml's ci-test profile).
       - name: Test
-        run: cargo test --workspace --release
+        run: cargo test --workspace --profile ci-test
       - name: Build
         run: cargo build --workspace --release
       # One archive per platform, made here because artifacts lose Unix file permissions:
