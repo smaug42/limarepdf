@@ -228,7 +228,13 @@ the quit question first (`App::quit_question`). A password prompt says what it u
 or reload, or the next file of an Append PDFs (`Appending`, BUG-20), whose files `App::read_appending` reads in
 order on a thread until one needs a password or fails; `App::append_read` adds them in one step if the tab is still
 open. A file with a prompt open or waiting counts as being read (`App::reading`), so opening it again asks nothing
-more. Commands the user starts set `App::dialog` directly: the modal dialog blocks them while one is open.
+more. Whether an open failed for want of a password is judged from the error's text (`needs_password`). Commands
+the user starts set `App::dialog` directly: the modal dialog blocks them while one is open. A thread's result for a
+dialog already open fills it in place, matched by a number, or is dropped: Print opens at once and
+`App::find_printers` lists the printers on a thread (`Loaded::Printers`, matched by search number to the Print
+dialog open or waiting, BUG-11); core's `print::run_within` bounds every CUPS command (`print::ASK_WITHIN` 10 s,
+`SEND_WITHIN` 2 minutes for `lp`, the whole process group killed). A Windows job the spooler doesn't take can't be
+stopped (backlog PB-17).
 
 Closing and quitting (ENH-01) ask `Dialog::ConfirmClose(asked, quitting)`, Save (Save as… for a tab with no file) /
 Discard / Cancel; quitting with several unsaved documents asks `Dialog::ConfirmQuit` first, Review… / Discard all /
