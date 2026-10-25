@@ -123,7 +123,10 @@ Toasts (`App::toasts`, at most one per tab) belong to a tab by its id. One for a
 records the tab's `Tab::history` (revision, undo and redo depths) and goes once that moves or typing starts, so its
 Undo runs only while the change is the last thing in the tab; `Tab::info` notices have no Undo. A tab's toast waits
 while the tab is behind (`TOAST_AWAY`). Tabs are closed by index through `App::close_tab`, which keeps the tab in
-front, and `App::close_asking`; a confirmation names its tab by id (`Asked`).
+front, and `App::close_asking`; a confirmation names its tab by id (`Asked`). A tab's close button records the
+tab's id, and the tab closes after the frame's commands (`App::ui`): the rest of the frame is drawn from what was
+read at its start (`has`, the commands' state), so nothing after the tab strip reaches for a tab just closed (the
+delta audit's DA01: closing the only tab crashed in the navigation rail).
 
 Text the standard fonts can't write goes into an embedded font (`crates/limarepdf-core/src/embed.rs`,
 `Pdf::embed_codes`): the bundled Liberation face of the standard font (`LIBERATION`, in core's `assets/fonts/`,
@@ -189,7 +192,10 @@ Hidden layers (`Pdf::without_hidden`, BUG-16): content in a hidden layer still s
 for what follows it (ISO 32000-1, 8.11.3.2), so only its painting goes. Inside a hidden marked-content section,
 state operators (colour, `cm`, `q`/`Q`, line style, `gs`, text state and positioning, `BT`/`ET`) are kept as
 they are; a path is collected until it is painted, then dropped, or kept with `n` when it has `W`/`W*` (so it
-still clips); `sh`, `Do`, inline images and marked-content points go. Hidden text becomes a text-free `TJ` as
+still clips); a hidden painting operator that ends a path begun before the hidden section (`open`: path
+operators kept and not yet painted) becomes `n` too, so the next visible painting doesn't draw that path, and a
+clip set before the section still clips (the delta audit's DA04); `sh`, `Do`, inline images and marked-content
+points go. Hidden text becomes a text-free `TJ` as
 wide (`hidden_show`, the same arithmetic as redaction's: glyph widths from `FontCtx`, `Tc` and `Tw` in
 thousandths of the font size; `Tz` cancels out), and `'` and `"` keep their move to the next line and the
 spacing `"` sets. `TextState` follows `Tf`, `Tc`, `Tw` and `Tr` through `q`/`Q`; a page starts with spacing 0,
@@ -302,7 +308,10 @@ shows the `ChangedOnDisk` notice, whose Reload the question has no room for (thr
 again, `App::check_disk` compares the files on a thread, and a tab whose file changed shows the notice, once per
 new version (`Tab::changed_on_disk`). Reload (`Act::Reload`, asking with unsaved changes) reads the file through the
 same path as Open, with the tab's id and revision, and swaps the new tab into the old one's place unless the
-document changed meanwhile. A change made between the check and the write is still replaced; there is no locking.
+document changed meanwhile or something is being typed that isn't in it yet: on the pages (`Editor::pending`) or
+in the inspector's properties and label prefix (`Tab::typing_in_forms`; the delta audit's DA02). Typing before
+Reload was asked for is kept first (`Act::uses_document`), so the revision covers it, and agreeing to lose the
+changes made before still reloads. A change made between the check and the write is still replaced; there is no locking.
 
 The app shows one dialog at a time (`App::dialog`), and nothing that arrives while one is open replaces it (BUG-07,
 the fourth audit's A01). Results from threads (reads, jobs, signing, files dropped on the window) go through

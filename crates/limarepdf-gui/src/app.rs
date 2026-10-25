@@ -1596,19 +1596,21 @@ impl App {
                 } => {
                     self.opened(&path);
                     self.recent.add(&path);
-                    // Reloading: the tab, as it was when asked, is still there.
+                    // Reloading: the tab, as it was when asked, is still there, with nothing
+                    // typed since on the pages or in the inspector (a title, a label), which
+                    // the file would replace.
                     let reload = match into {
                         Some((id, revision)) => {
                             let i = self.tabs.iter().position(|t| t.id == id);
                             let ready = i.filter(|&i| {
                                 let t = &self.tabs[i];
-                                t.revision == revision && !t.ed.pending()
+                                t.revision == revision && !t.ed.pending() && !t.typing_in_forms()
                             });
                             if ready.is_none() {
                                 self.show(Dialog::Message(
                                     "Not reloaded".into(),
-                                    "The document changed or was closed while its file was \
-                                     read again, so it wasn't reloaded."
+                                    "The document was changed, typed in or closed while its \
+                                     file was read again, so it wasn't reloaded."
                                         .into(),
                                 ));
                                 continue;
@@ -5040,8 +5042,10 @@ impl eframe::App for App {
             self.show_view(Side::Search);
         }
 
+        // The tab whose close button was clicked, closed at the end of the frame: the rest
+        // of it is drawn for the tabs as they were (`has`, `c`).
+        let mut close = None;
         if has {
-            let mut close = None;
             egui::Panel::top("tabs").show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     for i in 0..self.tabs.len() {
@@ -5050,17 +5054,11 @@ impl eframe::App for App {
                             self.active = i;
                         }
                         if x {
-                            close = Some(i);
+                            close = Some(self.tabs[i].id);
                         }
                     }
                 });
             });
-            // The tab in front stays there, unless it is the one closed.
-            if let Some(i) = close {
-                self.run_command(&ctx, actions::name(Act::CloseTab), |app, _| {
-                    app.close_asking(i)
-                });
-            }
         }
 
         // The status bar: the page and messages at the left; the page layout, Fit width
@@ -5409,6 +5407,13 @@ impl eframe::App for App {
         self.palette_ui(&ctx, &c, &mut acts);
         for a in acts {
             self.run_command(&ctx, actions::name(a), |app, ctx| app.act(ctx, a));
+        }
+        // By its id, as a command above may have opened or closed tabs. The tab in front
+        // stays there, unless it is the one closed.
+        if let Some(i) = close.and_then(|id| self.tabs.iter().position(|t| t.id == id)) {
+            self.run_command(&ctx, actions::name(Act::CloseTab), |app, _| {
+                app.close_asking(i)
+            });
         }
         // The dialog drawn last takes input: messages and questions go last, as they can
         // come from the windows before them.
@@ -10678,6 +10683,69 @@ mod tests {
         }
     }
 
+    /// Closing the only tab by its close button leaves the start screen, without the rest
+    /// of the frame reaching for the tab just closed; and three tabs closed by their buttons
+    /// one after another, in every order, leave none (the delta audit's DA01).
+    #[test]
+    fn closing_every_tab_by_its_button_leaves_the_start_screen() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        pages_tab(&mut app, &ctx, 1);
+        app.tabs[0].path = Some(PathBuf::from("/nonexistent/a.pdf"));
+        close_by_button(&mut app, &ctx, "a.pdf");
+        assert!(app.tabs.is_empty());
+        let tree = settle(&mut app, &ctx);
+        assert!(node(&tree, "Open PDF…").is_some(), "no start screen");
+        let names = ["a.pdf", "b.pdf", "c.pdf"];
+        let orders = [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ];
+        for (front, order) in (0..3).flat_map(|f| orders.iter().map(move |o| (f, o))) {
+            let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+            named_tabs(&mut app, &ctx);
+            app.active = front;
+            for (closed, &i) in order.iter().enumerate() {
+                close_by_button(&mut app, &ctx, names[i]);
+                assert_eq!(app.tabs.len(), 2 - closed, "{front} in front, {order:?}");
+                assert!(app.active < app.tabs.len().max(1));
+            }
+        }
+    }
+
+    /// The only tab, unsaved, closed by its button: Cancel keeps it, Discard closes it,
+    /// and Save saves it and then closes it, leaving the start screen (DA01).
+    #[test]
+    fn closing_the_only_unsaved_tab_by_its_button() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let dir = test_dir("close-only");
+        let file = dir.join("a.pdf");
+        for answer in ["Cancel", "Discard", "Save"] {
+            let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+            unsaved_tab(&mut app, &ctx, Some(file.clone()));
+            close_by_button(&mut app, &ctx, "a.pdf *");
+            let asked = matches!(app.dialog, Dialog::ConfirmClose(..));
+            assert!(asked, "{answer}: didn't ask");
+            click(&mut app, &ctx, answer);
+            settle(&mut app, &ctx);
+            assert_eq!(app.tabs.is_empty(), answer != "Cancel", "{answer}");
+            assert_eq!(file.exists(), answer == "Save", "{answer}");
+            if answer == "Cancel" {
+                assert!(app.tabs[0].dirty, "Cancel lost the changes");
+            }
+        }
+        assert_eq!(pages_in(&file), 2, "not saved");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// Closing an unsaved tab behind the one in front asks about it from there, and the
     /// one in front stays: Cancel changes nothing, Discard closes it, also when another
     /// file finished opening meanwhile (BUG-09, audit A02).
@@ -11192,6 +11260,94 @@ mod tests {
         form_file(&a, "Changed");
         assert!(app.stale(0, &alias).is_some(), "by another path");
         assert!(app.stale(1, &alias).is_none(), "not tab b's file");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Reload reads the file again in the background. Typing begun while it reads (the
+    /// document title, a page label's prefix, new text on the page) or a change made
+    /// meanwhile keeps the tab as it is, saying so, and the typing goes in as before. With
+    /// nothing done meanwhile the file replaces the tab, also after the user agreed to
+    /// lose the changes made before asking (the delta audit's DA02). The read's result is
+    /// delivered by the test, after the typing, as Reload asked for it.
+    #[test]
+    fn reload_keeps_what_is_typed_while_the_file_is_read() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let dir = test_dir("reload-typing");
+        let file = dir.join("a.pdf");
+        pages_file(&file, 100.0, 3, None);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let note = typing_doc(&mut app, &ctx);
+        app.tabs[0].path = Some(file.clone());
+        let ty = Typist::new(&ctx);
+        // What Reload records when it starts (`App::reload`).
+        let asked = |app: &App| (app.tabs[0].id, app.tabs[0].revision);
+        let deliver = |app: &mut App, into| {
+            let pdf = Pdf::from_bytes(&std::fs::read(&file).unwrap(), None).unwrap();
+            let (path, version) = (file.clone(), disk::version(&file).unwrap());
+            let (page, signed, into) = (None, None, Some(into));
+            app.tx
+                .send(Loaded::Ok {
+                    path,
+                    pdf,
+                    page,
+                    signed,
+                    version,
+                    into,
+                })
+                .unwrap();
+            app.poll_loads(&ctx);
+        };
+        for case in ["document title", "label prefix", "new text", "a change"] {
+            let before = asked(&app);
+            let tab = app.tabs[0].id;
+            match case {
+                "label prefix" => {
+                    app.reveal_labels();
+                    let tree = ty.pause(&mut app);
+                    ty.click(&mut app, middle(&tree, "Prefix"));
+                    ty.text(&mut app, "A-");
+                }
+                "a change" => {
+                    assert!(app.tabs[0].edit(&ctx, |p| p.insert_blank(1, 300.0, 500.0)));
+                }
+                _ => {
+                    start_typing(&mut app, &ty, case, note);
+                    ty.key(&mut app, Key::End, egui::Modifiers::NONE);
+                    ty.text(&mut app, " Walrus");
+                }
+            }
+            let waiting = case == "a change" || app.tabs[0].revision == before.1;
+            assert!(waiting, "{case}: kept already");
+            deliver(&mut app, before);
+            assert_eq!(app.tabs[0].id, tab, "{case}: reloaded over it");
+            assert_eq!(message(&app).0, "Not reloaded", "{case}");
+            app.dialog = Dialog::None;
+            let kept = app.tabs[0].keep_typing(&ctx);
+            assert!(kept, "{case}: the typing wasn't kept");
+            let pdf = &app.tabs[0].pdf;
+            match case {
+                "document title" => assert_eq!(pdf.info().title.as_deref(), Some("Seal Walrus")),
+                "label prefix" => assert_eq!(pdf.label_ranges()[0].prefix, "A-"),
+                "new text" => assert!(saved_pdf(&app.tabs[0]).page_text(0).contains("Walrus")),
+                _ => assert_eq!(pdf.page_count(), 2),
+            }
+        }
+        // Nothing done while it reads: the file replaces the tab and its changes.
+        assert!(app.tabs[0].unsaved());
+        let before = asked(&app);
+        deliver(&mut app, before);
+        assert_ne!(app.tabs[0].id, before.0, "not reloaded");
+        assert_eq!(app.tabs[0].page_count(), 3);
+        assert!(!app.tabs[0].unsaved());
+        // Through the question, reading the file for real: Discard and reload.
+        assert!(app.tabs[0].edit(&ctx, |p| p.insert_blank(1, 300.0, 500.0)));
+        app.act(&ctx, Act::Reload);
+        assert!(matches!(app.dialog, Dialog::ConfirmReload(_)));
+        click(&mut app, &ctx, "Discard and reload");
+        wait_for(&mut app, &ctx, |a| !a.tabs[0].unsaved());
+        assert_eq!(app.tabs[0].page_count(), 3);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

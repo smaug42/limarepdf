@@ -110,7 +110,9 @@
 - Removing hidden layers could change what shows: a colour, position or clip set inside a hidden layer was lost
   with it, so artwork after the layer turned black or moved, and text after hidden text on the same line moved
   back. Only what hidden layers draw is removed now; their settings stay, and hidden text leaves a gap as wide.
-  Where that can't be done for certain (hidden text that clips, or whose width depends on where a drawing is
+  A shape begun before a hidden layer and filled or outlined inside it no longer shows up after the removal,
+  drawn by the next visible shape, and a clip begun before the layer still clips. Where that can't be done for
+  certain (hidden text that clips, or whose width depends on where a drawing is
   used), the removal stops and changes nothing, saying where.
 - Appended pages with filled form fields could show the answers blank: their fields weren't carried over, so
   answers without a drawing of their own weren't drawn. Append PDFs now asks first, then draws those files'
@@ -181,7 +183,8 @@
   cancelling part way keeps every document open.
 - When you come back to LimarePDF after another app changed a file open here, its tab shows a notice with
   Reload. ☰ > File > Reload from disk reads the file again as it now is, after asking when there are unsaved
-  changes, which it loses.
+  changes, which it loses. Anything typed or changed while the file is read (a document title, say) is kept, and
+  the document isn't reloaded, saying so.
 - A security policy, [SECURITY.md](SECURITY.md): which versions get fixes, and how to report a security problem
   privately through GitHub. It is linked from the README and Troubleshooting, and comes in the archives and every
   package and installer.

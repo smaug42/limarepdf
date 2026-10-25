@@ -1038,6 +1038,8 @@ impl Pdf {
         // While in hidden content: its marked-content depth, and the path being built.
         let mut skip: Option<usize> = None;
         let mut path: Vec<Operation> = Vec::new();
+        // A path begun in what is kept and not yet painted, which hidden content may paint.
+        let mut open = false;
         for o in ops {
             let name = o.operator.as_str();
             text.follow(&o, &mut saved);
@@ -1058,12 +1060,14 @@ impl Pdf {
                     }
                     "m" | "l" | "c" | "v" | "y" | "h" | "re" | "W" | "W*" => path.push(o),
                     "S" | "s" | "f" | "F" | "f*" | "B" | "B*" | "b" | "b*" | "n" => {
-                        // A clipping path is kept, unpainted.
-                        if path.iter().any(|p| p.operator.starts_with('W')) {
+                        // The path ends unpainted: a clipping path still clips, and a path
+                        // begun before the hidden content ends here, not at the next painting.
+                        if open || path.iter().any(|p| p.operator.starts_with('W')) {
                             out.append(&mut path);
                             out.push(Operation::new("n", vec![]));
                         }
                         path.clear();
+                        open = false;
                     }
                     "Tj" | "TJ" | "'" | "\"" => {
                         if text.render >= 4 {
@@ -1122,6 +1126,8 @@ impl Pdf {
                         continue;
                     }
                 }
+                "m" | "l" | "c" | "v" | "y" | "h" | "re" | "W" | "W*" => open = true,
+                "S" | "s" | "f" | "F" | "f*" | "B" | "B*" | "b" | "b*" | "n" => open = false,
                 _ => {}
             }
             out.push(o);

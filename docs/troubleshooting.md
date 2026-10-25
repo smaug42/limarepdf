@@ -74,8 +74,8 @@ without one but have a permissions password, which limits printing, copying or c
 New and edited text can be in Latin (Vietnamese included), Greek and Cyrillic, and Chinese, Japanese, Korean and
 single emoji in an installed font that has them. Hebrew, Arabic and scripts whose letters join (Devanagari, Thai
 and others) can't be written yet, in any font. Text boxes, headers, footers, watermarks and fill-and-sign text are
-written in Helvetica, so they take only Latin, Greek and Cyrillic: for other characters, use the Add text tool in
-an installed font that has them. [What doesn't work yet](features.md#what-doesnt-work-yet) has the details.
+written in Helvetica, so they take only Latin, Greek and Cyrillic: for Chinese, Japanese, Korean or single emoji,
+use the Add text tool in an installed font that has them. [What doesn't work yet](features.md#what-doesnt-work-yet) has the details.
 
 ### "LimarePDF can't add this emoji yet"
 
@@ -100,8 +100,10 @@ emoji), which LimarePDF can't write into a PDF. Choose another font in the inspe
 The text box was made by another app and has characters Helvetica can't write (Chinese, Hebrew and so on).
 LimarePDF draws text boxes in Helvetica, so it keeps the box's own drawing and refuses a new colour, opacity,
 style, size or text rather than draw those characters as `?`. You can still move or delete it. To change its
-look, edit it in the app that made it, or delete it and write the text with the Add text tool in an installed
-font that has the characters.
+look, edit it in the app that made it. Chinese, Japanese, Korean and single emoji can also be written with the
+Add text tool in an installed font that has them; Hebrew, Arabic and other right-to-left or shaped scripts, emoji
+made of several characters and emoji drawn only in colour can't be written yet. Add the new text first and check
+it, then delete the old box, so nothing is lost if some characters can't be written.
 
 ### A text box shows `?` instead of some characters
 

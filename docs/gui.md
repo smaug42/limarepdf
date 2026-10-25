@@ -122,7 +122,8 @@ that tab first, or choose another name.
 
 When you come back to LimarePDF after another app changed a file open here, its tab shows a notice with
 **Reload**. ☰ > File > **Reload from disk** reads the file again as it now is; with unsaved changes it asks
-first, as they are lost. Reloading keeps the page you were on.
+first, as they are lost. Reloading keeps the page you were on. Anything you type or change while the file is
+being read (a big file, or one on a slow drive) is kept instead: the document isn't reloaded, and a message says so.
 
 Saving writes a temporary file beside the document and then replaces the document with it, so a save that fails
 part way leaves the original as it was. On Linux and macOS, the temporary file is readable only by you while it is

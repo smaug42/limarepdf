@@ -954,7 +954,7 @@ fn all_shown(p: &Pdf) -> Pdf {
 
 /// Content whose hidden layer `/L1` sets what visible content after it is drawn with, each
 /// with what the hidden layer draws.
-const STATE_IN_HIDDEN_LAYERS: [&str; 10] = [
+const STATE_IN_HIDDEN_LAYERS: [&str; 13] = [
     // Colour.
     "/OC /L1 BDC 1 0 0 rg 0 0 1 RG 0 140 50 50 re f EMC 80 30 100 100 re f",
     // Position.
@@ -962,6 +962,11 @@ const STATE_IN_HIDDEN_LAYERS: [&str; 10] = [
     // A clip, set alone and while filling.
     "/OC /L1 BDC 100 0 100 200 re W n 0 1 0 rg 0 0 300 200 re f EMC 0 0 1 rg 0 0 300 100 re f",
     "/OC /L1 BDC 0 1 0 rg 100 0 100 200 re W f EMC 0 0 1 rg 0 0 300 100 re f",
+    // A shape begun before the layer and painted in it, with shapes after it: the hidden
+    // painting ended it (the delta audit's DA04). And a clip set before the layer.
+    "20 20 50 50 re /OC /L1 BDC f EMC 140 20 50 50 re f",
+    "0 0 1 rg 20 20 50 50 re 30 30 m 60 60 l /OC /L1 BDC 0 1 0 rg B EMC 140 20 50 50 re f",
+    "100 0 100 200 re W /OC /L1 BDC n 0 1 0 rg 0 0 300 200 re f EMC 0 0 1 rg 0 0 300 100 re f",
     // A saved state restored after the layer.
     "/OC /L1 BDC q 1 0 0 rg 0 150 40 40 re f EMC 20 20 50 50 re f Q 100 20 50 50 re f",
     // Text: its font and spacing, then where it ends, along the line.
