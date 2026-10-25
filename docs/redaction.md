@@ -38,7 +38,8 @@ has marks asks first, since nothing under them has been removed.
 then checks that nothing readable is left under them; if anything is, nothing is changed and an error says what was
 found. A report lists what was removed from each page, and where the removed text can still be found elsewhere in
 the document (other pages, bookmarks, comments, form fields, document properties). Undo brings it all back until
-the document is closed; once saved, the removed content is gone from the file.
+the document is closed, also after saving; the file you saved doesn't hold the removed content, unless you save
+again after the Undo.
 
 Marks are standard PDF redaction marks, so marks made in other apps can be applied in LimarePDF, and the other way
 round. From the command line, `limarepdf-cli redact` marks, applies, or does both (see
@@ -113,11 +114,16 @@ What is ticked at first:
 - **Attached files:** files attached to the document or to comments.
 - **Hidden layers and their content:** the content of layers that are switched off is deleted, wherever it is
   drawn: on the pages, in forms drawn inside forms (up to 32 deep), in comments' and fields' drawings, in patterns,
-  soft masks and Type 3 fonts. Those layers leave the layer list; layers that are shown stay. If some drawing
-  can't be read, or is nested deeper, LimarePDF can't tell whether it holds hidden content, so the command stops
-  with a message saying what, and changes nothing. It stops in the same way for a drawing without resources of its
-  own that is used in places giving its layers different meanings (hidden in one, shown in another), as its hidden
-  content can't be taken out of one place only. Leave hidden layers out to remove the rest. Compressed data is
+  soft masks and Type 3 fonts. Those layers leave the layer list; layers that are shown stay. What shows doesn't
+  change: a colour, position or clip a hidden layer sets still applies to what is drawn after it, and hidden text
+  is replaced by a gap as wide, so text after it on the line stays where it was. If some drawing can't be read,
+  or is nested deeper, LimarePDF can't tell whether it holds hidden content, so the command stops with a message
+  saying what, and changes nothing. It stops in the same way for a drawing without resources of its own that is
+  used in places giving its layers or fonts different meanings (hidden in one, shown in another), as its hidden
+  content can't be taken out of one place only; and where removing hidden content would change what shows:
+  hidden text that clips what comes after it, hidden text whose width LimarePDF can't work out (its font is set
+  where the drawing is used) with visible text after it on the same line, or a shape begun in a hidden layer and
+  painted outside it. Leave hidden layers out to remove the rest. Compressed data is
   checked to its end: if it is cut off or damaged part way, the command stops in the same way ("Part of this
   document is damaged..."). Data that is complete but whose checksum at the end is wrong is read in full, as other
   PDF readers read it, and the result says so.

@@ -2,8 +2,10 @@
 
 # Command-line reference
 
-`limarepdf-cli` does everything the desktop app does to a document, for scripts and batches. Every command prints its own
-options with `limarepdf-cli <command> --help`.
+`limarepdf-cli` does most of what the desktop app does to a document, for scripts and batches. Editing page content,
+adding comments, and Fill and sign are in the app only: from the command line, page objects can be listed
+(`objects`), and comments listed, removed and flattened (`annot`). Every command prints its own options with
+`limarepdf-cli <command> --help`.
 
 Commands that change a document take the input file first and write the result to `-o out.pdf`; the input is
 never changed: an `-o` that names the input, by any path or link to it, is refused with nothing written (on
@@ -46,7 +48,7 @@ with the status it would have had otherwise.
 | `limarepdf-cli text in.pdf --pages 1-2` | Print the text of pages |
 | `limarepdf-cli search in.pdf "invoice"` | Find text; `--boxes` also prints where each match is on its page |
 | `limarepdf-cli objects in.pdf --pages 1` | List the editable objects (text lines, images, paths) with their boxes; OCR text is marked "(hidden)", and a line in more than one font, size or colour shows its first part's, marked "mixed" |
-| `limarepdf-cli render in.pdf --dpi 150 --out-dir pngs` | Save pages as images, as the app shows them; `--format jpeg --quality 85` for JPEG. Known limit: a filled form field with no drawing of its own comes out empty ([details](export-and-printing.md#pages-as-images)) |
+| `limarepdf-cli render in.pdf --dpi 150 --out-dir pngs` | Save pages as images, as the app shows them; `--format jpeg --quality 85` for JPEG. Images already there aren't replaced, and nothing is written, unless you add `--overwrite`. Filled form fields are drawn as the app draws them; a warning names any it can't draw, which come out empty ([details](export-and-printing.md#pages-as-images)) |
 | `limarepdf-cli annot list in.pdf` | List the annotations (comments, notes, highlights, drawings): number, page, type, author, date and comment, and which one a reply answers. `--pages 2-3` for some pages; links and form fields are left out |
 | `limarepdf-cli annot list in.pdf --json` | The same as a JSON array, with each annotation's colour, opacity and box on the page (points from the top left) |
 | `limarepdf-cli form list in.pdf` | List the form fields: name, kind, value, pages, and whether each is required or read-only, with a choice's options |
@@ -59,7 +61,7 @@ with the status it would have had otherwise.
 | `limarepdf-cli form fill in.pdf -o out.pdf --set name=Ann --set agree=on` | Fill in fields. Checkboxes take `on` or `off`; a multi-select list takes its choices separated by `\|` |
 | `limarepdf-cli form fill in.pdf -o out.pdf --values values.json` | Fill in fields from a JSON object in the form `limarepdf-cli form list --json` prints, so you can list, edit and fill. A choice can be given by its export value or by the text shown for it. `--set` can be added and is applied after the file |
 | `limarepdf-cli form reset in.pdf -o out.pdf` | Put every field back to its default value |
-| `limarepdf-cli form flatten in.pdf -o out.pdf` | Draw the fields into the pages as they look now and remove them, so the values can't be changed. `--pages 1-3` flattens only those pages; fields elsewhere stay fillable. Refuses, naming the fields, when a shown value has no drawing and LimarePDF can't draw it (text beyond Latin, Greek and Cyrillic), rather than lose it |
+| `limarepdf-cli form flatten in.pdf -o out.pdf` | Draw the fields into the pages as they look now and remove them, so they can no longer be filled in. `--pages 1-3` flattens only those pages; fields elsewhere stay fillable. Refuses, naming the fields, when a shown value has no drawing and LimarePDF can't draw it (text beyond Latin, Greek and Cyrillic), rather than lose it |
 | `limarepdf-cli form fill in.pdf -o out.pdf --values values.json --flatten` | Fill in, then flatten |
 
 Filling checks every value first: an unknown field name, a read-only field, text too long for the field, a line
@@ -84,7 +86,7 @@ with that reason. Hybrid forms, which carry ordinary fields alongside the XFA, a
 | --- | --- |
 | `limarepdf-cli annot remove in.pdf -o out.pdf` | Remove every annotation (links and form fields stay) |
 | `limarepdf-cli annot remove in.pdf -o out.pdf --type highlight,note --author Sam --pages 1-3` | Remove only those: of these types, by this author (exact match), on these pages. Any of the three can be left out |
-| `limarepdf-cli annot flatten in.pdf -o out.pdf` | Draw the annotations into the pages as they look now and remove them, so they can't be changed or removed. `--pages 1-3` for some pages only |
+| `limarepdf-cli annot flatten in.pdf -o out.pdf` | Draw the annotations into the pages as they look now and remove them, so they are no longer annotations (they become page content). `--pages 1-3` for some pages only |
 
 The types are `highlight`, `underline`, `strikeout`, `squiggly`, `note`, `textbox`, `square`, `circle`, `line`,
 `polygon`, `polyline`, `ink` (freehand drawing) and `stamp`; other types can be named as the file does, for example
@@ -106,7 +108,7 @@ sound and video, and redaction marks are kept. Annotations stored without a draw
 | `limarepdf-cli reorder in.pdf -o out.pdf --order 3,1,2` | Put all pages in a new order |
 | `limarepdf-cli insert-blank in.pdf -o out.pdf --after 0` | Insert a blank page after page N (0 = at the start) |
 | `limarepdf-cli crop in.pdf -o out.pdf --page 1 --rect 50,600,400,780` | Set a page's crop box in points: left, bottom, right, top |
-| `limarepdf-cli merge a.pdf b.pdf -o out.pdf` | Join PDFs in the order given |
+| `limarepdf-cli merge a.pdf b.pdf -o out.pdf` | Join PDFs in the order given. The first file's form stays fillable; a later file with form fields is refused unless `--flatten-forms` is given, which draws its fields onto its pages with their answers (they can no longer be filled in). An answer LimarePDF can't draw stops it, naming the field |
 | `limarepdf-cli split big.pdf --every 50 --out-dir parts` | Split into files of N pages: `parts/big-001.pdf`, … |
 | `limarepdf-cli split big.pdf --bookmarks --out-dir parts` | Split where the top-level bookmarks go: `parts/big-002 Introduction.pdf`, … Pages before the first bookmark go in a file of their own. `--bookmarks 2` also splits at the bookmarks one level down |
 
@@ -116,7 +118,8 @@ tags above those) lose their alternative text. A form nested more than 32 deep m
 `extract` and `split` keep the bookmarks to
 the pages they keep; `delete` keeps every bookmark, without a destination when its page went. `split` writes each
 file as soon as its part is made (several at once, one per core); if one can't be written, the error says how many
-files already were.
+files already were. When a file is already at one of the parts' names, `split` writes nothing and lists those
+files; add `--overwrite` to replace them. `render` does the same for its images.
 
 ### Page labels
 

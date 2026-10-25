@@ -1,5 +1,203 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Ctrl+Z in a form field could bring back text typed in another document's field of the same name, and a new
+  note could take back the text of the note typed before it on the page, both then saved. Each document's text
+  boxes now keep their typing apart, and a box's own undo starts empty each time it gets the keyboard: what was
+  typed before was kept when it was left, and Undo takes it back from there.
+- Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y in a form field, a comment, a document property, a watermark, header or footer
+  text and the inspector's other boxes acted on the whole document (taking back another field's value, say)
+  instead of the typing there. They now undo and redo only the typing in the box with the keyboard, and do
+  nothing there once it has nothing left to undo; the document's Undo works as before outside the boxes.
+- Text still being typed was lost by a command run before clicking away: new text typed and then Rotate clockwise
+  from the command palette disappeared, and Undo couldn't bring it back. Undo or Redo clicked on the toolbar while
+  a new note was typed acted on the change before it, and the note was added afterwards. Removing blank pages,
+  recognising text and optimising scans left out text typed before they started, and wiped text typed while they
+  ran. Now every command that changes or uses the document (page commands, Undo and Redo, saving, printing,
+  exporting, signing, flattening, redaction, page drags in the thumbnails, bookmarks, opening Crop) first keeps
+  what is being typed (new text, a line, a note or text box, a form field, a comment or reply, the inspector's
+  boxes), as clicking away would, as an undo step of its own; Undo clicked while typing takes the typing back. A
+  result that comes back after typing started is discarded, saying so. Text that can't be kept (a form value
+  LimarePDF can't write) stays as typed with the reason shown, and the command doesn't run; Save no longer saves
+  without it.
+- Print pressed straight after typing in a form field, without leaving it, refused to print ("The document
+  changed while the question was open"). The field is now kept before the Print dialog opens, so the job holds
+  the typed value; the same goes for the other commands that ask a question first. A field being typed in when a
+  dialog opens keeps its typing, and gets the keyboard back when the dialog closes.
+- The Undo button on a notice such as "Deleted page 1" undid whatever came last in the tab in front: after going
+  to another document, it took back that document's edit and left the page deleted; after another change in the
+  same document, it took back that change. A notice's Undo now takes back only its own change in its own
+  document, and the notice goes as soon as something comes after that change. Going to another tab hides it, and
+  it shows again on coming back within 30 seconds. Notices that only tell you something ("There are no redaction
+  marks", say) no longer have an Undo button, and "Reset the form" no longer shows when the reset was refused.
+- Closing a tab behind the one in front, with its close button, switched to another document. The tab in front
+  now stays in front, and a tab with unsaved changes asks about them without coming to the front; closing the tab
+  in front still moves to the next one.
+- A form value LimarePDF can't write (right-to-left text, say), typed and then left by clicking elsewhere, Tab,
+  Enter or Esc, was lost once the reason was shown. It now stays typed in the field, which gets the keyboard back
+  when the message closes, and Tab doesn't move on to the next field.
+- Split into files replaced files of the same names in the chosen folder without asking. It now asks once, saying
+  how many, before writing anything, as exporting pages as images does; Cancel writes no files. On the command
+  line, `limarepdf-cli split` and `limarepdf-cli render` refuse to replace files, write nothing and list them;
+  add `--overwrite` to replace them.
+- Page images (in the app and with `limarepdf-cli render`), certificates exported with `limarepdf-cli id export`,
+  exported text and selected text saved as a text file were written in place: a failure part way (a full disk,
+  say) left a cut-off file, and a file linked to another one changed that other file too. Each is now written
+  whole or not at all, as documents are, and a write the system couldn't confirm on disk is reported as such.
+- The same file opened twice gave two tabs that saved over each other's changes without a word: a Name saved in
+  one tab went back to the old one when the other tab saved its Notes. Opening a file that is already open (by
+  any path to it, a link too, or while it is still being opened) now brings its tab to the front. Save checks
+  first that the file still holds what LimarePDF last read or saved there: when another app or tab changed it,
+  Save asks, offering Save as… or Replace, and Cancel keeps both the file and your changes. Save as, saving
+  selected text and signing refuse to write over a file that is open in another tab.
+- Opening several password-protected files at once asked for only one password: the other files were dropped
+  without a word. A message or another result arriving while a password was typed (a file that couldn't be
+  opened, say) replaced the prompt and what was typed, and closing the window replaced any open question with
+  "Quit without saving?". Now each question and message waits its turn: every file asks for its password, a wrong
+  password asks again before anything else, Cancel leaves only that file unopened, files that can't be opened are
+  told about in one message, and a question interrupted by closing the window comes back after Cancel. A page
+  asked for on the command line is kept through the password.
+- Enter in the password field didn't open the document, and Enter in Your name for comments didn't save the name;
+  only clicking the button did. Enter now answers both.
+- Append PDFs couldn't add a password-protected file's pages: it stopped with "Merge failed". It now asks for the
+  password (again when it is wrong), with Skip this file to go on without it; Cancel, or a file that can't be read,
+  adds nothing. The files are read in the background, so the window doesn't stop while large files are read.
+- Print froze the window until the printing system had listed the printers, which could take as long as it
+  liked when the printing service was slow or stuck, with no way to cancel. The Print dialog now opens at once,
+  says it is looking for printers, and can be cancelled; the printers fill it in when found. A printing service
+  that doesn't answer within 10 seconds, or can't list the printers, is reported in the dialog with Try again, as
+  is having no printers set up. On Linux and macOS a print job that the printing service doesn't take, or doesn't
+  confirm, within 2 minutes is stopped, saying the job may have been sent and to check the printer's queue; until
+  now it could keep other background work (Append PDFs, OCR, exports) from starting until LimarePDF was closed.
+- Choosing black for text in black and red (the first of its colours, which the colour picker starts from) did
+  nothing. A colour picked in the picker for text in several colours now makes it all that colour, the first one
+  too, in one undo step; opening and closing the picker changes nothing. The picker also offers the colours in
+  the text, to make it all one of them in a click.
+- Colour pickers showed a document's colours lighter than the page does, apart from black, white and full
+  colours: a mid grey looked light grey in the picker, and a mid colour picked by eye was written darker than it
+  looked. Every colour picker (text, comments, shapes, notes, text boxes, the pen, watermarks) now shows a colour
+  as the page does and writes the colour it shows; opening one and closing it leaves the colour exactly as it was.
+- Picking a font size, font or colour in the inspector while editing a line or typing new text on the page applied
+  only where the caret was, not to the characters selected, and the selection was lost. The selected characters
+  now change, and stay selected when the line takes the keyboard back.
+- An imported digital ID with no password couldn't sign or certify in the app, which asked for a password it
+  doesn't have. With the password left empty, the app now tries the ID without one; an ID that has a password
+  still asks for it.
+- Settings, recent files and saved signatures that couldn't be written (a settings folder you can't write to,
+  say) were dropped without a word. A message now says so once a session, and what you changed works until
+  LimarePDF closes; a signature saved for next time that can't be is said each time and stays usable, including
+  a picture LimarePDF couldn't copy, which was refused before.
+- Making or importing a digital ID whose being the default couldn't be noted was reported as failed although the
+  ID was kept, so trying again made a second copy. It is now reported as made, with a warning, in the app and on
+  the command line (`warning:` lines; the command succeeds). Changes to digital IDs, exports and the trust list
+  that your system couldn't confirm are safely on disk are reported as done with that warning, not as failures.
+  `limarepdf-cli sign` reports the signed file apart from the ID it couldn't keep as the default, instead of
+  failing after writing the file; the app's Signed message says so too.
+- Bullets, euro signs, dashes, curly quotes and other punctuation in text written by other programs (document
+  properties, bookmarks, form field names and values, field descriptions, comments and their authors, page
+  labels) showed as gaps or odd characters: "Budget • €100 — “approved”" read as "Budget 100 approved". They now
+  read as written, in the app and on the command line, and edit and save as they read. Text with control codes
+  is written so it reads back unchanged.
+- A photo added with Add image, or put in with Replace image, ignored the photo's own orientation: a picture
+  taken with the phone turned showed on its side, and a click placed it in a box of the wrong shape, squeezing
+  it. Both now show it upright, a click making a box of its upright shape, as importing images as pages already
+  did; a JPEG is still embedded as it is.
+- Arrowheads and other endings on a dashed line were drawn dashed too, with gaps. They are now solid, the line
+  itself still dashed, in the app, when flattened and in other readers.
+- Removing hidden layers could change what shows: a colour, position or clip set inside a hidden layer was lost
+  with it, so artwork after the layer turned black or moved, and text after hidden text on the same line moved
+  back. Only what hidden layers draw is removed now; their settings stay, and hidden text leaves a gap as wide.
+  Where that can't be done for certain (hidden text that clips, or whose width depends on where a drawing is
+  used), the removal stops and changes nothing, saying where.
+- Appended pages with filled form fields could show the answers blank: their fields weren't carried over, so
+  answers without a drawing of their own weren't drawn. Append PDFs now asks first, then draws those files'
+  fields onto their pages with their answers (they can't be filled in afterwards); the document's own fields
+  stay fillable. An answer LimarePDF can't draw stops the append, naming the field. `limarepdf-cli merge` refuses
+  such files after the first unless given `--flatten-forms`, which does the same.
+- Text boxes and fill-and-sign text took characters their font can't write (Chinese, emoji and the like), showed
+  them while typed and saved them as `?`. Such characters are now left out as they are typed or pasted, on the
+  page, in the inspector's Text box and in Fill and sign's Text, with a note at the caret, as for new text; a
+  text box or fill-and-sign text that still has them (your name put down, say) is refused with a message, with
+  nothing changed.
+- An emoji an installed font draws only in colour, with no shape of its own, was written into the PDF as
+  nothing. It is now refused at the caret, naming the font. Emoji made of several characters (flags, skin tones,
+  keycaps, and joined emoji such as families) were written as their separate parts in fonts that have them,
+  saying something else (a thumb and a colour square). They are now refused whole, with a note saying these
+  aren't supported yet, in every place LimarePDF writes text; comments, bookmarks and document properties keep
+  them.
+- A text box made by another app with characters Helvetica can't write (Chinese, say) was drawn again with `?`
+  for them, without a word, when its colour, opacity, style or size was changed in LimarePDF, and flattening
+  comments drew `?` into the page for good when it had no drawing of its own. Those changes are now refused with
+  a message naming the characters, the box keeping its own drawing (it can still be moved or deleted), and
+  flattening refuses such a box, naming its page, with nothing changed. On screen, in print and in exported
+  images, a box without a drawing still shows `?`.
+- An RSA-PSS signature (or certificate) that left out its RSA-PSS parameters, which the standard requires, was
+  checked as if it named the defaults (SHA-1, salt of 20 bytes), so one made that way could show as valid. It
+  now shows as *can't check*, as OpenSSL refuses it; an empty list of parameters still means the defaults.
+- `limarepdf-cli render` left a filled form field empty in its images when the field had no drawing of its own
+  (some apps leave drawing it to the reader). It now draws such fields as the app does; a field whose text
+  LimarePDF can't draw comes out empty with a warning naming it, and the images are still written.
+- A photo or scan of a whole sheet with a small signature on it was refused by Create signature's Image tab ("the
+  picture has no signature to keep"), and shaded or grainy paper could be kept as ink. Make the paper transparent
+  now judges the paper around each part of the picture, so it finds a small signature on a whole sheet and leaves
+  out shadows, grain and stray specks, while a blank or noisy sheet is still refused. You can also drag around the
+  signature on the picture to use only that part (Use the whole picture goes back), which helps when other
+  writing shares the sheet; the picture file isn't changed, and a saved signature keeps the part chosen. Paper can
+  now be made transparent in 1-bit and CMYK TIFF scans too. The window shows the picture and the result while you
+  choose.
+- Chinese, Japanese and Korean text whose character map (CMap) is stored in the file and built on another one was
+  read as the wrong characters, or not at all, by search, copying, text export and `limarepdf-cli text`. The map
+  is now read with the one it is built on, predefined or also stored in the file, as poppler reads it. How such
+  text is drawn is unchanged (see Rendering, Known to be wrong).
+- Two messages pointed to menus that don't exist: after exporting a certificate, "Edit > Trusted certificates >
+  Add", and after signing with a self-made ID, "Edit > Digital IDs". They now give Document > Digital signatures
+  > Trusted certificates… > Add certificate file…, and Document > Digital signatures > Digital IDs…. Setting a
+  signature field's value with `limarepdf-cli form fill` said "LimarePDF can't sign yet"; it now points to Sign
+  with digital ID in the app and `limarepdf-cli sign --field`.
+- The user guide said applying redactions can't be undone (Undo brings the content back until the document is
+  closed, also after saving), that flattened comments and fields can't be changed (they are no longer comments or
+  fields, but content editing can still move or delete them, as the Flatten annotations question, its command
+  description and the command line's help now say too), that the command line does everything the app does (it
+  doesn't edit page content, add comments or fill and sign), that every font LimarePDF writes is embedded (plain
+  Western text in Helvetica, Times or Courier isn't), and that a digital signature proves who signed (only as far
+  as you trust the signer's certificate). These and a few smaller statements now match the app.
+- Making a digital ID and signing with one use updated cryptography libraries (`crypto-bigint` 0.7.8, with
+  `elliptic-curve` 0.14.2 and `sha2` 0.11.1): in earlier versions, some calculations meant to take the same time
+  whatever the numbers could take different times depending on secret values, with some compilers and
+  processors, which could leak information about the key (RUSTSEC-2026-0387). The other libraries LimarePDF is
+  built from are updated to their latest compatible versions too.
+
+### Added
+
+- Closing a document with unsaved changes, or quitting, now offers Save (Save as… for a document with no file
+  yet, such as a new or recovered one), Discard or Cancel, instead of only discarding the changes. Saving asks the
+  usual questions first (a file changed by another app, a repaired original, redactions not applied, digital
+  signatures), and the document closes once it is saved. Quitting with several documents unsaved offers Review…,
+  which asks about each in turn, or Discard all. A save that is cancelled, fails or can't be confirmed on disk
+  keeps the document open with its changes and stops closing or quitting; nothing closes until the app quits, so
+  cancelling part way keeps every document open.
+- When you come back to LimarePDF after another app changed a file open here, its tab shows a notice with
+  Reload. ☰ > File > Reload from disk reads the file again as it now is, after asking when there are unsaved
+  changes, which it loses.
+- A security policy, [SECURITY.md](SECURITY.md): which versions get fixes, and how to report a security problem
+  privately through GitHub. It is linked from the README and Troubleshooting, and comes in the archives.
+
+### Changed
+
+- Today's date, in Fill and sign, the date under a signature, a stamp's name-and-date line and headers and
+  footers (`{date}`), is now your computer's calendar date instead of the date in UTC, which late in the evening
+  west of Greenwich was already tomorrow's. The times recorded for other programs (a comment's modification
+  time, a digital signature's signing time) are unchanged.
+- A single emoji typed in Helvetica, Times or Courier now gets the note that asks for an installed font that has
+  it, and one an installed font lacks names that font, as for other characters: single emoji are written in
+  installed fonts that draw them with outlines, such as Symbola and DejaVu Sans. The note used to say emoji
+  can't be added at all.
+- Releases now wait for the check of every library against known security advisories (RustSec), and are tested and
+  built from exactly the library versions in `Cargo.lock`.
+
 ## [0.9.0] - 2026-10-23
 
 ### Added

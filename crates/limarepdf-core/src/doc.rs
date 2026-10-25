@@ -279,11 +279,14 @@ impl Pdf {
         self.snapshot()
     }
 
-    /// Like [`Pdf::snapshot`], for on-screen rendering. hayro honours the Hidden annotation
-    /// flag but not NoView, so annotations flagged NoView are marked Hidden in the copy that
-    /// is serialised. The document itself is not changed.
+    /// Like [`Pdf::snapshot`], for drawing pages as the app shows them (`limarepdf-cli
+    /// render`). hayro honours the Hidden annotation flag but not NoView, so annotations
+    /// flagged NoView are marked Hidden in the copy that is serialised. Form fields are drawn
+    /// as [`Pdf::refresh_appearances`] would draw them, as the app draws them when opening a
+    /// file ([`Pdf::unshown_fields`] names those it can't draw). The document itself is not
+    /// changed.
     pub fn render_snapshot(&mut self) -> Result<Vec<u8>> {
-        self.snapshot_hiding(|flags, _| flags & 32 != 0, false)
+        self.snapshot_hiding(|flags, _| flags & 32 != 0, true)
     }
 
     /// Like [`Pdf::render_snapshot`], for the app, which draws sticky notes itself at a
@@ -742,7 +745,10 @@ impl Pdf {
         self.set_page_order(&new)
     }
 
-    /// Append the pages of `others` to this document.
+    /// Append the pages of `others` to this document. Their forms aren't merged into this
+    /// one's, so their fields can't be filled in here, and values without a drawing of their
+    /// own show blank: callers first ask to draw them onto the pages with
+    /// [`Pdf::flatten_form`] ([`Pdf::undrawable_fields`] names what it would refuse).
     pub fn append(&mut self, others: Vec<Pdf>) -> Result<()> {
         self.flatten()?;
         let mut ids = self.page_ids();
@@ -780,10 +786,26 @@ impl Pdf {
         }
     }
 
-    /// Split into files, part `n` (from 1) written to `path(n, title)`. Each part is
-    /// written and dropped as soon as it is made, so no more parts are held at once than
-    /// are being made. Returns how many files were written. When every file was written but
-    /// one wasn't confirmed on disk, the error is that file's [`crate::NotConfirmed`].
+    /// The files [`Pdf::split`] writes, in order: part `n` (from 1) at `path(n, title)`.
+    /// Callers check them with [`existing`] before splitting, as a split replaces files.
+    pub fn split_files(
+        &self,
+        by: SplitBy,
+        path: impl Fn(usize, Option<&str>) -> std::path::PathBuf,
+    ) -> Result<Vec<std::path::PathBuf>> {
+        let parts = self.split_parts(by)?;
+        Ok(parts
+            .iter()
+            .enumerate()
+            .map(|(i, (title, _))| path(i + 1, title.as_deref()))
+            .collect())
+    }
+
+    /// Split into files, part `n` (from 1) written to `path(n, title)`, replacing files of
+    /// the same name ([`Pdf::split_files`] lists them). Each part is written and dropped as
+    /// soon as it is made, so no more parts are held at once than are being made. Returns
+    /// how many files were written. When every file was written but one wasn't confirmed on
+    /// disk, the error is that file's [`crate::NotConfirmed`].
     pub fn split(
         &self,
         by: SplitBy,
@@ -1047,6 +1069,18 @@ fn pad_user_hash(bytes: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// The characters PDFDocEncoding gives bytes 0x18 to 0x1F, and 0x80 to 0xA0 (0x9F is
+/// undefined); every other byte means what it does in Latin-1.
+const PDF_DOC_18: [char; 8] = ['˘', 'ˇ', 'ˆ', '˙', '˝', '˛', '˚', '˜'];
+const PDF_DOC_80: [char; 33] = [
+    '•', '†', '‡', '…', '—', '–', 'ƒ', '⁄', '‹', '›', '−', '‰', '„', '“', '”', '‘', '’', '‚', '™',
+    'ﬁ', 'ﬂ', 'Ł', 'Œ', 'Š', 'Ÿ', 'Ž', 'ı', 'ł', 'œ', 'š', 'ž', '\u{9f}', '€',
+];
+
+/// A text string (properties, bookmarks, field names and values, comments, page labels):
+/// UTF-16 or UTF-8 after a byte order mark, else PDFDocEncoding. Bytes PDFDocEncoding
+/// leaves undefined (control codes, 0x7F, 0x9F) are kept as the same code points, as
+/// pdf.js reads them, so nothing is lost and names differing only there stay different.
 pub(crate) fn decode_text(b: &[u8]) -> String {
     if b.starts_with(&[0xFE, 0xFF]) {
         let u: Vec<u16> = b[2..]
@@ -1059,7 +1093,13 @@ pub(crate) fn decode_text(b: &[u8]) -> String {
     } else if b.starts_with(&[0xEF, 0xBB, 0xBF]) {
         String::from_utf8_lossy(&b[3..]).into_owned()
     } else {
-        b.iter().map(|&c| c as char).collect()
+        b.iter()
+            .map(|&c| match c {
+                0x18..=0x1F => PDF_DOC_18[usize::from(c - 0x18)],
+                0x80..=0xA0 => PDF_DOC_80[usize::from(c - 0x80)],
+                _ => c as char,
+            })
+            .collect()
     }
 }
 
@@ -1071,8 +1111,22 @@ pub fn write_file(path: impl AsRef<Path>, bytes: &[u8]) -> Result<()> {
     })
 }
 
+/// Those of `paths` that something is at already: a file, a folder or a link (a broken
+/// one too), which writing there would replace or fail on.
+pub fn existing(paths: &[std::path::PathBuf]) -> Vec<&Path> {
+    paths
+        .iter()
+        .filter(|p| std::fs::symlink_metadata(p).is_ok())
+        .map(|p| p.as_path())
+        .collect()
+}
+
+/// A text string for [`decode_text`]: printable ASCII, tabs and line breaks as they are
+/// (they mean the same in PDFDocEncoding), anything else as UTF-16.
 pub(crate) fn encode_text(s: &str) -> Vec<u8> {
-    if s.is_ascii() {
+    if s.bytes()
+        .all(|c| matches!(c, b' '..=b'~' | b'\t' | b'\n' | b'\r'))
+    {
         s.as_bytes().to_vec()
     } else {
         let mut v = vec![0xFE, 0xFF];
@@ -1191,6 +1245,60 @@ mod tests {
         assert!(re.split_parts(SplitBy::Every(0)).is_err());
     }
 
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("limarepdf-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The files a split is checked against are the ones it writes, and [`existing`] finds
+    /// the ones already there, a broken link among them (BUG-05).
+    #[test]
+    fn split_files_are_the_files_written() {
+        let dir = scratch("split-files");
+        let p = sample(5);
+        let name = |n, t: Option<&str>| dir.join(part_file_name("doc", n, t));
+        let files = p.split_files(SplitBy::Every(2), name).unwrap();
+        assert!(existing(&files).is_empty());
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.join("gone"), &files[2]).unwrap();
+        assert_eq!(p.split(SplitBy::Every(2), name).unwrap(), 3);
+        let mut written: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        written.sort();
+        assert_eq!(written, files);
+        assert_eq!(
+            existing(&files),
+            files.iter().map(|f| f.as_path()).collect::<Vec<_>>()
+        );
+        assert!(p.split_files(SplitBy::Every(0), name).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A part that can't be written fails the split; every other part is whole or not there,
+    /// and no temporary file is left (BUG-05's mid-run error).
+    #[test]
+    fn a_failed_part_leaves_no_cut_files() {
+        let dir = scratch("split-fails");
+        let p = sample(3);
+        let name = |n, t: Option<&str>| match n {
+            2 => dir.join("missing").join(part_file_name("doc", n, t)),
+            _ => dir.join(part_file_name("doc", n, t)),
+        };
+        let e = p.split(SplitBy::Every(1), name).unwrap_err();
+        assert!(format!("{e:#}").contains("missing"), "{e:#}");
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let n = path.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(["doc-001.pdf", "doc-003.pdf"].contains(&n.as_str()), "{n}");
+            assert_eq!(Pdf::open(&path, None).unwrap().page_count(), 1, "{n}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn reorder_and_metadata() {
         let mut p = sample(3);
@@ -1227,5 +1335,45 @@ mod tests {
         // With a stray `startxref` after the end, nothing is blanked.
         b.extend_from_slice(b"startxref\n");
         assert!(blank_null_encrypt(&b).is_none());
+    }
+
+    #[test]
+    fn text_strings_read_as_pdfdocencoding() {
+        // Every character where PDFDocEncoding differs from Latin-1.
+        let mut b: Vec<u8> = (0x18..=0x1F).collect();
+        b.extend(0x80..=0x9E);
+        b.push(0xA0);
+        assert_eq!(decode_text(&b), "˘ˇˆ˙˝˛˚˜•†‡…—–ƒ⁄‹›−‰„“”‘’‚™ﬁﬂŁŒŠŸŽıłœšž€");
+        assert_eq!(
+            decode_text(b"Budget \x80 \xa0100 \x84 \x8dapproved\x8e"),
+            "Budget • €100 — “approved”"
+        );
+        // The rest is Latin-1, line breaks and tabs included.
+        assert_eq!(decode_text(b"Caf\xe9 \xa9\t1\r\n2"), "Café ©\t1\r\n2");
+        // Bytes PDFDocEncoding leaves undefined are kept as they are, so nothing is lost
+        // and names that differ only there stay different.
+        assert_eq!(
+            decode_text(b"a\x01\x7f\x9f\xadb"),
+            "a\u{1}\u{7f}\u{9f}\u{ad}b"
+        );
+        // Marked strings are read as before.
+        assert_eq!(decode_text(b"\xfe\xff\x20\xac\x00!"), "€!");
+        assert_eq!(decode_text("\u{feff}€!".as_bytes()), "€!");
+    }
+
+    #[test]
+    fn text_strings_read_back_as_written() {
+        let all: String = (0u32..0x250).filter_map(char::from_u32).collect();
+        for s in [
+            "plain ASCII",
+            "tab\tand\r\nlines",
+            "Budget • €100 — “approved”",
+            "PDFDocEncoding's accents as control codes: \u{18}\u{1f}",
+            "and those it leaves undefined: \u{1}\u{7f}\u{9f}",
+            &all,
+        ] {
+            assert_eq!(decode_text(&encode_text(s)), s, "{s:?}");
+        }
+        assert_eq!(encode_text("plain\tASCII\r\n"), b"plain\tASCII\r\n");
     }
 }

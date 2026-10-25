@@ -71,12 +71,15 @@ and Help.
 - A **\*** after a tab's name means the document has unsaved changes. **Save** with Ctrl+S. **Save As**
   (Ctrl+Shift+S) writes a new file and leaves the original as it was, which is the safe choice for documents that
   matter.
-- Your file is only changed when you save. Closing a document or quitting asks first when there are unsaved
-  changes.
+- Your file is only changed when you save. Closing a document or quitting with unsaved changes asks whether to
+  **Save** them, **Discard** them or **Cancel**; with several documents unsaved, quitting offers **Review…** to
+  ask about each in turn. Save asks first when another app changed the file since you opened it.
 - While you work, LimarePDF keeps a private **recovery copy** of each document with unsaved changes. If the app
   stops unexpectedly, the next start offers them back ([Recovery copies](gui.md#recovery-copies)).
-- In a question, a **red button** means what it does can't be undone (such as applying redactions), or breaks a
-  document's digital signatures.
+- In a question, a **red button** means a choice to be sure of: it removes or discards something, replaces a file,
+  or breaks a document's digital signatures. Some can be undone while the document stays open: Undo brings back
+  what applying redactions removed, until you close the document, though a file you saved meanwhile no longer
+  holds it. Discarding changes or replacing a file can't be undone.
 
 ## Good to know
 

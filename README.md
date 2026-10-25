@@ -27,4 +27,4 @@ Then go to the [everyday tasks](docs/README.md#everyday-tasks), the [desktop app
 - [Releasing](docs/developer/releasing.md)
 - [Ideas pool](docs/developer/ideas.md)
 
-**[Changelog](CHANGELOG.md)** · **[Licence](docs/licence.md)**
+**[Changelog](CHANGELOG.md)** · **[Licence](docs/licence.md)** · **[Reporting a security problem](SECURITY.md)**

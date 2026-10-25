@@ -23,8 +23,14 @@ form fields and page assembly. These permissions rely on the reader honouring th
 
 ## Open a protected document
 
-Opening a document with an open password asks for it. A document with only a permissions password opens without
-asking, as it does in other readers, and a notice says it has one.
+Opening a document with an open password asks for it: type it and press Enter (or **Open**). A wrong password asks
+again. Opening several protected documents at once asks for each in turn, and **Cancel** leaves only that one
+unopened. A document with only a permissions password opens without asking, as it does in other readers, and a
+notice says it has one.
+
+**Append PDFs…** asks for a protected file's password in the same way: **Add pages** adds its pages, **Skip this
+file** goes on without it, and **Cancel** adds nothing
+([Organising pages](organising-pages.md#add-pages-and-merge-documents)).
 
 ## Take the protection off
 

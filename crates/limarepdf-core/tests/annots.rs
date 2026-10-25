@@ -879,6 +879,120 @@ fn a_line_can_be_pointed_elsewhere() {
     assert!(p.set_line_ends(0, line, [5.0, 5.0, 5.0, 5.2]).is_err());
 }
 
+const ENDINGS: [&str; 9] = [
+    "OpenArrow",
+    "ClosedArrow",
+    "ROpenArrow",
+    "RClosedArrow",
+    "Butt",
+    "Slash",
+    "Square",
+    "Diamond",
+    "Circle",
+];
+
+/// A 2-point black line from (60, 100) to (240, 100) shown, dashed 3 on 3 off when
+/// `dashed`, with `end` at its right end.
+fn line_with(end: &str, dashed: bool) -> (Pdf, ObjectId) {
+    let mut p = page();
+    let bs = if dashed {
+        dictionary! { "W" => 2, "S" => "D", "D" => nums(&[3.0, 3.0]) }
+    } else {
+        dictionary! { "W" => 2, "S" => "S" }
+    };
+    let id = add(
+        &mut p,
+        0,
+        "Line",
+        [40.0, 80.0, 260.0, 120.0],
+        dictionary! {
+            "C" => nums(&[0.0; 3]),
+            "L" => nums(&[60.0, 100.0, 240.0, 100.0]),
+            "LE" => vec![Object::from("None"), Object::Name(end.as_bytes().to_vec())],
+            "BS" => bs,
+        },
+    );
+    (p, id)
+}
+
+/// Ink just above the line's right end, where its ending is drawn but its shaft isn't,
+/// and along the shaft.
+fn ending_and_shaft(p: &mut Pdf, y: usize) -> (usize, usize) {
+    (
+        ink(p, [224, y - 8, 256, y - 2]).0,
+        ink(p, [80, y - 1, 200, y + 1]).0,
+    )
+}
+
+#[test]
+fn endings_on_dashed_lines_are_solid() {
+    for end in ENDINGS {
+        let (mut solid, _) = line_with(end, false);
+        let (mut dashed, id) = line_with(end, true);
+        let (want, shaft) = ending_and_shaft(&mut solid, 100);
+        // A butt is a 2-point tick: 8 pixels here.
+        assert!(want >= 8, "{end}: no ending drawn: {want}");
+        let (got, dashes) = ending_and_shaft(&mut dashed, 100);
+        assert_eq!(got, want, "{end}: drawn with gaps");
+        assert!(
+            dashes < shaft * 3 / 4,
+            "{end}: shaft not dashed: {dashes} of {shaft}"
+        );
+
+        // Drawn again after an edit, and flattened into the page.
+        dashed
+            .set_line_ends(0, (id.0, id.1), [60.0, 120.0, 240.0, 120.0])
+            .unwrap();
+        solid
+            .set_line_ends(0, (id.0, id.1), [60.0, 120.0, 240.0, 120.0])
+            .unwrap();
+        let want = ending_and_shaft(&mut solid, 120).0;
+        assert_eq!(ending_and_shaft(&mut dashed, 120).0, want, "{end}: edited");
+        dashed.flatten_annotations(None).unwrap();
+        assert!(dashed.annotations().is_empty());
+        let flat = ending_and_shaft(&mut dashed, 120).0;
+        assert_eq!(flat, want, "{end}: flattened");
+    }
+}
+
+/// Poppler draws the flattened endings solid too. Opt-in: needs `pdftoppm`.
+#[test]
+#[ignore]
+fn cross_check_dashed_line_endings_with_poppler() {
+    let dir = std::env::temp_dir().join(format!("limarepdf-dashed-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let poppler = |p: &mut Pdf, name: &str| {
+        p.flatten_annotations(None).unwrap();
+        let path = dir.join(format!("{name}.pdf"));
+        std::fs::write(&path, p.to_bytes().unwrap()).unwrap();
+        let stem = dir.join(name);
+        let ok = std::process::Command::new("pdftoppm")
+            .args(["-r", "72", "-singlefile", "-png"])
+            .arg(&path)
+            .arg(&stem)
+            .status()
+            .expect("pdftoppm")
+            .success();
+        assert!(ok);
+        let img = image::open(stem.with_extension("png")).unwrap().to_rgb8();
+        let ink = |r: [u32; 4]| {
+            (r[1]..r[3])
+                .flat_map(|y| (r[0]..r[2]).map(move |x| (x, y)))
+                .filter(|&(x, y)| img.get_pixel(x, y).0.iter().any(|&c| c < 240))
+                .count()
+        };
+        (ink([224, 92, 256, 98]), ink([80, 99, 200, 101]))
+    };
+    for end in ENDINGS {
+        let (want, shaft) = poppler(&mut line_with(end, false).0, &format!("{end}-solid"));
+        let (got, dashes) = poppler(&mut line_with(end, true).0, &format!("{end}-dashed"));
+        assert!(want >= 8, "{end}: no ending drawn");
+        assert_eq!(got, want, "{end}: drawn with gaps");
+        assert!(dashes < shaft * 3 / 4, "{end}: shaft not dashed");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn pen_strokes_are_simplified_and_join_one_drawing() {
     let mut p = page();
@@ -1159,20 +1273,29 @@ fn a_signature_picture_loses_its_paper_and_margins() {
     let mut out = std::io::Cursor::new(Vec::new());
     img.write_to(&mut out, image::ImageFormat::Png).unwrap();
     let bytes = out.into_inner();
-    let pic = |clear_paper| Stamp::Signature {
+    let cut = |clear_paper, crop| Stamp::Signature {
         art: SignArt::Picture {
             bytes: &bytes,
             clear_paper,
+            crop,
         },
         role: SignRole::Signature,
         color: InkColor::Black,
         date: false,
     };
+    let pic = |clear_paper| cut(clear_paper, None);
     // Cropped to the bar and a 2-pixel margin: 44 by 10.
     let (w, h) = pic(true).size("").unwrap();
     assert!((w / h - 4.4).abs() < 0.01, "{w} x {h}");
     let (w, h) = pic(false).size("").unwrap();
     assert!((w / h - 2.0).abs() < 0.01, "{w} x {h}");
+    // Only the left half: 30 by 30, or its part of the bar, which runs to the half's edge,
+    // with the margin on its other three sides: 22 by 10.
+    let half = Some([0.0, 0.0, 0.5, 1.0]);
+    let (w, h) = cut(false, half).size("").unwrap();
+    assert!((w / h - 1.0).abs() < 0.01, "{w} x {h}");
+    let (w, h) = cut(true, half).size("").unwrap();
+    assert!((w / h - 2.2).abs() < 0.01, "{w} x {h}");
     let mut p = page();
     p.add_stamp(0, &pic(true), StampPlace::Centre(150.0, 100.0), "")
         .unwrap();

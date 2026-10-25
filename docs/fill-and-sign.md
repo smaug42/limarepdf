@@ -34,7 +34,13 @@ the pane), opens a window with three ways to make one:
   Cedarville Cursive, Homemade Apple and Zeyada), shown as they will look. Each has Latin characters, and Caveat
   Cyrillic too; for a name a style can't show, the message names the styles that can, or draw it or use a picture.
 - **Image:** choose a photo or scan of your signature on paper (PNG, JPEG or TIFF). **Make the paper transparent**
-  (on by default) keeps only the ink and cuts off the empty margins, so the signature sits on the page like ink.
+  (on by default) keeps only the ink and cuts off the empty margins, so the signature sits on the page like ink. It
+  finds a small signature on a whole sheet too, and leaves out shadows, the paper's grain and stray specks. Other
+  writing on the sheet (a printed letter, say) counts as ink: drag around your signature on the picture to use only
+  that part, and **Use the whole picture** to go back. The preview under it shows the result. When LimarePDF can't
+  tell the signature from the paper (a blank or very faint picture), it says so: drag around the signature, or
+  untick Make the paper transparent. Your picture file isn't changed, and a saved signature keeps the part chosen.
+  A CMYK JPEG (from some print workflows) can only be used whole, with Make the paper transparent unticked.
 
 ![The Create signature window on its Type tab: a name typed and shown in the four handwriting styles, the first one picked, the ink colour (Black or Blue), Save for next time ticked, and the Use signature and Cancel buttons](images/create-signature.png)
 
@@ -52,7 +58,8 @@ take it off the list.
 **Save for next time** (on by default) keeps it in the list when LimarePDF starts again. Unticked, it stays in the
 list until LimarePDF closes, marked "until LimarePDF closes", and is then gone. Saved signatures are stored
 unencrypted in LimarePDF's settings folder (`signatures.txt`, and pictures copied into its `signatures` folder), on
-this computer only; taking a picture off the list deletes its copy.
+this computer only; taking a picture off the list deletes its copy. If it can't be saved there, a message says so,
+and it stays in the list until LimarePDF closes ([why](troubleshooting.md#settings-not-saved)).
 
 ## What you can put down
 
@@ -61,11 +68,13 @@ box to size it (it keeps its shape inside the box). The read tool then comes bac
 or resize it. To sign several places in a row, pin the tool (see [Keep tool active](gui.md#keep-tool-active)).
 
 - **Signature and initials:** a signature is up to 150 by 50 points, initials up to 50 by 30.
-- **Date:** today's date, in the style picked beside it: 2026-10-16, 16 October 2026 or October 16, 2026. The date
-  is in UTC, so late in the evening west of Greenwich it can already be tomorrow's. The date is a text box:
-  double-click it to change it.
-- **Name:** your name for comments (the same as ☰ > Edit > Your name for comments).
-- **Text:** type in the box, then click on the page; for anything else a form asks for.
+- **Date:** today's date on your computer, in the style picked beside it: 2026-10-16, 16 October 2026 or
+  October 16, 2026. The date is a text box: double-click it to change it.
+- **Name:** your name for comments (the same as ☰ > Edit > Your name for comments). A name with characters
+  beyond Latin, Greek and Cyrillic (or with emoji) can't be put down: a message says which.
+- **Text:** type in the box, then click on the page; for anything else a form asks for. Like the name and date,
+  it is a text box in Helvetica, so it takes Latin, Greek and Cyrillic characters; others (Chinese, emoji and so
+  on) aren't typed, and a note at the caret says so.
 - **Tick, cross and dot:** for boxes that aren't real form fields.
 - **Ink:** black or blue, for what is put down next.
 

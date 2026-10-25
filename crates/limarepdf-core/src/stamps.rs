@@ -8,7 +8,7 @@ use crate::embed::{unwritable, Face};
 use crate::form_ap::nums;
 use crate::imgs::{decode_upright_size, orient_matrix};
 use crate::matrix as mx;
-use crate::overlay::utc_now;
+use crate::overlay::local_today;
 use crate::sign::{mark_art, sign_label, signature_art, InkColor, Mark, SignArt, SignRole};
 use crate::{std14, Family, FontChoice, Pdf, Result};
 use anyhow::{anyhow, bail};
@@ -215,7 +215,7 @@ struct TextStamp {
 /// The name-and-date line. A name with characters the stamp's font can't show is left
 /// out rather than shown wrongly.
 fn name_and_date_line(author: &str) -> String {
-    let [y, m, d, ..] = utc_now();
+    let [y, m, d] = local_today();
     let date = format!("{y:04}-{m:02}-{d:02}");
     match author.trim() {
         "" => date,

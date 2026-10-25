@@ -5,15 +5,52 @@
 //! - Windows: `%APPDATA%\limarepdf\`
 //!
 //! `settings.txt` holds `key = value` lines; unknown keys and bad values are ignored. The
-//! files stay on this computer, and failing to read or write them is not an error.
+//! files stay on this computer. Failing to read them is not an error; failing to write them
+//! is said ([`Unsaved`]), and what was changed works until the app closes.
 
 use crate::editor::Tool;
 use crate::signing::SignKit;
+use anyhow::Context as _;
 use eframe::egui::ThemePreference;
 use limarepdf_core::page_colours::PageColours;
 pub use limarepdf_core::settings_dir;
 use limarepdf_core::{OpenLayout, StampColor};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Writes one of LimarePDF's own files (settings, saved signatures, recent files), making
+/// its folder first. Returns why it couldn't be written, or, written, why the system
+/// couldn't confirm it is safely on disk.
+pub fn write_own(file: &Path, text: &[u8]) -> anyhow::Result<Option<String>> {
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("making {}", dir.display()))?;
+    }
+    crate::app::unconfirmed(limarepdf_core::write_file(file, text))
+}
+
+/// Something of LimarePDF's own that couldn't be saved, for the app to say: a title and a
+/// message.
+pub type Unsaved = (String, String);
+
+/// What [`write_own`] writing `what` ("its settings") left to say, if anything.
+pub fn unsaved(what: &str, written: anyhow::Result<Option<String>>) -> Option<Unsaved> {
+    match written {
+        Ok(None) => None,
+        Ok(Some(why)) => Some((
+            "Settings not confirmed".into(),
+            format!(
+                "LimarePDF saved {what}, but your system couldn't confirm the file is safely on \
+                 disk ({why}). If the computer loses power, the latest changes may be lost."
+            ),
+        )),
+        Err(e) => Some((
+            "Settings not saved".into(),
+            format!(
+                "LimarePDF couldn't save {what} ({e:#}). What you change works until LimarePDF \
+                 closes, but won't be kept for next time."
+            ),
+        )),
+    }
+}
 
 /// How pages are laid out in the view.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -168,6 +205,11 @@ pub struct Settings {
     pub window_maximized: bool,
     /// Where they are saved; `None` when there is no settings folder.
     file: Option<PathBuf>,
+    /// What couldn't be saved last, until the app says it ([`Settings::take_unsaved`]).
+    unsaved: Option<Unsaved>,
+    /// A signature or initials saved for next time that couldn't be, until the app says
+    /// it ([`Settings::take_sign_unsaved`]).
+    sign_unsaved: Option<String>,
 }
 
 /// The name of the user logged in, or empty.
@@ -224,6 +266,8 @@ impl Settings {
             window: WINDOW_DEFAULT,
             window_maximized: false,
             file,
+            unsaved: None,
+            sign_unsaved: None,
         };
         let text = s
             .file
@@ -323,11 +367,36 @@ impl Settings {
         }
     }
 
-    pub fn save(&self) {
-        let Some(file) = &self.file else { return };
-        if let Some(dir) = file.parent() {
-            let _ = std::fs::create_dir_all(dir);
+    /// What couldn't be saved last, said once taken.
+    pub fn take_unsaved(&mut self) -> Option<Unsaved> {
+        self.unsaved.take()
+    }
+
+    /// A signature or initials saved for next time that couldn't be, said once taken.
+    pub fn take_sign_unsaved(&mut self) -> Option<String> {
+        self.sign_unsaved.take()
+    }
+
+    /// Saves the signatures and initials ([`SignKit::save`]). `kept`: one was just saved
+    /// for next time, so its failing is said each time it happens.
+    pub fn save_sign(&mut self, kept: bool) {
+        match self.sign.save() {
+            Err(e) if kept => {
+                self.sign_unsaved = Some(format!(
+                    "What you saved for next time can be used until LimarePDF closes, but \
+                     LimarePDF couldn't save it ({e:#})."
+                ));
+            }
+            written => {
+                if let Some(u) = unsaved("your saved signatures", written) {
+                    self.unsaved = Some(u);
+                }
+            }
         }
+    }
+
+    pub fn save(&mut self) {
+        let Some(file) = &self.file else { return };
         let mut text = format!(
             "theme = {}\npage_colours = {}\nrecolour_pictures = {}\npage_layout = {}\n\
              cover_page_alone = {}\nhighlight_colour = {}\nline_colour = {}\n",
@@ -377,7 +446,9 @@ impl Settings {
         for (wording, color) in &self.stamp_wordings {
             text += &format!("stamp_wording = {} {wording}\n", color.name());
         }
-        let _ = limarepdf_core::write_file(file, text.as_bytes());
+        if let Some(u) = unsaved("its settings", write_own(file, text.as_bytes())) {
+            self.unsaved = Some(u);
+        }
     }
 }
 

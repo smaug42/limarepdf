@@ -27,6 +27,7 @@ jobs:
   # Known security advisories (RustSec) against every crate in Cargo.lock. Ignored, with
   # the reason in docs/signatures.md: RUSTSEC-2023-0071, an RSA timing leak in `rsa` with
   # no fixed version, which needs someone timing many signings on the signer's machine.
+  # The release job waits for it: a release never ships with a known advisory.
   audit:
     runs-on: ubuntu-latest
     steps:
@@ -52,10 +53,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Optimised as released, without link-time optimisation (Cargo.toml's ci-test profile).
+      # --locked here and below: built from Cargo.lock exactly, the versions the audit job
+      # checked, failing if it is out of date rather than updating it.
       - name: Test
-        run: cargo test --workspace --profile ci-test
+        run: cargo test --workspace --profile ci-test --locked
       - name: Build
-        run: cargo build --workspace --release
+        run: cargo build --workspace --release --locked
       # One archive per platform, made here because artifacts lose Unix file permissions:
       # a folder limarepdf-<version>-<platform> holding the binaries, the docs and the licences.
       - name: Package
@@ -67,7 +70,7 @@ jobs:
           mkdir -p "$dir"
           ext=""; [ "${{ runner.os }}" = "Windows" ] && ext=".exe"
           cp target/release/limarepdf-cli$ext target/release/limarepdf$ext "$dir/"
-          cp README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE "$dir/"
+          cp README.md CHANGELOG.md SECURITY.md LICENSE-MIT LICENSE-APACHE "$dir/"
           # The README links to docs/, so the docs travel with each version.
           cp -r docs "$dir/docs"
           # Attribution and licence for the OCR model built into the binaries.
@@ -131,7 +134,7 @@ jobs:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
       - name: Build
-        run: cargo build --workspace --release --target aarch64-apple-darwin --target x86_64-apple-darwin
+        run: cargo build --workspace --release --locked --target aarch64-apple-darwin --target x86_64-apple-darwin
       - name: Make the dmg
         run: bash packaging/macos/make-dmg.sh dist
       - uses: actions/upload-artifact@v7
@@ -142,9 +145,10 @@ jobs:
   # On a version tag (v0.3.0): a draft GitHub Release with the archives, their checksums,
   # GPG signatures, build attestations and this version's section of CHANGELOG.md.
   # Publish it on GitHub. A dry run (workflow_dispatch) does everything but the release
-  # and uploads the signed files as an artifact instead.
+  # and uploads the signed files as an artifact instead. Both wait for the audit job, so
+  # neither starts after a known advisory.
   release:
-    needs: [build, macos-dmg]
+    needs: [audit, build, macos-dmg]
     if: startsWith(github.ref, 'refs/tags/v') || inputs.dry_run
     runs-on: ubuntu-latest
     permissions:

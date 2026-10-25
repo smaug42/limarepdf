@@ -10,8 +10,9 @@ use crate::typing_fonts::{self, Wanted};
 use eframe::egui::epaint::text::{ByteIndex, VariationCoords};
 use eframe::egui::{self, Color32, Galley, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use limarepdf_core::page_colours::PageColours;
-use limarepdf_core::{installed_could_write, writable, FontChoice, TextPart};
+use limarepdf_core::{emoji_sequence, installed_could_write, writable, FontChoice, TextPart};
 use std::sync::Arc;
+use unicode_segmentation::UnicodeSegmentation;
 
 /// The space from one line's baseline to the next, as a multiple of the size (Acrobat's).
 pub const LEADING: f32 = 1.2;
@@ -25,6 +26,10 @@ pub fn line_gap(above: f32, below: f32) -> f32 {
 /// Shown at the caret when a character typed or pasted can't be written.
 pub const REFUSED: &str =
     "LimarePDF can't add this character yet: Latin, Greek and Cyrillic characters work";
+/// Shown at the caret when an emoji made of several characters is typed or pasted
+/// ([`limarepdf_core::emoji_sequence`]).
+pub const SEQUENCE: &str = "LimarePDF can't add this emoji yet: flags, skin tones, keycaps and \
+                            joined emoji aren't supported";
 /// How long that note shows, in seconds.
 const NOTE_SECS: f64 = 3.0;
 /// The name screen readers give the editor.
@@ -62,6 +67,8 @@ impl Look {
 
 /// New text being typed on the page (the Add text tool).
 pub struct PageText {
+    /// The tab's editor ids ([`crate::editor::Editor::scope`]).
+    scope: egui::Id,
     pub page: usize,
     /// The left end of the first line's baseline, in displayed-page points (y down).
     pub at: (f32, f32),
@@ -93,38 +100,54 @@ fn typable(c: char, font: FontChoice) -> bool {
 
 /// `s` without the characters that can't be typed in `font` (tabs become spaces, carriage
 /// returns go, and in a `single` line, line breaks become spaces), and the first one
-/// refused.
-fn keep_typable(s: &str, single: bool, font: FontChoice) -> (String, Option<char>) {
-    let mut refused = None;
-    let kept = s
+/// refused. Each character as readers see it (a grapheme cluster) is kept or left out
+/// whole, so an emoji sequence goes whole rather than leave a part that says something
+/// else (a thumb without its skin tone).
+fn keep_typable(s: &str, single: bool, font: FontChoice) -> (String, Option<String>) {
+    let s: String = s
         .chars()
         .filter_map(|c| match c {
             '\r' => None,
             '\t' => Some(' '),
             '\n' if single => Some(' '),
-            c if typable(c, font) => Some(c),
-            _ => {
-                refused = refused.or(Some(c));
-                None
-            }
+            c => Some(c),
         })
         .collect();
+    let (mut kept, mut refused) = (String::new(), None);
+    for cluster in s.graphemes(true) {
+        if !emoji_sequence(cluster) && cluster.chars().all(|c| typable(c, font)) {
+            kept.push_str(cluster);
+        } else {
+            refused = refused.or_else(|| Some(cluster.to_string()));
+        }
+    }
     (kept, refused)
 }
 
-/// The note at the caret of a text editor for `c`, refused in `font`: the font is named
-/// when an installed font that has `c` could write it (Chinese in Helvetica, or what an
-/// installed family lacks), as choosing another font may help.
-pub fn note(font: FontChoice, c: char) -> String {
-    if !installed_could_write(c) {
-        REFUSED.to_string()
+/// The note at the caret of a text editor for `refused`, a character (grapheme cluster)
+/// refused in `font`: the font is named when an installed font that has it could write it
+/// (Chinese in Helvetica, or what an installed family lacks), as choosing another font may
+/// help.
+pub fn note(font: FontChoice, refused: &str) -> String {
+    if emoji_sequence(refused) || !refused.chars().all(installed_could_write) {
+        fixed_note(refused).to_string()
     } else if font.is_standard() {
         format!(
             "{} can't write this character; choose an installed font that has it",
             font.family_name()
         )
     } else {
-        limarepdf_core::refusal(font, &c.to_string())
+        limarepdf_core::refusal(font, refused)
+    }
+}
+
+/// The note at the caret for `refused` where the font can't be chosen (text boxes and
+/// stamps, set in Helvetica): no font is pointed to.
+pub fn fixed_note(refused: &str) -> &'static str {
+    if emoji_sequence(refused) {
+        SEQUENCE
+    } else {
+        REFUSED
     }
 }
 
@@ -155,8 +178,9 @@ pub struct Taken {
     pub undo: bool,
     /// Ctrl+Y or Ctrl+Shift+Z.
     pub redo: bool,
-    /// A character that can't be written was typed or pasted, and left out: the first.
-    pub refused: Option<char>,
+    /// A character that can't be written was typed or pasted, and left out: the first (a
+    /// grapheme cluster).
+    pub refused: Option<String>,
 }
 
 /// Take this frame's typing in hand before the editor with the keyboard sees it: what
@@ -174,6 +198,17 @@ pub fn take_typing(ui: &egui::Ui, single: bool, styles: bool, font: FontChoice) 
             t.bold = i.consume_key(egui::Modifiers::COMMAND, egui::Key::B);
             t.italic = i.consume_key(egui::Modifiers::COMMAND, egui::Key::I);
         }
+    });
+    t.refused = leave_out_untypable(ui, single, font);
+    t
+}
+
+/// Leave what can't be written in `font` out of this frame's typing, before the editor
+/// with the keyboard sees it (see [`keep_typable`]). Returns the first character left out
+/// (a grapheme cluster). The editor keeps its own Ctrl+Z, for plain text with no styles.
+pub fn leave_out_untypable(ui: &egui::Ui, single: bool, font: FontChoice) -> Option<String> {
+    let mut refused = None;
+    ui.input_mut(|i| {
         for e in &mut i.events {
             let s = match e {
                 egui::Event::Text(s)
@@ -183,10 +218,10 @@ pub fn take_typing(ui: &egui::Ui, single: bool, styles: bool, font: FontChoice) 
             };
             let (kept, gone) = keep_typable(s, single, font);
             *s = kept;
-            t.refused = t.refused.or(gone);
+            refused = refused.take().or(gone);
         }
     });
-    t
+    refused
 }
 
 /// Take `text`, typed in the editor `id`, back or forward a step of `history` when `t`
@@ -216,8 +251,41 @@ pub fn selection(ctx: &egui::Context, id: egui::Id) -> Option<(usize, usize)> {
     Some((r.secondary.index.0, r.primary.index.0))
 }
 
+/// Where what is selected in a text box is noted while it has the keyboard ([`held`]).
+const HELD: &str = "held-selection";
+
+/// What the inspector's style controls change in the text box `id`: what is selected
+/// there. egui keeps only the caret of a box without the keyboard, so while a list, the
+/// size box or the colour picker has it, this is what was selected when the box last had
+/// it; [`give_back`] selects that again.
+pub fn held(ctx: &egui::Context, id: egui::Id) -> Option<(usize, usize)> {
+    let note = id.with(HELD);
+    if ctx.memory(|m| m.has_focus(id)) {
+        let sel = selection(ctx, id);
+        ctx.data_mut(|d| match sel {
+            Some(s) => {
+                d.insert_temp(note, s);
+            }
+            None => d.remove::<(usize, usize)>(note),
+        });
+        sel
+    } else {
+        ctx.data(|d| d.get_temp(note))
+            .or_else(|| selection(ctx, id))
+    }
+}
+
+/// Give the text box `id` the keyboard back with what was selected in it ([`held`]).
+pub fn give_back(ctx: &egui::Context, id: egui::Id) {
+    if let Some(sel) = ctx.data(|d| d.get_temp(id.with(HELD))) {
+        select(ctx, id, sel);
+    }
+    ctx.memory_mut(|m| m.request_focus(id));
+}
+
 /// Select the characters `sel` (from the anchor to the caret) in the text editor `id`.
 pub fn select(ctx: &egui::Context, id: egui::Id, sel: (usize, usize)) {
+    ctx.data_mut(|d| d.insert_temp(id.with(HELD), sel));
     if let Some(mut st) = egui::TextEdit::load_state(ctx, id) {
         let range = egui::text::CCursorRange::two(
             egui::text::CCursor::new(sel.0),
@@ -226,6 +294,38 @@ pub fn select(ctx: &egui::Context, id: egui::Id, sel: (usize, usize)) {
         st.cursor.set_char_range(Some(range));
         st.store(ctx, id);
     }
+}
+
+/// Where the text box given the keyboard back by [`hand_back`] is noted, for a frame.
+const HANDED_BACK: &str = "typing-handed-back";
+
+/// Give the text box `id` the keyboard back in the middle of its typing (after a change
+/// in the inspector, say), keeping what Ctrl+Z can take back there.
+pub fn hand_back(ctx: &egui::Context, id: egui::Id) {
+    ctx.memory_mut(|m| m.request_focus(id));
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(HANDED_BACK), id));
+}
+
+/// Start the typing history of a text box that has just got the keyboard afresh, unless
+/// it was handed back ([`hand_back`]); `before` had the keyboard last frame. Returns what
+/// has it now. What was typed in a box before was kept in the document when the box was
+/// left, where Undo takes it back, so Ctrl+Z in a box never brings back text typed in
+/// another document, field or comment, or text the document has since undone.
+pub fn fresh_history(ctx: &egui::Context, before: Option<egui::Id>) -> Option<egui::Id> {
+    let now = ctx.memory(|m| m.focused());
+    let note = egui::Id::new(HANDED_BACK);
+    let handed = ctx.data_mut(|d| {
+        let id = d.get_temp::<egui::Id>(note);
+        d.remove::<egui::Id>(note);
+        id
+    });
+    if let Some(id) = now.filter(|&id| now != before && handed != Some(id)) {
+        if let Some(mut st) = egui::TextEdit::load_state(ctx, id) {
+            st.clear_undoer();
+            st.store(ctx, id);
+        }
+    }
+    now
 }
 
 /// The note at the caret about a refused character, for a few seconds after: since when,
@@ -544,9 +644,10 @@ pub fn field(
 impl PageText {
     /// New text starting at `at` (the baseline's left end, page points) on `page`, typed
     /// in `look`.
-    pub fn new(page: usize, at: (f32, f32), look: Look) -> Self {
+    pub fn new(scope: egui::Id, page: usize, at: (f32, f32), look: Look) -> Self {
         let text = Styled::plain("", look.style());
         Self {
+            scope,
             page,
             at,
             history: History::new(&text),
@@ -560,7 +661,7 @@ impl PageText {
 
     /// The editor's id.
     pub fn id(&self) -> egui::Id {
-        egui::Id::new(("page-text", self.page))
+        self.scope.with(("page-text", self.page))
     }
 
     /// Whether there is anything to add.
@@ -597,7 +698,7 @@ impl PageText {
                 self.text.italic(sel);
             }
             if let Some(c) = t.refused {
-                self.refused.mark(&ctx, note(font, c));
+                self.refused.mark(&ctx, note(font, &c));
             }
         }
         let text = &self.text;
@@ -649,8 +750,12 @@ impl PageText {
             on_grip = grab.contains_pointer();
         }
         self.refused.show(&ctx, &f.out, id);
+        if self.fresh {
+            // Nothing selected yet: none of an earlier text's selection held.
+            ctx.data_mut(|d| d.remove::<(usize, usize)>(id.with(HELD)));
+        }
         if self.fresh || (self.refocus && settled && !edit.has_focus()) {
-            edit.request_focus();
+            give_back(&ctx, id);
             let fresh = std::mem::take(&mut self.fresh);
             self.refocus = false;
             if fresh {
@@ -748,36 +853,47 @@ mod tests {
         );
         assert_eq!(
             keep_typable("Seal\r\n中\tfish", false, sans),
-            ("Seal\n fish".into(), Some('中'))
+            ("Seal\n fish".into(), Some("中".into()))
         );
         assert_eq!(
             keep_typable("中文", false, sans),
-            (String::new(), Some('中'))
+            (String::new(), Some("中".into()))
         );
         // Right-to-left scripts aren't written yet, though the face has Hebrew.
         assert_eq!(
             keep_typable("שלום", false, sans),
-            (String::new(), Some('ש'))
+            (String::new(), Some("ש".into()))
         );
         // In a single line, line breaks become spaces.
         assert_eq!(
             keep_typable("Seal\r\nfish", true, sans),
             ("Seal fish".into(), None)
         );
-        // The note points to installed fonts for what one could write, not for
-        // right-to-left or shaped scripts, emoji or control characters.
+        // The note points to installed fonts for what one could write (single emoji too),
+        // not for right-to-left or shaped scripts, emoji sequences or control characters.
         assert_eq!(
-            note(sans, '中'),
+            note(sans, "中"),
             "Helvetica can't write this character; choose an installed font that has it"
         );
         let times = FontChoice::from_name("Times-Bold");
         assert_eq!(
-            note(times, '한'),
+            note(times, "한"),
             "Times can't write this character; choose an installed font that has it"
         );
-        for c in ['ש', 'क', '😀', '\u{7}'] {
+        assert_eq!(
+            note(sans, "😀"),
+            "Helvetica can't write this character; choose an installed font that has it"
+        );
+        for c in ["ש", "क", "\u{7}"] {
             assert_eq!(note(sans, c), REFUSED, "{c:?}");
         }
+        for s in ["👍🏽", "🇬🇧", "👨\u{200D}👩"] {
+            assert_eq!(note(sans, s), SEQUENCE, "{s:?}");
+        }
+        // Where the font can't be chosen, none is pointed to.
+        assert_eq!(fixed_note("中"), REFUSED);
+        assert_eq!(fixed_note("😀"), REFUSED);
+        assert_eq!(fixed_note("🇬🇧"), SEQUENCE);
     }
 
     fn installed(name: &str) -> FontChoice {
@@ -792,12 +908,28 @@ mod tests {
         let caveat = installed("Caveat");
         assert_eq!(
             keep_typable("Жук Ωmega", false, caveat),
-            ("Жук mega".into(), Some('Ω'))
+            ("Жук mega".into(), Some("Ω".into()))
         );
         assert_eq!(
-            note(caveat, 'Ω'),
+            note(caveat, "Ω"),
             "Caveat has no \"Ω\"; choose another font"
         );
+        // Single emoji in a font with their outlines; one it draws only in colour is
+        // refused, and a sequence goes whole though the font has every part.
+        let emoji = installed("Limare Emoji Test");
+        assert_eq!(
+            keep_typable("Seal 😀😎 👍🏽 fish", false, emoji),
+            ("Seal 😀  fish".into(), Some("😎".into()))
+        );
+        assert_eq!(
+            note(emoji, "😎"),
+            "Limare Emoji Test has no \"😎\"; choose another font"
+        );
+        assert_eq!(
+            keep_typable("👍🏽👍", false, emoji),
+            ("👍".into(), Some("👍🏽".into()))
+        );
+        assert_eq!(note(emoji, "👍🏽"), SEQUENCE);
         // Ctrl+B and Ctrl+I switch only to faces the family has.
         let bold = switched(caveat, true, false);
         assert!(bold.bold && !bold.italic);

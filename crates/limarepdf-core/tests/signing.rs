@@ -25,7 +25,7 @@ fn unlocked(name: &str) -> UnlockedId {
     let _ = std::fs::remove_dir_all(&dir);
     let store = IdStore::new(dir.join("ids"));
     let file = std::fs::read(data_dir().join("ids").join(format!("{name}.p12"))).unwrap();
-    let id = store.import(&file, PASSWORD, None).unwrap();
+    let id = store.import(&file, PASSWORD, None).unwrap().id;
     let u = store.unlock(&id, PASSWORD).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
     u
@@ -56,7 +56,7 @@ fn czech() -> &'static UnlockedId {
             name: "Šárka Dvořák".into(),
             ..NewId::default()
         };
-        let id = store.create(&new, PASSWORD).unwrap();
+        let id = store.create(&new, PASSWORD).unwrap().id;
         let u = store.unlock(&id, PASSWORD).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         u
@@ -302,6 +302,7 @@ fn a_picture_signature_is_drawn_beside_the_text() {
     r.art = Some(SignArt::Picture {
         bytes: &png,
         clear_paper: false,
+        crop: None,
     });
     let s = sign(&base_pdf(), &r);
     newest_is_good(&s.bytes, rsa());

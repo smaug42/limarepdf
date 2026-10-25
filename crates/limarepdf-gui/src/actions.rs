@@ -24,6 +24,9 @@ pub enum Act {
     NewFromImages,
     Save,
     SaveAs,
+    /// Read the document's file again, as it now is on disk, after asking when there are
+    /// unsaved changes.
+    Reload,
     ExportImages,
     ExportText,
     Print,
@@ -163,6 +166,112 @@ pub enum Act {
     About,
 }
 
+impl Act {
+    /// Whether the command uses the document as it is: changes, saves, prints, exports or
+    /// signs it, or asks a question about it. What is being typed goes into the document
+    /// first (BUG-01). Commands that only show something, open a section of the inspector
+    /// or choose a tool leave the typing as it is; closing asks about it.
+    pub fn uses_document(self) -> bool {
+        match self {
+            Act::Save
+            | Act::SaveAs
+            | Act::Reload
+            | Act::ExportText
+            | Act::Print
+            | Act::PrintSelection
+            | Act::SaveSelection
+            | Act::Undo
+            | Act::Redo
+            | Act::Mark(_)
+            | Act::MarkRedact
+            | Act::MarkResultsRedact
+            | Act::ApplyRedactions
+            | Act::FinishSigning
+            | Act::RemoveHidden
+            | Act::DeleteSelection
+            | Act::MoveText
+            | Act::ReplaceImage
+            | Act::DeleteObject
+            | Act::Nudge(..)
+            | Act::SignDigital
+            | Act::Certify
+            | Act::DigitalPlaced
+            | Act::FlattenAnnots
+            | Act::ResetForm
+            | Act::FlattenForm
+            | Act::RotR
+            | Act::RotL
+            | Act::Delete
+            | Act::RemoveBlank
+            | Act::Extract
+            | Act::Blank
+            | Act::InsertImages
+            | Act::Merge => true,
+            Act::Open
+            | Act::OpenRecent(_)
+            | Act::ClearRecent
+            | Act::NewFromImages
+            | Act::ExportImages
+            | Act::CloseTab
+            | Act::ToggleRecovery
+            | Act::ShowRecoveryFile
+            | Act::Quit
+            | Act::Copy
+            | Act::SelectAllText
+            | Act::MarkColor { .. }
+            | Act::CommentName
+            | Act::CopyObjectText
+            | Act::EditObjectText
+            | Act::SignWith(_)
+            | Act::CreateSign(_)
+            | Act::Escape
+            | Act::Find
+            | Act::ZoomIn
+            | Act::ZoomOut
+            | Act::FitWidth
+            | Act::Actual
+            | Act::NextPage
+            | Act::PrevPage
+            | Act::FirstPage
+            | Act::LastPage
+            | Act::Layout(_)
+            | Act::ToggleCover
+            | Act::ToggleSide
+            | Act::PagesView
+            | Act::SearchView
+            | Act::Bookmarks
+            | Act::Comments
+            | Act::Signatures
+            | Act::SignatureDetails(_)
+            | Act::SignedVersion(_)
+            | Act::TrustedCertificates
+            | Act::DigitalIds
+            | Act::ToggleInspector
+            | Act::ToggleDock
+            | Act::ToggleHidden
+            | Act::ToggleFields
+            | Act::NextField
+            | Act::PrevField
+            | Act::ClearField
+            | Act::Theme(_)
+            | Act::PageColours(_)
+            | Act::TogglePicturesToo
+            | Act::Palette
+            | Act::Tool(_)
+            | Act::Crop
+            | Act::Split
+            | Act::PageLabels
+            | Act::HeaderFooter
+            | Act::Watermark
+            | Act::Props
+            | Act::Security
+            | Act::Scans
+            | Act::Ocr
+            | Act::About => false,
+        }
+    }
+}
+
 /// Where a command is listed in the menu and the palette.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Group {
@@ -204,6 +313,8 @@ impl Group {
 pub struct Ctx {
     /// A document is open.
     pub doc: bool,
+    /// The document was opened from or saved to a file.
+    pub file: bool,
     /// A background job (OCR, optimising, exporting, printing) is running.
     pub busy: bool,
     pub can_undo: bool,
@@ -283,6 +394,9 @@ fn doc(c: &Ctx) -> bool {
 }
 fn idle(c: &Ctx) -> bool {
     c.doc && !c.busy
+}
+fn file(c: &Ctx) -> bool {
+    c.file && !c.busy
 }
 fn undo(c: &Ctx) -> bool {
     c.can_undo
@@ -383,6 +497,16 @@ pub static ACTIONS: &[Action] = &[
         group: Group::File,
         label: "Save As…",
         keys: &[k(CS, Key::S)],
+        ..BASE
+    },
+    Action {
+        act: Act::Reload,
+        group: Group::File,
+        label: "Reload from disk",
+        icon: icon::ARROWS_CLOCKWISE,
+        enabled: file,
+        hint: "Reads the file again as it now is, after asking when there are unsaved \
+               changes, which reloading loses",
         ..BASE
     },
     Action {
@@ -1205,6 +1329,8 @@ pub static ACTIONS: &[Action] = &[
         sep: true,
         label: "Append PDFs…",
         icon: icon::STACK_PLUS,
+        // Files are read in the background, one append at a time.
+        enabled: idle,
         ..BASE
     },
     Action {
@@ -1265,7 +1391,7 @@ pub static ACTIONS: &[Action] = &[
         label: "Flatten annotations…",
         enabled: |c| c.doc && !c.busy,
         hint: "Make comments, notes, highlights and drawings part of the pages, as they \
-               look now, so they can't be changed or removed. Can be undone.",
+               look now, so they are no longer comments. Can be undone.",
         ..BASE
     },
     Action {
@@ -1285,7 +1411,7 @@ pub static ACTIONS: &[Action] = &[
         icon: icon::SIGNATURE,
         enabled: doc_idle,
         hint: "Draw the signatures, dates, ticks and other items put down with the Sign \
-               tool into the pages, so they can no longer be moved or removed.",
+               tool into the pages, so they can no longer be moved or removed as items.",
         ..BASE
     },
     Action {

@@ -84,6 +84,11 @@ enum Cmd {
         inputs: Vec<PathBuf>,
         #[arg(short, long)]
         output: PathBuf,
+        /// Draw the form fields of the second and later inputs onto their pages with their
+        /// answers (they can no longer be filled in). Merge can't combine forms, so it
+        /// refuses inputs after the first with form fields unless this is given
+        #[arg(long)]
+        flatten_forms: bool,
     },
     /// Split into parts of N pages (out-dir/<stem>-001.pdf, ...) or at bookmarks (out-dir/<stem>-001 Title.pdf, ...)
     Split {
@@ -95,6 +100,9 @@ enum Cmd {
         bookmarks: Option<usize>,
         #[arg(long)]
         out_dir: PathBuf,
+        /// Replace files already at the parts' names; without it nothing is written then
+        #[arg(long)]
+        overwrite: bool,
         #[arg(long)]
         password: Option<String>,
     },
@@ -533,8 +541,7 @@ enum Cmd {
         #[arg(long)]
         password: Option<String>,
     },
-    /// Render pages to image files: out-dir/<stem>-<page>.png (or .jpg), replacing files
-    /// of the same name
+    /// Render pages to image files: out-dir/<stem>-<page>.png (or .jpg)
     Render {
         input: PathBuf,
         #[arg(long, default_value = "all")]
@@ -549,6 +556,9 @@ enum Cmd {
         quality: u8,
         #[arg(long)]
         out_dir: PathBuf,
+        /// Replace files already at the images' names; without it nothing is written then
+        #[arg(long)]
+        overwrite: bool,
         #[arg(long)]
         password: Option<String>,
     },
@@ -928,7 +938,7 @@ enum FormCmd {
         /// A JSON object of values, as `limarepdf-cli form list --json` prints them
         #[arg(long, value_name = "FILE")]
         values: Option<PathBuf>,
-        /// Then flatten the form, so the values can't be changed
+        /// Then flatten the form, so the fields can no longer be filled in
         #[arg(long)]
         flatten: bool,
     },
@@ -937,8 +947,8 @@ enum FormCmd {
         #[command(flatten)]
         io: Io,
     },
-    /// Draw the fields into the pages as they look now and remove them, so the values
-    /// can no longer be changed
+    /// Draw the fields into the pages as they look now and remove them, so they can no
+    /// longer be filled in
     Flatten {
         #[command(flatten)]
         io: Io,
@@ -979,8 +989,8 @@ enum AnnotCmd {
         #[arg(long)]
         author: Option<String>,
     },
-    /// Draw the annotations into the pages as they look now and remove them, so they can
-    /// no longer be changed. Links and form fields are kept
+    /// Draw the annotations into the pages as they look now and remove them, so they are
+    /// no longer annotations (they become page content). Links and form fields are kept
     Flatten {
         #[command(flatten)]
         io: Io,
@@ -2114,6 +2124,14 @@ fn choose_password(file: &Option<PathBuf>, prompt: &str) -> Result<Zeroizing<Str
     Ok(p)
 }
 
+/// Says on stderr what didn't fully work with an ID kept (made, imported or removed):
+/// the ID's change is done, so the command still succeeds.
+fn id_warnings(warnings: &[String]) {
+    for w in warnings {
+        eprintln!("warning: {w}");
+    }
+}
+
 /// The facts about an ID's certificate, indented under its heading.
 fn id_details(id: &DigitalId, clean: &dyn Fn(&str) -> String) -> Result<()> {
     let c = &id.cert;
@@ -2236,14 +2254,21 @@ fn run_id(cmd: IdCmd) -> Result<()> {
                     limarepdf_core::MIN_PASSWORD
                 ),
             )?;
-            let id = saved(store.create(&new, &password))?;
+            let made = saved(store.create(&new, &password))?;
+            let id = &made.id;
             out!(
-                "Made the digital ID \"{}\" ({}), in {}. It is the default for signing.",
+                "Made the digital ID \"{}\" ({}), in {}.{}",
                 clean(id.cert.display_name()),
                 id.name,
-                id.path.display()
+                id.path.display(),
+                if id.default {
+                    " It is the default for signing."
+                } else {
+                    ""
+                }
             );
-            id_details(&id, &clean)?;
+            id_warnings(&made.warnings);
+            id_details(id, &clean)?;
             out!("");
             out!(
                 "Keep the password safe: LimarePDF can't recover it, and without it the ID can't \
@@ -2274,14 +2299,21 @@ fn run_id(cmd: IdCmd) -> Result<()> {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
             let password = read_password(&password_file, &format!("Password of {file_name}: "))?;
-            let id = saved(store.import(&bytes, &password, name.as_deref()))?;
+            let made = saved(store.import(&bytes, &password, name.as_deref()))?;
+            let id = &made.id;
             out!(
-                "Imported the digital ID \"{}\" ({}), in {}. It is the default for signing.",
+                "Imported the digital ID \"{}\" ({}), in {}.{}",
                 clean(id.cert.display_name()),
                 id.name,
-                id.path.display()
+                id.path.display(),
+                if id.default {
+                    " It is the default for signing."
+                } else {
+                    ""
+                }
             );
-            id_details(&id, &clean)?;
+            id_warnings(&made.warnings);
+            id_details(id, &clean)?;
             out!("");
             out!(
                 "It keeps its password, now with LimarePDF's own encryption. {} still holds the ID: \
@@ -2343,7 +2375,7 @@ fn run_id(cmd: IdCmd) -> Result<()> {
                 }
                 "cer" | "crt" | "der" => {
                     saved(
-                        std::fs::write(&output, &id.cert.der)
+                        limarepdf_core::write_file(&output, &id.cert.der)
                             .with_context(|| format!("writing {}", output.display())),
                     )?;
                     out!(
@@ -2391,8 +2423,9 @@ fn run_id(cmd: IdCmd) -> Result<()> {
                     return Ok(());
                 }
             }
-            saved(store.remove(&id))?;
+            let warnings = saved(store.remove(&id))?;
             out!("Removed the digital ID \"{label}\" ({}).", id.name);
+            id_warnings(&warnings);
         }
     }
     Ok(())
@@ -2404,29 +2437,10 @@ fn trust_path(explicit: &Option<PathBuf>) -> Result<PathBuf> {
     )
 }
 
-/// The trust list for checking: an explicit file must load; LimarePDF's own may be missing or
-/// unusable, which leaves every signer unconfirmed, with a warning.
-/// Whether `a` and `b` name the same file: the same path once links are followed, or on Unix
-/// the same device and inode, as a hard link is.
-fn same_file(a: &Path, b: &Path) -> bool {
-    if a.canonicalize()
-        .is_ok_and(|a| b.canonicalize().is_ok_and(|b| a == b))
-    {
-        return true;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if let (Ok(a), Ok(b)) = (std::fs::metadata(a), std::fs::metadata(b)) {
-            return a.dev() == b.dev() && a.ino() == b.ino();
-        }
-    }
-    false
-}
-
 /// Refuses an `output` that is one of the `inputs`, by any path or link to it, so the input is
 /// never changed.
 fn not_an_input(inputs: &[impl AsRef<Path>], output: &Path) -> Result<()> {
+    use limarepdf_core::disk::same_file;
     if let Some(input) = inputs.iter().find(|i| same_file(i.as_ref(), output)) {
         bail!(
             "{} is the input {}; the result must be saved to another file, as the input is never \
@@ -2438,6 +2452,35 @@ fn not_an_input(inputs: &[impl AsRef<Path>], output: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A command writing several files never replaces one silently (BUG-05): with anything at
+/// one of `files` already, it is refused before anything is written, unless `overwrite`.
+fn not_taken(files: &[PathBuf], overwrite: bool) -> Result<()> {
+    const SHOWN: usize = 5;
+    let taken = limarepdf_core::existing(files);
+    if overwrite || taken.is_empty() {
+        return Ok(());
+    }
+    let mut names: Vec<String> = taken
+        .iter()
+        .take(SHOWN)
+        .map(|p| display_line(&p.display().to_string(), 300))
+        .collect();
+    if taken.len() > SHOWN {
+        names.push(format!("and {} more", taken.len() - SHOWN));
+    }
+    let (what, it) = match taken.len() {
+        1 => ("a file is".to_string(), "it"),
+        n => (format!("{n} files are"), "them"),
+    };
+    bail!(
+        "{what} already there: {}. Nothing was written; choose another --out-dir, or add \
+         --overwrite to replace {it}",
+        names.join(", ")
+    );
+}
+
+/// The trust list for checking: an explicit file must load; LimarePDF's own may be missing or
+/// unusable, which leaves every signer unconfirmed, with a warning.
 fn trust_for_checking(explicit: &Option<PathBuf>) -> Result<TrustList> {
     let list = match (explicit, TrustList::default_path()) {
         (Some(p), _) if !p.exists() => bail!("there is no trust list at {}", p.display()),
@@ -2767,21 +2810,55 @@ fn run(cmd: Cmd) -> Result<()> {
                 ..Default::default()
             })
         })?,
-        Cmd::Merge { inputs, output } => {
+        Cmd::Merge {
+            inputs,
+            output,
+            flatten_forms,
+        } => {
             not_an_input(&inputs, &output)?;
-            let docs = inputs
+            let mut docs = inputs
                 .par_iter()
                 .map(|p| open(p, &None))
                 .collect::<Result<Vec<_>>>()?;
+            // The first input's form is kept; the others' fields can't be combined with it,
+            // and answers with no drawing of their own would show blank (BUG-19).
+            let mut drawn = Vec::new();
+            for (p, d) in inputs.iter().zip(&mut docs).skip(1) {
+                if d.form_fields().is_empty() {
+                    continue;
+                }
+                let name = shown(&p.display().to_string());
+                if !flatten_forms {
+                    bail!(
+                        "{name} has form fields, which merge can't keep fillable. Give \
+                         --flatten-forms to draw them onto its pages with their answers (they \
+                         can no longer be filled in). Nothing was written."
+                    );
+                }
+                let lost = d.undrawable_fields();
+                if !lost.is_empty() {
+                    bail!(
+                        "LimarePDF can't draw the answers of {} in {name}, so --flatten-forms \
+                         would lose them. Nothing was written.",
+                        limarepdf_core::quoted_list(&lost)
+                    );
+                }
+                d.flatten_form(None)?;
+                drawn.push(name);
+            }
             let mut m = Pdf::merge(docs)?;
             saved(m.save(&output))?;
             out!("wrote {} ({} pages)", output.display(), m.page_count());
+            for name in drawn {
+                out!("drew the form fields of {name} onto its pages");
+            }
         }
         Cmd::Split {
             input,
             every,
             bookmarks,
             out_dir,
+            overwrite,
             password,
         } => {
             let p = open(&input, &password)?;
@@ -2794,10 +2871,11 @@ fn run(cmd: Cmd) -> Result<()> {
                 Some(level) => SplitBy::Bookmarks(level),
                 None => SplitBy::Every(every),
             };
+            let name = |n, title: Option<&str>| out_dir.join(part_file_name(&stem, n, title));
             // Asked first, so that nothing is written when the document can't be split.
-            p.split_parts(by)?;
+            not_taken(&p.split_files(by, name)?, overwrite)?;
             std::fs::create_dir_all(&out_dir)?;
-            let n = saved(p.split(by, |n, title| out_dir.join(part_file_name(&stem, n, title))))?;
+            let n = saved(p.split(by, name))?;
             out!("split into {n} files in {}", out_dir.display());
         }
         Cmd::Extract { io, pages } => run_edit(&io, |p| {
@@ -3374,6 +3452,7 @@ fn run(cmd: Cmd) -> Result<()> {
                 Some(b) => Some(SignArt::Picture {
                     bytes: b,
                     clear_paper: true,
+                    crop: None,
                 }),
                 None if style != SignStyle::Caveat => Some(SignArt::Typed { text: &name, style }),
                 None => None,
@@ -3396,7 +3475,8 @@ fn run(cmd: Cmd) -> Result<()> {
                 },
             )?;
             saved(limarepdf_core::write_file(&output, &signed.bytes))?;
-            store.set_default(&chosen)?;
+            // The PDF is written: a default that can't be kept is said apart from it.
+            let default = store.set_default(&chosen);
             let what = if certify.is_some() {
                 "Certified"
             } else {
@@ -3407,6 +3487,18 @@ fn run(cmd: Cmd) -> Result<()> {
                 limarepdf_core::display_line(&signed.field, 80),
                 output.display()
             );
+            if let Err(e) = default {
+                match e.downcast_ref::<limarepdf_core::NotConfirmed>() {
+                    Some(n) => eprintln!(
+                        "warning: your system couldn't confirm that the ID is now the default \
+                         for signing is safely on disk ({})",
+                        n.why
+                    ),
+                    None => eprintln!(
+                        "warning: the ID couldn't be kept as the default for signing: {e:#}"
+                    ),
+                }
+            }
             if signed.rewritten {
                 out!(
                     "The file's structure was damaged, or other PDF apps may show it \
@@ -3784,13 +3876,20 @@ fn run(cmd: Cmd) -> Result<()> {
             format,
             quality,
             out_dir,
+            overwrite,
             password,
         } => {
-            // As the app shows it (NoView annotations hidden, missing annotation drawings
-            // added), or the file as it is when the document reader can't open it.
-            let hp = match open(&input, &password).and_then(|mut p| p.render_snapshot()) {
-                Ok(bytes) => render::load(bytes, None)?,
-                Err(_) => render::load(std::fs::read(&input)?, password.as_deref())?,
+            // As the app shows it (NoView annotations hidden, missing annotation and field
+            // drawings added), or the file as it is when the document reader can't open it.
+            let (hp, pdf) = match open(&input, &password).and_then(|mut p| {
+                let bytes = p.render_snapshot()?;
+                Ok((bytes, p))
+            }) {
+                Ok((bytes, p)) => (render::load(bytes, None)?, Some(p)),
+                Err(_) => (
+                    render::load(std::fs::read(&input)?, password.as_deref())?,
+                    None,
+                ),
             };
             let n = render::Renderer::new(&hp).page_count();
             let idx = parse_page_range(&pages, n)?;
@@ -3803,11 +3902,27 @@ fn run(cmd: Cmd) -> Result<()> {
                 FormatArg::Png => render::ImageFormat::Png,
                 FormatArg::Jpeg => render::ImageFormat::Jpeg(quality),
             };
+            let files: Vec<PathBuf> = render::image_names(&idx, &stem, format)
+                .iter()
+                .map(|n| out_dir.join(n))
+                .collect();
+            not_taken(&files, overwrite)?;
             let t = std::time::Instant::now();
             saved(render::write_images(
                 &hp, &idx, dpi, format, &out_dir, &stem,
             ))?;
             out!("rendered {} page(s) in {:.2?}", idx.len(), t.elapsed());
+            let blank = pdf.map(|p| p.unshown_fields(&idx)).unwrap_or_default();
+            if !blank.is_empty() {
+                let (these, their) = match blank.len() {
+                    1 => ("this field is", "its value"),
+                    _ => ("these fields are", "their values"),
+                };
+                eprintln!(
+                    "warning: {these} empty in the images, because LimarePDF can't draw {their}: {}",
+                    limarepdf_core::quoted_list(&blank)
+                );
+            }
         }
     }
     Ok(())

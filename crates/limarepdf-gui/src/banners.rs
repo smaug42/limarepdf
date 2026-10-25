@@ -19,6 +19,8 @@ const LARGE_BYTES: u64 = 100_000_000;
 pub enum Kind {
     /// The document's digital signatures: being checked, or how they checked.
     Signatures,
+    /// Something else changed the file after LimarePDF last read or saved it.
+    ChangedOnDisk,
     /// The document was restored from a recovery copy.
     Recovered,
     /// A recovery copy made before content was removed couldn't be deleted.
@@ -77,6 +79,7 @@ impl Banner {
                 Tone::Bad => icon::SEAL_WARNING,
                 Tone::Neutral => icon::SEAL,
             },
+            Kind::ChangedOnDisk => icon::ARROWS_CLOCKWISE,
             Kind::Recovered => icon::LIFEBUOY,
             Kind::LeftoverCopy => icon::FILE_X,
             Kind::NoCopies => icon::WARNING_CIRCLE,
@@ -99,6 +102,7 @@ impl Banner {
     pub fn action(&self) -> Option<(&'static str, Act)> {
         match self.kind {
             Kind::Signatures => Some(("Signatures", Act::Signatures)),
+            Kind::ChangedOnDisk => Some(("Reload", Act::Reload)),
             Kind::Protected => Some(("Password security", Act::Security)),
             Kind::Redactions => Some(("Apply redactions…", Act::ApplyRedactions)),
             Kind::Signing => Some(("Finish signing…", Act::FinishSigning)),
@@ -127,6 +131,16 @@ pub fn recovered(time: &str, signed: bool) -> Banner {
         );
     }
     Banner::plain(Kind::Recovered, text)
+}
+
+/// The notice when another app or tab changed the file after LimarePDF last read or saved
+/// it (BUG-06).
+pub fn changed_on_disk() -> Banner {
+    Banner::plain(
+        Kind::ChangedOnDisk,
+        "The file was changed by another app or tab since LimarePDF opened or saved it. \
+         Reload to see it as it is now; saving asks before replacing it.",
+    )
 }
 
 /// The notice when a recovery copy of the document can't be written (`why`).

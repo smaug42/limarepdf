@@ -11,6 +11,11 @@ Print a document, save its pages as pictures, or save its text.
    are any), the copies, and **Print on** one side or both sides (flipped on the long or the short edge).
 3. Press **Print**.
 
+The dialog opens at once and fills in the printers when the system has listed them; until then it says it is
+looking for printers, and Cancel closes it. If the printing service doesn't answer within 10 seconds or can't
+list the printers, the dialog says why; with no printers set up, it says so. Either way, **Try again** looks once
+more (after adding a printer in the system's settings, say).
+
 Printing runs in the background. A page range LimarePDF can't read is reported under it, with what you typed kept.
 **Print as image** is under Advanced (see below). To print only some text, select it and right-click > Print
 selected text… (see [Reading and finding](reading-and-finding.md#print-or-save-just-the-selection)).
@@ -22,12 +27,14 @@ own engine, so a printout can differ from LimarePDF's screen. "Print as image" (
 LimarePDF at 300 dpi instead. Each job names the printer's default paper size (read with `lpoptions`), as other apps'
 jobs do: some printer setups print every page blurred when a job leaves it out. Form fields are drawn into the pages
 sent (those meant for printing), since some CUPS setups drop fields without drawing them; the open document keeps
-its form.
+its form. A job that CUPS doesn't take within 2 minutes, or doesn't confirm within 2 minutes after taking it, is
+stopped, with a message saying it may have been sent: check the printer's queue before printing again.
 
 **Windows** prints through the print spooler. LimarePDF draws each page at the printer's resolution, at most 600 dpi
 and at most 268 million pixels (A0 is drawn at about 415 dpi, which the printer scales up). A page prints at actual
 size, shrunk to the printable area when it is larger, centred, and turned when a landscape page meets portrait
-paper or the reverse.
+paper or the reverse. A job the spooler doesn't take can't be stopped: other background work (Append PDFs, OCR,
+exports) waits until it ends or LimarePDF is closed.
 
 When LimarePDF draws the pages, annotations not flagged for printing are left out.
 
@@ -56,10 +63,10 @@ one is an error that names the page, and a lower resolution works. Large page im
 bounds the memory a complex page takes but makes some pages slower to export
 ([details](rendering.md#large-drawings)).
 
-On the command line: `limarepdf-cli render --format png|jpeg`. Known limit of the command line: a filled form field
-with no drawing of its own (some apps leave drawing it to the reader) comes out empty in `limarepdf-cli render`'s
-images. The app draws such fields when it opens a file, so its exports show them, and printing draws them
-everywhere. To be fixed.
+On the command line: `limarepdf-cli render --format png|jpeg`. Like the app, it draws a filled form field that has
+no drawing of its own (some apps leave drawing it to the reader). A field whose text LimarePDF can't draw
+(characters beyond Latin, Greek and Cyrillic) comes out empty: the images are still written, with a warning naming
+those fields.
 
 ## Text
 

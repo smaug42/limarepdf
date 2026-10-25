@@ -68,13 +68,16 @@ pub use atomic::NotConfirmed;
 pub use blank::BLANK_TOLERANCE;
 pub use cms_check::CertInfo;
 pub use display::{display_line, display_text, local_date, local_time, quoted_list};
-pub use doc::{part_file_name, write_file, Info, Pdf, SplitBy};
+pub use doc::{existing, part_file_name, write_file, Info, Pdf, SplitBy};
 pub use edit::{PartFont, PathStyle, Shape, TextEdit, TextPart};
-pub use embed::{bundled_face, installed_could_write, liberation, refusal, writable, LIBERATION};
+pub use embed::{
+    bundled_face, emoji_sequence, installed_could_write, liberation, refusal, writable, LIBERATION,
+};
 pub use fonts::{winansi_byte, Family, FontChoice};
 pub use forms::{Field, FieldKind, FieldValue, Widget};
 pub use ids::{
-    password_problem, DigitalId, IdList, IdStore, NewId, UnlockedId, WrongPassword, MIN_PASSWORD,
+    password_problem, DigitalId, IdList, IdStore, NewId, Stored, UnlockedId, WrongPassword,
+    MIN_PASSWORD,
 };
 pub use imgs::{image_dimensions, picture_preview, ImageImport};
 pub use labels::{LabelRange, LabelStyle};
@@ -100,7 +103,8 @@ pub use sig_verify::{
     SigKind, SigStatus, SigWarning, SignatureReport, SigningTime, TimeSource, Timestamp,
 };
 pub use sign::{
-    sign_label, typed_signature, DateStyle, InkColor, Mark, SignArt, SignRole, SignStyle, SIGN_TEXT,
+    picture_view, sign_label, typed_signature, DateStyle, InkColor, Mark, SignArt, SignRole,
+    SignStyle, SIGN_TEXT,
 };
 pub use stamps::{stamp_wording, Stamp, StampColor, StampKind, StampPlace};
 pub use text::SearchHit;

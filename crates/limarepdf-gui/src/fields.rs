@@ -20,18 +20,28 @@ struct Focus {
 enum Edit {
     /// Shown with a ring; Space or Enter acts on it.
     Ring,
-    /// A text box over the field. `fresh` until it has taken the keyboard.
+    /// A text box over the field. `fresh` until it has taken the keyboard; `back` while a
+    /// dialog has it, to take it back when the dialog closes.
     Text {
         text: String,
         original: String,
         fresh: bool,
+        back: bool,
     },
     /// A choice's options in a list below the field; `text` is what's typed in an
     /// editable drop-down.
     Options { text: String, fresh: bool },
 }
 
-#[derive(Default)]
+/// The typing a text box kept as its field was left, until the change is made: given
+/// back if it is refused ([`FormUi::kept`]).
+struct Left {
+    name: String,
+    widget: usize,
+    text: String,
+    original: String,
+}
+
 pub struct FormUi {
     /// The document's fields, read again after every change.
     fields: Option<Vec<Field>>,
@@ -40,8 +50,26 @@ pub struct FormUi {
     /// Tint every field, and outline the required ones.
     pub highlight: bool,
     focus: Option<Focus>,
+    left: Option<Left>,
     /// Bring the focused field into view: set when the keyboard moves to it.
     scroll: bool,
+    /// The tab's editor ids ([`crate::editor::Editor::scope`]): a text box's id is this
+    /// with its field and widget.
+    pub scope: egui::Id,
+}
+
+impl Default for FormUi {
+    fn default() -> Self {
+        Self {
+            fields: None,
+            order: Vec::new(),
+            highlight: false,
+            focus: None,
+            left: None,
+            scroll: false,
+            scope: egui::Id::new("form"),
+        }
+    }
 }
 
 impl FormUi {
@@ -139,6 +167,7 @@ impl FormUi {
                 text: t.clone(),
                 original: t.clone(),
                 fresh: true,
+                back: false,
             },
             (FieldKind::Choice { .. }, v) if open => Edit::Options {
                 text: match v {
@@ -209,22 +238,55 @@ impl FormUi {
     }
 
     /// Keep what was typed in the field being left, when the keyboard moves on before its
-    /// text box has noticed, or before saving.
-    pub fn commit_typing(&mut self, acts: &mut Vec<Action>) {
-        let Some((fi, _)) = self.focused() else {
-            return;
-        };
-        if let Some(Focus {
+    /// text box has noticed, or before saving. Returns the value the field had, for
+    /// [`Self::uncommit`].
+    pub fn commit_typing(&mut self, acts: &mut Vec<Action>) -> Option<String> {
+        let (fi, _) = self.focused()?;
+        let Some(Focus {
             edit: Edit::Text { text, original, .. },
             ..
         }) = &mut self.focus
-        {
-            if text != original {
-                *original = text.clone();
-                let v = FieldValue::Text(text.clone());
-                acts.push(set(&self.fields.as_ref().unwrap()[fi], v));
-            }
+        else {
+            return None;
+        };
+        if text == original {
+            return None;
         }
+        let was = std::mem::replace(original, text.clone());
+        let v = FieldValue::Text(text.clone());
+        acts.push(set(&self.fields.as_ref().unwrap()[fi], v));
+        Some(was)
+    }
+
+    /// The field's typing is still to keep: what [`Self::commit_typing`] queued wasn't
+    /// made, and `original` is the value the field has.
+    pub fn uncommit(&mut self, original: String) {
+        if let Some(Focus {
+            edit: Edit::Text { original: o, .. },
+            ..
+        }) = &mut self.focus
+        {
+            *o = original;
+        }
+    }
+
+    /// The change queued for field `name` was made, or refused when not `ok`. Typing its
+    /// text box kept as the field was left and then refused goes back into the box, which
+    /// takes the keyboard back once the reason has been read (BUG-37).
+    pub fn kept(&mut self, name: &str, ok: bool) {
+        let Some(l) = self.left.take().filter(|l| !ok && l.name == name) else {
+            return;
+        };
+        self.focus = Some(Focus {
+            name: l.name,
+            widget: l.widget,
+            edit: Edit::Text {
+                text: l.text,
+                original: l.original,
+                fresh: false,
+                back: true,
+            },
+        });
     }
 
     /// What a click on (or Space over) a field does.
@@ -379,17 +441,20 @@ impl FormUi {
         };
         let field = f.clone();
         let Some(Focus {
+            widget,
             edit:
                 Edit::Text {
                     text,
                     original,
                     fresh,
+                    back,
                 },
             ..
         }) = &mut self.focus
         else {
             return;
         };
+        let id = self.scope.with(("field-text", &field.name, *widget));
         // The size the field is saved with, so typing looks like the result; a field that
         // fits its text to the box gets about what that gives.
         let size = if field.text_size > 0.0 {
@@ -408,7 +473,7 @@ impl FormUi {
         } else {
             egui::TextEdit::singleline(text)
         }
-        .id(egui::Id::new(("field-text", &field.name)))
+        .id(id)
         .font(egui::FontId::proportional(size))
         .desired_width(rect.width())
         .margin(egui::Margin::same(2))
@@ -426,7 +491,19 @@ impl FormUi {
             *fresh = false;
             return;
         }
+        let dialog = crate::dialogs::any_open(ui.ctx());
+        if *back && !dialog {
+            crate::page_text::hand_back(ui.ctx(), id);
+            *back = false;
+            return;
+        }
         if !out.lost_focus() {
+            return;
+        }
+        // A dialog took the keyboard (a command's question, or why the typing couldn't be
+        // kept): the typing stays until it closes.
+        if dialog {
+            *back = true;
             return;
         }
         // Tab is taken here, or `keys` would see it too and move on a second field. Esc,
@@ -440,7 +517,12 @@ impl FormUi {
             )
         });
         if text != original {
-            *original = text.clone();
+            self.left = Some(Left {
+                name: field.name.clone(),
+                widget: *widget,
+                text: text.clone(),
+                original: std::mem::replace(original, text.clone()),
+            });
             acts.push(set(&field, FieldValue::Text(text.clone())));
         }
         if tab {
@@ -479,7 +561,7 @@ impl FormUi {
         // keyboard would take it as a click (Space chooses one).
         let mut close =
             multi && !*fresh && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter));
-        let area = egui::Area::new(egui::Id::new(("field-options", &f.name)))
+        let area = egui::Area::new(self.scope.with(("field-options", &f.name)))
             .order(egui::Order::Foreground)
             .fixed_pos(rect.left_bottom())
             .show(ui.ctx(), |ui| {

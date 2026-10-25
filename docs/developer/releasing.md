@@ -12,6 +12,11 @@ How a release is made, for maintainers.
    - check the signature crates listed in [How it is built](architecture.md#signature-crates): if a pinned
      pre-release (`rsa`, `pkcs1`) has a final version, move to it; if RUSTSEC-2023-0071 has a fixed `rsa`, take it
      and remove the `--ignore` from the `audit` job in `ci.yml`; read any new advisory the `audit` job reports;
+   - take compatible dependency updates (`cargo update`, then the signing cross-checks with
+     `-- --ignored cross_check`); move to a new major version only as planned work. After a hayro upgrade, run the
+     two ignored transparency group tests (`non_isolated_group_blends_against_page_backdrop`,
+     `knockout_group_replaces_earlier_objects`); after an egui upgrade, check the workarounds that rely on egui's
+     internal ids, `dialogs::slider`'s number box, and whether winit now takes drops on Wayland;
    - check that the user guide's screenshots (`docs/images/`) still show the app as it is, and retake any that
      don't: a 1000×660 window in the light theme under a virtual X server, made-up documents and digital IDs only,
      cut down to the part the page is about.
@@ -28,7 +33,11 @@ How a release is made, for maintainers.
    the two run side by side. The `main` run is still worth having, because it refreshes the build cache that pull
    requests and tags start from.
 
-4. CI runs again for the tag. Its `release` job checks that the tag matches `Cargo.toml`, takes the release notes
+4. CI runs again for the tag. Its `release` job starts only once the `audit` job and every build have passed, so a
+   new advisory published since the pull request stops the release: fix it (an update, or an `--ignore` with its
+   reason in `ci.yml` and `docs/signatures.md` when it doesn't apply), then delete the tag
+   (`git push --delete origin vX.Y.Z`, `git tag -d vX.Y.Z`) and tag the fixed `main` again. It checks that the tag
+   matches `Cargo.toml`, takes the release notes
    from the matching `CHANGELOG.md` section, ends them with a link comparing the tag with the previous version tag,
    and creates a draft GitHub Release with the four archives, `SHA256SUMS`, and a GPG signature (`.asc`) for each.
    It also records a build attestation for every file.
@@ -43,8 +52,9 @@ release already there and fails.
 `.github/workflows/ci.yml` runs on pull requests, pushes to `main`, and `v*` tags. Each platform job runs the tests
 in the `ci-test` profile (`Cargo.toml`: optimised with overflow checks, as released, but without link-time
 optimisation, which every test executable would otherwise go through on its own), then builds the binaries with
-`--release` and packages
-`limarepdf-<version>-<platform>.tar.gz` (`.zip` on Windows), holding the binaries, the README, `CHANGELOG.md`, `docs/` and
+`--release` and packages (both with `--locked`: built from `Cargo.lock` exactly, the versions the `audit` job
+checked; a `Cargo.lock` out of date with `Cargo.toml` fails the job instead of being updated on the runner)
+`limarepdf-<version>-<platform>.tar.gz` (`.zip` on Windows), holding the binaries, the README, `CHANGELOG.md`, `SECURITY.md`, `docs/` and
 the licences. The archives are made on the runner because Actions artifacts lose Unix file permissions; on the
 Actions page each artifact therefore downloads as a zip with the archive inside.
 
@@ -71,7 +81,8 @@ users check with `gh attestation verify`.
 
 To try the release job without making a release, start the workflow by hand (Actions > ci > Run workflow) on a
 branch with "dry_run" ticked. It builds, signs and attests as a release would, then uploads the files as the
-`release-dry-run` artifact instead of creating a release. Its attestations are real but harmless: they name the
+`release-dry-run` artifact instead of creating a release. Like a release, it waits for the `audit` job: the run's
+graph shows `release` after `audit`, `build` and `macos-dmg`, and a failed audit skips it. Its attestations are real but harmless: they name the
 branch, not a tag.
 
 ## Package repositories

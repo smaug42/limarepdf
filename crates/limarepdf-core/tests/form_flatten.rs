@@ -315,3 +315,163 @@ fn flattens_values_drawn_elsewhere_and_ones_not_shown() {
     let b = ink(&mut p, 0).expect("the drawing kept");
     assert!(b[1] >= 29 && b[3] <= 51, "{b:?}");
 }
+
+/// How many dark pixels page `page` has in `r` (left, top, right, bottom, in points from
+/// the top left).
+fn dark_in(p: &mut Pdf, page: usize, r: [usize; 4]) -> usize {
+    let hp = render::load(p.render_snapshot().unwrap(), None).unwrap();
+    let bmp = Renderer::new(&hp).render(page, 1.0).unwrap();
+    let mut n = 0;
+    for y in r[1]..r[3] {
+        for x in r[0]..r[2] {
+            let i = (y * bmp.width + x) * 4;
+            n += usize::from(bmp.rgba[i..i + 3].iter().all(|&c| c < 128));
+        }
+    }
+    n
+}
+
+/// A filled form whose answers have no drawings of their own (the app that filled it left
+/// that to the reader), but for a radio button's: a text field `name`, a choice `pick`, a
+/// checkbox `agree` and radio buttons `size`.
+fn filled_without_drawings() -> Pdf {
+    let (mut p, ids) = doc(vec![
+        widget(dictionary! {
+            "FT" => "Tx", "T" => text("name"), "Rect" => rect(10.0, 150.0, 150.0, 20.0),
+            "V" => text("Ada Lovelace"),
+        }),
+        widget(dictionary! {
+            "FT" => "Ch", "Ff" => 1 << 17, "T" => text("pick"),
+            "Opt" => vec![text("First"), text("Second")],
+            "Rect" => rect(10.0, 100.0, 150.0, 20.0), "V" => text("Second"),
+        }),
+        widget(dictionary! {
+            "FT" => "Btn", "T" => text("agree"), "Rect" => rect(200.0, 150.0, 20.0, 20.0),
+            "V" => "Yes", "AS" => "Yes",
+        }),
+    ]);
+    let mark = |p: &mut Pdf, op: &str| {
+        let d = dictionary! {
+            "Type" => "XObject", "Subtype" => "Form", "BBox" => rect(0.0, 0.0, 20.0, 20.0),
+        };
+        p.doc
+            .add_object(lopdf::Stream::new(d, op.as_bytes().to_vec()))
+    };
+    let (on, off) = (mark(&mut p, "0 g 0 0 20 20 re f"), mark(&mut p, ""));
+    let size = p.doc.new_object_id();
+    let kids: Vec<Object> = [("S", 200.0, "S"), ("L", 240.0, "Off")]
+        .into_iter()
+        .map(|(state, x, shown)| {
+            let k = p.doc.add_object(widget(dictionary! {
+                "Parent" => size, "Rect" => rect(x, 100.0, 20.0, 20.0), "AS" => shown,
+                "AP" => dictionary! { "N" => dictionary! { state => on, "Off" => off } },
+            }));
+            place(&mut p, 0, k);
+            k.into()
+        })
+        .collect();
+    let field = dictionary! {
+        "FT" => "Btn", "Ff" => 1 << 15, "T" => text("size"), "V" => "S", "Kids" => kids,
+    };
+    p.doc.objects.insert(size, Object::Dictionary(field));
+    let form = p.doc.catalog().unwrap().get(b"AcroForm").unwrap();
+    let form = form.as_reference().unwrap();
+    let mut fields: Vec<Object> = ids.into_iter().map(Object::from).collect();
+    fields.push(size.into());
+    let d = p.doc.get_dictionary_mut(form).unwrap();
+    d.set("Fields", fields);
+    d.set("NeedAppearances", true);
+    p
+}
+
+/// BUG-19 (the fourth audit's A16): a filled form's pages added to another document, its
+/// fields drawn onto them first as Append asks, show its answers; the document's own
+/// fields, one of the same name among them, stay fillable.
+#[test]
+fn appended_forms_drawn_onto_their_pages_keep_their_answers() {
+    let mut incoming = filled_without_drawings();
+    assert!(incoming.undrawable_fields().is_empty());
+    let (mut p, _) = doc(vec![widget(dictionary! {
+        "FT" => "Tx", "T" => text("name"), "Rect" => rect(10.0, 150.0, 150.0, 20.0),
+    })]);
+    incoming.flatten_form(None).unwrap();
+    p.append(vec![incoming]).unwrap();
+    let mut p = Pdf::from_bytes(&p.to_bytes().unwrap(), None).unwrap();
+
+    let text = p.page_text(2);
+    assert!(
+        text.contains("Ada Lovelace") && text.contains("Second"),
+        "{text}"
+    );
+    // The ticked box and the chosen radio button, at y 30-50 and 80-100 from the top.
+    let tick = dark_in(&mut p, 2, [200, 30, 220, 50]);
+    assert!(tick > 20, "agree: {tick}");
+    assert!(dark_in(&mut p, 2, [202, 82, 218, 98]) > 200, "size S");
+    assert_eq!(dark_in(&mut p, 2, [242, 82, 258, 98]), 0, "size L");
+    assert_eq!(annots(&p, 2), 0);
+
+    let fields = p.form_fields();
+    assert_eq!(fields.len(), 1, "{fields:?}");
+    assert_eq!(fields[0].widgets[0].page, 0);
+    p.set_field("name", FieldValue::Text("Grace".into()))
+        .unwrap();
+    assert!(p.page_text(2).contains("Ada Lovelace"));
+}
+
+/// The answers flattening would lose, so it refuses, are named before anything is
+/// changed: text in characters LimarePDF can't write in a field yet, a radio button with
+/// no drawing.
+#[test]
+fn undrawable_answers_are_named_before_flattening() {
+    let (mut p, ids) = doc(vec![
+        widget(dictionary! {
+            "FT" => "Tx", "T" => text("name"), "Rect" => rect(10.0, 150.0, 150.0, 20.0),
+            "V" => utf16("日本語"),
+        }),
+        widget(dictionary! {
+            "FT" => "Btn", "Ff" => 1 << 15, "T" => text("size"),
+            "Rect" => rect(200.0, 100.0, 20.0, 20.0), "V" => "S", "AS" => "S",
+        }),
+        widget(dictionary! {
+            "FT" => "Tx", "T" => text("city"), "Rect" => rect(10.0, 100.0, 150.0, 20.0),
+            "V" => text("Oslo"),
+        }),
+    ]);
+    let before = p.clone().to_bytes().unwrap();
+    assert_eq!(p.undrawable_fields(), ["name", "size"]);
+    assert!(
+        p.clone().to_bytes().unwrap() == before,
+        "the document changed"
+    );
+    let e = p.flatten_form(None).unwrap_err().to_string();
+    assert!(e.contains("\"name\"") && e.contains("\"size\""), "{e}");
+    // Without them, nothing is lost.
+    p.doc.get_dictionary_mut(ids[0]).unwrap().remove(b"V");
+    p.doc.get_dictionary_mut(ids[1]).unwrap().set("AS", "Off");
+    assert!(p.undrawable_fields().is_empty());
+}
+
+/// Poppler reads the drawn answers on the appended pages too. Opt-in: needs `pdftotext`.
+#[test]
+#[ignore]
+fn cross_check_appended_answers_with_poppler() {
+    let mut incoming = filled_without_drawings();
+    incoming.flatten_form(None).unwrap();
+    let mut p = Pdf::new();
+    p.insert_blank(0, 300.0, 200.0).unwrap();
+    p.append(vec![incoming]).unwrap();
+    let path = std::env::temp_dir().join(format!("limarepdf-append-{}.pdf", std::process::id()));
+    std::fs::write(&path, p.to_bytes().unwrap()).unwrap();
+    let out = std::process::Command::new("pdftotext")
+        .args(["-f", "2", "-l", "2"])
+        .arg(&path)
+        .arg("-")
+        .output()
+        .expect("pdftotext");
+    std::fs::remove_file(&path).unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("Ada Lovelace") && text.contains("Second"),
+        "{text}"
+    );
+}

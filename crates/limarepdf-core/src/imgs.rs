@@ -56,10 +56,11 @@ pub(crate) struct Raster {
     pub orientation: Orientation,
 }
 
-/// Pixel size of a PNG, JPEG or TIFF file (the first page of a TIFF), as stored.
+/// Pixel size of a PNG, JPEG or TIFF file (the first page of a TIFF) as it is meant to be
+/// seen, after its EXIF or TIFF orientation.
 pub fn image_dimensions(bytes: &[u8]) -> Result<(u32, u32)> {
-    let (w, h, _) = header(bytes)?;
-    Ok((w, h))
+    let (w, h, o) = header(bytes)?;
+    Ok(if swaps_axes(o) { (h, w) } else { (w, h) })
 }
 
 /// A PNG, JPEG or TIFF file (its first image) decoded for showing on screen: width,
@@ -137,9 +138,8 @@ fn raw_rgba(w: u32, h: u32, space: &str, bpc: u8, data: &[u8], alpha: Option<&[u
 /// A picture's width and height in pixels as it is meant to be seen, after its EXIF
 /// orientation.
 pub(crate) fn decode_upright_size(bytes: &[u8]) -> Result<(f32, f32)> {
-    let (w, h, o) = header(bytes)?;
-    let (w, h) = (w as f32, h as f32);
-    Ok(if swaps_axes(o) { (h, w) } else { (w, h) })
+    let (w, h) = image_dimensions(bytes)?;
+    Ok((w as f32, h as f32))
 }
 
 /// Pixel size and orientation of a PNG, JPEG or TIFF file (the first page of a TIFF),
@@ -533,6 +533,17 @@ fn corners(o: Orientation) -> [(f32, f32); 3] {
     }
 }
 
+/// Where a point of a picture as it is seen (`u`, `v`: shares of its width and height, y
+/// down) is in the stored picture (shares of its width and height, y down).
+pub(crate) fn stored_point(o: Orientation, u: f32, v: f32) -> (f32, f32) {
+    let [tl, bl, br] = corners(o);
+    // Seen = top-left + s * (bottom-right - bottom-left) + t * (bottom-left - top-left), y
+    // up; those two steps are unit lengths along the axes, so this undoes it.
+    let (dx, dy) = (u - tl.0, 1.0 - v - tl.1);
+    let (across, down) = ((br.0 - bl.0, br.1 - bl.1), (bl.0 - tl.0, bl.1 - tl.1));
+    (across.0 * dx + across.1 * dy, down.0 * dx + down.1 * dy)
+}
+
 pub(crate) fn swaps_axes(o: Orientation) -> bool {
     use Orientation::*;
     matches!(o, Rotate90 | Rotate270 | Rotate90FlipH | Rotate270FlipH)
@@ -553,16 +564,9 @@ pub(crate) fn orient_matrix(o: Orientation, pw: f32, ph: f32) -> [f32; 6] {
 }
 
 impl Pdf {
-    /// Decode an image file and add it to the document as an image XObject.
-    /// Returns the object id and the stored pixel size. JPEG data is embedded as is.
-    pub(crate) fn add_image_object(&mut self, bytes: &[u8]) -> Result<(ObjectId, u32, u32)> {
-        let r = first(decode(bytes)?)?;
-        let (w, h) = (r.w, r.h);
-        Ok((self.add_raster(r), w, h))
-    }
-
-    /// Like [`Pdf::add_image_object`], but returns the pixel size as displayed and the
-    /// orientation to draw it with (see [`orient_matrix`]).
+    /// Decode an image file and add it to the document as an image XObject. Returns the
+    /// object id, the pixel size as displayed and the orientation to draw it with (see
+    /// [`orient_matrix`]). JPEG data is embedded as is.
     pub(crate) fn add_upright_image(
         &mut self,
         bytes: &[u8],

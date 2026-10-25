@@ -1,10 +1,10 @@
 //! Recently opened files, kept between runs in `recent.txt` (one path per line) in LimarePDF's
 //! settings folder (see [`crate::settings`]).
 //!
-//! The list stays on this computer. Failing to read or write it is not an error: the list
-//! is a convenience.
+//! The list stays on this computer. Failing to read it is not an error: the list is a
+//! convenience. Failing to write it is said, as for the settings.
 
-use crate::settings::settings_dir;
+use crate::settings::{settings_dir, unsaved, write_own, Unsaved};
 use std::path::{Path, PathBuf};
 
 /// How many files the list keeps.
@@ -14,6 +14,8 @@ pub struct Recent {
     paths: Vec<PathBuf>,
     /// Where the list is saved; `None` when there is no settings folder.
     file: Option<PathBuf>,
+    /// What couldn't be saved last, until the app says it ([`Recent::take_unsaved`]).
+    unsaved: Option<Unsaved>,
 }
 
 impl Recent {
@@ -35,7 +37,11 @@ impl Recent {
             .map(PathBuf::from)
             .take(MAX)
             .collect();
-        Self { paths, file }
+        Self {
+            paths,
+            file,
+            unsaved: None,
+        }
     }
 
     /// Most recent first, whether or not the files still exist.
@@ -67,7 +73,12 @@ impl Recent {
         self.save();
     }
 
-    fn save(&self) {
+    /// What couldn't be saved last, said once taken.
+    pub fn take_unsaved(&mut self) -> Option<Unsaved> {
+        self.unsaved.take()
+    }
+
+    fn save(&mut self) {
         let Some(file) = &self.file else { return };
         let text: String = self
             .paths
@@ -75,10 +86,10 @@ impl Recent {
             .filter_map(|p| p.to_str())
             .map(|p| format!("{p}\n"))
             .collect();
-        if let Some(dir) = file.parent() {
-            let _ = std::fs::create_dir_all(dir);
+        let written = write_own(file, text.as_bytes());
+        if let Some(u) = unsaved("its list of recent files", written) {
+            self.unsaved = Some(u);
         }
-        let _ = limarepdf_core::write_file(file, text.as_bytes());
     }
 }
 
@@ -109,6 +120,28 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&other).unwrap(), "/a.pdf\n");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "/b.pdf\n/a.pdf\n");
         std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    }
+
+    /// BUG-14: a list that can't be written is kept for this session, and why is held for
+    /// the app to say.
+    #[test]
+    fn a_list_that_can_t_be_written_is_said() {
+        let (_, file) = list("unwritable");
+        let dir = file.parent().unwrap();
+        std::fs::create_dir_all(dir).unwrap();
+        // A file where the settings folder would be.
+        std::fs::write(dir.join("blocker"), "a file, not a folder").unwrap();
+        let mut r = Recent::from_file(Some(dir.join("blocker").join("recent.txt")));
+        r.add(Path::new("/a.pdf"));
+        assert_eq!(r.paths(), [PathBuf::from("/a.pdf")]);
+        let (title, text) = r.take_unsaved().expect("not said");
+        assert_eq!(title, "Settings not saved");
+        assert!(
+            text.starts_with("LimarePDF couldn't save its list of recent files (making "),
+            "{text}"
+        );
+        assert!(r.take_unsaved().is_none(), "said twice");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

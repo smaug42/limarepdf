@@ -6,11 +6,12 @@
 use crate::annot_ap::{arrow_size, DRAWN, NOTE_SIZE};
 use crate::annots::NO_VIEW;
 use crate::doc::encode_text;
+use crate::embed::check_writable;
 use crate::form_ap::{lines_height, nums, Metrics};
 use crate::form_write::parse_da;
 use crate::matrix as mx;
 use crate::overlay::utc_now;
-use crate::{AnnotKind, Pdf, Result, Shape, ShapeLook, TextStyle};
+use crate::{AnnotKind, FontChoice, Pdf, Result, Shape, ShapeLook, TextStyle};
 use anyhow::{anyhow, bail};
 use lopdf::{dictionary, Dictionary, Object, ObjectId, StringFormat};
 
@@ -152,7 +153,9 @@ impl Pdf {
     }
 
     /// Write `text` on page `page_index` (zero-based) in a text box filling `rect`
-    /// (displayed-page points, y down), set as `style` says. Returns its id.
+    /// (displayed-page points, y down), set as `style` says. Returns its id. Text boxes are
+    /// set in Helvetica, or its embedded face: text with characters neither has is
+    /// refused, with nothing changed.
     pub fn add_text_box(
         &mut self,
         page_index: usize,
@@ -164,6 +167,7 @@ impl Pdf {
         if rect[2] - rect[0] < 1.0 || rect[3] - rect[1] < 1.0 {
             bail!("the text box is too small");
         }
+        check_writable(FontChoice::default(), text)?;
         let page = self.page_id_at(page_index)?;
         let (to_user, _, _) = self.vis_down(page);
         let mut d = dictionary! {
@@ -423,8 +427,11 @@ impl Pdf {
         }
     }
 
-    /// Set a text box's text size and colour, fill and border, and draw it again.
+    /// Set a text box's text size and colour, fill and border, and draw it again. Refused,
+    /// with nothing changed, for one another app wrote with characters its font can't
+    /// write ([`Pdf::check_box_drawable`]).
     pub fn set_text_style(&mut self, id: (u32, u16), style: &TextStyle) -> Result<()> {
+        self.check_box_drawable(id)?;
         let d = self.doc.get_dictionary_mut(id)?;
         if d.get(b"Subtype").and_then(|o| o.as_name()).ok() != Some(b"FreeText") {
             bail!("not a text box");
@@ -439,7 +446,8 @@ impl Pdf {
     /// Move an annotation on page `page_index` (zero-based) so that its box becomes `to`
     /// (displayed-page points, y down), stretching its lines, points and marked areas to
     /// match. A move keeps the drawing it has; a change of size draws it again when LimarePDF
-    /// can, and otherwise the viewer stretches the old drawing.
+    /// can, and otherwise the viewer stretches the old drawing. A text box another app wrote
+    /// with characters its font can't write isn't resized ([`Pdf::check_box_drawable`]).
     pub fn move_annotation(
         &mut self,
         page_index: usize,
@@ -463,6 +471,10 @@ impl Pdf {
             .get(b"Subtype")
             .and_then(|o| o.as_name())
             .is_ok_and(|s| DRAWN.contains(&s));
+        if drawn && resized {
+            self.check_box_drawable(id)?;
+        }
+        let d = self.doc.get_dictionary(id)?;
         let mut changed: Vec<(&[u8], Object)> = vec![(b"Rect", nums(&new).into())];
         for key in [&b"L"[..], b"Vertices", b"QuadPoints", b"CL"] {
             if let Some(v) = self.numbers(d.get(key).ok()) {
@@ -571,7 +583,10 @@ impl Pdf {
 
     /// Change an annotation's colour (`None` for none), opacity (0 to 1) and comment.
     /// Kinds LimarePDF draws are drawn again when their look changes. Locked annotations are
-    /// changed too; the app checks [`crate::Annot::locked`] first.
+    /// changed too; the app checks [`crate::Annot::locked`] first. A text box's new text is
+    /// refused, with nothing changed, as [`Pdf::add_text_box`] refuses it, and so is a new
+    /// look for one another app wrote with characters its font can't write
+    /// ([`Pdf::check_box_drawable`]).
     pub fn set_annotation(
         &mut self,
         id: (u32, u16),
@@ -589,6 +604,11 @@ impl Pdf {
             || (old.opacity - opacity).abs() > 1e-3
             || (old.kind == AnnotKind::TextBox && old.contents != contents)
             || !old.has_appearance;
+        if old.kind == AnnotKind::TextBox && old.contents != contents {
+            check_writable(FontChoice::default(), contents)?;
+        } else if looks_new {
+            self.check_box_drawable(id)?;
+        }
         let d = self.doc.get_dictionary_mut(id)?;
         let drawn = d
             .get(b"Subtype")

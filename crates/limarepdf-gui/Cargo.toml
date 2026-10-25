@@ -18,6 +18,8 @@ eframe.workspace = true
 rayon.workspace = true
 rfd.workspace = true
 egui-phosphor.workspace = true
+# Typed emoji made of several characters left out whole (page_text.rs); egui already uses it.
+unicode-segmentation = "1.13"
 
 [build-dependencies]
 # Embeds the icon in limarepdf.exe on Windows; does nothing on other platforms.

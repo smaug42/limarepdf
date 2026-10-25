@@ -684,12 +684,14 @@ fn modal(
 }
 
 /// Whether Enter was pressed in the field `r`, a dialog's only field: it takes the keyboard
-/// when nothing has it, as the dialog opens.
+/// when nothing has it, as the dialog opens. Enter is seen first, as the field gives up the
+/// keyboard for it: taking the keyboard back hides that (BUG-08).
 fn entered(ui: &Ui, r: &egui::Response) -> bool {
-    if ui.memory(|m| m.focused().is_none()) {
+    let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+    if !enter && ui.memory(|m| m.focused().is_none()) {
         r.request_focus();
     }
-    r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter))
+    enter
 }
 
 /// A box for a page range, such as `1-3,5,8-` or `all`, `width` wide if given. Going into
@@ -755,8 +757,20 @@ fn layout_choice(ui: &mut Ui, layout: &mut Layout, choices: &[Layout]) {
     });
 }
 
+/// Looking for the printers, which the Print dialog does once open (BUG-11).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Search {
+    /// Search number `.0` is running.
+    Running(u64),
+    /// Done: [`Print::printers`] has the printers, perhaps none.
+    Done,
+    /// The printers couldn't be listed: why.
+    Failed(String),
+}
+
 pub struct Print {
     pub printers: Vec<Printer>,
+    pub search: Search,
     pub printer: usize,
     /// The document printed, shown under the title.
     pub file: String,
@@ -776,6 +790,7 @@ impl Print {
     pub fn new(printers: Vec<Printer>, file: String) -> Self {
         Self {
             printers,
+            search: Search::Done,
             printer: 0,
             file,
             all: true,
@@ -787,6 +802,26 @@ impl Print {
             selection: None,
         }
     }
+    /// Looking for the printers, by search number `search`.
+    pub fn looking(search: u64, file: String) -> Self {
+        Self {
+            search: Search::Running(search),
+            ..Self::new(Vec::new(), file)
+        }
+    }
+    /// The printers found by `search`, or why they couldn't be listed: shown, with the
+    /// default chosen.
+    pub fn found(&mut self, found: Result<Vec<Printer>, String>) {
+        (self.printers, self.search) = match found {
+            Ok(list) => (list, Search::Done),
+            Err(why) => (Vec::new(), Search::Failed(why)),
+        };
+        self.printer = 0;
+    }
+    /// Whether Print can print: the printers are found, and there is one.
+    pub fn ready(&self) -> bool {
+        self.search == Search::Done && !self.printers.is_empty()
+    }
     /// The pages asked for, as a page range.
     pub fn range(&self) -> &str {
         if self.all {
@@ -796,6 +831,8 @@ impl Print {
         }
     }
 }
+/// The Print dialog. [`Outcome::Apply`] is Print once [`Print::ready`], and Try again
+/// before.
 pub fn print(ctx: &Context, s: &mut Print) -> Outcome {
     let title = match s.selection {
         Some(_) => "Print selected text",
@@ -803,11 +840,31 @@ pub fn print(ctx: &Context, s: &mut Print) -> Outcome {
     };
     let file = s.file.clone();
     let (out, esc) = Shell::new(title).file(Some(&file)).show(ctx, |ui| {
-        if s.printers.is_empty() {
-            content(ui, |ui| {
-                ui.label("No printers are set up. Add one in the system's printer settings.")
-            });
-            return match footer(ui, None, &[Btn::primary("OK")]) {
+        let why = match &s.search {
+            Search::Running(_) => {
+                content(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Looking for printers…");
+                    })
+                });
+                let print = Btn::primary("Print").enabled(false);
+                return match footer(ui, None, &[print, Btn::cancel()]) {
+                    Some(_) => Outcome::Cancel,
+                    None => Outcome::Open,
+                };
+            }
+            Search::Failed(why) => Some(format!("LimarePDF couldn't list the printers: {why}.")),
+            Search::Done if s.printers.is_empty() => Some(
+                "No printers are set up. Add one in the system's printer settings, then try again."
+                    .into(),
+            ),
+            Search::Done => None,
+        };
+        if let Some(why) = why {
+            content(ui, |ui| ui.label(why));
+            return match footer(ui, None, &[Btn::primary("Try again"), Btn::cancel()]) {
+                Some(0) => Outcome::Apply,
                 Some(_) => Outcome::Cancel,
                 None => Outcome::Open,
             };
@@ -1024,27 +1081,51 @@ pub struct Password {
     pub input: String,
     pub error: Option<String>,
 }
-pub fn password(ctx: &Context, s: &mut Password) -> Outcome {
+/// The password of a file to open (Open: [`Choice::First`]), or (`appending`) of a file
+/// whose pages are being added, with Skip this file ([`Choice::Second`]) as well.
+pub fn password(ctx: &Context, s: &mut Password, appending: bool) -> Choice {
     // Cut short as the tab's title is.
     let name = s.path.file_name();
     let name = name.map(|n| limarepdf_core::display_line(&n.to_string_lossy(), 120));
     let shell = Shell::new("Password required").file(name.as_deref());
-    modal(ctx, shell, Btn::primary("Open"), true, |ui| {
-        ui.add(
-            egui::Label::new("This document is protected. Type its password to open it.").wrap(),
-        );
-        ui.add_space(GAP);
-        let r = field(ui, "Password", |ui| {
-            let edit = egui::TextEdit::singleline(&mut s.input)
-                .password(true)
-                .desired_width(f32::INFINITY);
-            ui.add(theme::field(edit))
+    let (text, action) = match appending {
+        false => ("open it", "Open"),
+        true => ("add its pages", "Add pages"),
+    };
+    let (out, esc) = shell.show(ctx, |ui| {
+        let enter = content(ui, |ui| {
+            let text = format!("This document is protected. Type its password to {text}.");
+            ui.add(egui::Label::new(text).wrap());
+            ui.add_space(GAP);
+            let r = field(ui, "Password", |ui| {
+                let edit = egui::TextEdit::singleline(&mut s.input)
+                    .password(true)
+                    .desired_width(f32::INFINITY);
+                ui.add(theme::field(edit))
+            });
+            if let Some(e) = &s.error {
+                let e = RichText::new(e).color(ui.visuals().error_fg_color);
+                ui.add(egui::Label::new(e).wrap());
+            }
+            entered(ui, &r)
         });
-        if let Some(e) = &s.error {
-            ui.add(egui::Label::new(RichText::new(e).color(ui.visuals().error_fg_color)).wrap());
+        let mut buttons = vec![Btn::primary(action)];
+        if appending {
+            buttons.push(Btn::plain("Skip this file"));
         }
-        entered(ui, &r)
-    })
+        buttons.push(Btn::cancel());
+        match footer(ui, None, &buttons) {
+            Some(0) => Choice::First,
+            Some(i) if i + 1 < buttons.len() => Choice::Second,
+            Some(_) => Choice::Cancel,
+            None if enter => Choice::First,
+            None => Choice::Open,
+        }
+    });
+    if esc {
+        return Choice::Cancel;
+    }
+    out
 }
 
 /// The name written into comments and markup; empty for none.
@@ -1631,7 +1712,7 @@ mod tests {
                 error: Some("That isn't the password.".into()),
             };
             let tree = drawn(size, |ctx| {
-                password(ctx, &mut s);
+                password(ctx, &mut s, false);
             });
             label_above(&tree, "Password").unwrap();
             let field = named(&tree, "Password").unwrap();

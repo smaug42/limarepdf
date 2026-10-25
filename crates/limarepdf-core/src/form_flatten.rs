@@ -49,7 +49,7 @@ fn print_widget(pdf: &Pdf, d: &Dictionary) -> Flat {
 
 impl Pdf {
     /// Draw the form's widgets into the pages' content as they look now and remove them,
-    /// so the values can no longer be changed. `pages` (zero-based) limits this to some
+    /// so the fields can no longer be filled in. `pages` (zero-based) limits this to some
     /// pages; a field with widgets on other pages stays fillable there. Fields left with
     /// no widgets are removed, and the form itself once none are left. Hidden widgets are
     /// removed without being drawn. Refuses, with nothing changed, when a shown field's
@@ -71,12 +71,32 @@ impl Pdf {
     /// widgets showing a value that has no drawing, which LimarePDF can't draw either.
     /// Changes nothing.
     pub fn unprintable_fields(&self, pages: &[usize]) -> Vec<String> {
-        if self.undrawn(pages, print_widget).is_empty() {
+        self.lost_values(pages, print_widget)
+    }
+
+    /// The fields on `pages` (zero-based) whose values won't show in pictures of the pages
+    /// ([`Pdf::render_snapshot`]): widgets showing a value that has no drawing, which
+    /// LimarePDF can't draw either. Changes nothing.
+    pub fn unshown_fields(&self, pages: &[usize]) -> Vec<String> {
+        self.lost_values(pages, flat_widget)
+    }
+
+    /// The fields whose values flattening the whole form ([`Pdf::flatten_form`]) would
+    /// lose, so it refuses: shown widgets showing a value that has no drawing, which
+    /// LimarePDF can't draw either. Changes nothing.
+    pub fn undrawable_fields(&self) -> Vec<String> {
+        let pages: Vec<usize> = (0..self.page_count()).collect();
+        self.unshown_fields(&pages)
+    }
+
+    /// The fields on `pages` whose values drawing the widgets `which` draws would lose.
+    fn lost_values(&self, pages: &[usize], which: fn(&Pdf, &Dictionary) -> Flat) -> Vec<String> {
+        if self.undrawn(pages, which).is_empty() {
             return Vec::new();
         }
         let mut copy = self.clone();
         copy.refresh_appearances();
-        copy.undrawn(pages, print_widget)
+        copy.undrawn(pages, which)
     }
 
     /// `refuse`: when a value would be lost, refuse with nothing changed rather than

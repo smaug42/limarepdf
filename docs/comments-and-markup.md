@@ -53,7 +53,9 @@ More about notes and text boxes:
   Insert), or Note for any other. Printed, they keep their own drawing, or LimarePDF's, 20 points across. Hovering
   over a note shows its comment.
 - Text boxes use Helvetica, and for Polish, Czech, Vietnamese, Greek, Cyrillic and other characters it lacks, its
-  Liberation Sans face, embedded in the file. Other characters (Chinese, Hebrew and so on) come out as `?`.
+  Liberation Sans face, embedded in the file. Other characters (Chinese, Hebrew, emoji and so on) can't be typed or
+  pasted, on the page or in the inspector, and a note at the caret says so. To write them, use the Add text tool
+  in an installed font that has them. A note's comment takes any character, emoji included.
 - When you finish a text box, it grows downward to fit its text, keeping its width. It stops at the bottom of the
   page, and never shrinks (resize it by dragging its handles).
 - The Text box tool can be kept on to add several in a row (see [Keep tool active](gui.md#keep-tool-active)). The
@@ -124,7 +126,9 @@ for comments…. Leave it empty to save no name.
 ## Flatten comments into the pages
 
 ☰ > Document > Flatten annotations… draws all the annotations into the pages as they look now and removes them, so
-they can no longer be changed or removed in any reader. Their comment text is dropped. Links and form fields stay,
+they are no longer comments in any reader: they can't be changed or removed as comments. Their comment text is
+dropped. What was drawn is page content, so content editing can still move, resize or delete each as a whole
+([Move, resize or delete](content-editing.md#move-resize-or-delete)). Links and form fields stay,
 and so do file attachments. Undo brings them back until you close the document.
 
 ## How comments are drawn
@@ -134,7 +138,10 @@ highlights, underlines, strike-outs, squiggly underlines, notes, text boxes, rec
 freehand drawings, stamps, carets and file attachment icons itself, on screen and when printing, including cloudy
 borders, text box callout lines and line leader lines. The file isn't changed by this; flattening saves LimarePDF's
 drawing into it (file attachments stay as they are). Text boxes are drawn in Helvetica, ignoring any rich-text
-styling; a stamp shows its name in a coloured frame. [Rendering](rendering.md#known-to-be-wrong) lists what isn't
+styling; a stamp shows its name in a coloured frame. A text box with characters Helvetica can't write (Chinese,
+Hebrew and so on) shows them as `?` when LimarePDF draws it, so flattening refuses one without a drawing of its
+own, naming its page, and a text box with its own drawing keeps it: a new colour, style, size or text for it is
+refused ([Troubleshooting](troubleshooting.md#limarepdf-cant-draw-this-text-box-again)). [Rendering](rendering.md#known-to-be-wrong) lists what isn't
 reproduced.
 
 The app shows up to 10,000 annotations on a page, with a notice on a page that has more.

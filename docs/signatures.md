@@ -38,7 +38,10 @@ It doesn't by itself say who owns that key: the signature carries a certificate 
 a certificate with any name. Whether to believe the name is a separate question, called trust.
 
 It is not the same as [fill and sign](fill-and-sign.md), which puts a picture of your signature on the
-page. Anyone can copy a picture; a digital signature breaks if the document is changed.
+page. Anyone can copy a picture; a digital signature breaks if the bytes it signed are changed. A signed document can
+still be changed afterwards without breaking it, as long as the changes are saved after the signed bytes (which
+LimarePDF does): each one is then listed with the signature, and judged by whether the signer allowed it (see
+[Changes after signing](#changes-after-signing)).
 
 ## Requirements
 
@@ -133,7 +136,7 @@ characters that could disguise them (direction changes, invisible characters) be
 
 ## Trusting signers
 
-A valid signature proves the document is unchanged since a certain key signed it. Whose key that is, is a
+A valid signature proves the bytes it signed are unchanged since a certain key signed them. Whose key that is, is a
 separate question: anyone can make a digital ID with any name on it. LimarePDF answers it from your **trust list**, as
 Acrobat does from its trusted certificates. Each valid signature gets a **Trust** line in `limarepdf-cli verify`:
 
@@ -246,7 +249,10 @@ chooses the ID signing starts with; **Remove…** asks a second time (**Remove f
 exporting run in the background and the window shows when they are done. If one fails, its form comes back with
 what you typed and the reason: a wrong password under the password, anything else (such as a file that can't be
 read or written) at the end of the form. The passwords are cleared, as they always are once used, so type them
-again to try again. The same rules apply as on the command line, described below.
+again to try again. When the ID is kept but something after that didn't work (it couldn't be made the default,
+or your system couldn't confirm a file is safely on disk), the window says so in a warning: the ID is there, so
+don't make or import it again. The same rules apply as on the command line, described below, which prints such
+warnings starting with `warning:` and still succeeds.
 
 IDs are kept in the `ids` folder of LimarePDF's settings folder: `~/.config/limarepdf/ids/` on Linux,
 `~/Library/Application Support/limarepdf/ids/` on macOS, `%APPDATA%\limarepdf\ids\` on Windows. Each is one PKCS#12 file
@@ -330,7 +336,8 @@ have an exported copy. Signatures already made with it stay valid.
    [certify](#what-signing-does) the document (only before anyone has signed it).
 2. Click an empty signature field on the page, or drag a box where the signature goes (at least 12 points each
    way). The pane also lists the document's empty signature fields to pick from. Esc, or another tool, stops.
-3. In the window, pick the digital ID (the default is picked; expired IDs can't sign), type its password, and
+3. In the window, pick the digital ID (the default is picked; expired IDs can't sign), type its password (leave
+   it empty for an imported ID that has none), and
    optionally a reason and a location. **Show my saved signature beside the text** uses the first signature in
    your fill-and-sign list for the left part of the look; without one, your name is written in handwriting. For a
    certification, choose what others may do afterwards. **Digital IDs…** opens the Digital IDs window, to make or
@@ -369,7 +376,8 @@ The first puts your signature in a new box on page 2: 200 by 60 points, 350 poin
 top of the page as shown. The second signs the document's empty signature field named `Approver` (`limarepdf-cli verify`
 lists empty fields by name). LimarePDF asks for the ID's password; `--password-file` reads it from a file instead, and
 `--id` chooses another ID than the default (its number or name in `limarepdf-cli id list`). The ID you sign with becomes the
-default. `--reason` and `--location` are your own statements, shown with the signature by every reader. On the
+default; when that can't be noted, a `warning:` line says so after the signed file is written, and the command still
+succeeds. In the app, the Signed message says so. `--reason` and `--location` are your own statements, shown with the signature by every reader. On the
 command line, signing adds only the signature (and draws in fill-and-sign items).
 
 ### What signing does
@@ -519,7 +527,8 @@ document as you see it may not be what was signed: look at the signed version (a
 **Can't check: reason.** LimarePDF can't tell either way: an algorithm it doesn't support (MD5, RIPEMD-160, Brainpool
 and P-521 curves), a missing or unreadable certificate, more than one signer in one signature (the PDF rules allow
 exactly one), limits on an RSA-PSS key that it can't read (including a trailer field other than 1, the only one
-RFC 4055 defines), or data it can't read. Don't rely on such a signature without checking it elsewhere.
+RFC 4055 defines), an RSA-PSS signature that leaves out its parameters (the standard requires them; the signature
+or one of its certificates says *leaves out its RSA-PSS parameters*), or data it can't read. Don't rely on such a signature without checking it elsewhere.
 
 ### Warnings
 
@@ -678,7 +687,7 @@ The full record, with the files used, is in [Testing](developer/testing.md#digit
   authorities; LimarePDF makes no network connections.
 - Algorithms: RSA (PKCS#1 v1.5 and PSS, up to 8192 bits), ECDSA on P-256 and P-384, with SHA-1, SHA-224, SHA-256,
   SHA-384 and SHA-512. Brainpool curves (used by some European ID cards), P-521, MD5 and RIPEMD-160 can't be
-  checked. RSA-PSS signatures must use MGF1 with the signature's own digest.
+  checked. RSA-PSS signatures must use MGF1 with the signature's own digest, and name their parameters.
 - RSA-PSS key limits are checked as OpenSSL checks them, except for one: a certificate that limits its key to a
   trailer field other than 1 gives *can't check*, where OpenSSL 3.6 ignores that limit.
 - Certificates must be properly DER-encoded; a few old signers wrote them otherwise, and those can't be checked.
@@ -772,8 +781,8 @@ shows it, and one with signatures is refused.
 **RUSTSEC-2023-0071**, a timing leak in `rsa` with no fixed version yet, concerns using a private key. Checking
 uses only public keys, so it doesn't apply to checking. It applies to signing with an RSA key: an attacker would
 have to time many signings on your computer. LimarePDF blinds its RSA signatures, which makes such timing harder. CI runs
-`cargo audit` on every change with this one advisory set aside; [releasing](developer/releasing.md) has a step to look for
-final versions and new advisories before each release.
+`cargo audit` on every change with this one advisory set aside, and a release waits for it to pass;
+[releasing](developer/releasing.md) has a step to look for final versions and new advisories before each release.
 
 **Digital IDs** are as safe as their passwords. In the files LimarePDF writes, the key is encrypted with AES-256, using a
 key stretched from your password by PBKDF2-HMAC-SHA256 with 600,000 iterations (OWASP's current figure); the

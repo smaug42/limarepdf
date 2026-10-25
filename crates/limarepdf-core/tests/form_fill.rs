@@ -16,6 +16,13 @@ fn text(s: &str) -> Object {
     Object::String(s.as_bytes().to_vec(), StringFormat::Literal)
 }
 
+/// `s` as a text string in UTF-16, for characters beyond ASCII.
+fn utf16(s: &str) -> Object {
+    let mut b = vec![0xFE, 0xFF];
+    b.extend(s.encode_utf16().flat_map(u16::to_be_bytes));
+    Object::String(b, StringFormat::Literal)
+}
+
 fn rect(x: f32, y: f32, w: f32, h: f32) -> Object {
     vec![x.into(), y.into(), (x + w).into(), (y + h).into()].into()
 }
@@ -91,6 +98,26 @@ fn ink(p: &mut Pdf) -> Option<[usize; 4]> {
         }
     }
     b
+}
+
+#[test]
+fn render_snapshot_draws_fields_without_a_drawing() {
+    // A value another app left the reader to draw, as `limarepdf-cli render` sees it (BUG-23).
+    let mut p = page();
+    let ids = form(
+        &mut p,
+        vec![dictionary! {
+            "FT" => "Tx", "T" => text("name"), "Rect" => rect(10.0, 150.0, 150.0, 20.0),
+            "V" => text("Hello"), "F" => 4,
+        }],
+    );
+    let b = ink(&mut p).expect("the value is drawn");
+    assert!(
+        b[0] >= 10 && b[2] <= 160 && b[1] >= 30 && b[3] <= 50,
+        "outside the field: {b:?}"
+    );
+    // Only the copy drawn is given the drawing.
+    assert!(!p.doc.get_dictionary(ids[0]).unwrap().has(b"AP"));
 }
 
 #[test]
@@ -301,6 +328,7 @@ fn refuses_values_that_dont_fit() {
             dictionary! { "FT" => "Tx", "T" => text("locked"), "Ff" => 1, "Rect" => rect(0.0, 30.0, 50.0, 20.0) },
             dictionary! { "FT" => "Ch", "T" => text("pick"), "Opt" => vec![text("a")], "Rect" => rect(0.0, 60.0, 50.0, 20.0) },
             dictionary! { "FT" => "Btn", "Ff" => 1 << 16, "T" => text("go"), "Rect" => rect(0.0, 90.0, 50.0, 20.0) },
+            dictionary! { "FT" => "Sig", "T" => text("sig"), "Rect" => rect(0.0, 120.0, 50.0, 20.0) },
         ],
     );
     let err = |r: limarepdf_core::Result<()>| r.unwrap_err().to_string();
@@ -314,6 +342,13 @@ fn refuses_values_that_dont_fit() {
         err(p.set_field("pick", FieldValue::Choice(vec!["b".into()]))).contains("isn't one of")
     );
     assert!(err(p.set_field("go", FieldValue::None)).contains("push button"));
+    // A signature field points to signing (BUG-33).
+    let sig = err(p.set_field("sig", t("x")));
+    assert!(
+        sig.contains("Document > Digital signatures > Sign with digital ID")
+            && sig.contains("`limarepdf-cli sign --field \"sig\"`"),
+        "{sig}"
+    );
     assert!(err(p.set_field("one", FieldValue::Check(true))).contains("doesn't suit"));
     // Nothing was written.
     assert_eq!(value(&p, "one"), FieldValue::Text(String::new()));
@@ -449,7 +484,7 @@ fn draws_missing_appearances() {
         &mut p,
         vec![
             dictionary! { "FT" => "Tx", "T" => text("a"), "V" => text("shown"), "Rect" => rect(0.0, 0.0, 80.0, 20.0) },
-            dictionary! { "FT" => "Tx", "T" => text("b"), "V" => text("Жж"), "Rect" => rect(0.0, 30.0, 80.0, 20.0) },
+            dictionary! { "FT" => "Tx", "T" => text("b"), "V" => utf16("שלום"), "Rect" => rect(0.0, 30.0, 80.0, 20.0) },
         ],
     );
     // A ticked checkbox without drawings gets them, showing it ticked.

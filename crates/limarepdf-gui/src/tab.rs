@@ -1,6 +1,6 @@
 use crate::actions::{self, Act, Ctx};
 use crate::banners::{self, Banner};
-use crate::editor::{annot_tip, Action, Editor, StampPick, Tool};
+use crate::editor::{annot_tip, Action, Editor, StampPick, Tool, Typed};
 use crate::inspector::{Forms, Hf, Sec, Wm};
 use crate::markup::Mark;
 use crate::recovery::schedule::Schedule;
@@ -13,6 +13,7 @@ use crate::theme;
 use crate::worker::{Colours, Key, Sample, Worker, TILE};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptions, Vec2};
 use egui_phosphor::regular as icon;
+use limarepdf_core::disk;
 use limarepdf_core::render::{Missing, MAX_REGION_SCALE};
 use limarepdf_core::{
     Annot, BookmarkPlace, Encryption, ImageWatermark, LinkTarget, OutlineItem, Pdf, SearchHit,
@@ -176,6 +177,12 @@ pub struct Tab {
     pub id: u64,
     pub pdf: Pdf,
     pub path: Option<PathBuf>,
+    /// The file at `path` as LimarePDF last read or saved it, which saving checks it is
+    /// still before replacing it (BUG-06); `None` when not known.
+    pub disk: Option<disk::Version>,
+    /// The newer file another app or tab put at `path`, once noticed: the banner about it
+    /// shows once for each.
+    pub changed_on_disk: Option<disk::Version>,
     pub dirty: bool,
     /// Bumped on every change to `pdf`, so background work can tell whether its input
     /// is still current.
@@ -269,6 +276,8 @@ pub struct Tab {
     pub forms: Forms,
     /// Something undoable just happened, for the undo toast.
     pub notice: Option<String>,
+    /// Something to say with nothing done, for a toast with no Undo.
+    pub info: Option<String>,
     /// A link to a web address (or anything outside the document) was clicked; the app
     /// asks before opening it.
     pub open_link: Option<String>,
@@ -360,6 +369,8 @@ impl Tab {
             id,
             pdf,
             path,
+            disk: None,
+            changed_on_disk: None,
             dirty: false,
             revision: 0,
             encryption: None,
@@ -401,10 +412,11 @@ impl Tab {
             goto_y: None,
             error: None,
             broken: None,
-            ed: Editor::default(),
+            ed: Editor::for_tab(id),
             requested: Vec::new(),
             forms: Forms::default(),
             notice: None,
+            info: None,
             open_link: None,
             thumb_drag: None,
             stale: HashSet::new(),
@@ -525,12 +537,34 @@ impl Tab {
         self.dirty || self.ed.pending() || self.typing_in_forms()
     }
 
-    /// Put what has been typed but not yet kept into the document, as clicking away
-    /// would: one edit for each, which Undo takes back.
-    pub fn keep_typing(&mut self, ctx: &egui::Context) {
-        self.ed.keep_pending();
+    /// Put what has been typed but not yet kept into the document, on the pages and in
+    /// the inspector's forms, before a command uses the document (saving, printing, a page
+    /// command); see [`Tab::keep_page_typing`].
+    pub fn keep_typing(&mut self, ctx: &egui::Context) -> bool {
+        self.keep_page_typing(ctx) && self.keep_forms(ctx)
+    }
+
+    /// Put what is being typed on the pages into the document, as clicking away would,
+    /// before a change that uses, draws again or replaces the document (BUG-01): one edit
+    /// for each, which Undo takes back. Typing that can't be kept stays as it is, with the
+    /// reason shown, and false says the change mustn't go ahead.
+    pub fn keep_page_typing(&mut self, ctx: &egui::Context) -> bool {
+        // Changes queued before go in first, as they would at the end of the frame.
         self.apply_actions(ctx);
-        self.keep_forms(ctx);
+        let earlier = self.error.take();
+        for piece in Typed::ALL {
+            let Some(held) = self.ed.keep(piece) else {
+                continue;
+            };
+            self.apply_actions(ctx);
+            if self.error.is_some() {
+                self.ed.put_back(held);
+                return false;
+            }
+            self.ed.done(held);
+        }
+        self.error = earlier;
+        true
     }
 
     pub fn state(&self) -> State {
@@ -546,6 +580,12 @@ impl Tab {
         }
     }
 
+    /// Where the tab's undo history is: the revision and the undo and redo depths. Any
+    /// change, Undo or Redo moves it.
+    pub fn history(&self) -> (u64, usize, usize) {
+        (self.revision, self.undo.len(), self.redo.len())
+    }
+
     /// After a command failed part way: nothing selected, dragged or half made, the Read
     /// tool, and no commands left queued.
     pub fn reset_interaction(&mut self) {
@@ -553,14 +593,15 @@ impl Tab {
         self.requested.clear();
     }
 
-    /// Run an edit with undo support. On failure the document is left unchanged, and
-    /// false is returned.
+    /// Run an edit with undo support, after what is being typed on the pages is kept
+    /// ([`Tab::keep_page_typing`]). On failure the document is left unchanged, and false is
+    /// returned.
     pub fn edit(
         &mut self,
         ctx: &egui::Context,
         f: impl FnOnce(&mut Pdf) -> limarepdf_core::Result<()>,
     ) -> bool {
-        self.edit_inner(ctx, Redraw::All, false, false, f)
+        self.keep_page_typing(ctx) && self.edit_inner(ctx, Redraw::All, false, false, f)
     }
 
     /// Like [`Tab::edit`], for a change that removes content for good (redaction, removing hidden
@@ -571,7 +612,7 @@ impl Tab {
         ctx: &egui::Context,
         f: impl FnOnce(&mut Pdf) -> limarepdf_core::Result<()>,
     ) -> bool {
-        self.edit_inner(ctx, Redraw::All, true, false, f)
+        self.keep_page_typing(ctx) && self.edit_inner(ctx, Redraw::All, true, false, f)
     }
 
     /// Like [`Tab::edit`], for a document setting that doesn't show on the pages (properties,
@@ -818,6 +859,12 @@ impl Tab {
         if self.crop_view.is_some() == on {
             return;
         }
+        // The pages are drawn again: what is being typed on them goes in first, or the
+        // Crop section closes.
+        if on && !self.keep_page_typing(ctx) {
+            self.forms.close = Some(crate::inspector::Section::Crop);
+            return;
+        }
         self.crop_view = on.then(Vec::new);
         self.crop_drag = None;
         self.refresh(ctx);
@@ -933,7 +980,8 @@ impl Tab {
                     self.edit_pages(ctx, &[p], |pdf| pdf.set_path_style(p, id, &st));
                 }
                 Action::SetField(pages, name, v) => {
-                    self.edit_pages(ctx, &pages, |pdf| pdf.set_field(&name, v));
+                    let ok = self.edit_pages(ctx, &pages, |pdf| pdf.set_field(&name, v));
+                    self.ed.form.kept(&name, ok);
                 }
                 Action::SetAnnot(p, id, e) => {
                     self.edit_pages(ctx, &[p], |pdf| {
@@ -1215,7 +1263,7 @@ impl Tab {
             .filter(|(_, b): &(usize, Vec<[f32; 4]>)| !b.is_empty())
             .collect();
         if marks.is_empty() {
-            self.notice = Some("Search first: there are no results to mark".into());
+            self.info = Some("Search first: there are no results to mark".into());
             return;
         }
         let pages: Vec<usize> = marks.iter().map(|(p, _)| *p).collect();
@@ -1250,9 +1298,14 @@ impl Tab {
 
     /// Ask for an image file and arm the image tool with it.
     pub fn choose_image(&mut self) {
-        let Some(bytes) = crate::editor::pick_image() else {
-            return;
-        };
+        if let Some(bytes) = crate::editor::pick_image() {
+            self.arm_image(bytes);
+        }
+    }
+
+    /// Arm the image tool with the picture `bytes`: a click places it in a box of its
+    /// shape as it is meant to be seen.
+    pub(crate) fn arm_image(&mut self, bytes: Vec<u8>) {
         match limarepdf_core::image_dimensions(&bytes) {
             Ok((w, h)) => {
                 self.ed.pending_image = Some((bytes, w as f32 / h.max(1) as f32));
@@ -1296,7 +1349,12 @@ impl Tab {
         self.redo.last().is_some_and(|s| s.removal)
     }
 
+    /// Undo the last change. What is being typed on the pages is kept first, as its own
+    /// change, so that is what Undo takes back.
     pub fn undo(&mut self, ctx: &egui::Context) {
+        if !self.keep_page_typing(ctx) {
+            return;
+        }
         if let Some(step) = self.undo.pop() {
             if let Some(back) = self.restore(ctx, step) {
                 self.redo.push(back);
@@ -1305,8 +1363,12 @@ impl Tab {
     }
 
     /// Redo the last undone change. The app withdraws the recovery copies first when
-    /// [`Tab::redo_removes`].
+    /// [`Tab::redo_removes`]. What is being typed on the pages is kept first, as for any
+    /// change, which leaves nothing to redo.
     pub fn redo(&mut self, ctx: &egui::Context) {
+        if !self.keep_page_typing(ctx) {
+            return;
+        }
         if let Some(step) = self.redo.pop() {
             if let Some(back) = self.restore(ctx, step) {
                 self.undo.push(back);
@@ -1718,6 +1780,14 @@ impl Tab {
         self.banners.insert(at, b);
     }
 
+    /// The document was just written to `path`, which becomes its file, as it now is there.
+    pub fn wrote(&mut self, path: PathBuf) {
+        self.disk = disk::version(&path).ok();
+        self.changed_on_disk = None;
+        self.drop_banner(banners::Kind::ChangedOnDisk);
+        self.path = Some(path);
+    }
+
     pub fn drop_banner(&mut self, kind: banners::Kind) {
         self.banners.retain(|b| b.kind != kind);
     }
@@ -1996,6 +2066,7 @@ impl Tab {
     /// The command state for this tab's part: document, undo, selection and tool.
     pub fn fill_ctx(&self, c: &mut Ctx) {
         c.doc = true;
+        c.file = self.path.is_some();
         c.layout = self.layout;
         c.cover = self.cover;
         c.can_undo = self.can_undo();
@@ -3053,7 +3124,12 @@ mod tests {
         // New page text: selected, and movable with the read tool until something else is.
         t.ed.set_tool(Tool::Text);
         let look = t.ed.new_look();
-        t.ed.adding = Some(page_text::PageText::new(0, (72.0, 72.0), look));
+        t.ed.adding = Some(page_text::PageText::new(
+            t.ed.scope(),
+            0,
+            (72.0, 72.0),
+            look,
+        ));
         if let Some(a) = t.ed.adding.as_mut() {
             a.text.sync("Walrus", None);
         }

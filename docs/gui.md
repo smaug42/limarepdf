@@ -89,7 +89,21 @@ Each document gets a tab. The tab shows its name, with `*` while it has unsaved 
 
 Closing a document or quitting asks first when there are unsaved changes, including text still being typed: a
 comment or text box on the page, a form field, the selected comment's changes in the inspector, or a reply not yet
-added. Saving keeps that text first, as clicking away would (Undo takes it back).
+added. Saving keeps that text first, as clicking away would, and so do printing and the other commands that
+change or use the document ([Undo](#undo)).
+
+The question, Save changes?, offers **Save** (**Save as…** for a document with no file yet, such as a new or
+recovered one), **Discard** or **Cancel**. Save asks the same questions as saving does at other times (a file
+another app changed, a repaired original, redactions not applied, digital signatures), and the document closes once
+it is saved. If the save is cancelled, fails, or can't be confirmed on disk, the document stays open with its
+changes.
+
+Quitting with one document unsaved asks about it the same way. With several, it offers **Review…**, which asks
+about each in turn, or **Discard all**, which quits. Nothing closes until LimarePDF quits: cancelling part way, or
+a save that fails, leaves every document open, the ones already saved saved and the rest with their changes.
+
+Closing a tab behind the one you are reading leaves you where you are, also when it asks about unsaved changes
+first; closing the tab in front takes you to the next one, or the one before when it was the last.
 
 If a damaged file makes LimarePDF fail while showing a document, that tab shows an error page with Save a copy and
 Close this tab; other tabs carry on.
@@ -98,6 +112,17 @@ Close this tab; other tabs carry on.
 
 Save (Ctrl+S) writes the document over its file; Save As (Ctrl+Shift+S) writes a new file and leaves the original
 as it was. Your file is only changed when you save.
+
+A file is open in one tab at a time: opening it again, by any path or link to it, brings its tab to the front.
+Before saving over the file, LimarePDF checks it still holds what LimarePDF last read or saved there. If another
+app (or another LimarePDF window) changed it since, Save asks first: **Save as…** writes your version to a new
+file and keeps theirs, **Replace** puts your version in its place, and Cancel keeps both the file and your
+changes. Save As, saving selected text and signing don't write over a file that is open in another tab: close
+that tab first, or choose another name.
+
+When you come back to LimarePDF after another app changed a file open here, its tab shows a notice with
+**Reload**. ☰ > File > **Reload from disk** reads the file again as it now is; with unsaved changes it asks
+first, as they are lost. Reloading keeps the page you were on.
 
 Saving writes a temporary file beside the document and then replaces the document with it, so a save that fails
 part way leaves the original as it was. On Linux and macOS, the temporary file is readable only by you while it is
@@ -118,10 +143,25 @@ signed original.
 Everything that changes the document can be undone with Ctrl+Z, and redone with Ctrl+Y (or Ctrl+Shift+Z), up to 20
 steps back. Each step keeps a whole copy of the document, and a document's steps are limited to 1 GB together, so
 undo goes back fewer steps on very large documents (about 7 on a 139 MB scan); the latest change can always be
-undone. Deleting shows a notice with an Undo button.
+undone.
 
-While you type in a line, a note, a text box or a form field, Ctrl+Z and Ctrl+Y undo and redo the typing; once it
-is kept, Undo takes the whole change back.
+Deleting pages, comments, objects or bookmarks, marking text for redaction, flattening, resetting a form and changing password settings show a
+notice at the bottom of the window with an Undo button, which takes back that change in that document only. The
+notice goes as soon as something comes after the change there (another change, Undo, Redo or typing). Going to
+another tab hides it; come back within 30 seconds and it shows again. Notices that only tell you something (there
+are no redaction marks to apply, say) have no Undo button.
+
+While you type in a line, a note, a text box, a form field or any of the inspector's boxes, Ctrl+Z and Ctrl+Y undo
+and redo the typing there and nothing else; with nothing left to undo there, they do nothing. Once it is kept (when
+you leave the box), Undo takes the whole change back, and the box starts with nothing to undo when you come back to
+it.
+
+A command that changes or uses the document (rotating or deleting a page, removing blank pages, saving, printing,
+exporting, signing, Undo itself) keeps what you are typing first, as clicking away would: a step of its own, which
+Undo takes back, before the command's step. So Undo clicked on the toolbar while you type takes back what you
+typed. Text that can't be kept (a form value LimarePDF can't write) stays as typed, with the reason shown, and the
+command doesn't run. Commands that only show something (zoom, moving between pages, opening a section of the
+inspector) leave your typing as it is.
 
 ## Dialogs
 
@@ -142,7 +182,7 @@ there is room (Copies and Print on, a signature's Reason and Location) and go on
 of documents or certificates are an outlined box with each row's buttons on its right (under it in a narrow
 window); facts to read, such as a certificate's, have their names in a column on the left.
 
-A question about a document (Flatten, Apply redactions, Discard changes and the others) acts on the document it was
+A question about a document (Flatten, Apply redactions, Save changes and the others) acts on the document it was
 asked about, even if another tab has come to the front meanwhile, and brings it back to the front. If that document
 changed or was closed while the question was open, nothing is done, and a message says so.
 
@@ -154,10 +194,11 @@ something to do and × to dismiss it. At most two show at a time.
 | Notice | Button |
 | --- | --- |
 | Its digital signatures are being checked, and then how they checked, coloured green, amber, grey or red (always first; see [Digital signatures](signatures.md#checking-a-signed-pdf)) | Signatures |
+| Another app or tab changed its file since LimarePDF opened or saved it: checked when you come back to the window, when you open the file again and when you save ([Saving](#saving)) | Reload |
 | It was restored from a recovery copy, as it was at the time shown, and isn't saved; a signed document's signatures aren't checked ([Recovery copies](#recovery-copies)) | Save as… |
 | An earlier recovery copy, made before content was removed, couldn't be deleted, and where it is | Show file |
 | Recovery copies of it can't be kept right now, and why | Save |
-| The file is damaged, and LimarePDF repaired it to open it: some content may be missing. The original stays as it is: the document counts as changed (closing it warns of unsaved changes), and Save asks whether to replace the original or save the repaired copy as a new file. A signed file's signatures can't vouch for what is shown (they show *can't check*, or a change that isn't allowed), and the repaired copy can't keep them ([details](rendering.md#damaged-files)) | Save as… |
+| The file is damaged, and LimarePDF repaired it to open it: some content may be missing. The original stays as it is: the document counts as changed (closing it asks whether to save the changes), and Save asks whether to replace the original or save the repaired copy as a new file. A signed file's signatures can't vouch for what is shown (they show *can't check*, or a change that isn't allowed), and the repaired copy can't keep them ([details](rendering.md#damaged-files)) | Save as… |
 | The file isn't put together quite as the PDF format asks, so other PDF apps may show it differently: some content could be missing or different in them. Saving a copy writes it the way LimarePDF shows it, which every app reads the same, and the notice goes. Not shown for repaired files (the notice above covers them) or signed ones (their signatures show *can't check* and say why) ([details](rendering.md#files-other-apps-may-show-differently)) | Save as… |
 | The document was password-protected: saving removes the protection unless you set it again. A document that opens without a password but has a permissions password (which can limit printing, copying or changes; other readers open it without asking too) says so instead: saving removes that password unless you set it again ([Password protection](security.md)) | Password security |
 | Areas are marked for redaction but the marks haven't been applied (kept up to date while you work; [Redaction](redaction.md)) | Apply redactions… |
@@ -181,8 +222,8 @@ copies are not autosave: **your own files are never written by them.**
 
 - A copy is made about a minute after you change a document, then at most once a minute while you go on changing it.
   It holds the document as it was then, so changes made in the last minute or so before a crash can be lost. Text
-  still being typed (a comment, a form field, a reply) isn't in a copy until it is kept, by clicking away or
-  applying it.
+  still being typed (a comment, a form field, a reply) isn't in a copy until it is kept, by clicking away,
+  applying it, or a command that keeps it first (saving, printing, a page command).
 - Saving or closing a document deletes its copy, and quitting normally deletes them all.
 - Password-protected documents get no copies: not one opened with a password, not one you set a password on (its
   copy is deleted first), not pages taken from one, and not a document you add a protected document's pages to
@@ -247,7 +288,7 @@ settings open the matching section of the inspector.
 
 The page and document settings apply as you set them, with no Apply button, each change one undo step: typed
 text when you press Enter or leave the field, a choice at once, a number when you stop dragging it or leave its
-box. Saving or closing keeps a field you are still typing in. Password security is the exception: its Apply button
+box. Saving, printing and other commands keep a field you are still typing in. Password security is the exception: its Apply button
 sets the passwords, which take effect when you save.
 
 Right-click a page, an object, selected words or a thumbnail for a short menu of what applies there.
@@ -302,7 +343,7 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Ctrl+A, Ctrl+C | Select all text on the page, copy it (read tool) |
 | Esc | Cancel: close an open list, menu or colour picker (only that), finish (and keep) new text, a line, a note, a text box or a form field being typed, clear the selection, or leave a tool for the read tool |
 | Ctrl+B, Ctrl+I | Bold, Italic for the words selected in new text being typed (Add text) or a line being edited on the page; with nothing selected, the word at the caret, or what is typed next between words |
-| Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) while typing new text, a line, a note, a text box or the inspector's text | Undo, redo the typing there (and the styles, in new text and lines), not the document |
+| Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) while typing new text, a line, a note, a text box, a form field or in any box of the inspector | Undo, redo the typing there (and the styles, in new text and lines), not the document |
 | Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |
 | Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the top bar, tabs, bottom bar and panels left to right; inside a dialog, its fields and then its buttons. Space or Enter presses the button. In a form, Tab moves between its fields; Ctrl+K reaches every command |
 

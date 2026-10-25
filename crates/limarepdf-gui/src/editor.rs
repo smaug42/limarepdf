@@ -130,6 +130,48 @@ struct PenStroke {
     join: Option<(u32, u16)>,
 }
 
+/// A kind of typing that isn't in the document yet (see [`Editor::pending`]), in the
+/// order they are kept before a command ([`Editor::keep`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Typed {
+    /// New text on a page.
+    Text,
+    /// A note or text box.
+    Writing,
+    /// The selected object's changes, in the inspector or typed over its line.
+    Object,
+    /// A form field.
+    Field,
+    /// The selected comment's changes in the inspector.
+    Comment,
+    /// A reply to it.
+    Reply,
+}
+
+impl Typed {
+    pub const ALL: [Typed; 6] = [
+        Typed::Text,
+        Typed::Writing,
+        Typed::Object,
+        Typed::Field,
+        Typed::Comment,
+        Typed::Reply,
+    ];
+}
+
+/// What [`Editor::keep`] took from the editor to keep, to put back if keeping it fails.
+pub struct Held(Kept);
+
+enum Kept {
+    Text(Box<PageText>),
+    Writing(Writing),
+    Object(Box<(Insp, Option<LineEdit>)>),
+    /// The value the field had before.
+    Field(String),
+    Comment,
+    Reply(String),
+}
+
 /// A note or text box being typed: a new one at `rect` (displayed-page points), or the
 /// existing one `id`.
 pub struct Writing {
@@ -149,6 +191,8 @@ pub struct Writing {
     /// A list or colour picker was open last frame: the click that closes it is not one
     /// outside a new note.
     picking: bool,
+    /// The note about a character a text box can't write.
+    refused: page_text::Refused,
 }
 
 impl Writing {
@@ -165,6 +209,7 @@ impl Writing {
             fresh: true,
             refocus: false,
             picking: false,
+            refused: page_text::Refused::default(),
         }
     }
 
@@ -489,43 +534,158 @@ fn size_box(
     chosen
 }
 
-/// A colour button, named for screen readers (egui leaves it unnamed).
+/// A colour button for PDF colour `c`, named for screen readers (egui leaves it unnamed).
 pub fn color_button(ui: &mut egui::Ui, c: &mut [f32; 3], name: &str) -> egui::Response {
-    let r = ui.color_edit_button_rgb(c);
+    // The value egui's picker last gave for `c`: converting back and forth isn't exact,
+    // and egui keeps a grey's hue by the value it gave (BUG-38).
+    let key = ui.auto_id_with("pdf-colour");
+    let mut shown = ui
+        .data(|d| d.get_temp::<([f32; 3], [f32; 3])>(key))
+        .filter(|(pdf, _)| pdf == c)
+        .map_or_else(|| to_linear(*c), |(_, shown)| shown);
+    let r = ui.color_edit_button_rgb(&mut shown);
+    // Only a change made in the picker is taken back: a colour only looked at stays
+    // exactly as it was.
+    if r.changed() {
+        *c = from_linear(shown);
+        ui.data_mut(|d| d.insert_temp(key, (*c, shown)));
+    }
     dialogs::set_name(&r, name);
     r
 }
 
+/// PDF colour `c` as egui's colour pickers take it. A PDF's RGB values are what the page
+/// shows (gamma-encoded, as sRGB), while egui's pickers work in linear light; given the
+/// values as they are, a mid grey looked lighter in the picker than on the page (BUG-38).
+fn to_linear(c: [f32; 3]) -> [f32; 3] {
+    c.map(|v| egui::ecolor::linear_from_gamma(v.clamp(0.0, 1.0)))
+}
+
+/// The PDF colour of a colour egui's pickers give ([`to_linear`]).
+fn from_linear(c: [f32; 3]) -> [f32; 3] {
+    c.map(|v| egui::ecolor::gamma_from_linear(v).clamp(0.0, 1.0))
+}
+
 /// The colour button for text in `colors` (each once, the first the picker starts from):
-/// with more than one, it shows them side by side and says the colour is mixed. Returns
-/// the colour picked.
+/// with more than one, it shows them side by side and says the colour is mixed, and its
+/// picker offers each to make it all that colour. Returns the colour picked: anything
+/// done in the picker is a pick, even of the colour it started from, so picking the
+/// first colour of mixed text makes it all that colour; opening and closing it is not.
 fn text_color_button(ui: &mut egui::Ui, colors: &[[f32; 3]]) -> Option<[f32; 3]> {
+    use egui::widgets::color_picker::{color_picker_hsva_2d, Alpha};
     let was = colors.first().copied().unwrap_or([0.0; 3]);
-    let mut c = was;
     let mixed = colors.len() > 1;
-    let r = color_button(
-        ui,
-        &mut c,
+    let popup = ui.auto_id_with("text-colour");
+    let open = egui::Popup::is_id_open(ui.ctx(), popup);
+    let (rect, r) = ui.allocate_exact_size(ui.spacing().interact_size, Sense::click());
+    r.widget_info(|| egui::WidgetInfo::new(egui::WidgetType::ColorButton));
+    dialogs::set_name(
+        &r,
         if mixed {
             "Text colour (mixed)"
         } else {
             "Text colour"
         },
     );
-    if mixed {
-        // Over the swatch, inside the button's border.
-        let swatch = r.rect.shrink(2.0);
-        let w = swatch.width() / colors.len() as f32;
+    if ui.is_rect_visible(rect) {
+        let look = if open {
+            &ui.visuals().widgets.open
+        } else {
+            ui.style().interact(&r)
+        };
+        let rect = rect.expand(look.expansion);
+        // Each colour side by side, inside the button's border.
+        let inner = rect.shrink(1.0);
+        let w = inner.width() / colors.len().max(1) as f32;
         for (i, &c) in colors.iter().enumerate() {
-            let x = swatch.min.x + w * i as f32;
-            let band =
-                Rect::from_min_max(Pos2::new(x, swatch.min.y), Pos2::new(x + w, swatch.max.y));
-            let [r, g, b] = c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
-            ui.painter()
-                .rect_filled(band, 0.0, Color32::from_rgb(r, g, b));
+            let x = inner.min.x + w * i as f32;
+            let band = Rect::from_min_max(Pos2::new(x, inner.min.y), Pos2::new(x + w, inner.max.y));
+            ui.painter().rect_filled(band, 0.0, rgb32(c));
         }
+        let corners = look.corner_radius.at_most(2);
+        let border = (1.0, look.bg_fill);
+        ui.painter()
+            .rect_stroke(rect, corners, border, StrokeKind::Inside);
     }
-    (!same_color(c, was)).then_some(c)
+    // The colours there were when the picker opened, offered while it stays open.
+    let offered = popup.with("offered");
+    let hsva_id = popup.with("hsva");
+    if !open {
+        ui.data_mut(|d| {
+            d.remove::<Vec<[f32; 3]>>(offered);
+            d.remove::<egui::ecolor::Hsva>(hsva_id);
+        });
+    }
+    let mut chosen = None;
+    egui::Popup::menu(&r)
+        .id(popup)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            let offer = ui.data_mut(|d| d.get_temp_mut_or(offered, colors.to_vec()).clone());
+            // The picker keeps its own hue and saturation where the colour has none
+            // (black, greys), as egui's own colour button does.
+            let [r, g, b] = to_linear(was);
+            let start = egui::Rgba::from_rgb(r, g, b);
+            let mut hsva = ui
+                .data(|d| d.get_temp::<egui::ecolor::Hsva>(hsva_id))
+                .filter(|h| same_color(from_linear(h.to_rgb()), was))
+                .unwrap_or_else(|| egui::ecolor::Hsva::from(start));
+            ui.spacing_mut().slider_width = PICKER_WIDTH;
+            let picker = ui.vertical(|ui| color_picker_hsva_2d(ui, &mut hsva, Alpha::Opaque));
+            ui.data_mut(|d| d.insert_temp(hsva_id, hsva));
+            // egui's picker ends with its colour area and hue slider: a press there picks
+            // the colour under the pointer, even the one the picker started from. A
+            // change made only by converting colours back and forth is no pick.
+            let s = ui.spacing();
+            let slid = PICKER_WIDTH + s.item_spacing.y + s.interact_size.y;
+            let r = picker.response.rect;
+            let sliders = Rect::from_min_max(Pos2::new(r.left(), r.bottom() - slid), r.max);
+            let pressed = ui.input(|i| {
+                let at = i.pointer.press_origin();
+                (i.pointer.any_down() || i.pointer.any_released())
+                    && at.is_some_and(|p| sliders.contains(p))
+            });
+            let c = from_linear(hsva.to_rgb());
+            if pressed || (picker.inner && !same_color(c, was)) {
+                // A colour the text has, to the eye, is that colour exactly.
+                let had = offer.iter().copied().find(|o| same_color(*o, c));
+                chosen = Some(had.unwrap_or(c));
+            }
+            if offer.len() > 1 {
+                ui.add_space(4.0);
+                ui.label("In the text");
+                ui.horizontal(|ui| {
+                    for (i, &c) in offer.iter().enumerate() {
+                        let size = ui.spacing().interact_size;
+                        let (rect, r) = ui.allocate_exact_size(size, Sense::click());
+                        let name = format!("Colour {} of {} in the text", i + 1, offer.len());
+                        r.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name)
+                        });
+                        dialogs::set_name(&r, &name);
+                        let look = ui.style().interact(&r);
+                        ui.painter().rect_filled(rect, 2.0, rgb32(c));
+                        let border = (look.fg_stroke.width, look.bg_stroke.color);
+                        ui.painter()
+                            .rect_stroke(rect, 2.0, border, StrokeKind::Inside);
+                        if r.on_hover_text("Make it all this colour").clicked() {
+                            chosen = Some(c);
+                            ui.close();
+                        }
+                    }
+                });
+            }
+        });
+    chosen
+}
+
+/// The width of the text colour picker's colour area and hue slider, as egui's own.
+const PICKER_WIDTH: f32 = 275.0;
+
+/// A colour, its parts from 0 to 1, as egui draws it.
+fn rgb32(c: [f32; 3]) -> Color32 {
+    let [r, g, b] = c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+    Color32::from_rgb(r, g, b)
 }
 
 /// Whether two colours are the same to the eye. The colour buttons store a colour back
@@ -540,6 +700,17 @@ fn settled(ctx: &egui::Context) -> bool {
     !egui::Popup::is_any_open(ctx)
         && !ctx.input(|i| i.pointer.any_down())
         && !ctx.egui_wants_keyboard_input()
+}
+
+/// The text box of the line being edited on `page`, in the tab's `scope`
+/// ([`Editor::scope`]).
+fn line_edit_id(scope: egui::Id, page: usize) -> egui::Id {
+    scope.with(("line-edit", page))
+}
+
+/// The inspector's text box for text object `id` on `page`, in the tab's `scope`.
+fn text_object_id(scope: egui::Id, page: usize, id: usize) -> egui::Id {
+    scope.with(("text-object", page, id))
 }
 
 /// A line of page text being edited in place: its page and object index. The text being
@@ -828,6 +999,9 @@ pub struct Editor {
     /// The colour around the line being edited (found by the tab), which hides the line
     /// under the editor; `None` until known.
     pub cover: Option<Color32>,
+    /// What the ids of the tab's text boxes are made from, so that no two documents share
+    /// one, nor their typing.
+    scope: egui::Id,
 }
 
 impl Default for Editor {
@@ -903,6 +1077,7 @@ impl Default for Editor {
             digital_error: None,
             page_colours: PageColours::Normal,
             cover: None,
+            scope: egui::Id::new("editor"),
         }
     }
 }
@@ -1036,6 +1211,30 @@ fn resize(orig: [f32; 4], h: usize, dx: f32, dy: f32, keep_aspect: bool) -> [f32
 }
 
 impl Editor {
+    /// The editor of tab `tab` (its [`crate::tab::Tab::id`]).
+    pub fn for_tab(tab: u64) -> Self {
+        let scope = egui::Id::new(("tab", tab));
+        let mut ed = Self {
+            scope,
+            ..Self::default()
+        };
+        ed.form.scope = scope;
+        ed
+    }
+
+    /// What the ids of the tab's text boxes are made from: each is this with what the box
+    /// edits.
+    pub fn scope(&self) -> egui::Id {
+        self.scope
+    }
+
+    /// The text box of the note or text box being typed.
+    pub fn writing_id(&self) -> Option<egui::Id> {
+        let w = self.writing.as_ref()?;
+        let kind = if w.note { "note-text" } else { "box-text" };
+        Some(self.scope.with((kind, w.page, w.id)))
+    }
+
     /// Forget cached object lists (after any change to the document).
     pub fn invalidate(&mut self) {
         self.objs.clear();
@@ -1111,28 +1310,81 @@ impl Editor {
 
     /// Keep what was typed: a new note or text box with some text, or changed text.
     pub fn finish_writing(&mut self) {
-        let Some(w) = self.writing.take().filter(Writing::changed) else {
-            return;
-        };
-        let r = w.rect;
-        self.actions.push(match w.id {
-            Some(id) => Action::AnnotText(w.page, id, w.text),
-            None if w.note => {
-                Action::AddNote(w.page, ((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0), w.text)
-            }
-            None => Action::AddTextBox(w.page, r, w.text),
-        });
+        self.keep(Typed::Writing);
     }
 
     /// Keep the new text being typed, if any: added as one undo step.
     pub fn finish_adding(&mut self) {
-        let Some(a) = self.adding.take().filter(PageText::has_text) else {
-            return;
+        if let Some(held) = self.keep(Typed::Text) {
+            self.done(held);
+        }
+    }
+
+    /// Queue the change that keeps `piece` and stop typing it, as clicking away does.
+    /// Returns what was being typed, for [`Self::put_back`] if the change fails or
+    /// [`Self::done`] once it is made; `None` when there was nothing to keep (a new note
+    /// or text left empty goes).
+    pub fn keep(&mut self, piece: Typed) -> Option<Held> {
+        let (action, held) = match piece {
+            Typed::Text => {
+                let a = self.adding.take().filter(PageText::has_text)?;
+                let add = Action::AddText(a.page, a.at, a.text.clone());
+                (add, Kept::Text(Box::new(a)))
+            }
+            Typed::Writing => {
+                let w = self.writing.take().filter(Writing::changed)?;
+                let (r, text) = (w.rect, w.text.clone());
+                let a = match w.id {
+                    Some(id) => Action::AnnotText(w.page, id, text),
+                    None if w.note => {
+                        Action::AddNote(w.page, ((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0), text)
+                    }
+                    None => Action::AddTextBox(w.page, r, text),
+                };
+                (a, Kept::Writing(w))
+            }
+            Typed::Object => {
+                let a = self.insp_change()?;
+                let held = (self.insp.take()?, self.line_edit.take());
+                (a, Kept::Object(Box::new(held)))
+            }
+            Typed::Field => {
+                let mut acts = Vec::new();
+                let original = self.form.commit_typing(&mut acts)?;
+                (acts.pop()?, Kept::Field(original))
+            }
+            Typed::Comment => (self.annot_changes()?, Kept::Comment),
+            Typed::Reply => {
+                let a = self.reply_to()?;
+                (a, Kept::Reply(std::mem::take(&mut self.reply)))
+            }
         };
+        self.actions.push(action);
+        Some(Held(held))
+    }
+
+    /// Go on typing what [`Self::keep`] took, its change not made.
+    pub fn put_back(&mut self, held: Held) {
+        match held.0 {
+            Kept::Text(a) => self.adding = Some(*a),
+            Kept::Writing(w) => self.writing = Some(w),
+            Kept::Object(o) => {
+                let (insp, line) = *o;
+                (self.insp, self.line_edit) = (Some(insp), line);
+            }
+            Kept::Field(original) => self.form.uncommit(original),
+            Kept::Comment => {}
+            Kept::Reply(r) => self.reply = r,
+        }
+    }
+
+    /// What [`Self::keep`] took is in the document now.
+    pub fn done(&mut self, held: Held) {
         // The next new text carries on in the style this one ended in, as typing would.
-        let end = page_text::Look::of(a.text.end_style());
-        (self.tfont, self.tsize, self.tcolor) = (end.font, end.size, end.color);
-        self.actions.push(Action::AddText(a.page, a.at, a.text));
+        if let Kept::Text(a) = held.0 {
+            let end = page_text::Look::of(a.text.end_style());
+            (self.tfont, self.tsize, self.tcolor) = (end.font, end.size, end.color);
+        }
     }
 
     /// How new text is set, from the inspector.
@@ -1155,22 +1407,6 @@ impl Editor {
             || self.annot_changes().is_some()
             || self.reply_to().is_some()
             || self.insp_change().is_some()
-    }
-
-    /// Queue the changes that keep what [`Self::pending`] finds, as clicking away and Add
-    /// reply would.
-    pub fn keep_pending(&mut self) {
-        self.finish_adding();
-        self.finish_writing();
-        self.commit_insp();
-        self.form.commit_typing(&mut self.actions);
-        if let Some(a) = self.annot_changes() {
-            self.actions.push(a);
-        }
-        if let Some(a) = self.reply_to() {
-            self.reply.clear();
-            self.actions.push(a);
-        }
     }
 
     /// The selected comment's changes in the inspector, as the change that applies them.
@@ -1215,11 +1451,7 @@ impl Editor {
     /// Keep the selected object's changes (see [`Self::insp_change`]) as one undo step. The
     /// working copy starts again from the object.
     fn commit_insp(&mut self) {
-        if let Some(a) = self.insp_change() {
-            self.actions.push(a);
-            self.insp = None;
-            self.line_edit = None;
-        }
+        self.keep(Typed::Object);
     }
 
     /// Edit a line of page text on the page, with `pick` selected.
@@ -1280,18 +1512,9 @@ impl Editor {
 
     /// Whether a line of page text is being edited, or new text, a note or a text box
     /// typed, on the page.
+    #[cfg(test)]
     pub fn typing_on_page(&self) -> bool {
         self.line_edit.is_some() || self.adding.is_some() || self.writing.is_some()
-    }
-
-    /// Whether text is typed on the page ([`Self::typing_on_page`]) or a line's text in the
-    /// inspector: Undo and Redo there take back the typing.
-    pub fn typing_text(&self, ctx: &egui::Context) -> bool {
-        self.typing_on_page()
-            || self.insp.as_ref().is_some_and(|i| {
-                let id = egui::Id::new(("text-object", i.key.0, i.key.1));
-                ctx.memory(|m| m.has_focus(id))
-            })
     }
 
     /// The line being edited drawn in place, as its page and the box to hide (page
@@ -1342,7 +1565,7 @@ impl Editor {
         };
         let ctx = ui.ctx().clone();
         let to_screen = |x: f32, y: f32| Pos2::new(r.min.x + x * k, r.min.y + y * k);
-        let id = egui::Id::new(("line-edit", page));
+        let id = line_edit_id(self.scope, page);
         let drawn = drawn_in_place(&o);
         if ctx.memory(|m| m.has_focus(id)) {
             // Before the editor sees the keys: what can't be written in the font it goes
@@ -1363,7 +1586,7 @@ impl Editor {
                 insp.text.italic(sel);
             }
             if let Some(c) = t.refused {
-                le.refused.mark(&ctx, page_text::note(font, c));
+                le.refused.mark(&ctx, page_text::note(font, &c));
             }
         }
         let b = o.bbox;
@@ -1511,7 +1734,7 @@ impl Editor {
         if !edit.has_focus() && (le.refocus || in_inspector || picking) {
             // Not in the click's own frames: a list it opens shows from the next one.
             if settled(&ctx) && !picking && !in_inspector {
-                edit.request_focus();
+                page_text::give_back(&ctx, id);
                 le.refocus = false;
             } else {
                 le.refocus = true;
@@ -1543,6 +1766,9 @@ impl Editor {
     /// page should not take the pointer this frame: it is over the text box, or the typing
     /// just ended.
     fn writing_ui(&mut self, ui: &mut egui::Ui, page: usize, r: Rect, k: f32) -> bool {
+        let (Some(id), scope) = (self.writing_id(), self.scope) else {
+            return false;
+        };
         let Some(w) = self.writing.as_mut().filter(|w| w.page == page) else {
             return false;
         };
@@ -1558,7 +1784,7 @@ impl Editor {
                 ui.painter()
                     .rect_filled(area, 2.0, Color32::from_rgb(cr, cg, cb));
             }
-            let inner = egui::Area::new(ui.id().with(("note-writing", page)))
+            let inner = egui::Area::new(scope.with(("note-writing", page)))
                 .fixed_pos(area.right_top() + Vec2::new(6.0, 0.0))
                 .order(egui::Order::Foreground)
                 .show(ui.ctx(), |ui| {
@@ -1567,7 +1793,7 @@ impl Editor {
                             ui.set_width(240.0);
                             ui.add(
                                 egui::TextEdit::multiline(&mut w.text)
-                                    .id(egui::Id::new(("note-text", page)))
+                                    .id(id)
                                     .hint_text("Comment")
                                     .desired_rows(4)
                                     .desired_width(f32::INFINITY),
@@ -1594,17 +1820,30 @@ impl Editor {
                 (inner.inner, on_page && !picking, on_page && picking)
             }
         } else {
+            // Set in Helvetica, or its embedded face: what neither has isn't typed, as on
+            // the page. A note's comment is a text string, which takes any character.
+            if ui.ctx().memory(|m| m.has_focus(id)) {
+                let helvetica = FontChoice::default();
+                if let Some(c) = page_text::leave_out_untypable(ui, false, helvetica) {
+                    let note = page_text::fixed_note(&c).to_string();
+                    w.refused.mark(ui.ctx(), note);
+                }
+            }
             let te = egui::TextEdit::multiline(&mut w.text)
-                .id(egui::Id::new(("box-text", page)))
+                .id(id)
                 .font(egui::FontId::proportional((w.size * k).clamp(6.0, 96.0)))
                 .desired_rows(1)
                 .min_size(area.size())
                 .desired_width(area.width())
                 .margin(egui::Margin::same(2));
             *ui.visuals_mut() = egui::Visuals::light();
-            let out = ui.put(area, te);
+            // As `Ui::put` lays it out, keeping the output for the note at the caret.
+            let layout = egui::Layout::centered_and_justified(egui::Direction::TopDown);
+            let at = egui::UiBuilder::new().max_rect(area).layout(layout);
+            let out = ui.scope_builder(at, |ui| te.show(ui)).inner;
             *ui.visuals_mut() = theme;
-            (out, false, false)
+            w.refused.show(ui.ctx(), &out, id);
+            (out.response.response, false, false)
         };
         if w.fresh {
             out.request_focus();
@@ -1632,7 +1871,7 @@ impl Editor {
         }
         // After the keys, so the Esc that closed the colour picker doesn't also end it.
         if w.refocus && settled(ui.ctx()) && !out.has_focus() {
-            out.request_focus();
+            page_text::hand_back(ui.ctx(), out.id);
             w.refocus = false;
         }
         held || (!w.note && out.hovered())
@@ -2551,7 +2790,7 @@ impl Editor {
                     } else {
                         // New text there; with nothing typed yet, it moves there.
                         let look = self.new_look();
-                        self.adding = Some(PageText::new(page, (p.x, p.y), look));
+                        self.adding = Some(PageText::new(self.scope, page, (p.x, p.y), look));
                     }
                 }
             }
@@ -3428,12 +3667,23 @@ impl Editor {
             });
             let label = if e.text.is_some() { "Text" } else { "Comment" };
             ui.label(label);
-            let r = ui.add(
-                egui::TextEdit::multiline(&mut e.contents)
-                    .desired_rows(4)
-                    .desired_width(f32::INFINITY),
-            );
-            dialogs::set_name(&r, label);
+            // A text box's text is set in Helvetica, or its embedded face: what neither has
+            // isn't typed, as on the page. A comment is a text string, which takes any.
+            let id = self.scope.with(("annot-text", a.id));
+            if e.text.is_some() && ui.ctx().memory(|m| m.has_focus(id)) {
+                let helvetica = FontChoice::default();
+                if let Some(c) = page_text::leave_out_untypable(ui, false, helvetica) {
+                    let note = page_text::fixed_note(&c).to_string();
+                    self.text_refused.mark(ui.ctx(), note);
+                }
+            }
+            let out = egui::TextEdit::multiline(&mut e.contents)
+                .id(id)
+                .desired_rows(4)
+                .desired_width(f32::INFINITY)
+                .show(ui);
+            self.text_refused.show(ui.ctx(), &out, id);
+            dialogs::set_name(&out.response.response, label);
             // Changes are kept as they are made, each finished one a step to undo; the
             // comment when it is left.
             if theme::glyph_button(ui, icon::TRASH, "Delete").clicked() {
@@ -3657,7 +3907,7 @@ impl Editor {
                     // line editor, which then takes the keyboard back.
                     Some(a) => {
                         let end = a.text.text().chars().count();
-                        let sel = selection(ui.ctx(), a.id()).unwrap_or((end, end));
+                        let sel = page_text::held(ui.ctx(), a.id()).unwrap_or((end, end));
                         if styles_ui(ui, &mut a.text, sel, 4.0..=200.0) {
                             a.refocus = true;
                         }
@@ -3755,9 +4005,8 @@ impl Editor {
                 return;
             }
             Tool::Sign => {
-                let out = self
-                    .sign
-                    .ui(ui, &mut self.sign_kit, &mut self.author, self.sign_items);
+                let (kit, author) = (&mut self.sign_kit, &mut self.author);
+                let out = self.sign.ui(ui, self.scope, kit, author, self.sign_items);
                 self.finish_signing |= out.finish;
                 if let Some(e) = &self.sign_error {
                     ui.colored_label(ui.visuals().error_fg_color, e);
@@ -3875,7 +4124,7 @@ impl Editor {
                 ui.add_space(4.0);
                 // While the line is edited on the page, the text is typed there.
                 if self.line_edit.is_none() {
-                    let id = egui::Id::new(("text-object", page, id));
+                    let id = text_object_id(self.scope, page, id);
                     // What can't be written isn't typed, as on the page.
                     if ui.ctx().memory(|m| m.has_focus(id)) {
                         let sel = selection(ui.ctx(), id).unwrap_or((0, 0));
@@ -3884,7 +4133,7 @@ impl Editor {
                         let (history, text) = (&mut insp.history, &mut insp.text);
                         page_text::undo_redo(ui.ctx(), id, &t, history, text);
                         if let Some(c) = t.refused {
-                            self.text_refused.mark(ui.ctx(), page_text::note(font, c));
+                            self.text_refused.mark(ui.ctx(), page_text::note(font, &c));
                         }
                     }
                     let mut typed = insp.text.text().to_string();
@@ -3911,7 +4160,7 @@ impl Editor {
                 } else {
                     // What is selected in the line being edited on the page, else all of it.
                     let sel = match self.line_edit.as_ref() {
-                        Some(le) => selection(ui.ctx(), egui::Id::new(("line-edit", le.page)))
+                        Some(le) => page_text::held(ui.ctx(), line_edit_id(self.scope, le.page))
                             .unwrap_or((0, 0)),
                         None => (0, insp.text.text().chars().count()),
                     };
@@ -3919,7 +4168,7 @@ impl Editor {
                 }
                 if self.line_edit.is_none() {
                     // The line being edited on the page watches its own changes.
-                    let id = egui::Id::new(("text-object", page, id));
+                    let id = text_object_id(self.scope, page, id);
                     let sel = selection(ui.ctx(), id);
                     let now = ui.input(|i| i.time);
                     let settled = settled(ui.ctx());
@@ -4019,6 +4268,76 @@ mod tests {
     use super::*;
     use limarepdf_core::Family;
 
+    /// BUG-38: egui's pickers show a PDF colour as the page does, and give back the
+    /// value they show.
+    #[test]
+    fn pickers_show_pdf_colours_as_the_page_does() {
+        let colours = [
+            [0.5, 0.5, 0.5],
+            [0.2, 0.6, 0.9],
+            [0.0; 3],
+            [1.0; 3],
+            [1.0, 0.0, 0.0],
+        ];
+        for c in colours {
+            let [r, g, b] = to_linear(c);
+            let shown = Color32::from(egui::Rgba::from_rgb(r, g, b));
+            let page = rgb32(c);
+            let near = |a: u8, b: u8| a.abs_diff(b) <= 1;
+            let same =
+                near(shown.r(), page.r()) && near(shown.g(), page.g()) && near(shown.b(), page.b());
+            assert!(same, "{c:?}: {shown:?}, {page:?}");
+            assert!(same_color(from_linear(to_linear(c)), c), "{c:?}");
+        }
+    }
+
+    /// BUG-38: a colour button opened and closed leaves its colour exactly as it was.
+    #[test]
+    fn a_colour_only_looked_at_stays_as_it_was() {
+        let ctx = egui::Context::default();
+        let was = [0.3, 0.6, 0.9];
+        let mut c = was;
+        // Draws the button with `events`; returns where it is.
+        let frame = |events: Vec<egui::Event>, c: &mut [f32; 3]| {
+            let raw = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            let mut at = Pos2::ZERO;
+            let mut out = ctx.run_ui(raw, |ui| {
+                at = color_button(ui, c, "Colour").rect.center();
+            });
+            // Nothing draws the frame.
+            out.textures_delta.clear();
+            at
+        };
+        let at = frame(vec![], &mut c);
+        let press = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(vec![egui::Event::PointerMoved(at)], &mut c);
+        frame(vec![press(true)], &mut c);
+        frame(vec![press(false)], &mut c);
+        for _ in 0..3 {
+            frame(vec![], &mut c);
+        }
+        assert!(egui::Popup::is_any_open(&ctx), "the picker didn't open");
+        assert_eq!(c, was);
+    }
+
+    /// Queue the changes that keep what [`Editor::pending`] finds, as the tab does before a
+    /// command, and stop typing them.
+    fn keep_all(ed: &mut Editor) {
+        for piece in Typed::ALL {
+            if let Some(held) = ed.keep(piece) {
+                ed.done(held);
+            }
+        }
+    }
+
     #[test]
     fn comment_changes_and_replies_not_yet_kept_are_pending() {
         let mut pdf = limarepdf_core::Pdf::new();
@@ -4048,7 +4367,7 @@ mod tests {
         if let Some((_, e)) = ed.annot_insp.as_mut() {
             e.contents = "Walrus comment".into();
         }
-        ed.keep_pending();
+        keep_all(&mut ed);
         assert!(matches!(
             ed.actions.as_slice(),
             [Action::SetAnnot(0, i, e), Action::Reply(0, j, r)]
@@ -4199,7 +4518,7 @@ mod tests {
         assert!(!ed.pending());
         // A change smaller than a hundredth is still a change.
         ed.insp.as_mut().unwrap().text.set_size((0, 22), 10.13);
-        ed.keep_pending();
+        keep_all(&mut ed);
         assert!(matches!(
             ed.actions.as_slice(),
             [Action::EditText(0, 2, te, false)] if te.parts[0].size == 10.13
@@ -4329,7 +4648,7 @@ mod tests {
         ed.select_object(0, 2);
         ed.sync_insp();
         ed.insp.as_mut().unwrap().text.set_size((0, 22), 18.0);
-        ed.keep_pending();
+        keep_all(&mut ed);
         assert!(matches!(
             ed.actions.as_slice(),
             [Action::EditText(0, 2, te, false)]

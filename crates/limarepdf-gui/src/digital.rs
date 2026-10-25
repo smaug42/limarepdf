@@ -8,6 +8,7 @@
 //! means the password has to be typed again: a form comes back with what else was typed
 //! and the error, its passwords empty.
 
+use crate::app::{unconfirmed, unconfirmed_text};
 use crate::dialogs::{self, Btn, Shell};
 use crate::signing::Saved;
 use crate::theme;
@@ -367,8 +368,35 @@ struct Task {
     what: &'static str,
     /// The form it was started from, without its passwords, shown again if it fails.
     form: Page,
-    /// Its result: a sentence for the window.
-    rx: Receiver<limarepdf_core::Result<String>>,
+    /// Its result: what the window says.
+    rx: Receiver<limarepdf_core::Result<(Said, String)>>,
+}
+
+/// How what the Digital IDs window last did went.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Said {
+    Done,
+    /// Done, but something didn't fully work.
+    Warning,
+    Failed,
+}
+
+/// What the window says of something done: `head`, then what didn't fully work
+/// (`warnings`, each to follow "but"), then `tail`.
+fn told(head: &str, warnings: &[String], tail: &str) -> (Said, String) {
+    let mut text = head.to_string();
+    if !warnings.is_empty() {
+        text += &format!(" But {}.", warnings.join(", and "));
+    }
+    if !tail.is_empty() {
+        text += &format!(" {tail}");
+    }
+    let said = if warnings.is_empty() {
+        Said::Done
+    } else {
+        Said::Warning
+    };
+    (said, text)
 }
 
 /// The Digital IDs window.
@@ -378,8 +406,8 @@ pub struct IdsWindow {
     pick: usize,
     page: Page,
     task: Option<Task>,
-    /// The last thing done (`true`) or why it failed.
-    note: Option<(bool, String)>,
+    /// The last thing done, or why it failed.
+    note: Option<(Said, String)>,
     /// Remove was clicked once; the second click removes.
     remove_armed: bool,
 }
@@ -424,7 +452,7 @@ impl IdsWindow {
             out.changed = true;
             self.reload(None);
             match r {
-                Ok(text) => self.note = Some((true, text)),
+                Ok(note) => self.note = Some(note),
                 Err(e) => self.page = task.form.failed(&e),
             }
         }
@@ -575,9 +603,11 @@ impl IdsWindow {
                         .on_hover_text("Sign with this ID unless you choose another")
                         .clicked()
                     {
-                        self.note = Some(match store.set_default(&id) {
-                            Ok(()) => (true, format!("\"{}\" is now the default.", label(&id))),
-                            Err(e) => (false, format!("{e:#}")),
+                        let now = format!("\"{}\" is now the default.", label(&id));
+                        self.note = Some(match unconfirmed(store.set_default(&id)) {
+                            Ok(None) => told(&now, &[], ""),
+                            Ok(Some(why)) => told(&now, &[unconfirmed_text(&why)], ""),
+                            Err(e) => (Said::Failed, format!("{e:#}")),
                         });
                         out.changed = true;
                         self.reload(Some(&id.name));
@@ -592,9 +622,10 @@ impl IdsWindow {
                             .button(RichText::new("Remove for good").color(red))
                             .clicked()
                         {
+                            let removed = format!("Removed \"{}\".", label(&id));
                             self.note = Some(match store.remove(&id) {
-                                Ok(()) => (true, format!("Removed \"{}\".", label(&id))),
-                                Err(e) => (false, format!("{e:#}")),
+                                Ok(warnings) => told(&removed, &warnings, ""),
+                                Err(e) => (Said::Failed, format!("{e:#}")),
                             });
                             out.changed = true;
                             self.reload(None);
@@ -615,13 +646,13 @@ impl IdsWindow {
                 }
             });
         }
-        if let Some((ok, text)) = &self.note {
+        if let Some((said, text)) = &self.note {
             ui.add_space(dialogs::FIELD_GAP);
             let text = RichText::new(text);
-            let text = if *ok {
-                text
-            } else {
-                text.color(ui.visuals().error_fg_color)
+            let text = match said {
+                Said::Done => text,
+                Said::Warning => text.color(ui.visuals().warn_fg_color),
+                Said::Failed => text.color(ui.visuals().error_fg_color),
             };
             ui.add(egui::Label::new(text).wrap());
         }
@@ -692,7 +723,7 @@ impl IdsWindow {
         ctx: &Context,
         what: &'static str,
         form: Page,
-        work: impl FnOnce(IdStore) -> limarepdf_core::Result<String> + Send + 'static,
+        work: impl FnOnce(IdStore) -> limarepdf_core::Result<(Said, String)> + Send + 'static,
     ) {
         match self.store.clone() {
             Ok(store) => {
@@ -715,12 +746,13 @@ impl IdsWindow {
         f.again = Secret::default();
         let form = Page::Create(f);
         self.start(ctx, "Making the digital ID…", form, move |store| {
-            let id = store.create(&new, &password.0)?;
-            Ok(format!(
-                "Made the digital ID \"{}\". It is the default for signing. Keep a copy: \
-                 Export saves it with its key, for a backup or other apps.",
-                label(&id)
-            ))
+            let made = store.create(&new, &password.0)?;
+            let mut head = format!("Made the digital ID \"{}\".", label(&made.id));
+            if made.id.default {
+                head += " It is the default for signing.";
+            }
+            let tail = "Keep a copy: Export saves it with its key, for a backup or other apps.";
+            Ok(told(&head, &made.warnings, tail))
         });
     }
 
@@ -770,13 +802,16 @@ impl IdsWindow {
             }
             let bytes =
                 std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?;
-            let id = store.import(&bytes, &password.0, None)?;
-            Ok(format!(
-                "Imported \"{}\". It is the default for signing. {} still holds the ID: keep \
-                 it safe, or delete it if LimarePDF's copy is enough.",
-                label(&id),
+            let made = store.import(&bytes, &password.0, None)?;
+            let mut head = format!("Imported \"{}\".", label(&made.id));
+            if made.id.default {
+                head += " It is the default for signing.";
+            }
+            let tail = format!(
+                "{} still holds the ID: keep it safe, or delete it if LimarePDF's copy is enough.",
                 file.display()
-            ))
+            );
+            Ok(told(&head, &made.warnings, &tail))
         });
     }
 
@@ -887,18 +922,18 @@ impl IdsWindow {
     /// Saves the form's certificate to `path`. The form stays, with the error, if that
     /// fails.
     fn export_certificate(&mut self, mut f: Box<ExportForm>, path: &Path) {
-        match limarepdf_core::write_file(path, &f.id.cert.der) {
-            Ok(()) => {
-                self.note = Some((
-                    true,
-                    format!(
-                        "Saved the certificate of \"{}\" to {}. Recipients trust it in \
-                         LimarePDF with Edit > Trusted certificates > Add, or in their PDF \
-                         app's trusted certificates, after checking the fingerprint with you.",
-                        label(&f.id),
-                        path.display()
-                    ),
-                ));
+        match unconfirmed(limarepdf_core::write_file(path, &f.id.cert.der)) {
+            Ok(unsure) => {
+                let head = format!(
+                    "Saved the certificate of \"{}\" to {}.",
+                    label(&f.id),
+                    path.display()
+                );
+                let warnings: Vec<String> = unsure.iter().map(|w| unconfirmed_text(w)).collect();
+                let tail = "Recipients trust it in LimarePDF with Document > Digital signatures \
+                            > Trusted certificates… > Add certificate file…, or in their PDF \
+                            app's trusted certificates, after checking the fingerprint with you.";
+                self.note = Some(told(&head, &warnings, tail));
             }
             Err(e) => {
                 f.error = Some((Field::Form, sentence(&e)));
@@ -918,9 +953,9 @@ impl IdsWindow {
             let unlocked = store.unlock(&id, &password.0)?;
             let file_password = if fresh { &new_password } else { &password };
             let bytes = unlocked.to_p12(&file_password.0)?;
-            limarepdf_core::write_private(&path, &bytes)?;
-            Ok(format!(
-                "Saved \"{}\" with its key to {}, protected by {}. Keep it safe.",
+            let unsure = unconfirmed(limarepdf_core::write_private(&path, &bytes))?;
+            let head = format!(
+                "Saved \"{}\" with its key to {}, protected by {}.",
                 label(&id),
                 path.display(),
                 if fresh {
@@ -928,7 +963,9 @@ impl IdsWindow {
                 } else {
                     "the ID's password"
                 }
-            ))
+            );
+            let warnings: Vec<String> = unsure.iter().map(|w| unconfirmed_text(w)).collect();
+            Ok(told(&head, &warnings, "Keep it safe."))
         });
     }
 }
@@ -980,6 +1017,9 @@ pub struct Signed {
     pub certified: bool,
     /// Whether the signed file was confirmed on disk (decision D7).
     pub confirmed: bool,
+    /// Why the ID used couldn't be kept as the default for signing next time, if it
+    /// couldn't: to follow "but".
+    pub default_unsaved: Option<String>,
 }
 
 /// What the signing window did this frame.
@@ -1022,6 +1062,8 @@ pub struct SignWindow {
     /// A problem with signing itself, shown at the form's end (the app sets some too).
     pub error: Option<String>,
     task: Option<Receiver<limarepdf_core::Result<Signed>>>,
+    /// The signing under way was tried with no password (an imported ID can have none).
+    no_password: bool,
     /// The field the keyboard goes to when next drawn: the password.
     focus: Option<Field>,
 }
@@ -1057,6 +1099,7 @@ impl SignWindow {
             field_error: None,
             error: None,
             task: None,
+            no_password: false,
             focus: Some(Field::Password),
         };
         w.pick_default();
@@ -1095,18 +1138,11 @@ impl SignWindow {
             .is_some_and(|i| unusable(i).is_none())
     }
 
-    /// Whether signing can go ahead: an ID that can sign, and its password, which is asked
-    /// for beside it when missing.
+    /// Whether signing can go ahead: an ID that can sign. With no password typed, it is
+    /// tried with none, as an imported ID can have none; for one that has a password, the
+    /// password is asked for beside it then.
     fn ready(&mut self) -> bool {
-        if !self.can_sign() {
-            return false;
-        }
-        if self.password.0.is_empty() {
-            self.field_error = Some((Field::Password, "Type the ID's password.".into()));
-            self.focus = Some(Field::Password);
-            return false;
-        }
-        true
+        self.can_sign()
     }
 
     /// The signer agreed to sign although earlier signatures will report disallowed
@@ -1127,6 +1163,7 @@ impl SignWindow {
             return;
         };
         let password = std::mem::take(&mut self.password);
+        self.no_password = password.0.is_empty();
         let opt = |s: &str| Some(s.trim().to_string()).filter(|s| !s.is_empty());
         let (reason, location) = (opt(&self.reason), opt(&self.location));
         let certify = self.certify.then_some(self.permissions);
@@ -1158,8 +1195,18 @@ impl SignWindow {
                 Err(e) => return Err(e),
             };
             // The ID just used becomes the default; failing to note that doesn't undo the
-            // signing.
-            let _ = store.set_default(&id);
+            // signing, and is said with it.
+            let default_unsaved = match unconfirmed(store.set_default(&id)) {
+                Ok(None) => None,
+                Ok(Some(why)) => Some(format!(
+                    "your system couldn't confirm that the ID is now the default for signing \
+                     is safely on disk ({why})"
+                )),
+                Err(e) => Some(format!(
+                    "the ID couldn't be kept as the default for signing ({e:#}), so it may \
+                     need choosing next time"
+                )),
+            };
             Ok(Signed {
                 path: input.out,
                 bytes: signed.bytes,
@@ -1170,6 +1217,7 @@ impl SignWindow {
                 self_issued: id.cert.self_issued,
                 certified: certify.is_some(),
                 confirmed,
+                default_unsaved,
             })
         }));
     }
@@ -1182,6 +1230,11 @@ impl SignWindow {
                     Ok(s) => return SignOut::Done(Box::new(s)),
                     Err(e) => match e.downcast_ref::<DisallowedChanges>() {
                         Some(d) => self.disallowed = Some(disallowed_text(d)),
+                        // The ID has a password, and none was typed.
+                        None if wrong_password(&e) && self.no_password => {
+                            let missing = "Type the ID's password.";
+                            self.field_error = Some((Field::Password, missing.into()));
+                        }
                         None if wrong_password(&e) => {
                             self.field_error = Some((Field::Password, sentence(&e)));
                         }
@@ -1307,8 +1360,9 @@ impl SignWindow {
                                 egui::Label::new(
                                     RichText::new(
                                         "Others see you as an unknown signer until they trust \
-                                         your certificate: send it to them from Digital IDs \
-                                         (Export, certificate only).",
+                                         your certificate: send it to them from Document > \
+                                         Digital signatures > Digital IDs… (Export…, \
+                                         Certificate only).",
                                     )
                                     .small()
                                     .weak(),
@@ -1559,11 +1613,13 @@ mod tests {
         w.reason = "Approved".into();
         for certify in [false, true] {
             w.certify = certify;
-            // None typed: asked for beside it, with the keyboard there.
-            assert!(!w.ready());
+            // None typed: tried with none, then asked for beside it, with the keyboard
+            // there.
+            assert!(w.ready());
+            w.start(&ctx, input(&out));
             let (_, tree) = drawn(&mut w);
             said_at(&tree, "Password", "Type the ID's password.");
-            assert!(w.error.is_none());
+            assert!(w.error.is_none() && !out.exists());
 
             // A wrong one: said there too; it is typed again.
             w.password = Secret("not the password".into());
@@ -1597,6 +1653,72 @@ mod tests {
         assert_eq!(field("Password"), Some((tree.focus, true)));
         for name in ["Digital ID", "Reason", "Location"] {
             assert!(field(name).is_some(), "{name} isn't named");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A23: an imported ID with no password signs and certifies with none typed; a
+    /// password typed for it is wrong.
+    #[test]
+    fn an_imported_id_without_a_password_signs_with_none() {
+        let dir = std::env::temp_dir().join(format!(
+            "limarepdf-digital-{}-no-password",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = IdStore::new(dir.join("ids"));
+        let file = std::fs::read(format!(
+            "{}/../limarepdf-core/tests/data/signatures/ids/empty-password.p12",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        store.import(&file, "", None).unwrap();
+        let place = SignPlace::NewBox {
+            page: 0,
+            rect: [72.0, 72.0, 272.0, 132.0],
+        };
+        let mut w = SignWindow::new(0, 0, place, "a box".into(), false, false);
+        w.store = Ok(store);
+        w.reload();
+        let mut doc = Pdf::from_text("Hello", (612.0, 792.0)).unwrap();
+        let base = doc.to_bytes().unwrap();
+        let ctx = Context::default();
+        let out = dir.join("signed.pdf");
+        let input = || Input {
+            base: Arc::from(base.as_slice()),
+            edited: None,
+            art: None,
+            out: out.clone(),
+        };
+        for certify in [false, true] {
+            w.certify = certify;
+            // A password typed: wrong for this ID, said beside it; nothing written.
+            w.password = Secret(PASSWORD.into());
+            assert!(w.ready());
+            w.start(&ctx, input());
+            let (_, tree) = drawn(&mut w);
+            let wrong = "The password is wrong, or the file is damaged.";
+            said_at(&tree, "Password", wrong);
+            assert!(!out.exists());
+
+            // None typed: signed, or certified, and valid.
+            assert!(w.password.0.is_empty());
+            assert!(w.ready());
+            w.start(&ctx, input());
+            let (SignOut::Done(s), _) = drawn(&mut w) else {
+                panic!("not signed: {:?} {:?}", w.error, w.field_error);
+            };
+            assert_eq!(s.certified, certify);
+            let written = std::fs::read(&out).unwrap();
+            let rep = limarepdf_core::verify_signatures(
+                &written,
+                None,
+                &limarepdf_core::TrustList::default(),
+            )
+            .unwrap();
+            assert_eq!(rep.signatures.len(), 1);
+            assert_eq!(rep.signatures[0].status, limarepdf_core::SigStatus::Valid);
+            std::fs::remove_file(&out).unwrap();
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1723,7 +1845,7 @@ mod tests {
             name: "Jane Example".into(),
             ..NewId::default()
         };
-        let id = store.create(&new, PASSWORD).unwrap();
+        let id = store.create(&new, PASSWORD).unwrap().id;
         (store, id)
     }
 
@@ -2147,11 +2269,42 @@ mod tests {
         w.import(&ctx, import_form(&file, PASSWORD));
         finish(&mut w);
         assert!(matches!(w.page, Page::List));
-        let (ok, text) = w.note.clone().unwrap();
+        let (said, text) = w.note.clone().unwrap();
         assert!(
-            ok && text.starts_with("Imported \"Jane Example\""),
+            said == Said::Done && text.starts_with("Imported \"Jane Example\""),
             "{text}"
         );
+        assert_eq!(w.list.ids.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// BUG-14: an ID imported whose default can't be noted is imported, and the window
+    /// says so with a warning, never as a failure that a second try would repeat.
+    #[test]
+    fn an_import_whose_default_can_t_be_kept_is_said_as_done() {
+        let dir = scratch("import-no-default");
+        let file = std::path::PathBuf::from(format!(
+            "{}/../limarepdf-core/tests/data/signatures/ids/p256.p12",
+            env!("CARGO_MANIFEST_DIR")
+        ));
+        // A folder has the name of the file that notes the default.
+        std::fs::create_dir_all(dir.join("ids").join("default.txt")).unwrap();
+        let mut w = ids_window(IdStore::new(dir.join("ids")));
+        let ctx = Context::default();
+        w.import(&ctx, import_form(&file, "mpe-test-password"));
+        let tree = finish(&mut w);
+        assert!(matches!(w.page, Page::List));
+        let (said, text) = w.note.clone().unwrap();
+        assert_eq!(said, Said::Warning, "{text}");
+        let head = "Imported \"Test Signer P-256\". But it couldn't be made the default for \
+                    signing (";
+        assert!(text.starts_with(head), "{text}");
+        assert!(text.contains("still holds the ID"), "{text}");
+        let shown = tree
+            .nodes
+            .iter()
+            .any(|(_, n)| n.value() == Some(text.as_str()));
+        assert!(shown, "the note isn't shown");
         assert_eq!(w.list.ids.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2223,11 +2376,46 @@ mod tests {
         w.export_key(&ctx, form(ExportKind::Key, PASSWORD), out.clone());
         finish(&mut w);
         assert!(matches!(w.page, Page::List));
-        let (ok, text) = w.note.clone().unwrap();
-        assert!(ok && text.contains("the new password"), "{text}");
+        let (said, text) = w.note.clone().unwrap();
+        assert!(
+            said == Said::Done && text.contains("the new password"),
+            "{text}"
+        );
         let back = IdStore::new(dir.join("back"));
         back.import(&std::fs::read(&out).unwrap(), NEW, None)
             .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_saved_certificate_says_where_recipients_trust_it() {
+        let dir = scratch("export-cert");
+        let (store, id) = store_with_id(&dir);
+        let mut w = ids_window(store);
+        let form = Box::new(ExportForm {
+            id,
+            kind: ExportKind::Certificate,
+            password: Secret(String::new()),
+            fresh: true,
+            new_password: Secret(String::new()),
+            again: Secret(String::new()),
+            error: None,
+            focus: None,
+        });
+        let out = dir.join("jane.cer");
+        w.export_certificate(form, &out);
+        assert!(out.exists());
+        let (said, text) = w.note.clone().unwrap();
+        assert_eq!(said, Said::Done, "{text}");
+        // The way there, as the menus have it.
+        let trusted = crate::actions::get(crate::actions::Act::TrustedCertificates);
+        let way = format!(
+            "{} > {} > {} > Add certificate file…",
+            trusted.group.name(),
+            trusted.submenu,
+            trusted.label
+        );
+        assert!(text.contains(&way), "{text}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2282,8 +2470,11 @@ mod tests {
         w.create(&ctx, form());
         finish(&mut w);
         assert!(matches!(w.page, Page::List));
-        let (ok, text) = w.note.clone().unwrap();
-        assert!(ok && text.starts_with("Made the digital ID"), "{text}");
+        let (said, text) = w.note.clone().unwrap();
+        assert!(
+            said == Said::Done && text.starts_with("Made the digital ID"),
+            "{text}"
+        );
         assert_eq!(w.list.ids.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }

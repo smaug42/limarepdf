@@ -23,7 +23,7 @@ These words in curly brackets are filled in on each page:
 | --- | --- |
 | `{page}` | The page's number, counted from 1 |
 | `{pages}` | How many pages the document has |
-| `{date}` | Today's date, such as 2026-10-23 (in UTC, so late in the evening west of Greenwich it can already be tomorrow's) |
+| `{date}` | Today's date on your computer, such as 2026-10-23 |
 | `{bates}` | The page's Bates number (below) |
 
 **Font size** sets the text's size (10 points at first), and **Margin** how far it sits from the page's edges (36
@@ -64,14 +64,16 @@ updates what you added instead of adding a second copy, one undo step each (a co
 steps back through the changes, and the section's settings follow. **Add another** keeps it and adds a new one.
 
 Any other change to the document ends this: the section shows Add to pages again, and the pages show the settings
-again once you change one. From then on, what was added is part of the pages: it can't be removed on its own, only
-with Undo.
+again once you change one. From then on, what was added is part of the pages: no command removes it from all its
+pages. Undo takes it back until you close the document, also after saving, and on each page its text and pictures
+can be edited or deleted like any other page content (see [Move, resize or
+delete](content-editing.md#move-resize-or-delete)).
 
 ## Characters
 
 Header, footer, Bates and watermark text is written in Helvetica, and characters it lacks (Polish, Czech,
 Vietnamese, Greek, Cyrillic and so on) in its Liberation Sans face, embedded in the file. Other scripts (Chinese,
-Hebrew, Arabic and so on) and emoji can't be typed: a note at the caret says so.
+Hebrew, Arabic and so on) and emoji can't be typed or pasted: a note at the caret says so.
 
 While a section is open, the pages show its text in Liberation Sans, which has Helvetica's widths, over the content
 even when it is set to go behind it. Once added, the pages show it as written.
@@ -95,8 +97,8 @@ The inspector offers:
   frame with the word in capitals.
 - **Add my name and the date:** on by default; adds a small line under the word with your name and today's date.
   The Name box under it is the same name as ☰ > Edit > Your name for comments, so changing either changes both. The
-  date is in UTC, as headers and footers use. The name and date are fixed when the stamp is put down. The choice
-  is remembered.
+  date is today's on your computer, as headers and footers use. The name and date are fixed when the stamp is put
+  down. The choice is remembered.
 - **Your own wording:** pick green, red or blue, type the wording in the box under the ready-made stamps, then click
   on the page. It is shown in capitals, and goes into the list above when you leave the box (Enter or a click
   elsewhere). Picking a colour also recolours the picked wording of your own. The last five wordings are remembered

@@ -584,18 +584,30 @@ impl Tab {
     }
 
     /// Keep what is being typed in the forms, as leaving the field would (before saving or
-    /// closing), and a linked stamp's changes not yet in it.
-    pub fn keep_forms(&mut self, ctx: &egui::Context) {
-        match self.forms.typing.take() {
+    /// closing), and a linked stamp's changes not yet in it. Returns false when something
+    /// couldn't be kept, with the reason shown; a field typed in is still being typed in.
+    pub fn keep_forms(&mut self, ctx: &egui::Context) -> bool {
+        let earlier = self.error.take();
+        let typing = self.forms.typing.take();
+        match typing {
             Some(LABEL_PREFIX) => self.keep_label(ctx, None),
             Some(_) => self.keep_props(ctx),
             None => {}
         }
+        if self.error.is_some() {
+            self.forms.typing = typing;
+            return false;
+        }
         for kind in [Stamp::Watermark, Stamp::HeaderFooter] {
             if self.stamp_behind(kind) {
                 self.stamp_from_form(ctx, kind, true);
+                if self.error.is_some() {
+                    return false;
+                }
             }
         }
+        self.error = earlier;
+        true
     }
 
     /// Whether the form for `kind` is linked to a stamp and says something else, that it
@@ -635,6 +647,7 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
     let hf_link = t.linked(Stamp::HeaderFooter).is_some();
     let wm_behind = t.stamp_behind(Stamp::Watermark);
     let hf_behind = t.stamp_behind(Stamp::HeaderFooter);
+    let scope = t.ed.scope();
     let here = Here {
         layout: t.layout.to_open(t.cover),
         panel: match (c.side, t.side) {
@@ -720,7 +733,7 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
     });
     sections.show(ui, Some(Section::Watermark), "Watermark", |ui| {
         let before = f.wm.clone();
-        let press = watermark_ui(ui, &mut f.wm, wm_link);
+        let press = watermark_ui(ui, scope, &mut f.wm, wm_link);
         // Changed since one was added: shown on the pages again until added.
         f.wm_added &= wm_link || f.wm == before;
         if let Some(a) = stamp_change(ui, Stamp::Watermark, press, wm_behind) {
@@ -730,7 +743,7 @@ pub fn show(ui: &mut Ui, t: &mut Tab, c: &Ctx) -> Option<Apply> {
     let hf_title = "Headers, footers, Bates";
     sections.show(ui, Some(Section::HeaderFooter), hf_title, |ui| {
         let before = f.hf.clone();
-        let press = header_footer_ui(ui, &mut f.hf, hf_link);
+        let press = header_footer_ui(ui, scope, &mut f.hf, hf_link);
         f.hf_added &= hf_link || f.hf == before;
         if let Some(a) = stamp_change(ui, Stamp::HeaderFooter, press, hf_behind) {
             apply = Some(a);
@@ -1222,21 +1235,21 @@ struct Press {
 }
 
 /// A text field of a stamp section, which notes in `p` when it is left; a grid row named
-/// `label`. What Helvetica (or its embedded face) can't write isn't typed, as on the page;
-/// the note doesn't point to installed fonts, as a stamp can't be set in one.
-fn stamp_text(ui: &mut Ui, label: &str, text: &mut String, p: &mut Press) {
-    let id = egui::Id::new(("stamp-text", label));
+/// `label`, its id made from the tab's `scope`. What Helvetica (or its embedded face) can't
+/// write isn't typed, as on the page; the note doesn't point to installed fonts, as a stamp
+/// can't be set in one.
+fn stamp_text(ui: &mut Ui, scope: egui::Id, label: &str, text: &mut String, p: &mut Press) {
+    let id = scope.with(("stamp-text", label));
     let note = id.with("refused");
     let ctx = ui.ctx().clone();
     let mut refused: page_text::Refused = ctx.data(|d| d.get_temp(note)).unwrap_or_default();
     let helvetica = limarepdf_core::FontChoice::default();
     let focused = ctx.memory(|m| m.has_focus(id));
-    if focused
-        .then(|| page_text::take_typing(ui, true, false, helvetica).refused)
+    if let Some(c) = focused
+        .then(|| page_text::leave_out_untypable(ui, true, helvetica))
         .flatten()
-        .is_some()
     {
-        refused.mark(&ctx, page_text::REFUSED.to_string());
+        refused.mark(&ctx, page_text::fixed_note(&c).to_string());
     }
     let field = egui::TextEdit::singleline(text)
         .id(id)
@@ -1285,7 +1298,7 @@ fn stamp_change(ui: &Ui, kind: Stamp, p: Press, behind: bool) -> Option<Apply> {
     (behind && settled).then_some(Apply::Stamp { kind, update: true })
 }
 
-fn watermark_ui(ui: &mut Ui, s: &mut Wm, linked: bool) -> Press {
+fn watermark_ui(ui: &mut Ui, scope: egui::Id, s: &mut Wm, linked: bool) -> Press {
     let mut p = Press::default();
     ui.horizontal(|ui| {
         ui.radio_value(&mut s.picture, false, "Text");
@@ -1311,13 +1324,15 @@ fn watermark_ui(ui: &mut Ui, s: &mut Wm, linked: bool) -> Press {
             ui.end_row();
             slider_row(ui, "Size", &mut s.scale, 5.0..=100.0, "% of page");
         } else {
-            stamp_text(ui, "Text", &mut s.text, &mut p);
+            stamp_text(ui, scope, "Text", &mut s.text, &mut p);
             slider_row(ui, "Size", &mut s.size, 12.0..=300.0, "");
         }
         slider_row(ui, "Opacity", &mut s.opacity, 0.02..=1.0, "");
         slider_row(ui, "Rotation", &mut s.rotation, -90.0..=90.0, "°");
         if !s.picture {
-            row(ui, "Colour", |ui| ui.color_edit_button_rgb(&mut s.color));
+            row(ui, "Colour", |ui| {
+                crate::editor::color_button(ui, &mut s.color, "Colour")
+            });
         }
     });
     ui.radio_value(&mut s.foreground, true, "Above the content");
@@ -1327,14 +1342,14 @@ fn watermark_ui(ui: &mut Ui, s: &mut Wm, linked: bool) -> Press {
     p
 }
 
-fn header_footer_ui(ui: &mut Ui, s: &mut Hf, linked: bool) -> Press {
+fn header_footer_ui(ui: &mut Ui, scope: egui::Id, s: &mut Hf, linked: bool) -> Press {
     let mut p = Press::default();
     ui.weak("Tokens: {page}  {pages}  {date}  {bates}");
     grid(ui, "hf", |ui| {
         let sides = ["left", "centre", "right"];
         for (name, line) in [("Header", &mut s.header), ("Footer", &mut s.footer)] {
             for (side, text) in sides.iter().zip(line.iter_mut()) {
-                stamp_text(ui, &format!("{name}, {side}"), text, &mut p);
+                stamp_text(ui, scope, &format!("{name}, {side}"), text, &mut p);
             }
         }
         row(ui, "Font size", |ui| {
@@ -1352,8 +1367,8 @@ fn header_footer_ui(ui: &mut Ui, s: &mut Hf, linked: bool) -> Press {
         .on_hover_text("Without a {bates} token the number goes at the bottom right.");
     ui.add_enabled_ui(s.bates, |ui| {
         grid(ui, "bates", |ui| {
-            stamp_text(ui, "Prefix", &mut s.prefix, &mut p);
-            stamp_text(ui, "Suffix", &mut s.suffix, &mut p);
+            stamp_text(ui, scope, "Prefix", &mut s.prefix, &mut p);
+            stamp_text(ui, scope, "Suffix", &mut s.suffix, &mut p);
             row(ui, "Digits", |ui| {
                 ui.add(egui::DragValue::new(&mut s.digits).range(1..=12))
             });

@@ -8,6 +8,7 @@
 
 use crate::actions::Act;
 use crate::dialogs::{self, Btn, Shell};
+use crate::page_text;
 use crate::theme;
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Vec2};
 use limarepdf_core::{
@@ -25,6 +26,10 @@ const PAD: Vec2 = Vec2::new(480.0, 160.0);
 const PEN: f32 = 2.5;
 /// The most a preview in the pane takes up, in points.
 const PREVIEW: Vec2 = Vec2::new(190.0, 48.0);
+/// The most pixels across or down a chosen picture is shown with in the Create window,
+/// and the most points it takes up there.
+const VIEW: u32 = 1200;
+const VIEW_SIZE: Vec2 = Vec2::new(480.0, 240.0);
 
 /// A saved signature or set of initials.
 #[derive(Clone, PartialEq, Debug)]
@@ -38,11 +43,13 @@ pub enum Saved {
         text: String,
         style: SignStyle,
     },
-    /// A picture: its file (a copy in the settings folder when remembered), and whether
-    /// the paper around the ink is made transparent.
+    /// A picture: its file (a copy in the settings folder when remembered), whether the
+    /// paper around the ink is made transparent, and the part of it used, if not all (see
+    /// [`SignArt::Picture`]).
     Picture {
         path: PathBuf,
         clear_paper: bool,
+        crop: Option<[f32; 4]>,
     },
 }
 
@@ -77,15 +84,19 @@ impl Saved {
                 text,
                 style: *style,
             },
-            Saved::Picture { clear_paper, .. } => SignArt::Picture {
+            Saved::Picture {
+                clear_paper, crop, ..
+            } => SignArt::Picture {
                 bytes,
                 clear_paper: *clear_paper,
+                crop: *crop,
             },
         }
     }
 
-    /// As a line of the file: `draw WIDTH x,y x,y;x,y …`, `type STYLE TEXT` or
-    /// `picture clear|keep PATH`.
+    /// As a line of the file: `draw WIDTH x,y x,y;x,y …`, `type STYLE TEXT`,
+    /// `picture clear|keep PATH`, or for part of a picture `cropped LEFT,TOP,RIGHT,BOTTOM
+    /// clear|keep PATH` (which older versions skip).
     fn line(&self) -> String {
         match self {
             Saved::Drawn { strokes, width } => {
@@ -101,9 +112,19 @@ impl Saved {
                 format!("draw {width} {}", strokes.join(";"))
             }
             Saved::Typed { text, style } => format!("type {} {text}", style.number()),
-            Saved::Picture { path, clear_paper } => {
+            Saved::Picture {
+                path,
+                clear_paper,
+                crop,
+            } => {
                 let how = if *clear_paper { "clear" } else { "keep" };
-                format!("picture {how} {}", path.display())
+                match crop {
+                    Some(c) => {
+                        let c = c.map(|v| format!("{v:.4}")).join(",");
+                        format!("cropped {c} {how} {}", path.display())
+                    }
+                    None => format!("picture {how} {}", path.display()),
+                }
             }
         }
     }
@@ -139,6 +160,28 @@ impl Saved {
                 Some(Saved::Picture {
                     path: PathBuf::from(path.trim()),
                     clear_paper: how != "keep",
+                    crop: None,
+                })
+            }
+            "cropped" => {
+                let (c, rest) = rest.split_once(' ')?;
+                let c: Vec<f32> = c
+                    .split(',')
+                    .map(|v| v.parse().ok())
+                    .collect::<Option<_>>()?;
+                let crop = match c[..] {
+                    [l, t, r, b]
+                        if 0.0 <= l && l < r && r <= 1.0 && 0.0 <= t && t < b && b <= 1.0 =>
+                    {
+                        [l, t, r, b]
+                    }
+                    _ => return None,
+                };
+                let (how, path) = rest.split_once(' ')?;
+                Some(Saved::Picture {
+                    path: PathBuf::from(path.trim()),
+                    clear_paper: how != "keep",
+                    crop: Some(crop),
                 })
             }
             _ => None,
@@ -195,11 +238,12 @@ impl SignKit {
         k
     }
 
-    pub fn save(&self) {
-        let Some(file) = &self.file else { return };
-        if let Some(dir) = file.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
+    /// Writes the kit to its file ([`crate::settings::write_own`]): why it couldn't be, or
+    /// why the system couldn't confirm it is safely on disk.
+    pub fn save(&self) -> anyhow::Result<Option<String>> {
+        let Some(file) = &self.file else {
+            return Ok(None);
+        };
         let mut text = format!("ink = {}\ndate = {}\n", self.color.name(), self.date.name());
         for (key, list) in [
             ("signature", &self.signatures),
@@ -209,7 +253,7 @@ impl SignKit {
                 text += &format!("{key} = {}\n", e.saved.line());
             }
         }
-        let _ = limarepdf_core::write_file(file, text.as_bytes());
+        crate::settings::write_own(file, text.as_bytes())
     }
 
     pub fn list(&self, role: SignRole) -> &[Entry] {
@@ -226,14 +270,26 @@ impl SignKit {
         }
     }
 
+    /// Whether a signature or initials was saved for next time since `before`.
+    pub fn kept_since(&self, before: &SignKit) -> bool {
+        let kept = |k: &SignKit| {
+            let all = k.signatures.iter().chain(&k.initials);
+            all.filter(|e| e.keep).cloned().collect::<Vec<_>>()
+        };
+        let was = kept(before);
+        kept(self).iter().any(|e| !was.contains(e))
+    }
+
     /// The folder remembered pictures are copied to.
     fn picture_dir(&self) -> Option<PathBuf> {
         Some(self.file.as_ref()?.parent()?.join("signatures"))
     }
 
     /// Put a signature or set of initials first in its list, copying a remembered picture
-    /// into the settings folder. The oldest beyond [`SAVED`] is dropped.
-    pub fn add(&mut self, role: SignRole, mut e: Entry) -> Result<(), String> {
+    /// into the settings folder. The oldest beyond [`SAVED`] is dropped. A picture that
+    /// can't be copied is kept for this session only: returns what to say then.
+    pub fn add(&mut self, role: SignRole, mut e: Entry) -> Option<String> {
+        let mut unkept = None;
         if let (true, Saved::Picture { path, .. }, Some(dir)) =
             (e.keep, &mut e.saved, self.picture_dir())
         {
@@ -249,10 +305,16 @@ impl SignKit {
                 SignRole::Initials => "initials",
             };
             let copy = dir.join(format!("{name}-{stamp}.{ext}"));
-            std::fs::create_dir_all(&dir)
-                .and_then(|_| std::fs::copy(&*path, &copy))
-                .map_err(|err| format!("Can't keep a copy of the picture: {err}"))?;
-            *path = copy;
+            match std::fs::create_dir_all(&dir).and_then(|_| std::fs::copy(&*path, &copy)) {
+                Ok(_) => *path = copy,
+                Err(err) => {
+                    e.keep = false;
+                    unkept = Some(format!(
+                        "The {name} can be used until LimarePDF closes, but LimarePDF couldn't \
+                         keep a copy of its picture for next time ({err})."
+                    ));
+                }
+            }
         }
         let list = self.list_mut(role);
         list.retain(|x| x.saved != e.saved);
@@ -261,7 +323,7 @@ impl SignKit {
         for d in dropped {
             self.forget(&d);
         }
-        Ok(())
+        unkept
     }
 
     /// Take a signature or set of initials out of its list, deleting its picture's copy.
@@ -298,7 +360,10 @@ pub enum SignPick {
 /// look exactly as they will on the page.
 #[derive(Default)]
 pub struct Previews {
-    made: HashMap<u64, Option<TextureHandle>>,
+    /// Each picture, or why it can't be drawn.
+    made: HashMap<u64, Result<TextureHandle, String>>,
+    /// Chosen pictures as they are seen, or why they can't be shown, by file.
+    views: HashMap<PathBuf, Result<TextureHandle, String>>,
 }
 
 impl Previews {
@@ -310,6 +375,17 @@ impl Previews {
         role: SignRole,
         color: InkColor,
     ) -> Option<TextureHandle> {
+        self.made_or_why(ctx, saved, role, color).ok()
+    }
+
+    /// The picture of `saved`, or why it can't be drawn.
+    fn made_or_why(
+        &mut self,
+        ctx: &egui::Context,
+        saved: &Saved,
+        role: SignRole,
+        color: InkColor,
+    ) -> Result<TextureHandle, String> {
         let mut h = DefaultHasher::new();
         format!("{saved:?}{role:?}{color:?}").hash(&mut h);
         let key = h.finish();
@@ -319,11 +395,34 @@ impl Previews {
         self.made
             .entry(key)
             .or_insert_with(|| {
-                let bytes = saved.bytes().ok()?;
-                let bmp = saved.stamp(&bytes, role, color).preview("", 2.0).ok()?;
+                let why = |e: &dyn std::fmt::Display| capital(&e.to_string());
+                let bytes = saved.bytes().map_err(|e| why(&e))?;
+                let bmp = saved
+                    .stamp(&bytes, role, color)
+                    .preview("", 2.0)
+                    .map_err(|e| why(&e))?;
                 let img =
                     egui::ColorImage::from_rgba_unmultiplied([bmp.width, bmp.height], &bmp.rgba);
-                Some(ctx.load_texture(format!("sign-{key}"), img, TextureOptions::LINEAR))
+                Ok(ctx.load_texture(format!("sign-{key}"), img, TextureOptions::LINEAR))
+            })
+            .clone()
+    }
+
+    /// The picture at `path` as it is seen, to choose the part that holds the signature, or
+    /// why it can't be shown.
+    fn view(&mut self, ctx: &egui::Context, path: &Path) -> Result<TextureHandle, String> {
+        if self.views.len() > 8 {
+            self.views.clear();
+        }
+        let n = self.views.len();
+        self.views
+            .entry(path.to_path_buf())
+            .or_insert_with(|| {
+                let bytes = std::fs::read(path).map_err(|e| capital(&e.to_string()))?;
+                let (w, h, rgba) = limarepdf_core::picture_view(&bytes, VIEW)
+                    .map_err(|e| capital(&e.to_string()))?;
+                let img = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+                Ok(ctx.load_texture(format!("sign-view-{n}"), img, TextureOptions::LINEAR))
             })
             .clone()
     }
@@ -355,6 +454,11 @@ pub struct Create {
     style: SignStyle,
     picture: Option<PathBuf>,
     clear_paper: bool,
+    /// The part of the picture to use, if not all (see [`SignArt::Picture`]), and while a
+    /// drag chooses it, where it started and where it is now, in the same shares of the
+    /// picture.
+    crop: Option<[f32; 4]>,
+    drag: Option<(Pos2, Pos2)>,
     keep: bool,
     error: Option<String>,
 }
@@ -390,6 +494,8 @@ impl Create {
             style: SignStyle::Caveat,
             picture: None,
             clear_paper: true,
+            crop: None,
+            drag: None,
             keep: true,
             error: None,
         }
@@ -589,6 +695,8 @@ impl Create {
                     .pick_file()
                 {
                     self.picture = Some(p);
+                    self.crop = None;
+                    self.drag = None;
                     self.error = None;
                 }
             }
@@ -601,33 +709,108 @@ impl Create {
                 "Keep only the ink: the paper around it becomes see-through and the empty \
                  margins are cut off. Untick for a picture that should stay as it is.",
             );
-        if let Some(p) = &self.picture {
-            let saved = Saved::Picture {
-                path: p.clone(),
-                clear_paper: self.clear_paper,
-            };
-            match previews.get(ui.ctx(), &saved, self.role, color) {
-                Some(tex) => {
-                    let size = Previews::size(&tex, pad_size(ui));
-                    ui.image((tex.id(), size));
-                }
-                None => {
-                    let why = saved
-                        .bytes()
-                        .map_err(|e| e.to_string())
-                        .and_then(|b| {
-                            saved
-                                .stamp(&b, self.role, color)
-                                .size("")
-                                .map(drop)
-                                .map_err(|e| e.to_string())
-                        })
-                        .err()
-                        .unwrap_or_else(|| "Can't show this picture".into());
-                    ui.colored_label(ui.visuals().error_fg_color, capital(&why));
+        let Some(p) = self.picture.clone() else {
+            return;
+        };
+        match previews.view(ui.ctx(), &p) {
+            Ok(tex) => self.cropper(ui, &tex),
+            Err(why) => {
+                ui.colored_label(ui.visuals().error_fg_color, why);
+            }
+        }
+        ui.add_space(dialogs::FIELD_GAP);
+        ui.label("Preview");
+        ui.add_space(2.0);
+        let saved = Saved::Picture {
+            path: p,
+            clear_paper: self.clear_paper,
+            crop: self.crop,
+        };
+        match previews.made_or_why(ui.ctx(), &saved, self.role, color) {
+            Ok(tex) => {
+                let size = Previews::size(&tex, Vec2::new(ui.available_width(), 80.0));
+                ui.image((tex.id(), size));
+            }
+            Err(why) => {
+                ui.colored_label(ui.visuals().error_fg_color, why);
+                if self.clear_paper {
+                    ui.label(
+                        "Drag around the signature on the picture, or untick Make the paper \
+                         transparent.",
+                    );
                 }
             }
         }
+    }
+
+    /// The chosen picture, the part used marked; dragging over it chooses that part.
+    fn cropper(&mut self, ui: &mut egui::Ui, tex: &TextureHandle) {
+        let s = tex.size_vec2();
+        let max = Vec2::new(ui.available_width().min(VIEW_SIZE.x), VIEW_SIZE.y);
+        let (rect, resp) =
+            ui.allocate_exact_size(s * (max.x / s.x).min(max.y / s.y), Sense::drag());
+        dialogs::set_name(
+            &resp,
+            "Picture: drag around the signature to use only that part",
+        );
+        let painter = ui.painter_at(rect.expand(2.0));
+        let whole = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+        painter.image(tex.id(), rect, whole, Color32::WHITE);
+        let edge = ui.visuals().widgets.inactive.bg_stroke;
+        painter.rect_stroke(rect, 0.0, edge, egui::StrokeKind::Outside);
+        let share = |p: Pos2| {
+            ((p - rect.min) / rect.size())
+                .to_pos2()
+                .clamp(Pos2::ZERO, whole.max)
+        };
+        if resp.drag_started() {
+            if let Some(p) = ui.input(|i| i.pointer.press_origin()) {
+                self.drag = Some((share(p), share(p)));
+            }
+        }
+        if let (Some(d), Some(p)) = (&mut self.drag, resp.interact_pointer_pos()) {
+            d.1 = share(p);
+        }
+        let boxed = |(a, b): (Pos2, Pos2)| [a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y)];
+        if resp.drag_stopped() {
+            if let Some(c) = self.drag.take().map(boxed) {
+                // A box too small to hold anything is taken as a slip of the mouse.
+                if (c[2] - c[0]) * rect.width() >= 4.0 && (c[3] - c[1]) * rect.height() >= 4.0 {
+                    self.crop = Some(c);
+                    self.error = None;
+                }
+            }
+        }
+        if let Some(c) = self.drag.map(boxed).or(self.crop) {
+            let at = |u: f32, v: f32| rect.min + rect.size() * Vec2::new(u, v);
+            let part = Rect::from_min_max(at(c[0], c[1]), at(c[2], c[3]));
+            let shade = Color32::from_black_alpha(120);
+            for r in [
+                Rect::from_x_y_ranges(rect.x_range(), rect.top()..=part.top()),
+                Rect::from_x_y_ranges(rect.x_range(), part.bottom()..=rect.bottom()),
+                Rect::from_x_y_ranges(rect.left()..=part.left(), part.y_range()),
+                Rect::from_x_y_ranges(part.right()..=rect.right(), part.y_range()),
+            ] {
+                painter.rect_filled(r, 0.0, shade);
+            }
+            let line = Stroke::new(2.0, ui.visuals().selection.stroke.color);
+            painter.rect_stroke(part, 0.0, line, egui::StrokeKind::Middle);
+        }
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+        }
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add_enabled(
+                    self.crop.is_some(),
+                    egui::Button::new("Use the whole picture"),
+                )
+                .clicked()
+            {
+                self.crop = None;
+            }
+            ui.label("Drag over the picture to use part of it.");
+        });
     }
 
     /// The signature made, or why it can't be used yet.
@@ -648,6 +831,7 @@ impl Create {
                 let saved = Saved::Picture {
                     path,
                     clear_paper: self.clear_paper,
+                    crop: self.crop,
                 };
                 let bytes = saved.bytes().map_err(|e| e.to_string())?;
                 saved
@@ -721,6 +905,8 @@ pub struct SignPane {
     pub pick: SignPick,
     /// Words of your own to put down.
     pub text: String,
+    /// The note about a character those words can't have.
+    refused: page_text::Refused,
     pub previews: Previews,
     /// The Create signature window, when open, and where to put the result.
     pub create: Option<(Create, Option<(usize, StampPlace)>)>,
@@ -731,6 +917,7 @@ impl Default for SignPane {
         SignPane {
             pick: SignPick::Saved(SignRole::Signature, 0),
             text: String::new(),
+            refused: page_text::Refused::default(),
             previews: Previews::default(),
             create: None,
         }
@@ -845,9 +1032,11 @@ impl SignPane {
         self.create = Some((Create::new(role, author), place));
     }
 
+    /// The pane, its text box's id made from the tab's `scope`.
     pub fn ui(
         &mut self,
         ui: &mut egui::Ui,
+        scope: egui::Id,
         kit: &mut SignKit,
         author: &mut String,
         items: usize,
@@ -945,8 +1134,22 @@ impl SignPane {
         });
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.pick, SignPick::Text, "Text");
-            let r =
-                ui.add(egui::TextEdit::singleline(&mut self.text).hint_text("Type, then click"));
+            // Put down as a text box, in Helvetica or its embedded face: what neither has
+            // isn't typed, as on the page.
+            let id = scope.with("sign-text");
+            if ui.ctx().memory(|m| m.has_focus(id)) {
+                let helvetica = limarepdf_core::FontChoice::default();
+                if let Some(c) = page_text::leave_out_untypable(ui, true, helvetica) {
+                    let note = page_text::fixed_note(&c).to_string();
+                    self.refused.mark(ui.ctx(), note);
+                }
+            }
+            let out = egui::TextEdit::singleline(&mut self.text)
+                .id(id)
+                .hint_text("Type, then click")
+                .show(ui);
+            self.refused.show(ui.ctx(), &out, id);
+            let r = out.response.response;
             dialogs::set_name(&r, "Text to place");
             if r.changed() {
                 self.pick = SignPick::Text;
@@ -997,16 +1200,10 @@ impl SignPane {
             Outcome::Done(e) => {
                 let (role, place) = (c.role, *place);
                 self.create = None;
-                match kit.add(role, e) {
-                    Ok(()) => {
-                        self.pick = SignPick::Saved(role, 0);
-                        place
-                    }
-                    Err(e) => {
-                        *error = Some(e);
-                        None
-                    }
-                }
+                // Usable now even when it couldn't be saved for next time, which is said.
+                *error = kit.add(role, e);
+                self.pick = SignPick::Saved(role, 0);
+                place
             }
         }
     }
@@ -1068,7 +1265,7 @@ mod tests {
         std::fs::write(&f, "ink = blue\n").unwrap();
         let other = f.with_file_name("other.txt");
         std::fs::hard_link(&f, &other).unwrap();
-        SignKit::from_file(Some(f.clone())).save();
+        assert_eq!(SignKit::from_file(Some(f.clone())).save().unwrap(), None);
         assert_eq!(std::fs::read_to_string(&other).unwrap(), "ink = blue\n");
         assert!(std::fs::read_to_string(&f)
             .unwrap()
@@ -1091,37 +1288,28 @@ mod tests {
             text: "Sam Lee".into(),
             style: SignStyle::Zeyada,
         };
-        k.add(
-            SignRole::Signature,
-            Entry {
-                saved: drawn.clone(),
-                keep: true,
-            },
-        )
-        .unwrap();
-        k.add(
-            SignRole::Initials,
-            Entry {
-                saved: typed.clone(),
-                keep: true,
-            },
-        )
-        .unwrap();
+        let drawn_entry = Entry {
+            saved: drawn.clone(),
+            keep: true,
+        };
+        assert_eq!(k.add(SignRole::Signature, drawn_entry), None);
+        let typed_entry = Entry {
+            saved: typed.clone(),
+            keep: true,
+        };
+        assert_eq!(k.add(SignRole::Initials, typed_entry), None);
         // Not remembered: listed now, gone next time.
         let other = Saved::Typed {
             text: "Sam".into(),
             style: SignStyle::Caveat,
         };
-        k.add(
-            SignRole::Signature,
-            Entry {
-                saved: other,
-                keep: false,
-            },
-        )
-        .unwrap();
+        let other = Entry {
+            saved: other,
+            keep: false,
+        };
+        assert_eq!(k.add(SignRole::Signature, other), None);
         assert_eq!(k.signatures.len(), 2);
-        k.save();
+        assert_eq!(k.save().unwrap(), None);
         let k = SignKit::from_file(Some(f));
         assert_eq!((k.color, k.date), (InkColor::Blue, DateStyle::MonthDayYear));
         assert_eq!(
@@ -1151,15 +1339,52 @@ mod tests {
         let saved = Saved::Picture {
             path: original.clone(),
             clear_paper: true,
+            crop: Some([0.0, 0.25, 1.0, 0.75]),
         };
-        k.add(SignRole::Signature, Entry { saved, keep: true })
-            .unwrap();
-        let Saved::Picture { path: copy, .. } = k.signatures[0].saved.clone() else {
+        let e = Entry { saved, keep: true };
+        assert_eq!(k.add(SignRole::Signature, e), None);
+        let Saved::Picture {
+            path: copy, crop, ..
+        } = k.signatures[0].saved.clone()
+        else {
             panic!("not a picture");
         };
         assert!(copy.starts_with(dir.join("signatures")) && copy.exists());
+        // The whole picture is copied; the part used stays a part of it.
+        assert_eq!(std::fs::read(&copy).unwrap(), b"not really a png");
+        assert_eq!(crop, Some([0.0, 0.25, 1.0, 0.75]));
         k.remove(SignRole::Signature, 0);
         assert!(!copy.exists() && original.exists());
+    }
+
+    /// BUG-14: a picture whose copy can't be kept is still listed, to use until the app
+    /// closes, and that is said; it isn't saved for next time.
+    #[test]
+    fn a_picture_that_can_t_be_copied_is_kept_for_the_session() {
+        let f = file("picture-unkept");
+        let dir = f.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&dir).unwrap();
+        let original = dir.join("mine.png");
+        std::fs::write(&original, b"not really a png").unwrap();
+        // A file where the pictures' folder would be.
+        std::fs::write(dir.join("signatures"), "a file, not a folder").unwrap();
+        let mut k = SignKit::from_file(Some(f.clone()));
+        let saved = Saved::Picture {
+            path: original.clone(),
+            clear_paper: true,
+            crop: None,
+        };
+        let said = k.add(SignRole::Signature, Entry { saved, keep: true });
+        let said = said.expect("not said");
+        let start = "The signature can be used until LimarePDF closes, but LimarePDF couldn't \
+                     keep a copy of its picture for next time (";
+        assert!(said.starts_with(start), "{said}");
+        let e = &k.signatures[0];
+        assert!(!e.keep);
+        assert!(matches!(&e.saved, Saved::Picture { path, .. } if *path == original));
+        assert_eq!(k.save().unwrap(), None);
+        assert!(SignKit::from_file(Some(f)).signatures.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -1170,14 +1395,15 @@ mod tests {
                 text: format!("Sam {i}"),
                 style: SignStyle::Cedarville,
             };
-            k.add(SignRole::Signature, Entry { saved, keep: true })
-                .unwrap();
+            let e = Entry { saved, keep: true };
+            assert_eq!(k.add(SignRole::Signature, e), None);
         }
         assert_eq!(k.signatures.len(), SAVED);
         assert!(matches!(&k.signatures[0].saved, Saved::Typed { text, .. } if text == "Sam 6"));
     }
 
     const DRAWING: &str = "Drawing area: sign with the mouse or a pen";
+    const PICTURE: &str = "Picture: drag around the signature to use only that part";
 
     /// The Create window on a screen `size` points big, at `scale` pixels per point.
     struct Win {
@@ -1384,6 +1610,71 @@ mod tests {
             panic!("not a drawn signature");
         };
         assert_eq!((strokes, width), (vec![drawn[0].clone(), dot], PEN));
+    }
+
+    /// BUG-21: dragging over the chosen picture, either way, chooses the part used, which the
+    /// signature made keeps; a slip of the mouse doesn't, and Use the whole picture goes back
+    /// to all of it.
+    #[test]
+    fn dragging_over_the_picture_chooses_the_part_used() {
+        let picture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/images/icon.png");
+        let mut c = Create::new(SignRole::Signature, "Sam Lee");
+        c.way = Way::Picture;
+        c.picture = Some(picture.clone());
+        c.clear_paper = false;
+        let mut w = Win::new(c, Vec2::new(1000.0, 800.0), 1.0);
+        let view = bounds(&w.settled(), PICTURE);
+        let at = |u: f32, v: f32| view.lerp_inside(Vec2::new(u, v));
+        w.pointer(at(0.6, 0.7), Some(true));
+        for t in [0.5, 0.4, 0.3] {
+            w.pointer(at(t, t + 0.05), None);
+        }
+        w.pointer(at(0.25, 0.2), Some(false));
+        let crop = w.c.crop.expect("no part chosen");
+        let near = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.01);
+        assert!(near(crop, [0.25, 0.2, 0.6, 0.7]), "{crop:?}");
+        // A box of a pixel or two is a slip.
+        let p = at(0.1, 0.1);
+        w.pointer(p, Some(true));
+        w.pointer(p + Vec2::splat(6.0), None);
+        w.pointer(p + Vec2::new(2.0, 1.0), Some(false));
+        assert_eq!(w.c.crop, Some(crop));
+        w.settled();
+        let Ok(Entry {
+            saved: Saved::Picture { crop: kept, .. },
+            ..
+        }) = w.c.entry()
+        else {
+            panic!("not a picture");
+        };
+        assert_eq!(kept, Some(crop));
+        let whole = bounds(&w.settled(), "Use the whole picture").center();
+        w.pointer(whole, Some(true));
+        w.pointer(whole, Some(false));
+        assert_eq!(w.c.crop, None);
+    }
+
+    #[test]
+    fn a_part_of_a_picture_is_remembered() {
+        for crop in [None, Some([0.125, 0.5, 0.75, 1.0])] {
+            for clear_paper in [true, false] {
+                let s = Saved::Picture {
+                    path: PathBuf::from("/pictures/my signature.png"),
+                    clear_paper,
+                    crop,
+                };
+                assert_eq!(Saved::parse(&s.line()), Some(s.clone()), "{}", s.line());
+            }
+        }
+        // A part outside the picture, turned inside out or not of four shares isn't read.
+        for bad in [
+            "cropped 0.5,0,0.2,1 clear /x.png",
+            "cropped 0,0,1.5,1 keep /x.png",
+            "cropped 0,0,1 clear /x.png",
+            "cropped a,0,1,1 clear /x.png",
+        ] {
+            assert_eq!(Saved::parse(bad), None, "{bad}");
+        }
     }
 
     #[test]

@@ -43,7 +43,10 @@ As in a word processor:
 - Bold over words that are partly bold makes them all bold; over words that are all bold, it takes the bold off.
   Italic works the same way. Words in a family without a bold or italic face stay as they are.
 - Where the selection mixes fonts, sizes or colours, the inspector shows that one blank: the font list with no
-  name, the size box empty, the colour button with the colours side by side. Bold and Italic show on only when all
+  name, the size box empty, the colour button with the colours side by side. A colour picked then makes the
+  selection all that colour, even the one the picker starts from (the first); the picker also offers the colours
+  in the text (**In the text**), to make it all one of them in a click. Opening and closing the picker changes
+  nothing. Bold and Italic show on only when all
   of it is bold or italic. Picking a value there sets all of it.
 - A change in the inspector shows on the line at once, the line stays in editing, and the keyboard comes back to
   it; the change is kept with the typing.
@@ -75,10 +78,12 @@ the first. Bold and Italic are off for a family that has no such face.
 **Characters:** Latin (Vietnamese included), Greek and Cyrillic characters can be added. Those the standard fonts
 lack are written in their Liberation face, and text in an installed font is written in that font, both embedded in
 the file (cut down to the characters used). Chinese, Japanese and Korean can be typed in an installed font that has
-them. Others (Hebrew, Arabic, Devanagari, Thai and so on, and emoji), and characters the chosen font doesn't have,
-can't be typed or pasted, and a note at the caret says so. When another font could have the character (Chinese in
-Helvetica, say, or a letter an installed font lacks), the note names the font in use and asks you to choose an
-installed font that has it. The same goes for editing a line and the inspector's text field (see
+them, and so can single emoji (Symbola and DejaVu Sans have many). Others (Hebrew, Arabic, Devanagari, Thai and so
+on, and emoji made of several characters: flags, skin tones, keycaps, joined emoji such as families), characters
+the chosen font doesn't have, and emoji it draws only in colour, can't be typed or pasted, and a note at the caret
+says so. When another font could have the character (Chinese or an emoji in Helvetica, say, or a letter an
+installed font lacks), the note names the font in use and asks you to choose an installed font that has it. The
+same goes for editing a line and the inspector's text field (see
 [What doesn't work yet](features.md#what-doesnt-work-yet)).
 
 To put the same text on every page, such as page numbers or DRAFT, use
@@ -88,6 +93,8 @@ To put the same text on every page, such as page numbers or DRAFT, use
 
 1. Pick **Add image** in the top bar, and choose a PNG, JPEG or TIFF file.
 2. Drag a box on the page where it goes.
+
+A photo shows upright, the way it was taken, even when the camera or phone was turned.
 
 ## Move, resize or delete
 
@@ -186,8 +193,8 @@ detail is in [How it is built](developer/architecture.md#content-editing).
   colour instead). Colours in colour spaces other than RGB, grey and CMYK are shown approximately.
 - Inline images can be moved, resized and deleted, but not replaced. Pages whose inline images cannot be located
   safely are refused rather than risk losing them.
-- Replacing an image fits the new picture inside the old box, centred. JPEG EXIF rotation is not applied, and CMYK
-  JPEGs are not supported.
+- Replacing an image fits the new picture inside the old box, centred, upright as a photo's own orientation asks.
+  CMYK JPEGs are not supported.
 - Rotating objects, grouping, changing the stacking order, and copying and pasting between pages are not implemented.
 - Moving an object does not move links or annotations over it.
 - Text inside a form XObject (a reusable block of page content) is searched and selected like other text, but it is

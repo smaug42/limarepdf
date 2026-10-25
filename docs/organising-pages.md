@@ -37,9 +37,17 @@ Select the pages, then in the inspector:
   selected) adds the pages of the PDFs you choose at the end of the document. To merge documents, open the first
   one and append the others; drag thumbnails afterwards to put the pages elsewhere.
 
-Appending adds the pages only: the bookmarks, form fields and named destinations of the files added aren't carried
-over. Pages from a password-protected file make the whole document count as protected, so it gets no
-[recovery copies](gui.md#recovery-copies).
+The files are added in the order chosen, in one step that Ctrl+Z takes back. A password-protected file asks for its
+password: **Add pages** adds its pages, **Skip this file** leaves it out and adds the others, and **Cancel** adds
+nothing. A file that can't be read adds nothing either, and a message names it.
+
+Appending adds the pages only: the bookmarks and named destinations of the files added aren't carried over, and
+LimarePDF can't combine forms yet. When a file added has form fields, **Add pages with form fields?** asks first:
+**Add pages** draws its fields onto its pages with their answers, as they look now, so they show everywhere but
+can no longer be filled in; **Cancel** adds nothing. The document's own fields stay fillable. If LimarePDF can't
+draw an answer (text in characters it can't write in a field yet, say), nothing is added, and a message names
+the field and the file. Pages from a password-protected file make the whole document count as protected, so it
+gets no [recovery copies](gui.md#recovery-copies).
 
 ## Split into files
 
@@ -54,8 +62,8 @@ bookmark too, such as `book-002 Introduction.pdf`, and the pages before the firs
 own. Each file is written as soon as its part is made, so a large document split into many files needs little
 more memory than the document itself. Splitting doesn't change the document.
 
-Files with the same names already in the folder are replaced without asking, so choose an empty folder (to be
-fixed).
+If files with the same names are already in the folder, LimarePDF asks once, saying how many, before writing
+anything: **Replace** replaces them, **Cancel** writes no files at all.
 
 ## Remove blank pages
 

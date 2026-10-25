@@ -6,6 +6,7 @@ use crate::digital::{self, IdsWindow, SignOut, SignWindow};
 use crate::editor::{Action as EdAction, Tool};
 use crate::inspector::{self, Apply, Section};
 use crate::markup;
+use crate::page_text;
 use crate::panels::Panel;
 use crate::recent::Recent;
 use crate::selection::Selection;
@@ -16,11 +17,13 @@ use crate::theme;
 use crate::worker::Colours;
 use eframe::egui::{self, AtomExt as _, Key};
 use egui_phosphor::regular as icon;
+use limarepdf_core::disk::{self, OnDisk};
 use limarepdf_core::render::{image_names, ImageFormat};
 use limarepdf_core::{
     parse_page_range, part_file_name, print, ImageImport, OcrResult, OpenPanel, Pdf, ScanResult,
-    SplitBy, TrustRole,
+    SplitBy, TrustEntry, TrustRole,
 };
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
@@ -49,6 +52,62 @@ fn insert_images(
     Ok(())
 }
 
+/// A tab to reload: its id, and its revision when asked, so a document changed meanwhile
+/// isn't replaced.
+type Reloading = Option<(u64, u64)>;
+
+/// What a file's password is asked for.
+enum Unlock {
+    /// To open the file in a tab of its own, at this page if given, or (`Reloading`) to
+    /// read it again into a tab.
+    Tab(Option<usize>, Reloading),
+    /// To add its pages to a tab's document, with the files after it (BUG-20).
+    Append(Box<Appending>),
+}
+
+/// PDFs whose pages are being added to the end of a tab's document, read in the background
+/// one after another (BUG-20).
+struct Appending {
+    /// The tab they go to.
+    tab: u64,
+    /// The files, in order.
+    files: Vec<PathBuf>,
+    /// The documents read so far, one per file in order; `None` for a file left out.
+    read: Vec<Option<Pdf>>,
+}
+
+/// The documents read to add to a tab's document, some with form fields, waiting for the
+/// go-ahead to draw those fields onto their pages (BUG-19): pages are added without their
+/// forms, so the fields couldn't be filled in, and answers with no drawing of their own
+/// would show blank.
+struct AppendForms {
+    asked: Asked,
+    /// The documents, in order.
+    docs: Vec<Pdf>,
+    /// The names of the files with form fields.
+    names: Vec<String>,
+}
+
+/// Why reading the files to append stopped at the next one.
+enum AppendStop {
+    /// It needs a password, or (the message) the one given was wrong.
+    Password(Option<String>),
+    /// It can't be read: why.
+    Failed(String),
+}
+
+/// Whether opening a file failed for want of the right password.
+fn needs_password(e: &str) -> bool {
+    e.to_lowercase().contains("password")
+}
+
+/// What a password prompt says when asked again.
+const INCORRECT_PASSWORD: &str = "Incorrect password.";
+
+/// The title of the message about a file that can't be opened, and of several together.
+const CANNOT_OPEN: &str = "Cannot open file";
+const CANNOT_OPEN_SEVERAL: &str = "Cannot open files";
+
 enum Loaded {
     Ok {
         path: PathBuf,
@@ -56,7 +115,13 @@ enum Loaded {
         page: Option<usize>,
         /// For a file with signature fields: its bytes and password, to check them.
         signed: Option<(Arc<[u8]>, Option<String>)>,
+        /// The file as it was read.
+        version: disk::Version,
+        into: Reloading,
     },
+    /// How the files of tabs compare with the versions they last read or saved, each
+    /// tab's id with that version.
+    Disk(Vec<(u64, disk::Version, OnDisk)>),
     /// The signature check of tab `tab` (its `generation`th) finished.
     Signatures {
         tab: u64,
@@ -66,8 +131,16 @@ enum Loaded {
     NeedPassword {
         path: PathBuf,
         error: Option<String>,
+        page: Option<usize>,
+        into: Reloading,
     },
-    Err(String),
+    /// The file at the path couldn't be opened: why.
+    Err(PathBuf, String),
+    /// Files to append were read: all of them, or as far as one that stopped the reading.
+    Append(Box<Appending>, Option<AppendStop>),
+    /// Search number `.0` for the printers finished: the printers, default first, or why
+    /// they couldn't be listed.
+    Printers(u64, Result<Vec<print::Printer>, String>),
     /// A background job on a copy of tab `tab` at `revision` finished. On success: the
     /// changed document, whether anything changed, and a summary for the user.
     Job {
@@ -202,6 +275,30 @@ struct ImageExport {
     stem: String,
 }
 
+/// The document in front split into files in `dir`, named from `stem`.
+#[derive(Clone)]
+struct SplitFiles {
+    by: SplitBy,
+    dir: PathBuf,
+    stem: String,
+}
+
+/// Files about to be written, replacing files of the same names.
+#[derive(Clone)]
+enum Replacing {
+    Images(ImageExport),
+    Split(SplitFiles),
+}
+
+impl Replacing {
+    fn dir(&self) -> &Path {
+        match self {
+            Replacing::Images(e) => &e.dir,
+            Replacing::Split(s) => &s.dir,
+        }
+    }
+}
+
 /// The tab a question is about, as it was when asked. The answer acts on that tab only
 /// while it is open and unchanged ([`App::still`]): work in the background, such as a file
 /// finishing opening, goes on while a question is open.
@@ -220,15 +317,34 @@ impl Asked {
     }
 }
 
+/// Closing a tab, or quitting, with Save chosen for a document (ENH-01): what happens once
+/// its save is done ([`App::close_step`]). A save cancelled, refused or failed, or not
+/// confirmed on disk, leaves the document open with its changes, and closing or quitting
+/// stops.
+enum Closing {
+    /// Tab `tab` closes once saved, and the tab `front` was in front comes back.
+    Tab { tab: u64, front: Option<u64> },
+    /// Quitting: once `saving` is saved, each of `rest` still unsaved is asked about in
+    /// turn, and then the app quits. Nothing closes before that, so stopping keeps every
+    /// document open.
+    Quit {
+        saving: Option<u64>,
+        rest: VecDeque<u64>,
+    },
+}
+
 /// The dialogs left: settings live in the inspector.
 enum Dialog {
     None,
-    Password(dlg::Password),
+    /// The password for a file being opened, reloaded into a tab, or appended to one.
+    Password(dlg::Password, Unlock),
     Message(String, String),
-    ConfirmClose(Asked),
+    /// Save, or discard, a document's changes before closing it (`true`: before quitting)?
+    ConfirmClose(Asked, bool),
+    /// Quit with several documents unsaved: go through them, or discard them all?
     ConfirmQuit,
-    /// Export would replace this many files.
-    ConfirmReplace(Asked, ImageExport, usize),
+    /// Export or split would replace this many files.
+    ConfirmReplace(Asked, Replacing, usize),
     ConfirmFlatten(Asked),
     ConfirmFlattenAnnots(Asked),
     /// Save (`true`: as a new file) by writing the whole file, which breaks the
@@ -248,6 +364,8 @@ enum Dialog {
     Print(Asked, Box<dlg::Print>),
     /// Print with fields whose values won't show on paper?
     ConfirmPrintFields(Box<PrintFields>),
+    /// Add pages with their form fields drawn onto them?
+    ConfirmAppendForms(Box<AppendForms>),
     SaveSelection(Asked, dlg::Layout),
     /// Open this web or email address from a link?
     OpenLink(String),
@@ -262,13 +380,18 @@ enum Dialog {
     },
     /// Sign a recovered copy of a signed document, which writes the whole file?
     ConfirmSignRecovered(Asked),
+    /// Saving would replace a file another app or tab changed since the tab read or saved
+    /// it, now as this version: Save as, reload, or replace it (BUG-06)?
+    ConfirmStale(Asked, Box<disk::Version>),
+    /// Reload the file, losing the unsaved changes?
+    ConfirmReload(Asked),
 }
 
 impl Dialog {
     /// The tab the dialog is about, if it is about one.
     fn asked(&self) -> Option<&Asked> {
         match self {
-            Dialog::ConfirmClose(a)
+            Dialog::ConfirmClose(a, _)
             | Dialog::ConfirmReplace(a, ..)
             | Dialog::ConfirmFlatten(a)
             | Dialog::ConfirmFlattenAnnots(a)
@@ -280,11 +403,33 @@ impl Dialog {
             | Dialog::ConfirmSaveMarks(a, ..)
             | Dialog::Print(a, _)
             | Dialog::SaveSelection(a, _)
-            | Dialog::ConfirmSignRecovered(a) => Some(a),
+            | Dialog::ConfirmSignRecovered(a)
+            | Dialog::ConfirmStale(a, _)
+            | Dialog::ConfirmReload(a) => Some(a),
             Dialog::ConfirmSaveDisallowed(s) => Some(&s.asked),
             Dialog::ConfirmPrintFields(q) => Some(&q.asked),
+            Dialog::ConfirmAppendForms(q) => Some(&q.asked),
             _ => None,
         }
+    }
+
+    /// Whether it is a question about saving a document, so one waiting while the window's
+    /// close request is asked about: closing goes on only once it is answered.
+    fn saving(&self) -> bool {
+        matches!(
+            self,
+            Dialog::ConfirmClose(..)
+                | Dialog::ConfirmStale(..)
+                | Dialog::ConfirmSaveRepaired(_)
+                | Dialog::ConfirmSaveMarks(..)
+                | Dialog::ConfirmSaveSigned(..)
+                | Dialog::ConfirmSaveDisallowed(_)
+        )
+    }
+
+    /// Whether it is the question quitting asks.
+    fn quitting(&self) -> bool {
+        matches!(self, Dialog::ConfirmQuit | Dialog::ConfirmClose(_, true))
     }
 }
 
@@ -309,6 +454,31 @@ pub const NOT_CONFIRMED: &str = "The file was saved, but your system couldn't co
 /// is the new one, never the old one kept.
 pub fn not_confirmed(e: &anyhow::Error) -> bool {
     e.downcast_ref::<limarepdf_core::NotConfirmed>().is_some()
+}
+
+/// A write that replaced its file: done, or done but not confirmed on disk, with why the
+/// system couldn't confirm it (decision D7). Any other failure is returned.
+pub fn unconfirmed(r: anyhow::Result<()>) -> anyhow::Result<Option<String>> {
+    match r {
+        Ok(()) => Ok(None),
+        Err(e) => match e.downcast_ref::<limarepdf_core::NotConfirmed>() {
+            Some(n) => Ok(Some(n.why.clone())),
+            None => Err(e),
+        },
+    }
+}
+
+/// `why` the system couldn't confirm a file written is safely on disk, said after "but".
+pub fn unconfirmed_text(why: &str) -> String {
+    format!("your system couldn't confirm it is safely on disk ({why})")
+}
+
+/// What a change to the trust list adds to its sentence when the list was written but not
+/// confirmed on disk.
+fn trust_unsure(why: Option<String>) -> String {
+    why.map_or_else(String::new, |why| {
+        format!(", but your system couldn't confirm the trust list is safely on disk ({why})")
+    })
 }
 
 /// Why a document set to be saved with a password isn't signed: the signed file would be
@@ -374,6 +544,9 @@ impl Excerpt {
 
 /// Title of the OCR background job, also used to recognise its result.
 const OCR_JOB: &str = "Recognise text";
+
+/// Title of the split background job and its messages.
+const SPLIT_JOB: &str = "Split into files";
 
 /// Width of the inspector panel, and of its rail when collapsed.
 const INSPECTOR_WIDTH: f32 = 250.0;
@@ -481,12 +654,23 @@ fn name_resize_handle(ctx: &egui::Context, panel: &str, name: &str) {
 
 /// How long the undo toast stays, in seconds.
 const TOAST_SECONDS: f64 = 6.0;
+/// How long a toast waits while its tab is behind another, in seconds, and the least it
+/// shows for when that tab comes back to the front within the wait.
+const TOAST_AWAY: f64 = 30.0;
+const TOAST_BACK: f64 = 3.0;
 
-/// A brief notice at the bottom of the window with an Undo button.
+/// A brief notice at the bottom of the window about something that happened in one tab,
+/// shown while that tab is in front. Undo takes back the change it tells of, and goes as
+/// soon as that change isn't the last thing in the tab (BUG-02).
 struct Toast {
+    tab: u64,
     text: String,
-    /// When it goes away (egui input time).
+    /// The tab's [`Tab::history`] just after the change, for a change Undo takes back.
+    undo: Option<(u64, usize, usize)>,
+    /// When it goes away (egui input time), while its tab is in front.
     until: f64,
+    /// While its tab is behind another: since when, and the seconds it had left.
+    away: Option<(f64, f64)>,
 }
 
 /// The command palette (Ctrl+K) while it is open.
@@ -524,7 +708,10 @@ pub struct App {
     bar_widths: BarWidths,
     /// The window has been fitted to its monitor, at the first frame the monitor's size was known.
     fitted: bool,
-    toast: Option<Toast>,
+    /// The control that had the keyboard last frame (see [`page_text::fresh_history`]).
+    keyboard: Option<egui::Id>,
+    /// At most one for each tab.
+    toasts: Vec<Toast>,
     /// Recently opened files, kept between runs.
     recent: Recent,
     /// Settings kept between runs (the theme).
@@ -541,6 +728,27 @@ pub struct App {
     sign_window: Option<SignWindow>,
     /// Crash recovery: this run's copies, and the copies an earlier run left.
     rescue: recover::Rescue,
+    /// The files being read for tabs, so that opening one again while it is read doesn't
+    /// give it a second tab.
+    opening: Vec<PathBuf>,
+    /// The user said to replace this version of the tab's file, which another app or tab
+    /// changed (see [`Dialog::ConfirmStale`]).
+    replace_ok: Option<(u64, disk::Version)>,
+    /// The window had the keyboard last frame: getting it back, the tabs' files are
+    /// checked for changes made meanwhile.
+    focused: bool,
+    /// The settings or recent files couldn't be saved, and that was said: once a session
+    /// ([`App::say_unsaved`]).
+    said_unsaved: bool,
+    /// Dialogs waiting, in turn, for the one open to be answered (BUG-07).
+    waiting: VecDeque<Dialog>,
+    /// A file being read again with the password given for it: the dialogs waiting wait
+    /// for the result, so that a wrong password is asked for again first.
+    retrying: Option<PathBuf>,
+    /// The number of the last search for printers started (see [`dlg::Search`]).
+    searches: u64,
+    /// Closing a tab or quitting, once a document is saved (ENH-01).
+    closing: Option<Closing>,
 }
 
 impl App {
@@ -592,7 +800,8 @@ impl App {
             fold: 0,
             bar_widths: BarWidths::default(),
             fitted: false,
-            toast: None,
+            keyboard: None,
+            toasts: Vec::new(),
             recent,
             settings,
             sig_details: None,
@@ -601,23 +810,131 @@ impl App {
             ids_window: None,
             sign_window: None,
             rescue: recover::Rescue::default(),
+            opening: Vec::new(),
+            replace_ok: None,
+            focused: true,
+            said_unsaved: false,
+            waiting: VecDeque::new(),
+            retrying: None,
+            searches: 0,
+            closing: None,
         }
     }
 
+    /// Opens the PDF at `path` in a tab of its own. A file open already, by any path or
+    /// link to it, or being opened, isn't opened again: its tab comes to the front, and its
+    /// file is checked for changes made since it was read (BUG-06).
     fn spawn_open(
-        &self,
+        &mut self,
         ctx: &egui::Context,
         path: PathBuf,
         password: Option<String>,
         page: Option<usize>,
     ) {
+        if let Some(i) = self.tab_of(&path) {
+            self.active = i;
+            if let Some(p) = page {
+                self.tabs[i].go_to(p.saturating_sub(1));
+            }
+            self.check_disk(ctx, Some(self.tabs[i].id));
+            return;
+        }
+        if !self.reading(&path) {
+            self.read_file(ctx, path, password, page, None);
+        }
+    }
+
+    /// Whether the file at `path`, by any path or link to it, is being read for a tab, or
+    /// its password is asked for to read it.
+    fn reading(&self, path: &Path) -> bool {
+        let asks = |d: &Dialog| match d {
+            Dialog::Password(s, Unlock::Tab(..)) => disk::same_file(&s.path, path),
+            _ => false,
+        };
+        let asking = std::iter::once(&self.dialog).chain(&self.waiting).any(asks);
+        asking || self.opening.iter().any(|p| disk::same_file(p, path))
+    }
+
+    /// Shows `d` once the dialog open now, and those waiting before it, are answered: a
+    /// result coming in the background never replaces a question (BUG-07). Files that
+    /// can't be opened, waiting together, are told about in one message.
+    fn show(&mut self, d: Dialog) {
+        if let Dialog::Message(title, text) = &d {
+            if title == CANNOT_OPEN {
+                let same = self.waiting.iter_mut().find_map(|w| match w {
+                    Dialog::Message(t, x) if t == CANNOT_OPEN || t == CANNOT_OPEN_SEVERAL => {
+                        Some((t, x))
+                    }
+                    _ => None,
+                });
+                if let Some((t, x)) = same {
+                    *t = CANNOT_OPEN_SEVERAL.into();
+                    x.push_str("\n\n");
+                    x.push_str(text);
+                    return;
+                }
+            }
+        }
+        self.waiting.push_back(d);
+        self.next_dialog();
+    }
+
+    /// Asks for a password, `again` (after a wrong one, or the file skipped before it)
+    /// ahead of the dialogs waiting.
+    fn ask_password(&mut self, d: Dialog, again: bool) {
+        if again {
+            self.waiting.push_front(d);
+            self.next_dialog();
+        } else {
+            self.show(d);
+        }
+    }
+
+    /// Opens the next dialog waiting, once none is open and no password given is being
+    /// tried.
+    fn next_dialog(&mut self) {
+        if matches!(self.dialog, Dialog::None) && self.retrying.is_none() {
+            if let Some(d) = self.waiting.pop_front() {
+                self.dialog = d;
+            }
+        }
+    }
+
+    /// The tab whose file is at `path`, by any path or link to it.
+    fn tab_of(&self, path: &Path) -> Option<usize> {
+        self.tabs
+            .iter()
+            .position(|t| t.path.as_deref().is_some_and(|p| disk::same_file(p, path)))
+    }
+
+    /// The file at `path` was read, or couldn't be: it isn't being opened any more.
+    fn opened(&mut self, path: &Path) {
+        if let Some(i) = self.opening.iter().position(|p| p == path) {
+            self.opening.remove(i);
+        }
+        if self.retrying.as_deref() == Some(path) {
+            self.retrying = None;
+        }
+    }
+
+    /// Reads the PDF at `path` in the background, for a new tab or (`into`) to reload one.
+    fn read_file(
+        &mut self,
+        ctx: &egui::Context,
+        path: PathBuf,
+        password: Option<String>,
+        page: Option<usize>,
+        into: Reloading,
+    ) {
+        self.opening.push(path.clone());
         let tx = self.tx.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let open = || -> limarepdf_core::Result<(Pdf, Option<Arc<[u8]>>)> {
+            type Read = (Pdf, Option<Arc<[u8]>>, disk::Version);
+            let open = || -> limarepdf_core::Result<Read> {
                 use anyhow::Context as _;
-                let bytes =
-                    std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+                let (bytes, version) =
+                    disk::read(&path).with_context(|| format!("reading {}", path.display()))?;
                 let pdf = Pdf::from_bytes(&bytes, password.as_deref())?;
                 // Signed files keep their bytes, to check and for View signed version.
                 let fields = pdf.form_fields();
@@ -625,28 +942,73 @@ impl App {
                     .iter()
                     .any(|f| f.kind == limarepdf_core::FieldKind::Signature)
                     .then(|| Arc::from(bytes));
-                Ok((pdf, signed))
+                Ok((pdf, signed, version))
             };
             let msg = match crate::guard(open) {
-                Ok((pdf, signed)) => Loaded::Ok {
+                Ok((pdf, signed, version)) => Loaded::Ok {
                     path,
                     pdf,
                     page,
                     signed: signed.map(|b| (b, password)),
+                    version,
+                    into,
                 },
                 Err(e) => {
                     let s = format!("{e:#}");
-                    if s.to_lowercase().contains("password") {
+                    if needs_password(&s) {
                         Loaded::NeedPassword {
                             path,
-                            error: password.map(|_| "Incorrect password.".to_string()),
+                            error: password.map(|_| INCORRECT_PASSWORD.to_string()),
+                            page,
+                            into,
                         }
                     } else {
-                        Loaded::Err(format!("{}: {s}", path.display()))
+                        let text = format!("{}: {s}", path.display());
+                        Loaded::Err(path, text)
                     }
                 }
             };
             let _ = tx.send(msg);
+            ctx.request_repaint();
+        });
+    }
+
+    /// Reads tab `i`'s file again into it, as it now is.
+    fn reload(&mut self, ctx: &egui::Context, i: usize) {
+        let Some(t) = self.tabs.get(i) else {
+            return;
+        };
+        let (Some(path), into) = (t.path.clone(), Some((t.id, t.revision))) else {
+            return;
+        };
+        if !self.reading(&path) {
+            self.read_file(ctx, path, None, None, into);
+        }
+    }
+
+    /// Checks in the background whether the files of the tabs (or of tab `only`) still hold
+    /// what the tabs last read or saved; a tab whose file another app or tab changed shows
+    /// a banner about it.
+    fn check_disk(&self, ctx: &egui::Context, only: Option<u64>) {
+        let files: Vec<_> = self
+            .tabs
+            .iter()
+            .filter(|t| only.is_none_or(|id| id == t.id))
+            .filter_map(|t| Some((t.id, t.path.clone()?, t.disk.clone()?)))
+            .collect();
+        if files.is_empty() {
+            return;
+        }
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let found = files
+                .into_iter()
+                .filter_map(|(id, path, known)| {
+                    let now = disk::compare(&path, &known).ok()?;
+                    Some((id, known, now))
+                })
+                .collect();
+            let _ = tx.send(Loaded::Disk(found));
             ctx.request_repaint();
         });
     }
@@ -694,7 +1056,7 @@ impl App {
                 true
             }
             Err(e) => {
-                self.dialog = Dialog::Message("Cannot open".into(), format!("{e:#}"));
+                self.show(Dialog::Message("Cannot open".into(), format!("{e:#}")));
                 false
             }
         }
@@ -763,7 +1125,7 @@ impl App {
         let Some(cert) = ask.cert().cloned() else {
             return false;
         };
-        let result = (|| -> limarepdf_core::Result<limarepdf_core::Added> {
+        let result = (|| -> limarepdf_core::Result<(limarepdf_core::Added, Option<String>)> {
             let path = limarepdf_core::TrustList::default_path().ok_or_else(|| {
                 anyhow::anyhow!(
                     "LimarePDF can't find its settings folder (HOME or APPDATA isn't set)"
@@ -772,19 +1134,19 @@ impl App {
             let mut list = limarepdf_core::TrustList::load(&path)?;
             let label = ask.label.trim();
             let added = list.add(&cert.der, ask.role, (!label.is_empty()).then_some(label))?;
-            list.save(&path)?;
-            Ok(added)
+            Ok((added, unconfirmed(list.save(&path))?))
         })();
         match result {
-            Ok(added) => {
+            Ok((added, unsure)) => {
                 let was = match added {
                     limarepdf_core::Added::RoleChanged(old) => format!(" (instead of as {old})"),
                     limarepdf_core::Added::New => String::new(),
                 };
                 let name = limarepdf_core::display_line(ask.label.trim(), 80);
                 self.status = format!(
-                    "Now trusting \"{name}\" as {}{was}. {}",
+                    "Now trusting \"{name}\" as {}{was}{}. {}",
                     ask.role,
+                    trust_unsure(unsure),
                     sigs::TRUST_NOTE
                 );
                 self.retrust();
@@ -895,7 +1257,7 @@ impl App {
 
     /// Takes the certificate with this SHA-256 fingerprint out of the trust list file.
     fn untrust(&mut self, sha256: &str) {
-        let result = (|| -> limarepdf_core::Result<limarepdf_core::TrustEntry> {
+        let result = (|| -> limarepdf_core::Result<(TrustEntry, Option<String>)> {
             let path = limarepdf_core::TrustList::default_path().ok_or_else(|| {
                 anyhow::anyhow!(
                     "LimarePDF can't find its settings folder (HOME or APPDATA isn't set)"
@@ -908,14 +1270,14 @@ impl App {
             let e = list
                 .remove(i)
                 .ok_or_else(|| anyhow::anyhow!("it is no longer in the trust list"))?;
-            list.save(&path)?;
-            Ok(e)
+            Ok((e, unconfirmed(list.save(&path))?))
         })();
         match result {
-            Ok(e) => {
+            Ok((e, unsure)) => {
                 self.status = format!(
-                    "No longer trusting \"{}\". {}",
+                    "No longer trusting \"{}\"{}. {}",
                     limarepdf_core::display_line(&e.label, 80),
+                    trust_unsure(unsure),
                     sigs::TRUST_NOTE
                 );
             }
@@ -925,6 +1287,21 @@ impl App {
             }
         }
         self.retrust();
+    }
+
+    /// Says what of LimarePDF's own couldn't be saved: a signature saved for next time
+    /// each time, anything else (settings, recent files) once a session.
+    fn say_unsaved(&mut self) {
+        if let Some(text) = self.settings.take_sign_unsaved() {
+            self.show(Dialog::Message("Not saved for next time".into(), text));
+        }
+        let once = self.settings.take_unsaved();
+        if let Some((title, text)) = once.or_else(|| self.recent.take_unsaved()) {
+            if !std::mem::replace(&mut self.said_unsaved, true) {
+                let text = format!("{text} This isn't said again until LimarePDF starts again.");
+                self.show(Dialog::Message(title, text));
+            }
+        }
     }
 
     /// Opens the version of the active document that its signature `i` signed, in a new
@@ -1101,6 +1478,21 @@ impl App {
         if out.extension().is_none() {
             out.set_extension("pdf");
         }
+        // Never over another tab's file, nor over this tab's own when something else
+        // changed it since (BUG-06).
+        if let Some(why) = self.in_other_tab(&out, Some(w.tab)) {
+            w.error = Some(why);
+            return;
+        }
+        let i = self.tabs.iter().position(|t| t.id == w.tab);
+        if i.and_then(|i| self.stale(i, &out)).is_some() {
+            w.error = Some(
+                "Another app or tab changed this file since LimarePDF opened or saved it. \
+                 Reload it first, or choose another name."
+                    .into(),
+            );
+            return;
+        }
         w.start(
             ctx,
             digital::Input {
@@ -1148,11 +1540,14 @@ impl App {
         if !s.confirmed {
             text.push_str(&format!("\n\n{NOT_CONFIRMED}"));
         }
+        if let Some(why) = &s.default_unsaved {
+            text.push_str(&format!("\n\nThe document is signed, but {why}."));
+        }
         if s.self_issued {
             text.push_str(
                 "\n\nOthers see you as an unknown signer until they trust your certificate: \
-                 send it to them from Edit > Digital IDs (Export, certificate only). LimarePDF shows \
-                 the same until you trust it.",
+                 send it to them from Document > Digital signatures > Digital IDs… (Export…, \
+                 Certificate only). LimarePDF shows the same until you trust it.",
             );
         }
         let bytes: Arc<[u8]> = Arc::from(s.bytes);
@@ -1170,8 +1565,10 @@ impl App {
                     if let Some(p) = page {
                         self.tabs[self.active].go_to(p);
                     }
+                    let t = &mut self.tabs[self.active];
                     // Saving again is one click (decision D7).
-                    self.tabs[self.active].dirty = !s.confirmed;
+                    t.dirty = !s.confirmed;
+                    t.disk = t.path.as_deref().and_then(|p| disk::version(p).ok());
                     self.check_signatures(ctx, self.active, bytes, None);
                 }
                 if replace.is_none() {
@@ -1183,7 +1580,7 @@ impl App {
             }
             Err(e) => text.push_str(&format!("\n\nLimarePDF can't open the signed file: {e:#}")),
         }
-        self.dialog = Dialog::Message(what.into(), text);
+        self.show(Dialog::Message(what.into(), text));
     }
 
     fn poll_loads(&mut self, ctx: &egui::Context) {
@@ -1194,11 +1591,81 @@ impl App {
                     pdf,
                     page,
                     signed,
+                    version,
+                    into,
                 } => {
+                    self.opened(&path);
                     self.recent.add(&path);
+                    // Reloading: the tab, as it was when asked, is still there.
+                    let reload = match into {
+                        Some((id, revision)) => {
+                            let i = self.tabs.iter().position(|t| t.id == id);
+                            let ready = i.filter(|&i| {
+                                let t = &self.tabs[i];
+                                t.revision == revision && !t.ed.pending()
+                            });
+                            if ready.is_none() {
+                                self.show(Dialog::Message(
+                                    "Not reloaded".into(),
+                                    "The document changed or was closed while its file was \
+                                     read again, so it wasn't reloaded."
+                                        .into(),
+                                ));
+                                continue;
+                            }
+                            ready
+                        }
+                        // A tab got the file meanwhile (its Save as, say): that one is shown.
+                        None => match self.tab_of(&path) {
+                            Some(i) => {
+                                self.active = i;
+                                continue;
+                            }
+                            None => None,
+                        },
+                    };
                     if self.add_tab(ctx, pdf, Some(path), page, false) {
+                        self.tabs[self.active].disk = Some(version);
+                        if let Some(i) = reload {
+                            // add_tab put it last: it takes the old tab's place there.
+                            if let Some(new) = self.tabs.pop() {
+                                let old = std::mem::replace(&mut self.tabs[i], new);
+                                self.active = i;
+                                if page.is_none() {
+                                    self.tabs[i].go_to(old.current);
+                                }
+                                self.closed_copy(&old);
+                            }
+                        }
                         if let Some((bytes, password)) = signed {
                             self.check_signatures(ctx, self.active, bytes, password);
+                        }
+                    }
+                }
+                Loaded::Disk(found) => {
+                    for (id, known, now) in found {
+                        let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
+                            continue;
+                        };
+                        // Saved or reloaded since the check started.
+                        if t.disk.as_ref() != Some(&known) {
+                            continue;
+                        }
+                        match now {
+                            OnDisk::Same(v) => {
+                                t.disk = Some(v);
+                                t.changed_on_disk = None;
+                                t.drop_banner(BannerKind::ChangedOnDisk);
+                            }
+                            OnDisk::Changed(v) => {
+                                let seen = t.changed_on_disk.as_ref();
+                                if !seen.is_some_and(|s| s.same_bytes(&v)) {
+                                    t.show_banner(crate::banners::changed_on_disk());
+                                    t.changed_on_disk = Some(v);
+                                }
+                            }
+                            // Saving puts it back.
+                            OnDisk::Gone => {}
                         }
                     }
                 }
@@ -1211,14 +1678,58 @@ impl App {
                         t.sig_checked(generation, check);
                     }
                 }
-                Loaded::NeedPassword { path, error } => {
-                    self.dialog = Dialog::Password(dlg::Password {
+                Loaded::NeedPassword {
+                    path,
+                    error,
+                    page,
+                    into,
+                } => {
+                    let again = self.retrying.as_ref() == Some(&path);
+                    self.opened(&path);
+                    let ask = dlg::Password {
                         path,
                         input: String::new(),
                         error,
-                    });
+                    };
+                    self.ask_password(Dialog::Password(ask, Unlock::Tab(page, into)), again);
                 }
-                Loaded::Err(e) => self.dialog = Dialog::Message("Cannot open file".into(), e),
+                Loaded::Err(path, e) => {
+                    self.opened(&path);
+                    self.show(Dialog::Message(CANNOT_OPEN.into(), e));
+                }
+                Loaded::Printers(search, found) => {
+                    let mut dialogs = std::iter::once(&mut self.dialog).chain(&mut self.waiting);
+                    let looking = dialogs.find_map(|d| match d {
+                        Dialog::Print(_, s) if s.search == dlg::Search::Running(search) => Some(s),
+                        _ => None,
+                    });
+                    if let Some(s) = looking {
+                        s.found(found);
+                    }
+                }
+                Loaded::Append(a, stop) => {
+                    self.busy = false;
+                    self.status.clear();
+                    let again = a.files.iter().any(|f| self.retrying.as_ref() == Some(f));
+                    if again {
+                        self.retrying = None;
+                    }
+                    match stop {
+                        None => self.append_read(ctx, *a),
+                        Some(AppendStop::Password(error)) => {
+                            let ask = dlg::Password {
+                                path: a.files[a.read.len()].clone(),
+                                input: String::new(),
+                                error,
+                            };
+                            self.ask_password(Dialog::Password(ask, Unlock::Append(a)), again);
+                        }
+                        Some(AppendStop::Failed(why)) => self.show(Dialog::Message(
+                            "Append failed".into(),
+                            format!("{why}\n\nNothing was added."),
+                        )),
+                    }
+                }
                 Loaded::Job {
                     tab,
                     revision,
@@ -1233,17 +1744,19 @@ impl App {
                     let (pdf, changed, text) = match result {
                         Ok(r) => r,
                         Err(e) => {
-                            self.dialog = Dialog::Message(title.into(), e);
+                            self.show(Dialog::Message(title.into(), e));
                             continue;
                         }
                     };
-                    if changed && t.revision != revision {
-                        self.dialog = Dialog::Message(
+                    // Typing since the job started is a change too: it goes in, and the
+                    // result, made without it, is discarded.
+                    if changed && (!t.keep_page_typing(ctx) || t.revision != revision) {
+                        self.show(Dialog::Message(
                             title.into(),
                             "The document changed while this was running, so the result \
                              was discarded. Run it again."
                                 .into(),
-                        );
+                        ));
                         continue;
                     }
                     if changed {
@@ -1256,10 +1769,11 @@ impl App {
                             t.banners.retain(|b| b.kind != BannerKind::Scanned);
                         }
                     }
-                    self.dialog = Dialog::Message(title.into(), text);
+                    self.show(Dialog::Message(title.into(), text));
                 }
             }
         }
+        self.next_dialog();
     }
 
     fn pdf_dialog() -> rfd::FileDialog {
@@ -1282,10 +1796,10 @@ impl App {
             match std::fs::read(f) {
                 Ok(b) => out.push((f.clone(), b)),
                 Err(e) => {
-                    self.dialog = Dialog::Message(
+                    self.show(Dialog::Message(
                         "Cannot read image".into(),
                         format!("{}: {e}", f.display()),
-                    );
+                    ));
                     return None;
                 }
             }
@@ -1293,14 +1807,18 @@ impl App {
         Some(out)
     }
 
-    /// Run `work` on a copy of the active document on a background thread. The result is
-    /// applied (undoably) when it arrives, if the document has not changed meanwhile.
+    /// Run `work` on a copy of the active document on a background thread, what is being
+    /// typed on its pages kept first. The result is applied (undoably) when it arrives, if
+    /// the document has not changed meanwhile.
     fn spawn_job(
         &mut self,
         ctx: &egui::Context,
         title: &'static str,
         work: impl FnOnce(&mut Pdf) -> limarepdf_core::Result<(bool, String)> + Send + 'static,
     ) {
+        if !self.tabs[self.active].keep_page_typing(ctx) {
+            return;
+        }
         let t = &self.tabs[self.active];
         let (tab, revision, mut pdf) = (t.id, t.revision, t.pdf.clone());
         let (tx, ctx) = (self.tx.clone(), ctx.clone());
@@ -1320,6 +1838,20 @@ impl App {
         self.status = format!("{title}…");
     }
 
+    /// Looks for the printers on a background thread, returning the search's number. Its
+    /// result fills in the Print dialog looking for it, open or waiting, or is dropped:
+    /// one closed meanwhile isn't opened again (BUG-11).
+    fn find_printers(&mut self, ctx: &egui::Context) -> u64 {
+        self.searches += 1;
+        let (search, tx, ctx) = (self.searches, self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let found = crate::guard(print::printers).map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Loaded::Printers(search, found));
+            ctx.request_repaint();
+        });
+        search
+    }
+
     /// Send `pages` (zero-based) of the active tab to the printer on a background thread.
     fn start_print(&mut self, ctx: &egui::Context, pages: Vec<usize>, opts: print::PrintOptions) {
         let printer = opts.printer.clone().unwrap_or_default();
@@ -1333,9 +1865,21 @@ impl App {
     /// Write page images on a background thread; the document is not changed.
     fn start_export(&mut self, ctx: &egui::Context, e: ImageExport) {
         self.spawn_job(ctx, "Export pages as images", move |p| {
-            let files = p.export_images(&e.pages, e.dpi, e.format, &e.dir, &e.stem)?;
-            let n = files.len();
-            Ok((false, format!("Wrote {n} image(s) to {}.", e.dir.display())))
+            match p.export_images(&e.pages, e.dpi, e.format, &e.dir, &e.stem) {
+                Ok(files) => {
+                    let n = files.len();
+                    Ok((false, format!("Wrote {n} image(s) to {}.", e.dir.display())))
+                }
+                Err(err) if not_confirmed(&err) => Ok((
+                    false,
+                    format!(
+                        "Wrote the images to {}, but your system couldn't confirm they are \
+                         safely on disk. If the computer lost power just now, export them again.",
+                        e.dir.display()
+                    ),
+                )),
+                Err(err) => Err(err),
+            }
         });
     }
 
@@ -1363,11 +1907,18 @@ impl App {
         if path.extension().is_none() {
             path.set_extension("txt");
         }
-        match std::fs::write(&path, text) {
+        if let Some(why) = self.in_other_tab(&path, None) {
+            self.dialog = Dialog::Message("Open in a tab".into(), why);
+            return;
+        }
+        match limarepdf_core::write_file(&path, text.as_bytes()) {
             Ok(()) => self.status = format!("Wrote the text to {}", path.display()),
+            Err(e) if not_confirmed(&e) => {
+                self.dialog = Dialog::Message("Saved, not confirmed".into(), NOT_CONFIRMED.into())
+            }
             Err(e) => {
                 self.dialog =
-                    Dialog::Message("Export failed".into(), format!("{}: {e}", path.display()))
+                    Dialog::Message("Export failed".into(), format!("{}: {e:#}", path.display()))
             }
         }
     }
@@ -1392,8 +1943,13 @@ impl App {
         if path.extension().is_none() {
             path.set_extension(ext);
         }
+        if let Some(why) = self.in_other_tab(&path, None) {
+            self.dialog = Dialog::Message("Open in a tab".into(), why);
+            return;
+        }
+        let t = &self.tabs[self.active];
         let result: limarepdf_core::Result<()> = match layout {
-            dlg::Layout::TextFile => std::fs::write(&path, text).map_err(Into::into),
+            dlg::Layout::TextFile => limarepdf_core::write_file(&path, text.as_bytes()),
             _ => crate::guard(|| {
                 Excerpt::new(t, layout)
                     .build(&t.pdf)
@@ -1420,18 +1976,25 @@ impl App {
             Ok(()) => {
                 self.add_tab(ctx, pdf, None, None, true);
             }
-            Err(e) => {
-                self.dialog = Dialog::Message("Cannot import images".into(), format!("{e:#}"))
-            }
+            Err(e) => self.show(Dialog::Message(
+                "Cannot import images".into(),
+                format!("{e:#}"),
+            )),
         }
     }
 
-    /// Saves, with what is being typed kept first. Saving over a file that was repaired to
-    /// open it asks first, offering Save as instead: the original is only replaced when the
-    /// user says so.
+    /// Saves, with what is being typed kept first; if it can't be, nothing is saved.
+    /// Saving over a file that was repaired to open it asks first, offering Save as
+    /// instead: the original is only replaced when the user says so.
     fn save(&mut self, ctx: &egui::Context, as_new: bool) {
         if let Some(t) = self.tabs.get_mut(self.active) {
-            t.keep_typing(ctx);
+            if !t.keep_typing(ctx) {
+                return;
+            }
+        }
+        // Before the other questions, which are about what is saved: where it goes.
+        if !as_new && self.asked_stale(None) {
+            return;
         }
         let over_repaired = self
             .tabs
@@ -1516,22 +2079,104 @@ impl App {
         if let Some(dir) = original.and_then(|p| p.parent()).filter(|d| d.is_dir()) {
             d = d.set_directory(dir);
         }
-        let mut p = d.save_file()?;
+        let mut p = Self::save_as(d)?;
         if p.extension().is_none() {
             p.set_extension("pdf");
         }
         Some(p)
     }
 
+    /// The file the user picks in the save chooser `d`, if any.
+    #[cfg(not(test))]
+    fn save_as(d: rfd::FileDialog) -> Option<PathBuf> {
+        d.save_file()
+    }
+
+    /// Tests never open the chooser, which would show on the desktop: they get the file
+    /// [`tests::SAVE_AS`] holds, or nothing, as when the chooser is cancelled.
+    #[cfg(test)]
+    fn save_as(_: rfd::FileDialog) -> Option<PathBuf> {
+        tests::SAVE_AS.with(std::cell::Cell::take)
+    }
+
+    /// Where to save the active tab (see [`Self::save_path`]); `None`, saying why, for a
+    /// file open in another tab, or one another app or tab changed since this tab last
+    /// read or saved it, until the user says to replace it (BUG-06).
+    fn save_target(&mut self, as_new: bool) -> Option<PathBuf> {
+        let t = self.tabs.get(self.active)?;
+        let path = Self::save_path(t, as_new)?;
+        if let Some(why) = self.in_other_tab(&path, Some(t.id)) {
+            self.dialog = Dialog::Message("Open in another tab".into(), why);
+            return None;
+        }
+        if self.asked_stale(Some(&path)) {
+            return None;
+        }
+        Some(path)
+    }
+
+    /// Why nothing is written to `path` when it is the file of a tab other than `except`:
+    /// that tab would be left with an older copy, to save back over it.
+    fn in_other_tab(&self, path: &Path, except: Option<u64>) -> Option<String> {
+        let t = self.tabs.iter().find(|t| {
+            Some(t.id) != except && t.path.as_deref().is_some_and(|p| disk::same_file(p, path))
+        })?;
+        let which = if except.is_some() {
+            "another tab"
+        } else {
+            "a tab"
+        };
+        Some(format!(
+            "\"{}\" is open in {which}. Close that tab first, or choose another name. Nothing \
+             was saved.",
+            t.title()
+        ))
+    }
+
+    /// The file at `path` as it now is, when it is tab `i`'s own file and another app or
+    /// tab changed it since the tab last read or saved it, unless the user said to replace
+    /// that version.
+    fn stale(&self, i: usize, path: &Path) -> Option<disk::Version> {
+        let t = self.tabs.get(i)?;
+        let (own, known) = (t.path.as_deref()?, t.disk.as_ref()?);
+        if !disk::same_file(own, path) {
+            return None;
+        }
+        let Ok(OnDisk::Changed(now)) = disk::compare(path, known) else {
+            return None;
+        };
+        let ok = self.replace_ok.as_ref();
+        let ok = ok.is_some_and(|(id, v)| *id == t.id && v.same_bytes(&now));
+        (!ok).then_some(now)
+    }
+
+    /// Asks before the active tab replaces its file (or the one at `path`) when another
+    /// app or tab changed it; true when it asked.
+    fn asked_stale(&mut self, path: Option<&Path>) -> bool {
+        let Some(t) = self.tabs.get(self.active) else {
+            return false;
+        };
+        let Some(path) = path.or(t.path.as_deref()) else {
+            return false;
+        };
+        let Some(now) = self.stale(self.active, path) else {
+            return false;
+        };
+        let t = &mut self.tabs[self.active];
+        // With Reload, which the question has no room for.
+        t.show_banner(crate::banners::changed_on_disk());
+        t.changed_on_disk = Some(now.clone());
+        self.dialog = Dialog::ConfirmStale(Asked::of(t), Box::new(now));
+        true
+    }
+
     /// Writes a signed document whose edits were added after what was signed (`bytes`).
     /// The signatures stay, and the saved file becomes what later saves add to.
     fn save_appended(&mut self, ctx: &egui::Context, as_new: bool, bytes: Vec<u8>) {
-        let Some(tab) = self.tabs.get_mut(self.active) else {
+        let Some(path) = self.save_target(as_new) else {
             return;
         };
-        let Some(path) = Self::save_path(tab, as_new) else {
-            return;
-        };
+        let tab = &mut self.tabs[self.active];
         let confirmed = match limarepdf_core::write_file(&path, &bytes) {
             Ok(()) => true,
             Err(e) if not_confirmed(&e) => false,
@@ -1545,9 +2190,10 @@ impl App {
             path.display()
         );
         self.recent.add(&path);
+        self.replace_ok = None;
         tab.dirty = !confirmed;
         tab.scrubbed = false;
-        tab.path = Some(path);
+        tab.wrote(path);
         self.check_signatures(ctx, self.active, Arc::from(bytes), None);
         self.saved_copy(self.active, confirmed);
         if !confirmed {
@@ -1556,12 +2202,10 @@ impl App {
     }
 
     fn save_now(&mut self, ctx: &egui::Context, as_new: bool) {
-        let Some(tab) = self.tabs.get_mut(self.active) else {
+        let Some(path) = self.save_target(as_new) else {
             return;
         };
-        let Some(path) = Self::save_path(tab, as_new) else {
-            return;
-        };
+        let tab = &mut self.tabs[self.active];
         tab.pdf.set_encryption(tab.encryption.clone());
         let confirmed = match crate::guard(|| tab.pdf.save(&path)) {
             Ok(()) => true,
@@ -1573,6 +2217,7 @@ impl App {
         };
         self.status = format!("Saved {}", path.display());
         self.recent.add(&path);
+        self.replace_ok = None;
         tab.dirty = !confirmed;
         tab.scrubbed = false;
         // The saved file is the repaired copy, with nothing left to repair, and it reads the
@@ -1588,7 +2233,7 @@ impl App {
         let recheck =
             tab.sigs.is_some() || (tab.recovered.is_some() && tab.pdf.signature_count() > 0);
         let saved = recheck.then(|| std::fs::read(&path));
-        tab.path = Some(path);
+        tab.wrote(path);
         match saved {
             Some(Ok(bytes)) => self.check_signatures(ctx, self.active, Arc::from(bytes), password),
             Some(Err(e)) => {
@@ -1651,6 +2296,12 @@ impl App {
 
     fn act(&mut self, ctx: &egui::Context, a: Act) {
         let has = !self.tabs.is_empty();
+        // What is being typed goes into the document before a command uses it, or the
+        // command doesn't run (BUG-01). A question the command asks is then about the
+        // document with the typing in it (BUG-10).
+        if has && a.uses_document() && !self.tabs[self.active].keep_typing(ctx) {
+            return;
+        }
         match a {
             Act::Open => {
                 if let Some(files) = Self::pdf_dialog().pick_files() {
@@ -1672,25 +2323,32 @@ impl App {
             }
             Act::Save => self.save(ctx, false),
             Act::SaveAs => self.save(ctx, true),
+            Act::Reload if has => {
+                let t = &self.tabs[self.active];
+                if t.unsaved() {
+                    self.dialog = Dialog::ConfirmReload(Asked::of(t));
+                } else {
+                    self.reload(ctx, self.active);
+                }
+            }
             Act::ExportImages if has => self.reveal(Section::Export),
             Act::ExportText if has => self.export_text(),
             Act::Print | Act::PrintSelection if has && !self.busy => {
+                // Open at once, with the printers looked for meanwhile (BUG-11).
+                let search = self.find_printers(ctx);
                 let t = &self.tabs[self.active];
                 let selected = t.ed.selection.pages();
                 let file = t.title();
                 let selection = (a == Act::PrintSelection).then_some(dlg::Layout::Original);
-                self.dialog = match print::printers() {
-                    Ok(list) => Dialog::Print(
-                        self.asked(),
-                        Box::new(dlg::Print {
-                            all: selected.is_none(),
-                            pages: selected.map(inspector::range_text).unwrap_or_default(),
-                            selection,
-                            ..dlg::Print::new(list, file)
-                        }),
-                    ),
-                    Err(e) => Dialog::Message("Print".into(), format!("{e:#}")),
-                }
+                self.dialog = Dialog::Print(
+                    self.asked(),
+                    Box::new(dlg::Print {
+                        all: selected.is_none(),
+                        pages: selected.map(inspector::range_text).unwrap_or_default(),
+                        selection,
+                        ..dlg::Print::looking(search, file)
+                    }),
+                );
             }
             Act::SaveSelection if has => {
                 self.dialog = Dialog::SaveSelection(self.asked(), dlg::Layout::Original);
@@ -1735,7 +2393,7 @@ impl App {
             Act::ApplyRedactions if has => {
                 let n = self.tabs[self.active].pdf.redaction_marks().len();
                 if n == 0 {
-                    self.tabs[self.active].notice = Some(
+                    self.tabs[self.active].info = Some(
                         "There are no redaction marks: mark areas with Annotate > Mark areas for \
                          redaction, or mark selected text or search results"
                             .into(),
@@ -1747,7 +2405,7 @@ impl App {
             Act::FinishSigning if has => {
                 let n = self.tabs[self.active].pdf.sign_items();
                 if n == 0 {
-                    self.tabs[self.active].notice = Some(
+                    self.tabs[self.active].info = Some(
                         "There is nothing to finish: put down a signature, the date or a tick \
                          with the Sign tool first"
                             .into(),
@@ -1795,18 +2453,12 @@ impl App {
                     self.ids_window = Some(IdsWindow::new());
                 }
             }
-            Act::CloseTab if has => {
-                if self.tabs[self.active].unsaved() {
-                    self.dialog = Dialog::ConfirmClose(self.asked());
-                } else {
-                    self.close_tab(self.active);
-                }
-            }
+            Act::CloseTab if has => self.close_asking(self.active),
             Act::ToggleRecovery => self.toggle_recovery(),
             Act::ShowRecoveryFile => self.show_leftover(),
             Act::Quit => {
-                if self.tabs.iter().any(Tab::unsaved) {
-                    self.dialog = Dialog::ConfirmQuit;
+                if let Some(q) = self.quit_question() {
+                    self.dialog = q;
                 } else {
                     self.quit_ok = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1876,8 +2528,9 @@ impl App {
             Act::ResetForm => {
                 let t = &mut self.tabs[self.active];
                 t.ed.form.clear_focus();
-                t.edit(ctx, |p| p.reset_form());
-                t.notice = Some("Reset the form".into());
+                if t.edit(ctx, |p| p.reset_form()) {
+                    t.notice = Some("Reset the form".into());
+                }
             }
             Act::FlattenForm => self.dialog = Dialog::ConfirmFlatten(self.asked()),
             Act::FlattenAnnots => {
@@ -2001,7 +2654,7 @@ impl App {
                     } else {
                         format!("{n} pages")
                     };
-                    self.notify(ctx, format!("Deleted {what}"));
+                    self.notify(ctx, self.active, format!("Deleted {what}"), true);
                 }
             }
             Act::RemoveBlank => self.spawn_job(ctx, "Remove blank pages", |p| {
@@ -2148,19 +2801,40 @@ impl App {
         self.tabs[self.active].forms.reveal = Some(s);
     }
 
-    /// The undo toast, bottom centre above the status bar, until it times out, is
-    /// dismissed, or Undo is pressed.
-    fn toast_ui(&mut self, ctx: &egui::Context, acts: &mut Vec<Act>) {
-        let Some(toast) = &self.toast else {
+    /// The front tab's toast, bottom centre above the status bar, until it times out, is
+    /// dismissed, or Undo is pressed. The toasts of tabs behind wait, for a while.
+    fn toast_ui(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        let front = self.tabs.get(self.active).map(|t| t.id);
+        let tabs = &self.tabs;
+        self.toasts.retain_mut(|toast| {
+            let Some(t) = tabs.iter().find(|t| t.id == toast.tab) else {
+                return false;
+            };
+            // Something came after its change: another change, Undo, Redo, or typing.
+            let later = |h| h != t.history() || t.ed.pending() || t.typing_in_forms();
+            if toast.undo.is_some_and(later) {
+                return false;
+            }
+            match (Some(t.id) == front, toast.away) {
+                (true, None) => now < toast.until,
+                (true, Some((since, left))) => {
+                    toast.until = now + left.max(TOAST_BACK);
+                    toast.away = None;
+                    now - since < TOAST_AWAY
+                }
+                (false, None) => {
+                    toast.away = Some((now, toast.until - now));
+                    now < toast.until
+                }
+                (false, Some((since, _))) => now - since < TOAST_AWAY,
+            }
+        });
+        let Some(toast) = self.toasts.iter().find(|t| Some(t.tab) == front) else {
             return;
         };
-        let now = ctx.input(|i| i.time);
-        if now >= toast.until || self.tabs.is_empty() {
-            self.toast = None;
-            return;
-        }
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(toast.until - now));
-        let mut close = false;
+        let (mut undo, mut close) = (false, false);
         egui::Area::new(egui::Id::new("toast"))
             .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -40.0])
             .order(egui::Order::Foreground)
@@ -2171,30 +2845,46 @@ impl App {
                         ui.horizontal(|ui| {
                             ui.label(&toast.text);
                             ui.add_space(8.0);
-                            let undo = actions::get(Act::Undo);
-                            let b = egui::Button::new(egui::RichText::new("Undo").strong());
-                            let tip = tooltip(ctx, undo);
-                            if ui.add(b).on_hover_text(tip).clicked() {
-                                acts.push(Act::Undo);
-                                close = true;
+                            if toast.undo.is_some() {
+                                let b = egui::Button::new(egui::RichText::new("Undo").strong());
+                                let tip = tooltip(ctx, actions::get(Act::Undo));
+                                if ui.add(b).on_hover_text(tip).clicked() {
+                                    (undo, close) = (true, true);
+                                }
                             }
                             let x = egui::Button::new(theme::icon(icon::X));
-                            let x = x.frame_when_inactive(false);
-                            if ui.add(x).on_hover_text("Dismiss").clicked() {
+                            let x = ui.add(x.frame_when_inactive(false));
+                            x.widget_info(|| named("Dismiss"));
+                            if x.on_hover_text("Dismiss").clicked() {
                                 close = true;
                             }
                         });
                     });
             });
         if close {
-            self.toast = None;
+            self.toasts.retain(|t| Some(t.tab) != front);
+        }
+        // At once, while its change is still the last thing in the tab, as checked above.
+        if undo {
+            self.run_command(ctx, actions::name(Act::Undo), |app, ctx| {
+                app.act(ctx, Act::Undo)
+            });
         }
     }
 
-    /// Show the undo toast for something that just happened.
-    fn notify(&mut self, ctx: &egui::Context, text: String) {
-        let until = ctx.input(|i| i.time) + TOAST_SECONDS;
-        self.toast = Some(Toast { text, until });
+    /// Show a toast about something that just happened in tab `i`, replacing the tab's
+    /// earlier one; `undo` for a change Undo takes back.
+    fn notify(&mut self, ctx: &egui::Context, i: usize, text: String, undo: bool) {
+        let t = &self.tabs[i];
+        let toast = Toast {
+            tab: t.id,
+            text,
+            undo: undo.then(|| t.history()),
+            until: ctx.input(|i| i.time) + TOAST_SECONDS,
+            away: None,
+        };
+        self.toasts.retain(|x| x.tab != toast.tab);
+        self.toasts.push(toast);
     }
 
     /// Insert a blank page of `size` points after page `after` (0-based) and go to it.
@@ -2245,30 +2935,115 @@ impl App {
         self.tabs[self.active].redo(ctx);
     }
 
-    /// Adds the pages of `files` to the end of the active tab. Pages from a
-    /// password-protected document (one that opens without asking) make the tab protected:
-    /// its recovery copies are withdrawn first, as for a password, and it gets no more.
+    /// Adds the pages of `files` to the end of the active tab, reading them in the
+    /// background; a file that needs a password asks for it (BUG-20).
     fn merge_files(&mut self, ctx: &egui::Context, files: &[PathBuf]) {
-        let mut docs = Vec::new();
-        for f in files {
-            match crate::guard(|| Pdf::open(f, None)) {
-                Ok(d) => docs.push(d),
-                Err(e) => {
-                    self.dialog =
-                        Dialog::Message("Merge failed".into(), format!("{}: {e:#}", f.display()));
-                    return;
+        let a = Appending {
+            tab: self.tabs[self.active].id,
+            files: files.to_vec(),
+            read: Vec::new(),
+        };
+        self.read_appending(ctx, Box::new(a), None);
+    }
+
+    /// Reads the files of `a` in the background from the first not yet read, that one with
+    /// `password` if given, as far as one that needs a password or can't be read.
+    fn read_appending(
+        &mut self,
+        ctx: &egui::Context,
+        mut a: Box<Appending>,
+        mut password: Option<String>,
+    ) {
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let mut stop = None;
+            while let Some(f) = a.files.get(a.read.len()).cloned() {
+                let given = password.take();
+                match crate::guard(|| Pdf::open(&f, given.as_deref())) {
+                    Ok(d) => a.read.push(Some(d)),
+                    Err(e) => {
+                        let s = format!("{e:#}");
+                        stop = Some(if needs_password(&s) {
+                            AppendStop::Password(given.map(|_| INCORRECT_PASSWORD.into()))
+                        } else {
+                            AppendStop::Failed(format!("{}: {s}", f.display()))
+                        });
+                        break;
+                    }
                 }
             }
+            let _ = tx.send(Loaded::Append(a, stop));
+            ctx.request_repaint();
+        });
+        self.busy = true;
+        self.status = "Append PDFs…".into();
+    }
+
+    /// Adds the pages of the files read for `a` to the end of its tab, in one step. Pages
+    /// from a password-protected document make the tab protected: its recovery copies are
+    /// withdrawn first, as for a password, and it gets no more. Files with form fields are
+    /// asked about first; with an answer LimarePDF can't draw, nothing is added.
+    fn append_read(&mut self, ctx: &egui::Context, a: Appending) {
+        let Some(i) = self.tabs.iter().position(|t| t.id == a.tab) else {
+            self.show(Dialog::Message(
+                "Pages not added".into(),
+                "The document was closed while the files were read, so nothing was added.".into(),
+            ));
+            return;
+        };
+        let (mut docs, mut names) = (Vec::new(), Vec::new());
+        for (f, d) in a.files.iter().zip(a.read) {
+            let Some(d) = d else { continue };
+            if !d.form_fields().is_empty() {
+                let name = f.file_name().unwrap_or(f.as_os_str());
+                let name = name.to_string_lossy().into_owned();
+                // An answer that couldn't be drawn would be lost: nothing is added.
+                let lost = d.undrawable_fields();
+                if !lost.is_empty() {
+                    let (what, them) = match lost.len() {
+                        1 => ("the answer of the field", "it"),
+                        _ => ("the answers of these fields:", "them"),
+                    };
+                    self.show(Dialog::Message(
+                        "Pages not added".into(),
+                        format!(
+                            "LimarePDF can't draw {what} {} in “{name}”, so adding its pages \
+                             would lose {them}. Nothing was added.",
+                            limarepdf_core::quoted_list(&lost)
+                        ),
+                    ));
+                    return;
+                }
+                names.push(name);
+            }
+            docs.push(d);
         }
+        if docs.is_empty() {
+            return;
+        }
+        if !names.is_empty() {
+            let asked = Asked::of(&self.tabs[i]);
+            self.show(Dialog::ConfirmAppendForms(Box::new(AppendForms {
+                asked,
+                docs,
+                names,
+            })));
+            return;
+        }
+        self.add_pages(ctx, i, docs);
+    }
+
+    /// Adds the pages of `docs` to the end of tab `i`'s document, in one step.
+    fn add_pages(&mut self, ctx: &egui::Context, i: usize, docs: Vec<Pdf>) {
         let protected = docs.iter().any(Pdf::encrypted);
         if protected {
             let done = "added the pages of the password-protected document";
-            if let Err(stop) = self.withdraw_copies(self.active, done) {
-                self.dialog = stop;
+            if let Err(stop) = self.withdraw_copies(i, done) {
+                self.show(stop);
                 return;
             }
         }
-        let t = &mut self.tabs[self.active];
+        let t = &mut self.tabs[i];
         if t.edit(ctx, |p| p.append(docs)) && protected {
             t.copy.protected = true;
         }
@@ -2336,7 +3111,7 @@ impl App {
                 t.banners.retain(|b| b.kind != BannerKind::Protected);
                 t.set_encryption(encryption);
                 self.status = "Security settings apply when you save.".into();
-                self.notify(ctx, "Changed password security".into());
+                self.notify(ctx, active, "Changed password security".into(), true);
             }
             Apply::Crop(joins) => {
                 let t = &mut self.tabs[active];
@@ -2394,21 +3169,25 @@ impl App {
                     pages,
                     dir,
                 };
-                let existing = image_names(&e.pages, &e.stem, e.format)
+                let files: Vec<PathBuf> = image_names(&e.pages, &e.stem, e.format)
                     .iter()
-                    .filter(|n| e.dir.join(n).exists())
-                    .count();
-                if existing > 0 {
-                    self.dialog =
-                        Dialog::ConfirmReplace(Asked::of(&self.tabs[active]), e, existing);
-                } else {
-                    self.start_export(ctx, e);
+                    .map(|n| e.dir.join(n))
+                    .collect();
+                match limarepdf_core::existing(&files).len() {
+                    0 => self.start_export(ctx, e),
+                    n => {
+                        let asked = Asked::of(&self.tabs[active]);
+                        self.dialog = Dialog::ConfirmReplace(asked, Replacing::Images(e), n);
+                    }
                 }
             }
             Apply::Split => {
                 let f = &self.tabs[active].forms;
-                let level = f.split_at_marks.then_some(f.split_level.max(1));
-                let every = f.split.max(1);
+                let by = if f.split_at_marks {
+                    SplitBy::Bookmarks(f.split_level.max(1))
+                } else {
+                    SplitBy::Every(f.split.max(1))
+                };
                 let Some(dir) = rfd::FileDialog::new()
                     .set_title("Choose output folder")
                     .pick_folder()
@@ -2416,27 +3195,47 @@ impl App {
                     return;
                 };
                 let stem = self.tabs[active].stem("part");
-                self.spawn_job(ctx, "Split into files", move |p| {
-                    let by = match level {
-                        Some(level) => SplitBy::Bookmarks(level),
-                        None => SplitBy::Every(every),
-                    };
-                    match p.split(by, |n, title| dir.join(part_file_name(&stem, n, title))) {
-                        Ok(n) => Ok((false, format!("Wrote {n} files to {}.", dir.display()))),
-                        Err(e) if not_confirmed(&e) => Ok((
-                            false,
-                            format!(
-                                "Wrote the files to {}, but your system couldn't confirm they \
-                                 are safely on disk. If the computer lost power just now, \
-                                 split the document again.",
-                                dir.display()
-                            ),
-                        )),
-                        Err(e) => Err(e),
-                    }
-                });
+                self.split_into(ctx, SplitFiles { by, dir, stem });
             }
         }
+    }
+
+    /// Split the document in front into files, asking first when any of them would replace
+    /// a file, so that nothing is replaced unasked and nothing is written on Cancel.
+    fn split_into(&mut self, ctx: &egui::Context, s: SplitFiles) {
+        let t = &self.tabs[self.active];
+        let name = |n, title: Option<&str>| s.dir.join(part_file_name(&s.stem, n, title));
+        let files = match t.pdf.split_files(s.by, name) {
+            Ok(files) => files,
+            Err(e) => {
+                self.dialog = Dialog::Message(SPLIT_JOB.into(), format!("{e:#}"));
+                return;
+            }
+        };
+        match limarepdf_core::existing(&files).len() {
+            0 => self.start_split(ctx, s),
+            n => self.dialog = Dialog::ConfirmReplace(Asked::of(t), Replacing::Split(s), n),
+        }
+    }
+
+    /// Write the split's files on a background thread; the document is not changed.
+    fn start_split(&mut self, ctx: &egui::Context, s: SplitFiles) {
+        self.spawn_job(ctx, SPLIT_JOB, move |p| {
+            let name = |n, title: Option<&str>| s.dir.join(part_file_name(&s.stem, n, title));
+            match p.split(s.by, name) {
+                Ok(n) => Ok((false, format!("Wrote {n} files to {}.", s.dir.display()))),
+                Err(e) if not_confirmed(&e) => Ok((
+                    false,
+                    format!(
+                        "Wrote the files to {}, but your system couldn't confirm they \
+                         are safely on disk. If the computer lost power just now, \
+                         split the document again.",
+                        s.dir.display()
+                    ),
+                )),
+                Err(e) => Err(e),
+            }
+        });
     }
 
     /// What a question about the tab in front is tied to.
@@ -2468,9 +3267,80 @@ impl App {
         false
     }
 
+    /// Close tab `i`, asking first when it has unsaved work.
+    fn close_asking(&mut self, i: usize) {
+        if self.tabs[i].unsaved() {
+            self.dialog = Dialog::ConfirmClose(Asked::of(&self.tabs[i]), false);
+        } else {
+            self.close_tab(i);
+        }
+    }
+
+    /// The question quitting asks when there is unsaved work: about the one document, or,
+    /// with several, whether to go through them.
+    fn quit_question(&self) -> Option<Dialog> {
+        let mut unsaved = self.tabs.iter().filter(|t| t.unsaved());
+        let first = unsaved.next()?;
+        Some(match unsaved.next() {
+            None => Dialog::ConfirmClose(Asked::of(first), true),
+            Some(_) => Dialog::ConfirmQuit,
+        })
+    }
+
+    /// Quitting goes on from an answer to its question: the documents still to ask about.
+    /// A question waiting about a save is dropped, since quitting asks about each unsaved
+    /// document anyway, and so is a tab's closing it was for.
+    fn go_on_quitting(&mut self) -> VecDeque<u64> {
+        self.waiting.retain(|d| !d.saving());
+        match self.closing.take() {
+            Some(Closing::Quit { rest, .. }) => rest,
+            _ => VecDeque::new(),
+        }
+    }
+
+    /// Goes on closing a tab or quitting once no question is open (see [`Closing`]): the
+    /// saved tab closes, the next document is asked about, or the app quits. A document
+    /// still unsaved stops it.
+    fn close_step(&mut self, ctx: &egui::Context) {
+        let unsaved = |app: &Self, id| app.tabs.iter().any(|t| t.id == id && t.unsaved());
+        match self.closing.take() {
+            None => {}
+            Some(Closing::Tab { tab, front }) => {
+                if unsaved(self, tab) {
+                    return;
+                }
+                if let Some(i) = self.tabs.iter().position(|t| t.id == tab) {
+                    self.close_tab(i);
+                }
+                if let Some(i) = self.tabs.iter().position(|t| Some(t.id) == front) {
+                    self.active = i;
+                }
+            }
+            Some(Closing::Quit { saving, mut rest }) => {
+                if saving.is_some_and(|id| unsaved(self, id)) {
+                    return;
+                }
+                while let Some(id) = rest.pop_front() {
+                    if let Some(t) = self.tabs.iter().find(|t| t.id == id && t.unsaved()) {
+                        self.dialog = Dialog::ConfirmClose(Asked::of(t), true);
+                        self.closing = Some(Closing::Quit { saving: None, rest });
+                        return;
+                    }
+                }
+                self.quit_ok = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+    }
+
+    /// Close tab `i`. The tab in front stays there; closing it brings the next one, or the
+    /// one before when it was the last (BUG-09).
     fn close_tab(&mut self, i: usize) {
         if i < self.tabs.len() {
             let tab = self.tabs.remove(i);
+            if i < self.active {
+                self.active -= 1;
+            }
             self.active = self.active.min(self.tabs.len().saturating_sub(1));
             self.closed_copy(&tab);
             // Dropped last (stopping its render worker), with the app's state already valid.
@@ -2479,6 +3349,7 @@ impl App {
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
+        self.next_dialog();
         let mut dialog = std::mem::replace(&mut self.dialog, Dialog::None);
         let mut done = false;
         // The document a question is about, named under its title.
@@ -2518,48 +3389,142 @@ impl App {
                 Outcome::Cancel => done = true,
                 Outcome::Open => {}
             },
-            Dialog::ConfirmClose(asked) => match dlg::confirm(
-                ctx,
-                Ask::new(
-                    "Close without saving?",
-                    "This document has changes that aren't saved. Closing it loses them.",
-                    Btn::danger("Discard changes"),
-                )
-                .file(file),
-            ) {
-                Outcome::Apply => {
-                    if self.still(asked) {
-                        self.close_tab(self.active);
+            Dialog::ConfirmClose(asked, quitting) => {
+                let quitting = *quitting;
+                // A document with no file yet (new, or recovered) is saved as one.
+                let tab = self.tabs.iter().find(|t| t.id == asked.tab);
+                let save = if tab.is_some_and(|t| t.path.is_none()) {
+                    "Save as…"
+                } else {
+                    "Save"
+                };
+                let text = if quitting {
+                    "This document has changes that aren't saved. Save them before quitting, \
+                     or discard them."
+                } else {
+                    "This document has changes that aren't saved. Save them before closing \
+                     it, or discard them."
+                };
+                match dlg::choose(
+                    ctx,
+                    Shell::new("Save changes?").file(file),
+                    text,
+                    Btn::primary(save),
+                    Btn::danger("Discard"),
+                    true,
+                ) {
+                    Choice::First => {
+                        let front = self.tabs.get(self.active).map(|t| t.id);
+                        let rest = quitting.then(|| self.go_on_quitting());
+                        // The tab saved comes to the front for its save's questions.
+                        if self.still(asked) {
+                            self.closing = Some(match rest {
+                                Some(rest) => Closing::Quit {
+                                    saving: Some(asked.tab),
+                                    rest,
+                                },
+                                None => Closing::Tab {
+                                    tab: asked.tab,
+                                    front,
+                                },
+                            });
+                            self.save(ctx, false);
+                        }
+                        done = true;
                     }
-                    done = true;
+                    Choice::Second if quitting => {
+                        let rest = self.go_on_quitting();
+                        if self.still(asked) {
+                            self.closing = Some(Closing::Quit { saving: None, rest });
+                        }
+                        done = true;
+                    }
+                    Choice::Second => {
+                        // A tab asked about from behind another closes there.
+                        let front = self.tabs.get(self.active).map(|t| t.id);
+                        if self.still(asked) {
+                            self.close_tab(self.active);
+                            if let Some(i) = self.tabs.iter().position(|t| Some(t.id) == front) {
+                                self.active = i;
+                            }
+                        }
+                        done = true;
+                    }
+                    Choice::Cancel => {
+                        if quitting {
+                            self.closing = None;
+                        }
+                        done = true;
+                    }
+                    Choice::Open => {}
                 }
-                Outcome::Cancel => done = true,
-                Outcome::Open => {}
-            },
-            Dialog::ConfirmQuit => match dlg::confirm(
-                ctx,
-                Ask::new(
-                    "Quit without saving?",
-                    "Some documents have changes that aren't saved. Quitting loses them.",
-                    Btn::danger("Quit without saving"),
-                ),
-            ) {
-                Outcome::Apply => {
-                    self.quit_ok = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    done = true;
+            }
+            Dialog::ConfirmQuit => {
+                let n = self.tabs.iter().filter(|t| t.unsaved()).count();
+                match dlg::choose(
+                    ctx,
+                    Shell::new("Quit with unsaved changes?"),
+                    &format!(
+                        "{} changes that aren't saved. Review them to save or discard each \
+                         one's changes, or discard all the changes and quit.",
+                        plural(n, "A document has", "{n} documents have")
+                    ),
+                    Btn::primary("Review…"),
+                    Btn::danger("Discard all"),
+                    true,
+                ) {
+                    Choice::First => {
+                        self.go_on_quitting();
+                        let rest = self.tabs.iter().filter(|t| t.unsaved()).map(|t| t.id);
+                        self.closing = Some(Closing::Quit {
+                            saving: None,
+                            rest: rest.collect(),
+                        });
+                        done = true;
+                    }
+                    Choice::Second => {
+                        self.quit_ok = true;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        done = true;
+                    }
+                    Choice::Cancel => {
+                        if matches!(self.closing, Some(Closing::Quit { .. })) {
+                            self.closing = None;
+                        }
+                        done = true;
+                    }
+                    Choice::Open => {}
                 }
-                Outcome::Cancel => done = true,
-                Outcome::Open => {}
-            },
-            Dialog::Password(s) => match dlg::password(ctx, s) {
-                Outcome::Apply => {
-                    self.spawn_open(ctx, s.path.clone(), Some(s.input.clone()), None);
-                    done = true;
+            }
+            Dialog::Password(s, unlock) => {
+                let appending = matches!(unlock, Unlock::Append(_));
+                let answer = dlg::password(ctx, s, appending);
+                if matches!(answer, Choice::First | Choice::Second) {
+                    let path = s.path.clone();
+                    let password = (answer == Choice::First).then(|| s.input.clone());
+                    match std::mem::replace(unlock, Unlock::Tab(None, None)) {
+                        Unlock::Tab(page, None) => {
+                            self.spawn_open(ctx, path.clone(), password, page)
+                        }
+                        Unlock::Tab(page, into) => {
+                            self.read_file(ctx, path.clone(), password, page, into)
+                        }
+                        Unlock::Append(mut a) => {
+                            // Skip this file: on to the next.
+                            if password.is_none() {
+                                a.read.push(None);
+                            }
+                            self.read_appending(ctx, a, password);
+                        }
+                    }
+                    // Until it is read, the dialogs waiting wait: a wrong password is
+                    // asked for again first.
+                    if appending || self.opening.contains(&path) {
+                        self.retrying = Some(path);
+                    }
                 }
-                Outcome::Cancel => done = true,
-                Outcome::Open => {}
-            },
+                done = answer != Choice::Open;
+            }
             Dialog::RecoveryFile { title, text, file } => {
                 let (ok, show) = (Btn::primary("OK"), Btn::plain("Show file"));
                 match dlg::choose(ctx, Shell::new(title), text, ok, show, false) {
@@ -2572,16 +3537,20 @@ impl App {
                 }
             }
             _ if self.tabs.is_empty() => done = true,
-            Dialog::ConfirmReplace(asked, e, n) => match dlg::confirm(
+            Dialog::ConfirmReplace(asked, r, n) => match dlg::confirm(
                 ctx,
                 Ask::new(
                     "Replace files?",
                     &format!(
-                        "{} in {} already {} the names these images would get. Replacing \
-                         {} can't be undone.",
+                        "{} in {} already {} the names {} would get. Replacing {} can't be \
+                         undone.",
                         plural(*n, "A file", "{n} files"),
-                        e.dir.display(),
+                        r.dir().display(),
                         if *n == 1 { "has" } else { "have" },
+                        match r {
+                            Replacing::Images(_) => "these images",
+                            Replacing::Split(_) => "the split's files",
+                        },
                         if *n == 1 { "it" } else { "them" },
                     ),
                     Btn::danger("Replace"),
@@ -2590,7 +3559,10 @@ impl App {
             ) {
                 Outcome::Apply => {
                     if self.still(asked) {
-                        self.start_export(ctx, e.clone());
+                        match r.clone() {
+                            Replacing::Images(e) => self.start_export(ctx, e),
+                            Replacing::Split(s) => self.start_split(ctx, s),
+                        }
                     }
                     done = true;
                 }
@@ -2627,8 +3599,8 @@ impl App {
                 Ask::new(
                     "Flatten annotations?",
                     "Comments, notes, highlights and drawings become part of the pages, as \
-                     they look now, and can no longer be changed or removed, here or in other \
-                     readers. Their comment text is dropped. Links and form fields stay. Undo \
+                     they look now, and stop being comments, here and in other readers. Their \
+                     comment text is dropped. Links and form fields stay. Undo \
                      brings them back until you close the document.",
                     Btn::primary("Flatten annotations"),
                 )
@@ -2746,6 +3718,53 @@ impl App {
                     Outcome::Open => {}
                 }
             }
+            // Three answers and Cancel don't fit a narrow window: Reload is the banner's.
+            Dialog::ConfirmStale(asked, now) => match dlg::choose(
+                ctx,
+                Shell::new("Replace the changed file?").file(file),
+                "Another app or tab changed this file after LimarePDF opened or last saved it. \
+                 Replace puts this document in its place, and those changes are lost. Save as \
+                 a new file to keep both, or cancel and choose Reload above the pages to see \
+                 the file as it now is.",
+                Btn::primary("Save as…"),
+                Btn::danger("Replace"),
+                true,
+            ) {
+                Choice::First => {
+                    if self.still(asked) {
+                        self.save(ctx, true);
+                    }
+                    done = true;
+                }
+                Choice::Second => {
+                    if self.still(asked) {
+                        self.replace_ok = Some((asked.tab, (**now).clone()));
+                        self.save(ctx, false);
+                    }
+                    done = true;
+                }
+                Choice::Cancel => done = true,
+                Choice::Open => {}
+            },
+            Dialog::ConfirmReload(asked) => match dlg::confirm(
+                ctx,
+                Ask::new(
+                    "Reload without your changes?",
+                    "This document has changes that aren't saved. Reloading shows the file as \
+                     it now is, and loses them.",
+                    Btn::danger("Discard and reload"),
+                )
+                .file(file),
+            ) {
+                Outcome::Apply => {
+                    if self.still(asked) {
+                        self.reload(ctx, self.active);
+                    }
+                    done = true;
+                }
+                Outcome::Cancel => done = true,
+                Outcome::Open => {}
+            },
             Dialog::ConfirmSaveRepaired(asked) => match dlg::choose(
                 ctx,
                 Shell::new("Replace the damaged original?").file(file),
@@ -2840,7 +3859,10 @@ impl App {
                 }
             }
             Dialog::Print(asked, s) => match dlg::print(ctx, s) {
-                Outcome::Apply if s.printers.is_empty() => done = true,
+                // Try again.
+                Outcome::Apply if !s.ready() => {
+                    s.search = dlg::Search::Running(self.find_printers(ctx));
+                }
                 Outcome::Apply if !self.still(asked) => done = true,
                 Outcome::Apply => {
                     let t = &mut self.tabs[self.active];
@@ -2915,6 +3937,52 @@ impl App {
                     Outcome::Open => {}
                 }
             }
+            Dialog::ConfirmAppendForms(q) => {
+                let (has, their) = match q.names.as_slice() {
+                    [one] => (format!("“{one}” has form fields."), "its"),
+                    _ => (
+                        format!(
+                            "These files have form fields: {}.",
+                            limarepdf_core::quoted_list(&q.names)
+                        ),
+                        "their",
+                    ),
+                };
+                match dlg::confirm(
+                    ctx,
+                    Ask::new(
+                        "Add pages with form fields?",
+                        &format!(
+                            "{has} LimarePDF can't combine forms yet, so the fields are drawn \
+                             onto {their} pages with their answers, as they look now, and can \
+                             no longer be filled in. This document's own fields stay as they \
+                             are. Undo removes the added pages."
+                        ),
+                        Btn::primary("Add pages"),
+                    )
+                    .file(file),
+                ) {
+                    Outcome::Apply => {
+                        if self.still(&q.asked) {
+                            let mut docs = std::mem::take(&mut q.docs);
+                            let drawn = docs
+                                .iter_mut()
+                                .filter(|d| !d.form_fields().is_empty())
+                                .try_for_each(|d| d.flatten_form(None).map(|_| ()));
+                            match drawn {
+                                Ok(()) => self.add_pages(ctx, self.active, docs),
+                                Err(e) => self.show(Dialog::Message(
+                                    "Pages not added".into(),
+                                    format!("{e:#}\n\nNothing was added."),
+                                )),
+                            }
+                        }
+                        done = true;
+                    }
+                    Outcome::Cancel => done = true,
+                    Outcome::Open => {}
+                }
+            }
             Dialog::SaveSelection(asked, layout) => match dlg::save_selection(ctx, file, layout) {
                 Outcome::Apply => {
                     let layout = *layout;
@@ -2953,6 +4021,13 @@ impl App {
         if !done {
             self.dialog = dialog;
         }
+        // Not while a question about a save waits behind the quit question, which was
+        // cancelled: that save goes on first.
+        if matches!(self.dialog, Dialog::None) && !self.waiting.front().is_some_and(Dialog::saving)
+        {
+            self.close_step(ctx);
+        }
+        self.next_dialog();
     }
 
     /// The colours pages are drawn in on screen now.
@@ -3140,14 +4215,10 @@ impl App {
             return;
         }
         let c = self.state(ctx);
+        // Undo and Redo in a text box take back and redo the typing there, and nothing
+        // else, even with nothing left to undo there (form fields, comments and the
+        // inspector's boxes too); Undo takes back the whole edit once it is kept.
         let typing = ctx.egui_wants_keyboard_input();
-        // Undo and Redo while a line of page text is edited, or new text typed, on the page
-        // or in the inspector take back typing there; Undo takes back the whole edit once
-        // it is kept.
-        let line = self
-            .tabs
-            .get(self.active)
-            .is_some_and(|t| t.ed.typing_text(ctx));
         // Esc with a list, menu or colour picker open only closes it (a note being typed
         // stays open while its colour is picked).
         let picking = egui::Popup::is_any_open(ctx);
@@ -3156,7 +4227,7 @@ impl App {
             for (a, k) in actions::shortcuts() {
                 let page_only = matches!(a.act, Act::Copy | Act::SelectAllText);
                 let global = k.modifiers.command && !page_only;
-                let in_box = line && typing && matches!(a.act, Act::Undo | Act::Redo);
+                let in_box = typing && matches!(a.act, Act::Undo | Act::Redo);
                 let closes = picking && a.act == Act::Escape;
                 if (typing && !global) || in_box || closes || !(a.enabled)(&c) {
                     continue;
@@ -3391,8 +4462,9 @@ fn inspector_body(
             t.requested.push(Act::FinishSigning);
         }
         if t.ed.sign_kit != s.sign {
+            let kept = t.ed.sign_kit.kept_since(&s.sign);
             s.sign = t.ed.sign_kit.clone();
-            s.sign.save();
+            s.save_sign(kept);
         }
         if (
             t.ed.stamp_name_date,
@@ -3444,9 +4516,12 @@ fn inspector_popout(
                 ui.set_width(INSPECTOR_WIDTH);
                 ui.heading(inspector::title(t));
                 ui.add_space(4.0);
+                let scope = t.ed.scope();
                 egui::ScrollArea::vertical()
                     .max_height(height)
-                    .show(ui, |ui| apply = inspector_body(s, t, ui, c));
+                    .show(ui, |ui| {
+                        apply = ui.push_id(scope, |ui| inspector_body(s, t, ui, c)).inner;
+                    });
             });
         });
     let clicked_outside = ctx.input(|i| {
@@ -3695,6 +4770,12 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll_loads(&ctx);
+        // Back from another app, which may have changed the files open here.
+        let focused = ctx.input(|i| i.focused);
+        if focused && !self.focused {
+            self.check_disk(&ctx, None);
+        }
+        self.focused = focused;
         self.recovery_tick(&ctx);
         // Page colours follow the setting and, when automatic, the app's theme.
         let colours = self.colours(&ctx);
@@ -3720,12 +4801,14 @@ impl eframe::App for App {
         }
 
         // Guard against closing the window with unsaved work.
-        if ctx.input(|i| i.viewport().close_requested())
-            && !self.quit_ok
-            && self.tabs.iter().any(Tab::unsaved)
-        {
+        let quit = ctx.input(|i| i.viewport().close_requested()) && !self.quit_ok;
+        if let Some(q) = quit.then(|| self.quit_question()).flatten() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.dialog = Dialog::ConfirmQuit;
+            // Asked first: a question open comes back after Cancel.
+            let open = std::mem::replace(&mut self.dialog, q);
+            if !matches!(open, Dialog::None) && !open.quitting() {
+                self.waiting.push_front(open);
+            }
         }
 
         // The window's size, saved when the app closes; not while minimized or full screen.
@@ -3754,6 +4837,9 @@ impl eframe::App for App {
         self.side.set_narrow(width < SIDE_NARROW_WIDTH);
         self.inspector.set_narrow(width < NARROW_WIDTH);
 
+        // Before anything sees this frame's keys: a text box that has just got the keyboard
+        // starts with nothing to undo.
+        self.keyboard = page_text::fresh_history(&ctx, self.keyboard);
         self.shortcuts(&ctx);
 
         let mut acts: Vec<Act> = Vec::new();
@@ -3955,9 +5041,9 @@ impl eframe::App for App {
         }
 
         if has {
+            let mut close = None;
             egui::Panel::top("tabs").show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    let mut close = None;
                     for i in 0..self.tabs.len() {
                         let (pick, x) = tab_button(ui, &self.tabs[i].title(), i == self.active);
                         if pick {
@@ -3967,12 +5053,14 @@ impl eframe::App for App {
                             close = Some(i);
                         }
                     }
-                    if let Some(i) = close {
-                        self.active = i;
-                        acts.push(Act::CloseTab);
-                    }
                 });
             });
+            // The tab in front stays there, unless it is the one closed.
+            if let Some(i) = close {
+                self.run_command(&ctx, actions::name(Act::CloseTab), |app, _| {
+                    app.close_asking(i)
+                });
+            }
         }
 
         // The status bar: the page and messages at the left; the page layout, Fit width
@@ -4209,9 +5297,13 @@ impl eframe::App for App {
                     ui.separator();
                 }
                 ui.add_space(4.0);
+                // In the tab's own ids, so that no two documents share a box's state.
+                let scope = t.ed.scope();
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
-                    .show(ui, |ui| panel_apply = inspector_body(s, t, ui, &c));
+                    .show(ui, |ui| {
+                        panel_apply = ui.push_id(scope, |ui| inspector_body(s, t, ui, &c)).inner;
+                    });
             });
             name_resize_handle(&ctx, "inspector", "Inspector width");
             if toggle {
@@ -4267,10 +5359,12 @@ impl eframe::App for App {
             t.ed.sign_kit.clone_from(&self.settings.sign);
             t.ed.sign_window(ui.ctx());
             if t.ed.sign_kit != self.settings.sign {
+                let kept = t.ed.sign_kit.kept_since(&self.settings.sign);
                 self.settings.sign = t.ed.sign_kit.clone();
-                self.settings.sign.save();
+                self.settings.save_sign(kept);
             }
         }
+        self.say_unsaved();
 
         // Surface errors raised by tab operations.
         if let Some(t) = self.tabs.get_mut(self.active) {
@@ -4284,7 +5378,7 @@ impl eframe::App for App {
 
         // Commands chosen from right-click menus on pages and thumbnails, and undoable
         // changes the editor reports.
-        let mut notice = None;
+        let (mut notice, mut info) = (None, None);
         if let Some(t) = self.tabs.get_mut(self.active) {
             // The digital signature tool lists the empty signature fields, and opens the
             // signing window once its place is chosen.
@@ -4303,12 +5397,15 @@ impl eframe::App for App {
                 }
             }
             acts.append(&mut t.requested);
-            notice = t.notice.take();
+            (notice, info) = (t.notice.take(), t.info.take());
         }
         if let Some(text) = notice {
-            self.notify(&ctx, text);
+            self.notify(&ctx, self.active, text, true);
         }
-        self.toast_ui(&ctx, &mut acts);
+        if let Some(text) = info {
+            self.notify(&ctx, self.active, text, false);
+        }
+        self.toast_ui(&ctx);
         self.palette_ui(&ctx, &c, &mut acts);
         for a in acts {
             self.run_command(&ctx, actions::name(a), |app, ctx| app.act(ctx, a));
@@ -4334,8 +5431,12 @@ impl eframe::App for App {
     /// A normal exit (not a crash, which never gets here): no recovery copies are left.
     fn on_exit(&mut self) {
         self.end_recovery();
-        // The window's size, for the next start.
+        // The window's size, for the next start. With the window gone, a failure can only
+        // be said where the app was started from.
         self.settings.save();
+        if let Some((_, text)) = self.settings.take_unsaved() {
+            eprintln!("LimarePDF: {text}");
+        }
     }
 }
 
@@ -4402,6 +5503,12 @@ mod tests {
     use super::*;
     use crate::page_text;
     use limarepdf_core::{Cipher, Encryption, FontChoice, Restrictions, SignPlace};
+
+    thread_local! {
+        /// The file the save chooser gives next, once (see [`App::save_as`]).
+        pub(super) static SAVE_AS: std::cell::Cell<Option<PathBuf>> =
+            const { std::cell::Cell::new(None) };
+    }
 
     #[test]
     fn window_size_is_known_without_its_position() {
@@ -4680,7 +5787,7 @@ mod tests {
                 style: SignStyle::ALL[0],
             };
             let e = Entry { saved, keep: false };
-            app.settings.sign.add(role, e).unwrap();
+            assert_eq!(app.settings.sign.add(role, e), None);
         }
         app.act(&ctx, Act::Tool(Tool::Sign));
         clear_names(&mut app, &ctx, "Fill and sign", &mut bad);
@@ -4846,7 +5953,7 @@ mod tests {
                 style: SignStyle::ALL[0],
             };
             let e = Entry { saved, keep: false };
-            app.settings.sign.add(SignRole::Signature, e).unwrap();
+            assert_eq!(app.settings.sign.add(SignRole::Signature, e), None);
         }
         app.act(&ctx, Act::Tool(Tool::Sign));
         let toggled = |tree: &egui::accesskit::TreeUpdate, name: &str| {
@@ -4935,8 +6042,18 @@ mod tests {
     }
 
     /// The screen bounds of the node named `name` in `tree`, and whether it has the keyboard.
+    /// The place of the control called `name`, and whether it has the keyboard. Of several,
+    /// the biggest: a page rather than its thumbnail, whatever their order in the tree.
     fn node(tree: &egui::accesskit::TreeUpdate, name: &str) -> Option<(egui::Rect, bool)> {
-        let (id, n) = tree.nodes.iter().find(|(_, n)| n.label() == Some(name))?;
+        let (id, n) = tree
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.label() == Some(name))
+            .max_by(|(_, a), (_, b)| {
+                let area =
+                    |n: &egui::accesskit::Node| n.bounds().map_or(0.0, |b| b.width() * b.height());
+                area(a).total_cmp(&area(b))
+            })?;
         let b = n.bounds()?;
         let r = egui::Rect::from_min_max(
             egui::pos2(b.x0 as f32, b.y0 as f32),
@@ -5194,8 +6311,9 @@ mod tests {
         app.act(&ctx, Act::Tool(Tool::Text));
         let ed = &mut app.tabs[0].ed;
         // Nothing typed: Esc closes the editor, adding nothing; Esc again leaves the tool.
-        let new =
-            |ed: &crate::editor::Editor, at| Some(page_text::PageText::new(0, at, ed.new_look()));
+        let new = |ed: &crate::editor::Editor, at| {
+            Some(page_text::PageText::new(ed.scope(), 0, at, ed.new_look()))
+        };
         ed.adding = new(ed, (72.0, 72.0));
         ed.escape();
         assert!(ed.adding.is_none() && ed.actions.is_empty());
@@ -5350,7 +6468,7 @@ mod tests {
             r.min.y < at(100.0, 200.0).y && r.max.y > at(100.0, 200.0).y,
             "{r:?}"
         );
-        let id = egui::Id::new(("line-edit", 0));
+        let id = app.tabs[0].ed.scope().with(("line-edit", 0usize));
         let caret = egui::TextEdit::load_state(&ctx, id)
             .and_then(|s| s.cursor.char_range())
             .map(|c| c.primary.index.0);
@@ -5858,6 +6976,8 @@ mod tests {
             ),
             (vec![key(Key::Z, ctrl)], "fish"),
             (vec![key(Key::Y, ctrl)], "fish too"),
+            (vec![key(Key::Z, ctrl)], "fish"),
+            (vec![key(Key::Z, ctrl | egui::Modifiers::SHIFT)], "fish too"),
         ];
         for (events, end) in steps {
             frame(&mut app, events);
@@ -5929,6 +7049,345 @@ mod tests {
         assert_eq!((spans[3].0, spans[3].1), (11, 15));
     }
 
+    /// A tab with "Walrus ate fish" at (100, 200) in 30-point Helvetica: "ate" in `other`,
+    /// the rest in `color`.
+    fn app_in_colours(ctx: &egui::Context, color: [f32; 3], other: [f32; 3]) -> App {
+        use limarepdf_core::{PartFont, TextPart};
+        let mut app = app_with(ctx, 1);
+        let part = |text: &str, color| TextPart {
+            text: text.into(),
+            font: PartFont::Choice(FontChoice::default()),
+            size: 30.0,
+            color,
+            rise: 0.0,
+        };
+        let parts = [
+            part("Walrus ", color),
+            part("ate", other),
+            part(" fish", color),
+        ];
+        assert!(app.tabs[0].edit(ctx, |p| p.add_text_parts(0, (100.0, 200.0), &parts)));
+        app
+    }
+
+    /// Page 1's line as it would be saved now: the colour of each run of its characters,
+    /// with where the run ends.
+    fn line_colours(app: &App) -> Vec<(usize, Option<[f32; 3]>)> {
+        let pdf = saved_pdf(&app.tabs[0]);
+        let objs = pdf.page_objects(0).unwrap();
+        let line = objs.iter().find(|o| o.text.is_some()).expect("the line");
+        let mut out: Vec<(usize, Option<[f32; 3]>)> = Vec::new();
+        for s in &line.spans {
+            match out.last_mut() {
+                Some(last) if last.1 == s.fill => last.0 = s.chars.1,
+                _ => out.push((s.chars.1, s.fill)),
+            }
+        }
+        out
+    }
+
+    /// Clicks in the open text colour picker's colour area at `at`, from its bottom left
+    /// corner (0, 0: black) to its top right (1, 1: the hue at its full).
+    fn click_in_colour_area(
+        app: &mut App,
+        ctx: &egui::Context,
+        frame: &mut dyn FnMut(&mut App, Vec<egui::Event>) -> egui::accesskit::TreeUpdate,
+        at: egui::Vec2,
+    ) {
+        let tree = frame(app, vec![]);
+        // Above the text's colours offered are egui's colour area, 275 points square, and
+        // its hue slider.
+        let label = tree
+            .nodes
+            .iter()
+            .find(|(_, n)| n.value() == Some("In the text"))
+            .and_then(|(_, n)| n.bounds())
+            .expect("the picker");
+        let s = ctx.global_style().spacing.clone();
+        let bottom = label.y0 as f32 - 4.0 - s.item_spacing.y;
+        let area_bottom = bottom - s.interact_size.y - s.item_spacing.y;
+        let corner = egui::pos2(label.x0 as f32, area_bottom);
+        let p = corner + egui::vec2(at.x, -at.y) * 275.0;
+        frame(app, vec![egui::Event::PointerMoved(p)]);
+        frame(app, vec![press(p, true)]);
+        frame(app, vec![press(p, false)]);
+    }
+
+    /// A26: in mixed-colour text, a colour picked makes it all that colour, the one the
+    /// picker starts from (the first) too, in one Undo step; opening and closing the
+    /// picker changes nothing.
+    #[test]
+    fn a_colour_picked_makes_mixed_text_one_colour() {
+        let (black, red) = ([0.0; 3], [1.0, 0.0, 0.0]);
+        let (one, two) = ("Colour 1 of 2 in the text", "Colour 2 of 2 in the text");
+        // At the colour area's foot, black to the eye; at its top right, red's hue at its
+        // full: each the colour the picker starts from.
+        let (foot, corner) = (egui::vec2(0.5, 0.001), egui::vec2(1.0, 1.0));
+        for (first, other, at_first) in [(black, red, foot), (red, black, corner)] {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            theme::install(&ctx);
+            let mut app = app_in_colours(&ctx, first, other);
+            app.act(&ctx, Act::Tool(Tool::Select));
+            // Undo leaves nothing selected.
+            let select_line = |app: &mut App| {
+                let t = &mut app.tabs[0];
+                let objs = t.ed.objects(&t.pdf, 0).to_vec();
+                let line = objs
+                    .iter()
+                    .position(|o| o.text.is_some())
+                    .expect("the line");
+                t.ed.select_object(0, line);
+                app.open_inspector();
+            };
+            select_line(&mut app);
+            let mixed = vec![(7, Some(first)), (10, Some(other)), (15, Some(first))];
+            assert_eq!(line_colours(&app), mixed);
+            let mut frame = |app: &mut App, events| window(app, &ctx, 1400.0, events);
+
+            // Opened and closed, by its button or Esc, the picker changes nothing, and adds
+            // no Undo step; Esc closes only the picker.
+            let esc = || vec![key_with(Key::Escape, egui::Modifiers::NONE)];
+            for by_esc in [false, true] {
+                click_named(&mut app, &ctx, "Text colour (mixed)");
+                let tree = settle(&mut app, &ctx);
+                assert!(node(&tree, two).is_some(), "no picker");
+                if by_esc {
+                    frame(&mut app, esc());
+                } else {
+                    click_named(&mut app, &ctx, "Text colour (mixed)");
+                }
+                let tree = settle(&mut app, &ctx);
+                assert!(node(&tree, one).is_none(), "still open");
+                assert!(node(&tree, "Text colour (mixed)").is_some(), "not selected");
+                assert_eq!(line_colours(&app), mixed, "{first:?} first");
+            }
+
+            // The first colour picked in the colour area: all of it that colour.
+            click_named(&mut app, &ctx, "Text colour (mixed)");
+            settle(&mut app, &ctx);
+            click_in_colour_area(&mut app, &ctx, &mut frame, at_first);
+            click_named(&mut app, &ctx, "Text colour");
+            settle(&mut app, &ctx);
+            assert_eq!(line_colours(&app), [(15, Some(first))], "{first:?} first");
+            // One Undo step, back and forth.
+            app.act(&ctx, Act::Undo);
+            assert_eq!(line_colours(&app), mixed, "{first:?} first");
+            app.act(&ctx, Act::Redo);
+            assert_eq!(line_colours(&app), [(15, Some(first))], "{first:?} first");
+            app.act(&ctx, Act::Undo);
+
+            // A colour the text has, picked from those offered: all of it that colour.
+            for (offered, color) in [(one, first), (two, other)] {
+                select_line(&mut app);
+                click_named(&mut app, &ctx, "Text colour (mixed)");
+                settle(&mut app, &ctx);
+                click_named(&mut app, &ctx, offered);
+                let tree = settle(&mut app, &ctx);
+                assert!(node(&tree, one).is_none(), "still open");
+                assert_eq!(line_colours(&app), [(15, Some(color))], "{color:?}");
+                app.act(&ctx, Act::Undo);
+                assert_eq!(line_colours(&app), mixed, "{color:?}");
+            }
+            // The adding of the line is the only step left.
+            app.act(&ctx, Act::Undo);
+            let objs = saved_pdf(&app.tabs[0]).page_objects(0).unwrap();
+            assert!(objs.iter().all(|o| o.text.is_none()), "{first:?} first");
+        }
+    }
+
+    /// Edits page 1's line on the page, "ate fish" selected (a double-click on "ate", then
+    /// Shift+End), with `frame`; returns the window's tree then.
+    fn edit_ate_fish(
+        app: &mut App,
+        frame: &mut dyn FnMut(&mut App, Vec<egui::Event>) -> egui::accesskit::TreeUpdate,
+    ) -> egui::accesskit::TreeUpdate {
+        let mut tree = frame(app, vec![]);
+        for _ in 0..4 {
+            tree = frame(app, vec![]);
+        }
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        let words = app.tabs[0].pdf.page_words(0).unwrap();
+        let ate = words.iter().find(|w| w.text == "ate").expect("ate").bbox;
+        let at = egui::vec2((ate[0] + ate[2]) / 2.0, (ate[1] + ate[3]) / 2.0);
+        let p = page.min + at * (page.width() / 612.0);
+        frame(app, vec![egui::Event::PointerMoved(p)]);
+        for _ in 0..2 {
+            frame(app, vec![press(p, true)]);
+            frame(app, vec![press(p, false)]);
+        }
+        for _ in 0..3 {
+            frame(app, vec![]);
+        }
+        frame(app, vec![key_with(Key::End, egui::Modifiers::SHIFT)]);
+        for _ in 0..2 {
+            tree = frame(app, vec![]);
+        }
+        let name = "Editing text: Walrus ate fish";
+        assert_eq!(node(&tree, name).map(|(_, f)| f), Some(true));
+        tree
+    }
+
+    /// Clicks the control named `name` in `tree` with `frame`, then lets two frames pass.
+    fn click_with(
+        app: &mut App,
+        frame: &mut dyn FnMut(&mut App, Vec<egui::Event>) -> egui::accesskit::TreeUpdate,
+        tree: &egui::accesskit::TreeUpdate,
+        name: &str,
+    ) -> egui::accesskit::TreeUpdate {
+        let p = middle(tree, name);
+        frame(app, vec![egui::Event::PointerMoved(p)]);
+        frame(app, vec![press(p, true)]);
+        frame(app, vec![press(p, false)]);
+        frame(app, vec![]);
+        frame(app, vec![])
+    }
+
+    /// BUG-38: the colour picked is written as the picker shows it: half way up the colour
+    /// area, with no colour in it, is the grey the page shows as 0.5 (it was written 0.21,
+    /// which the page shows darker).
+    #[test]
+    fn a_colour_picked_is_written_as_the_picker_shows_it() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_in_colours(&ctx, [0.0; 3], [1.0, 0.0, 0.0]);
+        app.act(&ctx, Act::Tool(Tool::Select));
+        let t = &mut app.tabs[0];
+        let objs = t.ed.objects(&t.pdf, 0).to_vec();
+        let line = objs
+            .iter()
+            .position(|o| o.text.is_some())
+            .expect("the line");
+        t.ed.select_object(0, line);
+        app.open_inspector();
+        let mut frame = |app: &mut App, events| window(app, &ctx, 1400.0, events);
+        click_named(&mut app, &ctx, "Text colour (mixed)");
+        settle(&mut app, &ctx);
+        click_in_colour_area(&mut app, &ctx, &mut frame, egui::vec2(0.0, 0.5));
+        click_named(&mut app, &ctx, "Text colour");
+        settle(&mut app, &ctx);
+        let colours = line_colours(&app);
+        let [(15, Some(grey))] = colours[..] else {
+            panic!("not one colour: {colours:?}");
+        };
+        assert!(grey.iter().all(|v| (v - 0.5).abs() < 0.01), "{grey:?}");
+    }
+
+    /// A26: with characters selected in a line edited on the page, the first colour picked
+    /// makes those characters that colour and leaves the rest as it was.
+    #[test]
+    fn a_colour_picked_makes_mixed_selected_characters_one_colour() {
+        let (black, red) = ([0.0; 3], [1.0, 0.0, 0.0]);
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_in_colours(&ctx, black, red);
+        let time = std::cell::Cell::new(10.0);
+        let mut frame = |app: &mut App, events| timed_frame(app, &ctx, &time, events);
+        let none = egui::Modifiers::NONE;
+        // "ate fish" selected: red, then black.
+        let mut tree = edit_ate_fish(&mut app, &mut frame);
+        let name = "Editing text: Walrus ate fish";
+        // Red, the first, picked in the colour area.
+        click_with(&mut app, &mut frame, &tree, "Text colour (mixed)");
+        click_in_colour_area(&mut app, &ctx, &mut frame, egui::vec2(1.0, 1.0));
+        // Esc closes the picker; the line takes the keyboard back, the same characters
+        // selected, and they are red.
+        frame(&mut app, vec![key_with(Key::Escape, none)]);
+        for _ in 0..3 {
+            tree = frame(&mut app, vec![]);
+        }
+        let open = node(&tree, "Colour 1 of 2 in the text").is_some();
+        assert!(!open, "still open");
+        assert_eq!(node(&tree, name).map(|(_, f)| f), Some(true));
+        let one = node(&tree, "Text colour").is_some();
+        assert!(one, "the selection isn't one colour");
+        // Esc in the line keeps the edit.
+        frame(&mut app, vec![key_with(Key::Escape, none)]);
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        assert_eq!(line_colours(&app), [(7, Some(black)), (15, Some(red))]);
+        app.act(&ctx, Act::Undo);
+        let mixed = [(7, Some(black)), (10, Some(red)), (15, Some(black))];
+        assert_eq!(line_colours(&app), mixed);
+    }
+
+    /// The inspector's controls change what is selected in a line edited on the page,
+    /// although the line gives them the keyboard (egui then keeps only its caret): a size
+    /// from the list sizes the selected characters, and the line gets them back selected.
+    #[test]
+    fn a_size_picked_sizes_the_selected_characters_of_a_line() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_in_colours(&ctx, [0.0; 3], [1.0, 0.0, 0.0]);
+        let time = std::cell::Cell::new(10.0);
+        let mut frame = |app: &mut App, events| timed_frame(app, &ctx, &time, events);
+        let tree = edit_ate_fish(&mut app, &mut frame);
+        let tree = click_with(&mut app, &mut frame, &tree, "Font sizes");
+        click_with(&mut app, &mut frame, &tree, "12 pt");
+        let mut tree = frame(&mut app, vec![]);
+        for _ in 0..3 {
+            tree = frame(&mut app, vec![]);
+        }
+        let name = "Editing text: Walrus ate fish";
+        assert_eq!(node(&tree, name).map(|(_, f)| f), Some(true));
+        // Still selected: what is typed replaces it.
+        frame(&mut app, vec![egui::Event::Text("eats".into())]);
+        frame(&mut app, vec![key_with(Key::Escape, egui::Modifiers::NONE)]);
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        let (text, spans) = parts_of_line(&app);
+        assert_eq!(text, "Walrus eats");
+        let sizes: Vec<_> = spans.iter().map(|s| (s.0, s.1, s.3)).collect();
+        assert_eq!(sizes, [(0, 7, 30.0), (7, 11, 12.0)]);
+    }
+
+    /// As in a line edited on the page, a size picked for new text being typed sizes what
+    /// is selected in it, which stays selected.
+    #[test]
+    fn a_size_picked_sizes_the_selected_characters_of_new_text() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        app.act(&ctx, Act::Tool(Tool::Text));
+        let time = std::cell::Cell::new(10.0);
+        let mut frame = |app: &mut App, events| timed_frame(app, &ctx, &time, events);
+        let mut tree = frame(&mut app, vec![]);
+        for _ in 0..4 {
+            tree = frame(&mut app, vec![]);
+        }
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        let p = page.min + egui::vec2(100.0, 200.0) * (page.width() / 612.0);
+        frame(&mut app, vec![egui::Event::PointerMoved(p)]);
+        frame(&mut app, vec![press(p, true)]);
+        frame(&mut app, vec![press(p, false)]);
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        frame(&mut app, vec![egui::Event::Text("Walrus".into())]);
+        frame(&mut app, vec![key_with(Key::Home, egui::Modifiers::SHIFT)]);
+        let tree = frame(&mut app, vec![]);
+        let tree = click_with(&mut app, &mut frame, &tree, "Font sizes");
+        click_with(&mut app, &mut frame, &tree, "12 pt");
+        for _ in 0..4 {
+            frame(&mut app, vec![]);
+        }
+        // Still selected: what is typed replaces it.
+        frame(&mut app, vec![egui::Event::Text("Seal".into())]);
+        frame(&mut app, vec![key_with(Key::Escape, egui::Modifiers::NONE)]);
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        let (text, spans) = parts_of_line(&app);
+        assert_eq!(text, "Seal");
+        assert!(spans.iter().all(|s| s.3 == 12.0), "{spans:?}");
+    }
+
     #[test]
     fn a_double_click_with_the_read_tool_edits_its_line() {
         let ctx = egui::Context::default();
@@ -5989,7 +7448,7 @@ mod tests {
         let (_, focused) = node(&tree, name).expect("the line editor");
         assert!(focused, "the line editor doesn't have the keyboard");
         // The word double-clicked is selected.
-        let id = egui::Id::new(("line-edit", 0));
+        let id = app.tabs[0].ed.scope().with(("line-edit", 0usize));
         let picked = egui::TextEdit::load_state(&ctx, id)
             .and_then(|s| s.cursor.char_range())
             .map(|c| c.as_sorted_char_range())
@@ -6189,14 +7648,16 @@ mod tests {
         let mut app = app_with(&ctx, 1);
         let (min, k) = page_on_screen(&mut app, &ctx);
         let at = |x: f32, y: f32| min + egui::vec2(x, y) * k;
-        let typing =
-            |ctx: &egui::Context| ctx.memory(|m| m.has_focus(egui::Id::new(("note-text", 0usize))));
+        let typing = |app: &App| {
+            let id = app.tabs[0].ed.writing_id();
+            id.is_some_and(|id| ctx.memory(|m| m.has_focus(id)))
+        };
         // Put a note down at (x, y) with the Note tool and type `text` into it.
         let note = |app: &mut App, x: f32, y: f32, text: &str| {
             app.act(&ctx, Act::Tool(Tool::Note));
             window(app, &ctx, 1400.0, click_at(at(x, y)));
             let tree = window(app, &ctx, 1400.0, vec![]);
-            assert!(typing(&ctx), "the note doesn't have the keyboard");
+            assert!(typing(app), "the note doesn't have the keyboard");
             for name in ["Done", "Cancel"] {
                 assert!(node(&tree, name).is_none(), "the note has {name}");
             }
@@ -6274,7 +7735,10 @@ mod tests {
         let (min, k) = page_on_screen(&mut app, &ctx);
         let at = |x: f32, y: f32| min + egui::vec2(x, y) * k;
         let draw = |app: &mut App, events| window(app, &ctx, 1400.0, events);
-        let typing = || ctx.memory(|m| m.has_focus(egui::Id::new(("note-text", 0usize))));
+        let typing = |app: &App| {
+            let id = app.tabs[0].ed.writing_id();
+            id.is_some_and(|id| ctx.memory(|m| m.has_focus(id)))
+        };
         let picker = || egui::Popup::is_any_open(&ctx);
         let open = |app: &App| app.tabs[0].ed.writing.is_some();
         let settle = |app: &mut App| {
@@ -6333,7 +7797,7 @@ mod tests {
         settle(&mut app);
         assert!(!picker());
         assert!(open(&app), "Esc in the picker closed the note");
-        assert!(typing(), "the note didn't get the keyboard back");
+        assert!(typing(&app), "the note didn't get the keyboard back");
         draw(&mut app, vec![egui::Event::Text(" pod".into())]);
         // A click on the page that only closes the picker keeps the note open too.
         let tree = draw(&mut app, vec![]);
@@ -6373,7 +7837,7 @@ mod tests {
             app.act(&ctx, Act::Tool(Tool::TextBox));
             window(app, &ctx, 1400.0, click_at(at(x, y)));
             window(app, &ctx, 1400.0, vec![]);
-            let id = egui::Id::new(("box-text", 0usize));
+            let id = app.tabs[0].ed.writing_id().expect("the box");
             assert!(ctx.memory(|m| m.has_focus(id)), "the box has no keyboard");
             window(app, &ctx, 1400.0, vec![egui::Event::Text(text.into())]);
         };
@@ -6405,6 +7869,149 @@ mod tests {
         assert_eq!(comments(&app), ["Walrus typed"]);
         app.act(&ctx, Act::Undo);
         assert_eq!(comments(&app), ["Old text"]);
+    }
+
+    /// BUG-24: a text box is set in Helvetica, or its embedded face, so what neither has
+    /// isn't typed, with a note at the caret: on the page, in the inspector's Text box and
+    /// in Fill and sign's Text. It was saved as `?` before.
+    #[test]
+    fn text_boxes_refuse_at_the_caret_what_they_cant_write() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let (min, k) = page_on_screen(&mut app, &ctx);
+        let at = |x: f32, y: f32| min + egui::vec2(x, y) * k;
+        let none = egui::Modifiers::NONE;
+        let sequence = "LimarePDF can't add this emoji yet: flags, skin tones, keycaps and joined \
+                        emoji aren't supported";
+        let noted = |tree: &egui::accesskit::TreeUpdate, note: &str| {
+            tree.nodes.iter().any(|(_, n)| n.value() == Some(note))
+        };
+        let typed = |app: &mut App, text: &str| {
+            window(app, &ctx, 1400.0, vec![egui::Event::Text(text.into())]);
+            window(app, &ctx, 1400.0, vec![])
+        };
+        // On the page.
+        app.act(&ctx, Act::Tool(Tool::TextBox));
+        window(&mut app, &ctx, 1400.0, click_at(at(100.0, 100.0)));
+        window(&mut app, &ctx, 1400.0, vec![]);
+        let tree = typed(&mut app, "Walrus😀中");
+        assert!(noted(&tree, page_text::REFUSED), "no note at the caret");
+        let tree = typed(&mut app, "👍🏽");
+        assert!(noted(&tree, sequence), "no note for the sequence");
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::Escape, none)]);
+        for _ in 0..2 {
+            window(&mut app, &ctx, 1400.0, vec![]);
+        }
+        assert_eq!(comments(&app), ["Walrus"]);
+
+        // In the inspector, with the text box selected.
+        app.act(&ctx, Act::Tool(Tool::Select));
+        let t = &mut app.tabs[0];
+        let id = t.pdf.annotations()[0].id;
+        t.ed.annots(&t.pdf, 0);
+        t.ed.selection = Selection::Annot { page: 0, id };
+        click_named(&mut app, &ctx, "Text");
+        let tree = typed(&mut app, "😀");
+        assert!(noted(&tree, page_text::REFUSED), "no note in the inspector");
+        typed(&mut app, " ate fish");
+        app.tabs[0].ed.keep(crate::editor::Typed::Comment);
+        app.tabs[0].apply_actions(&ctx);
+        assert_eq!(comments(&app), ["Walrus ate fish"]);
+
+        // Fill and sign's text.
+        app.act(&ctx, Act::Tool(Tool::Sign));
+        click_named(&mut app, &ctx, "Text to place");
+        let tree = typed(&mut app, "Seal😀");
+        assert!(noted(&tree, page_text::REFUSED), "no note in Fill and sign");
+        assert_eq!(app.tabs[0].ed.sign.text, "Seal");
+    }
+
+    /// BUG-39: a text box another app wrote in Chinese can't be drawn again in Helvetica, so
+    /// a new colour or size is refused with the reason, and the document stays as it was.
+    #[test]
+    fn another_apps_text_box_refuses_a_new_look_with_the_reason() {
+        use lopdf::{dictionary, Object, StringFormat};
+        let ctx = egui::Context::default();
+        let mut pdf = Pdf::new();
+        pdf.insert_blank(0, 612.0, 792.0).unwrap();
+        let page = pdf.page_ids()[0];
+        let utf16: Vec<u8> = [0xFE, 0xFF]
+            .into_iter()
+            .chain("中文".encode_utf16().flat_map(u16::to_be_bytes))
+            .collect();
+        let rect: Vec<Object> = [100, 600, 300, 640].iter().map(|&v| v.into()).collect();
+        let id = pdf.doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "FreeText", "Rect" => rect, "P" => page,
+            "Contents" => Object::String(utf16, StringFormat::Hexadecimal),
+            "DA" => Object::string_literal("/Helv 12 Tf 0 g"),
+        });
+        pdf.doc
+            .get_dictionary_mut(page)
+            .unwrap()
+            .set("Annots", vec![Object::from(id)]);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        assert!(app.add_tab(&ctx, pdf, None, None, false));
+        let a = app.tabs[0].pdf.annotations()[0].clone();
+        let state = app.tabs[0].state();
+        let why = "LimarePDF can't draw this text box again: it has \"中文\", which LimarePDF \
+                   can't write yet (Latin, Greek and Cyrillic characters are supported)";
+        let red = crate::editor::AnnotEdit {
+            color: Some([1.0, 0.0, 0.0]),
+            opacity: a.opacity,
+            contents: a.contents.clone(),
+            text: a.text_style,
+            shape: None,
+        };
+        let b = a.bbox;
+        let wider = [b[0], b[1], b[2] + 50.0, b[3]];
+        use crate::editor::Action as Change;
+        for act in [
+            Change::SetAnnot(0, a.id, red),
+            Change::MoveAnnot(0, a.id, wider),
+        ] {
+            app.tabs[0].ed.actions.push(act);
+            app.tabs[0].apply_actions(&ctx);
+            assert_eq!(app.tabs[0].error.take().as_deref(), Some(why));
+            assert!(app.tabs[0].state() == state && !app.tabs[0].dirty);
+        }
+    }
+
+    /// BUG-24: new text in an installed font with outline emoji takes single emoji; one the
+    /// font draws only in colour, and emoji sequences, aren't typed, each with its note.
+    #[test]
+    fn single_emoji_are_typed_in_an_installed_font_that_has_them() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let emoji = crate::font_list::test_family("Limare Emoji Test");
+        let mut app = app_with(&ctx, 1);
+        let (min, k) = page_on_screen(&mut app, &ctx);
+        let at = |x: f32, y: f32| min + egui::vec2(x, y) * k;
+        app.act(&ctx, Act::Tool(Tool::Text));
+        app.tabs[0].ed.tfont.family = emoji;
+        window(&mut app, &ctx, 1400.0, click_at(at(100.0, 200.0)));
+        settled_at(&mut app, &ctx, 1400.0);
+        let noted = |tree: &egui::accesskit::TreeUpdate, note: &str| {
+            tree.nodes.iter().any(|(_, n)| n.value() == Some(note))
+        };
+        let typed = |app: &mut App, text: &str| {
+            window(app, &ctx, 1400.0, vec![egui::Event::Text(text.into())]);
+            window(app, &ctx, 1400.0, vec![])
+        };
+        let tree = typed(&mut app, "Walrus 😀😎");
+        let note = "Limare Emoji Test has no \"😎\"; choose another font";
+        assert!(noted(&tree, note), "no note naming the font");
+        let tree = typed(&mut app, "👍🏽");
+        let sequence = "LimarePDF can't add this emoji yet: flags, skin tones, keycaps and joined \
+                        emoji aren't supported";
+        assert!(noted(&tree, sequence), "no note for the sequence");
+        window(&mut app, &ctx, 1400.0, click_at(at(300.0, 400.0)));
+        settled_at(&mut app, &ctx, 1400.0);
+        let objs = app.tabs[0].pdf.page_objects(0).unwrap();
+        let lines: Vec<String> = objs.into_iter().filter_map(|o| o.text).collect();
+        assert_eq!(lines, ["Walrus 😀"]);
     }
 
     /// The names of the controls Tab reaches in turn, from the window's first one, `n`
@@ -6507,6 +8114,15 @@ mod tests {
             .expect("the dialog's widgets")
     }
 
+    /// The version of a small file, for questions that show one.
+    fn some_version() -> disk::Version {
+        let p = std::env::temp_dir().join(format!("limarepdf-app-{}-v", std::process::id()));
+        std::fs::write(&p, "v").unwrap();
+        let v = disk::version(&p).unwrap();
+        let _ = std::fs::remove_file(&p);
+        v
+    }
+
     /// The `i`th of the app's questions and messages, with long texts where they can come
     /// from the document or the system: its title, the buttons it shows, and the dialog.
     fn question(app: &App, long: &str, i: usize) -> Option<(String, Vec<&'static str>, Dialog)> {
@@ -6525,13 +8141,13 @@ mod tests {
                 ),
             ),
             1 => (
-                "Close without saving?".into(),
-                two("Discard changes"),
-                Dialog::ConfirmClose(app.asked()),
+                "Save changes?".into(),
+                vec!["Save", "Discard", "Cancel"],
+                Dialog::ConfirmClose(app.asked(), false),
             ),
             2 => (
-                "Quit without saving?".into(),
-                two("Quit without saving"),
+                "Quit with unsaved changes?".into(),
+                vec!["Review…", "Discard all", "Cancel"],
                 Dialog::ConfirmQuit,
             ),
             3 => (
@@ -6539,13 +8155,13 @@ mod tests {
                 two("Replace"),
                 Dialog::ConfirmReplace(
                     app.asked(),
-                    ImageExport {
+                    Replacing::Images(ImageExport {
                         pages: vec![0, 1],
                         dpi: 150.0,
                         format: ImageFormat::Png,
                         dir: PathBuf::from(format!("/home/sam/{long}")),
                         stem: long.into(),
-                    },
+                    }),
                     2,
                 ),
             ),
@@ -6670,11 +8286,93 @@ mod tests {
             21 => (
                 "Password required".into(),
                 two("Open"),
-                Dialog::Password(dlg::Password {
-                    path: PathBuf::from(format!("/home/sam/{long}.pdf")),
-                    input: String::new(),
-                    error: Some(format!("That isn't the password. {long}")),
-                }),
+                Dialog::Password(
+                    dlg::Password {
+                        path: PathBuf::from(format!("/home/sam/{long}.pdf")),
+                        input: String::new(),
+                        error: Some(format!("That isn't the password. {long}")),
+                    },
+                    Unlock::Tab(None, None),
+                ),
+            ),
+            22 => (
+                "Replace files?".into(),
+                two("Replace"),
+                Dialog::ConfirmReplace(
+                    app.asked(),
+                    Replacing::Split(SplitFiles {
+                        by: SplitBy::Bookmarks(1),
+                        dir: PathBuf::from(format!("/home/sam/{long}")),
+                        stem: long.into(),
+                    }),
+                    12,
+                ),
+            ),
+            23 => (
+                "Replace the changed file?".into(),
+                vec!["Save as…", "Replace", "Cancel"],
+                Dialog::ConfirmStale(app.asked(), Box::new(some_version())),
+            ),
+            24 => (
+                "Reload without your changes?".into(),
+                two("Discard and reload"),
+                Dialog::ConfirmReload(app.asked()),
+            ),
+            25 => (
+                "Password required".into(),
+                vec!["Add pages", "Skip this file", "Cancel"],
+                Dialog::Password(
+                    dlg::Password {
+                        path: PathBuf::from(format!("/home/sam/{long}.pdf")),
+                        input: String::new(),
+                        error: Some(format!("That isn't the password. {long}")),
+                    },
+                    Unlock::Append(Box::new(Appending {
+                        tab: app.tabs[0].id,
+                        files: vec![PathBuf::from(format!("/home/sam/{long}.pdf"))],
+                        read: Vec::new(),
+                    })),
+                ),
+            ),
+            // Print looking for the printers (Print shown, not yet enabled), unable to list
+            // them, and finding none (BUG-11).
+            26 => (
+                "Print".into(),
+                vec!["Cancel"],
+                Dialog::Print(
+                    app.asked(),
+                    Box::new(dlg::Print::looking(1, "test.pdf".into())),
+                ),
+            ),
+            27 => {
+                let mut print = dlg::Print::looking(1, "test.pdf".into());
+                print.found(Err(format!("lpstat: {long}")));
+                let print = Dialog::Print(app.asked(), Box::new(print));
+                ("Print".into(), two("Try again"), print)
+            }
+            28 => (
+                "Print".into(),
+                two("Try again"),
+                Dialog::Print(
+                    app.asked(),
+                    Box::new(dlg::Print::new(Vec::new(), "test.pdf".into())),
+                ),
+            ),
+            // Quitting, about one document (ENH-01).
+            29 => (
+                "Save changes?".into(),
+                vec!["Save", "Discard", "Cancel"],
+                Dialog::ConfirmClose(app.asked(), true),
+            ),
+            // Appending files with form fields (BUG-19).
+            30 => (
+                "Add pages with form fields?".into(),
+                two("Add pages"),
+                Dialog::ConfirmAppendForms(Box::new(AppendForms {
+                    asked: app.asked(),
+                    docs: Vec::new(),
+                    names: vec![format!("{long}.pdf"), "form.pdf".into()],
+                })),
             ),
             _ => return None,
         };
@@ -6747,7 +8445,7 @@ mod tests {
         ];
         for i in 0.. {
             let Some((title, _, _)) = question(&app, &long, i) else {
-                assert_eq!(i, 22, "a question was left out");
+                assert_eq!(i, 31, "a question was left out");
                 break;
             };
             for (size, scale) in sizes
@@ -6760,7 +8458,7 @@ mod tests {
                     ctx.memory_mut(|m| m.surrender_focus(id));
                 }
                 app.dialog = dialog;
-                let one_field = matches!(app.dialog, Dialog::Password(_) | Dialog::CommentName(_));
+                let one_field = matches!(app.dialog, Dialog::Password(..) | Dialog::CommentName(_));
                 let mut tree = dialog_frame(&mut app, &ctx, size, scale, vec![]);
                 for _ in 0..4 {
                     tree = dialog_frame(&mut app, &ctx, size, scale, vec![]);
@@ -7176,7 +8874,7 @@ mod tests {
         assert!(matches!(app.dialog, Dialog::ConfirmClose(..)));
         // The first tab, with nothing unsaved, is closed while the question is open.
         app.close_tab(0);
-        click(&mut app, &ctx, "Discard changes");
+        click(&mut app, &ctx, "Discard");
         let left: Vec<u64> = app.tabs.iter().map(|t| t.id).collect();
         assert_eq!(left, [ids[2]], "the wrong tab was closed");
     }
@@ -7218,11 +8916,11 @@ mod tests {
         );
         app.act(&ctx, Act::Quit);
         assert!(!app.quit_ok, "quit, and the typed text lost");
-        assert!(matches!(app.dialog, Dialog::ConfirmQuit));
+        assert!(matches!(app.dialog, Dialog::ConfirmClose(_, true)));
         // Discard drops it.
         app.dialog = Dialog::None;
         app.act(&ctx, Act::CloseTab);
-        click(&mut app, &ctx, "Discard changes");
+        click(&mut app, &ctx, "Discard");
         assert!(app.tabs.is_empty());
     }
 
@@ -7403,7 +9101,7 @@ mod tests {
         assert!(lines(&app).is_empty());
         // A character Helvetica can't write isn't typed, and as a watermark can't be set
         // in an installed font, the note doesn't point to one.
-        let field = egui::Id::new(("stamp-text", "Text"));
+        let field = app.tabs[0].ed.scope().with(("stamp-text", "Text"));
         ctx.memory_mut(|m| m.request_focus(field));
         window(&mut app, &ctx, 1400.0, vec![]);
         window(&mut app, &ctx, 1400.0, vec![egui::Event::Text("中".into())]);
@@ -7501,6 +9199,7 @@ mod tests {
             self_issued: false,
             certified: false,
             confirmed: true,
+            default_unsaved: None,
         }
     }
 
@@ -7573,6 +9272,101 @@ mod tests {
         assert!(message(&app).1.contains(NOT_CONFIRMED));
     }
 
+    /// BUG-14: an ID used that couldn't be kept as the default is said with the signing,
+    /// which is done all the same.
+    #[test]
+    fn a_default_not_kept_is_said_with_the_signing() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, 1);
+        let (id, revision) = (app.tabs[0].id, app.tabs[0].revision);
+        let s = digital::Signed {
+            default_unsaved: Some("the ID couldn't be kept as the default (a test)".into()),
+            ..signed_copy()
+        };
+        app.signed(&ctx, s, id, revision);
+        let (title, text) = message(&app);
+        assert_eq!(title, "Signed");
+        let said = "The document is signed, but the ID couldn't be kept as the default (a test).";
+        assert!(text.contains(said), "{text}");
+        assert!(!app.tabs[0].dirty);
+    }
+
+    /// BUG-33: signed with a self-issued ID, the message says where to export its
+    /// certificate, as the menus have it.
+    #[test]
+    fn a_self_issued_signing_says_where_to_export_the_certificate() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, 1);
+        let (id, revision) = (app.tabs[0].id, app.tabs[0].revision);
+        let s = digital::Signed {
+            self_issued: true,
+            ..signed_copy()
+        };
+        app.signed(&ctx, s, id, revision);
+        let ids = actions::get(Act::DigitalIds);
+        let way = format!("{} > {} > {}", ids.group.name(), ids.submenu, ids.label);
+        let text = message(&app).1;
+        assert!(text.contains(&way), "{text}");
+    }
+
+    /// BUG-14: with a settings folder that can't be written, what is changed works for the
+    /// session, and that it isn't kept is said once; a signature saved for next time that
+    /// can't be is said each time, and stays usable.
+    #[test]
+    fn settings_that_can_t_be_saved_are_said() {
+        use crate::signing::{Entry, Saved};
+        use limarepdf_core::{SignRole, SignStyle};
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let dir = test_dir("unwritable-settings");
+        // A file where the settings folder would be.
+        std::fs::write(dir.join("blocker"), "a file, not a folder").unwrap();
+        let folder = dir.join("blocker");
+        let settings = Settings::from_file(Some(folder.join("settings.txt")));
+        let mut app = App::with(settings, Recent::from_file(Some(folder.join("recent.txt"))));
+        let mut pdf = Pdf::new();
+        pdf.insert_blank(0, 612.0, 792.0).unwrap();
+        assert!(app.add_tab(&ctx, pdf, None, None, false));
+        app.act(&ctx, Act::Theme(egui::ThemePreference::Dark));
+        settle(&mut app, &ctx);
+        let (title, text) = message(&app);
+        assert_eq!(title, "Settings not saved");
+        let start = "LimarePDF couldn't save its settings (making ";
+        assert!(text.starts_with(start), "{text}");
+        assert!(text.ends_with("This isn't said again until LimarePDF starts again."));
+        assert_eq!(app.settings.theme, egui::ThemePreference::Dark);
+        app.dialog = Dialog::None;
+        // Once a session.
+        app.act(&ctx, Act::Theme(egui::ThemePreference::Light));
+        settle(&mut app, &ctx);
+        assert!(matches!(app.dialog, Dialog::None), "said again");
+        // A signature saved for next time, as the Create window adds it: said each time,
+        // and listed.
+        for (i, text) in ["Sam Lee", "S. Lee"].into_iter().enumerate() {
+            let saved = Saved::Typed {
+                text: text.into(),
+                style: SignStyle::ALL[0],
+            };
+            let e = Entry { saved, keep: true };
+            let mut kit = app.settings.sign.clone();
+            assert_eq!(kit.add(SignRole::Signature, e), None);
+            let kept = kit.kept_since(&app.settings.sign);
+            assert!(kept);
+            app.settings.sign = kit;
+            app.settings.save_sign(kept);
+            settle(&mut app, &ctx);
+            let (title, said) = message(&app);
+            assert_eq!(title, "Not saved for next time", "{i}");
+            let start = "What you saved for next time can be used until LimarePDF closes, but \
+                         LimarePDF couldn't save it (making ";
+            assert!(said.starts_with(start), "{said}");
+            assert_eq!(app.settings.sign.signatures.len(), i + 1);
+            app.dialog = Dialog::None;
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_password_set_while_signing_is_kept() {
         let ctx = egui::Context::default();
@@ -7634,5 +9428,2439 @@ mod tests {
         assert_eq!((app.tabs.len(), app.active), (1, 0));
         app.close_tab(0);
         assert_eq!((app.tabs.len(), app.active), (0, 0));
+    }
+
+    /// A one-page document with empty text fields: for each of `fields`, its name and how
+    /// many widgets show it, each widget a row of its own from the top of the page.
+    fn form_doc(fields: &[(&str, usize)]) -> Pdf {
+        use lopdf::{dictionary, Object};
+        let mut p = Pdf::new();
+        p.insert_blank(0, 612.0, 792.0).unwrap();
+        let page = p.page_ids()[0];
+        let (mut annots, mut tops) = (Vec::new(), Vec::new());
+        let mut row = 0;
+        for &(name, n) in fields {
+            let parent = p.doc.new_object_id();
+            let mut kids = Vec::new();
+            for _ in 0..n {
+                let top = 740 - 60 * row;
+                row += 1;
+                let rect: Vec<Object> = [72, top - 24, 400, top].map(Object::from).to_vec();
+                kids.push(Object::Reference(p.doc.add_object(dictionary! {
+                    "Type" => "Annot", "Subtype" => "Widget", "F" => 4, "Rect" => rect,
+                    "P" => page, "Parent" => parent,
+                })));
+            }
+            annots.extend(kids.iter().cloned());
+            let field = dictionary! {
+                "FT" => "Tx", "T" => Object::string_literal(name), "Kids" => kids,
+            };
+            p.doc.objects.insert(parent, Object::Dictionary(field));
+            tops.push(Object::Reference(parent));
+        }
+        p.doc
+            .get_dictionary_mut(page)
+            .unwrap()
+            .set("Annots", annots);
+        let form = dictionary! { "Fields" => tops };
+        p.doc.catalog_mut().unwrap().set("AcroForm", form);
+        p
+    }
+
+    /// The text of field `name` in the tab's document as it would be saved now, read back
+    /// from its bytes.
+    fn saved_field(t: &Tab, name: &str) -> String {
+        let bytes = t.pdf.clone().snapshot().unwrap();
+        let pdf = Pdf::from_bytes(&bytes, None).unwrap();
+        let f = pdf.form_fields().into_iter().find(|f| f.name == name);
+        match f.map(|f| f.value) {
+            Some(limarepdf_core::FieldValue::Text(t)) => t,
+            v => panic!("{name}: {v:?}"),
+        }
+    }
+
+    /// The text in the control with the keyboard.
+    fn focused_text(tree: &egui::accesskit::TreeUpdate) -> Option<String> {
+        let (_, n) = tree.nodes.iter().find(|(id, _)| *id == tree.focus)?;
+        n.value().map(str::to_string)
+    }
+
+    /// Drives the window as someone typing: each frame moves the clock on, so typing
+    /// settles into a step of a text box's own undo after a pause, as it does for people.
+    struct Typist<'a> {
+        ctx: &'a egui::Context,
+        time: std::cell::Cell<f64>,
+    }
+
+    impl<'a> Typist<'a> {
+        fn new(ctx: &'a egui::Context) -> Self {
+            Self {
+                ctx,
+                time: std::cell::Cell::new(10.0),
+            }
+        }
+
+        fn frame(&self, app: &mut App, events: Vec<egui::Event>) -> egui::accesskit::TreeUpdate {
+            timed_frame(app, self.ctx, &self.time, events)
+        }
+
+        /// A second and a half with no input.
+        fn pause(&self, app: &mut App) -> egui::accesskit::TreeUpdate {
+            for _ in 0..30 {
+                self.frame(app, vec![]);
+            }
+            self.frame(app, vec![])
+        }
+
+        /// Press `key` with `modifiers`; the window as it then is.
+        fn key(
+            &self,
+            app: &mut App,
+            key: Key,
+            modifiers: egui::Modifiers,
+        ) -> egui::accesskit::TreeUpdate {
+            self.frame(app, vec![key_with(key, modifiers)]);
+            self.frame(app, vec![])
+        }
+
+        /// Type `text`, then pause.
+        fn text(&self, app: &mut App, text: &str) {
+            self.frame(app, vec![egui::Event::Text(text.into())]);
+            self.pause(app);
+        }
+
+        fn click(&self, app: &mut App, p: egui::Pos2) {
+            self.frame(app, click_at(p));
+            self.pause(app);
+        }
+
+        /// Where the active tab's first page is on screen, and the size of its points.
+        fn page(&self, app: &mut App) -> (egui::Pos2, f32) {
+            let tree = self.pause(app);
+            let (page, _) = node(&tree, "Page 1").expect("the page");
+            (page.min, page.width() / 612.0)
+        }
+
+        /// Click the middle of widget `widget` of field `name` on the active tab's first
+        /// page.
+        fn click_field(&self, app: &mut App, name: &str, widget: usize) {
+            let (min, k) = self.page(app);
+            let t = &app.tabs[app.active];
+            let f = t.pdf.form_fields().into_iter().find(|f| f.name == name);
+            let b = f.expect("the field").widgets[widget].bbox;
+            let at = egui::vec2((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0);
+            self.click(app, min + at * k);
+        }
+    }
+
+    /// A 40 x 20 JPEG, red on the left and blue on the right, whose EXIF orientation 6
+    /// says to show it turned a quarter clockwise: 20 wide and 40 high, red at the top.
+    fn turned_photo() -> Vec<u8> {
+        use limarepdf_core::render::{encode, Bitmap, ImageFormat};
+        let (red, blue) = ([255, 0, 0, 255], [0, 0, 255, 255]);
+        let rgba = (0..40 * 20)
+            .flat_map(|i| if i % 40 < 20 { red } else { blue })
+            .collect();
+        let bitmap = Bitmap {
+            width: 40,
+            height: 20,
+            rgba,
+        };
+        let jpeg = encode(&bitmap, ImageFormat::Jpeg(95), 72.0).unwrap();
+        // An APP1 segment right after the start, its Exif block holding only the orientation.
+        let exif = b"Exif\0\0II*\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0";
+        let mut out = jpeg[..2].to_vec();
+        out.extend([0xFF, 0xE1]);
+        out.extend((exif.len() as u16 + 2).to_be_bytes());
+        out.extend(exif);
+        out.extend(&jpeg[2..]);
+        out
+    }
+
+    /// BUG-18: a turned photo placed with a click gets a box of its upright shape, and
+    /// shows upright in it.
+    #[test]
+    fn a_turned_photo_placed_by_a_click_is_upright_in_a_box_of_its_shape() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let mut pdf = Pdf::new();
+        pdf.insert_blank(0, 612.0, 792.0).unwrap();
+        assert!(app.add_tab(&ctx, pdf, None, None, false));
+        let ty = Typist::new(&ctx);
+        // Not through the command, which asks for a file.
+        app.tabs[0].arm_image(turned_photo());
+        let (min, k) = ty.page(&mut app);
+        ty.click(&mut app, min + egui::vec2(100.0, 100.0) * k);
+        let t = &mut app.tabs[0];
+        let objs = t.pdf.page_objects(0).unwrap();
+        let image = limarepdf_core::ObjectKind::Image;
+        let picture = objs.iter().find(|o| o.kind == image);
+        let [x0, y0, x1, y1] = picture.expect("the picture placed").bbox;
+        let (w, h) = (x1 - x0, y1 - y0);
+        let shape = (w - 200.0).abs() < 0.5 && (h - 400.0).abs() < 0.5;
+        assert!(shape, "{w} x {h}");
+        let hp = limarepdf_core::render::load(t.pdf.render_snapshot().unwrap(), None).unwrap();
+        let page = limarepdf_core::render::Renderer::new(&hp)
+            .render(0, 1.0)
+            .unwrap();
+        let px = |x: f32, y: f32| {
+            let i = (y as usize * page.width + x as usize) * 4;
+            [page.rgba[i], page.rgba[i + 1], page.rgba[i + 2]]
+        };
+        let mid = x0 + w / 2.0;
+        let (top, bottom) = (px(mid, y0 + h / 4.0), px(mid, y1 - h / 4.0));
+        assert!(top[0] > 200 && top[2] < 60, "red at the top: {top:?}");
+        let blue = bottom[2] > 200 && bottom[0] < 60;
+        assert!(blue, "blue at the bottom: {bottom:?}");
+    }
+
+    const CTRL: egui::Modifiers = egui::Modifiers::COMMAND;
+    const CTRL_SHIFT: egui::Modifiers = egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT);
+
+    /// Two documents with a field of the same name keep their typing apart: Ctrl+Z in the
+    /// second one's field, with nothing typed there and no document history, leaves it as it
+    /// was, and each saved value is its own (BUG-03, audit A10).
+    #[test]
+    fn same_named_fields_in_two_documents_keep_their_typing_apart() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        for _ in 0..2 {
+            assert!(app.add_tab(&ctx, form_doc(&[("name", 1)]), None, None, false));
+        }
+        let ty = Typist::new(&ctx);
+        app.active = 0;
+        ty.click_field(&mut app, "name", 0);
+        ty.text(&mut app, "Alpha");
+        ty.key(&mut app, Key::Escape, egui::Modifiers::NONE);
+        ty.pause(&mut app);
+        assert_eq!(saved_field(&app.tabs[0], "name"), "Alpha");
+        // The other document, as a click on its tab brings it to the front.
+        app.active = 1;
+        ty.click_field(&mut app, "name", 0);
+        for (key, modifiers) in [(Key::Z, CTRL), (Key::Z, CTRL_SHIFT), (Key::Y, CTRL)] {
+            let tree = ty.key(&mut app, key, modifiers);
+            let typed = focused_text(&tree);
+            assert_eq!(typed.as_deref(), Some(""), "{key:?} {modifiers:?}");
+        }
+        ty.key(&mut app, Key::Escape, egui::Modifiers::NONE);
+        ty.pause(&mut app);
+        assert!(!app.tabs[1].dirty);
+        assert_eq!(saved_field(&app.tabs[1], "name"), "");
+        assert_eq!(saved_field(&app.tabs[0], "name"), "Alpha");
+        // The first document closed and opened again as saved: nothing to undo in its field.
+        let bytes = app.tabs[0].pdf.clone().snapshot().unwrap();
+        app.close_tab(0);
+        let pdf = Pdf::from_bytes(&bytes, None).unwrap();
+        assert!(app.add_tab(&ctx, pdf, None, None, false));
+        ty.click_field(&mut app, "name", 0);
+        let tree = ty.key(&mut app, Key::Z, CTRL);
+        assert_eq!(focused_text(&tree).as_deref(), Some("Alpha"));
+        ty.key(&mut app, Key::Escape, egui::Modifiers::NONE);
+        ty.pause(&mut app);
+        assert_eq!(saved_field(&app.tabs[1], "name"), "Alpha");
+    }
+
+    /// A field shown twice keeps one value, and the box over its second widget starts with
+    /// nothing to undo: Ctrl+Z there doesn't take back what was typed in the first.
+    #[test]
+    fn a_field_shown_twice_starts_each_box_with_nothing_to_undo() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        assert!(app.add_tab(&ctx, form_doc(&[("name", 2)]), None, None, false));
+        let ty = Typist::new(&ctx);
+        ty.click_field(&mut app, "name", 0);
+        ty.text(&mut app, "Alpha");
+        ty.key(&mut app, Key::Escape, egui::Modifiers::NONE);
+        ty.pause(&mut app);
+        assert_eq!(saved_field(&app.tabs[0], "name"), "Alpha");
+        ty.click_field(&mut app, "name", 1);
+        let tree = ty.key(&mut app, Key::Z, CTRL);
+        assert_eq!(focused_text(&tree).as_deref(), Some("Alpha"));
+        ty.key(&mut app, Key::Escape, egui::Modifiers::NONE);
+        ty.pause(&mut app);
+        assert_eq!(saved_field(&app.tabs[0], "name"), "Alpha");
+    }
+
+    /// A second note on a page starts with nothing to undo: Ctrl+Z in it doesn't bring
+    /// back another note's text, whether it is new or an existing one opened for typing
+    /// (BUG-03, audit A10).
+    #[test]
+    fn a_second_note_on_a_page_does_not_undo_into_the_first() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let ty = Typist::new(&ctx);
+        let (min, k) = ty.page(&mut app);
+        let at = |x: f32, y: f32| min + egui::vec2(x, y) * k;
+        let typed = |app: &App| app.tabs[0].ed.writing.as_ref().map(|w| w.text.clone());
+        let esc = |app: &mut App| {
+            ty.key(app, Key::Escape, egui::Modifiers::NONE);
+            ty.pause(app);
+        };
+        for (x, text) in [(100.0, "Walrus"), (300.0, "")] {
+            app.act(&ctx, Act::Tool(Tool::Note));
+            ty.click(&mut app, at(x, 100.0));
+            ty.text(&mut app, text);
+            ty.key(&mut app, Key::Z, CTRL);
+            ty.key(&mut app, Key::Z, CTRL);
+            assert_eq!(typed(&app).as_deref(), Some(""));
+            ty.key(&mut app, Key::Y, CTRL);
+            assert_eq!(typed(&app).as_deref(), Some(text));
+            esc(&mut app);
+        }
+        assert_eq!(comments(&app), ["Walrus"]);
+        // Existing notes opened for typing: one changed, then the other.
+        app.act(&ctx, Act::Tool(Tool::Note));
+        ty.click(&mut app, at(300.0, 100.0));
+        ty.text(&mut app, "Seal");
+        esc(&mut app);
+        assert_eq!(comments(&app), ["Walrus", "Seal"]);
+        let open = |app: &mut App, text: &str| {
+            let t = &mut app.tabs[0];
+            let annots = t.pdf.annotations();
+            let a = annots
+                .iter()
+                .find(|a| a.contents == text)
+                .expect("the note");
+            t.ed.annots(&t.pdf, 0);
+            t.ed.selection = Selection::Annot { page: 0, id: a.id };
+            t.ed.write_selected();
+            ty.pause(app);
+        };
+        open(&mut app, "Walrus");
+        ty.key(&mut app, Key::End, egui::Modifiers::NONE);
+        ty.text(&mut app, " typed");
+        esc(&mut app);
+        assert_eq!(comments(&app), ["Walrus typed", "Seal"]);
+        open(&mut app, "Seal");
+        ty.key(&mut app, Key::Z, CTRL);
+        assert_eq!(typed(&app).as_deref(), Some("Seal"));
+        esc(&mut app);
+        assert_eq!(comments(&app), ["Walrus typed", "Seal"]);
+    }
+
+    /// Undo keys in a form field act on its typing only: with Name kept and Notes being
+    /// typed, they take back and redo Notes' typing, never Name, and with nothing left to
+    /// undo there they do nothing. Out of the fields, Undo and Redo are the document's
+    /// again (BUG-04, audit A03).
+    #[test]
+    fn undo_in_a_form_field_stays_in_the_field() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let pdf = form_doc(&[("Name", 1), ("Notes", 1)]);
+        assert!(app.add_tab(&ctx, pdf, None, None, false));
+        let ty = Typist::new(&ctx);
+        ty.click_field(&mut app, "Name", 0);
+        ty.text(&mut app, "Ann");
+        // Tab keeps Name and moves on to Notes.
+        ty.key(&mut app, Key::Tab, egui::Modifiers::NONE);
+        ty.pause(&mut app);
+        assert_eq!(saved_field(&app.tabs[0], "Name"), "Ann");
+        ty.text(&mut app, "Hello");
+        let steps = [
+            (Key::Z, CTRL, ""),
+            (Key::Z, CTRL, ""),
+            (Key::Z, CTRL_SHIFT, "Hello"),
+            (Key::Z, CTRL, ""),
+            (Key::Y, CTRL, "Hello"),
+        ];
+        for (key, modifiers, want) in steps {
+            let tree = ty.key(&mut app, key, modifiers);
+            let typed = focused_text(&tree);
+            assert_eq!(typed.as_deref(), Some(want), "{key:?} {modifiers:?}");
+            assert_eq!(saved_field(&app.tabs[0], "Name"), "Ann");
+        }
+        ty.key(&mut app, Key::Escape, egui::Modifiers::NONE);
+        ty.pause(&mut app);
+        let saved = |app: &App| {
+            let t = &app.tabs[0];
+            (saved_field(t, "Name"), saved_field(t, "Notes"))
+        };
+        assert_eq!(saved(&app), ("Ann".into(), "Hello".into()));
+        let steps = [
+            (Key::Z, CTRL, ("Ann", "")),
+            (Key::Z, CTRL, ("", "")),
+            (Key::Y, CTRL, ("Ann", "")),
+            (Key::Z, CTRL_SHIFT, ("Ann", "Hello")),
+        ];
+        for (key, modifiers, (name, notes)) in steps {
+            ty.key(&mut app, key, modifiers);
+            let want = (name.to_string(), notes.to_string());
+            assert_eq!(saved(&app), want, "{key:?} {modifiers:?}");
+        }
+    }
+
+    /// A tab of a page with the empty field "name", the note "Walrus" at (100, 400), the
+    /// line "Otter" at (450, 300) and the title "Seal", set as an undoable change: a
+    /// document with history to undo and one of each kind of thing typed in. Returns the
+    /// note's id.
+    fn typing_doc(app: &mut App, ctx: &egui::Context) -> (u32, u16) {
+        let mut pdf = form_doc(&[("name", 1)]);
+        let note = pdf.add_note(0, (100.0, 400.0), [1.0, 1.0, 0.0], "Walrus", "Tester");
+        let font = FontChoice::default();
+        pdf.add_text(0, (450.0, 300.0), "Otter", font, 20.0, [0.0; 3])
+            .unwrap();
+        assert!(app.add_tab(ctx, pdf, None, None, false));
+        let info = limarepdf_core::Info {
+            title: Some("Seal".into()),
+            ..Default::default()
+        };
+        assert!(app.tabs[0].edit(ctx, |p| p.set_info(&info)));
+        note.unwrap()
+    }
+
+    /// Give the keyboard to the box `case` names in [`typing_doc`]'s tab, with the read
+    /// tool and nothing selected first.
+    fn start_typing(app: &mut App, ty: &Typist, case: &str, note: (u32, u16)) {
+        let ctx = ty.ctx;
+        app.act(ctx, Act::Tool(Tool::Read));
+        app.tabs[0].ed.selection = Selection::None;
+        let (min, k) = ty.page(app);
+        let at = |x: f32, y: f32| min + egui::vec2(x, y) * k;
+        match case {
+            "form field" => ty.click_field(app, "name", 0),
+            "new note" | "new text box" | "new text" => {
+                // Within the window, clear of the field, the note and the line.
+                let (tool, y) = match case {
+                    "new note" => (Tool::Note, 150.0),
+                    "new text box" => (Tool::TextBox, 220.0),
+                    _ => (Tool::Text, 330.0),
+                };
+                app.act(ctx, Act::Tool(tool));
+                ty.click(app, at(300.0, y));
+            }
+            "line on the page" => {
+                // A double-click on it with the read tool.
+                let p = at(470.0, 295.0);
+                ty.frame(app, vec![egui::Event::PointerMoved(p), press(p, true)]);
+                ty.frame(app, vec![press(p, false)]);
+                ty.frame(app, vec![press(p, true)]);
+                ty.frame(app, vec![press(p, false)]);
+                ty.pause(app);
+            }
+            "comment in the inspector" => {
+                let t = &mut app.tabs[0];
+                t.ed.annots(&t.pdf, 0);
+                t.ed.selection = Selection::Annot { page: 0, id: note };
+                let tree = ty.pause(app);
+                ty.click(app, middle(&tree, "Comment"));
+            }
+            "document title" => {
+                app.tabs[0].forms.reveal = Some(inspector::Section::Properties);
+                let tree = ty.pause(app);
+                let (_, n) = tree
+                    .nodes
+                    .iter()
+                    .find(|(_, n)| n.value() == Some("Seal"))
+                    .expect("the title");
+                let b = n.bounds().unwrap();
+                let p = egui::pos2(((b.x0 + b.x1) / 2.0) as f32, ((b.y0 + b.y1) / 2.0) as f32);
+                ty.click(app, p);
+            }
+            "watermark text" => {
+                app.tabs[0].forms.reveal = Some(inspector::Section::Watermark);
+                ty.pause(app);
+                let id = app.tabs[0].ed.scope().with(("stamp-text", "Text"));
+                ctx.memory_mut(|m| m.request_focus(id));
+                ty.pause(app);
+            }
+            _ => panic!("no case {case}"),
+        }
+    }
+
+    /// The undo keys in each kind of text box, in a document with history to undo: Ctrl+Z,
+    /// Ctrl+Shift+Z and Ctrl+Y take back and redo the box's own typing, Ctrl+Z with nothing
+    /// left there does nothing, and the document is never touched (BUG-04).
+    #[test]
+    fn undo_keys_in_every_text_box_act_on_its_typing_only() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let note = typing_doc(&mut app, &ctx);
+        let ty = Typist::new(&ctx);
+        let cases = [
+            "form field",
+            "new note",
+            "new text box",
+            "new text",
+            "comment in the inspector",
+            "document title",
+            "watermark text",
+        ];
+        for case in cases {
+            start_typing(&mut app, &ty, case, note);
+            let tree = ty.key(&mut app, Key::End, egui::Modifiers::NONE);
+            let start = focused_text(&tree).unwrap_or_else(|| panic!("{case}: no keyboard"));
+            let state = app.tabs[0].state();
+            ty.text(&mut app, "typed");
+            let typed = format!("{start}typed");
+            let steps = [
+                (Key::Z, CTRL, &start),
+                (Key::Z, CTRL_SHIFT, &typed),
+                (Key::Z, CTRL, &start),
+                (Key::Y, CTRL, &typed),
+                (Key::Z, CTRL, &start),
+                (Key::Z, CTRL, &start),
+            ];
+            for (key, modifiers, want) in steps {
+                let tree = ty.key(&mut app, key, modifiers);
+                let now = focused_text(&tree);
+                assert_eq!(now.as_ref(), Some(want), "{case}: {key:?} {modifiers:?}");
+                assert!(app.tabs[0].state() == state, "{case}: the document changed");
+            }
+            ty.key(&mut app, Key::Escape, egui::Modifiers::NONE);
+            ty.pause(&mut app);
+            assert!(app.tabs[0].state() == state, "{case}: something was kept");
+        }
+    }
+
+    /// The tab's document as it would be saved now, read back from its bytes.
+    fn saved_pdf(t: &Tab) -> Pdf {
+        Pdf::from_bytes(&t.pdf.clone().snapshot().unwrap(), None).unwrap()
+    }
+
+    /// The first page's rotation in the tab's document as it would be saved now.
+    fn saved_rotation(t: &Tab) -> i64 {
+        let pdf = saved_pdf(t);
+        let page = pdf.doc.get_dictionary(pdf.page_ids()[0]).unwrap();
+        page.get(b"Rotate").and_then(|o| o.as_i64()).unwrap_or(0)
+    }
+
+    /// Run the command `name` from the command palette, typed there.
+    fn from_palette(app: &mut App, ty: &Typist, name: &str) {
+        ty.key(app, Key::K, CTRL);
+        ty.text(app, name);
+        ty.key(app, Key::Enter, egui::Modifiers::NONE);
+        ty.pause(app);
+    }
+
+    /// Add text, type, Rotate clockwise from the palette: the text goes into the document
+    /// first, a step of its own, so the page turns with it on; Undo turns the page back
+    /// and keeps the text, and Undo again takes the text back (BUG-01, audit A20).
+    #[test]
+    fn new_text_is_kept_before_the_page_is_rotated() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let ty = Typist::new(&ctx);
+        let (min, k) = ty.page(&mut app);
+        app.act(&ctx, Act::Tool(Tool::Text));
+        ty.click(&mut app, min + egui::vec2(100.0, 200.0) * k);
+        ty.text(&mut app, "PendingAuditText");
+        from_palette(&mut app, &ty, "Rotate clockwise");
+        let typed = |app: &App| {
+            saved_pdf(&app.tabs[0])
+                .page_text(0)
+                .contains("PendingAuditText")
+        };
+        let t = &app.tabs[0];
+        assert_eq!(saved_rotation(t), 90);
+        assert!(typed(&app), "the text was lost");
+        assert!(t.ed.adding.is_none() && !t.ed.pending());
+        app.act(&ctx, Act::Undo);
+        assert_eq!(saved_rotation(&app.tabs[0]), 0);
+        assert!(typed(&app), "Undo took the text back with the rotation");
+        app.act(&ctx, Act::Undo);
+        assert!(!typed(&app));
+        // The change before the text is still there.
+        assert_eq!(app.tabs[0].page_count(), 2);
+        app.act(&ctx, Act::Redo);
+        app.act(&ctx, Act::Redo);
+        assert_eq!(saved_rotation(&app.tabs[0]), 90);
+        assert!(typed(&app));
+    }
+
+    /// Each kind of typing goes into the document before a page command run from the
+    /// palette, and the command is a step of its own after it: Undo turns the page back and
+    /// keeps the typing (BUG-01).
+    #[test]
+    fn every_kind_of_typing_is_kept_before_a_page_command() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let note = typing_doc(&mut app, &ctx);
+        let ty = Typist::new(&ctx);
+        let cases = [
+            "form field",
+            "new note",
+            "new text box",
+            "new text",
+            "line on the page",
+            "comment in the inspector",
+            "document title",
+        ];
+        for case in cases {
+            start_typing(&mut app, &ty, case, note);
+            ty.key(&mut app, Key::End, egui::Modifiers::NONE);
+            ty.text(&mut app, "typed");
+            from_palette(&mut app, &ty, "Rotate clockwise");
+            let kept = |app: &App| {
+                let pdf = saved_pdf(&app.tabs[0]);
+                let comment = |text: &str| pdf.annotations().iter().any(|a| a.contents == text);
+                let line = |text: &str| {
+                    let objs = pdf.page_objects(0).unwrap();
+                    objs.iter().any(|o| o.text.as_deref() == Some(text))
+                };
+                match case {
+                    "form field" => saved_field(&app.tabs[0], "name") == "typed",
+                    "new note" | "new text box" => comment("typed"),
+                    "new text" => line("typed"),
+                    "line on the page" => line("Ottertyped"),
+                    "comment in the inspector" => comment("Walrustyped"),
+                    _ => pdf.info().title.as_deref() == Some("Sealtyped"),
+                }
+            };
+            let t = &app.tabs[0];
+            assert_eq!(saved_rotation(t), 90, "{case}: not rotated");
+            assert!(kept(&app), "{case}: the typing was lost");
+            assert!(
+                !t.ed.pending() && !t.typing_in_forms(),
+                "{case}: still pending"
+            );
+            app.act(&ctx, Act::Undo);
+            assert_eq!(saved_rotation(&app.tabs[0]), 0, "{case}: Undo");
+            assert!(
+                kept(&app),
+                "{case}: Undo took the typing back with the rotation"
+            );
+        }
+    }
+
+    /// Text being added goes into the document before a change made on the tab itself
+    /// (pages reordered by dragging their thumbnails, a bookmark), and before the Crop
+    /// section shows the pages whole: each is drawn again without the text being typed.
+    #[test]
+    fn typing_is_kept_before_the_tab_changes_or_redraws_its_pages() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let ty = Typist::new(&ctx);
+        let type_at = |app: &mut App, y: f32, text: &str| {
+            let (min, k) = ty.page(app);
+            app.act(&ctx, Act::Tool(Tool::Text));
+            ty.click(app, min + egui::vec2(100.0, y) * k);
+            ty.text(app, text);
+        };
+        let lines = |app: &App, page: usize| saved_pdf(&app.tabs[0]).page_text(page);
+        type_at(&mut app, 200.0, "Walrus");
+        assert!(app.tabs[0].edit(&ctx, |p| p.reorder(&[1, 0])));
+        assert!(lines(&app, 1).contains("Walrus"), "the text was lost");
+        // Steps of their own: Undo puts the pages back with the text on.
+        app.act(&ctx, Act::Undo);
+        assert!(lines(&app, 0).contains("Walrus"));
+        type_at(&mut app, 300.0, "Seal");
+        app.act(&ctx, Act::Crop);
+        ty.pause(&mut app);
+        assert!(app.tabs[0].crop_view());
+        assert!(lines(&app, 0).contains("Seal"), "the text was lost");
+    }
+
+    /// Undo clicked on the toolbar while a new note is typed takes the note back, not the
+    /// change before it, and Redo brings the note back (BUG-01, seen in batch 1).
+    #[test]
+    fn undo_on_the_toolbar_takes_back_a_note_being_typed() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let ty = Typist::new(&ctx);
+        let (min, k) = ty.page(&mut app);
+        app.act(&ctx, Act::Tool(Tool::Note));
+        ty.click(&mut app, min + egui::vec2(100.0, 100.0) * k);
+        ty.text(&mut app, "Walrus");
+        let tree = ty.pause(&mut app);
+        ty.click(&mut app, middle(&tree, "Undo"));
+        let t = &app.tabs[0];
+        assert_eq!(
+            t.page_count(),
+            2,
+            "Undo took back the change before the note"
+        );
+        assert!(comments(&app).is_empty() && t.ed.writing.is_none());
+        let tree = ty.pause(&mut app);
+        ty.click(&mut app, middle(&tree, "Redo"));
+        assert_eq!(comments(&app), ["Walrus"]);
+        assert_eq!(app.tabs[0].page_count(), 2);
+    }
+
+    /// Remove blank pages run while text is being added: the text goes into the document
+    /// before the job takes its copy, so the result has it. A result arriving while text is
+    /// typed is for a document that has changed since: the typing is kept and the result
+    /// is discarded, saying so (BUG-01).
+    #[test]
+    fn background_results_keep_what_is_being_typed() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let mut pdf = Pdf::new();
+        for i in 0..3 {
+            pdf.insert_blank(i, 612.0, 792.0).unwrap();
+        }
+        let font = FontChoice::default();
+        pdf.add_text(0, (100.0, 100.0), "Walrus", font, 20.0, [0.0; 3])
+            .unwrap();
+        assert!(app.add_tab(&ctx, pdf, None, None, false));
+        let ty = Typist::new(&ctx);
+        let type_at = |app: &mut App, y: f32, text: &str| {
+            let (min, k) = ty.page(app);
+            app.act(&ctx, Act::Tool(Tool::Text));
+            ty.click(app, min + egui::vec2(100.0, y) * k);
+            ty.text(app, text);
+        };
+        let page_text = |app: &App| saved_pdf(&app.tabs[0]).page_text(0);
+        type_at(&mut app, 300.0, "Seal");
+        from_palette(&mut app, &ty, "Remove blank pages");
+        for _ in 0..500 {
+            if !app.busy {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            ty.frame(&mut app, vec![]);
+        }
+        assert!(!app.busy, "the job didn't finish");
+        assert_eq!(app.tabs[0].page_count(), 1);
+        assert!(page_text(&app).contains("Seal"), "the text was lost");
+        app.dialog = Dialog::None;
+        // A result for the document as it is now, arriving while text is typed.
+        let t = &app.tabs[0];
+        let (tab, revision) = (t.id, t.revision);
+        let mut other = saved_pdf(t);
+        other.insert_blank(1, 612.0, 792.0).unwrap();
+        type_at(&mut app, 400.0, "Otter");
+        let result = Ok((other, true, "Done.".to_string()));
+        let title = "Remove blank pages";
+        let job = Loaded::Job {
+            tab,
+            revision,
+            title,
+            result,
+        };
+        app.tx.send(job).unwrap();
+        ty.pause(&mut app);
+        assert_eq!(app.tabs[0].page_count(), 1, "the result was applied");
+        assert!(page_text(&app).contains("Otter"), "the text was lost");
+        assert!(
+            matches!(&app.dialog, Dialog::Message(_, m) if m.contains("changed while")),
+            "nothing said"
+        );
+    }
+
+    /// Names the folder of stand-ins for CUPS, for the tests run by [`rerun_with_cups`].
+    #[cfg(not(windows))]
+    const STAND_IN_CUPS: &str = "LIMAREPDF_TEST_STAND_IN_CUPS";
+
+    /// A new folder `name` holding the stand-in commands `scripts` (name, shell script).
+    #[cfg(not(windows))]
+    fn stand_in_cups(name: &str, scripts: &[(&str, &str)]) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("limarepdf-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, script) in scripts {
+            let path = dir.join(name);
+            std::fs::write(&path, script).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        dir
+    }
+
+    /// Runs the ignored test `test` in a copy of the tests with the stand-ins in `dir` first
+    /// on its PATH, so no job reaches a real printer and the rest of the tests keep their
+    /// PATH.
+    #[cfg(not(windows))]
+    fn rerun_with_cups(dir: &Path, test: &str) {
+        let path = std::env::var("PATH").unwrap_or_default();
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test])
+            .args(["--ignored", "--test-threads=1", "--nocapture"])
+            .env("PATH", format!("{}:{path}", dir.display()))
+            .env(STAND_IN_CUPS, dir)
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&out.stdout).to_string()
+            + &String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success() && said.contains("1 passed"), "{said}");
+    }
+
+    /// Print right after typing in a field prints what was typed, by the whole route: Ctrl+P
+    /// with the field still being typed in, the printers listed, Print pressed. A value the
+    /// field can't take stops Print first, with the typing kept. Run with stand-ins for
+    /// `lpstat` and `lp` (BUG-10, audit A08).
+    #[cfg(not(windows))]
+    #[test]
+    fn print_right_after_typing_prints_the_typed_value() {
+        let lpstat = "#!/bin/sh\ncase \"$1\" in\n  -e) echo limarepdf-test ;;\n  \
+                      -d) echo 'system default destination: limarepdf-test' ;;\nesac\n";
+        let lp = "#!/bin/sh\ncat > \"$(dirname \"$0\")/job.pdf\"\n\
+                  echo 'request id is limarepdf-test-1 (1 file(s))'\n";
+        let dir = stand_in_cups(
+            "print",
+            &[("lpstat", lpstat), ("lp", lp), ("lpoptions", "#!/bin/sh\n")],
+        );
+        let job = dir.join("job.pdf");
+        rerun_with_cups(&dir, "app::tests::print_with_stand_in_cups");
+        let printed = Pdf::open(&job, None).expect("the job sent to lp");
+        let text = printed.page_text(0);
+        assert!(text.contains("Walrus"), "the job holds {text:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The part of [`print_right_after_typing_prints_the_typed_value`] run with the
+    /// stand-ins first on PATH; without them it does nothing.
+    #[cfg(not(windows))]
+    #[test]
+    #[ignore = "run by print_right_after_typing_prints_the_typed_value"]
+    fn print_with_stand_in_cups() {
+        if std::env::var_os(STAND_IN_CUPS).is_none() {
+            return;
+        }
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        assert!(app.add_tab(&ctx, form_doc(&[("name", 1)]), None, None, false));
+        let ty = Typist::new(&ctx);
+        // Right-to-left text, which a field can't hold: Print stops, with the typing kept
+        // in the field and the reason shown.
+        ty.click_field(&mut app, "name", 0);
+        ty.text(&mut app, "مرحبا");
+        ty.key(&mut app, Key::P, CTRL);
+        assert!(!matches!(app.dialog, Dialog::Print(..)), "Print opened");
+        assert!(matches!(app.dialog, Dialog::Message(..)), "no reason given");
+        let t = &app.tabs[0];
+        assert!(t.ed.pending() && !t.dirty, "the typing wasn't kept");
+        assert_eq!(saved_field(t, "name"), "");
+        app.dialog = Dialog::None;
+        let tree = ty.pause(&mut app);
+        assert_eq!(focused_text(&tree).as_deref(), Some("مرحبا"));
+        // Typed over, and Ctrl+P with the field still being typed in.
+        ty.key(&mut app, Key::A, CTRL);
+        ty.text(&mut app, "Walrus");
+        ty.key(&mut app, Key::P, CTRL);
+        assert!(matches!(app.dialog, Dialog::Print(..)), "Print didn't open");
+        assert_eq!(saved_field(&app.tabs[0], "name"), "Walrus");
+        wait_for(&mut app, &ctx, print_ready);
+        click(&mut app, &ctx, "Print");
+        // Its frames moved the clock on.
+        ty.time.set(ty.time.get() + 10.0);
+        for _ in 0..500 {
+            if !app.busy {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            ty.frame(&mut app, vec![]);
+        }
+        let sent = "Sent 1 page(s) to limarepdf-test.";
+        assert!(
+            matches!(&app.dialog, Dialog::Message(_, m) if m.starts_with(sent)),
+            "{}",
+            match &app.dialog {
+                Dialog::Message(_, m) => m.as_str(),
+                _ => "no message",
+            }
+        );
+    }
+
+    /// Whether Print is open with the printers found, ready to print.
+    #[cfg(not(windows))]
+    fn print_ready(app: &App) -> bool {
+        matches!(&app.dialog, Dialog::Print(_, s) if s.ready())
+    }
+
+    /// A stand-in `lpstat`. Listing the printers (`-e`), it waits the seconds in the file
+    /// `delay` beside it, if there is one, then fails if there is a file `fail`, or lists
+    /// the printers in `printers`. Naming the default (`-d`, asked last) it names the first,
+    /// and leaves a file `answered`.
+    #[cfg(not(windows))]
+    const SLOW_LPSTAT: &str = "#!/bin/sh\nd=$(dirname \"$0\")\ncase \"$1\" in\n  -e)\n    \
+        [ -f \"$d/delay\" ] && sleep \"$(cat \"$d/delay\")\"\n    \
+        [ -f \"$d/fail\" ] && { echo 'lpstat: scheduler is not running' >&2; exit 1; }\n    \
+        cat \"$d/printers\" ;;\n  -d)\n    \
+        echo \"system default destination: $(head -n 1 \"$d/printers\")\"\n    \
+        touch \"$d/answered\" ;;\nesac\n";
+
+    /// Print opens at once while the printing service is slow to list the printers, and the
+    /// printers fill it in when found; a dialog closed meanwhile isn't opened again, and a
+    /// failure or no printers can be tried again (BUG-11, audit A04). Run with a stand-in
+    /// `lpstat`.
+    #[cfg(not(windows))]
+    #[test]
+    fn print_opens_while_printers_are_looked_for() {
+        let dir = stand_in_cups("discovery", &[("lpstat", SLOW_LPSTAT)]);
+        std::fs::write(dir.join("printers"), "limarepdf-test\n").unwrap();
+        rerun_with_cups(&dir, "app::tests::print_discovery_with_stand_in_cups");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The part of [`print_opens_while_printers_are_looked_for`] run with the stand-in
+    /// first on PATH; without it it does nothing.
+    #[cfg(not(windows))]
+    #[test]
+    #[ignore = "run by print_opens_while_printers_are_looked_for"]
+    fn print_discovery_with_stand_in_cups() {
+        use std::time::{Duration, Instant};
+        let Some(dir) = std::env::var_os(STAND_IN_CUPS).map(PathBuf::from) else {
+            return;
+        };
+        let set = |name: &str, text: Option<&str>| match text {
+            Some(t) => std::fs::write(dir.join(name), t).unwrap(),
+            None => {
+                let _ = std::fs::remove_file(dir.join(name));
+            }
+        };
+        // Waits for the search running to finish, and takes in its result.
+        let answered = |app: &mut App, ctx: &egui::Context| {
+            let marker = dir.join("answered");
+            let start = Instant::now();
+            while !marker.exists() {
+                let late = start.elapsed() > Duration::from_secs(15);
+                assert!(!late, "lpstat never answered");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            std::fs::remove_file(&marker).unwrap();
+            for _ in 0..30 {
+                std::thread::sleep(Duration::from_millis(10));
+                app.poll_loads(ctx);
+            }
+        };
+        let search = |app: &App| match &app.dialog {
+            Dialog::Print(_, s) => s.search.clone(),
+            _ => panic!("Print isn't open"),
+        };
+        let done = |a: &App| match &a.dialog {
+            Dialog::Print(_, s) => !matches!(s.search, dlg::Search::Running(_)),
+            _ => false,
+        };
+        let found = |app: &App| -> Vec<String> {
+            match &app.dialog {
+                Dialog::Print(_, s) => s.printers.iter().map(|p| p.name.clone()).collect(),
+                _ => panic!("Print isn't open"),
+            }
+        };
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+
+        // A service taking 4 s to list the printers: the dialog opens at once, looking.
+        set("delay", Some("4"));
+        let start = Instant::now();
+        app.act(&ctx, Act::Print);
+        let waited = start.elapsed();
+        let quick = waited < Duration::from_secs(1);
+        assert!(quick, "the window waited {waited:?} for printers");
+        assert!(matches!(search(&app), dlg::Search::Running(_)));
+        // Cancelled while looking: the printers found later open nothing.
+        click(&mut app, &ctx, "Cancel");
+        assert!(matches!(app.dialog, Dialog::None));
+        answered(&mut app, &ctx);
+        let reopened = !matches!(app.dialog, Dialog::None) || !app.waiting.is_empty();
+        assert!(!reopened, "the printers found reopened Print");
+
+        // Opened again: the printers fill the dialog in, the default chosen.
+        set("delay", Some("1"));
+        app.act(&ctx, Act::Print);
+        wait_for(&mut app, &ctx, done);
+        match &app.dialog {
+            Dialog::Print(_, s) => {
+                assert!(s.ready());
+                let p = &s.printers[s.printer];
+                assert!(p.name == "limarepdf-test" && p.default, "{p:?}");
+            }
+            _ => unreachable!(),
+        }
+        set("answered", None);
+        click(&mut app, &ctx, "Cancel");
+
+        // A search cancelled, and Print opened again: the first one's result, coming last,
+        // leaves the new dialog as it is.
+        set("delay", Some("3"));
+        app.act(&ctx, Act::Print);
+        click(&mut app, &ctx, "Cancel");
+        // Started, the first search waits its 3 s.
+        std::thread::sleep(Duration::from_millis(300));
+        set("delay", None);
+        app.act(&ctx, Act::Print);
+        wait_for(&mut app, &ctx, done);
+        assert_eq!(found(&app), ["limarepdf-test"]);
+        set("answered", None);
+        set("printers", Some("stale\n"));
+        answered(&mut app, &ctx);
+        let stale = found(&app) != ["limarepdf-test"];
+        assert!(!stale, "an earlier search filled the dialog");
+        set("printers", Some("limarepdf-test\n"));
+        click(&mut app, &ctx, "Cancel");
+
+        // A service that fails: why, and Try again lists the printers.
+        set("fail", Some(""));
+        app.act(&ctx, Act::Print);
+        wait_for(&mut app, &ctx, done);
+        match search(&app) {
+            dlg::Search::Failed(why) => assert!(why.contains("scheduler is not running"), "{why}"),
+            s => panic!("{s:?}"),
+        }
+        set("fail", None);
+        click(&mut app, &ctx, "Try again");
+        assert!(matches!(search(&app), dlg::Search::Running(_)));
+        wait_for(&mut app, &ctx, done);
+        assert_eq!(found(&app), ["limarepdf-test"]);
+        set("answered", None);
+        click(&mut app, &ctx, "Cancel");
+
+        // No printers set up: said, and Try again finds one added meanwhile.
+        set("printers", Some(""));
+        app.act(&ctx, Act::Print);
+        wait_for(&mut app, &ctx, done);
+        assert!(found(&app).is_empty() && search(&app) == dlg::Search::Done);
+        set("printers", Some("limarepdf-test\n"));
+        click(&mut app, &ctx, "Try again");
+        wait_for(&mut app, &ctx, done);
+        assert_eq!(found(&app), ["limarepdf-test"]);
+        set("answered", None);
+        click(&mut app, &ctx, "Cancel");
+
+        // The window closed while looking: Quit is asked first, the printers fill in the
+        // dialog waiting, and it is back after Cancel.
+        set("delay", Some("1"));
+        app.act(&ctx, Act::Print);
+        close_window(&mut app, &ctx);
+        assert!(matches!(app.dialog, Dialog::ConfirmClose(_, true)));
+        let waits_ready =
+            |a: &App| matches!(a.waiting.front(), Some(Dialog::Print(_, s)) if s.ready());
+        wait_for(&mut app, &ctx, waits_ready);
+        click(&mut app, &ctx, "Cancel");
+        assert!(print_ready(&app), "Print isn't back");
+    }
+
+    /// Add a tab of `n` blank pages, with nothing unsaved, and bring it to the front.
+    fn pages_tab(app: &mut App, ctx: &egui::Context, n: usize) {
+        let mut pdf = Pdf::new();
+        for i in 0..n {
+            pdf.insert_blank(i, 612.0, 792.0).unwrap();
+        }
+        assert!(app.add_tab(ctx, pdf, None, None, false));
+    }
+
+    /// Where the undo toast's Undo button is, when one is shown: the button called Undo in
+    /// the window's lower half (the toolbar's is at the top).
+    fn toast_undo(tree: &egui::accesskit::TreeUpdate) -> Option<egui::Pos2> {
+        tree.nodes
+            .iter()
+            .filter(|(_, n)| n.role() == egui::accesskit::Role::Button && n.label() == Some("Undo"))
+            .filter_map(|(_, n)| n.bounds())
+            .find(|b| b.y0 > 400.0)
+            .map(|b| egui::pos2(((b.x0 + b.x1) / 2.0) as f32, ((b.y0 + b.y1) / 2.0) as f32))
+    }
+
+    /// Whether a label in the window starts with `text`.
+    fn shows(tree: &egui::accesskit::TreeUpdate, text: &str) -> bool {
+        tree.nodes
+            .iter()
+            .any(|(_, n)| n.value().is_some_and(|v| v.starts_with(text)))
+    }
+
+    /// A notice's Undo takes back its own change only: after a page is deleted in one
+    /// document, the other offers no Undo that would take back its own edit; back in the
+    /// first soon after, the notice and its Undo are there again. Both files saved and read
+    /// back hold what was done (BUG-02, audit A19).
+    #[test]
+    fn a_notice_undoes_its_own_change_in_its_own_tab() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        pages_tab(&mut app, &ctx, 12);
+        pages_tab(&mut app, &ctx, 12);
+        let ty = Typist::new(&ctx);
+        // In the second document the first page turned; in the first, page 1 deleted.
+        ty.frame(&mut app, vec![]);
+        app.act(&ctx, Act::RotR);
+        app.active = 0;
+        app.act(&ctx, Act::Delete);
+        let tree = ty.pause(&mut app);
+        assert!(shows(&tree, "Deleted page 1"), "no notice");
+        assert!(toast_undo(&tree).is_some(), "no Undo in the notice");
+        assert!(node(&tree, "Dismiss").is_some(), "Dismiss has no name");
+        // In the second document, no Undo there takes back its turn.
+        app.active = 1;
+        let tree = ty.pause(&mut app);
+        if let Some(undo) = toast_undo(&tree) {
+            ty.click(&mut app, undo);
+        }
+        assert_eq!(saved_rotation(&app.tabs[1]), 90, "the turn was undone");
+        assert_eq!(app.tabs[0].page_count(), 11);
+        // Back in the first: the notice's Undo brings the page back.
+        app.active = 0;
+        let tree = ty.pause(&mut app);
+        assert!(shows(&tree, "Deleted page 1"), "the notice is gone");
+        ty.click(&mut app, toast_undo(&tree).expect("no Undo in the notice"));
+        assert_eq!(app.tabs[0].page_count(), 12);
+        let dir = std::env::temp_dir();
+        let paths = ["a", "b"].map(|n| {
+            dir.join(format!(
+                "limarepdf-app-{}-notice-{n}.pdf",
+                std::process::id()
+            ))
+        });
+        for (i, path) in paths.iter().enumerate() {
+            app.active = i;
+            app.tabs[i].path = Some(path.clone());
+            app.act(&ctx, Act::Save);
+        }
+        let back = paths.map(|p| {
+            let pdf = Pdf::open(&p, None).unwrap();
+            let _ = std::fs::remove_file(&p);
+            pdf
+        });
+        assert_eq!(back[0].page_ids().len(), 12);
+        assert_eq!(back[1].page_ids().len(), 12);
+        let page = back[1].doc.get_dictionary(back[1].page_ids()[0]).unwrap();
+        let turn = page.get(b"Rotate").and_then(|o| o.as_i64()).unwrap_or(0);
+        assert_eq!(turn, 90, "the saved turn");
+    }
+
+    /// The notice and its Undo go once its change isn't the last thing in its tab: after
+    /// another edit, Undo, Undo and Redo, starting to type, or the tab closing; also after
+    /// too long in another tab (BUG-02, audit A19).
+    #[test]
+    fn a_notice_goes_once_its_change_is_not_the_last() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        type Then = fn(&mut App, &egui::Context, &Typist);
+        let cases: [(&str, Then); 6] = [
+            ("another edit", |app, ctx, _| app.act(ctx, Act::RotR)),
+            ("Undo", |app, ctx, _| app.act(ctx, Act::Undo)),
+            ("Undo and Redo", |app, ctx, _| {
+                app.act(ctx, Act::Undo);
+                app.act(ctx, Act::Redo);
+            }),
+            ("typing", |app, ctx, ty| {
+                app.act(ctx, Act::Tool(Tool::Text));
+                let tree = ty.frame(app, vec![]);
+                let (page, _) = node(&tree, "Page 1").expect("the page");
+                ty.click(app, page.center());
+                ty.text(app, "Walrus");
+                assert!(app.tabs[1].ed.pending(), "nothing typed");
+            }),
+            ("closing the tab", |app, _, _| app.close_tab(1)),
+            ("a long wait in another tab", |app, _, ty| {
+                app.active = 0;
+                ty.frame(app, vec![]);
+                ty.time.set(ty.time.get() + 40.0);
+                ty.frame(app, vec![]);
+                app.active = 1;
+            }),
+        ];
+        let ty = Typist::new(&ctx);
+        for (case, then) in cases {
+            let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+            pages_tab(&mut app, &ctx, 3);
+            pages_tab(&mut app, &ctx, 3);
+            ty.frame(&mut app, vec![]);
+            app.act(&ctx, Act::Delete);
+            let tree = ty.frame(&mut app, vec![]);
+            assert!(toast_undo(&tree).is_some(), "{case}: no notice");
+            then(&mut app, &ctx, &ty);
+            let tree = ty.frame(&mut app, vec![]);
+            let tree = match toast_undo(&tree) {
+                Some(_) => tree,
+                None => ty.frame(&mut app, vec![]),
+            };
+            assert!(!shows(&tree, "Deleted page"), "{case}: the notice stayed");
+            assert!(toast_undo(&tree).is_none(), "{case}: Undo still offered");
+        }
+    }
+
+    /// A notice waits while its tab is behind another: back within the wait, it shows for
+    /// what it had left, at least a few seconds, then goes (BUG-02).
+    #[test]
+    fn a_notice_waits_while_its_tab_is_behind() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        pages_tab(&mut app, &ctx, 3);
+        pages_tab(&mut app, &ctx, 3);
+        let ty = Typist::new(&ctx);
+        let shown = |app: &mut App| toast_undo(&ty.frame(app, vec![])).is_some();
+        ty.frame(&mut app, vec![]);
+        app.act(&ctx, Act::Delete);
+        ty.frame(&mut app, vec![]);
+        app.active = 0;
+        ty.frame(&mut app, vec![]);
+        ty.time.set(ty.time.get() + 20.0);
+        assert!(!shown(&mut app), "shown in the other tab");
+        app.active = 1;
+        assert!(shown(&mut app), "gone after 20 seconds");
+        ty.time.set(ty.time.get() + 2.0);
+        assert!(shown(&mut app), "gone at once");
+        ty.time.set(ty.time.get() + 5.0);
+        assert!(!shown(&mut app), "never goes");
+    }
+
+    /// A notice about nothing done offers no Undo, which would take back the change before
+    /// it (audit A19).
+    #[test]
+    fn a_notice_about_nothing_done_offers_no_undo() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let ty = Typist::new(&ctx);
+        for act in [Act::ApplyRedactions, Act::FinishSigning] {
+            // A tab with a change to undo.
+            let mut app = app_with(&ctx, 1);
+            app.act(&ctx, act);
+            let tree = ty.frame(&mut app, vec![]);
+            assert!(shows(&tree, "There "), "{act:?}: no notice");
+            assert!(toast_undo(&tree).is_none(), "{act:?}: Undo offered");
+        }
+    }
+
+    /// Three tabs of one page, a.pdf, b.pdf and c.pdf, with nothing unsaved; their ids.
+    fn named_tabs(app: &mut App, ctx: &egui::Context) -> Vec<u64> {
+        for n in ["a", "b", "c"] {
+            pages_tab(app, ctx, 1);
+            let path = PathBuf::from(format!("/nonexistent/{n}.pdf"));
+            app.tabs.last_mut().unwrap().path = Some(path);
+        }
+        app.tabs.iter().map(|t| t.id).collect()
+    }
+
+    /// Click the close button on the tab called `title`, as a user would.
+    fn close_by_button(app: &mut App, ctx: &egui::Context, title: &str) {
+        let tree = settle(app, ctx);
+        let (r, _) = node(&tree, &format!("Close {title}")).expect("the close button");
+        window(app, ctx, 1400.0, click_at(r.center()));
+        settle(app, ctx);
+    }
+
+    /// Closing a tab behind the one in front leaves that one in front; closing the one in
+    /// front brings the next, or the one before when it was the last (BUG-09, audit A02).
+    #[test]
+    fn closing_a_tab_keeps_the_one_in_front() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let names = ["a.pdf", "b.pdf", "c.pdf"];
+        // The tab in front, the one closed, and the one in front then.
+        let cases = [
+            (0, 2, 0),
+            (2, 0, 2),
+            (1, 2, 1),
+            (1, 0, 1),
+            (1, 1, 2),
+            (2, 2, 1),
+        ];
+        for (front, closed, then) in cases {
+            let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+            let ids = named_tabs(&mut app, &ctx);
+            app.active = front;
+            close_by_button(&mut app, &ctx, names[closed]);
+            let case = format!("{} in front, {} closed", names[front], names[closed]);
+            let gone = app.tabs.iter().all(|t| t.id != ids[closed]);
+            assert!(gone, "{case}: not closed");
+            assert_eq!(app.tabs.len(), 2, "{case}");
+            assert_eq!(app.tabs[app.active].id, ids[then], "{case}");
+        }
+    }
+
+    /// Closing an unsaved tab behind the one in front asks about it from there, and the
+    /// one in front stays: Cancel changes nothing, Discard closes it, also when another
+    /// file finished opening meanwhile (BUG-09, audit A02).
+    #[test]
+    fn closing_an_unsaved_tab_behind_asks_and_keeps_the_one_in_front() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let ids = named_tabs(&mut app, &ctx);
+        app.tabs[2].dirty = true;
+        app.active = 0;
+        close_by_button(&mut app, &ctx, "c.pdf *");
+        assert!(matches!(app.dialog, Dialog::ConfirmClose(..)), "didn't ask");
+        assert_eq!(app.active, 0, "the tab asked about came to the front");
+        click(&mut app, &ctx, "Cancel");
+        assert!(matches!(app.dialog, Dialog::None));
+        assert_eq!(app.tabs.len(), 3, "Cancel closed a tab");
+        assert_eq!(app.active, 0, "Cancel changed the tab in front");
+        close_by_button(&mut app, &ctx, "c.pdf *");
+        click(&mut app, &ctx, "Discard");
+        let left: Vec<u64> = app.tabs.iter().map(|t| t.id).collect();
+        assert_eq!(left, ids[..2]);
+        assert_eq!(app.active, 0, "Discard changed the tab in front");
+        // A file finishes opening while the question is open: it comes to the front, and
+        // stays there.
+        app.tabs[1].dirty = true;
+        close_by_button(&mut app, &ctx, "b.pdf *");
+        assert!(matches!(app.dialog, Dialog::ConfirmClose(..)), "didn't ask");
+        pages_tab(&mut app, &ctx, 1);
+        let opened = app.tabs[2].id;
+        click(&mut app, &ctx, "Discard");
+        let left: Vec<u64> = app.tabs.iter().map(|t| t.id).collect();
+        assert_eq!(left, [ids[0], opened]);
+        assert_eq!(app.active, 1, "the opened tab left the front");
+    }
+
+    /// A value a field can't take, typed and then left by a click elsewhere, Tab, Enter or
+    /// Esc, stays in the field with the keyboard once the reason is read, and nothing is
+    /// kept; Tab doesn't move on. A value it can take is kept as before (BUG-37).
+    #[test]
+    fn a_refused_field_value_stays_in_the_field_when_left() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        type Leave = fn(&Typist, &mut App);
+        let cases: [(&str, Leave); 4] = [
+            ("a click away", |ty, app| {
+                let (min, k) = ty.page(app);
+                ty.click(app, min + egui::vec2(500.0, 300.0) * k);
+            }),
+            ("Tab", |ty, app| {
+                ty.key(app, Key::Tab, egui::Modifiers::NONE);
+                ty.pause(app);
+            }),
+            ("Enter", |ty, app| {
+                ty.key(app, Key::Enter, egui::Modifiers::NONE);
+                ty.pause(app);
+            }),
+            ("Esc", |ty, app| {
+                ty.key(app, Key::Escape, egui::Modifiers::NONE);
+                ty.pause(app);
+            }),
+        ];
+        let ty = Typist::new(&ctx);
+        for (case, leave) in cases {
+            let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+            let pdf = form_doc(&[("a", 1), ("b", 1)]);
+            assert!(app.add_tab(&ctx, pdf, None, None, false));
+            ty.click_field(&mut app, "a", 0);
+            ty.text(&mut app, "مرحبا");
+            leave(&ty, &mut app);
+            let why = matches!(app.dialog, Dialog::Message(..));
+            assert!(why, "{case}: no reason given");
+            let t = &app.tabs[0];
+            assert!(!t.dirty && saved_field(t, "a").is_empty(), "{case}: kept");
+            app.dialog = Dialog::None;
+            let tree = ty.pause(&mut app);
+            assert_eq!(
+                focused_text(&tree).as_deref(),
+                Some("مرحبا"),
+                "{case}: the typing was lost"
+            );
+            assert!(app.tabs[0].ed.pending(), "{case}: not still being typed");
+            // Typed over, and left the same way: kept.
+            ty.key(&mut app, Key::A, CTRL);
+            ty.text(&mut app, "Walrus");
+            leave(&ty, &mut app);
+            assert!(matches!(app.dialog, Dialog::None), "{case}: refused");
+            assert_eq!(saved_field(&app.tabs[0], "a"), "Walrus", "{case}");
+            assert!(!app.tabs[0].ed.pending(), "{case}: still being typed");
+        }
+    }
+
+    /// A new note or text box with nothing typed in it closes at toolbar Undo and at a page
+    /// command, as the page under it may move or go (BUG-37).
+    #[test]
+    fn an_empty_new_box_closes_at_undo_and_page_commands() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let ty = Typist::new(&ctx);
+        for tool in [Tool::Note, Tool::Text] {
+            for act in [Act::Undo, Act::RotR, Act::Delete] {
+                let mut app = app_with(&ctx, 1);
+                app.act(&ctx, Act::Tool(tool));
+                let (min, k) = ty.page(&mut app);
+                ty.click(&mut app, min + egui::vec2(300.0, 300.0) * k);
+                let ed = &app.tabs[0].ed;
+                assert!(ed.typing_on_page(), "{tool:?}: no box opened");
+                assert!(!ed.pending(), "{tool:?}: something typed");
+                app.act(&ctx, act);
+                ty.pause(&mut app);
+                let open = app.tabs[0].ed.typing_on_page();
+                assert!(!open, "{tool:?}, {act:?}: the box stayed open");
+            }
+        }
+    }
+
+    /// Split asks once before replacing files: Cancel writes nothing and leaves the file
+    /// there as it was, Replace writes every part, and with nothing in the way it splits
+    /// without asking. A folder that can't be written to is reported (BUG-05, audit A07).
+    #[test]
+    fn split_asks_before_replacing_files() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        pages_tab(&mut app, &ctx, 3);
+        let dir = std::env::temp_dir().join(format!("limarepdf-app-{}-split", std::process::id()));
+        let fresh = || {
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+        };
+        let split = |app: &mut App| {
+            app.dialog = Dialog::None;
+            let s = SplitFiles {
+                by: SplitBy::Every(1),
+                dir: dir.clone(),
+                stem: "doc".into(),
+            };
+            app.split_into(&ctx, s);
+        };
+        let finish = |app: &mut App| {
+            for _ in 0..500 {
+                app.poll_loads(&ctx);
+                if !app.busy {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert!(!app.busy, "the split didn't finish");
+            match &app.dialog {
+                Dialog::Message(_, m) => m.clone(),
+                _ => panic!("no message"),
+            }
+        };
+        let files = |dir: &Path| {
+            let mut v: Vec<String> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            v.sort();
+            v
+        };
+        let parts = ["doc-001.pdf", "doc-002.pdf", "doc-003.pdf"];
+        fresh();
+        split(&mut app);
+        assert!(app.busy, "it asked with nothing in the way");
+        assert!(finish(&mut app).starts_with("Wrote 3 files"));
+        assert_eq!(files(&dir), parts);
+
+        fresh();
+        std::fs::write(dir.join("doc-002.pdf"), "keep").unwrap();
+        split(&mut app);
+        assert!(!app.busy, "it started before asking");
+        assert!(matches!(
+            app.dialog,
+            Dialog::ConfirmReplace(_, Replacing::Split(_), 1)
+        ));
+        click(&mut app, &ctx, "Cancel");
+        assert!(matches!(app.dialog, Dialog::None));
+        assert!(!app.busy, "it split on Cancel");
+        assert_eq!(files(&dir), ["doc-002.pdf"]);
+        assert_eq!(std::fs::read(dir.join("doc-002.pdf")).unwrap(), b"keep");
+
+        split(&mut app);
+        click(&mut app, &ctx, "Replace");
+        assert!(finish(&mut app).starts_with("Wrote 3 files"));
+        assert_eq!(files(&dir), parts);
+        for p in parts {
+            assert_eq!(Pdf::open(dir.join(p), None).unwrap().page_count(), 1, "{p}");
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fresh();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            // Root can write anywhere; there's nothing to check then.
+            if std::fs::write(dir.join("probe"), "").is_err() {
+                split(&mut app);
+                let message = finish(&mut app);
+                assert!(!message.starts_with("Wrote"), "{message}");
+                assert!(matches!(&app.dialog, Dialog::Message(t, _) if t == SPLIT_JOB));
+            }
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A fresh folder of its own for test `name`.
+    fn test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("limarepdf-app-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A form with the fields Name and Notes, saved at `path`.
+    fn form_file(path: &Path, name: &str) {
+        let mut pdf = form_doc(&[("Name", 1), ("Notes", 1)]);
+        pdf.set_field("Name", limarepdf_core::FieldValue::Text(name.into()))
+            .unwrap();
+        pdf.save(path).unwrap();
+    }
+
+    /// The text of field `name` in the file at `path`.
+    fn field_in(path: &Path, name: &str) -> String {
+        let pdf = Pdf::open(path, None).unwrap();
+        let f = pdf.form_fields().into_iter().find(|f| f.name == name);
+        match f.map(|f| f.value) {
+            Some(limarepdf_core::FieldValue::Text(t)) => t,
+            v => panic!("{name}: {v:?}"),
+        }
+    }
+
+    /// Opens `path` as Open does, and takes in the results until there are `tabs` tabs, or
+    /// for a few tenths of a second when that many are open already.
+    fn open_and_wait(app: &mut App, ctx: &egui::Context, path: &Path, tabs: usize) {
+        app.spawn_open(ctx, path.to_path_buf(), None, None);
+        let mut quiet = 0;
+        for _ in 0..500 {
+            app.poll_loads(ctx);
+            if app.tabs.len() >= tabs {
+                quiet += 1;
+                if quiet > 30 {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(app.tabs.len() >= tabs, "the file didn't open");
+    }
+
+    /// Sets field `name` of the active tab's document to `value`, as a change.
+    fn fill(app: &mut App, ctx: &egui::Context, name: &str, value: &str) {
+        let t = &mut app.tabs[app.active];
+        let v = limarepdf_core::FieldValue::Text(value.into());
+        assert!(t.edit(ctx, |p| p.set_field(name, v)));
+    }
+
+    /// The audit's A13 (BUG-06): the same file opened twice, its Name changed and saved in
+    /// the first tab, then its Notes in the second. The saved file keeps both changes,
+    /// where the second save used to put the old Name back without a word.
+    #[test]
+    fn opening_a_file_twice_never_loses_a_saved_change() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("twice");
+        let path = dir.join("form.pdf");
+        form_file(&path, "AlphaUnique");
+        open_and_wait(&mut app, &ctx, &path, 1);
+        let first = app.tabs[app.active].id;
+        // A second tab came here before.
+        open_and_wait(&mut app, &ctx, &path, 1);
+        app.active = 0;
+        fill(&mut app, &ctx, "Name", "First tab saved");
+        app.act(&ctx, Act::Save);
+        assert_eq!(field_in(&path, "Name"), "First tab saved");
+        app.active = app.tabs.len() - 1;
+        fill(&mut app, &ctx, "Notes", "Second tab saved");
+        app.act(&ctx, Act::Save);
+        assert_eq!(field_in(&path, "Name"), "First tab saved");
+        assert_eq!(app.tabs.len(), 1, "a second tab of the file");
+        assert_eq!(app.tabs[app.active].id, first);
+        assert_eq!(field_in(&path, "Notes"), "Second tab saved");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A file another app changed after it was opened isn't replaced by Save without
+    /// asking first (BUG-06).
+    #[test]
+    fn saving_never_silently_replaces_a_file_changed_since_it_was_read() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("changed");
+        let path = dir.join("form.pdf");
+        form_file(&path, "AlphaUnique");
+        open_and_wait(&mut app, &ctx, &path, 1);
+        // Another app saves its own change.
+        form_file(&path, "Other app");
+        fill(&mut app, &ctx, "Notes", "Ours");
+        app.act(&ctx, Act::Save);
+        assert_eq!(field_in(&path, "Name"), "Other app", "replaced");
+        assert!(app.tabs[0].dirty, "the change counts as saved");
+        assert_eq!(saved_field(&app.tabs[0], "Notes"), "Ours", "lost");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Takes in background results until `done`, for a few seconds at most.
+    fn wait_for(app: &mut App, ctx: &egui::Context, done: impl Fn(&App) -> bool) {
+        for _ in 0..500 {
+            app.poll_loads(ctx);
+            if done(app) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("nothing came");
+    }
+
+    /// One file opened by several paths at once, while the first is still being read, and
+    /// again once open: one tab, which comes to the front (BUG-06).
+    #[test]
+    fn a_file_is_opened_once_by_any_path_to_it() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("aliases");
+        let path = dir.join("form.pdf");
+        form_file(&path, "AlphaUnique");
+        let other = dir.join("other.pdf");
+        form_file(&other, "Other");
+        std::fs::create_dir(dir.join("sub")).unwrap();
+        let mut paths = vec![path.clone(), dir.join("sub/../form.pdf")];
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&path, dir.join("link.pdf")).unwrap();
+            std::fs::hard_link(&path, dir.join("hard.pdf")).unwrap();
+            paths.extend([dir.join("link.pdf"), dir.join("hard.pdf")]);
+        }
+        for p in &paths {
+            app.spawn_open(&ctx, p.clone(), None, None);
+        }
+        app.spawn_open(&ctx, other.clone(), None, None);
+        wait_for(&mut app, &ctx, |a| a.opening.is_empty());
+        assert_eq!(app.tabs.len(), 2);
+        // The two came in either order.
+        let at = |app: &App, p: &PathBuf| app.tabs.iter().position(|t| t.path.as_ref() == Some(p));
+        let (i, j) = (at(&app, &path).unwrap(), at(&app, &other).unwrap());
+        for p in &paths {
+            app.active = j;
+            app.spawn_open(&ctx, p.clone(), None, None);
+            assert!(app.opening.is_empty(), "{p:?} read again");
+            assert_eq!(app.active, i, "{p:?}");
+        }
+        app.spawn_open(&ctx, other.clone(), None, None);
+        assert_eq!((app.tabs.len(), app.active), (2, j));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Saving over a file another app changed asks: Cancel keeps both the file and the
+    /// unsaved changes, and shows the notice with Reload; Replace saves; after that, Save
+    /// doesn't ask again. A file only touched isn't a change (BUG-06).
+    #[test]
+    fn save_asks_before_replacing_a_changed_file() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("replace");
+        let path = dir.join("form.pdf");
+        form_file(&path, "AlphaUnique");
+        open_and_wait(&mut app, &ctx, &path, 1);
+        // The same bytes written again, as a sync tool might.
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::write(dir.join("copy"), &bytes).unwrap();
+        std::fs::rename(dir.join("copy"), &path).unwrap();
+        fill(&mut app, &ctx, "Notes", "Ours");
+        app.act(&ctx, Act::Save);
+        assert!(matches!(app.dialog, Dialog::None), "the same bytes");
+        assert_eq!(field_in(&path, "Notes"), "Ours");
+
+        form_file(&path, "Other app");
+        let theirs = std::fs::read(&path).unwrap();
+        fill(&mut app, &ctx, "Notes", "Ours again");
+        app.act(&ctx, Act::Save);
+        assert!(matches!(app.dialog, Dialog::ConfirmStale(..)));
+        let banner = |app: &App| {
+            let b = app.tabs[0].banners.iter();
+            b.filter(|b| b.kind == BannerKind::ChangedOnDisk).count()
+        };
+        assert_eq!(banner(&app), 1, "no Reload offered");
+        click(&mut app, &ctx, "Cancel");
+        assert!(matches!(app.dialog, Dialog::None));
+        assert_eq!(std::fs::read(&path).unwrap(), theirs);
+        assert!(app.tabs[0].dirty);
+        assert_eq!(saved_field(&app.tabs[0], "Notes"), "Ours again");
+
+        app.act(&ctx, Act::Save);
+        click(&mut app, &ctx, "Replace");
+        assert_eq!(field_in(&path, "Name"), "AlphaUnique");
+        assert_eq!(field_in(&path, "Notes"), "Ours again");
+        assert!(!app.tabs[0].dirty);
+        assert_eq!(banner(&app), 0);
+        fill(&mut app, &ctx, "Notes", "Third");
+        app.act(&ctx, Act::Save);
+        assert!(matches!(app.dialog, Dialog::None), "its own save");
+        assert_eq!(field_in(&path, "Notes"), "Third");
+
+        // A file deleted meanwhile is saved again without asking.
+        std::fs::remove_file(&path).unwrap();
+        fill(&mut app, &ctx, "Notes", "Fourth");
+        app.act(&ctx, Act::Save);
+        assert!(matches!(app.dialog, Dialog::None));
+        assert_eq!(field_in(&path, "Notes"), "Fourth");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Back in the window after another app changed a file open here, its tab says so,
+    /// once; Reload asks first when there are unsaved changes, then shows the file as it
+    /// now is, in the same place among the tabs (BUG-06).
+    #[test]
+    fn a_file_changed_elsewhere_is_noticed_and_reloaded() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        ctx.enable_accesskit();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("reload");
+        let path = dir.join("form.pdf");
+        form_file(&path, "AlphaUnique");
+        let other = dir.join("other.pdf");
+        form_file(&other, "Other");
+        open_and_wait(&mut app, &ctx, &path, 1);
+        open_and_wait(&mut app, &ctx, &other, 2);
+        app.active = 0;
+        let changed = |app: &App| {
+            let mut b = app.tabs[0].banners.iter();
+            b.any(|b| b.kind == BannerKind::ChangedOnDisk)
+        };
+        // Back from another app with nothing changed.
+        app.focused = false;
+        window(&mut app, &ctx, 1000.0, vec![]);
+        assert!(app.focused);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        app.poll_loads(&ctx);
+        assert!(!changed(&app));
+
+        form_file(&path, "Other app");
+        app.focused = false;
+        window(&mut app, &ctx, 1000.0, vec![]);
+        wait_for(&mut app, &ctx, changed);
+        let mut others = app.tabs[1].banners.iter();
+        assert!(!others.any(|b| b.kind == BannerKind::ChangedOnDisk));
+        // Dismissed, it doesn't come back for the same change.
+        app.tabs[0].drop_banner(BannerKind::ChangedOnDisk);
+        app.check_disk(&ctx, None);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        app.poll_loads(&ctx);
+        assert!(!changed(&app));
+
+        fill(&mut app, &ctx, "Notes", "Ours");
+        app.act(&ctx, Act::Reload);
+        assert!(matches!(app.dialog, Dialog::ConfirmReload(_)));
+        click(&mut app, &ctx, "Cancel");
+        assert_eq!(saved_field(&app.tabs[0], "Notes"), "Ours");
+        app.act(&ctx, Act::Reload);
+        let old = app.tabs[0].id;
+        click(&mut app, &ctx, "Discard and reload");
+        wait_for(&mut app, &ctx, |a| a.tabs[0].id != old);
+        assert_eq!((app.tabs.len(), app.active), (2, 0));
+        let t = &app.tabs[0];
+        assert_eq!(saved_field(t, "Name"), "Other app");
+        assert_eq!(saved_field(t, "Notes"), "");
+        assert!(!t.dirty && !changed(&app));
+        // Its Save replaces the file without asking: it is what was read.
+        fill(&mut app, &ctx, "Notes", "After reload");
+        app.act(&ctx, Act::Save);
+        assert!(matches!(app.dialog, Dialog::None));
+        assert_eq!(field_in(&path, "Notes"), "After reload");
+
+        // Unchanged, it reloads without asking; changed while being read, it doesn't.
+        let old = app.tabs[0].id;
+        app.act(&ctx, Act::Reload);
+        assert!(matches!(app.dialog, Dialog::None));
+        wait_for(&mut app, &ctx, |a| a.tabs[0].id != old);
+        app.act(&ctx, Act::Reload);
+        fill(&mut app, &ctx, "Notes", "Typed meanwhile");
+        wait_for(&mut app, &ctx, |a| a.opening.is_empty());
+        assert!(matches!(&app.dialog, Dialog::Message(t, _) if t == "Not reloaded"));
+        assert_eq!(saved_field(&app.tabs[0], "Notes"), "Typed meanwhile");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Nothing is saved over the file of another tab, by any path to it; a tab's own file
+    /// by another path to it is still checked for changes made elsewhere (BUG-06).
+    #[test]
+    fn nothing_is_saved_over_another_tabs_file() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("other-tab");
+        let (a, b) = (dir.join("a.pdf"), dir.join("b.pdf"));
+        form_file(&a, "A");
+        form_file(&b, "B");
+        open_and_wait(&mut app, &ctx, &a, 1);
+        open_and_wait(&mut app, &ctx, &b, 2);
+        let (ta, tb) = (app.tabs[0].id, app.tabs[1].id);
+        let alias = dir.join("sub/../a.pdf");
+        std::fs::create_dir(dir.join("sub")).unwrap();
+        let why = app.in_other_tab(&alias, Some(tb)).expect("refused");
+        assert!(why.contains("\"a.pdf\" is open in another tab"), "{why}");
+        assert!(app.in_other_tab(&alias, Some(ta)).is_none(), "its own file");
+        assert!(app.in_other_tab(&dir.join("c.pdf"), Some(tb)).is_none());
+        assert!(app.in_other_tab(&b, None).is_some());
+        assert!(app.stale(0, &alias).is_none());
+        form_file(&a, "Changed");
+        assert!(app.stale(0, &alias).is_some(), "by another path");
+        assert!(app.stale(1, &alias).is_none(), "not tab b's file");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A document of `pages` blank pages `width` points wide, saved at `path`, locked with
+    /// `password` when given.
+    fn pages_file(path: &Path, width: f32, pages: usize, password: Option<&str>) {
+        let mut pdf = Pdf::new();
+        for i in 0..pages {
+            pdf.insert_blank(i, width, 500.0).unwrap();
+        }
+        pdf.set_encryption(password.map(|p| Encryption {
+            user_password: p.into(),
+            owner_password: format!("{p}-owner"),
+            cipher: Cipher::Aes128,
+            restrictions: Restrictions::default(),
+        }));
+        pdf.save(path).unwrap();
+    }
+
+    /// The file whose password is asked for, if one is.
+    fn asked_password(app: &App) -> Option<PathBuf> {
+        match &app.dialog {
+            Dialog::Password(s, ..) => Some(s.path.clone()),
+            _ => None,
+        }
+    }
+
+    /// Puts `password` in the password asked for, and clicks `button`.
+    fn answer(app: &mut App, ctx: &egui::Context, password: &str, button: &str) {
+        match &mut app.dialog {
+            Dialog::Password(s, ..) => s.input = password.into(),
+            _ => panic!("no password asked for"),
+        }
+        click(app, ctx, button);
+    }
+
+    /// The widths of the pages of tab `i`.
+    fn widths(app: &App, i: usize) -> Vec<f32> {
+        let p = &app.tabs[i].pdf;
+        (0..p.page_count())
+            .map(|n| p.page_size(n).unwrap().0)
+            .collect()
+    }
+
+    /// The audit's A01 (BUG-07): two protected files opened together each ask for their
+    /// password in turn, a wrong password asks again before anything else, and both open.
+    #[test]
+    fn every_protected_file_opened_together_asks_for_its_password() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("two-locked");
+        let (a, b) = (dir.join("a.pdf"), dir.join("b.pdf"));
+        pages_file(&a, 100.0, 1, Some("walrus-a"));
+        pages_file(&b, 200.0, 1, Some("walrus-b"));
+        let pass = |p: &Path| if p == a { "walrus-a" } else { "walrus-b" };
+        app.spawn_open(&ctx, a.clone(), None, None);
+        app.spawn_open(&ctx, b.clone(), None, None);
+        wait_for(&mut app, &ctx, |a| a.opening.is_empty());
+        let first = asked_password(&app).expect("no password asked for");
+        answer(&mut app, &ctx, "wrong", "Open");
+        wait_for(&mut app, &ctx, |a| a.opening.is_empty());
+        assert_eq!(
+            asked_password(&app).as_ref(),
+            Some(&first),
+            "not asked again"
+        );
+        assert!(matches!(&app.dialog, Dialog::Password(s, ..) if s.error.is_some()));
+        answer(&mut app, &ctx, pass(&first), "Open");
+        wait_for(&mut app, &ctx, |a| a.tabs.len() == 1);
+        let second = asked_password(&app).expect("the second file's request was lost");
+        assert_ne!(second, first);
+        answer(&mut app, &ctx, pass(&second), "Open");
+        wait_for(&mut app, &ctx, |a| a.tabs.len() == 2);
+        let mut opened = [widths(&app, 0)[0], widths(&app, 1)[0]];
+        opened.sort_by(f32::total_cmp);
+        assert_eq!(opened, [100.0, 200.0]);
+        assert!(matches!(app.dialog, Dialog::None));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// BUG-07: what comes in while a password is being typed waits for it, the typing kept;
+    /// Cancel leaves only its own file unopened; files that can't be opened are told about
+    /// in one message.
+    #[test]
+    fn results_wait_for_the_password_being_typed() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("mixed");
+        let (locked, plain) = (dir.join("locked.pdf"), dir.join("plain.pdf"));
+        let (bad1, bad2) = (dir.join("bad1.pdf"), dir.join("bad2.pdf"));
+        pages_file(&locked, 100.0, 1, Some("walrus"));
+        pages_file(&plain, 200.0, 1, None);
+        std::fs::write(&bad1, "not a PDF").unwrap();
+        std::fs::write(&bad2, "not a PDF either").unwrap();
+        app.spawn_open(&ctx, locked.clone(), None, None);
+        wait_for(&mut app, &ctx, |a| asked_password(a).is_some());
+        match &mut app.dialog {
+            Dialog::Password(s, ..) => s.input = "wal".into(),
+            _ => unreachable!(),
+        }
+        for p in [&bad1, &plain, &bad2] {
+            app.spawn_open(&ctx, p.clone(), None, None);
+        }
+        wait_for(&mut app, &ctx, |a| {
+            a.opening.is_empty() && a.tabs.len() == 1
+        });
+        match &app.dialog {
+            Dialog::Password(s, ..) => assert_eq!((&s.path, s.input.as_str()), (&locked, "wal")),
+            _ => panic!("the password being typed was replaced"),
+        }
+        click(&mut app, &ctx, "Cancel");
+        let (title, text) = message(&app);
+        assert_eq!(title, "Cannot open files");
+        assert!(
+            text.contains("bad1.pdf") && text.contains("bad2.pdf"),
+            "{text}"
+        );
+        click(&mut app, &ctx, "OK");
+        assert!(matches!(app.dialog, Dialog::None));
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(app.tabs[0].path.as_ref(), Some(&plain));
+        // Cancelled, it asks again when opened again.
+        app.spawn_open(&ctx, locked.clone(), None, None);
+        wait_for(&mut app, &ctx, |a| asked_password(a).is_some());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// BUG-07: a password asked for to reload a tab and one to open a file each wait their
+    /// turn and go where they were asked for, the page asked for kept.
+    #[test]
+    fn reload_and_open_passwords_each_go_to_their_own_place() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("reload-locked");
+        let (a, b) = (dir.join("a.pdf"), dir.join("b.pdf"));
+        pages_file(&a, 100.0, 1, None);
+        pages_file(&b, 200.0, 3, Some("walrus-b"));
+        let pass = |p: &Path| if p == a { "walrus-a" } else { "walrus-b" };
+        open_and_wait(&mut app, &ctx, &a, 1);
+        let old = app.tabs[0].id;
+        // Another app puts a password on it.
+        pages_file(&a, 150.0, 1, Some("walrus-a"));
+        app.act(&ctx, Act::Reload);
+        app.spawn_open(&ctx, b.clone(), None, Some(3));
+        wait_for(&mut app, &ctx, |a| a.opening.is_empty());
+        for _ in 0..2 {
+            let p = asked_password(&app).expect("a request was lost");
+            answer(&mut app, &ctx, pass(&p), "Open");
+            wait_for(&mut app, &ctx, |a| a.opening.is_empty());
+        }
+        assert!(matches!(app.dialog, Dialog::None));
+        assert_eq!(app.tabs.len(), 2);
+        assert_ne!(app.tabs[0].id, old, "not reloaded");
+        assert_eq!(widths(&app, 0), [150.0]);
+        assert_eq!(widths(&app, 1), [200.0; 3]);
+        assert_eq!(app.tabs[1].current, 2, "the page asked for");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The audit's A09 (BUG-08): Enter, pressed and released as a keyboard does, answers the
+    /// password field (a wrong password asks again) and the name field; Esc cancels; Tab
+    /// goes from the field to the buttons.
+    #[test]
+    fn enter_in_the_password_and_name_fields_answers_them() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        ctx.enable_accesskit();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("enter");
+        let (locked, other) = (dir.join("locked.pdf"), dir.join("other.pdf"));
+        pages_file(&locked, 100.0, 1, Some("walrus"));
+        pages_file(&other, 200.0, 1, Some("walrus"));
+        let ty = Typist::new(&ctx);
+        let release = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let press = |app: &mut App, key| {
+            ty.frame(app, vec![key_with(key, egui::Modifiers::NONE)]);
+            ty.frame(app, vec![release(key)])
+        };
+        let until = |app: &mut App, done: &dyn Fn(&App) -> bool| {
+            for _ in 0..300 {
+                if done(app) {
+                    ty.pause(app);
+                    return;
+                }
+                ty.frame(app, vec![]);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("nothing came");
+        };
+        app.spawn_open(&ctx, locked.clone(), None, None);
+        until(&mut app, &|a| asked_password(a).is_some());
+        ty.text(&mut app, "wrong");
+        press(&mut app, Key::Enter);
+        until(
+            &mut app,
+            &|a| matches!(&a.dialog, Dialog::Password(s, ..) if s.error.is_some()),
+        );
+        ty.text(&mut app, "walrus");
+        press(&mut app, Key::Enter);
+        until(&mut app, &|a| a.tabs.len() == 1);
+        assert!(matches!(app.dialog, Dialog::None));
+
+        app.spawn_open(&ctx, other.clone(), None, None);
+        until(&mut app, &|a| asked_password(a).is_some());
+        let mut reached = Vec::new();
+        for _ in 0..2 {
+            let tree = press(&mut app, Key::Tab);
+            let focus = tree.nodes.iter().find(|(id, _)| *id == tree.focus);
+            reached.extend(focus.and_then(|(_, n)| n.label()).map(str::to_string));
+        }
+        let mut want = ["Open", "Cancel"];
+        if !dlg::ACTION_FIRST {
+            want.reverse();
+        }
+        assert_eq!(reached, want);
+        ty.text(&mut app, "walrus");
+        press(&mut app, Key::Escape);
+        ty.pause(&mut app);
+        assert!(matches!(app.dialog, Dialog::None), "Esc");
+        assert!(
+            app.opening.is_empty() && app.tabs.len() == 1,
+            "Esc opened it"
+        );
+
+        app.act(&ctx, Act::CommentName);
+        ty.pause(&mut app);
+        ty.key(&mut app, Key::A, egui::Modifiers::COMMAND);
+        ty.text(&mut app, "Pat Example");
+        press(&mut app, Key::Enter);
+        ty.pause(&mut app);
+        assert!(
+            matches!(app.dialog, Dialog::None),
+            "Enter left the name open"
+        );
+        assert_eq!(app.settings.author.as_deref(), Some("Pat Example"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The window, drawn once as the system asks it to close.
+    fn close_window(app: &mut App, ctx: &egui::Context) {
+        let mut raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1000.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let viewport = raw.viewports.entry(egui::ViewportId::ROOT).or_default();
+        viewport.events.push(egui::ViewportEvent::Close);
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut out = ctx.run_ui(raw, |ui| eframe::App::ui(app, ui, &mut frame));
+        out.textures_delta.clear();
+    }
+
+    /// BUG-07: closing the window with unsaved changes asks first, and a password being
+    /// typed comes back, typing kept, after Cancel.
+    #[test]
+    fn closing_the_window_keeps_the_question_it_interrupts() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let dir = test_dir("close-asking");
+        let locked = dir.join("locked.pdf");
+        pages_file(&locked, 100.0, 1, Some("walrus"));
+        app.spawn_open(&ctx, locked.clone(), None, None);
+        wait_for(&mut app, &ctx, |a| asked_password(a).is_some());
+        match &mut app.dialog {
+            Dialog::Password(s, ..) => s.input = "wal".into(),
+            _ => unreachable!(),
+        }
+        close_window(&mut app, &ctx);
+        assert!(matches!(app.dialog, Dialog::ConfirmClose(_, true)));
+        click(&mut app, &ctx, "Cancel");
+        assert!(!app.quit_ok);
+        match &app.dialog {
+            Dialog::Password(s, ..) => assert_eq!(s.input, "wal"),
+            _ => panic!("the password being typed was lost"),
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Add a tab of one blank page, its file at `path` (not written yet), with a page
+    /// added and not saved, and bring it to the front.
+    fn unsaved_tab(app: &mut App, ctx: &egui::Context, path: Option<PathBuf>) -> u64 {
+        pages_tab(app, ctx, 1);
+        let t = app.tabs.last_mut().unwrap();
+        t.path = path;
+        assert!(t.edit(ctx, |p| p.insert_blank(1, 300.0, 500.0)));
+        t.id
+    }
+
+    /// The number of pages in the PDF at `path`.
+    fn pages_in(path: &Path) -> usize {
+        Pdf::from_bytes(&std::fs::read(path).unwrap(), None)
+            .unwrap()
+            .page_count()
+    }
+
+    fn ids(app: &App) -> Vec<u64> {
+        app.tabs.iter().map(|t| t.id).collect()
+    }
+
+    /// ENH-01: Save when closing a tab saves it, then closes it, and the tab in front
+    /// stays; a document with no file yet is saved as one, and cancelling the chooser
+    /// keeps it open with its changes.
+    #[test]
+    fn closing_with_save_saves_the_document_then_closes_it() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("close-save");
+        let (a, c) = (dir.join("a.pdf"), dir.join("c.pdf"));
+        let front = unsaved_tab(&mut app, &ctx, Some(a.clone()));
+        let new = unsaved_tab(&mut app, &ctx, None);
+        let behind = unsaved_tab(&mut app, &ctx, Some(c.clone()));
+        app.active = 0;
+        // Cancel changes nothing.
+        app.close_asking(2);
+        click(&mut app, &ctx, "Cancel");
+        assert_eq!(ids(&app), [front, new, behind]);
+        assert!(!c.exists() && app.closing.is_none());
+        // Save, about a tab behind the one in front.
+        app.close_asking(2);
+        click(&mut app, &ctx, "Save");
+        assert_eq!(pages_in(&c), 2, "not saved");
+        assert_eq!(ids(&app), [front, new], "the saved tab wasn't closed");
+        assert_eq!(app.tabs[app.active].id, front, "the tab in front changed");
+        // A new document: Save as…, with the chooser cancelled, then a file chosen.
+        app.close_asking(1);
+        click(&mut app, &ctx, "Save as…");
+        assert_eq!(ids(&app), [front, new], "closed without saving");
+        assert!(app.tabs[1].dirty && app.closing.is_none());
+        SAVE_AS.with(|s| s.set(Some(dir.join("new"))));
+        app.close_asking(1);
+        click(&mut app, &ctx, "Save as…");
+        assert_eq!(pages_in(&dir.join("new.pdf")), 2, "not saved as a file");
+        assert_eq!(ids(&app), [front]);
+        assert!(app.tabs[0].dirty && !a.exists(), "the tab left changed");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// ENH-01: a save that fails, or is cancelled at one of its questions, keeps the
+    /// document open with its changes, and nothing closes later on its own.
+    #[test]
+    fn closing_keeps_a_document_whose_save_fails_or_is_cancelled() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("close-kept");
+        let kept = |app: &App, id| app.tabs.iter().any(|t| t.id == id && t.dirty);
+        // Written into a folder that isn't there: Save failed.
+        let failing = unsaved_tab(&mut app, &ctx, Some(dir.join("gone").join("a.pdf")));
+        app.close_asking(0);
+        click(&mut app, &ctx, "Save");
+        assert!(matches!(&app.dialog, Dialog::Message(t, _) if t == "Save failed"));
+        click(&mut app, &ctx, "OK");
+        assert!(
+            kept(&app, failing),
+            "a document that failed to save was closed"
+        );
+        assert!(app.closing.is_none());
+        // Repaired: Cancel at Replace the damaged original?
+        let repaired = unsaved_tab(&mut app, &ctx, Some(dir.join("repaired.pdf")));
+        app.tabs[1].repaired = true;
+        app.close_asking(1);
+        click(&mut app, &ctx, "Save");
+        assert!(matches!(app.dialog, Dialog::ConfirmSaveRepaired(_)));
+        click(&mut app, &ctx, "Cancel");
+        assert!(kept(&app, repaired) && app.closing.is_none());
+        // Changed by another app: Cancel at Replace the changed file?, and Save as… there
+        // with the chooser cancelled.
+        let changed = dir.join("changed.pdf");
+        pages_file(&changed, 100.0, 1, None);
+        open_and_wait(&mut app, &ctx, &changed, 3);
+        let stale = app.tabs[2].id;
+        assert!(app.tabs[2].edit(&ctx, |p| p.insert_blank(1, 300.0, 500.0)));
+        pages_file(&changed, 200.0, 3, None);
+        for answer in ["Cancel", "Save as…"] {
+            app.close_asking(2);
+            click(&mut app, &ctx, "Save");
+            assert!(matches!(app.dialog, Dialog::ConfirmStale(..)));
+            click(&mut app, &ctx, answer);
+            assert!(kept(&app, stale), "closed after {answer}");
+            assert!(app.closing.is_none() && pages_in(&changed) == 3);
+        }
+        // Nothing closes later either.
+        for _ in 0..3 {
+            let out = ctx.run_ui(egui::RawInput::default(), |ui| app.dialogs(ui.ctx()));
+            drop(out);
+        }
+        assert_eq!(ids(&app), [failing, repaired, stale]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// ENH-01: quitting with several documents unsaved asks about each in turn; Cancel part
+    /// way quits nothing and closes nothing, the documents saved stay saved and the rest
+    /// keep their changes; once every one is saved or discarded, the app quits. Discard all
+    /// quits at once.
+    #[test]
+    fn quitting_asks_about_each_unsaved_document_in_turn() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("quit-each");
+        let files: Vec<PathBuf> = ["a", "b", "c"]
+            .iter()
+            .map(|n| dir.join(format!("{n}.pdf")))
+            .collect();
+        pages_tab(&mut app, &ctx, 1);
+        for f in &files {
+            unsaved_tab(&mut app, &ctx, Some(f.clone()));
+        }
+        let all = ids(&app);
+        let asked = |app: &App| match &app.dialog {
+            Dialog::ConfirmClose(a, true) => app.tabs.iter().position(|t| t.id == a.tab),
+            _ => None,
+        };
+        app.act(&ctx, Act::Quit);
+        assert!(matches!(app.dialog, Dialog::ConfirmQuit));
+        click(&mut app, &ctx, "Review…");
+        assert_eq!(asked(&app), Some(1));
+        click(&mut app, &ctx, "Save");
+        assert_eq!(pages_in(&files[0]), 2, "not saved");
+        assert_eq!(asked(&app), Some(2), "didn't go on to the next");
+        click(&mut app, &ctx, "Cancel");
+        assert!(!app.quit_ok && app.closing.is_none());
+        assert_eq!(ids(&app), all, "a document was closed");
+        let dirty: Vec<bool> = app.tabs.iter().map(|t| t.dirty).collect();
+        assert_eq!(dirty, [false, false, true, true]);
+        assert!(!files[1].exists() && !files[2].exists());
+        // Again: the first is saved now; Discard the second, Save the third, and quit.
+        app.act(&ctx, Act::Quit);
+        click(&mut app, &ctx, "Review…");
+        assert_eq!(asked(&app), Some(2));
+        click(&mut app, &ctx, "Discard");
+        assert_eq!(asked(&app), Some(3));
+        assert!(!app.quit_ok, "quit with a document not yet asked about");
+        click(&mut app, &ctx, "Save");
+        assert_eq!(pages_in(&files[2]), 2);
+        assert!(app.quit_ok, "didn't quit");
+        assert!(!files[1].exists(), "the discarded document was saved");
+        // Discard all.
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        unsaved_tab(&mut app, &ctx, None);
+        unsaved_tab(&mut app, &ctx, None);
+        app.act(&ctx, Act::Quit);
+        click(&mut app, &ctx, "Discard all");
+        assert!(app.quit_ok);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// ENH-01: a save failing while quitting stops quitting, with every document open.
+    #[test]
+    fn quitting_stops_when_a_save_fails() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("quit-fails");
+        let (a, gone) = (dir.join("a.pdf"), dir.join("gone").join("b.pdf"));
+        unsaved_tab(&mut app, &ctx, Some(a.clone()));
+        unsaved_tab(&mut app, &ctx, Some(gone));
+        let all = ids(&app);
+        close_window(&mut app, &ctx);
+        click(&mut app, &ctx, "Review…");
+        click(&mut app, &ctx, "Save");
+        click(&mut app, &ctx, "Save");
+        assert!(matches!(&app.dialog, Dialog::Message(t, _) if t == "Save failed"));
+        click(&mut app, &ctx, "OK");
+        assert!(!app.quit_ok, "quit with a document that failed to save");
+        assert!(app.closing.is_none() && matches!(app.dialog, Dialog::None));
+        assert_eq!(ids(&app), all);
+        assert!(!app.tabs[0].dirty && app.tabs[1].dirty);
+        assert_eq!(pages_in(&a), 2);
+        // With one document unsaved, quitting asks about it alone, and Discard quits.
+        close_window(&mut app, &ctx);
+        assert!(matches!(app.dialog, Dialog::ConfirmClose(_, true)));
+        click(&mut app, &ctx, "Discard");
+        assert!(app.quit_ok);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// ENH-01: closing the window while a tab's save asks a question asks Quit first;
+    /// after Cancel the save's question is back, and once answered the tab is saved and
+    /// closed. Going on to quit instead asks about that document again, once.
+    #[test]
+    fn closing_the_window_during_a_save_keeps_the_save() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("close-during-save");
+        let path = dir.join("repaired.pdf");
+        let front = unsaved_tab(&mut app, &ctx, None);
+        unsaved_tab(&mut app, &ctx, Some(path.clone()));
+        app.tabs[1].repaired = true;
+        app.active = 0;
+        app.close_asking(1);
+        click(&mut app, &ctx, "Save");
+        assert!(matches!(app.dialog, Dialog::ConfirmSaveRepaired(_)));
+        close_window(&mut app, &ctx);
+        assert!(matches!(app.dialog, Dialog::ConfirmQuit));
+        click(&mut app, &ctx, "Cancel");
+        assert!(
+            matches!(app.dialog, Dialog::ConfirmSaveRepaired(_)),
+            "the save's question is gone"
+        );
+        click(&mut app, &ctx, "Replace original");
+        assert_eq!(pages_in(&path), 2);
+        assert_eq!(ids(&app), [front], "the saved tab wasn't closed");
+        // Quitting from the middle of a save: Review asks about each document once.
+        let other = unsaved_tab(&mut app, &ctx, Some(path.clone()));
+        app.tabs[1].repaired = true;
+        app.close_asking(1);
+        click(&mut app, &ctx, "Save");
+        close_window(&mut app, &ctx);
+        click(&mut app, &ctx, "Review…");
+        assert!(app.waiting.is_empty(), "the save's question still waits");
+        let mut asked = Vec::new();
+        while let Dialog::ConfirmClose(a, true) = &app.dialog {
+            asked.push(a.tab);
+            click(&mut app, &ctx, "Discard");
+        }
+        assert_eq!(asked, [front, other]);
+        assert!(app.quit_ok);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The audit's A17 (BUG-20): Append PDFs asks for a protected file's password (again
+    /// when wrong) and adds every file's pages in order in one step; Skip this file leaves
+    /// that one out; Cancel, or a file that can't be read, adds nothing.
+    #[test]
+    fn append_asks_for_a_protected_files_password() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, 1);
+        let dir = test_dir("append");
+        let (one, locked) = (dir.join("one.pdf"), dir.join("locked.pdf"));
+        let (three, broken) = (dir.join("three.pdf"), dir.join("broken.pdf"));
+        pages_file(&one, 100.0, 1, None);
+        pages_file(&locked, 200.0, 2, Some("walrus"));
+        pages_file(&three, 300.0, 1, None);
+        std::fs::write(&broken, "not a PDF").unwrap();
+        let files = [one.clone(), locked.clone(), three.clone()];
+        let before = widths(&app, 0);
+        assert_eq!(before, [612.0, 612.0]);
+
+        app.merge_files(&ctx, &files);
+        wait_for(&mut app, &ctx, |a| !a.busy);
+        assert_eq!(asked_password(&app).as_ref(), Some(&locked), "not asked");
+        answer(&mut app, &ctx, "wrong", "Add pages");
+        wait_for(&mut app, &ctx, |a| !a.busy);
+        assert!(matches!(&app.dialog, Dialog::Password(s, ..) if s.error.is_some()));
+        assert_eq!(widths(&app, 0), before);
+        answer(&mut app, &ctx, "walrus", "Add pages");
+        wait_for(&mut app, &ctx, |a| !a.busy);
+        assert!(matches!(app.dialog, Dialog::None));
+        assert_eq!(widths(&app, 0), [612.0, 612.0, 100.0, 200.0, 200.0, 300.0]);
+        assert!(app.tabs[0].copy.protected, "pages of a protected file");
+        app.act(&ctx, Act::Undo);
+        assert_eq!(widths(&app, 0), before, "not one step");
+
+        app.merge_files(&ctx, &files);
+        wait_for(&mut app, &ctx, |a| !a.busy);
+        click(&mut app, &ctx, "Skip this file");
+        wait_for(&mut app, &ctx, |a| !a.busy);
+        assert_eq!(widths(&app, 0), [612.0, 612.0, 100.0, 300.0]);
+        app.act(&ctx, Act::Undo);
+
+        let state = app.tabs[0].state();
+        app.merge_files(&ctx, &files);
+        wait_for(&mut app, &ctx, |a| !a.busy);
+        click(&mut app, &ctx, "Cancel");
+        assert!(matches!(app.dialog, Dialog::None));
+        assert!(app.tabs[0].state() == state, "Cancel changed it");
+
+        app.merge_files(&ctx, &[one.clone(), broken.clone()]);
+        wait_for(&mut app, &ctx, |a| !a.busy);
+        let (title, text) = message(&app);
+        assert_eq!(title, "Append failed");
+        assert!(
+            text.contains("broken.pdf") && text.ends_with("Nothing was added."),
+            "{text}"
+        );
+        assert!(app.tabs[0].state() == state);
+        click(&mut app, &ctx, "OK");
+
+        // Its tab closed while the files are read.
+        app.merge_files(&ctx, std::slice::from_ref(&one));
+        app.close_tab(0);
+        wait_for(&mut app, &ctx, |a| !a.busy);
+        assert_eq!(message(&app).0, "Pages not added");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A one-page form whose field Name holds `answer` with no drawing of its own, as apps
+    /// that leave the drawing to the reader save it, at `path`.
+    fn undrawn_form_file(path: &Path, answer: lopdf::Object) {
+        let mut pdf = form_doc(&[("Name", 1)]);
+        let catalog = pdf.doc.catalog().unwrap();
+        let form = catalog.get(b"AcroForm").unwrap().as_dict().unwrap();
+        let field = form.get(b"Fields").unwrap().as_array().unwrap()[0].clone();
+        let field = field.as_reference().unwrap();
+        pdf.doc.get_dictionary_mut(field).unwrap().set("V", answer);
+        pdf.save(path).unwrap();
+    }
+
+    /// The audit's A16 (BUG-19): Append PDFs asks before adding a file with form fields,
+    /// whose answers are then drawn onto its pages; the document's own fields stay
+    /// fillable, and Undo removes the pages. Cancel adds nothing; nor does an answer
+    /// LimarePDF can't draw, which is named.
+    #[test]
+    fn append_draws_the_form_fields_of_added_pages_once_asked() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("append-forms");
+        let (own, filled) = (dir.join("own.pdf"), dir.join("filled.pdf"));
+        let (plain, foreign) = (dir.join("plain.pdf"), dir.join("foreign.pdf"));
+        form_file(&own, "Grace");
+        undrawn_form_file(&filled, lopdf::Object::string_literal("Ada Lovelace"));
+        pages_file(&plain, 100.0, 1, None);
+        // Text in characters LimarePDF can't write in a field yet.
+        let mut utf16 = vec![0xFE, 0xFF];
+        utf16.extend("日本語".encode_utf16().flat_map(u16::to_be_bytes));
+        undrawn_form_file(
+            &foreign,
+            lopdf::Object::String(utf16, lopdf::StringFormat::Hexadecimal),
+        );
+        open_and_wait(&mut app, &ctx, &own, 1);
+        let state = app.tabs[0].state();
+
+        app.merge_files(&ctx, &[plain.clone(), filled.clone()]);
+        wait_for(&mut app, &ctx, |a| !a.busy);
+        let Dialog::ConfirmAppendForms(q) = &app.dialog else {
+            panic!("not asked");
+        };
+        assert_eq!(q.names, ["filled.pdf"]);
+        click(&mut app, &ctx, "Cancel");
+        assert!(matches!(app.dialog, Dialog::None));
+        assert!(app.tabs[0].state() == state, "Cancel changed it");
+
+        app.merge_files(&ctx, &[plain.clone(), filled.clone()]);
+        wait_for(&mut app, &ctx, |a| !a.busy);
+        click(&mut app, &ctx, "Add pages");
+        assert!(matches!(app.dialog, Dialog::None));
+        let mut pdf = app.tabs[0].pdf.clone();
+        assert_eq!(pdf.page_count(), 3);
+        assert!(
+            pdf.page_text(2).contains("Ada Lovelace"),
+            "answer not drawn"
+        );
+        let names: Vec<String> = pdf.form_fields().into_iter().map(|f| f.name).collect();
+        assert_eq!(names, ["Name", "Notes"]);
+        pdf.set_field("Name", limarepdf_core::FieldValue::Text("Hopper".into()))
+            .unwrap();
+        assert!(pdf.page_text(2).contains("Ada Lovelace"));
+        app.act(&ctx, Act::Undo);
+        assert_eq!(app.tabs[0].pdf.page_count(), 1, "not one step");
+
+        let state = app.tabs[0].state();
+        app.merge_files(&ctx, &[filled.clone(), foreign.clone()]);
+        wait_for(&mut app, &ctx, |a| !a.busy);
+        let (title, text) = message(&app);
+        assert_eq!(title, "Pages not added");
+        assert!(
+            text.contains("\"Name\" in “foreign.pdf”") && text.ends_with("Nothing was added."),
+            "{text}"
+        );
+        assert!(app.tabs[0].state() == state);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
