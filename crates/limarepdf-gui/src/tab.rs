@@ -1298,9 +1298,14 @@ impl Tab {
 
     /// Ask for an image file and arm the image tool with it.
     pub fn choose_image(&mut self) {
-        let Some(bytes) = crate::editor::pick_image() else {
-            return;
-        };
+        if let Some(bytes) = crate::editor::pick_image() {
+            self.arm_image(bytes);
+        }
+    }
+
+    /// Arm the image tool with the picture `bytes`: a click places it in a box of its
+    /// shape as it is meant to be seen.
+    pub(crate) fn arm_image(&mut self, bytes: Vec<u8>) {
         match limarepdf_core::image_dimensions(&bytes) {
             Ok((w, h)) => {
                 self.ed.pending_image = Some((bytes, w as f32 / h.max(1) as f32));

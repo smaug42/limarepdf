@@ -62,9 +62,8 @@ box to size it (it keeps its shape inside the box). The read tool then comes bac
 or resize it. To sign several places in a row, pin the tool (see [Keep tool active](gui.md#keep-tool-active)).
 
 - **Signature and initials:** a signature is up to 150 by 50 points, initials up to 50 by 30.
-- **Date:** today's date, in the style picked beside it: 2026-10-16, 16 October 2026 or October 16, 2026. The date
-  is in UTC, so late in the evening west of Greenwich it can already be tomorrow's. The date is a text box:
-  double-click it to change it.
+- **Date:** today's date on your computer, in the style picked beside it: 2026-10-16, 16 October 2026 or
+  October 16, 2026. The date is a text box: double-click it to change it.
 - **Name:** your name for comments (the same as ☰ > Edit > Your name for comments).
 - **Text:** type in the box, then click on the page; for anything else a form asks for.
 - **Tick, cross and dot:** for boxes that aren't real form fields.

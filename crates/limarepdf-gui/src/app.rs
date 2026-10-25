@@ -9280,6 +9280,69 @@ mod tests {
         }
     }
 
+    /// A 40 x 20 JPEG, red on the left and blue on the right, whose EXIF orientation 6
+    /// says to show it turned a quarter clockwise: 20 wide and 40 high, red at the top.
+    fn turned_photo() -> Vec<u8> {
+        use limarepdf_core::render::{encode, Bitmap, ImageFormat};
+        let (red, blue) = ([255, 0, 0, 255], [0, 0, 255, 255]);
+        let rgba = (0..40 * 20)
+            .flat_map(|i| if i % 40 < 20 { red } else { blue })
+            .collect();
+        let bitmap = Bitmap {
+            width: 40,
+            height: 20,
+            rgba,
+        };
+        let jpeg = encode(&bitmap, ImageFormat::Jpeg(95), 72.0).unwrap();
+        // An APP1 segment right after the start, its Exif block holding only the orientation.
+        let exif = b"Exif\0\0II*\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0";
+        let mut out = jpeg[..2].to_vec();
+        out.extend([0xFF, 0xE1]);
+        out.extend((exif.len() as u16 + 2).to_be_bytes());
+        out.extend(exif);
+        out.extend(&jpeg[2..]);
+        out
+    }
+
+    /// BUG-18: a turned photo placed with a click gets a box of its upright shape, and
+    /// shows upright in it.
+    #[test]
+    fn a_turned_photo_placed_by_a_click_is_upright_in_a_box_of_its_shape() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let mut pdf = Pdf::new();
+        pdf.insert_blank(0, 612.0, 792.0).unwrap();
+        assert!(app.add_tab(&ctx, pdf, None, None, false));
+        let ty = Typist::new(&ctx);
+        // Not through the command, which asks for a file.
+        app.tabs[0].arm_image(turned_photo());
+        let (min, k) = ty.page(&mut app);
+        ty.click(&mut app, min + egui::vec2(100.0, 100.0) * k);
+        let t = &mut app.tabs[0];
+        let objs = t.pdf.page_objects(0).unwrap();
+        let image = limarepdf_core::ObjectKind::Image;
+        let picture = objs.iter().find(|o| o.kind == image);
+        let [x0, y0, x1, y1] = picture.expect("the picture placed").bbox;
+        let (w, h) = (x1 - x0, y1 - y0);
+        let shape = (w - 200.0).abs() < 0.5 && (h - 400.0).abs() < 0.5;
+        assert!(shape, "{w} x {h}");
+        let hp = limarepdf_core::render::load(t.pdf.render_snapshot().unwrap(), None).unwrap();
+        let page = limarepdf_core::render::Renderer::new(&hp)
+            .render(0, 1.0)
+            .unwrap();
+        let px = |x: f32, y: f32| {
+            let i = (y as usize * page.width + x as usize) * 4;
+            [page.rgba[i], page.rgba[i + 1], page.rgba[i + 2]]
+        };
+        let mid = x0 + w / 2.0;
+        let (top, bottom) = (px(mid, y0 + h / 4.0), px(mid, y1 - h / 4.0));
+        assert!(top[0] > 200 && top[2] < 60, "red at the top: {top:?}");
+        let blue = bottom[2] > 200 && bottom[0] < 60;
+        assert!(blue, "blue at the bottom: {bottom:?}");
+    }
+
     const CTRL: egui::Modifiers = egui::Modifiers::COMMAND;
     const CTRL_SHIFT: egui::Modifiers = egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT);
 

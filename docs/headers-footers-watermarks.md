@@ -23,7 +23,7 @@ These words in curly brackets are filled in on each page:
 | --- | --- |
 | `{page}` | The page's number, counted from 1 |
 | `{pages}` | How many pages the document has |
-| `{date}` | Today's date, such as 2026-10-23 (in UTC, so late in the evening west of Greenwich it can already be tomorrow's) |
+| `{date}` | Today's date on your computer, such as 2026-10-23 |
 | `{bates}` | The page's Bates number (below) |
 
 **Font size** sets the text's size (10 points at first), and **Margin** how far it sits from the page's edges (36
@@ -95,8 +95,8 @@ The inspector offers:
   frame with the word in capitals.
 - **Add my name and the date:** on by default; adds a small line under the word with your name and today's date.
   The Name box under it is the same name as ☰ > Edit > Your name for comments, so changing either changes both. The
-  date is in UTC, as headers and footers use. The name and date are fixed when the stamp is put down. The choice
-  is remembered.
+  date is today's on your computer, as headers and footers use. The name and date are fixed when the stamp is put
+  down. The choice is remembered.
 - **Your own wording:** pick green, red or blue, type the wording in the box under the ready-made stamps, then click
   on the page. It is shown in capitals, and goes into the list above when you leave the box (Enter or a click
   elsewhere). Picking a colour also recolours the picked wording of your own. The last five wordings are remembered

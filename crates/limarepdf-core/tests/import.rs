@@ -302,6 +302,156 @@ fn jpeg_exif_orientation() {
     s.expect(15.0, 30.0, GREEN, 40, "bottom right");
 }
 
+/// The four quadrants' colours of `want` at its quarter points, scaled by `k` and placed
+/// at (`x`, `y`) on the shown page, in `s`.
+fn expect_upright(s: &Shot, want: &RgbImage, (x, y): (f32, f32), k: f32, what: &str) {
+    let (w, h) = (want.width() as f32, want.height() as f32);
+    for (fx, fy) in [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)] {
+        let c = want.get_pixel((w * fx) as u32, (h * fy) as u32).0;
+        s.expect(x + w * fx * k, y + h * fy * k, c, 40, what);
+    }
+}
+
+/// The JPEG of `quadrants` tagged with EXIF orientation `code`, and how it looks upright.
+fn oriented(code: u8) -> (Vec<u8>, RgbImage) {
+    let src = DynamicImage::ImageRgb8(quadrants());
+    let mut want = src.clone();
+    want.apply_orientation(Orientation::from_exif(code).unwrap());
+    (with_exif(encode_jpeg(&src, None), code), want.to_rgb8())
+}
+
+/// The bytes of the one image XObject the document has.
+fn only_image(p: &Pdf) -> Vec<u8> {
+    let images: Vec<_> = p
+        .doc
+        .objects
+        .values()
+        .filter_map(|o| o.as_stream().ok())
+        .filter(|s| s.dict.get(b"Subtype").and_then(|n| n.as_name()).ok() == Some(b"Image"))
+        .collect();
+    assert_eq!(images.len(), 1);
+    images[0].content.clone()
+}
+
+#[test]
+fn added_pictures_are_upright_all_eight() {
+    for code in 1..=8u8 {
+        let (jpg, want) = oriented(code);
+        let (w, h) = (want.width() as f32 * 2.0, want.height() as f32 * 2.0);
+        // A plain page, one turned a quarter, and one cropped and turned three quarters.
+        for (turn, crop) in [(0, false), (90, false), (270, true)] {
+            let what = format!("EXIF orientation {code}, page turned {turn}, cropped {crop}");
+            let mut p = Pdf::new();
+            p.insert_blank(0, 200.0, 160.0).unwrap();
+            if crop {
+                p.set_crop_margins(0, [10.0, 20.0, 15.0, 5.0]).unwrap();
+            }
+            p.rotate_pages(&[0], turn).unwrap();
+            p.add_image(0, [30.0, 40.0, 30.0 + w, 40.0 + h], &jpg)
+                .unwrap();
+            assert_eq!(only_image(&p), jpg, "{what}: the JPEG is kept as it is");
+            let s = shot(&mut p, 0, 2.0);
+            expect_upright(&s, &want, (30.0, 40.0), 2.0, &what);
+            s.expect(30.0 + w + 4.0, 40.0 + h / 2.0, WHITE, 12, &what);
+            s.expect(30.0 + w / 2.0, 40.0 + h + 4.0, WHITE, 12, &what);
+        }
+    }
+}
+
+#[test]
+fn replaced_pictures_are_upright_and_keep_their_shape_all_eight() {
+    let blank = encode_png(&DynamicImage::ImageRgb8(RgbImage::from_pixel(
+        8,
+        8,
+        Rgb(BLACK),
+    )));
+    for code in 1..=8u8 {
+        let (jpg, want) = oriented(code);
+        let what = format!("EXIF orientation {code}");
+        let mut p = Pdf::new();
+        p.insert_blank(0, 200.0, 200.0).unwrap();
+        // An 80-point square picture, replaced.
+        p.add_image(0, [50.0, 50.0, 130.0, 130.0], &blank).unwrap();
+        let id = p.page_objects(0).unwrap()[0].id;
+        p.replace_image(0, id, &jpg).unwrap();
+        let s = shot(&mut p, 0, 2.0);
+        // Upright it is 40 x 20 or 20 x 40: fitted into the square, in its middle.
+        let k = 80.0 / want.width().max(want.height()) as f32;
+        let (w, h) = (want.width() as f32 * k, want.height() as f32 * k);
+        let at = (50.0 + (80.0 - w) / 2.0, 50.0 + (80.0 - h) / 2.0);
+        expect_upright(&s, &want, at, k, &what);
+        let room = format!("{what}: room around it");
+        if w < h {
+            s.expect(55.0, 90.0, WHITE, 12, &room);
+            s.expect(125.0, 90.0, WHITE, 12, &room);
+        } else {
+            s.expect(90.0, 55.0, WHITE, 12, &room);
+            s.expect(90.0, 125.0, WHITE, 12, &room);
+        }
+        let mut streams = p.doc.objects.values().filter_map(|o| o.as_stream().ok());
+        assert!(
+            streams.any(|s| s.content == jpg),
+            "{what}: the JPEG is kept as it is"
+        );
+    }
+}
+
+/// Poppler draws added and replaced pictures upright too. Opt-in: needs `pdftoppm`.
+#[test]
+#[ignore]
+fn cross_check_upright_pictures_with_poppler() {
+    let dir = std::env::temp_dir().join(format!("limarepdf-upright-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let poppler = |p: &mut Pdf, name: &str| {
+        let path = dir.join(format!("{name}.pdf"));
+        std::fs::write(&path, p.to_bytes().unwrap()).unwrap();
+        let stem = dir.join(name);
+        let ok = std::process::Command::new("pdftoppm")
+            .args(["-r", "144", "-singlefile", "-png"])
+            .arg(&path)
+            .arg(&stem)
+            .status()
+            .expect("pdftoppm")
+            .success();
+        assert!(ok);
+        image::open(stem.with_extension("png")).unwrap().to_rgb8()
+    };
+    let expect = |img: &RgbImage, want: &RgbImage, (x, y): (f32, f32), k: f32, what: &str| {
+        let (w, h) = (want.width() as f32, want.height() as f32);
+        for (fx, fy) in [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)] {
+            let c = want.get_pixel((w * fx) as u32, (h * fy) as u32).0;
+            let at = ((x + w * fx * k) * 2.0, (y + h * fy * k) * 2.0);
+            let got = img.get_pixel(at.0 as u32, at.1 as u32).0;
+            let ok = (0..3).all(|i| (got[i] as i32 - c[i] as i32).abs() <= 40);
+            assert!(ok, "{what}: at {at:?} got {got:?}, want {c:?}");
+        }
+    };
+    let blank = encode_png(&DynamicImage::ImageRgb8(RgbImage::from_pixel(
+        8,
+        8,
+        Rgb(BLACK),
+    )));
+    for code in 1..=8u8 {
+        let (jpg, want) = oriented(code);
+        let mut p = Pdf::new();
+        p.insert_blank(0, 200.0, 200.0).unwrap();
+        let (w, h) = (want.width() as f32 * 2.0, want.height() as f32 * 2.0);
+        p.add_image(0, [30.0, 40.0, 30.0 + w, 40.0 + h], &jpg)
+            .unwrap();
+        p.add_image(0, [100.0, 100.0, 180.0, 180.0], &blank)
+            .unwrap();
+        let id = p.page_objects(0).unwrap()[1].id;
+        p.replace_image(0, id, &jpg).unwrap();
+        let img = poppler(&mut p, &format!("o{code}"));
+        expect(&img, &want, (30.0, 40.0), 2.0, &format!("{code}: added"));
+        let k = 80.0 / want.width().max(want.height()) as f32;
+        let (w, h) = (want.width() as f32 * k, want.height() as f32 * k);
+        let at = (100.0 + (80.0 - w) / 2.0, 100.0 + (80.0 - h) / 2.0);
+        expect(&img, &want, at, k, &format!("{code}: replaced"));
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 // ------------------------------------------------------------ colour data
 
 #[test]
@@ -457,7 +607,7 @@ fn sizes_are_read_from_the_header() {
     };
     assert_eq!(image_dimensions(&tiff(None, true)).unwrap(), (40, 20));
     // Each format's orientation is still honoured: turned a quarter, the 40 x 20
-    // picture makes a stamp 20 wide and 40 high.
+    // picture is 20 wide and 40 high, and so is its stamp.
     let cases = [
         (
             encode_png(&img),
@@ -470,7 +620,7 @@ fn sizes_are_read_from_the_header() {
         (tiff(None, false), tiff(Some(6), false)),
     ];
     for (plain, turned) in cases {
-        assert_eq!(image_dimensions(&turned).unwrap(), (40, 20));
+        assert_eq!(image_dimensions(&turned).unwrap(), (20, 40));
         let (w, h) = Stamp::Picture(&plain).size("").unwrap();
         assert!(w > h);
         assert_eq!(Stamp::Picture(&turned).size("").unwrap(), (h, w));

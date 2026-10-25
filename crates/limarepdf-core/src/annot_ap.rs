@@ -764,12 +764,13 @@ fn line_end(ops: &mut Vec<Operation>, end: &[u8], at: (f32, f32), from: (f32, f3
     if closed {
         ops.push(op("h", vec![]));
     }
-    // Endings are drawn solid even on a dashed line.
+    // Endings are drawn solid even on a dashed line: an empty pattern ends the line's
+    // dashes, which would otherwise carry on into the ending.
     let pen = Pen {
         c: pen.c.clone(),
         ic: pen.ic.clone(),
         w: pen.w,
-        dash: None,
+        dash: pen.dash.as_ref().map(|_| Vec::new()),
     };
     pen.paint(ops, filled);
 }

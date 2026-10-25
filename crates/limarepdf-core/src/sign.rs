@@ -8,7 +8,7 @@ use crate::annot_write::simplify;
 use crate::form_ap::nums;
 use crate::form_flatten::Flat;
 use crate::imgs::{decode, first, orient_matrix, swaps_axes, Pixels, Raster};
-use crate::overlay::{escape, text_width, utc_now};
+use crate::overlay::{escape, local_today, text_width};
 use crate::stamps::KAPPA;
 use crate::{Pdf, Result, TextStyle};
 use anyhow::{anyhow, bail};
@@ -572,7 +572,7 @@ pub(crate) fn signature_art(
     let k = (fw / (x1 - x0)).min(fh / (y1 - y0));
     let (sw, sh) = ((x1 - x0) * k, (y1 - y0) * k);
     let line = date.then(|| {
-        let [y, m, d, ..] = utc_now();
+        let [y, m, d] = local_today();
         format!("{y:04}-{m:02}-{d:02}")
     });
     let below = line
@@ -809,9 +809,9 @@ impl DateStyle {
         }
     }
 
-    /// Today's date (in UTC, as stamps write it) written this way.
+    /// Today's date (in this computer's time zone, as stamps write it) written this way.
     pub fn today(self) -> String {
-        let [y, m, d, ..] = utc_now();
+        let [y, m, d] = local_today();
         self.format(y as u32, m as u32, d as u32)
     }
 }

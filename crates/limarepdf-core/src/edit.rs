@@ -2,11 +2,13 @@
 
 use crate::embed::Pen;
 use crate::fonts::FontChoice;
+use crate::imgs::orient_matrix;
 use crate::inline::Inline;
 use crate::matrix::{self as mx, mul, M};
 use crate::objects::{Obj, ObjectKind, Parsed, Show, Span, TextData};
 use crate::{PageObject, Pdf, Result};
 use anyhow::{anyhow, bail};
+use image::metadata::Orientation;
 use lopdf::content::{Content, Operation};
 use lopdf::{Dictionary, Object, ObjectId, Stream, StringFormat};
 
@@ -261,6 +263,11 @@ fn name(n: &str) -> Object {
 }
 fn cm(m: M) -> Operation {
     op("cm", m.iter().map(|&x| r(x)).collect())
+}
+/// The `cm` that turns a picture stored in orientation `o` upright within its unit
+/// square, when it needs turning.
+fn upright(o: Orientation) -> Option<Operation> {
+    (o != Orientation::NoTransforms).then(|| cm(orient_matrix(o, 1.0, 1.0)))
 }
 fn rgb(o: &str, c: [f32; 3]) -> Operation {
     op(o, c.iter().map(|&x| r(x.clamp(0.0, 1.0))).collect())
@@ -881,20 +888,21 @@ impl Pdf {
         self.commit(page, out, parsed.depth_left, &parsed.inline)
     }
 
-    /// Replace the picture of an image object with a PNG/JPEG file; the new picture is fitted inside the old box.
+    /// Replace the picture of an image object with a PNG/JPEG file; the new picture is fitted
+    /// inside the old box, upright as the file's orientation asks.
     pub fn replace_image(&mut self, page_index: usize, id: usize, bytes: &[u8]) -> Result<()> {
         let (page, parsed) = self.load_edit(page_index)?;
         let obj = Self::pick(&parsed, id)?.clone();
         if obj.kind != ObjectKind::Image || obj.inline {
             bail!("only image objects stored as XObjects can be replaced");
         }
-        let (img, w, h) = self.add_image_object(bytes)?;
+        let (img, w, h, turn) = self.add_upright_image(bytes)?;
         let nm = self.add_resource(page, "XObject", "LimareIm", Object::Reference(img))?;
         let (bw, bh) = (
             obj.ctm[0].hypot(obj.ctm[1]).max(1e-3),
             obj.ctm[2].hypot(obj.ctm[3]).max(1e-3),
         );
-        let a = w as f32 / h as f32;
+        let a = w / h;
         let fit = if a > bw / bh {
             let sy = (bw / a) / bh;
             [1.0, 0.0, 0.0, sy, 0.0, (1.0 - sy) / 2.0]
@@ -905,12 +913,9 @@ impl Pdf {
         let mut out = Vec::with_capacity(parsed.ops.len() + 3);
         for (i, o) in parsed.ops.iter().enumerate() {
             if i == obj.first {
-                out.extend([
-                    op("q", vec![]),
-                    cm(fit),
-                    op("Do", vec![name(&nm)]),
-                    op("Q", vec![]),
-                ]);
+                out.extend([op("q", vec![]), cm(fit)]);
+                out.extend(upright(turn));
+                out.extend([op("Do", vec![name(&nm)]), op("Q", vec![])]);
             } else {
                 out.push(o.clone());
             }
@@ -971,18 +976,17 @@ impl Pdf {
         })
     }
 
-    /// Add a picture filling `rect` (displayed-page points, y down).
+    /// Add a picture filling `rect` (displayed-page points, y down), upright as the file's
+    /// orientation asks.
     pub fn add_image(&mut self, page_index: usize, rect: [f32; 4], bytes: &[u8]) -> Result<()> {
-        let (img, _, _) = self.add_image_object(bytes)?;
+        let (img, _, _, o) = self.add_upright_image(bytes)?;
         self.append_layer(page_index, move |s, page| {
             let nm = s.add_resource(page, "XObject", "LimareIm", Object::Reference(img))?;
             let (w, h) = (rect[2] - rect[0], rect[3] - rect[1]);
-            Ok(vec![
-                op("q", vec![]),
-                cm([w, 0.0, 0.0, -h, rect[0], rect[3]]),
-                op("Do", vec![name(&nm)]),
-                op("Q", vec![]),
-            ])
+            let mut ops = vec![op("q", vec![]), cm([w, 0.0, 0.0, -h, rect[0], rect[3]])];
+            ops.extend(upright(o));
+            ops.extend([op("Do", vec![name(&nm)]), op("Q", vec![])]);
+            Ok(ops)
         })
     }
 

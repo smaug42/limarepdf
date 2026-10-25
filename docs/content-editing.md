@@ -92,6 +92,8 @@ To put the same text on every page, such as page numbers or DRAFT, use
 1. Pick **Add image** in the top bar, and choose a PNG, JPEG or TIFF file.
 2. Drag a box on the page where it goes.
 
+A photo shows upright, the way it was taken, even when the camera or phone was turned.
+
 ## Move, resize or delete
 
 With the read tool:
@@ -189,8 +191,8 @@ detail is in [How it is built](developer/architecture.md#content-editing).
   colour instead). Colours in colour spaces other than RGB, grey and CMYK are shown approximately.
 - Inline images can be moved, resized and deleted, but not replaced. Pages whose inline images cannot be located
   safely are refused rather than risk losing them.
-- Replacing an image fits the new picture inside the old box, centred. JPEG EXIF rotation is not applied, and CMYK
-  JPEGs are not supported.
+- Replacing an image fits the new picture inside the old box, centred, upright as a photo's own orientation asks.
+  CMYK JPEGs are not supported.
 - Rotating objects, grouping, changing the stacking order, and copying and pasting between pages are not implemented.
 - Moving an object does not move links or annotations over it.
 - Text inside a form XObject (a reusable block of page content) is searched and selected like other text, but it is

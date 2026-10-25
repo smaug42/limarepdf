@@ -96,6 +96,17 @@
   that your system couldn't confirm are safely on disk are reported as done with that warning, not as failures.
   `limarepdf-cli sign` reports the signed file apart from the ID it couldn't keep as the default, instead of
   failing after writing the file; the app's Signed message says so too.
+- Bullets, euro signs, dashes, curly quotes and other punctuation in text written by other programs (document
+  properties, bookmarks, form field names and values, field descriptions, comments and their authors, page
+  labels) showed as gaps or odd characters: "Budget • €100 — “approved”" read as "Budget 100 approved". They now
+  read as written, in the app and on the command line, and edit and save as they read. Text with control codes
+  is written so it reads back unchanged.
+- A photo added with Add image, or put in with Replace image, ignored the photo's own orientation: a picture
+  taken with the phone turned showed on its side, and a click placed it in a box of the wrong shape, squeezing
+  it. Both now show it upright, a click making a box of its upright shape, as importing images as pages already
+  did; a JPEG is still embedded as it is.
+- Arrowheads and other endings on a dashed line were drawn dashed too, with gaps. They are now solid, the line
+  itself still dashed, in the app, when flattened and in other readers.
 
 ### Added
 
@@ -109,6 +120,13 @@
 - When you come back to LimarePDF after another app changed a file open here, its tab shows a notice with
   Reload. ☰ > File > Reload from disk reads the file again as it now is, after asking when there are unsaved
   changes, which it loses.
+
+### Changed
+
+- Today's date, in Fill and sign, the date under a signature, a stamp's name-and-date line and headers and
+  footers (`{date}`), is now your computer's calendar date instead of the date in UTC, which late in the evening
+  west of Greenwich was already tomorrow's. The times recorded for other programs (a comment's modification
+  time, a digital signature's signing time) are unchanged.
 
 ## [0.9.0] - 2026-10-23
 

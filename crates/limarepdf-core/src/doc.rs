@@ -1063,6 +1063,18 @@ fn pad_user_hash(bytes: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// The characters PDFDocEncoding gives bytes 0x18 to 0x1F, and 0x80 to 0xA0 (0x9F is
+/// undefined); every other byte means what it does in Latin-1.
+const PDF_DOC_18: [char; 8] = ['˘', 'ˇ', 'ˆ', '˙', '˝', '˛', '˚', '˜'];
+const PDF_DOC_80: [char; 33] = [
+    '•', '†', '‡', '…', '—', '–', 'ƒ', '⁄', '‹', '›', '−', '‰', '„', '“', '”', '‘', '’', '‚', '™',
+    'ﬁ', 'ﬂ', 'Ł', 'Œ', 'Š', 'Ÿ', 'Ž', 'ı', 'ł', 'œ', 'š', 'ž', '\u{9f}', '€',
+];
+
+/// A text string (properties, bookmarks, field names and values, comments, page labels):
+/// UTF-16 or UTF-8 after a byte order mark, else PDFDocEncoding. Bytes PDFDocEncoding
+/// leaves undefined (control codes, 0x7F, 0x9F) are kept as the same code points, as
+/// pdf.js reads them, so nothing is lost and names differing only there stay different.
 pub(crate) fn decode_text(b: &[u8]) -> String {
     if b.starts_with(&[0xFE, 0xFF]) {
         let u: Vec<u16> = b[2..]
@@ -1075,7 +1087,13 @@ pub(crate) fn decode_text(b: &[u8]) -> String {
     } else if b.starts_with(&[0xEF, 0xBB, 0xBF]) {
         String::from_utf8_lossy(&b[3..]).into_owned()
     } else {
-        b.iter().map(|&c| c as char).collect()
+        b.iter()
+            .map(|&c| match c {
+                0x18..=0x1F => PDF_DOC_18[usize::from(c - 0x18)],
+                0x80..=0xA0 => PDF_DOC_80[usize::from(c - 0x80)],
+                _ => c as char,
+            })
+            .collect()
     }
 }
 
@@ -1097,8 +1115,12 @@ pub fn existing(paths: &[std::path::PathBuf]) -> Vec<&Path> {
         .collect()
 }
 
+/// A text string for [`decode_text`]: printable ASCII, tabs and line breaks as they are
+/// (they mean the same in PDFDocEncoding), anything else as UTF-16.
 pub(crate) fn encode_text(s: &str) -> Vec<u8> {
-    if s.is_ascii() {
+    if s.bytes()
+        .all(|c| matches!(c, b' '..=b'~' | b'\t' | b'\n' | b'\r'))
+    {
         s.as_bytes().to_vec()
     } else {
         let mut v = vec![0xFE, 0xFF];
@@ -1307,5 +1329,45 @@ mod tests {
         // With a stray `startxref` after the end, nothing is blanked.
         b.extend_from_slice(b"startxref\n");
         assert!(blank_null_encrypt(&b).is_none());
+    }
+
+    #[test]
+    fn text_strings_read_as_pdfdocencoding() {
+        // Every character where PDFDocEncoding differs from Latin-1.
+        let mut b: Vec<u8> = (0x18..=0x1F).collect();
+        b.extend(0x80..=0x9E);
+        b.push(0xA0);
+        assert_eq!(decode_text(&b), "˘ˇˆ˙˝˛˚˜•†‡…—–ƒ⁄‹›−‰„“”‘’‚™ﬁﬂŁŒŠŸŽıłœšž€");
+        assert_eq!(
+            decode_text(b"Budget \x80 \xa0100 \x84 \x8dapproved\x8e"),
+            "Budget • €100 — “approved”"
+        );
+        // The rest is Latin-1, line breaks and tabs included.
+        assert_eq!(decode_text(b"Caf\xe9 \xa9\t1\r\n2"), "Café ©\t1\r\n2");
+        // Bytes PDFDocEncoding leaves undefined are kept as they are, so nothing is lost
+        // and names that differ only there stay different.
+        assert_eq!(
+            decode_text(b"a\x01\x7f\x9f\xadb"),
+            "a\u{1}\u{7f}\u{9f}\u{ad}b"
+        );
+        // Marked strings are read as before.
+        assert_eq!(decode_text(b"\xfe\xff\x20\xac\x00!"), "€!");
+        assert_eq!(decode_text("\u{feff}€!".as_bytes()), "€!");
+    }
+
+    #[test]
+    fn text_strings_read_back_as_written() {
+        let all: String = (0u32..0x250).filter_map(char::from_u32).collect();
+        for s in [
+            "plain ASCII",
+            "tab\tand\r\nlines",
+            "Budget • €100 — “approved”",
+            "PDFDocEncoding's accents as control codes: \u{18}\u{1f}",
+            "and those it leaves undefined: \u{1}\u{7f}\u{9f}",
+            &all,
+        ] {
+            assert_eq!(decode_text(&encode_text(s)), s, "{s:?}");
+        }
+        assert_eq!(encode_text("plain\tASCII\r\n"), b"plain\tASCII\r\n");
     }
 }

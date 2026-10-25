@@ -16,6 +16,13 @@ fn text(s: &str) -> Object {
     Object::String(s.as_bytes().to_vec(), StringFormat::Literal)
 }
 
+/// `s` as a text string in UTF-16, for characters beyond ASCII.
+fn utf16(s: &str) -> Object {
+    let mut b = vec![0xFE, 0xFF];
+    b.extend(s.encode_utf16().flat_map(u16::to_be_bytes));
+    Object::String(b, StringFormat::Literal)
+}
+
 fn rect(x: f32, y: f32, w: f32, h: f32) -> Object {
     vec![x.into(), y.into(), (x + w).into(), (y + h).into()].into()
 }
@@ -449,7 +456,7 @@ fn draws_missing_appearances() {
         &mut p,
         vec![
             dictionary! { "FT" => "Tx", "T" => text("a"), "V" => text("shown"), "Rect" => rect(0.0, 0.0, 80.0, 20.0) },
-            dictionary! { "FT" => "Tx", "T" => text("b"), "V" => text("Жж"), "Rect" => rect(0.0, 30.0, 80.0, 20.0) },
+            dictionary! { "FT" => "Tx", "T" => text("b"), "V" => utf16("שלום"), "Rect" => rect(0.0, 30.0, 80.0, 20.0) },
         ],
     );
     // A ticked checkbox without drawings gets them, showing it ticked.

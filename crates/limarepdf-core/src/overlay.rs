@@ -461,11 +461,20 @@ impl Pdf {
     }
 }
 
-/// Today's UTC date as YYYY-MM-DD (no external time crate): the `{date}` of headers and
+/// Today's date in this computer's time zone as YYYY-MM-DD: the `{date}` of headers and
 /// footers.
 pub fn today_iso() -> String {
-    let [y, m, d, ..] = utc_now();
+    let [y, m, d] = local_today();
     format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// Today's date in this computer's time zone: year, month, day. Dates people see (headers
+/// and footers, stamps, signatures, Fill and sign's Today) are local; times written for
+/// other programs, such as an annotation's modification date, stay in UTC ([`utc_now`]).
+pub(crate) fn local_today() -> [i64; 3] {
+    use chrono::Datelike;
+    let d = chrono::Local::now().date_naive();
+    [d.year().into(), d.month().into(), d.day().into()]
 }
 
 /// The time now in UTC: year, month, day, hour, minute, second.

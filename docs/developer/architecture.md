@@ -20,6 +20,16 @@ It uses:
   the usual scanner and OCR libraries, SANE and Tesseract, are C/C++, so LimarePDF doesn't drive scanners;
 - [`serde_json`](https://crates.io/crates/serde_json) in the command line, for form values as JSON.
 
+Text strings in the file (properties, bookmarks, field names, values and descriptions, comments and their
+authors, page labels, signature details) are all read by `doc::decode_text`: UTF-16BE or UTF-8 after a byte
+order mark, else PDFDocEncoding, which differs from Latin-1 at 0x18 to 0x1F (accents) and 0x80 to 0xA0 (bullet,
+dashes, curly quotes, euro and so on). Bytes it leaves undefined (other control codes, 0x7F, 0x9F) keep their own
+code points, as pdf.js reads them, so nothing is lost and field names differing only there stay apart; showing
+text strips control characters anyway (`display.rs`). `doc::encode_text` writes printable ASCII, tabs and line
+breaks as they are and anything else as UTF-16BE, so every string reads back unchanged. lopdf's own
+`decode_text_string` isn't used: its table drops tabs and line breaks. Font encodings in page content are separate
+(`fonts.rs`, `tounicode.rs`).
+
 Forms are read in `crates/limarepdf-core/src/forms.rs`. When a value changes, LimarePDF draws the field's appearance itself
 (`form_ap.rs`, written into the file by `form_write.rs`) rather than asking other readers to, so filled fields look
 the same everywhere; the desktop app's side is `crates/limarepdf-gui/src/fields.rs`.
@@ -154,6 +164,19 @@ pen strokes smoothed into curves, typed names as the glyph outlines of a bundled
 `skrifa` crate, so no font goes into the PDF), or a picture with its paper made transparent. Finish signing
 flattens just those annotations. The app's saved signatures and the Create signature window are in
 `crates/limarepdf-gui/src/signing.rs`.
+
+Dates people see (Fill and sign's Today, the date under a signature, a stamp's name-and-date line, headers' and
+footers' `{date}`) come from `overlay::local_today` and `today_iso`, the computer's calendar date through chrono's
+`Local`, asked for each time rather than kept, so an app left open overnight writes the new day. Times written for
+other programs stay in UTC (`overlay::utc_now`: an annotation's `/M`); a digital signature's `/M` is local time
+with its offset. `tests/local_dates.rs` reruns itself with `TZ` set to UTC+14 and UTC−11 (POSIX TZ strings, no
+time zone files needed), 25 hours apart, so at any moment at least one is on a different date from UTC; Unix
+only, as Windows ignores `TZ`.
+
+Annotation drawings LimarePDF makes are built in `annot_ap.rs`. A line's endings (`line_end`) are painted with a
+pen of their own: on a dashed line it sets an empty dash pattern (`[] 0 d`) before the ending, as `Pen::paint`
+only writes `d` when the pen has a pattern and the shaft's dashes would otherwise carry on into it. The same
+drawing is what flattening writes into the page.
 
 Digital signatures are checked in `crates/limarepdf-core/src/sig_verify.rs` (finding them, the byte-range rules, and
 tying each signature value to its dictionary in the version it signed, by position) and `cms_check.rs` (the CMS
@@ -342,6 +365,11 @@ form XObject, and per inline image.
   characters used; one font object per face grows as more is typed. Characters Liberation can't write (right-to-left
   and joined scripts, Chinese, Japanese, Korean) can't be typed. While it is typed, the app draws the text in the
   Liberation face, which has the standard font's widths, so the caret and line length match the written result.
+- **Pictures** added (`add_image`) or replaced (`replace_image`) are stored as the file has them (a JPEG's bytes as
+  they are) and turned upright for the EXIF or TIFF orientation by a `cm` from `imgs::orient_matrix` inside their
+  box, as image pages, image watermarks and picture stamps are (`add_upright_image`). A replacement is fitted into
+  the old box by its upright size. `image_dimensions` gives the upright size too, from the file's header; the app's
+  Image tool (`Tab::arm_image`) takes a click's box shape from it.
 - **Installed fonts** (the inspector's font list after the three standard ones) are the families whose fonts
   allow embedding (`OS/2 fsType`: not restricted, subsetting allowed, not bitmaps only), have outlines and the
   Latin letters; up to four faces each (regular, bold, italic, bold italic), a variable font set at weight 400 or
