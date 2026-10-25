@@ -11173,6 +11173,8 @@ mod tests {
         let other = dir.join("other.pdf");
         form_file(&other, "Other");
         std::fs::create_dir(dir.join("sub")).unwrap();
+        // Links are added on Unix only.
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut paths = vec![path.clone(), dir.join("sub/../form.pdf")];
         #[cfg(unix)]
         {

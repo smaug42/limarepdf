@@ -539,6 +539,7 @@ mod tests {
         assert_eq!(out, [0, 0, 255, 255, 0, 255, 0, 255]);
     }
 
+    #[cfg(unix)]
     fn sh(script: &str) -> Command {
         let mut c = Command::new("sh");
         c.args(["-c", script]);
