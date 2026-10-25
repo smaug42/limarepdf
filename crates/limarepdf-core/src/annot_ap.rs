@@ -12,7 +12,8 @@ use crate::form_write::parse_da;
 use crate::matrix as mx;
 use crate::overlay::escape;
 use crate::stamps::{bold_width, rounded, StampColor, StampKind, CAP};
-use crate::{Family, FontChoice, Pdf};
+use crate::{Family, FontChoice, Pdf, Result};
+use anyhow::bail;
 use lopdf::content::Operation;
 use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream};
 
@@ -127,10 +128,39 @@ impl Pdf {
         n
     }
 
+    /// The characters of a text box's text that its font (Helvetica, or its embedded face)
+    /// can't write, when it has any: drawn, they would show as `?`. LimarePDF's own text
+    /// boxes never have them ([`Pdf::add_text_box`]); one another app wrote can. `None`
+    /// for other annotations.
+    pub(crate) fn box_unwritable(&self, id: ObjectId) -> Option<String> {
+        let d = self.doc.get_dictionary(id).ok()?;
+        if d.get(b"Subtype").and_then(Object::as_name).ok()? != b"FreeText" {
+            return None;
+        }
+        let text = self.box_text(d);
+        let text: String = text.chars().filter(|c| !c.is_control()).collect();
+        Some(embed::unwritable(FontChoice::default(), &text)).filter(|m| !m.is_empty())
+    }
+
+    /// Refuses, naming the characters, to draw again a text box another app wrote whose
+    /// text its font can't write ([`Pdf::box_unwritable`]), rather than draw them as `?`
+    /// (BUG-39). Its own drawing stays.
+    pub(crate) fn check_box_drawable(&self, id: ObjectId) -> Result<()> {
+        match self.box_unwritable(id) {
+            Some(missing) => bail!(
+                "LimarePDF can't draw this text box again: {}",
+                embed::box_refusal(&missing)
+            ),
+            None => Ok(()),
+        }
+    }
+
     /// The font a text box's text is drawn in ([`Pdf::pen`]): Helvetica, or its embedded
-    /// face for characters Helvetica lacks. LimarePDF refuses other text in its own text
-    /// boxes ([`Pdf::add_text_box`]); in one another app wrote, characters neither has show
-    /// as `?`, as they did before LimarePDF embedded fonts. `None` for other annotations.
+    /// face for characters Helvetica lacks. Characters neither has show as `?`: LimarePDF
+    /// refuses such text in its own text boxes ([`Pdf::add_text_box`]), and refuses to
+    /// draw one another app wrote into the file ([`Pdf::check_box_drawable`]), so only the
+    /// app's view, prints and page pictures of a box without a drawing show them.
+    /// `None` for other annotations.
     pub(crate) fn box_pen(&mut self, id: ObjectId) -> Option<embed::Pen> {
         let d = self.doc.get_dictionary(id).ok()?;
         if d.get(b"Subtype").and_then(Object::as_name).ok()? != b"FreeText" {

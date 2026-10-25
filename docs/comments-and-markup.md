@@ -136,7 +136,10 @@ highlights, underlines, strike-outs, squiggly underlines, notes, text boxes, rec
 freehand drawings, stamps, carets and file attachment icons itself, on screen and when printing, including cloudy
 borders, text box callout lines and line leader lines. The file isn't changed by this; flattening saves LimarePDF's
 drawing into it (file attachments stay as they are). Text boxes are drawn in Helvetica, ignoring any rich-text
-styling; a stamp shows its name in a coloured frame. [Rendering](rendering.md#known-to-be-wrong) lists what isn't
+styling; a stamp shows its name in a coloured frame. A text box with characters Helvetica can't write (Chinese,
+Hebrew and so on) shows them as `?` when LimarePDF draws it, so flattening refuses one without a drawing of its
+own, naming its page, and a text box with its own drawing keeps it: a new colour, style, size or text for it is
+refused ([Troubleshooting](troubleshooting.md#limarepdf-cant-draw-this-text-box-again)). [Rendering](rendering.md#known-to-be-wrong) lists what isn't
 reproduced.
 
 The app shows up to 10,000 annotations on a page, with a notice on a page that has more.

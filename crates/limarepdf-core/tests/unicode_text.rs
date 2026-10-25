@@ -762,6 +762,82 @@ fn writers_in_the_standard_fonts_refuse_emoji_with_nothing_changed() {
     assert!(text.contains("PAID") && !text.contains("Sam"), "{text:?}");
 }
 
+/// A text box another app wrote on the first page, with `words` and, when `drawn`, a
+/// drawing of its own (a blue bar standing in for the text).
+fn their_text_box(p: &mut Pdf, words: &str, rect: [i64; 4], drawn: bool) -> ObjectId {
+    let page = p.page_ids()[0];
+    let r: Vec<Object> = rect.iter().map(|&v| v.into()).collect();
+    let mut d = dictionary! {
+        "Type" => "Annot", "Subtype" => "FreeText", "Rect" => r, "F" => 4,
+        "Contents" => utf16(words), "DA" => text("/Helv 12 Tf 0 g"), "P" => page,
+    };
+    if drawn {
+        let (w, h) = (rect[2] - rect[0], rect[3] - rect[1]);
+        let bbox: Vec<Object> = [0, 0, w, h].iter().map(|&v| v.into()).collect();
+        let form = dictionary! { "Type" => "XObject", "Subtype" => "Form", "BBox" => bbox };
+        let content = format!("0 0 1 rg 2 2 {} {} re f", w - 4, h - 4).into_bytes();
+        let ap = p.doc.add_object(Stream::new(form, content));
+        d.set("AP", dictionary! { "N" => ap });
+    }
+    let id = p.doc.add_object(d);
+    let pd = p.doc.get_dictionary_mut(page).unwrap();
+    let mut annots = pd
+        .get(b"Annots")
+        .ok()
+        .and_then(|a| a.as_array().ok())
+        .cloned()
+        .unwrap_or_default();
+    annots.push(id.into());
+    pd.set("Annots", annots);
+    id
+}
+
+#[test]
+fn another_apps_text_box_is_never_redrawn_with_question_marks() {
+    // BUG-39: Helvetica has no Chinese, so drawn again the text would be `?`.
+    let mut p = page();
+    let id = their_text_box(&mut p, "中文 notes", [20, 200, 200, 240], true);
+    let before = objects(&p);
+    let again = "LimarePDF can't draw this text box again: it has \"中文\", which LimarePDF can't \
+                 write yet (Latin, Greek and Cyrillic characters are supported)";
+    let a = p.annotations()[0].clone();
+    let e = p.set_annotation(id, Some([1.0, 0.0, 0.0]), a.opacity, &a.contents);
+    assert_eq!(e.unwrap_err().to_string(), again);
+    let e = p.set_annotation(id, a.color, 0.5, &a.contents);
+    assert_eq!(e.unwrap_err().to_string(), again);
+    let red = TextStyle {
+        color: [1.0, 0.0, 0.0],
+        ..TextStyle::default()
+    };
+    assert_eq!(p.set_text_style(id, &red).unwrap_err().to_string(), again);
+    let b = a.bbox;
+    let wider = [b[0], b[1], b[2] + 40.0, b[3]];
+    let e = p.move_annotation(0, id, wider).unwrap_err();
+    assert_eq!(e.to_string(), again);
+    assert_eq!(objects(&p), before, "nothing changed");
+    // Moved without a change of size, it keeps its own drawing.
+    let moved = [b[0] + 10.0, b[1], b[2] + 10.0, b[3]];
+    p.move_annotation(0, id, moved).unwrap();
+    assert!(ink(&mut p, [35, 65, 205, 95]) > 1000, "its own drawing");
+
+    // Without a drawing, flattening refuses rather than draw it into the page as `?`.
+    let mut p = page();
+    their_text_box(&mut p, "中文 notes", [20, 200, 200, 240], false);
+    let before = objects(&p);
+    let e = p.flatten_annotations(None).unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "LimarePDF can't draw the text box on page 1: it has \"中文\", which LimarePDF can't \
+         write yet (Latin, Greek and Cyrillic characters are supported); nothing was flattened"
+    );
+    assert_eq!(objects(&p), before);
+    // One whose text it can write is drawn, and flattened, as before.
+    let mut p = page();
+    their_text_box(&mut p, "Łódź notes", [20, 200, 200, 240], false);
+    assert_eq!(p.flatten_annotations(None).unwrap(), 1);
+    assert!(reopened(&mut p).page_text(0).contains("Łódź notes"));
+}
+
 /// The number of dark pixels on the first page of the PDF `bytes` as Poppler draws it, at
 /// 2 pixels per point.
 fn poppler_ink(bytes: &[u8]) -> usize {

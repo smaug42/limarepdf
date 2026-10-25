@@ -8,7 +8,7 @@ use crate::form_flatten::Flat;
 use crate::form_write::parse_da;
 use crate::matrix as mx;
 use crate::{Pdf, Result};
-use anyhow::anyhow;
+use anyhow::{anyhow, bail};
 use lopdf::{Dictionary, Object, ObjectId};
 use std::collections::HashSet;
 
@@ -378,11 +378,23 @@ impl Pdf {
     /// they can no longer be changed or removed. `pages` (zero-based) limits this to some
     /// pages. Links, form fields, file attachments, media and redaction marks are kept;
     /// replies and popups go without being drawn, as do hidden annotations. Annotations
-    /// without a drawing get LimarePDF's first. Returns how many were drawn.
+    /// without a drawing get LimarePDF's first. Returns how many were drawn. Refused, with
+    /// nothing changed, when one of those is a text box whose text its font can't write
+    /// ([`Pdf::box_unwritable`]), rather than draw `?` into the page for good (BUG-39).
     pub fn flatten_annotations(&mut self, pages: Option<&[usize]>) -> Result<usize> {
         let ids = self.page_ids();
         let pages = self.page_list(pages)?;
         let on: Vec<ObjectId> = pages.iter().map(|&i| ids[i]).collect();
+        for (&i, &page) in pages.iter().zip(&on) {
+            let missing = self.missing_appearances(&[page]).into_iter();
+            if let Some(chars) = missing.filter_map(|id| self.box_unwritable(id)).next() {
+                bail!(
+                    "LimarePDF can't draw the text box on page {}: {}; nothing was flattened",
+                    i + 1,
+                    crate::embed::box_refusal(&chars)
+                );
+            }
+        }
         // File attachments stay annotations, so they keep having no drawing.
         let missing: Vec<ObjectId> = self
             .missing_appearances(&on)

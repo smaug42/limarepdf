@@ -398,10 +398,7 @@ pub fn writable(f: FontChoice, c: char) -> bool {
 /// The message refusing text with the characters `missing`: its emoji sequences
 /// ([`emoji_sequence`]), when it has any, as no font helps with those.
 pub(crate) fn cant_write(missing: &str) -> String {
-    let sequences: String = missing
-        .graphemes(true)
-        .filter(|g| emoji_sequence(g))
-        .collect();
+    let sequences = sequences(missing);
     if !sequences.is_empty() {
         return format!(
             "LimarePDF can't write \"{sequences}\" yet: flags, skin tones, keycaps and joined \
@@ -411,6 +408,30 @@ pub(crate) fn cant_write(missing: &str) -> String {
     format!(
         "LimarePDF can't write \"{missing}\" yet; Latin, Greek and Cyrillic characters are \
          supported"
+    )
+}
+
+/// The emoji sequences ([`emoji_sequence`]) among the characters `missing`.
+fn sequences(missing: &str) -> String {
+    missing
+        .graphemes(true)
+        .filter(|g| emoji_sequence(g))
+        .collect()
+}
+
+/// Why a text box with the characters `missing` (in Helvetica, or its embedded face) can't
+/// be drawn: the end of a message that says which box (BUG-39).
+pub(crate) fn box_refusal(missing: &str) -> String {
+    let sequences = sequences(missing);
+    if !sequences.is_empty() {
+        return format!(
+            "it has \"{sequences}\", and flags, skin tones, keycaps and joined emoji aren't \
+             supported yet"
+        );
+    }
+    format!(
+        "it has \"{missing}\", which LimarePDF can't write yet (Latin, Greek and Cyrillic \
+         characters are supported)"
     )
 }
 

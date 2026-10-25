@@ -427,8 +427,11 @@ impl Pdf {
         }
     }
 
-    /// Set a text box's text size and colour, fill and border, and draw it again.
+    /// Set a text box's text size and colour, fill and border, and draw it again. Refused,
+    /// with nothing changed, for one another app wrote with characters its font can't
+    /// write ([`Pdf::check_box_drawable`]).
     pub fn set_text_style(&mut self, id: (u32, u16), style: &TextStyle) -> Result<()> {
+        self.check_box_drawable(id)?;
         let d = self.doc.get_dictionary_mut(id)?;
         if d.get(b"Subtype").and_then(|o| o.as_name()).ok() != Some(b"FreeText") {
             bail!("not a text box");
@@ -443,7 +446,8 @@ impl Pdf {
     /// Move an annotation on page `page_index` (zero-based) so that its box becomes `to`
     /// (displayed-page points, y down), stretching its lines, points and marked areas to
     /// match. A move keeps the drawing it has; a change of size draws it again when LimarePDF
-    /// can, and otherwise the viewer stretches the old drawing.
+    /// can, and otherwise the viewer stretches the old drawing. A text box another app wrote
+    /// with characters its font can't write isn't resized ([`Pdf::check_box_drawable`]).
     pub fn move_annotation(
         &mut self,
         page_index: usize,
@@ -467,6 +471,10 @@ impl Pdf {
             .get(b"Subtype")
             .and_then(|o| o.as_name())
             .is_ok_and(|s| DRAWN.contains(&s));
+        if drawn && resized {
+            self.check_box_drawable(id)?;
+        }
+        let d = self.doc.get_dictionary(id)?;
         let mut changed: Vec<(&[u8], Object)> = vec![(b"Rect", nums(&new).into())];
         for key in [&b"L"[..], b"Vertices", b"QuadPoints", b"CL"] {
             if let Some(v) = self.numbers(d.get(key).ok()) {
@@ -576,7 +584,9 @@ impl Pdf {
     /// Change an annotation's colour (`None` for none), opacity (0 to 1) and comment.
     /// Kinds LimarePDF draws are drawn again when their look changes. Locked annotations are
     /// changed too; the app checks [`crate::Annot::locked`] first. A text box's new text is
-    /// refused, with nothing changed, as [`Pdf::add_text_box`] refuses it.
+    /// refused, with nothing changed, as [`Pdf::add_text_box`] refuses it, and so is a new
+    /// look for one another app wrote with characters its font can't write
+    /// ([`Pdf::check_box_drawable`]).
     pub fn set_annotation(
         &mut self,
         id: (u32, u16),
@@ -589,14 +599,16 @@ impl Pdf {
             .into_iter()
             .find(|a| a.id == id)
             .ok_or_else(|| anyhow!("no such annotation"))?;
-        if old.kind == AnnotKind::TextBox && old.contents != contents {
-            check_writable(FontChoice::default(), contents)?;
-        }
         let opacity = opacity.clamp(0.0, 1.0);
         let looks_new = old.color != color
             || (old.opacity - opacity).abs() > 1e-3
             || (old.kind == AnnotKind::TextBox && old.contents != contents)
             || !old.has_appearance;
+        if old.kind == AnnotKind::TextBox && old.contents != contents {
+            check_writable(FontChoice::default(), contents)?;
+        } else if looks_new {
+            self.check_box_drawable(id)?;
+        }
         let d = self.doc.get_dictionary_mut(id)?;
         let drawn = d
             .get(b"Subtype")

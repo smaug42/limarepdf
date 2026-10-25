@@ -95,13 +95,21 @@ then type again.
 The installed font you chose doesn't have that character, or draws it only in colour (some fonts have colour
 emoji), which LimarePDF can't write into a PDF. Choose another font in the inspector's font list.
 
+### "LimarePDF can't draw this text box again"
+
+The text box was made by another app and has characters Helvetica can't write (Chinese, Hebrew and so on).
+LimarePDF draws text boxes in Helvetica, so it keeps the box's own drawing and refuses a new colour, opacity,
+style, size or text rather than draw those characters as `?`. You can still move or delete it. To change its
+look, edit it in the app that made it, or delete it and write the text with the Add text tool in an installed
+font that has the characters.
+
 ### A text box shows `?` instead of some characters
 
-LimarePDF draws a text box made by another app in Helvetica when it has no drawing of its own, and when you change
-its colour, style or size, so characters Helvetica can't write (Chinese, Hebrew and so on) come out as `?`. Undo
-puts it back. A change to such a box's text is refused, with a message naming the characters. Text boxes made in
-LimarePDF never show `?`: what Helvetica can't write isn't typed. To write such characters, use the Add text tool
-in an installed font instead.
+A text box made by another app without a drawing of its own is drawn by LimarePDF in Helvetica, on screen, when
+printed and in exported images, so characters Helvetica can't write come out as `?` there. The file isn't
+changed, and other readers may show the box as its app made it. Flattening comments refuses such a box, naming its
+page ("LimarePDF can't draw the text box on page …"), rather than draw `?` into the page for good. Text boxes made
+in LimarePDF never show `?`: what Helvetica can't write isn't typed.
 
 ### An edited line looks different
 

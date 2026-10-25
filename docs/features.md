@@ -52,9 +52,11 @@ this list once it works. The feature table below has the details.
   other Indic scripts, Thai) and emoji made of several characters (flags, skin tones, keycaps, and joined emoji
   such as families) can't, in any font: typed or pasted in new text, a line being edited, a text box, a header,
   footer or watermark, or fill-and-sign text, they aren't typed and a note at the caret says so; form values and
-  stamp wording with them are refused with a message. A text box made by another app, when it has no drawing or
-  you change its colour, style or size, and a plain-text page of selected text, show them as `?` (a change to
-  such a box's text is refused).
+  stamp wording with them are refused with a message. A text box made by another app with such characters can be
+  moved and deleted, but a new colour, opacity, style, size or text is refused with a message, as LimarePDF would
+  have to draw it again; if it has no drawing of its own, LimarePDF shows, prints and exports it with `?` for
+  them, and flattening comments refuses, naming its page. A plain-text page of selected
+  text shows them as `?`.
   Comments, replies, bookmarks and document properties keep every character, emoji included.
   Typed signatures show what their handwriting has: Caveat has Cyrillic, the other three Latin only.
 - Installed fonts are offered only when their licence allows embedding and they have the Latin letters; a

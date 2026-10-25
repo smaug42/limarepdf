@@ -157,8 +157,13 @@ Bates numbers and watermarks through `Pdf::pen` and `inspector::stamp_text`; for
 `form_write::check_value`; stamp wording through `stamp_wording`; typed signatures through `typed_signature`; the
 signer's name on a signature's look through `sig_sign::shown_name` (left out when it can't be written). Comments,
 replies, bookmarks, document properties and page labels are text strings (`doc::encode_text`, UTF-16 with
-surrogate pairs past U+FFFF), which take any character. A text box another app wrote is still drawn with `?` for
-what Helvetica lacks when LimarePDF draws it (`Pdf::box_pen`'s fallback).
+surrogate pairs past U+FFFF), which take any character. A text box another app wrote may have characters
+Helvetica can't write (`Pdf::box_unwritable`): `Pdf::check_box_drawable` refuses whatever would draw it again
+into the file (a new look in `set_annotation`, `set_text_style`, a resize in `move_annotation`; BUG-39), and
+`flatten_annotations` refuses when such a box has no drawing, naming its page (`embed::box_refusal` words the
+reason). `Pdf::box_pen`'s `?` fallback is left only for drawings in a copy: the app's view, printing and page
+images (`snapshot_hiding`). Finding an installed font that has the characters was considered and left: the
+font list keeps no coverage, so it would mean reading every installed font file.
 
 Installed fonts for writing text are listed by `crates/limarepdf-core/src/typefaces.rs`: the families in
 `InstalledFonts::system()`'s `fontdb` database whose fonts allow embedding and have the Latin letters, each with

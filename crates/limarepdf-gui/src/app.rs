@@ -7928,6 +7928,56 @@ mod tests {
         assert_eq!(app.tabs[0].ed.sign.text, "Seal");
     }
 
+    /// BUG-39: a text box another app wrote in Chinese can't be drawn again in Helvetica, so
+    /// a new colour or size is refused with the reason, and the document stays as it was.
+    #[test]
+    fn another_apps_text_box_refuses_a_new_look_with_the_reason() {
+        use lopdf::{dictionary, Object, StringFormat};
+        let ctx = egui::Context::default();
+        let mut pdf = Pdf::new();
+        pdf.insert_blank(0, 612.0, 792.0).unwrap();
+        let page = pdf.page_ids()[0];
+        let utf16: Vec<u8> = [0xFE, 0xFF]
+            .into_iter()
+            .chain("中文".encode_utf16().flat_map(u16::to_be_bytes))
+            .collect();
+        let rect: Vec<Object> = [100, 600, 300, 640].iter().map(|&v| v.into()).collect();
+        let id = pdf.doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "FreeText", "Rect" => rect, "P" => page,
+            "Contents" => Object::String(utf16, StringFormat::Hexadecimal),
+            "DA" => Object::string_literal("/Helv 12 Tf 0 g"),
+        });
+        pdf.doc
+            .get_dictionary_mut(page)
+            .unwrap()
+            .set("Annots", vec![Object::from(id)]);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        assert!(app.add_tab(&ctx, pdf, None, None, false));
+        let a = app.tabs[0].pdf.annotations()[0].clone();
+        let state = app.tabs[0].state();
+        let why = "LimarePDF can't draw this text box again: it has \"中文\", which LimarePDF \
+                   can't write yet (Latin, Greek and Cyrillic characters are supported)";
+        let red = crate::editor::AnnotEdit {
+            color: Some([1.0, 0.0, 0.0]),
+            opacity: a.opacity,
+            contents: a.contents.clone(),
+            text: a.text_style,
+            shape: None,
+        };
+        let b = a.bbox;
+        let wider = [b[0], b[1], b[2] + 50.0, b[3]];
+        use crate::editor::Action as Change;
+        for act in [
+            Change::SetAnnot(0, a.id, red),
+            Change::MoveAnnot(0, a.id, wider),
+        ] {
+            app.tabs[0].ed.actions.push(act);
+            app.tabs[0].apply_actions(&ctx);
+            assert_eq!(app.tabs[0].error.take().as_deref(), Some(why));
+            assert!(app.tabs[0].state() == state && !app.tabs[0].dirty);
+        }
+    }
+
     /// BUG-24: new text in an installed font with outline emoji takes single emoji; one the
     /// font draws only in colour, and emoji sequences, aren't typed, each with its note.
     #[test]

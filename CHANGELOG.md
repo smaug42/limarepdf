@@ -128,6 +128,12 @@
   saying something else (a thumb and a colour square). They are now refused whole, with a note saying these
   aren't supported yet, in every place LimarePDF writes text; comments, bookmarks and document properties keep
   them.
+- A text box made by another app with characters Helvetica can't write (Chinese, say) was drawn again with `?`
+  for them, without a word, when its colour, opacity, style or size was changed in LimarePDF, and flattening
+  comments drew `?` into the page for good when it had no drawing of its own. Those changes are now refused with
+  a message naming the characters, the box keeping its own drawing (it can still be moved or deleted), and
+  flattening refuses such a box, naming its page, with nothing changed. On screen, in print and in exported
+  images, a box without a drawing still shows `?`.
 
 ### Added
 
