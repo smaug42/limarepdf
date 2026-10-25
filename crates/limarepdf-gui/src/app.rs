@@ -76,6 +76,18 @@ struct Appending {
     read: Vec<Option<Pdf>>,
 }
 
+/// The documents read to add to a tab's document, some with form fields, waiting for the
+/// go-ahead to draw those fields onto their pages (BUG-19): pages are added without their
+/// forms, so the fields couldn't be filled in, and answers with no drawing of their own
+/// would show blank.
+struct AppendForms {
+    asked: Asked,
+    /// The documents, in order.
+    docs: Vec<Pdf>,
+    /// The names of the files with form fields.
+    names: Vec<String>,
+}
+
 /// Why reading the files to append stopped at the next one.
 enum AppendStop {
     /// It needs a password, or (the message) the one given was wrong.
@@ -352,6 +364,8 @@ enum Dialog {
     Print(Asked, Box<dlg::Print>),
     /// Print with fields whose values won't show on paper?
     ConfirmPrintFields(Box<PrintFields>),
+    /// Add pages with their form fields drawn onto them?
+    ConfirmAppendForms(Box<AppendForms>),
     SaveSelection(Asked, dlg::Layout),
     /// Open this web or email address from a link?
     OpenLink(String),
@@ -394,6 +408,7 @@ impl Dialog {
             | Dialog::ConfirmReload(a) => Some(a),
             Dialog::ConfirmSaveDisallowed(s) => Some(&s.asked),
             Dialog::ConfirmPrintFields(q) => Some(&q.asked),
+            Dialog::ConfirmAppendForms(q) => Some(&q.asked),
             _ => None,
         }
     }
@@ -2966,7 +2981,8 @@ impl App {
 
     /// Adds the pages of the files read for `a` to the end of its tab, in one step. Pages
     /// from a password-protected document make the tab protected: its recovery copies are
-    /// withdrawn first, as for a password, and it gets no more.
+    /// withdrawn first, as for a password, and it gets no more. Files with form fields are
+    /// asked about first; with an answer LimarePDF can't draw, nothing is added.
     fn append_read(&mut self, ctx: &egui::Context, a: Appending) {
         let Some(i) = self.tabs.iter().position(|t| t.id == a.tab) else {
             self.show(Dialog::Message(
@@ -2975,10 +2991,50 @@ impl App {
             ));
             return;
         };
-        let docs: Vec<Pdf> = a.read.into_iter().flatten().collect();
+        let (mut docs, mut names) = (Vec::new(), Vec::new());
+        for (f, d) in a.files.iter().zip(a.read) {
+            let Some(d) = d else { continue };
+            if !d.form_fields().is_empty() {
+                let name = f.file_name().unwrap_or(f.as_os_str());
+                let name = name.to_string_lossy().into_owned();
+                // An answer that couldn't be drawn would be lost: nothing is added.
+                let lost = d.undrawable_fields();
+                if !lost.is_empty() {
+                    let (what, them) = match lost.len() {
+                        1 => ("the answer of the field", "it"),
+                        _ => ("the answers of these fields:", "them"),
+                    };
+                    self.show(Dialog::Message(
+                        "Pages not added".into(),
+                        format!(
+                            "LimarePDF can't draw {what} {} in “{name}”, so adding its pages \
+                             would lose {them}. Nothing was added.",
+                            limarepdf_core::quoted_list(&lost)
+                        ),
+                    ));
+                    return;
+                }
+                names.push(name);
+            }
+            docs.push(d);
+        }
         if docs.is_empty() {
             return;
         }
+        if !names.is_empty() {
+            let asked = Asked::of(&self.tabs[i]);
+            self.show(Dialog::ConfirmAppendForms(Box::new(AppendForms {
+                asked,
+                docs,
+                names,
+            })));
+            return;
+        }
+        self.add_pages(ctx, i, docs);
+    }
+
+    /// Adds the pages of `docs` to the end of tab `i`'s document, in one step.
+    fn add_pages(&mut self, ctx: &egui::Context, i: usize, docs: Vec<Pdf>) {
         let protected = docs.iter().any(Pdf::encrypted);
         if protected {
             let done = "added the pages of the password-protected document";
@@ -3874,6 +3930,52 @@ impl App {
                         if self.still(&q.asked) {
                             let pages = std::mem::take(&mut q.pages);
                             self.start_print(ctx, pages, q.opts.clone());
+                        }
+                        done = true;
+                    }
+                    Outcome::Cancel => done = true,
+                    Outcome::Open => {}
+                }
+            }
+            Dialog::ConfirmAppendForms(q) => {
+                let (has, their) = match q.names.as_slice() {
+                    [one] => (format!("“{one}” has form fields."), "its"),
+                    _ => (
+                        format!(
+                            "These files have form fields: {}.",
+                            limarepdf_core::quoted_list(&q.names)
+                        ),
+                        "their",
+                    ),
+                };
+                match dlg::confirm(
+                    ctx,
+                    Ask::new(
+                        "Add pages with form fields?",
+                        &format!(
+                            "{has} LimarePDF can't combine forms yet, so the fields are drawn \
+                             onto {their} pages with their answers, as they look now, and can \
+                             no longer be filled in. This document's own fields stay as they \
+                             are. Undo removes the added pages."
+                        ),
+                        Btn::primary("Add pages"),
+                    )
+                    .file(file),
+                ) {
+                    Outcome::Apply => {
+                        if self.still(&q.asked) {
+                            let mut docs = std::mem::take(&mut q.docs);
+                            let drawn = docs
+                                .iter_mut()
+                                .filter(|d| !d.form_fields().is_empty())
+                                .try_for_each(|d| d.flatten_form(None).map(|_| ()));
+                            match drawn {
+                                Ok(()) => self.add_pages(ctx, self.active, docs),
+                                Err(e) => self.show(Dialog::Message(
+                                    "Pages not added".into(),
+                                    format!("{e:#}\n\nNothing was added."),
+                                )),
+                            }
                         }
                         done = true;
                     }
@@ -8119,6 +8221,16 @@ mod tests {
                 vec!["Save", "Discard", "Cancel"],
                 Dialog::ConfirmClose(app.asked(), true),
             ),
+            // Appending files with form fields (BUG-19).
+            30 => (
+                "Add pages with form fields?".into(),
+                two("Add pages"),
+                Dialog::ConfirmAppendForms(Box::new(AppendForms {
+                    asked: app.asked(),
+                    docs: Vec::new(),
+                    names: vec![format!("{long}.pdf"), "form.pdf".into()],
+                })),
+            ),
             _ => return None,
         };
         Some(q)
@@ -8190,7 +8302,7 @@ mod tests {
         ];
         for i in 0.. {
             let Some((title, _, _)) = question(&app, &long, i) else {
-                assert_eq!(i, 30, "a question was left out");
+                assert_eq!(i, 31, "a question was left out");
                 break;
             };
             for (size, scale) in sizes
@@ -11511,6 +11623,83 @@ mod tests {
         app.close_tab(0);
         wait_for(&mut app, &ctx, |a| !a.busy);
         assert_eq!(message(&app).0, "Pages not added");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A one-page form whose field Name holds `answer` with no drawing of its own, as apps
+    /// that leave the drawing to the reader save it, at `path`.
+    fn undrawn_form_file(path: &Path, answer: lopdf::Object) {
+        let mut pdf = form_doc(&[("Name", 1)]);
+        let catalog = pdf.doc.catalog().unwrap();
+        let form = catalog.get(b"AcroForm").unwrap().as_dict().unwrap();
+        let field = form.get(b"Fields").unwrap().as_array().unwrap()[0].clone();
+        let field = field.as_reference().unwrap();
+        pdf.doc.get_dictionary_mut(field).unwrap().set("V", answer);
+        pdf.save(path).unwrap();
+    }
+
+    /// The audit's A16 (BUG-19): Append PDFs asks before adding a file with form fields,
+    /// whose answers are then drawn onto its pages; the document's own fields stay
+    /// fillable, and Undo removes the pages. Cancel adds nothing; nor does an answer
+    /// LimarePDF can't draw, which is named.
+    #[test]
+    fn append_draws_the_form_fields_of_added_pages_once_asked() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("append-forms");
+        let (own, filled) = (dir.join("own.pdf"), dir.join("filled.pdf"));
+        let (plain, foreign) = (dir.join("plain.pdf"), dir.join("foreign.pdf"));
+        form_file(&own, "Grace");
+        undrawn_form_file(&filled, lopdf::Object::string_literal("Ada Lovelace"));
+        pages_file(&plain, 100.0, 1, None);
+        // Text in characters LimarePDF can't write in a field yet.
+        let mut utf16 = vec![0xFE, 0xFF];
+        utf16.extend("日本語".encode_utf16().flat_map(u16::to_be_bytes));
+        undrawn_form_file(
+            &foreign,
+            lopdf::Object::String(utf16, lopdf::StringFormat::Hexadecimal),
+        );
+        open_and_wait(&mut app, &ctx, &own, 1);
+        let state = app.tabs[0].state();
+
+        app.merge_files(&ctx, &[plain.clone(), filled.clone()]);
+        wait_for(&mut app, &ctx, |a| !a.busy);
+        let Dialog::ConfirmAppendForms(q) = &app.dialog else {
+            panic!("not asked");
+        };
+        assert_eq!(q.names, ["filled.pdf"]);
+        click(&mut app, &ctx, "Cancel");
+        assert!(matches!(app.dialog, Dialog::None));
+        assert!(app.tabs[0].state() == state, "Cancel changed it");
+
+        app.merge_files(&ctx, &[plain.clone(), filled.clone()]);
+        wait_for(&mut app, &ctx, |a| !a.busy);
+        click(&mut app, &ctx, "Add pages");
+        assert!(matches!(app.dialog, Dialog::None));
+        let mut pdf = app.tabs[0].pdf.clone();
+        assert_eq!(pdf.page_count(), 3);
+        assert!(
+            pdf.page_text(2).contains("Ada Lovelace"),
+            "answer not drawn"
+        );
+        let names: Vec<String> = pdf.form_fields().into_iter().map(|f| f.name).collect();
+        assert_eq!(names, ["Name", "Notes"]);
+        pdf.set_field("Name", limarepdf_core::FieldValue::Text("Hopper".into()))
+            .unwrap();
+        assert!(pdf.page_text(2).contains("Ada Lovelace"));
+        app.act(&ctx, Act::Undo);
+        assert_eq!(app.tabs[0].pdf.page_count(), 1, "not one step");
+
+        let state = app.tabs[0].state();
+        app.merge_files(&ctx, &[filled.clone(), foreign.clone()]);
+        wait_for(&mut app, &ctx, |a| !a.busy);
+        let (title, text) = message(&app);
+        assert_eq!(title, "Pages not added");
+        assert!(
+            text.contains("\"Name\" in “foreign.pdf”") && text.ends_with("Nothing was added."),
+            "{text}"
+        );
+        assert!(app.tabs[0].state() == state);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

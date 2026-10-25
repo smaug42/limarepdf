@@ -742,7 +742,10 @@ impl Pdf {
         self.set_page_order(&new)
     }
 
-    /// Append the pages of `others` to this document.
+    /// Append the pages of `others` to this document. Their forms aren't merged into this
+    /// one's, so their fields can't be filled in here, and values without a drawing of their
+    /// own show blank: callers first ask to draw them onto the pages with
+    /// [`Pdf::flatten_form`] ([`Pdf::undrawable_fields`] names what it would refuse).
     pub fn append(&mut self, others: Vec<Pdf>) -> Result<()> {
         self.flatten()?;
         let mut ids = self.page_ids();

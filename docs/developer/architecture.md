@@ -159,6 +159,28 @@ blacked out and saved again in `redact_img.rs`. Afterwards the pages are parsed 
 is left under the marks. Hidden information (metadata, scripts, attachments, hidden layers) is removed by
 `sanitise.rs`. See [Redaction](../redaction.md).
 
+Hidden layers (`Pdf::without_hidden`, BUG-16): content in a hidden layer still sets the graphics and text state
+for what follows it (ISO 32000-1, 8.11.3.2), so only its painting goes. Inside a hidden marked-content section,
+state operators (colour, `cm`, `q`/`Q`, line style, `gs`, text state and positioning, `BT`/`ET`) are kept as
+they are; a path is collected until it is painted, then dropped, or kept with `n` when it has `W`/`W*` (so it
+still clips); `sh`, `Do`, inline images and marked-content points go. Hidden text becomes a text-free `TJ` as
+wide (`hidden_show`, the same arithmetic as redaction's: glyph widths from `FontCtx`, `Tc` and `Tw` in
+thousandths of the font size; `Tz` cancels out), and `'` and `"` keep their move to the next line and the
+spacing `"` sets. `TextState` follows `Tf`, `Tc`, `Tw` and `Tr` through `q`/`Q`; a page starts with spacing 0,
+a form or other drawing with nothing known, as it inherits where it is used. Refused (`Unsure`, reported as a
+`blocked` entry): hidden text in a clipping mode (`Tr` 4 to 7; an inherited clipping mode in a form isn't looked
+for, it is taken as 0); hidden text of unknown width (no font set in the drawing, a CMap LimarePDF can't split
+for certain) followed by a visible `Tj`/`TJ` before a line move, `BT` or `ET` resets the position; a path left
+open at the section's end. A drawing without resources of its own takes its fonts from where it is used too, so
+`HiddenNames` includes the fonts, and `check_shared` compares the result for each set.
+
+Appending pages (`Pdf::append`) doesn't merge forms. Before adding a file with form fields, Append PDFs
+(`App::append_read`, BUG-19) refuses if `Pdf::undrawable_fields` (the whole-form form of `unprintable_fields`) names
+any, else asks (`Dialog::ConfirmAppendForms`, holding the read documents in `AppendForms`), then flattens each
+such document with `flatten_form` before `App::add_pages` adds them in one step. `limarepdf-cli merge` does the same
+for its second and later inputs with `--flatten-forms`, and refuses them without it; the first input's form is
+the result's.
+
 Fill-and-sign signatures (`crates/limarepdf-core/src/sign.rs`) are stamp annotations whose artwork LimarePDF draws once:
 pen strokes smoothed into curves, typed names as the glyph outlines of a bundled handwriting font (read with the
 `skrifa` crate, so no font goes into the PDF), or a picture with its paper made transparent. Finish signing

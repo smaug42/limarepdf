@@ -84,6 +84,11 @@ enum Cmd {
         inputs: Vec<PathBuf>,
         #[arg(short, long)]
         output: PathBuf,
+        /// Draw the form fields of the second and later inputs onto their pages with their
+        /// answers (they can no longer be filled in). Merge can't combine forms, so it
+        /// refuses inputs after the first with form fields unless this is given
+        #[arg(long)]
+        flatten_forms: bool,
     },
     /// Split into parts of N pages (out-dir/<stem>-001.pdf, ...) or at bookmarks (out-dir/<stem>-001 Title.pdf, ...)
     Split {
@@ -2805,15 +2810,48 @@ fn run(cmd: Cmd) -> Result<()> {
                 ..Default::default()
             })
         })?,
-        Cmd::Merge { inputs, output } => {
+        Cmd::Merge {
+            inputs,
+            output,
+            flatten_forms,
+        } => {
             not_an_input(&inputs, &output)?;
-            let docs = inputs
+            let mut docs = inputs
                 .par_iter()
                 .map(|p| open(p, &None))
                 .collect::<Result<Vec<_>>>()?;
+            // The first input's form is kept; the others' fields can't be combined with it,
+            // and answers with no drawing of their own would show blank (BUG-19).
+            let mut drawn = Vec::new();
+            for (p, d) in inputs.iter().zip(&mut docs).skip(1) {
+                if d.form_fields().is_empty() {
+                    continue;
+                }
+                let name = shown(&p.display().to_string());
+                if !flatten_forms {
+                    bail!(
+                        "{name} has form fields, which merge can't keep fillable. Give \
+                         --flatten-forms to draw them onto its pages with their answers (they \
+                         can no longer be filled in). Nothing was written."
+                    );
+                }
+                let lost = d.undrawable_fields();
+                if !lost.is_empty() {
+                    bail!(
+                        "LimarePDF can't draw the answers of {} in {name}, so --flatten-forms \
+                         would lose them. Nothing was written.",
+                        limarepdf_core::quoted_list(&lost)
+                    );
+                }
+                d.flatten_form(None)?;
+                drawn.push(name);
+            }
             let mut m = Pdf::merge(docs)?;
             saved(m.save(&output))?;
             out!("wrote {} ({} pages)", output.display(), m.page_count());
+            for name in drawn {
+                out!("drew the form fields of {name} onto its pages");
+            }
         }
         Cmd::Split {
             input,

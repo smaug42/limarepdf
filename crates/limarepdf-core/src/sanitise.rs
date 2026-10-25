@@ -3,6 +3,7 @@
 //! private application data), and optionally comments, form values, bookmarks and what
 //! lies outside the visible page area.
 
+use crate::fonts::FontCtx;
 use crate::inline::Inline;
 use crate::{Pdf, Result};
 use anyhow::anyhow;
@@ -165,9 +166,147 @@ struct Seen {
 }
 
 /// The names resources give content in hidden layers: in `/Properties`, and in `/XObject`
-/// (pictures and forms in a hidden layer), each sorted. A drawing loses the same content
-/// with any resources that give the same names.
-type HiddenNames = (Vec<Vec<u8>>, Vec<Vec<u8>>);
+/// (pictures and forms in a hidden layer), each sorted; and their fonts (the width of hidden
+/// text depends on them), each written out. A drawing loses the same content with any
+/// resources that give the same.
+type HiddenNames = (Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<(Vec<u8>, String)>);
+
+/// Hidden content that can't be taken out without changing what shows after it: why, to
+/// follow the name of the drawing it is in.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct Unsure(&'static str);
+
+impl Unsure {
+    const WIDTH: Unsure = Unsure(
+        "has hidden text whose width LimarePDF can't work out, and visible text on the same \
+         line comes after it",
+    );
+    const CLIP: Unsure = Unsure("has hidden text that clips what is drawn after it");
+    const SHAPE: Unsure = Unsure("has a hidden shape that is finished outside its layer");
+}
+
+/// The text state [`Pdf::without_hidden`] follows, to keep what comes after hidden text
+/// where it was. A value is `None` until the drawing sets it, when it is that of where the
+/// drawing is used.
+#[derive(Clone)]
+struct TextState {
+    /// The font's resource name, and its size.
+    font: Option<(Vec<u8>, f32)>,
+    /// Character and word spacing.
+    tc: Option<f32>,
+    tw: Option<f32>,
+    /// The rendering mode: 4 to 7 add the text to the clip. Taken as 0 until set (a mode
+    /// that clips, set outside a form for text inside it, isn't looked for).
+    render: i64,
+}
+
+impl TextState {
+    /// The state a page's content (`page`) or another drawing starts with.
+    fn new(page: bool) -> Self {
+        let zero = page.then_some(0.0);
+        TextState {
+            font: None,
+            tc: zero,
+            tw: zero,
+            render: 0,
+        }
+    }
+
+    /// Follow operator `o`; `saved` is the stack `q` and `Q` keep the state on.
+    fn follow(&mut self, o: &Operation, saved: &mut Vec<TextState>) {
+        let num = |i: usize| o.operands.get(i).and_then(|x| x.as_float().ok());
+        match o.operator.as_str() {
+            "q" => saved.push(self.clone()),
+            "Q" => {
+                if let Some(s) = saved.pop() {
+                    *self = s;
+                }
+            }
+            "Tf" => {
+                if let (Some(Object::Name(n)), Some(size)) = (o.operands.first(), num(1)) {
+                    self.font = Some((n.clone(), size));
+                }
+            }
+            "Tc" => self.tc = num(0).or(self.tc),
+            "Tw" => self.tw = num(0).or(self.tw),
+            "Tr" => self.render = num(0).map_or(self.render, |r| r as i64),
+            "\"" => {
+                self.tw = num(0).or(self.tw);
+                self.tc = num(1).or(self.tc);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// What hidden text-showing operator `o`, drawn in text state `t` with `font`, leaves: its
+/// move to the next line (`'` and `"`, with the spacing `"` sets), then spacing as wide as
+/// its text, as a `TJ` without text. And whether the width was known: it isn't without the
+/// font, its size or spacing, or when LimarePDF can't split its strings into characters
+/// for certain.
+fn hidden_show(o: &Operation, t: &TextState, font: Option<&FontCtx>) -> (Vec<Operation>, bool) {
+    let mut out = Vec::new();
+    let mut items: Vec<&Object> = o.operands.iter().collect();
+    match o.operator.as_str() {
+        "TJ" => {
+            items = o
+                .operands
+                .first()
+                .and_then(|a| a.as_array().ok())
+                .map(|a| a.iter().collect())
+                .unwrap_or_default();
+        }
+        "\"" => {
+            out.extend(
+                ["Tw", "Tc"]
+                    .into_iter()
+                    .zip(&o.operands)
+                    .map(|(n, v)| Operation::new(n, vec![v.clone()])),
+            );
+            out.push(Operation::new("T*", vec![]));
+            items = o.operands.iter().skip(2).collect();
+        }
+        "'" => out.push(Operation::new("T*", vec![])),
+        _ => {}
+    }
+    let known = |s: &[u8]| font.is_some_and(|f| f.codes_known && f.drawn_alike(s));
+    let (Some((_, size)), Some(tc), Some(tw)) = (&t.font, t.tc, t.tw) else {
+        return (out, false);
+    };
+    // In thousandths of the font size, as `TJ` counts: each character moves on by its
+    // glyph's width and the spacing, each number back by itself.
+    let mut moved = 0.0f32;
+    for it in items {
+        match it {
+            Object::String(s, _) => {
+                let Some(f) = font.filter(|_| known(s)) else {
+                    return (out, false);
+                };
+                for (code, space, raw) in f.codes(s) {
+                    let spacing = tc + if space { tw } else { 0.0 };
+                    if spacing != 0.0 && *size == 0.0 {
+                        return (out, false);
+                    }
+                    let spacing = if spacing == 0.0 {
+                        0.0
+                    } else {
+                        spacing * 1000.0 / size
+                    };
+                    moved += f.width(code, raw.len()) + spacing;
+                }
+            }
+            x => moved -= x.as_float().unwrap_or(0.0),
+        }
+    }
+    if moved.abs() > 1e-4 {
+        out.push(Operation::new(
+            "TJ",
+            vec![Object::Array(vec![Object::Real(-moved)])],
+        ));
+    }
+    (out, true)
+}
 
 /// Why a stream's content couldn't be read.
 enum Unread {
@@ -673,11 +812,17 @@ impl Pdf {
         let (Some(first), Ok((data, _))) = (&was.first, readable(s)) else {
             return;
         };
+        let looks = [first, res].map(|r| self.without_hidden(&data, r, hidden, false));
+        let name = format!("a drawing in the file (object {})", id.0);
+        if let Some(why) = looks
+            .iter()
+            .find_map(|l| l.as_ref().err()?.downcast_ref::<Unsure>())
+        {
+            scan.blocked.push(format!("{name} {why}"));
+            return;
+        }
         // What can't be read is in `blocked` already, from the first look.
-        let (Ok(a), Ok(b)) = (
-            self.without_hidden(&data, first, hidden),
-            self.without_hidden(&data, res, hidden),
-        ) else {
+        let [Ok(a), Ok(b)] = looks else {
             return;
         };
         let same = match (a, b) {
@@ -692,14 +837,12 @@ impl Pdf {
         };
         if !same {
             scan.blocked.push(format!(
-                "a drawing in the file (object {}) is shared between places that set its \
-                 layers differently",
-                id.0
+                "{name} is shared between places that set its layers or fonts differently"
             ));
         }
     }
 
-    /// The names resources `res` give content in the `hidden` layers, as
+    /// The names resources `res` give content in the `hidden` layers, and their fonts, as
     /// [`Pdf::without_hidden`] looks them up.
     fn hidden_names(&self, res: &Dictionary, hidden: &HashSet<ObjectId>) -> HiddenNames {
         let props = self.resolved_dict(res.get(b"Properties").ok());
@@ -721,9 +864,20 @@ impl Pdf {
             })
             .map(|(n, _)| n.clone())
             .collect();
+        // Fonts by what they are: the same font can be a reference in one place and copied
+        // in another.
+        let mut fonts: Vec<(Vec<u8>, String)> = self
+            .resolved_dict(res.get(b"Font").ok())
+            .iter()
+            .map(|(n, f)| {
+                let font = self.doc.dereference(f).map(|(_, f)| f).unwrap_or(f);
+                (n.clone(), format!("{font:?}"))
+            })
+            .collect();
         layers.sort();
         drawings.sort();
-        (layers, drawings)
+        fonts.sort();
+        (layers, drawings, fonts)
     }
 
     /// Page `page`'s content streams, read with [`readable`] and joined as lopdf joins them,
@@ -757,9 +911,10 @@ impl Pdf {
         name: &str,
         scan: &mut LayerScan,
     ) {
+        let page = matches!(drawn, Drawn::Page(_));
         let edit = read.and_then(|(data, fault)| {
             scan.faults |= fault;
-            self.without_hidden(&data, res, hidden)
+            self.without_hidden(&data, res, hidden, page)
                 .map_err(Unread::Other)
         });
         match edit {
@@ -769,7 +924,10 @@ impl Pdf {
                 scan.damaged = true;
                 scan.blocked.push(format!("{name} is damaged"));
             }
-            Err(Unread::Other(e)) => scan.blocked.push(format!("{name} can't be read ({e})")),
+            Err(Unread::Other(e)) => scan.blocked.push(match e.downcast_ref::<Unsure>() {
+                Some(why) => format!("{name} {why}"),
+                None => format!("{name} can't be read ({e})"),
+            }),
         }
     }
 
@@ -848,12 +1006,20 @@ impl Pdf {
 
     /// A content stream without what is in hidden layers: marked content tagged with a
     /// hidden layer, and pictures and forms that belong to one. `None` when nothing was.
+    /// `page`: the stream is a page's content, which starts with the default text state (a
+    /// form or other drawing starts with that of where it is used).
+    ///
+    /// Hidden content still sets what is drawn after it (ISO 32000-1, 8.11.3.2), so only
+    /// its painting goes: settings (colour, position, line style, text state) are kept, a
+    /// clipping path still clips, and hidden text becomes spacing as wide. Refuses with
+    /// [`Unsure`] where the result wouldn't look the same.
     #[allow(clippy::type_complexity)]
     fn without_hidden(
         &self,
         data: &[u8],
         res: &Dictionary,
         hidden: &HashSet<ObjectId>,
+        page: bool,
     ) -> Result<Option<(Vec<Operation>, Inline)>> {
         let (data, inline) = crate::inline::extract(data).map_err(|e| anyhow!("{e}"))?;
         let ops = Content::decode(&data)
@@ -861,26 +1027,70 @@ impl Pdf {
             .operations;
         let props = self.resolved_dict(res.get(b"Properties").ok());
         let xobjs = self.resolved_dict(res.get(b"XObject").ok());
+        let fonts = self.resolved_dict(res.get(b"Font").ok());
+        let mut cache: HashMap<Vec<u8>, Option<FontCtx>> = HashMap::new();
         let mut out = Vec::with_capacity(ops.len());
         let mut changed = false;
-        // While skipping: the marked-content depth, and q minus Q skipped.
-        let mut skip: Option<(usize, i64)> = None;
+        let mut text = TextState::new(page);
+        let mut saved: Vec<TextState> = Vec::new();
+        // Hidden text of unknown width moved the text position by an unknown amount.
+        let mut lost = false;
+        // While in hidden content: its marked-content depth, and the path being built.
+        let mut skip: Option<usize> = None;
+        let mut path: Vec<Operation> = Vec::new();
         for o in ops {
-            if let Some((depth, qs)) = skip.as_mut() {
-                match o.operator.as_str() {
+            let name = o.operator.as_str();
+            text.follow(&o, &mut saved);
+            if matches!(name, "BT" | "ET" | "Td" | "TD" | "T*" | "Tm" | "'" | "\"") {
+                lost = false;
+            }
+            if let Some(depth) = skip.as_mut() {
+                match name {
                     "BDC" | "BMC" => *depth += 1,
-                    "EMC" => *depth -= 1,
-                    "q" => *qs += 1,
-                    "Q" => *qs -= 1,
-                    _ => {}
-                }
-                if *depth == 0 {
-                    // Keep the graphics state stack as it was.
-                    let (q, n) = if *qs > 0 { ("q", *qs) } else { ("Q", -*qs) };
-                    out.extend((0..n).map(|_| Operation::new(q, vec![])));
-                    skip = None;
+                    "EMC" => {
+                        *depth -= 1;
+                        if *depth == 0 {
+                            if !path.is_empty() {
+                                return Err(Unsure::SHAPE.into());
+                            }
+                            skip = None;
+                        }
+                    }
+                    "m" | "l" | "c" | "v" | "y" | "h" | "re" | "W" | "W*" => path.push(o),
+                    "S" | "s" | "f" | "F" | "f*" | "B" | "B*" | "b" | "b*" | "n" => {
+                        // A clipping path is kept, unpainted.
+                        if path.iter().any(|p| p.operator.starts_with('W')) {
+                            out.append(&mut path);
+                            out.push(Operation::new("n", vec![]));
+                        }
+                        path.clear();
+                    }
+                    "Tj" | "TJ" | "'" | "\"" => {
+                        if text.render >= 4 {
+                            return Err(Unsure::CLIP.into());
+                        }
+                        let font = text.font.as_ref().and_then(|(f, _)| {
+                            cache
+                                .entry(f.clone())
+                                .or_insert_with(|| {
+                                    let (_, d) = self.doc.dereference(fonts.get(f).ok()?).ok()?;
+                                    d.as_dict().ok().map(|d| FontCtx::new(&self.doc, d))
+                                })
+                                .as_ref()
+                        });
+                        let (ops, width) = hidden_show(&o, &text, font);
+                        out.extend(ops);
+                        lost = !width;
+                    }
+                    // Painting.
+                    "sh" | "Do" | "MP" | "DP" => {}
+                    t if inline.raw(t).is_some() => {}
+                    _ => out.push(o),
                 }
                 continue;
+            }
+            if lost && matches!(name, "Tj" | "TJ") {
+                return Err(Unsure::WIDTH.into());
             }
             let oc_layer = |prop: Option<&Object>| -> bool {
                 match prop {
@@ -894,7 +1104,7 @@ impl Pdf {
                     if o.operands.first().and_then(|t| t.as_name().ok()) == Some(b"OC")
                         && oc_layer(o.operands.get(1)) =>
                 {
-                    skip = Some((1, 0));
+                    skip = Some(1);
                     changed = true;
                     continue;
                 }

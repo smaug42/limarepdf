@@ -1,7 +1,8 @@
 mod common;
 
+use common::compare::{differences, Image};
 use common::saved::{tools, Saved};
-use limarepdf_core::{FieldValue, Hidden, Info, Pdf};
+use limarepdf_core::{render, FieldValue, Hidden, Info, Pdf};
 use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream};
 
 /// A one-page 300×200 pt document drawing `content` with `/F1` (Helvetica), with extra
@@ -765,7 +766,7 @@ fn shared_unresourced(hidden: [bool; 2], draws: [bool; 2]) -> Pdf {
 
 #[test]
 fn hidden_layers_in_a_drawing_shared_with_other_layer_names_are_refused() {
-    let why = "is shared between places that set its layers differently";
+    let why = "is shared between places that set its layers or fonts differently";
     for (hidden, draws) in [
         ([false, true], [true, true]),
         // The first page only lists the form.
@@ -923,6 +924,150 @@ fn hidden_layers_in_data_cut_off_part_way_are_refused() {
     let form = p.doc.add_object(cut(form));
     page_res_set(&mut p, "XObject", dictionary! { "Fm" => form }.into());
     refuses_unchanged(p, why);
+}
+
+/// A page drawing `content`, with the hidden layer `/L1`.
+fn layered(content: &str) -> Pdf {
+    let mut p = make(content, Dictionary::new());
+    let off = add_layers(&mut p);
+    page_res_set(&mut p, "Properties", dictionary! { "L1" => off }.into());
+    p
+}
+
+/// The first page as LimarePDF draws it, at 72 dpi.
+fn drawn(p: &mut Pdf) -> Image {
+    let hp = render::load(p.snapshot().unwrap(), None).unwrap();
+    Image::from_bitmap(&render::Renderer::new(&hp).render(0, 1.0).unwrap())
+}
+
+/// How many pixels of `a` and `b` differ beyond anti-aliasing.
+fn changed(a: &Image, b: &Image) -> usize {
+    differences(a, b, 8).0.iter().filter(|&&x| x).count()
+}
+
+/// The same document with every layer shown.
+fn all_shown(p: &Pdf) -> Pdf {
+    let mut p = p.clone();
+    p.doc.catalog_mut().unwrap().remove(b"OCProperties");
+    p
+}
+
+/// Content whose hidden layer `/L1` sets what visible content after it is drawn with, each
+/// with what the hidden layer draws.
+const STATE_IN_HIDDEN_LAYERS: [&str; 10] = [
+    // Colour.
+    "/OC /L1 BDC 1 0 0 rg 0 0 1 RG 0 140 50 50 re f EMC 80 30 100 100 re f",
+    // Position.
+    "/OC /L1 BDC 1 0 0 1 40 0 cm 0 1 0 rg 0 150 40 40 re f EMC 20 20 50 50 re f",
+    // A clip, set alone and while filling.
+    "/OC /L1 BDC 100 0 100 200 re W n 0 1 0 rg 0 0 300 200 re f EMC 0 0 1 rg 0 0 300 100 re f",
+    "/OC /L1 BDC 0 1 0 rg 100 0 100 200 re W f EMC 0 0 1 rg 0 0 300 100 re f",
+    // A saved state restored after the layer.
+    "/OC /L1 BDC q 1 0 0 rg 0 150 40 40 re f EMC 20 20 50 50 re f Q 100 20 50 50 re f",
+    // Text: its font and spacing, then where it ends, along the line.
+    "/OC /L1 BDC BT /F1 30 Tf 2 Tc 150 Tz (WALRUS) Tj ET EMC BT 20 50 Td (Shown text) Tj ET",
+    "BT /F1 20 Tf 20 100 Td /OC /L1 BDC (WALRUS hidden ) Tj EMC (Shown) Tj ET",
+    "BT /F1 20 Tf 3 Tw 20 100 Td /OC /L1 BDC [(WALRUS) -400 ( more)] TJ EMC (Shown) Tj ET",
+    "BT /F1 20 Tf 24 TL 20 150 Td /OC /L1 BDC (WALRUS) ' EMC (Shown) Tj ET",
+    "BT /F1 20 Tf 24 TL 20 150 Td /OC /L1 BDC 4 1 (WALRUS ok) \" EMC (Shown a b) Tj ET",
+];
+
+#[test]
+fn removing_hidden_layers_keeps_what_shows() {
+    for content in STATE_IN_HIDDEN_LAYERS {
+        let mut p = layered(content);
+        // hayro 0.8.0 doesn't clip with a path painted as it is set (`W f`; backlog PB-11):
+        // how the page should look, drawn with the clip on its own.
+        let before = match content.contains("W f") {
+            true => drawn(&mut make(
+                "100 0 100 200 re W n 0 0 1 rg 0 0 300 100 re f",
+                Dictionary::new(),
+            )),
+            false => drawn(&mut p),
+        };
+        assert!(
+            changed(&drawn(&mut all_shown(&p)), &before) > 0,
+            "{content}: the hidden layer draws nothing"
+        );
+        let rep = p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+        assert_eq!(rep.count(Hidden::HiddenLayers), 1, "{content}");
+        assert_eq!(
+            changed(&drawn(&mut p), &before),
+            0,
+            "{content}: what shows changed"
+        );
+        // With every layer shown, nothing more shows: what the hidden layer drew is gone.
+        let shown = drawn(&mut all_shown(&p));
+        assert_eq!(
+            changed(&shown, &before),
+            0,
+            "{content}: hidden drawing left"
+        );
+        assert!(!file_has(&mut p, "WALRUS"), "{content}: hidden text left");
+    }
+}
+
+#[test]
+fn hidden_layers_whose_removal_would_change_what_shows_are_refused() {
+    // Hidden text that clips.
+    refuses_unchanged(
+        layered(
+            "BT /F1 20 Tf 7 Tr 20 100 Td /OC /L1 BDC (WALRUS) Tj EMC ET \
+             0 0 1 rg 0 0 300 200 re f",
+        ),
+        "page 1's content has hidden text that clips what is drawn after it",
+    );
+    // A shape begun in the layer and painted after it.
+    refuses_unchanged(
+        layered("/OC /L1 BDC 20 20 50 50 re EMC f"),
+        "page 1's content has a hidden shape that is finished outside its layer",
+    );
+    // A form drawing hidden text in the font of where it is used, then text after it on the
+    // same line: how far the hidden text reached isn't known.
+    let form = |line: &str| {
+        let mut p = make("BT /F1 20 Tf ET /Fm Do", Dictionary::new());
+        let off = add_layers(&mut p);
+        let form = p.doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Form", "BBox" => rect([0, 0, 300, 200]),
+                "Resources" => dictionary! { "Properties" => dictionary! { "L1" => off } },
+            },
+            format!("BT 20 100 Td /OC /L1 BDC (WALRUS) Tj EMC {line} ET").into_bytes(),
+        ));
+        page_res_set(&mut p, "XObject", dictionary! { "Fm" => form }.into());
+        p
+    };
+    refuses_unchanged(
+        form("(Shown) Tj"),
+        "has hidden text whose width LimarePDF can't work out, and visible text on the same \
+         line comes after it",
+    );
+    // Text after it on a line of its own is where it was.
+    let mut p = form("0 -30 Td (Shown) Tj");
+    let before = drawn(&mut p);
+    p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+    assert_eq!(changed(&drawn(&mut p), &before), 0);
+    assert!(!file_has(&mut p, "WALRUS"));
+}
+
+/// Poppler draws what shows the same before and after hidden layers are removed:
+/// `cargo test -p limarepdf-core --test sanitise -- --ignored cross_check`.
+#[test]
+#[ignore]
+fn cross_check_what_shows_after_removing_hidden_layers_with_poppler() {
+    for content in STATE_IN_HIDDEN_LAYERS {
+        let mut p = layered(content);
+        let before = tools::pdftoppm(&p.to_bytes().unwrap());
+        p.remove_hidden(&[Hidden::HiddenLayers]).unwrap();
+        let after = tools::pdftoppm(&p.to_bytes().unwrap());
+        assert_eq!(changed(&after, &before), 0, "{content}: what shows changed");
+        let shown = tools::pdftoppm(&all_shown(&p).to_bytes().unwrap());
+        assert_eq!(
+            changed(&shown, &before),
+            0,
+            "{content}: hidden drawing left"
+        );
+    }
 }
 
 /// Poppler and Ghostscript, reading the output on their own:

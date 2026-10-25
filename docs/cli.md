@@ -106,7 +106,7 @@ sound and video, and redaction marks are kept. Annotations stored without a draw
 | `limarepdf-cli reorder in.pdf -o out.pdf --order 3,1,2` | Put all pages in a new order |
 | `limarepdf-cli insert-blank in.pdf -o out.pdf --after 0` | Insert a blank page after page N (0 = at the start) |
 | `limarepdf-cli crop in.pdf -o out.pdf --page 1 --rect 50,600,400,780` | Set a page's crop box in points: left, bottom, right, top |
-| `limarepdf-cli merge a.pdf b.pdf -o out.pdf` | Join PDFs in the order given |
+| `limarepdf-cli merge a.pdf b.pdf -o out.pdf` | Join PDFs in the order given. The first file's form stays fillable; a later file with form fields is refused unless `--flatten-forms` is given, which draws its fields onto its pages with their answers (they can no longer be filled in). An answer LimarePDF can't draw stops it, naming the field |
 | `limarepdf-cli split big.pdf --every 50 --out-dir parts` | Split into files of N pages: `parts/big-001.pdf`, … |
 | `limarepdf-cli split big.pdf --bookmarks --out-dir parts` | Split where the top-level bookmarks go: `parts/big-002 Introduction.pdf`, … Pages before the first bookmark go in a file of their own. `--bookmarks 2` also splits at the bookmarks one level down |
 

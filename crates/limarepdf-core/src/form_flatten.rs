@@ -71,12 +71,25 @@ impl Pdf {
     /// widgets showing a value that has no drawing, which LimarePDF can't draw either.
     /// Changes nothing.
     pub fn unprintable_fields(&self, pages: &[usize]) -> Vec<String> {
-        if self.undrawn(pages, print_widget).is_empty() {
+        self.lost_values(pages, print_widget)
+    }
+
+    /// The fields whose values flattening the whole form ([`Pdf::flatten_form`]) would
+    /// lose, so it refuses: shown widgets showing a value that has no drawing, which
+    /// LimarePDF can't draw either. Changes nothing.
+    pub fn undrawable_fields(&self) -> Vec<String> {
+        let pages: Vec<usize> = (0..self.page_count()).collect();
+        self.lost_values(&pages, flat_widget)
+    }
+
+    /// The fields on `pages` whose values drawing the widgets `which` draws would lose.
+    fn lost_values(&self, pages: &[usize], which: fn(&Pdf, &Dictionary) -> Flat) -> Vec<String> {
+        if self.undrawn(pages, which).is_empty() {
             return Vec::new();
         }
         let mut copy = self.clone();
         copy.refresh_appearances();
-        copy.undrawn(pages, print_widget)
+        copy.undrawn(pages, which)
     }
 
     /// `refuse`: when a value would be lost, refuse with nothing changed rather than

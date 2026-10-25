@@ -41,9 +41,13 @@ The files are added in the order chosen, in one step that Ctrl+Z takes back. A p
 password: **Add pages** adds its pages, **Skip this file** leaves it out and adds the others, and **Cancel** adds
 nothing. A file that can't be read adds nothing either, and a message names it.
 
-Appending adds the pages only: the bookmarks, form fields and named destinations of the files added aren't carried
-over. Pages from a password-protected file make the whole document count as protected, so it gets no
-[recovery copies](gui.md#recovery-copies).
+Appending adds the pages only: the bookmarks and named destinations of the files added aren't carried over, and
+LimarePDF can't combine forms yet. When a file added has form fields, **Add pages with form fields?** asks first:
+**Add pages** draws its fields onto its pages with their answers, as they look now, so they show everywhere but
+can no longer be filled in; **Cancel** adds nothing. The document's own fields stay fillable. If LimarePDF can't
+draw an answer (text in characters it can't write in a field yet, say), nothing is added, and a message names
+the field and the file. Pages from a password-protected file make the whole document count as protected, so it
+gets no [recovery copies](gui.md#recovery-copies).
 
 ## Split into files
 

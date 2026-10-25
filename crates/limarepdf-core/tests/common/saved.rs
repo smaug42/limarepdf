@@ -839,6 +839,18 @@ pub mod tools {
             .collect()
     }
 
+    /// The first page as poppler draws it, at 72 dpi.
+    pub fn pdftoppm(bytes: &[u8]) -> super::super::compare::Image {
+        let args = ["-r", "72", "-singlefile", "-png", "{}", "{dir}/page"];
+        let (_, files) = run_with_files("pdftoppm", &args, bytes);
+        let png = image::load_from_memory(&files[0].1).unwrap().to_rgb8();
+        super::super::compare::Image {
+            width: png.width() as usize,
+            height: png.height() as usize,
+            rgb: png.into_raw(),
+        }
+    }
+
     /// The page text as poppler reads it.
     pub fn pdftotext(bytes: &[u8]) -> String {
         run("pdftotext", &["{}", "-"], bytes)

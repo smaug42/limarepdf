@@ -107,6 +107,16 @@
   did; a JPEG is still embedded as it is.
 - Arrowheads and other endings on a dashed line were drawn dashed too, with gaps. They are now solid, the line
   itself still dashed, in the app, when flattened and in other readers.
+- Removing hidden layers could change what shows: a colour, position or clip set inside a hidden layer was lost
+  with it, so artwork after the layer turned black or moved, and text after hidden text on the same line moved
+  back. Only what hidden layers draw is removed now; their settings stay, and hidden text leaves a gap as wide.
+  Where that can't be done for certain (hidden text that clips, or whose width depends on where a drawing is
+  used), the removal stops and changes nothing, saying where.
+- Appended pages with filled form fields could show the answers blank: their fields weren't carried over, so
+  answers without a drawing of their own weren't drawn. Append PDFs now asks first, then draws those files'
+  fields onto their pages with their answers (they can't be filled in afterwards); the document's own fields
+  stay fillable. An answer LimarePDF can't draw stops the append, naming the field. `limarepdf-cli merge` refuses
+  such files after the first unless given `--flatten-forms`, which does the same.
 
 ### Added
 
