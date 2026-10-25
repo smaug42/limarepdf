@@ -18,6 +18,14 @@ it against the rpm's requirement), macOS 11 from both halves of the dmg's (the d
 
 Run them with `cargo test --workspace`.
 
+CI runs the tests but not the formatting check or clippy, so run those before a change goes in: `cargo fmt --all
+--check` and `cargo clippy --workspace --all-targets -- -D warnings`; for code that differs by platform (printing,
+recovery, file replacement, opening files, the build), also `cargo clippy -p limarepdf-core -p limarepdf-gui
+--all-targets --target <target> -- -D warnings` for `x86_64-pc-windows-gnu`, `aarch64-apple-darwin` and
+`x86_64-apple-darwin` (type-checked only: nothing is linked). `--all-targets` takes in the tests, whose
+Unix-only parts have hidden Windows warnings before (core's `print.rs` helper and an unneeded `mut`, fixed
+2026-10-25).
+
 | Tests | What they cover |
 | --- | --- |
 | `crates/limarepdf-core/tests/integration.rs` | Overlays, encryption round trips with all four ciphers, RC4 files with an empty password and a 16-byte `/U` (revisions 3 and 4), whether a file needed a password to open, encrypted files reading as other apps read them, search, crop margins on turned pages |
