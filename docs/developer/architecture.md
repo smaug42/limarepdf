@@ -119,11 +119,23 @@ back when the dialog closes (`Edit::Text`'s `back`); one whose own change is ref
 back the same way (`FormUi::kept`). Panel Apply buttons that redraw only some pages or nothing don't commit first:
 they lose nothing, and their forms join their own undo steps.
 
+Undo steps (`tab.rs`'s `Step`) each hold a whole copy of the document as an `Arc`, at most `MAX_UNDO` of them and
+`UNDO_BUDGET` (1 GB) per tab together, the oldest dropped first and the latest always kept (`trim`). A watermark or
+headers and footers just added stay linked to the inspector's form (`Tab::stamp`, a `Stamped`) until anything else
+changes; the link's `base`, the document before the stamp, is the same `Arc` as the undo step made when it was
+added, so it costs nothing while that step is kept. `held` counts every copy once, wherever it is held (steps, the
+links kept in steps, the form's link). When the latest step and a link's copy no step holds are over the budget on
+their own, those links end (`Tab::keep_to_budget`, run after every push and after `put_stamp`) and `Tab::info`
+says so (BUG-36).
+
 Toasts (`App::toasts`, at most one per tab) belong to a tab by its id. One for an undoable change (`Tab::notice`)
 records the tab's `Tab::history` (revision, undo and redo depths) and goes once that moves or typing starts, so its
 Undo runs only while the change is the last thing in the tab; `Tab::info` notices have no Undo. A tab's toast waits
 while the tab is behind (`TOAST_AWAY`). Tabs are closed by index through `App::close_tab`, which keeps the tab in
-front, and `App::close_asking`; a confirmation names its tab by id (`Asked`).
+front, and `App::close_asking`; a confirmation names its tab by id (`Asked`). A tab's close button records the
+tab's id, and the tab closes after the frame's commands (`App::ui`): the rest of the frame is drawn from what was
+read at its start (`has`, the commands' state), so nothing after the tab strip reaches for a tab just closed (the
+delta audit's DA01: closing the only tab crashed in the navigation rail).
 
 Text the standard fonts can't write goes into an embedded font (`crates/limarepdf-core/src/embed.rs`,
 `Pdf::embed_codes`): the bundled Liberation face of the standard font (`LIBERATION`, in core's `assets/fonts/`,
@@ -189,7 +201,10 @@ Hidden layers (`Pdf::without_hidden`, BUG-16): content in a hidden layer still s
 for what follows it (ISO 32000-1, 8.11.3.2), so only its painting goes. Inside a hidden marked-content section,
 state operators (colour, `cm`, `q`/`Q`, line style, `gs`, text state and positioning, `BT`/`ET`) are kept as
 they are; a path is collected until it is painted, then dropped, or kept with `n` when it has `W`/`W*` (so it
-still clips); `sh`, `Do`, inline images and marked-content points go. Hidden text becomes a text-free `TJ` as
+still clips); a hidden painting operator that ends a path begun before the hidden section (`open`: path
+operators kept and not yet painted) becomes `n` too, so the next visible painting doesn't draw that path, and a
+clip set before the section still clips (the delta audit's DA04); `sh`, `Do`, inline images and marked-content
+points go. Hidden text becomes a text-free `TJ` as
 wide (`hidden_show`, the same arithmetic as redaction's: glyph widths from `FontCtx`, `Tc` and `Tw` in
 thousandths of the font size; `Tz` cancels out), and `'` and `"` keep their move to the next line and the
 spacing `"` sets. `TextState` follows `Tf`, `Tc`, `Tw` and `Tr` through `q`/`Q`; a page starts with spacing 0,
@@ -302,7 +317,32 @@ shows the `ChangedOnDisk` notice, whose Reload the question has no room for (thr
 again, `App::check_disk` compares the files on a thread, and a tab whose file changed shows the notice, once per
 new version (`Tab::changed_on_disk`). Reload (`Act::Reload`, asking with unsaved changes) reads the file through the
 same path as Open, with the tab's id and revision, and swaps the new tab into the old one's place unless the
-document changed meanwhile. A change made between the check and the write is still replaced; there is no locking.
+document changed meanwhile or something is being typed that isn't in it yet: on the pages (`Editor::pending`) or
+in the inspector's properties and label prefix (`Tab::typing_in_forms`; the delta audit's DA02). Typing before
+Reload was asked for is kept first (`Act::uses_document`), so the revision covers it, and agreeing to lose the
+changes made before still reloads. A change made between the check and the write is still replaced; there is no locking.
+
+Files reach the app from the command line (`read_args` in main.rs; on macOS an older system's `-psn_…` process
+number is skipped), drops on the window, and on macOS from Finder (BUG-28): Open With, a double-click and a drop on
+the Dock icon all send an "open documents" Apple Event (`aevt`/`odoc`), at launch or while running, and never as
+arguments. The usual route, an `NSApplicationDelegate` with `application:openURLs:`, is closed: winit 0.30 installs
+its own delegate and panics if another replaces it (winit issues 4015 and 4260; winit's own docs describe master,
+not 0.30). So `macos.rs` leaves the delegate alone and takes the event from `NSAppleEventManager`: `macos::listen`,
+called in `main` before the event loop, observes `NSApplicationWillFinishLaunchingNotification` (from the
+notification centre, not the delegate), and then installs its handler for `odoc` over AppKit's, which AppKit
+installs as launching finishes and which opens nothing without a delegate or document controller. Its handler
+reads the event's direct object (a list, or one item) as file URLs, coercing aliases and bookmarks, and hands the
+paths, with the count of items that aren't files, to `incoming::Incoming::system()`, a queue that wakes the window
+(`request_repaint`) once `App::new` has given it the context. Events can come before the window exists or after
+launch has finished (with the macOS 26 SDK, launch's own event can come after `applicationDidFinishLaunching`, as
+Mozilla's bug 2036237 found), so the queue takes paths at any time and `App::open_incoming` empties it each frame
+(and when the restore window closes) through `open_startup`, as command-line files open: while Recover unsaved
+changes asks, they wait in the queue; items that aren't files are reported as "Cannot open file". The calls
+objc2-foundation gates behind `objc2-core-services` (`setEventHandler:…`, `paramDescriptorForKeyword:`,
+`descriptorType`) are sent with `msg_send!` with their four-character codes as `u32`, to keep that crate out. Once
+eframe moves to winit 0.31, its delegate support may be the simpler route. Linux tests cover the queue and the
+app's side; the handler runs only on a Mac, so away from one it is only compiled (clippy for both Apple targets,
+CI's macOS builds).
 
 The app shows one dialog at a time (`App::dialog`), and nothing that arrives while one is open replaces it (BUG-07,
 the fourth audit's A01). Results from threads (reads, jobs, signing, files dropped on the window) go through
@@ -392,6 +432,10 @@ replaces the tab and is checked like any opened file.
 
 In the desktop app, every command is defined once in `crates/limarepdf-gui/src/actions.rs`; the menu, the top bar, the
 command palette, the right-click menus, the floating toolbar and the keyboard shortcuts are all built from that list.
+The menus show an entry's short `label` inside its `submenu`; the palette, which has no submenus, shows the
+submenu's name before it in the weak colour ("Theme › Dark"), names the row `actions::spoken_title` for screen
+readers ("Theme: Dark") and searches the label, submenu and group (`actions::matches`; BUG-34, audit A18). A test
+keeps every palette entry's name its own.
 
 ## Content editing
 
@@ -404,7 +448,16 @@ form XObject, and per inline image.
   to 0.7 forward along it. Font, size and colour don't split a line: its parts in one style each are its spans
   (`PageObject::spans`: characters, font, size, colour, and rise, how far a part such as a superscript sits above
   the baseline of the line's largest text). A gap wider than 0.18 of the smaller text's size reads as a space,
-  which belongs to the part before it.
+  which belongs to the part before it. The line's box (`line_box`) covers its shows' boxes less those showing only
+  whitespace and less the whitespace at the line's two ends, cut off at the characters' measured positions; the
+  text keeps them (BUG-25: a label's tab in a larger font reached over the next label, which a click, the selection
+  and the edit cover then took as the first label's).
+- **Where a line's characters are** on the displayed page: `PageObject::dir`, the way the line runs (a unit vector),
+  and `PageObject::stops`, where each character starts along it from `baseline` and where the last ends, from the
+  same measured positions as search boxes (`caret_stops`). A line edited in a plain box (turned, or invisible OCR
+  text) puts the caret at the stop nearest a click, measured along `dir` (`editor::caret_along`), and a
+  double-click finds the word by the words' order along `dir`, a repeated word too (BUG-26: the caret went by how
+  far across the box the click was, which a quarter-turned line doesn't run along).
 - **Moving or resizing** wraps the object's drawing operators in `q <matrix> cm … Q`. What a text line's
   operators set between its shows (the font and colour of its parts) is set again after the `Q`, so the text
   after the line is drawn as before.

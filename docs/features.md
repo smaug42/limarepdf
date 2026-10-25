@@ -75,9 +75,9 @@ this list once it works. The feature table below has the details.
   them bold; double-click the line first. Page text has no underline or strike-through (underline and strike-out
   comments can be added over it).
 - A line turned on the page, and invisible recognised (OCR) text, are edited in a box over the line rather than
-  drawn where they are (a turned line's box shows its fonts, sizes and colours). Over a picture or a shaded
-  background, the line being edited is hidden under one flat colour, the one most common around it, until you
-  finish.
+  drawn where they are (a turned line's box shows its fonts, sizes and colours; the caret goes by the character
+  clicked). Over a picture or a shaded background, the line being edited is hidden under one flat colour, the one
+  most common around it, until you finish.
 - No spell checking.
 
 **Selecting and arranging**
@@ -101,8 +101,10 @@ this list once it works. The feature table below has the details.
 - No export to Word or Excel, no comparing documents, no PDF/A.
 - Text recognition (OCR) reads Latin script only.
 - No autosave or custom shortcuts, and English only (unsaved work is kept in recovery copies).
-- Tested mostly on Linux: Windows only partly, macOS not at all; printing on paper only on Linux. Dropping files
-  onto the window doesn't work in Linux Wayland sessions yet.
+- Support for every system is provisional ([requirements](install.md#requirements)): tested by hand mostly on
+  Linux, Windows only partly, macOS not at all; printing on paper only on Linux. Dropping files onto the window
+  doesn't work in Linux Wayland sessions yet. The Linux builds need glibc 2.39 or later (Ubuntu 24.04, Debian 13,
+  Fedora 40); on older systems LimarePDF has to be built from source.
 - The side panel and the inspector can be made wider or narrower only by dragging their edge with the mouse, not
   from the keyboard. Screen readers haven't been tried yet (Orca, Narrator, VoiceOver).
 
@@ -113,13 +115,13 @@ available.
 
 | Area | Status | Notes |
 | --- | --- | --- |
-| Tabs, thumbnails, opening by drag and drop | Done | Dropping files doesn't work in Linux Wayland sessions yet ([workaround](troubleshooting.md#dropping-files-on-the-window-does-nothing)) |
+| Tabs, thumbnails, opening by drag and drop | Done | Dropping files doesn't work in Linux Wayland sessions yet ([workaround](troubleshooting.md#dropping-files-on-the-window-does-nothing)). Files opened from the file manager open in tabs, also while the app runs; on macOS (Finder's Open With, double-click, the Dock icon) not yet tried on a Mac |
 | Recent files | Done | Start screen and ☰ > File > Open recent; 10 files, kept on your computer only |
 | A file open in one tab; changes made elsewhere | Done | Opening an open file again (by any path or link) shows its tab. Save asks before replacing a file another app or tab changed (Save as… or Replace); a notice with Reload shows when you come back to the window after such a change; ☰ > File > Reload from disk. Not checked while LimarePDF has the keyboard, only on coming back, opening and saving. [Details](gui.md#saving) |
 | Notices about the document | Done | Password-protected, scanned pages, form fields, large files. [Details](gui.md#notices-about-the-document) |
 | Zoom, fit width, continuous scrolling, page navigation | Done | Pages fit the window's width by default and follow resizing; zooming turns that off. Zoom from 10% to 6400%, drawn in tiles at high zoom so pages stay sharp. Single-page and facing-page layouts (the layout button at the bottom right or View > Page layout; cover page alone or paired), per document, following the document's own preference when it has one. [Details](reading-and-finding.md#move-around-the-pages) |
 | Open at a page from the command line | Done | `limarepdf file.pdf --page N` |
-| Command palette, right-click menus, floating toolbar | Done | A tool's tooltip says how to use it; the inspector shows controls, not instructions. Toolbar customisation: No |
+| Command palette, right-click menus, floating toolbar | Done | A tool's tooltip says how to use it; the inspector shows controls, not instructions. The palette shows a command in a submenu with the submenu's name ("Theme › Dark", "Page colours › Dark"), for screen readers too, and finds it by that name. Toolbar customisation: No |
 | Pages boxes | Done | Numbers and ranges (`1-3,7`, `5-`, `all`) in printing and the inspector's tools; going into one that says `all` selects it, so typing replaces it. [Details](gui.md#pages-boxes) |
 | App icon | Done | Window, taskbar and Windows `.exe`. Wayland needs the desktop entry installed. [Details](install.md#menu-entry-and-icon-on-linux) |
 | About window | Done | Version (copyable for bug reports), links, contributors, credits; "Made in Canada". [Details](gui.md#look-and-feel) |
@@ -134,7 +136,7 @@ available.
 | Print or save selected text | Done | As the pages look, full width, cut down to the selected lines, or as plain text in Helvetica (Latin, Greek and Cyrillic; other characters come out as `?`); also saves a .txt file. [Details](reading-and-finding.md#print-or-save-just-the-selection) |
 | Page operations: insert, delete, rotate, extract, reorder, crop, remove blank pages | Done | Crop by dragging the crop box on the pages, shown whole while it is set, or by typing margins. Blank means one even colour, give or take specks or a lone page number. Deleted and extracted-away pages leave nothing in the saved file: bookmarks, named destinations, links, form fields and tags no longer refer to them, and the tags' alternative text for their content goes. A form nested more than 32 deep is refused, changing nothing ([details](organising-pages.md)) |
 | Merge and split | Done | Split by page count or at bookmarks, files named after them. Append PDFs adds files in order in one step, asking for a protected file's password (or skip that file); a file that can't be read adds nothing. Bookmarks and named destinations of appended files are not carried over; a file with form fields is asked about, then its fields are drawn onto its pages with their answers (no longer fillable), and an answer that can't be drawn adds nothing (`limarepdf-cli merge --flatten-forms` does the same). Split parts, like extracted pages, keep the bookmarks to their own pages and nothing of the other pages; each is written as soon as it is made, so memory stays near the document's own size. Asks once before replacing files already in the folder. Split by file size: No. [Details](organising-pages.md#split-into-files) |
-| Undo and redo | Done | 20 levels, including password settings; fewer on very large documents (up to 1 GB per document). While you type in a box (new text, a line, a note, a form field, the inspector), Ctrl+Z and Ctrl+Y undo and redo that box's typing only, each document's apart. A deletion's notice offers Undo for that change in its own document, until something else changes it. [Details](gui.md#undo) |
+| Undo and redo | Done | 20 levels, including password settings; fewer on very large documents (up to 1 GB per document, including the copy a watermark or headers and footers just added keeps so its section can change it; on a document too large for that copy, the section stops changing it and says so). While you type in a box (new text, a line, a note, a form field, the inspector), Ctrl+Z and Ctrl+Y undo and redo that box's typing only, each document's apart. A deletion's notice offers Undo for that change in its own document, until something else changes it. [Details](gui.md#undo) |
 | Headers, footers, page numbers, dates, Bates numbers | Done | Shown on the pages as you set them, added with Add to pages, then updated in place as you change them. Helvetica; Latin, Greek and Cyrillic characters; Bates numbers up to 18446744073709551615 (more is refused, changing nothing). [Details](headers-footers-watermarks.md) |
 | Watermarks | Done | Text or a PNG, JPEG or TIFF picture; centred, with size, opacity, rotation, above or behind. Shown on the pages as you set them, added with Add to pages, then updated in place. [Details](headers-footers-watermarks.md#add-a-watermark) |
 | Document properties | Done | Title, author, subject, keywords, creator, producer; each kept as you type it (Enter or leaving the field), one undo step each. [Details](gui.md#document-properties) |
@@ -160,7 +162,8 @@ available.
 | Bookmarks | Partial | Shown in the Bookmarks view (also from the command palette) and followed; added, renamed and deleted in that view or with `limarepdf-cli bookmarks`. Moving or reordering them, styles and colours: No. [Details](reading-and-finding.md#bookmarks), [CLI](cli.md#bookmarks) |
 | Links | Partial | Followed: to pages, and to web and email addresses after asking. Links to other PDF files, and adding or editing links: No. [Details](reading-and-finding.md#links) |
 | Layers, attachments | No | |
-| Installers and packages | Done | `.deb` and `.rpm` packages with apt and dnf repositories, a macOS `.dmg`, a Windows MSI, and archives; GPG-signed. [Install](install.md); more package managers planned, see below |
+| Supported systems | Partial | Windows 10 and 11 (x64), macOS 11 or later (Apple Silicon and Intel), 64-bit Linux with glibc 2.39 or later. All provisional: built and tested automatically on each, but the release checks by hand haven't all passed on each yet. [Requirements](install.md#requirements) |
+| Installers and packages | Done | `.deb` and `.rpm` packages with apt and dnf repositories, a macOS `.dmg`, a Windows MSI (with a desktop shortcut if you tick it), and archives; GPG-signed. Each carries the licences and a README linking to the guide online for its version; the archives carry the guide itself. [Install](install.md); more package managers planned, see below |
 | Redaction | Done | Mark areas, selected text or search results (standard redaction marks), check them, then apply: text, drawings, comments and links under them (every one, also past the 10,000 a page shows) are removed for good, pictures (scans included) blacked out there, then checked. Text whose characters can't be placed for certain (some Chinese, Japanese and Korean fonts) goes a whole piece at a time. Refuses, changing nothing, when a form field under a mark or the tags' index is nested more than 32 deep, or the tags' index is too large to search. In the app and with `limarepdf-cli redact`. [Details](redaction.md) |
 | Removing hidden information | Done | Metadata (including XMP), JavaScript and automatic actions (also those following an ordinary link or action), attachments, hidden layers and their content (in nested drawings, comments' drawings and patterns too), thumbnails and private data; if chosen, comments, form values (cleared for good, defaults and read-only fields included), bookmarks and what lies outside the crop box. What shows stays as it was: settings made in a hidden layer (colour, position, clip) are kept, hidden text leaves a gap as wide. Refuses, changing nothing, when it can't look into everything a hidden layer could be in, damaged compressed data included, or a drawing shared by places that give its layers (or its fonts) different meanings, or hidden text that clips or whose width isn't known with visible text after it on the line, or when form values are chosen and the form is nested more than 32 deep. Document > Remove hidden information… and `limarepdf-cli sanitise`. [Details](redaction.md#removing-hidden-information) |
 | Digital signatures | Done | Checking in the app (a coloured banner, the Digital signatures view, Details, View signed version, trusting signers and authorities, Trusted certificates) and from the command line (`limarepdf-cli verify`): unchanged or not, signer's certificate, signing time and timestamps, certification and locked fields, warnings; RSA and ECDSA P-256/P-384, holding RSA keys to the RSA-PSS limits their certificates set; refuses the known wrapping and copying attacks; lists the changes made after each signature and judges them by Acrobat's rules (stricter when unsure), catching the shadow and incremental-saving attacks, and won't vouch for or sign as it is a file PDF apps read differently; saves the version a signature signed; trusting signers and certificate authorities (`limarepdf-cli trust`), with chains checked by RFC 5280's rules at the signing time, in LimarePDF only. Digital IDs in the app (Document > Digital signatures > Digital IDs) and from the command line (`limarepdf-cli id`): make a self-signed one (RSA 3072-bit, five years, like Acrobat's), import `.p12`/`.pfx` files from Acrobat, Windows, macOS or a certificate authority (old and new encryptions, an empty password too; not IDs allowed only RSA-PSS signatures), export an ID or its certificate. Signing and certifying in the app (Document > Digital signatures > Sign with digital ID, Certify; edits made since opening are signed with it, asking first when earlier signatures wouldn't allow them) and from the command line (`limarepdf-cli sign`): in an empty signature field or a new box, as Acrobat signs (`adbe.pkcs7.detached`, SHA-256), with a visible look (your name in handwriting or a picture, "Digitally signed by" and the date), added after the file's bytes so earlier signatures stay valid; follows certifications and field locks; every signed file checked before it is written. Saving a signed document (Save in the app, every editing command) adds the changes after what was signed, so the signatures stay valid; asks first (the command line refuses without a flag) when they don't allow the changes, and before writing the whole file when it must (redactions, removed hidden information, passwords, damaged files). Not yet: timestamps when signing, encrypted documents (or ones set to get a password when saved); only partly tested with Adobe Acrobat (see below). [Details](signatures.md) |
@@ -259,13 +262,15 @@ Done for now (see the Rendering row above). Left for a later round:
 - **hayro's own gaps** (knockout and non-isolated transparency groups, thin-line snapping, some shadings, CMaps
   stored in the file and built on another one, and installed fonts for plain fonts that aren't embedded, which
   hayro doesn't ask for yet), listed in [Known to be wrong](rendering.md#known-to-be-wrong). They are documented here and in the build plan,
-  and not reported to hayro.
+  and not reported to hayro. The transparency groups can't be fixed in LimarePDF for now: hayro doesn't tell it
+  which groups are knockout or non-isolated, and none of the test files looked wrong because of them.
 - **A very large memory request:** on one test file hayro asks for 7.6 GB at once to fill a single shape at 96 dpi.
   On Linux it draws, since the memory is never used; on Windows, which doesn't promise memory it hasn't got, it
   could stop the app. Not tried on Windows yet; the check is in
   [Testing](developer/testing.md#platform-smoke-checks).
 - **Notices for what hayro draws wrongly:** plain fonts that aren't embedded (such as Calibri or Wingdings, drawn
-  with a standard font), and knockout or non-isolated transparency groups. Offered, not yet decided.
+  with a standard font). Offered, not yet decided. Transparency groups get no notice: it would show on files that
+  look right.
 - **A check on a HiDPI screen** (scale factor 2): tile sizes, the 4096-pixel cap and sharpness have only been tried
   at scale 1.
 - **Damaged files LimarePDF still can't open:** show them read-only as hayro reads them, when the repair finds no
@@ -320,12 +325,16 @@ keystores, signing encrypted files (see [ideas](developer/ideas.md)).
 Since 0.5: every release file and `SHA256SUMS` are GPG-signed with LimarePDF's own key, and each file has a build
 attestation (`gh attestation verify`); a dry run of the release job checks this without releasing. Each release has
 Linux `.deb` and `.rpm` packages (the rpm signed), signed apt and dnf repositories on the project's GitHub Pages
-(rebuilt when a release is published), a universal macOS `LimarePDF.app` in a `.dmg`, and a Windows MSI installer. The
-archives stay. A release waits for the check of every library against known security advisories, and is
+(rebuilt when a release is published), a universal macOS `LimarePDF.app` in a `.dmg`, and a Windows MSI installer that
+offers a desktop shortcut (also for installs without its screens: `DESKTOPSHORTCUT=1`). The packages carry every
+licence, the security notes and a README linking to the guide online for their version, each checked by CI as
+installed. The archives stay, with the guide inside. Support for every system is provisional for now
+([requirements](install.md#requirements)). A release waits for the check of every library against known security advisories, and is
 built from exactly the versions in `Cargo.lock`; security problems are reported privately, as
 [SECURITY.md](../SECURITY.md) describes.
 
-- **Untested:** whether a PDF opened from Finder's Open With loads in LimarePDF, rather than just starting it.
+- **Untested:** opening PDFs from Finder (Open With, a double-click, the Dock icon) on a Mac. The app now opens
+  the files Finder sends, at start and while running, but this is only built and tested on Linux and by CI so far.
 - **Next:** an AUR package, a Homebrew cask in LimarePDF's own tap, and winget and Scoop manifests. Maybe Flatpak.
 - **Code signing** (macOS notarization, Windows Authenticode) needs certificates LimarePDF doesn't have yet, so those builds
   stay unsigned; the GPG signatures and attestations cover them meanwhile.

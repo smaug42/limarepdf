@@ -33,12 +33,14 @@ for size in 16 32 128; do
 done
 iconutil -c icns "$iconset" -o "$app/Contents/Resources/limarepdf.icns"
 
-# Docs and licences, as in the archives.
+# The README, changelog and security notes, linking to the online guide (package-docs.sh), and the licences.
 res="$app/Contents/Resources"
-cp README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE "$res/"
+bash "$here/../package-docs.sh"
+cp target/package-docs/README.md target/package-docs/CHANGELOG.md target/package-docs/SECURITY.md "$res/"
+cp LICENSE-MIT LICENSE-APACHE "$res/"
 cp crates/limarepdf-core/models/README.md "$res/OCR-MODEL.md"
 cp crates/limarepdf-gui/assets/fonts/OFL.txt "$res/FONT-LICENSE-Inter.txt"
-for f in OFL-Caveat OFL-CedarvilleCursive LICENSE-HomemadeApple OFL-Zeyada; do
+for f in OFL-Liberation OFL-Caveat OFL-CedarvilleCursive LICENSE-HomemadeApple OFL-Zeyada; do
   cp "crates/limarepdf-core/assets/fonts/$f.txt" "$res/FONT-LICENSE-${f#*-}.txt"
 done
 

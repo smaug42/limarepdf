@@ -10,7 +10,10 @@ mod digital;
 mod editor;
 mod fields;
 mod font_list;
+mod incoming;
 mod inspector;
+#[cfg(target_os = "macos")]
+mod macos;
 mod markup;
 mod page_text;
 mod panels;
@@ -41,17 +44,30 @@ pub fn guard<T>(f: impl FnOnce() -> limarepdf_core::Result<T>) -> limarepdf_core
     })
 }
 
-fn main() -> eframe::Result {
+/// The files and `--page` number on the command line (without the program's name). Older
+/// macOS gave an app started from Finder a `-psn_…` process number, which is no file.
+fn read_args(
+    args: impl IntoIterator<Item = String>,
+    macos: bool,
+) -> (Vec<std::path::PathBuf>, Option<usize>) {
     let mut files = Vec::new();
     let mut page: Option<usize> = None;
-    let mut args = std::env::args().skip(1);
+    let mut args = args.into_iter();
     while let Some(a) = args.next() {
         if a == "--page" {
             page = args.next().and_then(|v| v.parse().ok());
-        } else if !a.starts_with("--") {
+        } else if !a.starts_with("--") && !(macos && a.starts_with("-psn_")) {
             files.push(std::path::PathBuf::from(a));
         }
     }
+    (files, page)
+}
+
+fn main() -> eframe::Result {
+    let (files, page) = read_args(std::env::args().skip(1), cfg!(target_os = "macos"));
+    // Finder's Open With and double-click, from the first one, sent as the app launches.
+    #[cfg(target_os = "macos")]
+    macos::listen();
     let mut viewport = eframe::egui::ViewportBuilder::default()
         .with_title("LimarePDF")
         // Wayland takes the icon from the io.github.smaug42.limarepdf.desktop file this id names, not the window.
@@ -87,5 +103,17 @@ mod tests {
         let n = 7;
         let e = super::guard::<()>(|| panic!("index {n}")).unwrap_err();
         assert!(e.to_string().contains("index 7"));
+    }
+
+    #[test]
+    fn finder_process_numbers_are_not_files_on_macos() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let (files, page) =
+            super::read_args(args(&["-psn_0_12345", "a b.pdf", "--page", "3"]), true);
+        assert_eq!(files, [std::path::PathBuf::from("a b.pdf")]);
+        assert_eq!(page, Some(3));
+        // Elsewhere it is an ordinary (if odd) file name.
+        let (files, _) = super::read_args(args(&["-psn_0_12345", "--other"]), false);
+        assert_eq!(files, [std::path::PathBuf::from("-psn_0_12345")]);
     }
 }

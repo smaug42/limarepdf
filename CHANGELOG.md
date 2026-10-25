@@ -110,7 +110,9 @@
 - Removing hidden layers could change what shows: a colour, position or clip set inside a hidden layer was lost
   with it, so artwork after the layer turned black or moved, and text after hidden text on the same line moved
   back. Only what hidden layers draw is removed now; their settings stay, and hidden text leaves a gap as wide.
-  Where that can't be done for certain (hidden text that clips, or whose width depends on where a drawing is
+  A shape begun before a hidden layer and filled or outlined inside it no longer shows up after the removal,
+  drawn by the next visible shape, and a clip begun before the layer still clips. Where that can't be done for
+  certain (hidden text that clips, or whose width depends on where a drawing is
   used), the removal stops and changes nothing, saying where.
 - Appended pages with filled form fields could show the answers blank: their fields weren't carried over, so
   answers without a drawing of their own weren't drawn. Append PDFs now asks first, then draws those files'
@@ -169,6 +171,28 @@
   whatever the numbers could take different times depending on secret values, with some compilers and
   processors, which could leak information about the key (RUSTSEC-2026-0387). The other libraries LimarePDF is
   built from are updated to their latest compatible versions too.
+- On macOS, opening a PDF with LimarePDF from Finder (Open With, a double-click when it is the default app, or
+  dropping it on the Dock icon) started the app or brought it to the front without opening the file. Those files
+  now open in tabs of their own, whether LimarePDF is starting or already running, several at once too, asking
+  for a password where one is needed; while the app offers recovery copies at start, they open once that window
+  closes. A file Finder sends that can't be found is reported. Not yet tried on a Mac.
+- Spaces or a tab after a line's last word made the line's box reach past its text, over whatever came next: on
+  forms whose labels end in a tab, a click between two labels, or on the start of the next one, took the first
+  label, and editing it hid the next label until you finished. A line's box now ends at its last letter and
+  starts at its first, and the spaces stay in its text.
+- A click in a line turned on the page put the caret by how far across the page the click was rather than along
+  the line, so it landed in the wrong word, and a double-click on a word the line has twice selected another
+  word; in invisible recognised (OCR) text the caret was placed as if every character were the same width. The
+  caret now goes by the character clicked, and a double-click selects the word clicked, whichever way the line
+  runs.
+- The command palette listed two commands named Dark, both under View, with nothing to tell the app's theme from
+  the page colours, and searching "theme" found nothing. Commands in a submenu are now shown with its name
+  ("Theme › Dark", "Page colours › Dark"), screen readers hear it too, and searches find them by it ("theme",
+  "dark theme", "page colours"). The menus keep their short names.
+- A watermark or headers and footers just added kept a second whole copy of the document so its section could
+  keep changing it, outside the 1 GB undo limit, so a large document could hold more than the limit. The copy is
+  now the undo step's own, counted in the limit; when a very large document leaves no room for it, the section
+  stops changing what was added, saying so, and what was added stays on the pages.
 
 ### Added
 
@@ -181,9 +205,17 @@
   cancelling part way keeps every document open.
 - When you come back to LimarePDF after another app changed a file open here, its tab shows a notice with
   Reload. ☰ > File > Reload from disk reads the file again as it now is, after asking when there are unsaved
-  changes, which it loses.
+  changes, which it loses. Anything typed or changed while the file is read (a document title, say) is kept, and
+  the document isn't reloaded, saying so.
 - A security policy, [SECURITY.md](SECURITY.md): which versions get fixes, and how to report a security problem
-  privately through GitHub. It is linked from the README and Troubleshooting, and comes in the archives.
+  privately through GitHub. It is linked from the README and Troubleshooting, and comes in the archives and every
+  package and installer.
+- The Windows installer offers a desktop shortcut, under the install folder (not ticked unless you tick it). For
+  installs without its screens, `DESKTOPSHORTCUT=1` asks for one; a newer version keeps the choice made before,
+  and `DESKTOPSHORTCUT=0` removes it. Uninstalling removes it.
+- The supported systems are stated in [Install](docs/install.md#requirements), the README and Features: Windows 10
+  and 11 (x64), macOS 11 or later on Apple Silicon and Intel, and 64-bit Linux with glibc 2.39 or later, all
+  provisional until the release checks by hand have passed on each.
 
 ### Changed
 
@@ -197,6 +229,13 @@
   can't be added at all.
 - Releases now wait for the check of every library against known security advisories (RustSec), and are tested and
   built from exactly the library versions in `Cargo.lock`.
+- The README in the `.deb`, `.rpm`, Windows installer and macOS app linked to guide pages they don't include. It
+  now links to the guide online for its version, as do the changelog and the security notes there; the archives
+  still carry the guide. The Windows installer and macOS app now include the licence of the Liberation fonts too.
+- The `.rpm` now asks for glibc 2.39 or later, which the Linux builds need, so an older system refuses it when
+  installing instead of the app failing to start. The Intel macOS builds now say macOS 11 or later, as the
+  Apple Silicon ones and the docs do (they said 10.12). The docs no longer say older Linux systems can use the
+  archive: it needs the same glibc.
 
 ## [0.9.0] - 2026-10-23
 

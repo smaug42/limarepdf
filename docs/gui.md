@@ -40,7 +40,8 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
 
 Ctrl+K opens the command palette, which lists every command. Type to filter, use Up and Down to choose, and press
 Enter to run; Esc closes it. It looks like the dialogs, without a title or buttons: a search field, then each
-command with its category and shortcut in columns.
+command with its category and shortcut in columns. A command from a submenu shows the submenu's name before its
+own, such as "Theme › Dark" and "Page colours › Dark", and typing the submenu's name ("theme") finds its commands.
 
 ## The tools
 
@@ -76,6 +77,9 @@ since a drawing takes several strokes.
 Open PDFs with the Open button, Ctrl+O, or by dropping them on the window. Image files (PNG, JPEG, TIFF) open as a
 new document with one page per image; the start screen's Make a PDF from images… does the same (see
 [Scans and OCR](scanning-and-ocr.md)). From a terminal, `limarepdf file.pdf --page 3` opens a file at page 3.
+Files opened with LimarePDF from the file manager (Open with, or a double-click when it is the default app; on
+macOS also dropping them on the Dock icon) open in tabs of their own, whether LimarePDF is starting or already
+running.
 
 On Linux in a Wayland session, dropping files on the window does nothing yet: see
 [Troubleshooting](troubleshooting.md#dropping-files-on-the-window-does-nothing).
@@ -122,7 +126,8 @@ that tab first, or choose another name.
 
 When you come back to LimarePDF after another app changed a file open here, its tab shows a notice with
 **Reload**. ☰ > File > **Reload from disk** reads the file again as it now is; with unsaved changes it asks
-first, as they are lost. Reloading keeps the page you were on.
+first, as they are lost. Reloading keeps the page you were on. Anything you type or change while the file is
+being read (a big file, or one on a slow drive) is kept instead: the document isn't reloaded, and a message says so.
 
 Saving writes a temporary file beside the document and then replaces the document with it, so a save that fails
 part way leaves the original as it was. On Linux and macOS, the temporary file is readable only by you while it is
@@ -143,7 +148,8 @@ signed original.
 Everything that changes the document can be undone with Ctrl+Z, and redone with Ctrl+Y (or Ctrl+Shift+Z), up to 20
 steps back. Each step keeps a whole copy of the document, and a document's steps are limited to 1 GB together, so
 undo goes back fewer steps on very large documents (about 7 on a 139 MB scan); the latest change can always be
-undone.
+undone. A watermark or headers and footers just added count in that limit too, with the copy of the document their
+section keeps to change them (see [Change it after adding](headers-footers-watermarks.md#change-it-after-adding)).
 
 Deleting pages, comments, objects or bookmarks, marking text for redaction, flattening, resetting a form and changing password settings show a
 notice at the bottom of the window with an Undo button, which takes back that change in that document only. The

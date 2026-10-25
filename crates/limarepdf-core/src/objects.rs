@@ -42,6 +42,11 @@ pub struct PageObject {
     pub hidden: bool,
     /// For text: the left end of the line's baseline, where an edited line is written.
     pub baseline: Option<(f32, f32)>,
+    /// For text: the way the line runs on the displayed page, as a unit vector.
+    pub dir: Option<(f32, f32)>,
+    /// For text: where each character starts along the line, in points from `baseline`
+    /// towards `dir`, and where the last one ends: one more than the line's characters.
+    pub stops: Vec<f32>,
     /// For text: the line runs left to right across the displayed page, letters upright,
     /// and is not in vertical writing.
     pub upright: bool,
@@ -773,6 +778,8 @@ impl Pdf {
                     font_reusable: false,
                     hidden: false,
                     baseline: None,
+                    dir: None,
+                    stops: Vec::new(),
                     upright: false,
                     vertical: false,
                     spans: Vec::new(),
@@ -803,6 +810,12 @@ impl Pdf {
                     let (across, up) = ((m[0], m[1]), (m[2], m[3]));
                     let level = across.0 > 0.0 && across.1.abs() <= 1e-3 * across.0;
                     po.upright = level && up.1 < 0.0 && !t.vertical;
+                    let len = across.0.hypot(across.1);
+                    if let (Some(at), true) = (po.baseline, len > 1e-6) {
+                        let dir = (across.0 / len, across.1 / len);
+                        po.dir = Some(dir);
+                        po.stops = caret_stops(&t.pieces, to_vis, at, dir);
+                    }
                 }
                 if let Some(p) = &o.path {
                     po.fill = p.fill_c;
@@ -1031,6 +1044,64 @@ pub(crate) fn span_boxes(pieces: &[Piece], a: usize, b: usize) -> Vec<[f32; 4]> 
     out
 }
 
+/// Where each character of a line's `pieces` starts along it and where the last one ends,
+/// in displayed-page points from `origin` towards `dir` ([`PageObject::stops`]). Within a
+/// piece, characters are placed as [`span_boxes`] places them.
+fn caret_stops(pieces: &[Piece], to_vis: M, origin: (f32, f32), dir: (f32, f32)) -> Vec<f32> {
+    // How far along the line the point `f` of the way from `a` to `b` (user space) is.
+    let along = |(a, b): ((f32, f32), (f32, f32)), f: f32| {
+        let (x, y) = apply(to_vis, a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f);
+        (x - origin.0) * dir.0 + (y - origin.1) * dir.1
+    };
+    let mut stops = Vec::new();
+    let mut end = None;
+    for p in pieces {
+        let n = p.chars.1 - p.chars.0;
+        let ends = (p.corners[0], p.corners[1]);
+        for j in 0..n {
+            let (f0, f1) = if p.spans.len() == n {
+                p.spans[j]
+            } else {
+                (j as f32 / n as f32, (j + 1) as f32 / n as f32)
+            };
+            stops.push(along(ends, f0));
+            end = Some(along(ends, f1));
+        }
+    }
+    stops.extend(end);
+    stops
+}
+
+/// A line's box in user space: its pieces' boxes, less the pieces showing only whitespace
+/// and the whitespace at the line's two ends, which draw nothing and would reach over
+/// what is next to the line (a label's tab in a larger font over the next label). Shows
+/// with no characters count where they are among the line's text.
+fn line_box(pieces: &[Piece], text: &str) -> [f32; 4] {
+    let chars: Vec<char> = text.chars().collect();
+    let first = chars.iter().position(|c| !c.is_whitespace()).unwrap_or(0);
+    let last = chars
+        .iter()
+        .rposition(|c| !c.is_whitespace())
+        .map_or(chars.len(), |i| i + 1);
+    let mut points = Vec::new();
+    for p in pieces {
+        let (s, e) = p.chars;
+        if s == e {
+            if s >= first && s <= last {
+                points.extend(p.corners);
+            }
+        } else if chars[s..e].iter().all(|c| c.is_whitespace()) {
+            continue;
+        } else if s >= first && e <= last {
+            points.extend(p.corners);
+        } else {
+            let part = span_boxes(std::slice::from_ref(p), s.max(first), e.min(last));
+            points.extend(part.iter().flat_map(|b| [(b[0], b[1]), (b[2], b[3])]));
+        }
+    }
+    mx::aabb(points)
+}
+
 /// Turn the show operations of one BT..ET block into line objects.
 fn group_runs(runs: Vec<RunInfo>, out: &mut Vec<Obj>) {
     let mut cur: Vec<RunInfo> = Vec::new();
@@ -1086,7 +1157,7 @@ fn group_runs(runs: Vec<RunInfo>, out: &mut Vec<Obj>) {
         let lift = rise(first);
         let origin = (first.start.0 - lift * up.0, first.start.1 - lift * up.1);
         let spans = styled_spans(&group, &pieces, rise, main.size);
-        let bb = mx::aabb(group.iter().flat_map(|r| r.corners));
+        let bb = line_box(&pieces, &text);
         out.push(Obj {
             kind: ObjectKind::Text,
             first: first.run.op,

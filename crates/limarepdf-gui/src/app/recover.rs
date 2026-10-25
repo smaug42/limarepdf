@@ -4,7 +4,7 @@
 //! restore window at start, the setting, and ending the session at a normal exit. The store
 //! and its thread are `crate::recovery`.
 
-use super::{App, Dialog};
+use super::{App, Dialog, CANNOT_OPEN, CANNOT_OPEN_SEVERAL};
 use crate::banners::{self, Kind as BannerKind};
 use crate::dialogs::{self as dlg, Offer, RestoreOut};
 use crate::recovery::schedule::{Next, INTERVAL};
@@ -598,6 +598,30 @@ impl App {
         if let Some((files, page)) = self.rescue.startup.take() {
             self.open_startup(ctx, files, page);
         }
+        self.open_incoming(ctx);
+    }
+
+    /// Opens the files the system asked to open (Finder on macOS, BUG-28) as the command
+    /// line's are, waiting as they do while the restore window is open.
+    pub(super) fn open_incoming(&mut self, ctx: &egui::Context) {
+        if self.rescue.asking {
+            return;
+        }
+        let (files, unread) = self.incoming.take();
+        match unread {
+            0 => {}
+            1 => self.show(Dialog::Message(
+                CANNOT_OPEN.into(),
+                "A file sent to LimarePDF to open couldn't be found.".into(),
+            )),
+            n => self.show(Dialog::Message(
+                CANNOT_OPEN_SEVERAL.into(),
+                format!("{n} files sent to LimarePDF to open couldn't be found."),
+            )),
+        }
+        if !files.is_empty() {
+            self.open_startup(ctx, files, None);
+        }
     }
 
     /// At a normal exit: this session's copies and folder go, and so do the copies restored
@@ -1045,6 +1069,26 @@ mod tests {
                     })
                 })
         })
+    }
+
+    /// BUG-28: files sent to open (Finder on macOS) while the restore window asks wait for
+    /// it, as the command line's do, and start opening once it closes.
+    #[test]
+    fn files_sent_to_open_wait_for_the_restore_window() {
+        let ctx = egui::Context::default();
+        let m = crashed_with(&page().to_bytes().unwrap(), DocInfo::default());
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        app.start_recovery_in(&ctx, Arc::new(m), &root(), clock());
+        assert!(app.rescue.asking);
+        let sent = PathBuf::from("/sent/to/open.pdf");
+        app.incoming.hand_in(vec![sent.clone()], 0);
+        app.open_incoming(&ctx);
+        assert!(
+            app.opening.is_empty(),
+            "opened while the restore window asks"
+        );
+        app.close_restore(&ctx);
+        assert_eq!(app.opening, [sent]);
     }
 
     /// An app keeping its copies on a disk that fails as told, with one tab of

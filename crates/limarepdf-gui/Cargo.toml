@@ -21,6 +21,19 @@ egui-phosphor.workspace = true
 # Typed emoji made of several characters left out whole (page_text.rs); egui already uses it.
 unicode-segmentation = "1.13"
 
+# Finder's Open With and double-click (macos.rs); eframe, rfd and arboard already use both.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.3"
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSAppleEventDescriptor",
+    "NSAppleEventManager",
+    "NSNotification",
+    "NSObject",
+    "NSString",
+    "NSURL",
+] }
+
 [build-dependencies]
 # Embeds the icon in limarepdf.exe on Windows; does nothing on other platforms.
 winresource = { version = "0.1.34", default-features = false }
@@ -30,7 +43,9 @@ winresource = { version = "0.1.34", default-features = false }
 lopdf.workspace = true
 
 # Linux packages, built in CI with cargo-deb and cargo-generate-rpm after the release build.
-# Both hold limarepdf and the limarepdf-cli command, the desktop entry, the icon and the docs. The
+# Both hold limarepdf and the limarepdf-cli command, the desktop entry, the icon, the README,
+# changelog and security notes (from packaging/package-docs.sh, run first, with links to the
+# online guide for this version) and the licences. The
 # libraries listed are the ones limarepdf loads at run time (windowing, OpenGL, file dialogs
 # over D-Bus), which the tools can't see; printing uses lp and file dialogs use the portal.
 [package.metadata.deb]
@@ -48,8 +63,9 @@ assets = [
     ["target/release/limarepdf-cli", "usr/bin/", "755"],
     ["assets/io.github.smaug42.limarepdf.desktop", "usr/share/applications/", "644"],
     ["../../docs/images/icon.png", "usr/share/icons/hicolor/256x256/apps/io.github.smaug42.limarepdf.png", "644"],
-    ["../../README.md", "usr/share/doc/limarepdf/", "644"],
-    ["../../CHANGELOG.md", "usr/share/doc/limarepdf/", "644"],
+    ["../../target/package-docs/README.md", "usr/share/doc/limarepdf/", "644"],
+    ["../../target/package-docs/CHANGELOG.md", "usr/share/doc/limarepdf/", "644"],
+    ["../../target/package-docs/SECURITY.md", "usr/share/doc/limarepdf/", "644"],
     ["../../LICENSE-MIT", "usr/share/doc/limarepdf/", "644"],
     ["../../LICENSE-APACHE", "usr/share/doc/limarepdf/", "644"],
     ["../limarepdf-core/models/README.md", "usr/share/doc/limarepdf/OCR-MODEL.md", "644"],
@@ -73,8 +89,9 @@ assets = [
     { source = "target/release/limarepdf-cli", dest = "/usr/bin/limarepdf-cli", mode = "755" },
     { source = "assets/io.github.smaug42.limarepdf.desktop", dest = "/usr/share/applications/io.github.smaug42.limarepdf.desktop", mode = "644" },
     { source = "../../docs/images/icon.png", dest = "/usr/share/icons/hicolor/256x256/apps/io.github.smaug42.limarepdf.png", mode = "644" },
-    { source = "../../README.md", dest = "/usr/share/doc/limarepdf/README.md", mode = "644", doc = true },
-    { source = "../../CHANGELOG.md", dest = "/usr/share/doc/limarepdf/CHANGELOG.md", mode = "644", doc = true },
+    { source = "../../target/package-docs/README.md", dest = "/usr/share/doc/limarepdf/README.md", mode = "644", doc = true },
+    { source = "../../target/package-docs/CHANGELOG.md", dest = "/usr/share/doc/limarepdf/CHANGELOG.md", mode = "644", doc = true },
+    { source = "../../target/package-docs/SECURITY.md", dest = "/usr/share/doc/limarepdf/SECURITY.md", mode = "644", doc = true },
     { source = "../../LICENSE-MIT", dest = "/usr/share/licenses/limarepdf/LICENSE-MIT", mode = "644" },
     { source = "../../LICENSE-APACHE", dest = "/usr/share/licenses/limarepdf/LICENSE-APACHE", mode = "644" },
     { source = "../limarepdf-core/models/README.md", dest = "/usr/share/doc/limarepdf/OCR-MODEL.md", mode = "644", doc = true },
@@ -87,8 +104,11 @@ assets = [
 ]
 
 # Library sonames rather than package names, so the same rpm works on Fedora and openSUSE.
+# The GLIBC_ entry is the newest glibc version the binaries use (built on ubuntu-latest); CI
+# fails if it differs from what they use.
 [package.metadata.generate-rpm.requires]
 "libc.so.6()(64bit)" = "*"
+"libc.so.6(GLIBC_2.39)(64bit)" = "*"
 "libm.so.6()(64bit)" = "*"
 "libgcc_s.so.1()(64bit)" = "*"
 "libdbus-1.so.3()(64bit)" = "*"

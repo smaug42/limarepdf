@@ -54,8 +54,11 @@ More about notes and text boxes:
   over a note shows its comment.
 - Text boxes use Helvetica, and for Polish, Czech, Vietnamese, Greek, Cyrillic and other characters it lacks, its
   Liberation Sans face, embedded in the file. Other characters (Chinese, Hebrew, emoji and so on) can't be typed or
-  pasted, on the page or in the inspector, and a note at the caret says so. To write them, use the Add text tool
-  in an installed font that has them. A note's comment takes any character, emoji included.
+  pasted, on the page or in the inspector, and a note at the caret says so. Chinese, Japanese, Korean and single
+  emoji can be written on the page instead with the Add text tool, in an installed font that has them. Hebrew,
+  Arabic and other right-to-left or shaped scripts, emoji made of several characters (flags, skin tones, joined
+  emoji) and emoji a font draws only in colour can't be written in any font yet
+  ([details](content-editing.md#add-text)). A note's comment takes any character, emoji included.
 - When you finish a text box, it grows downward to fit its text, keeping its width. It stops at the bottom of the
   page, and never shrinks (resize it by dragging its handles).
 - The Text box tool can be kept on to add several in a row (see [Keep tool active](gui.md#keep-tool-active)). The

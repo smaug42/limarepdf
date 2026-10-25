@@ -96,6 +96,9 @@ These come from hayro 0.8, the library that draws the pages:
 - Knockout groups are drawn as non-knockout.
 - Non-isolated groups are drawn as isolated, which changes colours where a blend mode such as Multiply is used
   inside the group.
+
+  These two rarely show: 20 of the 1,089 test files use such groups, and none of them looked wrong because of it
+  next to poppler.
 - Shading patterns that carry their own graphics state aren't supported.
 - A character map (CMap) stored in the file and built on another is drawn right only when its text names the
   other with `usecmap` and that one is predefined (such as `90ms-RKSJ-H`). Built on a CMap stored in the file, the
