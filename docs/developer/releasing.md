@@ -12,6 +12,11 @@ How a release is made, for maintainers.
    - check the signature crates listed in [How it is built](architecture.md#signature-crates): if a pinned
      pre-release (`rsa`, `pkcs1`) has a final version, move to it; if RUSTSEC-2023-0071 has a fixed `rsa`, take it
      and remove the `--ignore` from the `audit` job in `ci.yml`; read any new advisory the `audit` job reports;
+   - take compatible dependency updates (`cargo update`, then the signing cross-checks with
+     `-- --ignored cross_check`); move to a new major version only as planned work. After a hayro upgrade, run the
+     two ignored transparency group tests (`non_isolated_group_blends_against_page_backdrop`,
+     `knockout_group_replaces_earlier_objects`); after an egui upgrade, check the workarounds that rely on egui's
+     internal ids, `dialogs::slider`'s number box, and whether winit now takes drops on Wayland;
    - check that the user guide's screenshots (`docs/images/`) still show the app as it is, and retake any that
      don't: a 1000×660 window in the light theme under a virtual X server, made-up documents and digital IDs only,
      cut down to the part the page is about.

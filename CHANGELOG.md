@@ -164,6 +164,11 @@
   doesn't edit page content, add comments or fill and sign), that every font LimarePDF writes is embedded (plain
   Western text in Helvetica, Times or Courier isn't), and that a digital signature proves who signed (only as far
   as you trust the signer's certificate). These and a few smaller statements now match the app.
+- Making a digital ID and signing with one use updated cryptography libraries (`crypto-bigint` 0.7.8, with
+  `elliptic-curve` 0.14.2 and `sha2` 0.11.1): in earlier versions, some calculations meant to take the same time
+  whatever the numbers could take different times depending on secret values, with some compilers and
+  processors, which could leak information about the key (RUSTSEC-2026-0387). The other libraries LimarePDF is
+  built from are updated to their latest compatible versions too.
 
 ### Added
 

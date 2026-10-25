@@ -395,6 +395,12 @@ a signature in the field a certified document left empty. Both call every one va
 earlier signature valid too. Signed files with classic cross-reference tables, cross-reference streams and object
 streams, and pages turned 90 degrees, were checked by LimarePDF.
 
+After the dependency update of 2026-10-25 (`crypto-bigint` 0.7.8 for RUSTSEC-2026-0387, `elliptic-curve` 0.14.2,
+`sha2` 0.11.1 and every other compatible update), the six signing cross-checks (`-- --ignored cross_check` in
+`signatures.rs`, `signing.rs`, `digital_ids.rs` and `signature_trust.rs`, RSA-PSS included) were run again and
+pass, and `cargo audit --ignore RUSTSEC-2023-0071` passes with four informational warnings (`ttf-parser`,
+`zbus_names`, `zvariant` and `zvariant_derive` unmaintained).
+
 Saving signed documents was checked on the 53 third-party samples LimarePDF can open with a signature in them. Saved
 without changes, or after an undo, nothing is added. With a comment added, every signature checks as before, by
 LimarePDF and by `pdfsig` alike, and LimarePDF reports the comment as allowed except where the document's certification or a
