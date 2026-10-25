@@ -88,7 +88,10 @@ selection through `page_text::held`, which notes it while the box has the keyboa
 size box or the colour picker has it; `page_text::give_back` selects it again as the box takes the keyboard back
 (BUG-12). The text colour button (`editor::text_color_button`) has its own pop-up around egui's
 `color_picker_hsva_2d`: a press on its colour area or hue slider is a pick even of the colour it started from, and
-mixed text offers its own colours to pick. The line underneath is
+mixed text offers its own colours to pick. egui's pickers work in linear light and a PDF's RGB values are
+gamma-encoded as the page shows them, so every colour button converts at the boundary (`editor::to_linear`,
+`from_linear`, BUG-38), and `editor::color_button` writes a colour back only when the picker changed it. The line
+underneath is
 covered in the colour the page worker (`worker.rs`, `Worker::sample`) finds around it, from a drawing of that
 part of the page in the current page colours.
 

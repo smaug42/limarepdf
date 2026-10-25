@@ -1331,7 +1331,9 @@ fn watermark_ui(ui: &mut Ui, scope: egui::Id, s: &mut Wm, linked: bool) -> Press
         slider_row(ui, "Opacity", &mut s.opacity, 0.02..=1.0, "");
         slider_row(ui, "Rotation", &mut s.rotation, -90.0..=90.0, "°");
         if !s.picture {
-            row(ui, "Colour", |ui| ui.color_edit_button_rgb(&mut s.color));
+            row(ui, "Colour", |ui| {
+                crate::editor::color_button(ui, &mut s.color, "Colour")
+            });
         }
     });
     ui.radio_value(&mut s.foreground, true, "Above the content");

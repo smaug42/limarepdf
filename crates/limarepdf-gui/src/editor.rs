@@ -531,11 +531,36 @@ fn size_box(
     chosen
 }
 
-/// A colour button, named for screen readers (egui leaves it unnamed).
+/// A colour button for PDF colour `c`, named for screen readers (egui leaves it unnamed).
 pub fn color_button(ui: &mut egui::Ui, c: &mut [f32; 3], name: &str) -> egui::Response {
-    let r = ui.color_edit_button_rgb(c);
+    // The value egui's picker last gave for `c`: converting back and forth isn't exact,
+    // and egui keeps a grey's hue by the value it gave (BUG-38).
+    let key = ui.auto_id_with("pdf-colour");
+    let mut shown = ui
+        .data(|d| d.get_temp::<([f32; 3], [f32; 3])>(key))
+        .filter(|(pdf, _)| pdf == c)
+        .map_or_else(|| to_linear(*c), |(_, shown)| shown);
+    let r = ui.color_edit_button_rgb(&mut shown);
+    // Only a change made in the picker is taken back: a colour only looked at stays
+    // exactly as it was.
+    if r.changed() {
+        *c = from_linear(shown);
+        ui.data_mut(|d| d.insert_temp(key, (*c, shown)));
+    }
     dialogs::set_name(&r, name);
     r
+}
+
+/// PDF colour `c` as egui's colour pickers take it. A PDF's RGB values are what the page
+/// shows (gamma-encoded, as sRGB), while egui's pickers work in linear light; given the
+/// values as they are, a mid grey looked lighter in the picker than on the page (BUG-38).
+fn to_linear(c: [f32; 3]) -> [f32; 3] {
+    c.map(|v| egui::ecolor::linear_from_gamma(v.clamp(0.0, 1.0)))
+}
+
+/// The PDF colour of a colour egui's pickers give ([`to_linear`]).
+fn from_linear(c: [f32; 3]) -> [f32; 3] {
+    c.map(|v| egui::ecolor::gamma_from_linear(v).clamp(0.0, 1.0))
 }
 
 /// The colour button for text in `colors` (each once, the first the picker starts from):
@@ -596,10 +621,11 @@ fn text_color_button(ui: &mut egui::Ui, colors: &[[f32; 3]]) -> Option<[f32; 3]>
             let offer = ui.data_mut(|d| d.get_temp_mut_or(offered, colors.to_vec()).clone());
             // The picker keeps its own hue and saturation where the colour has none
             // (black, greys), as egui's own colour button does.
-            let start = egui::Rgba::from_rgb(was[0], was[1], was[2]);
+            let [r, g, b] = to_linear(was);
+            let start = egui::Rgba::from_rgb(r, g, b);
             let mut hsva = ui
                 .data(|d| d.get_temp::<egui::ecolor::Hsva>(hsva_id))
-                .filter(|h| same_color(h.to_rgb(), was))
+                .filter(|h| same_color(from_linear(h.to_rgb()), was))
                 .unwrap_or_else(|| egui::ecolor::Hsva::from(start));
             ui.spacing_mut().slider_width = PICKER_WIDTH;
             let picker = ui.vertical(|ui| color_picker_hsva_2d(ui, &mut hsva, Alpha::Opaque));
@@ -616,8 +642,8 @@ fn text_color_button(ui: &mut egui::Ui, colors: &[[f32; 3]]) -> Option<[f32; 3]>
                 (i.pointer.any_down() || i.pointer.any_released())
                     && at.is_some_and(|p| sliders.contains(p))
             });
-            if pressed || (picker.inner && !same_color(hsva.to_rgb(), was)) {
-                let c = hsva.to_rgb();
+            let c = from_linear(hsva.to_rgb());
+            if pressed || (picker.inner && !same_color(c, was)) {
                 // A colour the text has, to the eye, is that colour exactly.
                 let had = offer.iter().copied().find(|o| same_color(*o, c));
                 chosen = Some(had.unwrap_or(c));
@@ -4215,6 +4241,66 @@ pub fn pick_image_path() -> Option<PathBuf> {
 mod tests {
     use super::*;
     use limarepdf_core::Family;
+
+    /// BUG-38: egui's pickers show a PDF colour as the page does, and give back the
+    /// value they show.
+    #[test]
+    fn pickers_show_pdf_colours_as_the_page_does() {
+        let colours = [
+            [0.5, 0.5, 0.5],
+            [0.2, 0.6, 0.9],
+            [0.0; 3],
+            [1.0; 3],
+            [1.0, 0.0, 0.0],
+        ];
+        for c in colours {
+            let [r, g, b] = to_linear(c);
+            let shown = Color32::from(egui::Rgba::from_rgb(r, g, b));
+            let page = rgb32(c);
+            let near = |a: u8, b: u8| a.abs_diff(b) <= 1;
+            let same =
+                near(shown.r(), page.r()) && near(shown.g(), page.g()) && near(shown.b(), page.b());
+            assert!(same, "{c:?}: {shown:?}, {page:?}");
+            assert!(same_color(from_linear(to_linear(c)), c), "{c:?}");
+        }
+    }
+
+    /// BUG-38: a colour button opened and closed leaves its colour exactly as it was.
+    #[test]
+    fn a_colour_only_looked_at_stays_as_it_was() {
+        let ctx = egui::Context::default();
+        let was = [0.3, 0.6, 0.9];
+        let mut c = was;
+        // Draws the button with `events`; returns where it is.
+        let frame = |events: Vec<egui::Event>, c: &mut [f32; 3]| {
+            let raw = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            let mut at = Pos2::ZERO;
+            let mut out = ctx.run_ui(raw, |ui| {
+                at = color_button(ui, c, "Colour").rect.center();
+            });
+            // Nothing draws the frame.
+            out.textures_delta.clear();
+            at
+        };
+        let at = frame(vec![], &mut c);
+        let press = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(vec![egui::Event::PointerMoved(at)], &mut c);
+        frame(vec![press(true)], &mut c);
+        frame(vec![press(false)], &mut c);
+        for _ in 0..3 {
+            frame(vec![], &mut c);
+        }
+        assert!(egui::Popup::is_any_open(&ctx), "the picker didn't open");
+        assert_eq!(c, was);
+    }
 
     /// Queue the changes that keep what [`Editor::pending`] finds, as the tab does before a
     /// command, and stop typing them.

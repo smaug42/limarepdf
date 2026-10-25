@@ -76,6 +76,10 @@
   nothing. A colour picked in the picker for text in several colours now makes it all that colour, the first one
   too, in one undo step; opening and closing the picker changes nothing. The picker also offers the colours in
   the text, to make it all one of them in a click.
+- Colour pickers showed a document's colours lighter than the page does, apart from black, white and full
+  colours: a mid grey looked light grey in the picker, and a mid colour picked by eye was written darker than it
+  looked. Every colour picker (text, comments, shapes, notes, text boxes, the pen, watermarks) now shows a colour
+  as the page does and writes the colour it shows; opening one and closing it leaves the colour exactly as it was.
 - Picking a font size, font or colour in the inspector while editing a line or typing new text on the page applied
   only where the caret was, not to the characters selected, and the selection was lost. The selected characters
   now change, and stay selected when the line takes the keyboard back.

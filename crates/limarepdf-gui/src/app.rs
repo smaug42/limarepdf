@@ -7141,6 +7141,37 @@ mod tests {
         frame(app, vec![])
     }
 
+    /// BUG-38: the colour picked is written as the picker shows it: half way up the colour
+    /// area, with no colour in it, is the grey the page shows as 0.5 (it was written 0.21,
+    /// which the page shows darker).
+    #[test]
+    fn a_colour_picked_is_written_as_the_picker_shows_it() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_in_colours(&ctx, [0.0; 3], [1.0, 0.0, 0.0]);
+        app.act(&ctx, Act::Tool(Tool::Select));
+        let t = &mut app.tabs[0];
+        let objs = t.ed.objects(&t.pdf, 0).to_vec();
+        let line = objs
+            .iter()
+            .position(|o| o.text.is_some())
+            .expect("the line");
+        t.ed.select_object(0, line);
+        app.open_inspector();
+        let mut frame = |app: &mut App, events| window(app, &ctx, 1400.0, events);
+        click_named(&mut app, &ctx, "Text colour (mixed)");
+        settle(&mut app, &ctx);
+        click_in_colour_area(&mut app, &ctx, &mut frame, egui::vec2(0.0, 0.5));
+        click_named(&mut app, &ctx, "Text colour");
+        settle(&mut app, &ctx);
+        let colours = line_colours(&app);
+        let [(15, Some(grey))] = colours[..] else {
+            panic!("not one colour: {colours:?}");
+        };
+        assert!(grey.iter().all(|v| (v - 0.5).abs() < 0.01), "{grey:?}");
+    }
+
     /// A26: with characters selected in a line edited on the page, the first colour picked
     /// makes those characters that colour and leaves the rest as it was.
     #[test]
