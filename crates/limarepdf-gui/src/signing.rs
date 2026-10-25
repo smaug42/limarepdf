@@ -8,6 +8,7 @@
 
 use crate::actions::Act;
 use crate::dialogs::{self, Btn, Shell};
+use crate::page_text;
 use crate::theme;
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Vec2};
 use limarepdf_core::{
@@ -740,6 +741,8 @@ pub struct SignPane {
     pub pick: SignPick,
     /// Words of your own to put down.
     pub text: String,
+    /// The note about a character those words can't have.
+    refused: page_text::Refused,
     pub previews: Previews,
     /// The Create signature window, when open, and where to put the result.
     pub create: Option<(Create, Option<(usize, StampPlace)>)>,
@@ -750,6 +753,7 @@ impl Default for SignPane {
         SignPane {
             pick: SignPick::Saved(SignRole::Signature, 0),
             text: String::new(),
+            refused: page_text::Refused::default(),
             previews: Previews::default(),
             create: None,
         }
@@ -864,9 +868,11 @@ impl SignPane {
         self.create = Some((Create::new(role, author), place));
     }
 
+    /// The pane, its text box's id made from the tab's `scope`.
     pub fn ui(
         &mut self,
         ui: &mut egui::Ui,
+        scope: egui::Id,
         kit: &mut SignKit,
         author: &mut String,
         items: usize,
@@ -964,8 +970,22 @@ impl SignPane {
         });
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.pick, SignPick::Text, "Text");
-            let r =
-                ui.add(egui::TextEdit::singleline(&mut self.text).hint_text("Type, then click"));
+            // Put down as a text box, in Helvetica or its embedded face: what neither has
+            // isn't typed, as on the page.
+            let id = scope.with("sign-text");
+            if ui.ctx().memory(|m| m.has_focus(id)) {
+                let helvetica = limarepdf_core::FontChoice::default();
+                if let Some(c) = page_text::leave_out_untypable(ui, true, helvetica) {
+                    let note = page_text::fixed_note(&c).to_string();
+                    self.refused.mark(ui.ctx(), note);
+                }
+            }
+            let out = egui::TextEdit::singleline(&mut self.text)
+                .id(id)
+                .hint_text("Type, then click")
+                .show(ui);
+            self.refused.show(ui.ctx(), &out, id);
+            let r = out.response.response;
             dialogs::set_name(&r, "Text to place");
             if r.changed() {
                 self.pick = SignPick::Text;

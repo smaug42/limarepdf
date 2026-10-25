@@ -43,12 +43,19 @@ this list once it works. The feature table below has the details.
 
 - Only Latin (Vietnamese included), Greek and Cyrillic characters can be added: in new or edited text, text
   boxes, headers, footers, Bates numbers, watermarks, stamps, form values and fill-and-sign text. New and edited
-  text can also be Chinese, Japanese or Korean in an installed font that has them (Noto Sans CJK, say), not in
-  Helvetica, Times or Courier (typed in those, a note at the caret asks for an installed font that has them).
+  text can also be Chinese, Japanese or Korean, or single emoji, in an installed font that has them (Noto Sans
+  CJK, say, or Symbola or DejaVu Sans for emoji), not in Helvetica, Times or Courier (typed in those, a note at
+  the caret asks for an installed font that has them). An emoji the chosen font draws only in colour, with no
+  shape of its own, is refused, as it would show nothing in the PDF; so are colour emoji fonts, which aren't
+  offered.
   Hebrew and Arabic (written right to left), the scripts whose letters join or change shape (Devanagari and the
-  other Indic scripts, Thai) and emoji can't, in any font: when adding text, editing a line or typing a header,
-  footer or watermark, a note at the caret says so; form values and stamp wording with them are refused; text boxes (typed in LimarePDF, or made by another app without a drawing) and
-  a plain-text page of selected text show them as `?`.
+  other Indic scripts, Thai) and emoji made of several characters (flags, skin tones, keycaps, and joined emoji
+  such as families) can't, in any font: typed or pasted in new text, a line being edited, a text box, a header,
+  footer or watermark, or fill-and-sign text, they aren't typed and a note at the caret says so; form values and
+  stamp wording with them are refused with a message. A text box made by another app, when it has no drawing or
+  you change its colour, style or size, and a plain-text page of selected text, show them as `?` (a change to
+  such a box's text is refused).
+  Comments, replies, bookmarks and document properties keep every character, emoji included.
   Typed signatures show what their handwriting has: Caveat has Cyrillic, the other three Latin only.
 - Installed fonts are offered only when their licence allows embedding and they have the Latin letters; a
   family's missing bold or italic can't be made up (the button is off), and a typed character goes in the font of

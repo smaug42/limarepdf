@@ -53,7 +53,9 @@ More about notes and text boxes:
   Insert), or Note for any other. Printed, they keep their own drawing, or LimarePDF's, 20 points across. Hovering
   over a note shows its comment.
 - Text boxes use Helvetica, and for Polish, Czech, Vietnamese, Greek, Cyrillic and other characters it lacks, its
-  Liberation Sans face, embedded in the file. Other characters (Chinese, Hebrew and so on) come out as `?`.
+  Liberation Sans face, embedded in the file. Other characters (Chinese, Hebrew, emoji and so on) can't be typed or
+  pasted, on the page or in the inspector, and a note at the caret says so. To write them, use the Add text tool
+  in an installed font that has them. A note's comment takes any character, emoji included.
 - When you finish a text box, it grows downward to fit its text, keeping its width. It stops at the bottom of the
   page, and never shrinks (resize it by dragging its handles).
 - The Text box tool can be kept on to add several in a row (see [Keep tool active](gui.md#keep-tool-active)). The

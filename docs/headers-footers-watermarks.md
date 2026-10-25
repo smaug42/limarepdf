@@ -71,7 +71,7 @@ with Undo.
 
 Header, footer, Bates and watermark text is written in Helvetica, and characters it lacks (Polish, Czech,
 Vietnamese, Greek, Cyrillic and so on) in its Liberation Sans face, embedded in the file. Other scripts (Chinese,
-Hebrew, Arabic and so on) and emoji can't be typed: a note at the caret says so.
+Hebrew, Arabic and so on) and emoji can't be typed or pasted: a note at the caret says so.
 
 While a section is open, the pages show its text in Liberation Sans, which has Helvetica's widths, over the content
 even when it is set to go behind it. Once added, the pages show it as written.

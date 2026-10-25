@@ -135,9 +135,30 @@ subsetter first, so they keep their numbers and earlier text stays valid. The fo
 records the face, the glyphs with their characters and a checksum of the font file; a font another app has
 changed since is left alone and a new one started. In a signed document only fonts made since it was opened
 (`Pdf::made_fonts`) are grown, as growing one a signed revision holds would show as a change to it. Characters
-are put together (NFC) first; right-to-left and shaped scripts are refused (Liberation has Hebrew). The app's
-caret note (`page_text::note`) points to installed fonts only for characters `embed::installed_could_write`
-allows (not control characters, right-to-left or shaped scripts, or emoji).
+are put together (NFC) first; right-to-left and shaped scripts are refused (Liberation has Hebrew). A face covers
+a character only when its glyph has an outline (`Face::outlined`, found once per glyph through skrifa), except
+characters meant to be blank (`embed::blank`: spaces, default-ignorable marks, the blank Braille pattern): a
+colour emoji's glyph is often empty, drawn by `COLR`, `CBDT` or `sbix` data a PDF has no use for, and written it
+would show nothing. Text is spelled a grapheme cluster at a time (`unicode-segmentation`): an emoji sequence
+(`embed::emoji_sequence`: a skin tone, regional indicators, the keycap mark, tags or the emoji variation selector,
+or a zero-width joiner between pictographs) is refused whole, as its parts written one by one would say something
+else (BUG-24; PF-14 is the support). A zero-width joiner outside one is an invisible mark and is written. The
+app's caret note (`page_text::note`) points to installed fonts only for characters
+`embed::installed_could_write` allows (not control characters, right-to-left or shaped scripts, or the parts of
+emoji sequences; single emoji yes, as Symbola and DejaVu Sans draw them with outlines), and
+`page_text::keep_typable` keeps or leaves out a whole cluster.
+
+Every path that writes typed text checks it the same way (BUG-24): new and edited lines through `Pdf::pen`; text
+boxes and fill-and-sign text, always Helvetica, through `embed::check_writable` in `Pdf::add_text_box` and in
+`Pdf::set_annotation` for a box's new text, with the app leaving out at the caret what Helvetica can't write (the
+text box on the page in `Editor::writing_ui`, the inspector's Text box in `annot_inspector`, Fill and sign's Text
+in `SignPane::ui`, all through `page_text::leave_out_untypable` and `page_text::fixed_note`); headers, footers,
+Bates numbers and watermarks through `Pdf::pen` and `inspector::stamp_text`; form values through
+`form_write::check_value`; stamp wording through `stamp_wording`; typed signatures through `typed_signature`; the
+signer's name on a signature's look through `sig_sign::shown_name` (left out when it can't be written). Comments,
+replies, bookmarks, document properties and page labels are text strings (`doc::encode_text`, UTF-16 with
+surrogate pairs past U+FFFF), which take any character. A text box another app wrote is still drawn with `?` for
+what Helvetica lacks when LimarePDF draws it (`Pdf::box_pen`'s fallback).
 
 Installed fonts for writing text are listed by `crates/limarepdf-core/src/typefaces.rs`: the families in
 `InstalledFonts::system()`'s `fontdb` database whose fonts allow embedding and have the Latin letters, each with

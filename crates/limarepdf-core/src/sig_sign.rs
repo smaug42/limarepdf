@@ -1044,6 +1044,9 @@ mod tests {
         assert_eq!(shown_name(&cert("山田")), None);
         assert_eq!(shown_name(&cert("שרה")), None);
         assert_eq!(shown_name(&cert("Jo\u{7}e")), None);
+        // Emoji, single or in sequences: the face has none.
+        assert_eq!(shown_name(&cert("Jo 😀")), None);
+        assert_eq!(shown_name(&cert("Jo 👍🏽")), None);
     }
 
     #[test]

@@ -2417,6 +2417,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tiff",
  "unicode-normalization",
+ "unicode-segmentation",
  "windows-sys 0.61.2",
  "x509-cert",
  "zeroize",
@@ -2433,6 +2434,7 @@ dependencies = [
  "lopdf",
  "rayon",
  "rfd",
+ "unicode-segmentation",
  "winresource",
 ]
 

@@ -191,6 +191,8 @@ pub struct Writing {
     /// A list or colour picker was open last frame: the click that closes it is not one
     /// outside a new note.
     picking: bool,
+    /// The note about a character a text box can't write.
+    refused: page_text::Refused,
 }
 
 impl Writing {
@@ -207,6 +209,7 @@ impl Writing {
             fresh: true,
             refocus: false,
             picking: false,
+            refused: page_text::Refused::default(),
         }
     }
 
@@ -1583,7 +1586,7 @@ impl Editor {
                 insp.text.italic(sel);
             }
             if let Some(c) = t.refused {
-                le.refused.mark(&ctx, page_text::note(font, c));
+                le.refused.mark(&ctx, page_text::note(font, &c));
             }
         }
         let b = o.bbox;
@@ -1817,6 +1820,15 @@ impl Editor {
                 (inner.inner, on_page && !picking, on_page && picking)
             }
         } else {
+            // Set in Helvetica, or its embedded face: what neither has isn't typed, as on
+            // the page. A note's comment is a text string, which takes any character.
+            if ui.ctx().memory(|m| m.has_focus(id)) {
+                let helvetica = FontChoice::default();
+                if let Some(c) = page_text::leave_out_untypable(ui, false, helvetica) {
+                    let note = page_text::fixed_note(&c).to_string();
+                    w.refused.mark(ui.ctx(), note);
+                }
+            }
             let te = egui::TextEdit::multiline(&mut w.text)
                 .id(id)
                 .font(egui::FontId::proportional((w.size * k).clamp(6.0, 96.0)))
@@ -1825,9 +1837,13 @@ impl Editor {
                 .desired_width(area.width())
                 .margin(egui::Margin::same(2));
             *ui.visuals_mut() = egui::Visuals::light();
-            let out = ui.put(area, te);
+            // As `Ui::put` lays it out, keeping the output for the note at the caret.
+            let layout = egui::Layout::centered_and_justified(egui::Direction::TopDown);
+            let at = egui::UiBuilder::new().max_rect(area).layout(layout);
+            let out = ui.scope_builder(at, |ui| te.show(ui)).inner;
             *ui.visuals_mut() = theme;
-            (out, false, false)
+            w.refused.show(ui.ctx(), &out, id);
+            (out.response.response, false, false)
         };
         if w.fresh {
             out.request_focus();
@@ -3651,12 +3667,23 @@ impl Editor {
             });
             let label = if e.text.is_some() { "Text" } else { "Comment" };
             ui.label(label);
-            let r = ui.add(
-                egui::TextEdit::multiline(&mut e.contents)
-                    .desired_rows(4)
-                    .desired_width(f32::INFINITY),
-            );
-            dialogs::set_name(&r, label);
+            // A text box's text is set in Helvetica, or its embedded face: what neither has
+            // isn't typed, as on the page. A comment is a text string, which takes any.
+            let id = self.scope.with(("annot-text", a.id));
+            if e.text.is_some() && ui.ctx().memory(|m| m.has_focus(id)) {
+                let helvetica = FontChoice::default();
+                if let Some(c) = page_text::leave_out_untypable(ui, false, helvetica) {
+                    let note = page_text::fixed_note(&c).to_string();
+                    self.text_refused.mark(ui.ctx(), note);
+                }
+            }
+            let out = egui::TextEdit::multiline(&mut e.contents)
+                .id(id)
+                .desired_rows(4)
+                .desired_width(f32::INFINITY)
+                .show(ui);
+            self.text_refused.show(ui.ctx(), &out, id);
+            dialogs::set_name(&out.response.response, label);
             // Changes are kept as they are made, each finished one a step to undo; the
             // comment when it is left.
             if theme::glyph_button(ui, icon::TRASH, "Delete").clicked() {
@@ -3978,9 +4005,8 @@ impl Editor {
                 return;
             }
             Tool::Sign => {
-                let out = self
-                    .sign
-                    .ui(ui, &mut self.sign_kit, &mut self.author, self.sign_items);
+                let (kit, author) = (&mut self.sign_kit, &mut self.author);
+                let out = self.sign.ui(ui, self.scope, kit, author, self.sign_items);
                 self.finish_signing |= out.finish;
                 if let Some(e) = &self.sign_error {
                     ui.colored_label(ui.visuals().error_fg_color, e);
@@ -4107,7 +4133,7 @@ impl Editor {
                         let (history, text) = (&mut insp.history, &mut insp.text);
                         page_text::undo_redo(ui.ctx(), id, &t, history, text);
                         if let Some(c) = t.refused {
-                            self.text_refused.mark(ui.ctx(), page_text::note(font, c));
+                            self.text_refused.mark(ui.ctx(), page_text::note(font, &c));
                         }
                     }
                     let mut typed = insp.text.text().to_string();

@@ -117,6 +117,17 @@
   fields onto their pages with their answers (they can't be filled in afterwards); the document's own fields
   stay fillable. An answer LimarePDF can't draw stops the append, naming the field. `limarepdf-cli merge` refuses
   such files after the first unless given `--flatten-forms`, which does the same.
+- Text boxes and fill-and-sign text took characters their font can't write (Chinese, emoji and the like), showed
+  them while typed and saved them as `?`. Such characters are now left out as they are typed or pasted, on the
+  page, in the inspector's Text box and in Fill and sign's Text, with a note at the caret, as for new text; a
+  text box or fill-and-sign text that still has them (your name put down, say) is refused with a message, with
+  nothing changed.
+- An emoji an installed font draws only in colour, with no shape of its own, was written into the PDF as
+  nothing. It is now refused at the caret, naming the font. Emoji made of several characters (flags, skin tones,
+  keycaps, and joined emoji such as families) were written as their separate parts in fonts that have them,
+  saying something else (a thumb and a colour square). They are now refused whole, with a note saying these
+  aren't supported yet, in every place LimarePDF writes text; comments, bookmarks and document properties keep
+  them.
 
 ### Added
 
@@ -137,6 +148,10 @@
   footers (`{date}`), is now your computer's calendar date instead of the date in UTC, which late in the evening
   west of Greenwich was already tomorrow's. The times recorded for other programs (a comment's modification
   time, a digital signature's signing time) are unchanged.
+- A single emoji typed in Helvetica, Times or Courier now gets the note that asks for an installed font that has
+  it, and one an installed font lacks names that font, as for other characters: single emoji are written in
+  installed fonts that draw them with outlines, such as Symbola and DejaVu Sans. The note used to say emoji
+  can't be added at all.
 
 ## [0.9.0] - 2026-10-23
 

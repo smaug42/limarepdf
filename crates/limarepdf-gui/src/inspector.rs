@@ -1245,12 +1245,11 @@ fn stamp_text(ui: &mut Ui, scope: egui::Id, label: &str, text: &mut String, p: &
     let mut refused: page_text::Refused = ctx.data(|d| d.get_temp(note)).unwrap_or_default();
     let helvetica = limarepdf_core::FontChoice::default();
     let focused = ctx.memory(|m| m.has_focus(id));
-    if focused
+    if let Some(c) = focused
         .then(|| page_text::leave_out_untypable(ui, true, helvetica))
         .flatten()
-        .is_some()
     {
-        refused.mark(&ctx, page_text::REFUSED.to_string());
+        refused.mark(&ctx, page_text::fixed_note(&c).to_string());
     }
     let field = egui::TextEdit::singleline(text)
         .id(id)

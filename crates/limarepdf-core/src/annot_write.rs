@@ -6,11 +6,12 @@
 use crate::annot_ap::{arrow_size, DRAWN, NOTE_SIZE};
 use crate::annots::NO_VIEW;
 use crate::doc::encode_text;
+use crate::embed::check_writable;
 use crate::form_ap::{lines_height, nums, Metrics};
 use crate::form_write::parse_da;
 use crate::matrix as mx;
 use crate::overlay::utc_now;
-use crate::{AnnotKind, Pdf, Result, Shape, ShapeLook, TextStyle};
+use crate::{AnnotKind, FontChoice, Pdf, Result, Shape, ShapeLook, TextStyle};
 use anyhow::{anyhow, bail};
 use lopdf::{dictionary, Dictionary, Object, ObjectId, StringFormat};
 
@@ -152,7 +153,9 @@ impl Pdf {
     }
 
     /// Write `text` on page `page_index` (zero-based) in a text box filling `rect`
-    /// (displayed-page points, y down), set as `style` says. Returns its id.
+    /// (displayed-page points, y down), set as `style` says. Returns its id. Text boxes are
+    /// set in Helvetica, or its embedded face: text with characters neither has is
+    /// refused, with nothing changed.
     pub fn add_text_box(
         &mut self,
         page_index: usize,
@@ -164,6 +167,7 @@ impl Pdf {
         if rect[2] - rect[0] < 1.0 || rect[3] - rect[1] < 1.0 {
             bail!("the text box is too small");
         }
+        check_writable(FontChoice::default(), text)?;
         let page = self.page_id_at(page_index)?;
         let (to_user, _, _) = self.vis_down(page);
         let mut d = dictionary! {
@@ -571,7 +575,8 @@ impl Pdf {
 
     /// Change an annotation's colour (`None` for none), opacity (0 to 1) and comment.
     /// Kinds LimarePDF draws are drawn again when their look changes. Locked annotations are
-    /// changed too; the app checks [`crate::Annot::locked`] first.
+    /// changed too; the app checks [`crate::Annot::locked`] first. A text box's new text is
+    /// refused, with nothing changed, as [`Pdf::add_text_box`] refuses it.
     pub fn set_annotation(
         &mut self,
         id: (u32, u16),
@@ -584,6 +589,9 @@ impl Pdf {
             .into_iter()
             .find(|a| a.id == id)
             .ok_or_else(|| anyhow!("no such annotation"))?;
+        if old.kind == AnnotKind::TextBox && old.contents != contents {
+            check_writable(FontChoice::default(), contents)?;
+        }
         let opacity = opacity.clamp(0.0, 1.0);
         let looks_new = old.color != color
             || (old.opacity - opacity).abs() > 1e-3

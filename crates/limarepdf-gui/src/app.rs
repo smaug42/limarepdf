@@ -7871,6 +7871,99 @@ mod tests {
         assert_eq!(comments(&app), ["Old text"]);
     }
 
+    /// BUG-24: a text box is set in Helvetica, or its embedded face, so what neither has
+    /// isn't typed, with a note at the caret: on the page, in the inspector's Text box and
+    /// in Fill and sign's Text. It was saved as `?` before.
+    #[test]
+    fn text_boxes_refuse_at_the_caret_what_they_cant_write() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let (min, k) = page_on_screen(&mut app, &ctx);
+        let at = |x: f32, y: f32| min + egui::vec2(x, y) * k;
+        let none = egui::Modifiers::NONE;
+        let sequence = "LimarePDF can't add this emoji yet: flags, skin tones, keycaps and joined \
+                        emoji aren't supported";
+        let noted = |tree: &egui::accesskit::TreeUpdate, note: &str| {
+            tree.nodes.iter().any(|(_, n)| n.value() == Some(note))
+        };
+        let typed = |app: &mut App, text: &str| {
+            window(app, &ctx, 1400.0, vec![egui::Event::Text(text.into())]);
+            window(app, &ctx, 1400.0, vec![])
+        };
+        // On the page.
+        app.act(&ctx, Act::Tool(Tool::TextBox));
+        window(&mut app, &ctx, 1400.0, click_at(at(100.0, 100.0)));
+        window(&mut app, &ctx, 1400.0, vec![]);
+        let tree = typed(&mut app, "Walrus😀中");
+        assert!(noted(&tree, page_text::REFUSED), "no note at the caret");
+        let tree = typed(&mut app, "👍🏽");
+        assert!(noted(&tree, sequence), "no note for the sequence");
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::Escape, none)]);
+        for _ in 0..2 {
+            window(&mut app, &ctx, 1400.0, vec![]);
+        }
+        assert_eq!(comments(&app), ["Walrus"]);
+
+        // In the inspector, with the text box selected.
+        app.act(&ctx, Act::Tool(Tool::Select));
+        let t = &mut app.tabs[0];
+        let id = t.pdf.annotations()[0].id;
+        t.ed.annots(&t.pdf, 0);
+        t.ed.selection = Selection::Annot { page: 0, id };
+        click_named(&mut app, &ctx, "Text");
+        let tree = typed(&mut app, "😀");
+        assert!(noted(&tree, page_text::REFUSED), "no note in the inspector");
+        typed(&mut app, " ate fish");
+        app.tabs[0].ed.keep(crate::editor::Typed::Comment);
+        app.tabs[0].apply_actions(&ctx);
+        assert_eq!(comments(&app), ["Walrus ate fish"]);
+
+        // Fill and sign's text.
+        app.act(&ctx, Act::Tool(Tool::Sign));
+        click_named(&mut app, &ctx, "Text to place");
+        let tree = typed(&mut app, "Seal😀");
+        assert!(noted(&tree, page_text::REFUSED), "no note in Fill and sign");
+        assert_eq!(app.tabs[0].ed.sign.text, "Seal");
+    }
+
+    /// BUG-24: new text in an installed font with outline emoji takes single emoji; one the
+    /// font draws only in colour, and emoji sequences, aren't typed, each with its note.
+    #[test]
+    fn single_emoji_are_typed_in_an_installed_font_that_has_them() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let emoji = crate::font_list::test_family("Limare Emoji Test");
+        let mut app = app_with(&ctx, 1);
+        let (min, k) = page_on_screen(&mut app, &ctx);
+        let at = |x: f32, y: f32| min + egui::vec2(x, y) * k;
+        app.act(&ctx, Act::Tool(Tool::Text));
+        app.tabs[0].ed.tfont.family = emoji;
+        window(&mut app, &ctx, 1400.0, click_at(at(100.0, 200.0)));
+        settled_at(&mut app, &ctx, 1400.0);
+        let noted = |tree: &egui::accesskit::TreeUpdate, note: &str| {
+            tree.nodes.iter().any(|(_, n)| n.value() == Some(note))
+        };
+        let typed = |app: &mut App, text: &str| {
+            window(app, &ctx, 1400.0, vec![egui::Event::Text(text.into())]);
+            window(app, &ctx, 1400.0, vec![])
+        };
+        let tree = typed(&mut app, "Walrus 😀😎");
+        let note = "Limare Emoji Test has no \"😎\"; choose another font";
+        assert!(noted(&tree, note), "no note naming the font");
+        let tree = typed(&mut app, "👍🏽");
+        let sequence = "LimarePDF can't add this emoji yet: flags, skin tones, keycaps and joined \
+                        emoji aren't supported";
+        assert!(noted(&tree, sequence), "no note for the sequence");
+        window(&mut app, &ctx, 1400.0, click_at(at(300.0, 400.0)));
+        settled_at(&mut app, &ctx, 1400.0);
+        let objs = app.tabs[0].pdf.page_objects(0).unwrap();
+        let lines: Vec<String> = objs.into_iter().filter_map(|o| o.text).collect();
+        assert_eq!(lines, ["Walrus 😀"]);
+    }
+
     /// The names of the controls Tab reaches in turn, from the window's first one, `n`
     /// presses.
     fn tab_walk(app: &mut App, ctx: &egui::Context, width: f32, n: usize) -> Vec<String> {

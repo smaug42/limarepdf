@@ -78,10 +78,12 @@ the first. Bold and Italic are off for a family that has no such face.
 **Characters:** Latin (Vietnamese included), Greek and Cyrillic characters can be added. Those the standard fonts
 lack are written in their Liberation face, and text in an installed font is written in that font, both embedded in
 the file (cut down to the characters used). Chinese, Japanese and Korean can be typed in an installed font that has
-them. Others (Hebrew, Arabic, Devanagari, Thai and so on, and emoji), and characters the chosen font doesn't have,
-can't be typed or pasted, and a note at the caret says so. When another font could have the character (Chinese in
-Helvetica, say, or a letter an installed font lacks), the note names the font in use and asks you to choose an
-installed font that has it. The same goes for editing a line and the inspector's text field (see
+them, and so can single emoji (Symbola and DejaVu Sans have many). Others (Hebrew, Arabic, Devanagari, Thai and so
+on, and emoji made of several characters: flags, skin tones, keycaps, joined emoji such as families), characters
+the chosen font doesn't have, and emoji it draws only in colour, can't be typed or pasted, and a note at the caret
+says so. When another font could have the character (Chinese or an emoji in Helvetica, say, or a letter an
+installed font lacks), the note names the font in use and asks you to choose an installed font that has it. The
+same goes for editing a line and the inspector's text field (see
 [What doesn't work yet](features.md#what-doesnt-work-yet)).
 
 To put the same text on every page, such as page numbers or DRAFT, use

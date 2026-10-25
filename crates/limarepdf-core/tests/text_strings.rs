@@ -1,9 +1,10 @@
 //! Text strings as other programs write them: PDFDocEncoding, without a byte order mark.
 //! The file is built from raw bytes, not through LimarePDF's own writer, then read through
 //! every place that shows such text (properties, bookmarks, form names, values and
-//! descriptions, comments and page labels), edited and saved.
+//! descriptions, comments and page labels), edited and saved. And emoji in text strings
+//! LimarePDF writes, sequences included.
 
-use limarepdf_core::{FieldValue, Info, Pdf};
+use limarepdf_core::{BookmarkPlace, FieldValue, Info, Pdf};
 use lopdf::{dictionary, Object, StringFormat};
 
 /// `Budget • €100 — “approved”` in PDFDocEncoding.
@@ -130,6 +131,38 @@ fn edits_and_saves_keep_the_characters() {
     let p = reopened(&mut p);
     assert_eq!(p.info().title.as_deref(), Some("Budget • €300 — “final”"));
     assert_eq!(p.info().author.as_deref(), Some("Renée Łukasz"));
+}
+
+/// Emoji in the sequences that make them, as phones and emoji pickers type them: a skin
+/// tone, a family, a flag, a keycap and the emoji variation selector.
+const EMOJI: &str = "Walrus 😀 👍🏽 👨\u{200D}👩\u{200D}👧 🇬🇧 1\u{FE0F}\u{20E3} ❤\u{FE0F}";
+
+#[test]
+fn comments_bookmarks_and_properties_keep_emoji_and_their_sequences() {
+    // Text strings, which no font writes: they keep every character.
+    let mut p = Pdf::new();
+    p.insert_blank(0, 300.0, 200.0).unwrap();
+    let note = p
+        .add_note(0, (50.0, 50.0), [1.0, 1.0, 0.0], EMOJI, EMOJI)
+        .unwrap();
+    p.add_reply(note, EMOJI, "Sam").unwrap();
+    p.add_bookmark(EMOJI, 0, BookmarkPlace::End).unwrap();
+    let info = Info {
+        title: Some(EMOJI.into()),
+        subject: Some(EMOJI.into()),
+        ..Info::default()
+    };
+    p.set_info(&info).unwrap();
+    let p = reopened(&mut p);
+    let notes = p.annotations();
+    assert_eq!(notes.len(), 2);
+    for a in &notes {
+        assert_eq!(a.contents, EMOJI);
+    }
+    assert_eq!(notes[0].author, EMOJI);
+    assert_eq!(p.outline()[0].title, EMOJI);
+    assert_eq!(p.info().title.as_deref(), Some(EMOJI));
+    assert_eq!(p.info().subject.as_deref(), Some(EMOJI));
 }
 
 /// Poppler reads the made-up file's title the same way. Opt-in: needs `pdfinfo`.

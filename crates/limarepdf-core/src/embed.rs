@@ -27,6 +27,7 @@ use anyhow::{anyhow, bail};
 use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream};
 use sha2::{Digest, Sha256};
 use skrifa::instance::Location;
+use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::prelude::{FontRef, LocationRef, MetadataProvider, Size};
 use skrifa::{GlyphId, Tag};
 use std::collections::{HashMap, HashSet};
@@ -36,6 +37,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use subsetter::GlyphRemapper;
 use unicode_normalization::UnicodeNormalization;
+use unicode_segmentation::UnicodeSegmentation;
 
 /// The bundled Liberation faces (see `assets/fonts/README.md`): sans, serif and mono, each
 /// regular, bold, italic and bold italic, by name. They have the widths of Helvetica, Times
@@ -154,6 +156,8 @@ pub(crate) struct Face {
     source: [u8; 8],
     /// Each glyph's width, in thousandths of an em, rounded as `/W` gives it.
     widths: Vec<i64>,
+    /// Whether each glyph has an outline ([`Face::outlined`]), found the first time asked.
+    outlines: Box<[OnceLock<bool>]>,
 }
 
 /// Largest embedded font file read back to grow it, once decompressed.
@@ -258,6 +262,7 @@ impl Face {
         let widths = (0..m.glyph_count as u32)
             .map(|g| (gm.advance_width(GlyphId::new(g)).unwrap_or(0.0) * em).round() as i64)
             .collect();
+        let outlines = (0..m.glyph_count).map(|_| OnceLock::new()).collect();
         let mut sum = Sha256::new();
         sum.update(data);
         if index != 0 || !coords.is_empty() {
@@ -278,6 +283,7 @@ impl Face {
             cff,
             source,
             widths,
+            outlines,
         })
     }
 
@@ -293,37 +299,65 @@ impl Face {
             .map_or_else(|| self.font().attributes().weight.value(), |(_, v)| *v)
     }
 
-    /// The face's glyph for `c`; `None` for characters it lacks, control characters and
-    /// those of right-to-left and shaped scripts.
+    /// The face's glyph for `c`; `None` for characters it lacks, control characters, those
+    /// of right-to-left and shaped scripts and the parts of emoji sequences
+    /// ([`emoji_part`]), and for a character meant to show something, a glyph with no
+    /// outline: a colour emoji's, say, drawn by colour layers or pictures a PDF doesn't
+    /// have, so it would show nothing.
     fn glyph(&self, c: char) -> Option<u16> {
-        if c.is_control() || right_to_left(c) || shaped(c) {
+        if c.is_control() || right_to_left(c) || shaped(c) || emoji_part(c) {
             return None;
         }
-        let g = self.font().charmap().map(c)?.to_u32();
-        (g != 0).then_some(g as u16)
+        let g = self.font().charmap().map(c)?.to_u32() as u16;
+        (g != 0 && (blank(c) || self.outlined(g))).then_some(g)
+    }
+
+    /// Whether glyph `g` draws anything, set as the face is.
+    fn outlined(&self, g: u16) -> bool {
+        let Some(known) = self.outlines.get(g as usize) else {
+            return false;
+        };
+        *known.get_or_init(|| {
+            let mut pen = Strokes(0);
+            let settings =
+                DrawSettings::unhinted(Size::unscaled(), LocationRef::from(&self.location));
+            self.font()
+                .outline_glyphs()
+                .get(GlyphId::new(g.into()))
+                .is_some_and(|o| o.draw(settings, &mut pen).is_ok() && pen.0 > 0)
+        })
     }
 
     /// Whether the face has a glyph for `c` that LimarePDF can write (control characters,
-    /// right-to-left and shaped scripts never).
+    /// right-to-left and shaped scripts and the parts of emoji sequences never).
     pub(crate) fn covers(&self, c: char) -> bool {
         self.glyph(c).is_some()
     }
 
     /// The characters `text` is written with in the face: put together (NFC) where the face
     /// has the combined letter, else apart where it has the parts; and those it can't write,
-    /// each once.
+    /// each once, an emoji sequence whole ([`emoji_sequence`]).
     fn spelled(&self, text: &str) -> (Vec<char>, String) {
         let (mut out, mut missing) = (Vec::new(), String::new());
-        for c in text.nfc() {
-            if self.covers(c) {
-                out.push(c);
+        let text: String = text.nfc().collect();
+        for cluster in text.graphemes(true) {
+            if emoji_sequence(cluster) {
+                if !missing.contains(cluster) {
+                    missing.push_str(cluster);
+                }
                 continue;
             }
-            let parts: Vec<char> = c.to_string().nfd().collect();
-            if parts.len() > 1 && parts.iter().all(|&p| self.covers(p)) {
-                out.extend(parts);
-            } else if !missing.contains(c) {
-                missing.push(c);
+            for c in cluster.chars() {
+                if self.covers(c) {
+                    out.push(c);
+                    continue;
+                }
+                let parts: Vec<char> = c.to_string().nfd().collect();
+                if parts.len() > 1 && parts.iter().all(|&p| self.covers(p)) {
+                    out.extend(parts);
+                } else if !missing.contains(c) {
+                    missing.push(c);
+                }
             }
         }
         (out, missing)
@@ -361,8 +395,19 @@ pub fn writable(f: FontChoice, c: char) -> bool {
     }
 }
 
-/// The message refusing text with the characters `missing`.
+/// The message refusing text with the characters `missing`: its emoji sequences
+/// ([`emoji_sequence`]), when it has any, as no font helps with those.
 pub(crate) fn cant_write(missing: &str) -> String {
+    let sequences: String = missing
+        .graphemes(true)
+        .filter(|g| emoji_sequence(g))
+        .collect();
+    if !sequences.is_empty() {
+        return format!(
+            "LimarePDF can't write \"{sequences}\" yet: flags, skin tones, keycaps and joined \
+             emoji aren't supported"
+        );
+    }
     format!(
         "LimarePDF can't write \"{missing}\" yet; Latin, Greek and Cyrillic characters are \
          supported"
@@ -370,21 +415,35 @@ pub(crate) fn cant_write(missing: &str) -> String {
 }
 
 /// Whether LimarePDF could write `c` in an installed font that has it: not a control
-/// character, nor of a right-to-left or shaped script, nor an emoji (no font LimarePDF
-/// offers has them), so choosing another font may help.
+/// character, nor of a right-to-left or shaped script, nor a part of an emoji sequence
+/// ([`emoji_part`]), so choosing another font may help. A single emoji can be, in a font
+/// that draws it with an outline (Symbola, say).
 pub fn installed_could_write(c: char) -> bool {
-    !c.is_control() && !right_to_left(c) && !shaped(c) && !emoji(c)
+    !c.is_control() && !right_to_left(c) && !shaped(c) && !emoji_part(c)
 }
 
 /// The message refusing text in `f` with the characters `missing`: an installed family
 /// lacking them is named, as another font may have them.
 pub fn refusal(f: FontChoice, missing: &str) -> String {
+    let sequence = missing.graphemes(true).any(emoji_sequence);
     match f.typeface() {
-        Some(t) if missing.chars().any(installed_could_write) => {
+        Some(t) if !sequence && missing.chars().any(installed_could_write) => {
             format!("{} has no \"{missing}\"; choose another font", t.name)
         }
         _ => cant_write(missing),
     }
+}
+
+/// Refuses `text`, with [`refusal`]'s message, when LimarePDF can't write all of it in
+/// `f` as [`Pdf::pen`] would (control characters, such as line breaks, aside). Nothing is
+/// embedded.
+pub(crate) fn check_writable(f: FontChoice, text: &str) -> Result<()> {
+    let text: String = text.chars().filter(|c| !c.is_control()).collect();
+    let missing = unwritable(f, &text);
+    if !missing.is_empty() {
+        bail!("{}", refusal(f, &missing));
+    }
+    Ok(())
 }
 
 /// The characters of `text` LimarePDF can't write in `f` (a standard font or its embedded
@@ -846,16 +905,82 @@ fn shaped(c: char) -> bool {
     )
 }
 
-/// Whether `c` is an emoji picture (faces, animals, flags and the rest), drawn by colour
-/// fonts that aren't offered as they lack the Latin letters (`typefaces.rs`).
-fn emoji(c: char) -> bool {
+/// Whether `cluster`, one character as readers see it (a grapheme cluster), is an emoji
+/// made of several characters: with a skin tone, a flag (regional indicators, or tags), a
+/// keycap, the emoji variation selector, or emoji joined by the zero-width joiner (families
+/// and the like); or one of those parts alone. Written a character at a time it would show
+/// something else, and LimarePDF can't write them as one yet (PF-14).
+pub fn emoji_sequence(cluster: &str) -> bool {
+    cluster.chars().any(emoji_part)
+        || (cluster.contains('\u{200D}') && cluster.chars().any(pictograph))
+}
+
+/// Whether `c` only makes emoji sequences: the skin tones, the regional indicators (flags),
+/// the keycap mark, tags (flags of regions) and the emoji variation selector. The
+/// zero-width joiner isn't one: alone, it is an invisible mark some text has.
+fn emoji_part(c: char) -> bool {
     matches!(
         c,
-        '\u{1F1E6}'..='\u{1F1FF}'
-            | '\u{1F300}'..='\u{1F6FF}'
-            | '\u{1F900}'..='\u{1F9FF}'
-            | '\u{1FA70}'..='\u{1FAFF}'
+        '\u{1F3FB}'..='\u{1F3FF}'
+            | '\u{1F1E6}'..='\u{1F1FF}'
+            | '\u{20E3}'
+            | '\u{FE0F}'
+            | '\u{E0000}'..='\u{E007F}'
     )
+}
+
+/// Whether `c` is a picture an emoji sequence joins: the emoji blocks (faces, animals and
+/// the rest), and the older symbols some sequences use (♀, ❤, ⚕).
+fn pictograph(c: char) -> bool {
+    matches!(
+        c,
+        '\u{2600}'..='\u{27BF}' | '\u{2B00}'..='\u{2BFF}' | '\u{1F000}'..='\u{1FAFF}'
+    )
+}
+
+/// Whether `c` is meant to show nothing: spaces, and invisible marks (Unicode's default
+/// ignorable characters: joiners, variation selectors, the soft hyphen and the rest), and
+/// the blank Braille pattern. A glyph with no outline is right for these.
+fn blank(c: char) -> bool {
+    c.is_whitespace()
+        || matches!(
+            c,
+            '\u{AD}'
+                | '\u{34F}'
+                | '\u{61C}'
+                | '\u{115F}'..='\u{1160}'
+                | '\u{17B4}'..='\u{17B5}'
+                | '\u{180B}'..='\u{180F}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{206F}'
+                | '\u{2800}'
+                | '\u{3164}'
+                | '\u{FE00}'..='\u{FE0F}'
+                | '\u{FEFF}'
+                | '\u{FFA0}'
+                | '\u{FFF0}'..='\u{FFF8}'
+                | '\u{1BCA0}'..='\u{1BCA3}'
+                | '\u{1D173}'..='\u{1D17A}'
+                | '\u{E0000}'..='\u{E0FFF}'
+        )
+}
+
+/// Counts the lines and curves an outline draws.
+struct Strokes(usize);
+
+impl OutlinePen for Strokes {
+    fn move_to(&mut self, _: f32, _: f32) {}
+    fn line_to(&mut self, _: f32, _: f32) {
+        self.0 += 1;
+    }
+    fn quad_to(&mut self, _: f32, _: f32, _: f32, _: f32) {
+        self.0 += 1;
+    }
+    fn curve_to(&mut self, _: f32, _: f32, _: f32, _: f32, _: f32, _: f32) {
+        self.0 += 1;
+    }
+    fn close(&mut self) {}
 }
 
 /// The font descriptor's key for a face's font file: `/FontFile3` (with `/Subtype
@@ -1227,8 +1352,8 @@ mod tests {
     }
 
     /// A test font as an installed family's face, by the family's name: Source Serif 4
-    /// (OpenType CFF), Cantarell (CFF2, variable, weights 100 to 800) or Caveat (TrueType,
-    /// variable, weights 400 to 700).
+    /// (OpenType CFF), Cantarell (CFF2, variable, weights 100 to 800), Caveat (TrueType,
+    /// variable, weights 400 to 700) or [`EMOJI`].
     fn installed(name: &str, bold: bool) -> FontChoice {
         static NUMBERS: OnceLock<Vec<u16>> = OnceLock::new();
         let numbers = NUMBERS.get_or_init(|| {
@@ -1237,6 +1362,7 @@ mod tests {
                 dir.join("tests/data/fonts/SourceSerif4-Regular.otf"),
                 dir.join("tests/data/fonts/Cantarell-VF.otf"),
                 dir.join("assets/fonts/Caveat.ttf"),
+                dir.join("tests/data/fonts/LimareEmojiTest.ttf"),
             ];
             crate::add_font_files(&files.iter().map(|p| p.as_path()).collect::<Vec<_>>())
         });
@@ -1441,14 +1567,20 @@ mod tests {
         for c in ['क', 'ก', 'ᄀ', 'ក', 'ꦄ', '𑀅'] {
             assert!(shaped(c), "{c:?}");
         }
-        for c in ['A', 'Ω', 'ж', '中', 'あ', '한', 'ẫ'] {
+        // Single emoji too: some installed fonts draw them with outlines.
+        for c in ['A', 'Ω', 'ж', '中', 'あ', '한', 'ẫ', '😀', '🐋'] {
             assert!(!shaped(c), "{c:?}");
             assert!(installed_could_write(c), "{c:?}");
         }
-        for c in ['\n', 'ש', 'ب', 'क', 'ก', '😀', '🐋', '🇬'] {
+        for c in ['\n', 'ש', 'ب', 'क', 'ก'] {
             assert!(!installed_could_write(c), "{c:?}");
         }
-        assert_eq!(refusal(caveat, "🐋"), cant_write("🐋"));
+        // Nor the parts of emoji sequences.
+        for c in ['🇬', '🏽', '\u{FE0F}', '\u{20E3}', '\u{E0067}'] {
+            assert!(!installed_could_write(c), "{c:?}");
+        }
+        let whale = "Caveat has no \"🐋\"; choose another font";
+        assert_eq!(refusal(caveat, "🐋"), whale);
 
         // A face the family lacks.
         let bold_serif = installed("Source Serif 4", true);
@@ -1456,6 +1588,93 @@ mod tests {
         assert_eq!(err, "Source Serif 4 has no bold face");
         assert!(!writable(bold_serif, 'A'));
         assert_eq!(p.doc.objects.len(), before);
+    }
+
+    /// The made-up font with emoji (`tools/make_emoji_test_font.py`).
+    const EMOJI: &str = "Limare Emoji Test";
+
+    /// Dark pixels on the first page of `p`, saved, at 2 pixels per point.
+    fn inked(p: &mut Pdf) -> usize {
+        let h = render::load(p.to_bytes().unwrap(), None).unwrap();
+        let r = Renderer::new(&h);
+        let b = r.render(0, 2.0).unwrap();
+        assert!(r.take_missing().is_empty());
+        b.rgba.chunks(4).filter(|px| px[0] < 128).count()
+    }
+
+    #[test]
+    fn single_emoji_are_written_in_a_font_that_has_their_outlines() {
+        let emoji = installed(EMOJI, false);
+        assert!(writable(emoji, '😀') && writable(emoji, 'W'));
+        let mut p = blank();
+        show(&mut p, &[(emoji, "Walrus 😀")]);
+        let mut back = reopened(&mut p);
+        let text = back.page_text(0);
+        assert!(text.contains("Walrus 😀"), "{text:?}");
+        let mut words = blank();
+        show(&mut words, &[(emoji, "Walrus")]);
+        // The emoji is a box 0.9 em square: about 21 pixels at 12 pt.
+        let (with, without) = (inked(&mut back), inked(&mut words));
+        assert!(with > without + 300, "the emoji is drawn: {with} {without}");
+    }
+
+    #[test]
+    fn glyphs_without_an_outline_are_refused() {
+        let emoji = installed(EMOJI, false);
+        // The font maps 😎 to a glyph drawn only by colour layers: written in a PDF, it
+        // would show nothing.
+        let face = Face::of(emoji).unwrap();
+        assert!(face.font().charmap().map('😎').is_some());
+        assert!(!writable(emoji, '😎'));
+        let mut p = blank();
+        let before = p.doc.objects.len();
+        let err = p.pen(emoji, "Cool 😎").err().unwrap().to_string();
+        assert_eq!(err, "Limare Emoji Test has no \"😎\"; choose another font");
+        assert_eq!(p.doc.objects.len(), before, "nothing changed");
+        assert_eq!(unwritable(emoji, "😀😎"), "😎");
+        // Characters meant to show nothing are written: spaces, and the invisible ones.
+        for c in [' ', '\u{2009}', '\u{202F}', '\u{200B}', '\u{AD}'] {
+            assert!(writable(SANS, c), "{c:?}");
+        }
+        assert!(writable(emoji, ' '));
+    }
+
+    #[test]
+    fn emoji_sequences_are_refused_whole() {
+        let emoji = installed(EMOJI, false);
+        let mut p = blank();
+        let before = p.doc.objects.len();
+        // The font has a glyph for every part, but written one by one the parts would
+        // say something else: a thumb and a colour swatch, two people, two letters.
+        let sequences = [
+            "👍🏽",
+            "👨\u{200D}👩",
+            "🇬🇧",
+            "1\u{FE0F}\u{20E3}",
+            "😀\u{FE0F}",
+        ];
+        for s in sequences {
+            assert_eq!(unwritable(emoji, &format!("Seal {s} fish")), s, "{s:?}");
+            let text = format!("Seal {s}");
+            let err = p.pen(emoji, &text).err().unwrap().to_string();
+            let want = format!(
+                "LimarePDF can't write \"{s}\" yet: flags, skin tones, keycaps and joined emoji \
+                 aren't supported"
+            );
+            assert_eq!(err, want);
+            assert_eq!(refusal(emoji, s), want);
+            assert_eq!(cant_write(s), want);
+        }
+        assert_eq!(p.doc.objects.len(), before, "nothing changed");
+        // The parts that only make sequences can't be written alone either; the others can.
+        for c in ['🏽', '🇬', '\u{20E3}', '\u{FE0F}'] {
+            assert!(!writable(emoji, c), "{c:?}");
+        }
+        assert!(writable(emoji, '👍') && writable(emoji, '👨'));
+        // A joiner outside an emoji is only an invisible mark, written as it is.
+        assert!(unwritable(SANS, "a\u{200D}b").is_empty());
+        // In a standard font, named whole too, beside what else it lacks.
+        assert_eq!(unwritable(SANS, "a 👍🏽 b 中"), "👍🏽中");
     }
 
     #[test]

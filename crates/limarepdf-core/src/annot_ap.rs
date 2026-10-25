@@ -128,8 +128,9 @@ impl Pdf {
     }
 
     /// The font a text box's text is drawn in ([`Pdf::pen`]): Helvetica, or its embedded
-    /// face for characters Helvetica lacks. Characters neither has show as `?`, as they
-    /// did before LimarePDF embedded fonts. `None` for other annotations.
+    /// face for characters Helvetica lacks. LimarePDF refuses other text in its own text
+    /// boxes ([`Pdf::add_text_box`]); in one another app wrote, characters neither has show
+    /// as `?`, as they did before LimarePDF embedded fonts. `None` for other annotations.
     pub(crate) fn box_pen(&mut self, id: ObjectId) -> Option<embed::Pen> {
         let d = self.doc.get_dictionary(id).ok()?;
         if d.get(b"Subtype").and_then(Object::as_name).ok()? != b"FreeText" {

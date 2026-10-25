@@ -2,12 +2,13 @@
 //! design, batch 2): new and edited lines, text boxes, fill-and-sign text, form values,
 //! headers, footers, Bates numbers, watermarks, stamps and selected text as a plain page.
 //! Each is read back after saving, and text the standard fonts can write still embeds
-//! nothing.
+//! nothing. Emoji are written where a font has them, and refused with a message where
+//! not (BUG-24).
 
 use limarepdf_core::render::{self, Renderer};
 use limarepdf_core::{
-    Bates, Family, FieldValue, FontChoice, HeaderFooter, InkColor, Pdf, Stamp, StampColor,
-    StampPlace, TextEdit, TextStyle, Watermark,
+    typed_signature, Bates, Family, FieldValue, FontChoice, HeaderFooter, InkColor, Pdf, SignStyle,
+    Stamp, StampColor, StampPlace, TextEdit, TextStyle, Watermark,
 };
 use lopdf::{dictionary, Dictionary, Object, ObjectId, Stream, StringFormat};
 
@@ -175,8 +176,8 @@ fn an_edited_line_is_set_in_the_embedded_face_of_its_kind() {
         .any(|o| o.hidden && o.text.as_deref() == Some(RUSSIAN)));
 }
 
-/// A test font as an installed family, by name: Source Serif 4 (OpenType CFF) or Cantarell
-/// (variable).
+/// A test font as an installed family, by name: Source Serif 4 (OpenType CFF), Cantarell
+/// (variable) or [`EMOJI`].
 fn installed(name: &str) -> Family {
     static NUMBERS: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
     let numbers = NUMBERS.get_or_init(|| {
@@ -184,6 +185,7 @@ fn installed(name: &str) -> Family {
         let files = [
             dir.join("SourceSerif4-Regular.otf"),
             dir.join("Cantarell-VF.otf"),
+            dir.join("LimareEmojiTest.ttf"),
         ];
         limarepdf_core::add_font_files(&files.iter().map(|p| p.as_path()).collect::<Vec<_>>())
     });
@@ -445,7 +447,10 @@ fn selected_text_as_a_plain_page_keeps_what_it_can_write() {
 
 /// Runs `name` with `args` (`{}` the file holding `bytes`): its output and messages.
 fn tool(name: &str, args: &[&str], bytes: &[u8]) -> (String, String) {
-    let dir = std::env::temp_dir().join(format!("limarepdf-unicode-{}", std::process::id()));
+    // A folder of its own for each run, as the cross-checks run side by side.
+    static RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let run = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("limarepdf-unicode-{}-{run}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!("{name}.pdf"));
     std::fs::write(&path, bytes).unwrap();
@@ -581,4 +586,265 @@ fn characters_it_cant_write_are_refused_with_nothing_changed() {
     };
     assert!(p.add_watermark(&[0], &wm).is_err());
     assert_eq!(objects(&p), before);
+}
+
+// ---------------------------------------------------------------- emoji (BUG-24)
+
+/// The made-up font with emoji (`tools/make_emoji_test_font.py`): the Latin letters, 😀
+/// with an outline, 😎 in colour layers only, and a glyph for each part of [`SEQUENCES`].
+const EMOJI: &str = "Limare Emoji Test";
+
+/// Emoji made of several characters: a skin tone, a family, a flag, a keycap and the emoji
+/// variation selector.
+const SEQUENCES: [&str; 5] = [
+    "👍🏽",
+    "👨\u{200D}👩\u{200D}👧",
+    "🇬🇧",
+    "1\u{FE0F}\u{20E3}",
+    "❤\u{FE0F}",
+];
+
+/// The refusal of an emoji sequence.
+fn sequence_refused(s: &str) -> String {
+    format!(
+        "LimarePDF can't write \"{s}\" yet: flags, skin tones, keycaps and joined emoji aren't \
+         supported"
+    )
+}
+
+#[test]
+fn new_and_edited_lines_write_single_emoji_in_a_font_that_has_them() {
+    let emoji = font(installed(EMOJI), false, false);
+    let mut p = page();
+    p.add_text(0, (20.0, 40.0), "Walrus 😀", emoji, 14.0, [0.0; 3])
+        .unwrap();
+    p.add_text(0, (20.0, 80.0), "Seal", emoji, 14.0, [0.0; 3])
+        .unwrap();
+    let mut back = reopened(&mut p);
+    let seal = back.page_objects(0).unwrap();
+    let seal = seal.iter().find(|o| o.text.as_deref() == Some("Seal"));
+    let edit = |text: &str| TextEdit {
+        text: text.into(),
+        font: None,
+        size: None,
+        color: None,
+        parts: Vec::new(),
+    };
+    back.edit_text(0, seal.unwrap().id, &edit("Seal 😀"))
+        .unwrap();
+    let mut again = reopened(&mut back);
+    assert_eq!(embedded(&again), ["LimareEmojiTest-Regular"]);
+    let text = again.page_text(0);
+    assert!(
+        text.contains("Walrus 😀") && text.contains("Seal 😀"),
+        "{text:?}"
+    );
+    // The emoji after "Seal" is drawn: a box about 13 points square.
+    assert!(ink(&mut again, [60, 65, 90, 85]) > 100);
+
+    // Drawn only in colour, or a sequence: refused, with nothing changed.
+    let before = objects(&again);
+    let e = again
+        .add_text(0, (20.0, 120.0), "Cool 😎", emoji, 14.0, [0.0; 3])
+        .unwrap_err()
+        .to_string();
+    assert_eq!(e, "Limare Emoji Test has no \"😎\"; choose another font");
+    let walrus = again.page_objects(0).unwrap();
+    let walrus = walrus
+        .iter()
+        .find(|o| o.text.as_deref() == Some("Walrus 😀"))
+        .unwrap()
+        .id;
+    for s in SEQUENCES {
+        let text = format!("Seal {s}");
+        let e = again
+            .add_text(0, (20.0, 120.0), &text, emoji, 14.0, [0.0; 3])
+            .unwrap_err();
+        assert_eq!(e.to_string(), sequence_refused(s));
+        let e = again.edit_text(0, walrus, &edit(s)).unwrap_err();
+        assert_eq!(e.to_string(), sequence_refused(s));
+    }
+    assert_eq!(objects(&again), before);
+}
+
+#[test]
+fn text_boxes_and_fill_and_sign_text_refuse_what_they_cant_write() {
+    // Set in Helvetica, or its embedded face, which has no emoji or Chinese.
+    let mut p = page();
+    let style = TextStyle::default();
+    let before = objects(&p);
+    for t in ["Walrus 😀", "Seal 中", "Seal 👍🏽"] {
+        let e = p
+            .add_text_box(0, [20.0, 20.0, 380.0, 60.0], t, &style, "Sam")
+            .unwrap_err()
+            .to_string();
+        assert!(e.starts_with("LimarePDF can't write"), "{t}: {e}");
+        let e = p
+            .add_sign_text(0, (200.0, 200.0), t, InkColor::Blue, "Sam")
+            .unwrap_err()
+            .to_string();
+        assert!(e.starts_with("LimarePDF can't write"), "{t}: {e}");
+    }
+    let e = p
+        .add_text_box(0, [20.0, 20.0, 380.0, 60.0], "Walrus 😀", &style, "")
+        .unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "LimarePDF can't write \"😀\" yet; Latin, Greek and Cyrillic characters are supported"
+    );
+    assert_eq!(objects(&p), before);
+
+    // A text box's text changed to what it can't write is refused, and it keeps its text
+    // and drawing.
+    let id = p
+        .add_text_box(0, [20.0, 20.0, 380.0, 60.0], POLISH, &style, "Sam")
+        .unwrap();
+    let before = objects(&p);
+    let a = p.annotations()[0].clone();
+    for t in ["Walrus 😀", "Seal 👍🏽"] {
+        assert!(p.set_annotation(id, a.color, a.opacity, t).is_err(), "{t}");
+    }
+    assert_eq!(objects(&p), before);
+    assert_eq!(p.annotations()[0].contents, POLISH);
+}
+
+#[test]
+fn writers_in_the_standard_fonts_refuse_emoji_with_nothing_changed() {
+    let mut p = page();
+    form(&mut p);
+    let before = objects(&p);
+    for t in ["Walrus 😀", "Seal 👍🏽"] {
+        let field = p.set_field("one", FieldValue::Text(t.into()));
+        assert!(field.is_err(), "{t}");
+        let hf = HeaderFooter {
+            header: [t.into(), String::new(), String::new()],
+            ..HeaderFooter::default()
+        };
+        assert!(p.add_header_footer(&[0], &hf).is_err(), "{t}");
+        let bates = HeaderFooter {
+            footer: [String::new(), "{bates}".into(), String::new()],
+            bates: Some(Bates {
+                prefix: t.into(),
+                ..Bates::default()
+            }),
+            ..HeaderFooter::default()
+        };
+        assert!(p.add_header_footer(&[0], &bates).is_err(), "{t}");
+        let wm = Watermark {
+            text: t.into(),
+            ..Watermark::default()
+        };
+        assert!(p.add_watermark(&[0], &wm).is_err(), "{t}");
+        let stamp = Stamp::Custom {
+            text: t,
+            color: StampColor::Green,
+            name_and_date: false,
+        };
+        let e = p
+            .add_stamp(0, &stamp, StampPlace::Centre(200.0, 100.0), "")
+            .unwrap_err();
+        assert!(e.to_string().starts_with("a stamp can't show"), "{e}");
+        for style in SignStyle::ALL {
+            assert!(typed_signature(t, style).is_err(), "{t} {style:?}");
+        }
+    }
+    assert_eq!(objects(&p), before);
+    // A name the stamp can't show is left off its line, as for other scripts.
+    let stamp = Stamp::Custom {
+        text: "paid",
+        color: StampColor::Green,
+        name_and_date: true,
+    };
+    p.add_stamp(0, &stamp, StampPlace::Centre(200.0, 100.0), "Sam 😀")
+        .unwrap();
+    p.flatten_annotations(None).unwrap();
+    let text = reopened(&mut p).page_text(0);
+    assert!(text.contains("PAID") && !text.contains("Sam"), "{text:?}");
+}
+
+/// The number of dark pixels on the first page of the PDF `bytes` as Poppler draws it, at
+/// 2 pixels per point.
+fn poppler_ink(bytes: &[u8]) -> usize {
+    let dir = std::env::temp_dir().join(format!("limarepdf-emoji-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let pdf = dir.join("in.pdf");
+    std::fs::write(&pdf, bytes).unwrap();
+    let out = dir.join("out");
+    let run = std::process::Command::new("pdftoppm")
+        .args(["-r", "144", "-gray", "-singlefile"])
+        .arg(&pdf)
+        .arg(&out)
+        .status()
+        .expect("pdftoppm installed");
+    assert!(run.success(), "pdftoppm failed");
+    let pgm = std::fs::read(dir.join("out.pgm")).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    // A binary PGM: "P5", width, height and the largest value, then a byte a pixel.
+    let mut fields = 0;
+    let mut at = 0;
+    while fields < 4 {
+        while pgm[at].is_ascii_whitespace() {
+            at += 1;
+        }
+        while !pgm[at].is_ascii_whitespace() {
+            at += 1;
+        }
+        fields += 1;
+    }
+    pgm[at + 1..].iter().filter(|&&v| v < 128).count()
+}
+
+/// Single emoji in fonts that draw them with outlines, as Poppler reads and draws them: the
+/// made-up font, and Symbola and DejaVu Sans where installed (each has the Latin letters and
+/// outline emoji). A colour emoji font isn't offered. Opt-in: `cargo test -p limarepdf-core
+/// --test unicode_text -- --ignored cross_check`.
+#[test]
+#[ignore]
+fn cross_check_emoji_with_poppler() {
+    let mut fonts = vec![(EMOJI, installed(EMOJI), "😀")];
+    for (name, emoji) in [("Symbola", "🐋 😀 🦊"), ("DejaVu Sans", "😀 🐱 🌕")] {
+        let found = limarepdf_core::typefaces()
+            .into_iter()
+            .find(|(_, t)| t.name == name);
+        match found {
+            Some((n, _)) => fonts.push((name, Family::Installed(n), emoji)),
+            None => eprintln!("{name} isn't installed: not checked"),
+        }
+    }
+    for (name, family, emoji) in fonts {
+        let f = font(family, false, false);
+        let line = format!("Walrus {emoji}");
+        let mut p = page();
+        p.add_text(0, (20.0, 40.0), &line, f, 24.0, [0.0; 3])
+            .unwrap();
+        let mut p = reopened(&mut p);
+        assert!(p.page_text(0).contains(&line), "{name}: LimarePDF");
+        let bytes = p.to_bytes().unwrap();
+        // Through the text map, characters beyond the first plane included.
+        let (text, _) = tool("pdftotext", &["{}", "-"], &bytes);
+        assert!(text.contains(&line), "{name}: poppler read {text:?}");
+        let (fonts, errors) = tool("pdffonts", &["{}"], &bytes);
+        assert!(errors.trim().is_empty(), "{name}: pdffonts: {errors}");
+        let row = fonts.lines().nth(2).unwrap();
+        let flags: Vec<&str> = row.split_whitespace().rev().skip(2).take(3).collect();
+        assert_eq!(flags, ["yes", "yes", "yes"], "{name}: {row}");
+        // Poppler and LimarePDF draw the emoji: more ink than the word alone.
+        let mut words = page();
+        words
+            .add_text(0, (20.0, 40.0), "Walrus", f, 24.0, [0.0; 3])
+            .unwrap();
+        let (with, without) = (poppler_ink(&bytes), poppler_ink(&words.to_bytes().unwrap()));
+        assert!(with > without + 200, "{name}: poppler {with} {without}");
+        let whole = [0, 0, W as usize, H as usize];
+        let (with, without) = (ink(&mut p, whole), ink(&mut words, whole));
+        assert!(with > without + 50, "{name}: LimarePDF {with} {without}");
+        eprintln!("{name}: {emoji} written, read and drawn");
+    }
+    // Noto Color Emoji draws in colour pictures only, with no outlines or Latin letters.
+    let noto = std::path::Path::new("/usr/share/fonts/noto/NotoColorEmoji.ttf");
+    if noto.exists() {
+        assert!(limarepdf_core::add_font_files(&[noto]).is_empty());
+    } else {
+        eprintln!("Noto Color Emoji isn't installed: not checked");
+    }
 }
