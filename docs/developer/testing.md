@@ -422,9 +422,11 @@ the limitations) is to be confirmed in those tests. The checks still to run are 
 
 The release gate (REL-03's first part, 2026-10-25): `ci.yml` parsed, the `release` job needing `audit`, `build` and
 `macos-dmg`, and every `cargo test` and `cargo build` in the build jobs with `--locked`; `cargo metadata --locked`
-passes on the branch, so `Cargo.lock` is current. A dry run of the release workflow on `bugfix-round-2`, showing
-`release` waiting for `audit`: not run yet (it needs the change pushed). SECURITY.md's links checked with the docs'
-link checker.
+passes on the branch, so `Cargo.lock` is current. The release workflow's dry run on d1df056 (run 40206629311,
+2026-10-25) passed: `audit` ended in 2 min 18 s, the builds between 19 and 41 min, and `release` started only after
+the last of them (the Intel Mac build), then signed and attested the files and uploaded `release-dry-run`, skipping
+the draft release. The gate adds no time while `audit` is faster than the builds. SECURITY.md's links checked with
+the docs' link checker.
 
 ## Acceptance checks
 
