@@ -1273,20 +1273,29 @@ fn a_signature_picture_loses_its_paper_and_margins() {
     let mut out = std::io::Cursor::new(Vec::new());
     img.write_to(&mut out, image::ImageFormat::Png).unwrap();
     let bytes = out.into_inner();
-    let pic = |clear_paper| Stamp::Signature {
+    let cut = |clear_paper, crop| Stamp::Signature {
         art: SignArt::Picture {
             bytes: &bytes,
             clear_paper,
+            crop,
         },
         role: SignRole::Signature,
         color: InkColor::Black,
         date: false,
     };
+    let pic = |clear_paper| cut(clear_paper, None);
     // Cropped to the bar and a 2-pixel margin: 44 by 10.
     let (w, h) = pic(true).size("").unwrap();
     assert!((w / h - 4.4).abs() < 0.01, "{w} x {h}");
     let (w, h) = pic(false).size("").unwrap();
     assert!((w / h - 2.0).abs() < 0.01, "{w} x {h}");
+    // Only the left half: 30 by 30, or its part of the bar, which runs to the half's edge,
+    // with the margin on its other three sides: 22 by 10.
+    let half = Some([0.0, 0.0, 0.5, 1.0]);
+    let (w, h) = cut(false, half).size("").unwrap();
+    assert!((w / h - 1.0).abs() < 0.01, "{w} x {h}");
+    let (w, h) = cut(true, half).size("").unwrap();
+    assert!((w / h - 2.2).abs() < 0.01, "{w} x {h}");
     let mut p = page();
     p.add_stamp(0, &pic(true), StampPlace::Centre(150.0, 100.0), "")
         .unwrap();

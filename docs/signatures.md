@@ -524,7 +524,8 @@ document as you see it may not be what was signed: look at the signed version (a
 **Can't check: reason.** LimarePDF can't tell either way: an algorithm it doesn't support (MD5, RIPEMD-160, Brainpool
 and P-521 curves), a missing or unreadable certificate, more than one signer in one signature (the PDF rules allow
 exactly one), limits on an RSA-PSS key that it can't read (including a trailer field other than 1, the only one
-RFC 4055 defines), or data it can't read. Don't rely on such a signature without checking it elsewhere.
+RFC 4055 defines), an RSA-PSS signature that leaves out its parameters (the standard requires them; the signature
+or one of its certificates says *leaves out its RSA-PSS parameters*), or data it can't read. Don't rely on such a signature without checking it elsewhere.
 
 ### Warnings
 
@@ -683,7 +684,7 @@ The full record, with the files used, is in [Testing](developer/testing.md#digit
   authorities; LimarePDF makes no network connections.
 - Algorithms: RSA (PKCS#1 v1.5 and PSS, up to 8192 bits), ECDSA on P-256 and P-384, with SHA-1, SHA-224, SHA-256,
   SHA-384 and SHA-512. Brainpool curves (used by some European ID cards), P-521, MD5 and RIPEMD-160 can't be
-  checked. RSA-PSS signatures must use MGF1 with the signature's own digest.
+  checked. RSA-PSS signatures must use MGF1 with the signature's own digest, and name their parameters.
 - RSA-PSS key limits are checked as OpenSSL checks them, except for one: a certificate that limits its key to a
   trailer field other than 1 gives *can't check*, where OpenSSL 3.6 ignores that limit.
 - Certificates must be properly DER-encoded; a few old signers wrote them otherwise, and those can't be checked.

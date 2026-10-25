@@ -533,6 +533,17 @@ fn corners(o: Orientation) -> [(f32, f32); 3] {
     }
 }
 
+/// Where a point of a picture as it is seen (`u`, `v`: shares of its width and height, y
+/// down) is in the stored picture (shares of its width and height, y down).
+pub(crate) fn stored_point(o: Orientation, u: f32, v: f32) -> (f32, f32) {
+    let [tl, bl, br] = corners(o);
+    // Seen = top-left + s * (bottom-right - bottom-left) + t * (bottom-left - top-left), y
+    // up; those two steps are unit lengths along the axes, so this undoes it.
+    let (dx, dy) = (u - tl.0, 1.0 - v - tl.1);
+    let (across, down) = ((br.0 - bl.0, br.1 - bl.1), (bl.0 - tl.0, bl.1 - tl.1));
+    (across.0 * dx + across.1 * dy, down.0 * dx + down.1 * dy)
+}
+
 pub(crate) fn swaps_axes(o: Orientation) -> bool {
     use Orientation::*;
     matches!(o, Rotate90 | Rotate270 | Rotate90FlipH | Rotate270FlipH)

@@ -302,6 +302,7 @@ fn a_picture_signature_is_drawn_beside_the_text() {
     r.art = Some(SignArt::Picture {
         bytes: &png,
         clear_paper: false,
+        crop: None,
     });
     let s = sign(&base_pdf(), &r);
     newest_is_good(&s.bytes, rsa());

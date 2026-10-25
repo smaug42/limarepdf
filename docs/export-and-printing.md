@@ -63,10 +63,10 @@ one is an error that names the page, and a lower resolution works. Large page im
 bounds the memory a complex page takes but makes some pages slower to export
 ([details](rendering.md#large-drawings)).
 
-On the command line: `limarepdf-cli render --format png|jpeg`. Known limit of the command line: a filled form field
-with no drawing of its own (some apps leave drawing it to the reader) comes out empty in `limarepdf-cli render`'s
-images. The app draws such fields when it opens a file, so its exports show them, and printing draws them
-everywhere. To be fixed.
+On the command line: `limarepdf-cli render --format png|jpeg`. Like the app, it draws a filled form field that has
+no drawing of its own (some apps leave drawing it to the reader). A field whose text LimarePDF can't draw
+(characters beyond Latin, Greek and Cyrillic) comes out empty: the images are still written, with a warning naming
+those fields.
 
 ## Text
 

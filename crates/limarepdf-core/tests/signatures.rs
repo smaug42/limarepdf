@@ -169,7 +169,8 @@ fn rsa_cert(key: &str, key_alg: Option<&[u8]>) -> Vec<u8> {
 }
 
 /// RSA-PSS-only keys (RFC 4055 sections 1.2 and 3.1) against the signatures made with
-/// them: (name, document, verdict). The first five are the third audit's.
+/// them, then signatures' own RSA-PSS parameters: (name, document, verdict). The first five
+/// are the third audit's.
 fn pss_cases() -> Vec<(&'static str, Vec<u8>, Want)> {
     use Hash::*;
     let restricted = |h: Hash, m: Hash, salt: u64| {
@@ -193,6 +194,12 @@ fn pss_cases() -> Vec<(&'static str, Vec<u8>, Want)> {
         )
     };
     let defaults = pss_alg(Some(&seq(&[])));
+    // Signed with RSA-PSS's defaults (SHA-1, salt 20), naming `alg`.
+    let defaults_alg = defaults.clone();
+    let sha1_pss = |alg: Vec<u8>| Cms {
+        sig_alg: Some(alg),
+        ..pss(Sha1, 20)
+    };
     vec![
         case("rsa_pkcs_control", None, Cms::default(), Want::Valid),
         case(
@@ -276,6 +283,27 @@ fn pss_cases() -> Vec<(&'static str, Vec<u8>, Want)> {
             Some(pss_alg(Some(&seq(&[&ctx(2, &octets(b"x"))])))),
             pss(Sha256, 32),
             Want::Cant("RSA-PSS key limits can't be read"),
+        ),
+        // A signature's own RSA-PSS algorithm must carry its parameters (RFC 4055 section
+        // 3.1): left out or NULL, they aren't read as the defaults, which the value was
+        // made with here. Empty, they are the defaults.
+        case(
+            "pss_signature_defaults",
+            None,
+            sha1_pss(defaults_alg.clone()),
+            Want::Valid,
+        ),
+        case(
+            "pss_signature_without_params",
+            None,
+            sha1_pss(pss_alg(None)),
+            Want::Cant("leaves out its RSA-PSS parameters"),
+        ),
+        case(
+            "pss_signature_null_params",
+            None,
+            sha1_pss(pss_alg(Some(&null()))),
+            Want::Cant("leaves out its RSA-PSS parameters"),
         ),
     ]
 }

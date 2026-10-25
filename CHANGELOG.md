@@ -134,6 +134,20 @@
   a message naming the characters, the box keeping its own drawing (it can still be moved or deleted), and
   flattening refuses such a box, naming its page, with nothing changed. On screen, in print and in exported
   images, a box without a drawing still shows `?`.
+- An RSA-PSS signature (or certificate) that left out its RSA-PSS parameters, which the standard requires, was
+  checked as if it named the defaults (SHA-1, salt of 20 bytes), so one made that way could show as valid. It
+  now shows as *can't check*, as OpenSSL refuses it; an empty list of parameters still means the defaults.
+- `limarepdf-cli render` left a filled form field empty in its images when the field had no drawing of its own
+  (some apps leave drawing it to the reader). It now draws such fields as the app does; a field whose text
+  LimarePDF can't draw comes out empty with a warning naming it, and the images are still written.
+- A photo or scan of a whole sheet with a small signature on it was refused by Create signature's Image tab ("the
+  picture has no signature to keep"), and shaded or grainy paper could be kept as ink. Make the paper transparent
+  now judges the paper around each part of the picture, so it finds a small signature on a whole sheet and leaves
+  out shadows, grain and stray specks, while a blank or noisy sheet is still refused. You can also drag around the
+  signature on the picture to use only that part (Use the whole picture goes back), which helps when other
+  writing shares the sheet; the picture file isn't changed, and a saved signature keeps the part chosen. Paper can
+  now be made transparent in 1-bit and CMYK TIFF scans too. The window shows the picture and the result while you
+  choose.
 
 ### Added
 

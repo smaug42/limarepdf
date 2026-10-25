@@ -3452,6 +3452,7 @@ fn run(cmd: Cmd) -> Result<()> {
                 Some(b) => Some(SignArt::Picture {
                     bytes: b,
                     clear_paper: true,
+                    crop: None,
                 }),
                 None if style != SignStyle::Caveat => Some(SignArt::Typed { text: &name, style }),
                 None => None,
@@ -3878,11 +3879,17 @@ fn run(cmd: Cmd) -> Result<()> {
             overwrite,
             password,
         } => {
-            // As the app shows it (NoView annotations hidden, missing annotation drawings
-            // added), or the file as it is when the document reader can't open it.
-            let hp = match open(&input, &password).and_then(|mut p| p.render_snapshot()) {
-                Ok(bytes) => render::load(bytes, None)?,
-                Err(_) => render::load(std::fs::read(&input)?, password.as_deref())?,
+            // As the app shows it (NoView annotations hidden, missing annotation and field
+            // drawings added), or the file as it is when the document reader can't open it.
+            let (hp, pdf) = match open(&input, &password).and_then(|mut p| {
+                let bytes = p.render_snapshot()?;
+                Ok((bytes, p))
+            }) {
+                Ok((bytes, p)) => (render::load(bytes, None)?, Some(p)),
+                Err(_) => (
+                    render::load(std::fs::read(&input)?, password.as_deref())?,
+                    None,
+                ),
             };
             let n = render::Renderer::new(&hp).page_count();
             let idx = parse_page_range(&pages, n)?;
@@ -3905,6 +3912,17 @@ fn run(cmd: Cmd) -> Result<()> {
                 &hp, &idx, dpi, format, &out_dir, &stem,
             ))?;
             out!("rendered {} page(s) in {:.2?}", idx.len(), t.elapsed());
+            let blank = pdf.map(|p| p.unshown_fields(&idx)).unwrap_or_default();
+            if !blank.is_empty() {
+                let (these, their) = match blank.len() {
+                    1 => ("this field is", "its value"),
+                    _ => ("these fields are", "their values"),
+                };
+                eprintln!(
+                    "warning: {these} empty in the images, because LimarePDF can't draw {their}: {}",
+                    limarepdf_core::quoted_list(&blank)
+                );
+            }
         }
     }
     Ok(())

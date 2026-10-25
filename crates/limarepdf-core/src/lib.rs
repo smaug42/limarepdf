@@ -103,7 +103,8 @@ pub use sig_verify::{
     SigKind, SigStatus, SigWarning, SignatureReport, SigningTime, TimeSource, Timestamp,
 };
 pub use sign::{
-    sign_label, typed_signature, DateStyle, InkColor, Mark, SignArt, SignRole, SignStyle, SIGN_TEXT,
+    picture_view, sign_label, typed_signature, DateStyle, InkColor, Mark, SignArt, SignRole,
+    SignStyle, SIGN_TEXT,
 };
 pub use stamps::{stamp_wording, Stamp, StampColor, StampKind, StampPlace};
 pub use text::SearchHit;

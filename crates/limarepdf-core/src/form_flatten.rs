@@ -74,12 +74,19 @@ impl Pdf {
         self.lost_values(pages, print_widget)
     }
 
+    /// The fields on `pages` (zero-based) whose values won't show in pictures of the pages
+    /// ([`Pdf::render_snapshot`]): widgets showing a value that has no drawing, which
+    /// LimarePDF can't draw either. Changes nothing.
+    pub fn unshown_fields(&self, pages: &[usize]) -> Vec<String> {
+        self.lost_values(pages, flat_widget)
+    }
+
     /// The fields whose values flattening the whole form ([`Pdf::flatten_form`]) would
     /// lose, so it refuses: shown widgets showing a value that has no drawing, which
     /// LimarePDF can't draw either. Changes nothing.
     pub fn undrawable_fields(&self) -> Vec<String> {
         let pages: Vec<usize> = (0..self.page_count()).collect();
-        self.lost_values(&pages, flat_widget)
+        self.unshown_fields(&pages)
     }
 
     /// The fields on `pages` whose values drawing the widgets `which` draws would lose.

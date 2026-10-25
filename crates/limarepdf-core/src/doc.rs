@@ -279,11 +279,14 @@ impl Pdf {
         self.snapshot()
     }
 
-    /// Like [`Pdf::snapshot`], for on-screen rendering. hayro honours the Hidden annotation
-    /// flag but not NoView, so annotations flagged NoView are marked Hidden in the copy that
-    /// is serialised. The document itself is not changed.
+    /// Like [`Pdf::snapshot`], for drawing pages as the app shows them (`limarepdf-cli
+    /// render`). hayro honours the Hidden annotation flag but not NoView, so annotations
+    /// flagged NoView are marked Hidden in the copy that is serialised. Form fields are drawn
+    /// as [`Pdf::refresh_appearances`] would draw them, as the app draws them when opening a
+    /// file ([`Pdf::unshown_fields`] names those it can't draw). The document itself is not
+    /// changed.
     pub fn render_snapshot(&mut self) -> Result<Vec<u8>> {
-        self.snapshot_hiding(|flags, _| flags & 32 != 0, false)
+        self.snapshot_hiding(|flags, _| flags & 32 != 0, true)
     }
 
     /// Like [`Pdf::render_snapshot`], for the app, which draws sticky notes itself at a

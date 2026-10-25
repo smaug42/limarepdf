@@ -541,7 +541,14 @@ fn scheme(alg: &AlgId, digest: DigestAlg) -> Check<(Scheme, DigestAlg)> {
         oid::SHA256_RSA => (Scheme::RsaPkcs1, Sha256),
         oid::SHA384_RSA => (Scheme::RsaPkcs1, Sha384),
         oid::SHA512_RSA => (Scheme::RsaPkcs1, Sha512),
-        oid::RSA_PSS => pss_params(alg.params).map_err(malformed)??,
+        // RFC 4055 requires the parameters (an empty list for the defaults); left out or
+        // NULL, it isn't safe to guess what the signer meant.
+        oid::RSA_PSS => match alg.params {
+            Some(p) => pss_params(Some(p)).map_err(malformed)??,
+            None => {
+                return cant("it leaves out its RSA-PSS parameters, which the standard requires")
+            }
+        },
         oid::EC_PUBLIC_KEY => (Scheme::Ecdsa, digest),
         oid::ECDSA_SHA1 => (Scheme::Ecdsa, Sha1),
         oid::ECDSA_SHA224 => (Scheme::Ecdsa, Sha224),

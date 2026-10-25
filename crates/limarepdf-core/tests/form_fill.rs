@@ -101,6 +101,26 @@ fn ink(p: &mut Pdf) -> Option<[usize; 4]> {
 }
 
 #[test]
+fn render_snapshot_draws_fields_without_a_drawing() {
+    // A value another app left the reader to draw, as `limarepdf-cli render` sees it (BUG-23).
+    let mut p = page();
+    let ids = form(
+        &mut p,
+        vec![dictionary! {
+            "FT" => "Tx", "T" => text("name"), "Rect" => rect(10.0, 150.0, 150.0, 20.0),
+            "V" => text("Hello"), "F" => 4,
+        }],
+    );
+    let b = ink(&mut p).expect("the value is drawn");
+    assert!(
+        b[0] >= 10 && b[2] <= 160 && b[1] >= 30 && b[3] <= 50,
+        "outside the field: {b:?}"
+    );
+    // Only the copy drawn is given the drawing.
+    assert!(!p.doc.get_dictionary(ids[0]).unwrap().has(b"AP"));
+}
+
+#[test]
 fn sets_text_and_draws_it_inside_the_field() {
     let mut p = page();
     let ids = form(

@@ -593,6 +593,42 @@ fn crafted_certificates() {
         "its two signature algorithms differ",
     );
 
+    // Signed with RSA-PSS's defaults (SHA-1, salt 20): an empty parameter list names
+    // them (so the signature matches, and SHA-1 is refused), but left-out or NULL
+    // parameters, which RFC 4055 doesn't allow, aren't read as them.
+    let pss_signed = |alg: Vec<u8>| {
+        make_cert_pss(
+            &id_with_cert("ca", "ca"),
+            &CertSpec {
+                key_of: &cert_der("p256"),
+                cn: "Crafted Signer",
+                not_before: "260101000000Z",
+                not_after: "360101000000Z",
+                extensions: vec![ext_signing_key_usage(), aki.clone()],
+                inner_alg: None,
+            },
+            alg,
+            Hash::Sha1,
+            20,
+        )
+    };
+    failed(
+        &trust(
+            &signed_with_cert(pss_signed(pss_alg(Some(&seq(&[]))))),
+            &ca(),
+        ),
+        "is signed with SHA-1",
+    );
+    for params in [None, Some(null())] {
+        failed(
+            &trust(
+                &signed_with_cert(pss_signed(pss_alg(params.as_deref()))),
+                &ca(),
+            ),
+            "leaves out its RSA-PSS parameters",
+        );
+    }
+
     // Changed after the authority signed it: one letter of the name.
     let mut changed = good.clone();
     let at = changed.windows(7).position(|w| w == b"Crafted").unwrap();

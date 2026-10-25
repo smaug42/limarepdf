@@ -563,6 +563,34 @@ pub fn make_cert(issuer: &Id, s: &CertSpec) -> Vec<u8> {
 /// [`make_cert`] with the key's algorithm identifier replaced by `key_alg` (such as an
 /// RSA-PSS-only key's, RFC 4055) and, with `pss`, signed with RSA-PSS (SHA-256, salt 32).
 pub fn make_cert_with(issuer: &Id, s: &CertSpec, key_alg: Option<&[u8]>, pss: bool) -> Vec<u8> {
+    let alg = if pss {
+        pss_alg(Some(&pss_params(
+            Some(Hash::Sha256),
+            Some(Hash::Sha256),
+            Some(32),
+            None,
+        )))
+    } else {
+        seq(&[&oid(SHA256_RSA), &null()])
+    };
+    build_cert(issuer, s, key_alg, alg, pss.then_some((Hash::Sha256, 32)))
+}
+
+/// [`make_cert`] signed with RSA-PSS (`h`, MGF1 with `h`, a salt of `salt` bytes), whatever
+/// signature algorithm identifier `alg` says.
+pub fn make_cert_pss(issuer: &Id, s: &CertSpec, alg: Vec<u8>, h: Hash, salt: usize) -> Vec<u8> {
+    build_cert(issuer, s, None, alg, Some((h, salt)))
+}
+
+/// A certificate as [`make_cert_with`] makes it, naming `alg` and signed with RSA-PSS
+/// (`pss`: the digest and salt length) or else PKCS#1 v1.5 with SHA-256.
+fn build_cert(
+    issuer: &Id,
+    s: &CertSpec,
+    key_alg: Option<&[u8]>,
+    alg: Vec<u8>,
+    pss: Option<(Hash, usize)>,
+) -> Vec<u8> {
     use der::{Decode, Encode};
     let parse = |d: &[u8]| x509_cert::Certificate::from_der(d).unwrap();
     let issuer_name = parse(&issuer.cert)
@@ -577,16 +605,6 @@ pub fn make_cert_with(issuer: &Id, s: &CertSpec, key_alg: Option<&[u8]>, pss: bo
     let spki = match key_alg {
         Some(a) => seq(&[a, &key.subject_public_key.to_der().unwrap()]),
         None => key.to_der().unwrap(),
-    };
-    let alg = if pss {
-        pss_alg(Some(&pss_params(
-            Some(Hash::Sha256),
-            Some(Hash::Sha256),
-            Some(32),
-            None,
-        )))
-    } else {
-        seq(&[&oid(SHA256_RSA), &null()])
     };
     let subject = seq(&[&set(&[&seq(&[
         &oid("2.5.4.3"),
@@ -608,12 +626,14 @@ pub fn make_cert_with(issuer: &Id, s: &CertSpec, key_alg: Option<&[u8]>, pss: bo
     let Key::Rsa(k) = &issuer.key else {
         panic!("make_cert signs with RSA keys");
     };
-    let hash = Hash::Sha256.of(&[&tbs]);
-    let value = if pss {
-        sign_pss(k, Hash::Sha256, &hash, 32).0
-    } else {
-        k.sign(rsa::Pkcs1v15Sign::new::<sha2::Sha256>(), &hash)
-            .unwrap()
+    let value = match pss {
+        Some((h, salt)) => sign_pss(k, h, &h.of(&[&tbs]), salt).0,
+        None => k
+            .sign(
+                rsa::Pkcs1v15Sign::new::<sha2::Sha256>(),
+                &Hash::Sha256.of(&[&tbs]),
+            )
+            .unwrap(),
     };
     seq(&[&tbs, &alg, &tlv(0x03, &[&[0u8][..], &value].concat())])
 }

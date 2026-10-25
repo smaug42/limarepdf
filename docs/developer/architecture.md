@@ -213,6 +213,18 @@ pen strokes smoothed into curves, typed names as the glyph outlines of a bundled
 flattens just those annotations. The app's saved signatures and the Create signature window are in
 `crates/limarepdf-gui/src/signing.rs`.
 
+A picture's paper is made transparent by `clear_paper` (BUG-21): `paper_shade` finds the paper's shade in blocks of
+about a 24th of the picture (each block's 90th percentile, a block much darker than its neighbours taking theirs),
+blended between block centres, so shadows and uneven light are paper; `ink_alpha` keeps what is darker than that by
+more than six times the paper's grain (the median distance from the usual darkness, at least 24 levels), soft from a
+fifth to three fifths of the ink's darkness; `keep_writing` drops pieces (8-connected) of a few pixels and small
+pieces farther from the strokes than the strokes are tall, and refuses a picture whose largest piece is under 16
+pixels. The earlier "darkest 1%" estimate fell on the paper when the ink was under 1% of the picture (a signature on
+a whole sheet). `SignArt::Picture`'s `crop` (shares of the picture as seen, mapped to the stored pixels by
+`imgs::stored_point`) is applied first; the picture file is never changed, and the app saves the crop in
+`signatures.txt` as a `cropped` line, which older versions skip. `picture_view` gives the Create window the
+picture upright, at most 1200 pixels across.
+
 Dates people see (Fill and sign's Today, the date under a signature, a stamp's name-and-date line, headers' and
 footers' `{date}`) come from `overlay::local_today` and `today_iso`, the computer's calendar date through chrono's
 `Local`, asked for each time rather than kept, so an app left open overnight writes the new day. Times written for
@@ -238,7 +250,10 @@ structure) against the signer's permissions. Trust is in `trust.rs`: the trust l
 settings folder, whose location `limarepdf_core::settings_dir` gives both the app and the command line), and the chain
 search from a signer's certificate to a trusted authority over the certificates the signature and the document's
 `/DSS` carry, with RFC 5280's checks at the signing time, including certificate policy processing; each link's
-signature is checked over the certificate as written (`cms_check::check_cert_signature`). Trust is applied after
+signature is checked over the certificate as written (`cms_check::check_cert_signature`). Signatures and
+certificates read their algorithm through one function, `cms_check::scheme`: an RSA-PSS algorithm whose parameters
+are left out or NULL gives *can't check* (RFC 4055 requires them; only an empty list means the defaults), while an
+RSA-PSS-only key with no parameters has no limits (`pss_key_limits`, RFC 4055 section 1.2). Trust is applied after
 checking (`SignatureReport::apply_trust`), so a changed list can be applied again without checking again. In the
 app, `crates/limarepdf-gui/src/signatures.rs` runs the check on a background thread when a file with signature fields
 opens (and after a save), keeping the file's bytes for View signed version, and draws the banner, the Signatures
@@ -363,7 +378,10 @@ kept for the Digital signatures view as the base, and fall back to a full rewrit
 set, damaged, a read-back failure, or `Tab::scrubbed`: redactions applied or hidden information removed since the
 last save, tracked through undo and redo, since the signed version would keep what was removed). A signed
 document's fields are not drawn into it when it opens (`Tab::new`); the snapshots for display and printing draw
-them on a copy instead (`snapshot_hiding`), so a save adds only real edits.
+them on a copy instead (`snapshot_hiding`), so a save adds only real edits. The command line never draws fields
+when opening a file, so `render_snapshot` (`limarepdf-cli render`) and `print_snapshot` draw every document's fields
+on their copy; `app_snapshot` draws them only for signed documents, the app having drawn the others when opening.
+`Pdf::unshown_fields` and `unprintable_fields` name the values neither can draw (BUG-23).
 
 In the app, `crates/limarepdf-gui/src/digital.rs` holds the Digital IDs window and the signing window; making, importing
 and exporting IDs, and unlocking and signing, run on a background thread each, with the password moved into that
