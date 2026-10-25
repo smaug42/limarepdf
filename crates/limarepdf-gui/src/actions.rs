@@ -1523,9 +1523,19 @@ pub fn shortcuts() -> Vec<(&'static Action, KeyboardShortcut)> {
     v
 }
 
-/// Whether every word of `query` appears in the command's label or group name.
+/// The command's name in the palette for screen readers: its label after its submenu's
+/// name, if it has one ("Theme: Dark", "Page colours: Dark"), so commands of the same
+/// label tell apart. The palette shows it as "Theme › Dark".
+pub fn spoken_title(a: &Action) -> String {
+    match a.submenu {
+        "" => a.label.to_string(),
+        sub => format!("{sub}: {}", a.label),
+    }
+}
+
+/// Whether every word of `query` appears in the command's label, submenu or group name.
 pub fn matches(a: &Action, query: &str) -> bool {
-    let hay = format!("{} {}", a.label, a.group.name()).to_lowercase();
+    let hay = format!("{} {} {}", a.label, a.submenu, a.group.name()).to_lowercase();
     query
         .to_lowercase()
         .split_whitespace()
@@ -1766,5 +1776,44 @@ mod tests {
         assert!(matches(print, "print"));
         assert!(matches(print, "FILE pri"));
         assert!(!matches(print, "print watermark"));
+    }
+
+    /// BUG-34 (audit A18): a command in a submenu is found by the submenu's name too, so
+    /// "theme" finds the theme's commands and "dark theme" only its Dark.
+    #[test]
+    fn palette_search_matches_the_submenu() {
+        let found = |query: &str| -> Vec<Act> {
+            ACTIONS
+                .iter()
+                .filter(|a| a.palette && matches(a, query))
+                .map(|a| a.act)
+                .collect()
+        };
+        let themes = [
+            ThemePreference::System,
+            ThemePreference::Light,
+            ThemePreference::Dark,
+        ];
+        assert_eq!(found("theme"), themes.map(Act::Theme));
+        assert_eq!(found("dark theme"), [Act::Theme(ThemePreference::Dark)]);
+        let dark = Act::PageColours(PageLook::Fixed(PageColours::Dark));
+        assert_eq!(found("page colours dark"), [dark]);
+        assert_eq!(found("page colours").len(), 6);
+    }
+
+    /// BUG-34: no two commands in the palette look or sound alike: each one's submenu and
+    /// label, shown and named for screen readers, are its own.
+    #[test]
+    fn palette_titles_are_unique() {
+        let listed: Vec<_> = ACTIONS.iter().filter(|a| a.palette).collect();
+        for (i, a) in listed.iter().enumerate() {
+            for b in &listed[i + 1..] {
+                let (x, y) = (spoken_title(a), spoken_title(b));
+                assert!(x != y, "{:?} and {:?} are both {x}", a.act, b.act);
+            }
+        }
+        assert_eq!(spoken_title(get(Act::Print)), "Print…");
+        let dark = get(Act::Theme(ThemePreference::Dark));
+        assert_eq!(spoken_title(dark), "Theme: Dark");
     }
 }

@@ -56,8 +56,9 @@ pub enum Side {
 
 /// One undo or redo step: the state to go back to.
 struct Step {
-    /// The document's bytes; `None` when only the password settings changed.
-    pdf: Option<Vec<u8>>,
+    /// The document's bytes; `None` when only the password settings changed. A stamp's
+    /// link shares them when they are the document it was added to.
+    pdf: Option<Arc<Vec<u8>>>,
     encryption: Option<Encryption>,
     scrubbed: bool,
     /// The change between this step and the state it was taken from removed content for
@@ -69,8 +70,9 @@ struct Step {
 }
 
 /// A watermark or headers and footers just added, which the inspector's form keeps
-/// updating until anything else changes: the document's bytes before it was added, and
-/// the settings it was added with.
+/// updating until anything else changes: the document's bytes before it was added (the
+/// same copy as the undo step's, and counted in the undo budget), and the settings it was
+/// added with.
 #[derive(Clone)]
 pub struct Stamped {
     base: Arc<Vec<u8>>,
@@ -133,24 +135,45 @@ enum Redraw<'a> {
     Nothing,
 }
 
-impl Step {
-    /// The memory the step's copy of the document takes: its length, as the spare capacity
-    /// left by growing the buffer is never written, so the system gives it no memory.
-    fn size(&self) -> usize {
-        self.pdf.as_ref().map_or(0, Vec::len)
+/// The memory `steps` and the form's `link` hold, each copy of the document counted once
+/// (a stamp's link shares the copy of the step it was added after). A copy takes its
+/// length, as the spare capacity left by growing the buffer is never written, so the
+/// system gives it no memory.
+fn held(steps: &[Step], link: Option<&Stamped>) -> usize {
+    let links = steps.iter().filter_map(|s| s.stamp.as_ref()).chain(link);
+    let copies = steps.iter().filter_map(|s| s.pdf.as_ref());
+    let mut seen: Vec<&Arc<Vec<u8>>> = Vec::new();
+    for c in copies.chain(links.map(|l| &l.base)) {
+        if !seen.iter().any(|s| Arc::ptr_eq(s, c)) {
+            seen.push(c);
+        }
     }
+    seen.iter().map(|c| c.len()).sum()
 }
 
-/// Drop the oldest steps until at most [`MAX_UNDO`] remain and they hold at most `budget`
-/// bytes, always keeping the latest.
-fn trim(steps: &mut Vec<Step>, budget: usize) {
+/// Drop the oldest steps until at most [`MAX_UNDO`] remain and they and the form's `link`
+/// hold at most `budget` bytes, always keeping the latest. If that alone is over, the stamp
+/// links whose copies no step holds end (the form's and the steps'), and the kind of one
+/// ended is returned.
+fn trim(steps: &mut Vec<Step>, link: &mut Option<Stamped>, budget: usize) -> Option<Stamp> {
     let mut drop = steps.len().saturating_sub(MAX_UNDO);
-    let mut total: usize = steps[drop..].iter().map(Step::size).sum();
-    while total > budget && drop + 1 < steps.len() {
-        total -= steps[drop].size();
+    while held(&steps[drop..], link.as_ref()) > budget && drop + 1 < steps.len() {
         drop += 1;
     }
     steps.drain(..drop);
+    if held(steps, link.as_ref()) <= budget {
+        return None;
+    }
+    let kept: Vec<Arc<Vec<u8>>> = steps.iter().filter_map(|s| s.pdf.clone()).collect();
+    let own = |l: &Stamped| !kept.iter().any(|c| Arc::ptr_eq(c, &l.base));
+    let mut ended = None;
+    let links = steps.iter_mut().map(|s| &mut s.stamp).chain([link]);
+    for l in links {
+        if l.as_ref().is_some_and(own) {
+            ended = l.take().map(|l| l.kind());
+        }
+    }
+    ended
 }
 
 /// See [`Tab::state`].
@@ -238,6 +261,8 @@ pub struct Tab {
     /// The stamp the inspector's form is linked to: the last change made, until anything
     /// else changes (undo and redo bring the link back with the state it belongs to).
     pub stamp: Option<Stamped>,
+    /// [`UNDO_BUDGET`]; smaller in tests.
+    undo_budget: usize,
     /// The setting the last edit made by [`Tab::edit_setting`] changed, the revision and undo
     /// depth just after it, and when (`egui` time). Changing it again within
     /// [`MERGE_PAUSE`], with nothing else in between, joins that undo step.
@@ -399,6 +424,7 @@ impl Tab {
             undo: Vec::new(),
             redo: Vec::new(),
             stamp: None,
+            undo_budget: UNDO_BUDGET,
             last_setting: None,
             crop_view: None,
             crop_drag: None,
@@ -690,15 +716,13 @@ impl Tab {
         if !self.edit_inner(ctx, Redraw::Pages(pages), false, false, add) {
             return false;
         }
-        // The state before the stamp, which the undo step just made holds.
-        let base = base.or_else(|| {
-            let before = self.undo.last()?.pdf.clone()?;
-            Some(Arc::new(before))
-        });
+        // The state before the stamp: the undo step just made holds it, and shares it.
+        let base = base.or_else(|| self.undo.last()?.pdf.clone());
         self.stamp = base.map(|base| Stamped {
             base,
             form: form.clone(),
         });
+        self.keep_to_budget();
         true
     }
 
@@ -1323,7 +1347,7 @@ impl Tab {
         // The link to a stamp belongs to the state before the change.
         let stamp = self.stamp.take();
         self.undo.push(Step {
-            pdf,
+            pdf: pdf.map(Arc::new),
             encryption,
             scrubbed: self.scrubbed,
             removal,
@@ -1331,8 +1355,24 @@ impl Tab {
         });
         // Redo is emptied here, so the undo steps are all the budget covers.
         self.redo.clear();
-        trim(&mut self.undo, UNDO_BUDGET);
+        self.keep_to_budget();
         self.dirty = true;
+    }
+
+    /// Keep the undo steps and the form's stamp link within [`UNDO_BUDGET`]; a link that
+    /// ends for it is said (BUG-36).
+    fn keep_to_budget(&mut self) {
+        let Some(kind) = trim(&mut self.undo, &mut self.stamp, self.undo_budget) else {
+            return;
+        };
+        let what = match kind {
+            Stamp::Watermark => "The watermark just added",
+            Stamp::HeaderFooter => "The headers and footers just added",
+        };
+        self.info = Some(format!(
+            "{what} can't be changed from its section any more: this document is too \
+             large to keep the copy that needs. What was added stays on the pages"
+        ));
     }
 
     /// Change the password settings, with undo. They take effect when the document is
@@ -1382,7 +1422,7 @@ impl Tab {
             Some(bytes) => {
                 let cur = self.pdf.snapshot().ok()?;
                 self.pdf = Pdf::from_bytes(&bytes, None).ok()?;
-                Some(cur)
+                Some(Arc::new(cur))
             }
             None => None,
         };
@@ -2945,16 +2985,25 @@ mod tests {
         );
     }
 
-    #[test]
-    fn undo_steps_are_kept_within_the_budget() {
-        let step = |n: usize, removal: bool| Step {
-            pdf: (n > 0).then(|| vec![n as u8; n]),
+    fn step(n: usize, removal: bool) -> Step {
+        Step {
+            pdf: (n > 0).then(|| Arc::new(vec![n as u8; n])),
             encryption: None,
             scrubbed: false,
             removal,
             stamp: None,
-        };
-        let sizes = |s: &[Step]| s.iter().map(Step::size).collect::<Vec<_>>();
+        }
+    }
+
+    fn sizes(s: &[Step]) -> Vec<usize> {
+        s.iter()
+            .map(|s| s.pdf.as_ref().map_or(0, |p| p.len()))
+            .collect()
+    }
+
+    #[test]
+    fn undo_steps_are_kept_within_the_budget() {
+        let none = &mut None;
         // The oldest go first; password-only steps take nothing.
         let mut s = vec![
             step(40, true),
@@ -2962,22 +3011,96 @@ mod tests {
             step(0, false),
             step(20, false),
         ];
-        trim(&mut s, 60);
+        trim(&mut s, none, 60);
         assert_eq!(sizes(&s), [30, 0, 20]);
-        trim(&mut s, 50);
+        trim(&mut s, none, 50);
         assert_eq!(sizes(&s), [30, 0, 20]);
-        trim(&mut s, 49);
+        trim(&mut s, none, 49);
         assert_eq!(sizes(&s), [0, 20]);
         // The latest stays even when it alone is over the budget, and keeps its flag.
         let mut s = vec![step(10, false), step(100, true)];
-        trim(&mut s, 50);
+        assert_eq!(trim(&mut s, none, 50), None);
         assert_eq!(sizes(&s), [100]);
         assert!(s[0].removal);
         // Within the budget, the count limit still applies.
         let mut s: Vec<_> = (1..=MAX_UNDO + 3).map(|n| step(n, false)).collect();
-        trim(&mut s, usize::MAX);
+        trim(&mut s, none, usize::MAX);
         assert_eq!(s.len(), MAX_UNDO);
-        assert_eq!(s[0].size(), 4);
+        assert_eq!(sizes(&s)[0], 4);
+    }
+
+    /// BUG-36: a stamp's link counts in the undo budget, its copy once however many hold
+    /// it; when the latest step and the link alone are over, the link ends, unless its copy
+    /// is that step's own.
+    #[test]
+    fn a_stamp_link_counts_in_the_undo_budget() {
+        let link = |s: &Step| Stamped {
+            base: s.pdf.clone().unwrap(),
+            form: StampForm::Wm(Wm::default()),
+        };
+        // Added: the link shares the step's copy, so it costs nothing.
+        let mut s = vec![step(30, false), step(40, false)];
+        let mut l = Some(link(&s[1]));
+        assert_eq!(trim(&mut s, &mut l, 70), None);
+        assert_eq!(sizes(&s), [30, 40]);
+        assert!(l.is_some());
+        // Changed in place: the copy is held by the step before the change too, and still
+        // once; with no room, the oldest step goes first.
+        let mut changed = step(40, false);
+        changed.stamp = l.clone();
+        s.push(changed);
+        assert_eq!(held(&s, l.as_ref()), 110);
+        assert_eq!(trim(&mut s, &mut l, 80), None);
+        assert_eq!(sizes(&s), [40, 40]);
+        // The step it was added after goes too: the link's copy now counts on its own,
+        // and with no room for it the link ends, the step's and the form's.
+        assert_eq!(trim(&mut s, &mut l, 79), Some(Stamp::Watermark));
+        assert_eq!(sizes(&s), [40]);
+        assert!(l.is_none() && s[0].stamp.is_none());
+        assert_eq!(held(&s, None), 40);
+        // A link sharing the latest step's copy stays, even over the budget.
+        let mut s = vec![step(100, false)];
+        let mut l = Some(link(&s[0]));
+        assert_eq!(trim(&mut s, &mut l, 50), None);
+        assert!(l.is_some());
+    }
+
+    /// BUG-36: a watermark's link to the document it was added to is the undo step's copy,
+    /// not a second one; changed in place until the budget can't hold that copy, the link
+    /// then ends with a message, the watermark staying as last changed.
+    #[test]
+    fn a_stamp_link_shares_the_undo_copy_and_ends_when_it_would_pass_the_budget() {
+        let ctx = egui::Context::default();
+        let mut t = blank_tab(&ctx, 2);
+        t.forms.wm.text = "DRAFT".into();
+        t.stamp_from_form(&ctx, Stamp::Watermark, false);
+        let base = t.linked(Stamp::Watermark).unwrap().base.as_ptr();
+        assert_eq!(base, t.undo.last().unwrap().pdf.as_ref().unwrap().as_ptr());
+        t.forms.wm.text = "COPY".into();
+        t.stamp_from_form(&ctx, Stamp::Watermark, true);
+        assert!(t.linked(Stamp::Watermark).is_some());
+        assert_eq!(t.undo.len(), 2);
+        assert!(t.info.is_none());
+        // Room for the copy the next change makes, but not for the link's beside it.
+        let added_to = t.undo[0].pdf.as_ref().unwrap().len();
+        t.undo_budget = t.pdf.snapshot().unwrap().len() + added_to - 1;
+        t.forms.wm.text = "FINAL".into();
+        t.stamp_from_form(&ctx, Stamp::Watermark, true);
+        assert_eq!(page_lines(&t, 0), ["FINAL"]);
+        assert!(t.linked(Stamp::Watermark).is_none());
+        assert_eq!(t.undo.len(), 1);
+        assert!(held(&t.undo, None) <= t.undo_budget);
+        let said = t.info.take().unwrap();
+        let start = "The watermark just added can't be changed";
+        assert!(said.starts_with(start), "{said}");
+        // The form adds nothing now until asked, and Undo still takes back the last change.
+        t.forms.wm.text = "LATER".into();
+        let depth = t.undo.len();
+        t.keep_forms(&ctx);
+        assert_eq!(t.undo.len(), depth);
+        t.undo(&ctx);
+        assert_eq!(page_lines(&t, 0), ["COPY"]);
+        assert!(t.linked(Stamp::Watermark).is_none());
     }
 
     #[test]

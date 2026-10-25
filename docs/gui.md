@@ -40,7 +40,8 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
 
 Ctrl+K opens the command palette, which lists every command. Type to filter, use Up and Down to choose, and press
 Enter to run; Esc closes it. It looks like the dialogs, without a title or buttons: a search field, then each
-command with its category and shortcut in columns.
+command with its category and shortcut in columns. A command from a submenu shows the submenu's name before its
+own, such as "Theme › Dark" and "Page colours › Dark", and typing the submenu's name ("theme") finds its commands.
 
 ## The tools
 
@@ -147,7 +148,8 @@ signed original.
 Everything that changes the document can be undone with Ctrl+Z, and redone with Ctrl+Y (or Ctrl+Shift+Z), up to 20
 steps back. Each step keeps a whole copy of the document, and a document's steps are limited to 1 GB together, so
 undo goes back fewer steps on very large documents (about 7 on a 139 MB scan); the latest change can always be
-undone.
+undone. A watermark or headers and footers just added count in that limit too, with the copy of the document their
+section keeps to change them (see [Change it after adding](headers-footers-watermarks.md#change-it-after-adding)).
 
 Deleting pages, comments, objects or bookmarks, marking text for redaction, flattening, resetting a form and changing password settings show a
 notice at the bottom of the window with an Undo button, which takes back that change in that document only. The

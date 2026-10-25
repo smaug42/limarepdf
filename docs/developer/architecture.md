@@ -119,6 +119,15 @@ back when the dialog closes (`Edit::Text`'s `back`); one whose own change is ref
 back the same way (`FormUi::kept`). Panel Apply buttons that redraw only some pages or nothing don't commit first:
 they lose nothing, and their forms join their own undo steps.
 
+Undo steps (`tab.rs`'s `Step`) each hold a whole copy of the document as an `Arc`, at most `MAX_UNDO` of them and
+`UNDO_BUDGET` (1 GB) per tab together, the oldest dropped first and the latest always kept (`trim`). A watermark or
+headers and footers just added stay linked to the inspector's form (`Tab::stamp`, a `Stamped`) until anything else
+changes; the link's `base`, the document before the stamp, is the same `Arc` as the undo step made when it was
+added, so it costs nothing while that step is kept. `held` counts every copy once, wherever it is held (steps, the
+links kept in steps, the form's link). When the latest step and a link's copy no step holds are over the budget on
+their own, those links end (`Tab::keep_to_budget`, run after every push and after `put_stamp`) and `Tab::info`
+says so (BUG-36).
+
 Toasts (`App::toasts`, at most one per tab) belong to a tab by its id. One for an undoable change (`Tab::notice`)
 records the tab's `Tab::history` (revision, undo and redo depths) and goes once that moves or typing starts, so its
 Undo runs only while the change is the last thing in the tab; `Tab::info` notices have no Undo. A tab's toast waits
@@ -423,6 +432,10 @@ replaces the tab and is checked like any opened file.
 
 In the desktop app, every command is defined once in `crates/limarepdf-gui/src/actions.rs`; the menu, the top bar, the
 command palette, the right-click menus, the floating toolbar and the keyboard shortcuts are all built from that list.
+The menus show an entry's short `label` inside its `submenu`; the palette, which has no submenus, shows the
+submenu's name before it in the weak colour ("Theme › Dark"), names the row `actions::spoken_title` for screen
+readers ("Theme: Dark") and searches the label, submenu and group (`actions::matches`; BUG-34, audit A18). A test
+keeps every palette entry's name its own.
 
 ## Content editing
 

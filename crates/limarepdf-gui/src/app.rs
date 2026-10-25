@@ -4578,8 +4578,9 @@ fn palette_row(
     };
     let size = egui::vec2(ui.available_width(), theme::DIALOG_CONTROL);
     let (rect, r) = ui.allocate_exact_size(size, sense);
-    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, a.label));
-    dlg::set_name(&r, a.label);
+    let spoken = actions::spoken_title(a);
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, &spoken));
+    dlg::set_name(&r, &spoken);
     if !ui.is_rect_visible(rect) {
         return r;
     }
@@ -4620,9 +4621,15 @@ fn palette_row(
     let at = egui::pos2(cat_left, y);
     let category = a.group.name();
     painter.text(at, egui::Align2::LEFT_CENTER, category, font.clone(), weak);
-    // The name, cut short with … if it would reach the category.
+    // The name after its submenu's, in the weak colour, cut short with … if it would reach
+    // the category.
     let left = rect.left() + pad + 26.0;
-    let mut job = egui::text::LayoutJob::simple_singleline(a.label.to_string(), font, text);
+    let mut job = egui::text::LayoutJob::default();
+    let part = |colour| egui::TextFormat::simple(font.clone(), colour);
+    if !a.submenu.is_empty() {
+        job.append(&format!("{} › ", a.submenu), 0.0, part(weak));
+    }
+    job.append(a.label, 0.0, part(text));
     job.wrap = egui::text::TextWrapping::truncate_at_width((cat_left - gap - left).max(0.0));
     let galley = ui.painter().layout_job(job);
     let at = egui::pos2(left, y - galley.size().y / 2.0);
@@ -5900,6 +5907,32 @@ mod tests {
         assert!(app.palette.is_none());
         let about = matches!(app.dialog, Dialog::About(_));
         assert!(about, "Enter didn't run About");
+    }
+
+    /// BUG-34 (audit A18): searching "dark" lists the theme's Dark and the page colours'
+    /// Dark under their submenus' names, for screen readers too, and Enter runs the first.
+    #[test]
+    fn command_search_names_each_command_with_its_submenu() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        app.act(&ctx, Act::Palette);
+        settled_at(&mut app, &ctx, 1400.0);
+        let typed = egui::Event::Text("dark".into());
+        window(&mut app, &ctx, 1400.0, vec![typed]);
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        let theme = node(&tree, "Theme: Dark").expect("the theme's Dark").0;
+        let page = node(&tree, "Page colours: Dark").expect("Dark pages").0;
+        assert!(theme.top() < page.top());
+        assert!(node(&tree, "Dark").is_none(), "a row named only Dark");
+        let enter = key_with(Key::Enter, egui::Modifiers::NONE);
+        window(&mut app, &ctx, 1400.0, vec![enter]);
+        assert!(app.palette.is_none());
+        assert_eq!(app.settings.theme, egui::ThemePreference::Dark);
+        use crate::settings::PageLook;
+        let dark_pages = PageLook::Fixed(limarepdf_core::page_colours::PageColours::Dark);
+        assert_ne!(app.settings.page_look, dark_pages);
     }
 
     /// G06: Bold and Italic say whether they are on, and Tab goes through the new text's

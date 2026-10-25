@@ -185,6 +185,14 @@
   word; in invisible recognised (OCR) text the caret was placed as if every character were the same width. The
   caret now goes by the character clicked, and a double-click selects the word clicked, whichever way the line
   runs.
+- The command palette listed two commands named Dark, both under View, with nothing to tell the app's theme from
+  the page colours, and searching "theme" found nothing. Commands in a submenu are now shown with its name
+  ("Theme › Dark", "Page colours › Dark"), screen readers hear it too, and searches find them by it ("theme",
+  "dark theme", "page colours"). The menus keep their short names.
+- A watermark or headers and footers just added kept a second whole copy of the document so its section could
+  keep changing it, outside the 1 GB undo limit, so a large document could hold more than the limit. The copy is
+  now the undo step's own, counted in the limit; when a very large document leaves no room for it, the section
+  stops changing what was added, saying so, and what was added stays on the pages.
 
 ### Added
 
