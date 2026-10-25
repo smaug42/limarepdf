@@ -182,6 +182,8 @@
 - When you come back to LimarePDF after another app changed a file open here, its tab shows a notice with
   Reload. ☰ > File > Reload from disk reads the file again as it now is, after asking when there are unsaved
   changes, which it loses.
+- A security policy, [SECURITY.md](SECURITY.md): which versions get fixes, and how to report a security problem
+  privately through GitHub. It is linked from the README and Troubleshooting, and comes in the archives.
 
 ### Changed
 
@@ -193,6 +195,8 @@
   it, and one an installed font lacks names that font, as for other characters: single emoji are written in
   installed fonts that draw them with outlines, such as Symbola and DejaVu Sans. The note used to say emoji
   can't be added at all.
+- Releases now wait for the check of every library against known security advisories (RustSec), and are tested and
+  built from exactly the library versions in `Cargo.lock`.
 
 ## [0.9.0] - 2026-10-23
 

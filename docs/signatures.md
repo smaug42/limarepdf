@@ -781,8 +781,8 @@ shows it, and one with signatures is refused.
 **RUSTSEC-2023-0071**, a timing leak in `rsa` with no fixed version yet, concerns using a private key. Checking
 uses only public keys, so it doesn't apply to checking. It applies to signing with an RSA key: an attacker would
 have to time many signings on your computer. LimarePDF blinds its RSA signatures, which makes such timing harder. CI runs
-`cargo audit` on every change with this one advisory set aside; [releasing](developer/releasing.md) has a step to look for
-final versions and new advisories before each release.
+`cargo audit` on every change with this one advisory set aside, and a release waits for it to pass;
+[releasing](developer/releasing.md) has a step to look for final versions and new advisories before each release.
 
 **Digital IDs** are as safe as their passwords. In the files LimarePDF writes, the key is encrypted with AES-256, using a
 key stretched from your password by PBKDF2-HMAC-SHA256 with 600,000 iterations (OWASP's current figure); the

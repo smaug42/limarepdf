@@ -321,7 +321,9 @@ Since 0.5: every release file and `SHA256SUMS` are GPG-signed with LimarePDF's o
 attestation (`gh attestation verify`); a dry run of the release job checks this without releasing. Each release has
 Linux `.deb` and `.rpm` packages (the rpm signed), signed apt and dnf repositories on the project's GitHub Pages
 (rebuilt when a release is published), a universal macOS `LimarePDF.app` in a `.dmg`, and a Windows MSI installer. The
-archives stay.
+archives stay. A release waits for the check of every library against known security advisories, and is
+built from exactly the versions in `Cargo.lock`; security problems are reported privately, as
+[SECURITY.md](../SECURITY.md) describes.
 
 - **Untested:** whether a PDF opened from Finder's Open With loads in LimarePDF, rather than just starting it.
 - **Next:** an AUR package, a Homebrew cask in LimarePDF's own tap, and winget and Scoop manifests. Maybe Flatpak.

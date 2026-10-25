@@ -221,6 +221,9 @@ It helps to include:
 - a document that shows the problem, if it isn't private. Never attach a private document; a made-up one that
   shows the same problem is just as useful.
 
+A security problem, such as a signature shown as valid on a changed document or redaction leaving something
+behind, is reported privately instead, as the [security policy](../SECURITY.md) describes.
+
 ---
 
 [← Licence](licence.md) · [User guide](README.md) · [Glossary →](glossary.md)

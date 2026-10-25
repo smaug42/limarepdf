@@ -418,6 +418,14 @@ exported from Acrobat or Windows, or LimarePDF's exported files imported there. 
 the limitations) is to be confirmed in those tests. The checks still to run are listed under
 [Round trips with Adobe Acrobat](#round-trips-with-adobe-acrobat).
 
+### Releases
+
+The release gate (REL-03's first part, 2026-10-25): `ci.yml` parsed, the `release` job needing `audit`, `build` and
+`macos-dmg`, and every `cargo test` and `cargo build` in the build jobs with `--locked`; `cargo metadata --locked`
+passes on the branch, so `Cargo.lock` is current. A dry run of the release workflow on `bugfix-round-2`, showing
+`release` waiting for `audit`: not run yet (it needs the change pushed). SECURITY.md's links checked with the docs'
+link checker.
+
 ## Acceptance checks
 
 The automated tests cover the library and the command line. These checks cover what they can't: the desktop app used

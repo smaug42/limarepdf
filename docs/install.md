@@ -133,10 +133,13 @@ are under the run's artifacts (this needs a GitHub sign-in).
 You need Rust 1.95 or newer.
 
 ```
-cargo build --release
+cargo build --release --locked
 # the binaries: target/release/limarepdf and target/release/limarepdf-cli
 cargo test --workspace
 ```
+
+`--locked` builds with exactly the library versions in `Cargo.lock`, the ones the releases are built and checked
+with.
 
 More for developers is in the [developer docs](developer/README.md).
 
