@@ -262,13 +262,15 @@ Done for now (see the Rendering row above). Left for a later round:
 - **hayro's own gaps** (knockout and non-isolated transparency groups, thin-line snapping, some shadings, CMaps
   stored in the file and built on another one, and installed fonts for plain fonts that aren't embedded, which
   hayro doesn't ask for yet), listed in [Known to be wrong](rendering.md#known-to-be-wrong). They are documented here and in the build plan,
-  and not reported to hayro.
+  and not reported to hayro. The transparency groups can't be fixed in LimarePDF for now: hayro doesn't tell it
+  which groups are knockout or non-isolated, and none of the test files looked wrong because of them.
 - **A very large memory request:** on one test file hayro asks for 7.6 GB at once to fill a single shape at 96 dpi.
   On Linux it draws, since the memory is never used; on Windows, which doesn't promise memory it hasn't got, it
   could stop the app. Not tried on Windows yet; the check is in
   [Testing](developer/testing.md#platform-smoke-checks).
 - **Notices for what hayro draws wrongly:** plain fonts that aren't embedded (such as Calibri or Wingdings, drawn
-  with a standard font), and knockout or non-isolated transparency groups. Offered, not yet decided.
+  with a standard font). Offered, not yet decided. Transparency groups get no notice: it would show on files that
+  look right.
 - **A check on a HiDPI screen** (scale factor 2): tile sizes, the 4096-pixel cap and sharpness have only been tried
   at scale 1.
 - **Damaged files LimarePDF still can't open:** show them read-only as hayro reads them, when the repair finds no

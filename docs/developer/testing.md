@@ -248,6 +248,19 @@ tested" or "What has been checked".
   in the copy it renders and prints, not in the file (`crates/limarepdf-core/tests/annots.rs`);
 - password-protected files with all four ciphers.
 
+Drawn wrongly, kept as ignored tests rerun after each hayro upgrade (releasing.md step 1):
+`non_isolated_group_blends_against_page_backdrop` (hayro 0.8.0 draws the Multiply square unblended,
+[51, 153, 230] for [31, 46, 46]) and `knockout_group_replaces_earlier_objects` ([191, 63, 127], the red over the
+blue, for [255, 128, 128]). hayro-interpret's `Device::push_transparency_group` isn't given a group's `/I` or
+`/K`, so a newer hayro fixes them only with an API change. BUG-35's assessment (2026-10-25, a throwaway lopdf
+checker under `target/groupcheck/`): of the 1,079 corpus files lopdf reads, 103 use transparency groups (soft-mask
+groups left out), 19 have a non-isolated group with a non-Normal blend mode inside, and 1 (pdf.js issue17779) has
+knockout groups with see-through content. Their first 12 pages at 96 dpi against `pdftoppm`: no difference comes
+from the groups (the largest, pdfbox 3000_7 at 44% of pixels, is the crop box against poppler's media box;
+issue17779's region borders, which poppler leaves out, are the ones its pdf.js report expects). Rendering those
+forms without `/Group`, a workaround that ignores the state at their `Do`, made 14 of the 20 files differ more
+from poppler (pdfbox 5795: 0% to 91%) and 2 less (by about 1 point).
+
 #### Compared with poppler
 
 An opt-in check draws about 1,100 public test PDFs (the pdf.js and PDFBox test files hayro is tested on) with
@@ -449,7 +462,10 @@ MSI built without warnings and passed every step of its check (installed without
 folder with no problems, uninstalled, installed with `DESKTOPSHORTCUT=1`, the shortcut kept by an upgrade and
 removed by one with `DESKTOPSHORTCUT=0`, uninstalled leaving nothing); the dmg's app with no problems and both
 halves of `limarepdf` and `limarepdf-cli` saying macOS 11.0. The installer's screens are a row under
-[Platform smoke checks](#platform-smoke-checks).
+[Platform smoke checks](#platform-smoke-checks). On 470cc7b (BUG-28's Finder opening, run 40223533743,
+2026-10-25) the same checks passed, the dmg's app built with the new macOS code (`macos.rs`, `incoming.rs`), and
+the test suite ran on both Macs (Apple silicon and Intel: 1,051 passed, 37 ignored, the new `incoming` test
+among them).
 
 ## Acceptance checks
 
