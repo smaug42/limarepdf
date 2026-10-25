@@ -183,7 +183,14 @@
   Reload. ☰ > File > Reload from disk reads the file again as it now is, after asking when there are unsaved
   changes, which it loses.
 - A security policy, [SECURITY.md](SECURITY.md): which versions get fixes, and how to report a security problem
-  privately through GitHub. It is linked from the README and Troubleshooting, and comes in the archives.
+  privately through GitHub. It is linked from the README and Troubleshooting, and comes in the archives and every
+  package and installer.
+- The Windows installer offers a desktop shortcut, under the install folder (not ticked unless you tick it). For
+  installs without its screens, `DESKTOPSHORTCUT=1` asks for one; a newer version keeps the choice made before,
+  and `DESKTOPSHORTCUT=0` removes it. Uninstalling removes it.
+- The supported systems are stated in [Install](docs/install.md#requirements), the README and Features: Windows 10
+  and 11 (x64), macOS 11 or later on Apple Silicon and Intel, and 64-bit Linux with glibc 2.39 or later, all
+  provisional until the release checks by hand have passed on each.
 
 ### Changed
 
@@ -197,6 +204,13 @@
   can't be added at all.
 - Releases now wait for the check of every library against known security advisories (RustSec), and are tested and
   built from exactly the library versions in `Cargo.lock`.
+- The README in the `.deb`, `.rpm`, Windows installer and macOS app linked to guide pages they don't include. It
+  now links to the guide online for its version, as do the changelog and the security notes there; the archives
+  still carry the guide. The Windows installer and macOS app now include the licence of the Liberation fonts too.
+- The `.rpm` now asks for glibc 2.39 or later, which the Linux builds need, so an older system refuses it when
+  installing instead of the app failing to start. The Intel macOS builds now say macOS 11 or later, as the
+  Apple Silicon ones and the docs do (they said 10.12). The docs no longer say older Linux systems can use the
+  archive: it needs the same glibc.
 
 ## [0.9.0] - 2026-10-23
 

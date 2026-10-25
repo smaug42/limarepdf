@@ -2,9 +2,10 @@
   The Windows installer, built in CI with WiX 5 from the repository root:
     wix build packaging/windows/limarepdf.wxs -arch x64 -d Version=<version> -o limarepdf-<version>-x86_64.msi
   (with -ext WixToolset.UI.wixext -loc packaging/windows/limarepdf.wxl -culture en-US; the .wxl holds the
-  Welcome screen's licence summary). Installs for all users, by default in Program Files\LimarePDF,
-  with a Start menu shortcut, LimarePDF under "Open with" for PDFs (and in Settings > Default apps),
-  and limarepdf-cli.exe on the PATH. The UpgradeCode must never change: it is how a newer LimarePDF replaces
+  Welcome screen's licence summary and the shortcut option's label), after packaging/package-docs.sh.
+  Installs for all users, by default in Program Files\LimarePDF, with a Start menu shortcut, a desktop
+  shortcut if asked for, LimarePDF under "Open with" for PDFs (and in Settings > Default apps), and
+  limarepdf-cli.exe on the PATH. The UpgradeCode must never change: it is how a newer LimarePDF replaces
   an older one.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
@@ -13,15 +14,73 @@
     <MajorUpgrade DowngradeErrorMessage="A newer version of LimarePDF is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
-    <!-- Installer screens: welcome, install folder, ready, progress, finish. The licence page is
-         skipped (MIT or Apache-2.0 asks nothing of the user): the two Publish lines below take
+    <!-- Installer screens: welcome, install folder with the desktop shortcut option, ready, progress,
+         finish. The licence page is skipped (MIT or Apache-2.0 asks nothing of the user), and the
+         dialog set's folder page is replaced by LimareDirDlg below: the two Publish lines here take
          precedence over the dialog set's own (higher Order). -->
     <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
     <UI>
-      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstallDirDlg"
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="LimareDirDlg"
                Condition="NOT Installed" Order="2" />
-      <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="LimareDirDlg"
+               Condition="NOT Installed" Order="3" />
+
+      <!-- The folder page, laid out as the dialog set's pages are, with the shortcut option under the
+           folder. Its text comes from the UI extension's strings, apart from the option's. -->
+      <Dialog Id="LimareDirDlg" Width="370" Height="270" Title="!(loc.InstallDirDlg_Title)">
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes"
+                 Text="!(loc.WixUINext)">
+          <Publish Event="SetTargetPath" Value="[WIXUI_INSTALLDIR]" Order="1" />
+          <Publish Event="DoAction" Value="WixUIValidatePath_$(sys.BUILDARCHSHORT)" Order="2"
+                   Condition="NOT WIXUI_DONTVALIDATEPATH" />
+          <Publish Event="SpawnDialog" Value="InvalidDirDlg" Order="3"
+                   Condition="NOT WIXUI_DONTVALIDATEPATH AND WIXUI_INSTALLDIR_VALID &lt;&gt; &quot;1&quot;" />
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="4"
+                   Condition="WIXUI_DONTVALIDATEPATH OR WIXUI_INSTALLDIR_VALID = &quot;1&quot;" />
+        </Control>
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
+          <Publish Event="NewDialog" Value="WelcomeDlg" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes"
+                 Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+        <Control Id="Folder" Type="PathEdit" X="20" Y="100" Width="320" Height="18" Property="WIXUI_INSTALLDIR"
+                 Indirect="yes" />
+        <Control Id="ChangeFolder" Type="PushButton" X="20" Y="120" Width="56" Height="17"
+                 Text="!(loc.InstallDirDlgChange)">
+          <Publish Property="_BrowseProperty" Value="[WIXUI_INSTALLDIR]" Order="1" />
+          <Publish Event="SpawnDialog" Value="BrowseDlg" Order="2" />
+        </Control>
+        <Control Id="DesktopShortcut" Type="CheckBox" X="20" Y="155" Width="320" Height="17"
+                 Property="DESKTOPSHORTCUT" CheckBoxValue="1" Text="!(loc.LimareDesktopShortcut)" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="200" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="!(loc.InstallDirDlgTitle)" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes"
+                 NoPrefix="yes" Text="!(loc.InstallDirDlgDescription)" />
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no"
+                 Text="!(loc.InstallDirDlgBannerBitmap)" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="FolderLabel" Type="Text" X="20" Y="60" Width="290" Height="30" NoPrefix="yes"
+                 Text="!(loc.InstallDirDlgFolderLabel)" />
+      </Dialog>
     </UI>
+
+    <!-- The desktop shortcut: none unless ticked on the folder page, or DESKTOPSHORTCUT=1 given to
+         msiexec. An upgrade keeps the choice made before (read back from the registry) unless
+         DESKTOPSHORTCUT is given; DESKTOPSHORTCUT=0 turns it off. Both actions run once, before the
+         screens (or before installing, without them), so unticking the box is never overruled. -->
+    <Property Id="DESKTOPSHORTCUT" Secure="yes" />
+    <Property Id="EARLIERDESKTOPSHORTCUT">
+      <RegistrySearch Id="EarlierDesktopShortcut" Root="HKLM" Key="Software\LimarePDF" Name="DesktopShortcut"
+                      Type="raw" Bitness="always64" />
+    </Property>
+    <SetProperty Id="DESKTOPSHORTCUT" Action="KeepDesktopShortcut" Value="[EARLIERDESKTOPSHORTCUT]"
+                 After="AppSearch" Sequence="first" Condition="NOT DESKTOPSHORTCUT AND EARLIERDESKTOPSHORTCUT" />
+    <!-- An unset property formats as nothing, which clears DESKTOPSHORTCUT, so the box shows unticked. -->
+    <SetProperty Id="DESKTOPSHORTCUT" Action="DesktopShortcutOff" Value="[NO_DESKTOPSHORTCUT]"
+                 After="KeepDesktopShortcut" Sequence="first" Condition="DESKTOPSHORTCUT = &quot;0&quot;" />
 
     <Icon Id="limarepdf.ico" SourceFile="crates\limarepdf-gui\assets\icon.ico" />
     <Property Id="ARPPRODUCTICON" Value="limarepdf.ico" />
@@ -31,6 +90,7 @@
       <Directory Id="INSTALLFOLDER" Name="LimarePDF" />
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder" />
+    <StandardDirectory Id="DesktopFolder" />
 
     <Feature Id="Main">
       <Component Directory="INSTALLFOLDER">
@@ -69,8 +129,18 @@
                      Permanent="no" />
       </Component>
 
-      <Component Directory="INSTALLFOLDER"><File Source="README.md" /></Component>
-      <Component Directory="INSTALLFOLDER"><File Source="CHANGELOG.md" /></Component>
+      <!-- All users' desktop (a per-machine install). The registry value records the choice. -->
+      <Component Id="DesktopShortcut" Directory="DesktopFolder" Condition="DESKTOPSHORTCUT = &quot;1&quot;">
+        <Shortcut Id="Desktop" Name="LimarePDF" Description="View and edit PDF files" Target="[#limarepdf.exe]"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKLM" Key="Software\LimarePDF" Name="DesktopShortcut" Type="string" Value="1"
+                       KeyPath="yes" />
+      </Component>
+
+      <!-- The README, changelog and security notes link to the online guide (packaging/package-docs.sh). -->
+      <Component Directory="INSTALLFOLDER"><File Source="target\package-docs\README.md" /></Component>
+      <Component Directory="INSTALLFOLDER"><File Source="target\package-docs\CHANGELOG.md" /></Component>
+      <Component Directory="INSTALLFOLDER"><File Source="target\package-docs\SECURITY.md" /></Component>
       <Component Directory="INSTALLFOLDER"><File Source="LICENSE-MIT" /></Component>
       <Component Directory="INSTALLFOLDER"><File Source="LICENSE-APACHE" /></Component>
       <Component Directory="INSTALLFOLDER">
@@ -78,6 +148,9 @@
       </Component>
       <Component Directory="INSTALLFOLDER">
         <File Source="crates\limarepdf-gui\assets\fonts\OFL.txt" Name="FONT-LICENSE-Inter.txt" />
+      </Component>
+      <Component Directory="INSTALLFOLDER">
+        <File Source="crates\limarepdf-core\assets\fonts\OFL-Liberation.txt" Name="FONT-LICENSE-Liberation.txt" />
       </Component>
       <Component Directory="INSTALLFOLDER">
         <File Source="crates\limarepdf-core\assets\fonts\OFL-Caveat.txt" Name="FONT-LICENSE-Caveat.txt" />

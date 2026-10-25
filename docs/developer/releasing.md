@@ -56,22 +56,46 @@ optimisation, which every test executable would otherwise go through on its own)
 checked; a `Cargo.lock` out of date with `Cargo.toml` fails the job instead of being updated on the runner)
 `limarepdf-<version>-<platform>.tar.gz` (`.zip` on Windows), holding the binaries, the README, `CHANGELOG.md`, `SECURITY.md`, `docs/` and
 the licences. The archives are made on the runner because Actions artifacts lose Unix file permissions; on the
-Actions page each artifact therefore downloads as a zip with the archive inside.
+Actions page each artifact therefore downloads as a zip with the archive inside. The Mac builds target macOS 11
+(`MACOSX_DEPLOYMENT_TARGET` at the top of the workflow; Rust's own default for Intel is 10.12).
+
+The packages and installers (deb, rpm, MSI, dmg) don't carry `docs/`: `packaging/package-docs.sh` writes their
+README, changelog and security notes into `target/package-docs/` with every relative link pointed at the version's
+tag on GitHub (pages under `blob/`, images under `raw/`), so those links work once the version is tagged.
+`packaging/check-package.py <folder>` checks a layout as installed: the programs, the README, changelog, security
+notes, OCR model notes and every licence (the font ones included) there, every relative link reaching a file and
+heading in the folder, and every link to the version's tag reaching one in the repository. CI runs it on each
+archive before packing it, on the deb and rpm unpacked, on the MSI installed, and on the app in the mounted dmg;
+the logs list each package's files.
 
 The Linux job also makes `limarepdf_<version>-1_amd64.deb` and `limarepdf-<version>-1.x86_64.rpm` with `cargo-deb` and
 `cargo-generate-rpm`, from the `[package.metadata.deb]` and `[package.metadata.generate-rpm]` sections of
 `crates/limarepdf-gui/Cargo.toml`. Their dependency lists name the libraries limarepdf loads at run time; check them when
-eframe or rfd changes (`strings target/release/limarepdf | grep '\.so'` lists them). A quick install test:
+eframe or rfd changes (`strings target/release/limarepdf | grep '\.so'` lists them). The rpm's glibc version
+(`libc.so.6(GLIBC_2.39)(64bit)`) is written by hand, since the automatic scan is off; the job fails, naming the
+version to set, when the binaries need a different one (`ubuntu-latest` moving to a newer Ubuntu would do it:
+then update the floor in install.md, the README and features.md too). The deb's comes from `dpkg-shlibdeps`. A quick install test:
 `podman run --rm -v $PWD:/p:Z debian:stable bash -c 'apt-get update && apt-get install -y /p/limarepdf_*.deb && limarepdf-cli --version'`
 (and the same with `fedora` and `dnf install -y /p/*.rpm`).
 
 The `macos-dmg` job builds both Mac targets on one runner and runs `packaging/macos/make-dmg.sh`: it joins each
 binary with `lipo`, makes `LimarePDF.app` from `packaging/macos/Info.plist` (which registers LimarePDF for PDFs) and an icon made
-with `iconutil`, signs it ad hoc, and wraps it in `LimarePDF-<version>.dmg` with `hdiutil`.
+with `iconutil`, signs it ad hoc, and wraps it in `LimarePDF-<version>.dmg` with `hdiutil`. It then mounts the dmg,
+checks the app's files and that both halves of each binary say macOS 11.
 
 The Windows job also builds `limarepdf-<version>-x86_64.msi` from `packaging/windows/limarepdf.wxs` with WiX 5 (a .NET tool,
 pinned because later versions add an EULA step) and its UI extension, `WixToolset.UI.wixext` (the same version), for
-the installer screens. Its `UpgradeCode` must never change.
+the installer screens. Its `UpgradeCode` must never change. The folder page is the installer's own (`LimareDirDlg`,
+written for LimarePDF rather than copied from WiX, whose source is under the MS-RL licence), laid out like the
+extension's pages and using its strings, with the desktop shortcut checkbox; two `Publish` lines route the
+extension's Welcome and Ready pages to it. The checkbox sets `DESKTOPSHORTCUT`, which can also be given to
+`msiexec`; the shortcut's registry value records the choice, and two property actions, run once before the
+screens (or before installing, without them), keep it at an upgrade unless `DESKTOPSHORTCUT` is given, and turn
+`DESKTOPSHORTCUT=0` into an unticked box. The job also builds the same installer as versions 255.0.0 and 255.0.1
+and then installs on the runner without the screens: the files, the Start menu shortcut and the installed folder's
+check; uninstalling; the desktop shortcut asked for, kept by an upgrade and removed by one with
+`DESKTOPSHORTCUT=0`; and uninstalling again, leaving nothing. The screens themselves are only checked by hand
+(testing.md's platform smoke checks).
 
 The `release` job writes `SHA256SUMS`, signs it and every file with the signing subkey (below), checks each signature
 against `docs/limarepdf-signing-key.asc`, and records build provenance with `actions/attest-build-provenance`, which

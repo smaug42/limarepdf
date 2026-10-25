@@ -2,11 +2,17 @@
 
 ## Platforms
 
+What each platform needs and its support level, as install.md states them: every platform is **provisional**
+until its required rows under [Platform smoke checks](#platform-smoke-checks) pass (supported then). The floors
+are read from the binaries CI builds: glibc 2.39 from the Linux ones (0.9.0's, 2026-10-25; CI's Linux job checks
+it against the rpm's requirement), macOS 11 from both halves of the dmg's (the dmg job checks it).
+
 | Platform | Status |
 | --- | --- |
-| Linux x86_64 | Built and tested; the command line run on real PDFs; the desktop app used by hand and checked by screenshot under a virtual X server, including the narrow-window layout; the acceptance checks below run, including printing on paper |
-| Windows x86_64 | Built and tested by continuous integration (`.github/workflows/ci.yml`, GitHub Actions), which also packages all four platforms. Printing has been tried by hand up to the print dialog; nothing has been printed on paper. The rest of the code that differs by platform has run only in CI's tests there, not by hand: replacing files in one step (`atomic.rs`), free disk space (`disk.rs`), recovery copies and their folder (`recovery/`), settings, digital IDs and trust files kept private (`write_private`), opening documents and links and showing files in the file manager, and the installer package |
-| macOS (Intel and Apple Silicon) | Built and tested by continuous integration. Not run by hand |
+| Linux x86_64 | Needs glibc 2.39 or later (built on `ubuntu-latest`, Ubuntu 24.04). Provisional. Built and tested; the command line run on real PDFs; the desktop app used by hand and checked by screenshot under a virtual X server, including the narrow-window layout; the acceptance checks below run, including printing on paper |
+| Windows x86_64 | Windows 10 and 11. Provisional. Built and tested by continuous integration (`.github/workflows/ci.yml`, GitHub Actions), which also packages all four platforms. Printing has been tried by hand up to the print dialog; nothing has been printed on paper. The rest of the code that differs by platform has run only in CI's tests there, not by hand: replacing files in one step (`atomic.rs`), free disk space (`disk.rs`), recovery copies and their folder (`recovery/`), settings, digital IDs and trust files kept private (`write_private`), opening documents and links and showing files in the file manager, and the installer package's screens (CI installs, upgrades and uninstalls it without them) |
+| macOS (Intel and Apple Silicon) | macOS 11 or later. Provisional. Built and tested by continuous integration. Not run by hand |
+| Arch Linux x86_64 | The target of the Arch package and AUR recipe (REL-14, not built yet); its tested snapshot, date and package dependencies are recorded here when it is, apart from the Ubuntu-built binaries' glibc floor. LimarePDF is built from source and used by hand on an Arch-based system (CachyOS, glibc 2.44) |
 
 ## Automated tests
 
@@ -428,6 +434,18 @@ the last of them (the Intel Mac build), then signed and attested the files and u
 the draft release. The gate adds no time while `audit` is faster than the builds. SECURITY.md's links checked with
 the docs' link checker.
 
+### Packages
+
+Package contents and platform floors (BUG-29, REL-01; 2026-10-25). The deb and rpm built locally from the
+release binaries (`cargo deb --no-build`, `cargo generate-rpm`) and unpacked: each has the programs, the desktop
+entry and icon, the README, changelog and security notes from `package-docs.sh` (no relative links left; images
+under `raw/`), the OCR model notes and every licence, Liberation's included (the rpm's licences under
+`/usr/share/licenses/limarepdf/`); `check-package.py` finds no problems in either, nor in an archive-shaped folder
+made as CI makes it. Run on a copy with the original README, a font licence removed and a heading changed, it
+reports all three. The rpm's requirement matches 0.9.0's published binaries (`GLIBC_2.39`, read with `objdump -T`).
+The WiX files are well-formed XML; they are built only on Windows, so the MSI, its install checks and the dmg are
+checked by CI on the branch (results below once run).
+
 ## Acceptance checks
 
 The automated tests cover the library and the command line. These checks cover what they can't: the desktop app used
@@ -523,6 +541,8 @@ happened in everyday use but no result was written down.
 | Check | Linux | Windows | macOS |
 | --- | --- | --- | --- |
 | Install from the package or installer, start from the menu | apt and dnf repositories checked (0.5) | MSI installed and started by hand (0.5) | Not run |
+| Windows installer screens: the folder page's desktop shortcut box unticked at first; ticked, it adds the shortcut, which starts LimarePDF; an upgrade with the screens shows the earlier choice; Change… and Back work; uninstalling removes the shortcut | | Not run: deferred to the RC cycle (BUG-31; CI checks the same without the screens) | |
+| The README in the installed package: its links open the guide online for that version | Not run: deferred to the RC cycle | Not run: deferred to the RC cycle | Not run: deferred to the RC cycle |
 | Open a PDF from the file manager (double-click, Open with) | Not recorded | Not run | Not run (Finder's Open with) |
 | Open a PDF passed on the command line, with `--page` | Not recorded | Not run | Not run |
 | Edit, save, reopen | Used by hand | Not run | Not run |

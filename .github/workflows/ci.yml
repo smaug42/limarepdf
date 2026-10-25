@@ -23,6 +23,11 @@ concurrency:
 permissions:
   contents: read
 
+# The oldest macOS the Mac builds run on, for both kinds of Mac, as docs/install.md and
+# packaging/macos/Info.plist say (Rust's own default for Intel is older). The dmg job checks it.
+env:
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
+
 jobs:
   # Known security advisories (RustSec) against every crate in Cargo.lock. Ignored, with
   # the reason in docs/signatures.md: RUSTSEC-2023-0071, an RSA timing leak in `rsa` with
@@ -87,6 +92,9 @@ jobs:
             cp crates/limarepdf-gui/assets/io.github.smaug42.limarepdf.desktop "$dir/"
             cp docs/images/icon.png "$dir/io.github.smaug42.limarepdf.png"
           fi
+          # Every file it should hold there, and every link in its docs working.
+          py=python3; [ "${{ runner.os }}" = "Windows" ] && py=python
+          $py packaging/check-package.py "$dir"
           cd dist
           if [ "${{ runner.os }}" = "Windows" ]; then
             7z a -tzip "$name.zip" "$name" > /dev/null
@@ -99,9 +107,31 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           cargo install cargo-deb cargo-generate-rpm --locked
+          bash packaging/package-docs.sh
           cargo deb -p limarepdf-gui --no-build --no-strip --output dist/
           cargo generate-rpm -p crates/limarepdf-gui --output dist/
+      # Each package's files as installed, and the glibc it asks for: the rpm names it by hand
+      # (Cargo.toml), so it must match what the binaries use; the deb's is worked out by cargo-deb.
+      - name: Check the Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y rpm > /dev/null
+          dpkg-deb -c dist/*.deb
+          rpm -qlp dist/*.rpm
+          mkdir -p "$RUNNER_TEMP/deb" "$RUNNER_TEMP/rpm"
+          dpkg-deb -x dist/*.deb "$RUNNER_TEMP/deb"
+          python3 packaging/check-package.py "$RUNNER_TEMP/deb"
+          rpm2cpio "$PWD"/dist/*.rpm | (cd "$RUNNER_TEMP/rpm" && cpio -idm --quiet)
+          python3 packaging/check-package.py "$RUNNER_TEMP/rpm"
+          need=$(objdump -T target/release/limarepdf target/release/limarepdf-cli \
+            | grep -o 'GLIBC_[0-9][0-9.]*' | sort -uV | tail -1)
+          asked=$(rpm -qp --requires dist/*.rpm | sed -n 's/^libc\.so\.6(\(GLIBC_[0-9.]*\))(64bit).*/\1/p')
+          echo "The binaries need $need; the rpm asks for $asked; the deb: $(dpkg-deb -f dist/*.deb Depends | grep -o 'libc6 ([^)]*)')"
+          if [ "$need" != "$asked" ]; then
+            echo "Set the rpm's GLIBC_ requirement in crates/limarepdf-gui/Cargo.toml to $need"; exit 1
+          fi
       # The MSI from packaging/windows/limarepdf.wxs. WiX is pinned to 5 (open source, no EULA step).
+      # Two later versions of it, for the upgrade checks below, go to the runner's temporary folder.
       - name: Windows installer
         if: runner.os == 'Windows'
         shell: bash
@@ -109,10 +139,52 @@ jobs:
           dotnet tool install --global wix --version 5.0.2
           export PATH="$PATH:$HOME/.dotnet/tools"
           wix extension add --global WixToolset.UI.wixext/5.0.2
+          bash packaging/package-docs.sh
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          wix build packaging/windows/limarepdf.wxs -arch x64 -ext WixToolset.UI.wixext \
-            -loc packaging/windows/limarepdf.wxl -culture en-US -d Version=$version \
-            -o "dist/limarepdf-$version-x86_64.msi"
+          build() {
+            wix build packaging/windows/limarepdf.wxs -arch x64 -ext WixToolset.UI.wixext \
+              -loc packaging/windows/limarepdf.wxl -culture en-US -d Version=$1 -o "$2"
+          }
+          build "$version" "dist/limarepdf-$version-x86_64.msi"
+          build 255.0.0 "$RUNNER_TEMP/upgrade-1.msi"
+          build 255.0.1 "$RUNNER_TEMP/upgrade-2.msi"
+      # Installs the MSI without its screens, as a silent install would: the files and Start menu
+      # shortcut, and the desktop shortcut option left out, asked for, kept by an upgrade and turned
+      # off by one; then uninstalls. The screens themselves are checked by hand (docs/developer/testing.md).
+      - name: Check the Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $msi = (Get-Item dist\*.msi).FullName
+          $folder = "$env:ProgramFiles\LimarePDF"
+          $menu = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\LimarePDF.lnk"
+          $desktop = "$env:PUBLIC\Desktop\LimarePDF.lnk"
+          $log = "$env:RUNNER_TEMP\msiexec.log"
+          function Run($what) {
+            Write-Output "msiexec $what"
+            $p = Start-Process msiexec -ArgumentList "$what /qn /l*v `"$log`"" -Wait -PassThru
+            if ($p.ExitCode -notin 0, 3010) {
+              Get-Content $log -Tail 80
+              throw "msiexec $what ended with $($p.ExitCode)"
+            }
+          }
+          function Expect($path, $there) {
+            if ((Test-Path $path) -ne $there) { throw "$path is $(if ($there) { 'missing' } else { 'still there' })" }
+          }
+          Run "/i `"$msi`""
+          Expect "$folder\limarepdf.exe" $true; Expect $menu $true; Expect $desktop $false
+          python packaging\check-package.py $folder
+          if ($LASTEXITCODE -ne 0) { throw "The installed folder has problems" }
+          Run "/x `"$msi`""
+          Expect $folder $false; Expect $menu $false
+          Run "/i `"$msi`" DESKTOPSHORTCUT=1"
+          Expect $desktop $true
+          Run "/i `"$env:RUNNER_TEMP\upgrade-1.msi`""
+          Expect $desktop $true
+          Run "/i `"$env:RUNNER_TEMP\upgrade-2.msi`" DESKTOPSHORTCUT=0"
+          Expect $desktop $false; Expect $menu $true
+          Run "/x `"$env:RUNNER_TEMP\upgrade-2.msi`""
+          Expect $folder $false; Expect $menu $false; Expect $desktop $false
       - uses: actions/upload-artifact@v7
         with:
           name: limarepdf-${{ matrix.name }}
@@ -137,6 +209,22 @@ jobs:
         run: cargo build --workspace --release --locked --target aarch64-apple-darwin --target x86_64-apple-darwin
       - name: Make the dmg
         run: bash packaging/macos/make-dmg.sh dist
+      # The app as it comes out of the dmg: its files and their links, and macOS 11 as the oldest
+      # system for both kinds of Mac.
+      - name: Check the dmg
+        run: |
+          hdiutil attach -nobrowse -readonly -mountpoint "$RUNNER_TEMP/dmg" dist/*.dmg
+          app="$RUNNER_TEMP/dmg/LimarePDF.app"
+          find "$app" -type f
+          python3 packaging/check-package.py "$app/Contents"
+          for bin in limarepdf limarepdf-cli; do
+            for arch in arm64 x86_64; do
+              minos=$(otool -arch $arch -l "$app/Contents/MacOS/$bin" | awk '/minos/ {print $2; exit}')
+              echo "$bin ($arch): macOS $minos or later"
+              [ "$minos" = "11.0" ] || exit 1
+            done
+          done
+          hdiutil detach "$RUNNER_TEMP/dmg"
       - uses: actions/upload-artifact@v7
         with:
           name: limarepdf-macos-dmg
