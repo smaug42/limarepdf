@@ -148,6 +148,22 @@
   writing shares the sheet; the picture file isn't changed, and a saved signature keeps the part chosen. Paper can
   now be made transparent in 1-bit and CMYK TIFF scans too. The window shows the picture and the result while you
   choose.
+- Chinese, Japanese and Korean text whose character map (CMap) is stored in the file and built on another one was
+  read as the wrong characters, or not at all, by search, copying, text export and `limarepdf-cli text`. The map
+  is now read with the one it is built on, predefined or also stored in the file, as poppler reads it. How such
+  text is drawn is unchanged (see Rendering, Known to be wrong).
+- Two messages pointed to menus that don't exist: after exporting a certificate, "Edit > Trusted certificates >
+  Add", and after signing with a self-made ID, "Edit > Digital IDs". They now give Document > Digital signatures
+  > Trusted certificates… > Add certificate file…, and Document > Digital signatures > Digital IDs…. Setting a
+  signature field's value with `limarepdf-cli form fill` said "LimarePDF can't sign yet"; it now points to Sign
+  with digital ID in the app and `limarepdf-cli sign --field`.
+- The user guide said applying redactions can't be undone (Undo brings the content back until the document is
+  closed, also after saving), that flattened comments and fields can't be changed (they are no longer comments or
+  fields, but content editing can still move or delete them, as the Flatten annotations question, its command
+  description and the command line's help now say too), that the command line does everything the app does (it
+  doesn't edit page content, add comments or fill and sign), that every font LimarePDF writes is embedded (plain
+  Western text in Helvetica, Times or Courier isn't), and that a digital signature proves who signed (only as far
+  as you trust the signer's certificate). These and a few smaller statements now match the app.
 
 ### Added
 

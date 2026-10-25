@@ -328,6 +328,7 @@ fn refuses_values_that_dont_fit() {
             dictionary! { "FT" => "Tx", "T" => text("locked"), "Ff" => 1, "Rect" => rect(0.0, 30.0, 50.0, 20.0) },
             dictionary! { "FT" => "Ch", "T" => text("pick"), "Opt" => vec![text("a")], "Rect" => rect(0.0, 60.0, 50.0, 20.0) },
             dictionary! { "FT" => "Btn", "Ff" => 1 << 16, "T" => text("go"), "Rect" => rect(0.0, 90.0, 50.0, 20.0) },
+            dictionary! { "FT" => "Sig", "T" => text("sig"), "Rect" => rect(0.0, 120.0, 50.0, 20.0) },
         ],
     );
     let err = |r: limarepdf_core::Result<()>| r.unwrap_err().to_string();
@@ -341,6 +342,13 @@ fn refuses_values_that_dont_fit() {
         err(p.set_field("pick", FieldValue::Choice(vec!["b".into()]))).contains("isn't one of")
     );
     assert!(err(p.set_field("go", FieldValue::None)).contains("push button"));
+    // A signature field points to signing (BUG-33).
+    let sig = err(p.set_field("sig", t("x")));
+    assert!(
+        sig.contains("Document > Digital signatures > Sign with digital ID")
+            && sig.contains("`limarepdf-cli sign --field \"sig\"`"),
+        "{sig}"
+    );
     assert!(err(p.set_field("one", FieldValue::Check(true))).contains("doesn't suit"));
     // Nothing was written.
     assert_eq!(value(&p, "one"), FieldValue::Text(String::new()));

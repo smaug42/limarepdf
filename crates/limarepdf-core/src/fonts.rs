@@ -223,6 +223,95 @@ const MAX_SPACES: usize = 256;
 /// Most CMaps followed through `usecmap`, as hayro-cmap allows.
 const MAX_USECMAP: u32 = 16;
 
+/// Finds a CMap's data by the name a `usecmap` gives it.
+type Get<'a> = &'a dyn Fn(&[u8]) -> Option<&'a [u8]>;
+
+/// The predefined CMap `name`, in hayro-cmap's binary form.
+fn predefined_data(name: &[u8]) -> Option<&'static [u8]> {
+    load_embedded(CMapName::from_bytes(name))
+}
+
+/// The name CMap text `data` gives with `usecmap`, if any, as hayro-cmap reads it.
+fn used_name(data: &[u8]) -> Option<Vec<u8>> {
+    let name = std::cell::RefCell::new(None);
+    CMap::parse(data, |n: CMapName<'_>| {
+        *name.borrow_mut() = Some(n.to_bytes().to_vec());
+        None::<&[u8]>
+    });
+    name.into_inner()
+}
+
+/// The CMap of the embedded CMap stream `s` (object `id`) and its codespace, with those of
+/// the CMaps it is built on (BUG-33). A stream's `/UseCMap` entry names a predefined CMap
+/// or holds another stream, which its text may also name with `usecmap`; hayro-cmap
+/// follows only `usecmap`, and only to predefined CMaps. So an entry its text doesn't
+/// name is named at its start, and the names it uses find the streams. Each stream is
+/// read once, at most [`MAX_USECMAP`] deep.
+fn embedded_cmap(
+    doc: &Document,
+    id: Option<lopdf::ObjectId>,
+    s: &lopdf::Stream,
+) -> (Option<Arc<CMap>>, Vec<Space>) {
+    let regular = |n: &[u8]| {
+        !n.is_empty()
+            && n.iter()
+                .all(|c| c.is_ascii_graphic() && !b"()<>[]{}/%".contains(c))
+    };
+    let named = |data: &mut Vec<u8>, name: &[u8]| {
+        let head = [b"/", name, b" usecmap\n"].concat();
+        data.splice(0..0, head);
+    };
+    // Each stream's text, after the name the one before it uses it by.
+    let mut chain: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut seen = vec![id];
+    let (mut next, mut name) = (Some(s), Vec::new());
+    while let Some(s) = next.take() {
+        let Ok(mut data) = s.get_plain_content_with_limit(MAX_CMAP) else {
+            break;
+        };
+        let used = used_name(&data);
+        let base = s.dict.get(b"UseCMap").ok();
+        match base.and_then(|o| doc.dereference(o).ok()) {
+            Some((_, Object::Name(n))) if used.is_none() && predefined_data(n).is_some() => {
+                named(&mut data, n);
+            }
+            Some((base, Object::Stream(b)))
+                if !seen.contains(&base) && chain.len() + 1 < MAX_USECMAP as usize =>
+            {
+                let key = match used {
+                    Some(n) if regular(&n) => n,
+                    Some(_) => Vec::new(),
+                    None => {
+                        let k = format!("LimarePDF-UseCMap-{}", chain.len()).into_bytes();
+                        named(&mut data, &k);
+                        k
+                    }
+                };
+                if !key.is_empty() {
+                    seen.push(base);
+                    next = Some(b);
+                }
+                chain.push((std::mem::replace(&mut name, key), data));
+                continue;
+            }
+            _ => {}
+        }
+        chain.push((name, data));
+        break;
+    }
+    let Some((_, top)) = chain.first() else {
+        return (None, Vec::new());
+    };
+    let get = |n: &[u8]| {
+        predefined_data(n).or_else(|| {
+            let mut used = chain.iter().skip(1);
+            used.find(|(k, _)| k == n).map(|(_, d)| d.as_slice())
+        })
+    };
+    let cmap = CMap::parse(top, |n: CMapName<'_>| get(n.to_bytes())).map(Arc::new);
+    (cmap, codespace_in(top, 0, &get))
+}
+
 /// `bytes` split into character codes of the lengths `len` gives, each with its bytes.
 /// The flag marks the single-byte space (word spacing applies).
 fn split(bytes: &[u8], len: impl Fn(&[u8]) -> usize) -> Vec<(u32, bool, &[u8])> {
@@ -271,27 +360,29 @@ fn drawn_len(m: &CMap, bytes: &[u8]) -> Option<usize> {
     None
 }
 
-/// The codespace of CMap `data`, with those of the CMaps it uses (`usecmap`), `depth` deep
-/// in them. `data` is a CMap's text, or one of hayro-cmap's predefined CMaps in its own
-/// binary form. Empty when none can be read.
+/// The codespace of CMap `data`, with those of the predefined CMaps it uses (`usecmap`),
+/// `depth` deep in them. `data` is a CMap's text, or one of hayro-cmap's predefined CMaps
+/// in its own binary form. Empty when none can be read.
 fn codespace(data: &[u8], depth: u32) -> Vec<Space> {
+    codespace_in(data, depth, &predefined_data)
+}
+
+/// [`codespace`], with the CMaps used found by `get`.
+fn codespace_in<'a>(data: &[u8], depth: u32, get: Get<'a>) -> Vec<Space> {
     let read = if data.starts_with(b"bcmap") {
-        binary_codespace(data, depth)
+        binary_codespace(data, depth, get)
     } else {
-        text_codespace(data, depth)
+        text_codespace(data, depth, get)
     };
     read.filter(|s| s.len() <= MAX_SPACES).unwrap_or_default()
 }
 
-/// The codespace of the predefined CMap `name` uses.
-fn used_codespace(name: &[u8], depth: u32) -> Option<Vec<Space>> {
+/// The codespace of the CMap `name` uses, found by `get`.
+fn used_codespace<'a>(name: &[u8], depth: u32, get: Get<'a>) -> Option<Vec<Space>> {
     if depth >= MAX_USECMAP {
         return None;
     }
-    Some(codespace(
-        load_embedded(CMapName::from_bytes(name))?,
-        depth + 1,
-    ))
+    Some(codespace_in(get(name)?, depth + 1, get))
 }
 
 /// A codespace range from its lowest and highest codes, which must be as long, one to four
@@ -312,7 +403,7 @@ fn space_range(low: &[u8], high: &[u8]) -> Option<Space> {
 
 /// [`codespace`] of a CMap's text: the hexadecimal pairs between `begincodespacerange` and
 /// `endcodespacerange`. Comments, strings and dictionaries are passed over.
-fn text_codespace(data: &[u8], depth: u32) -> Option<Vec<Space>> {
+fn text_codespace<'a>(data: &[u8], depth: u32, get: Get<'a>) -> Option<Vec<Space>> {
     let regular = |c: u8| !c.is_ascii_whitespace() && !b"()<>[]{}/%".contains(&c);
     let mut out = Vec::new();
     let mut inside = false;
@@ -385,7 +476,7 @@ fn text_codespace(data: &[u8], depth: u32) -> Option<Vec<Space>> {
                     b"begincodespacerange" => inside = true,
                     b"endcodespacerange" if low.is_some() => return None,
                     b"endcodespacerange" => inside = false,
-                    b"usecmap" => out.extend(used_codespace(name, depth)?),
+                    b"usecmap" => out.extend(used_codespace(name, depth, get)?),
                     _ => {}
                 }
                 i = end;
@@ -401,7 +492,7 @@ fn text_codespace(data: &[u8], depth: u32) -> Option<Vec<Space>> {
 /// segments of a type byte, a 4-byte length counting these 5 bytes, and the data. A
 /// codespace segment is a count, then each range as its length in bytes and its lowest and
 /// highest codes; a `usecmap` segment is the used CMap's name.
-fn binary_codespace(data: &[u8], depth: u32) -> Option<Vec<Space>> {
+fn binary_codespace<'a>(data: &[u8], depth: u32, get: Get<'a>) -> Option<Vec<Space>> {
     const CODESPACE: u8 = 0x0C;
     const USECMAP: u8 = 0x09;
     let be32 = |at: usize| -> Option<usize> {
@@ -427,7 +518,7 @@ fn binary_codespace(data: &[u8], depth: u32) -> Option<Vec<Space>> {
                     rest = tail;
                 }
             }
-            USECMAP => out.extend(used_codespace(seg, depth)?),
+            USECMAP => out.extend(used_codespace(seg, depth, get)?),
             _ => {}
         }
         at += len.max(5);
@@ -540,13 +631,7 @@ impl<'a> FontCtx<'a> {
                     let space = load_embedded(name).map_or_else(Vec::new, |d| codespace(d, 0));
                     (predefined(name), space)
                 }
-                Some((_, Object::Stream(s))) => match s.get_plain_content_with_limit(MAX_CMAP) {
-                    Ok(data) => (
-                        CMap::parse(&data, load_embedded).map(Arc::new),
-                        codespace(&data, 0),
-                    ),
-                    Err(_) => (None, Vec::new()),
-                },
+                Some((id, Object::Stream(s))) => embedded_cmap(doc, id, s),
                 _ => (None, Vec::new()),
             };
             ctx.codes_known |= ctx.cmap.is_some() && !ctx.space.is_empty();
@@ -879,14 +964,14 @@ mod tests {
         let none: Vec<&str> = names
             .split_whitespace()
             .filter(|n| {
-                used_codespace(n.as_bytes(), 0)
+                used_codespace(n.as_bytes(), 0, &predefined_data)
                     .unwrap_or_default()
                     .is_empty()
             })
             .collect();
         assert!(none.is_empty(), "{none:?}");
         // Shift-JIS: one byte, two from 0x8140, one for half-width katakana, two again.
-        let sjis = used_codespace(b"90ms-RKSJ-H", 0).unwrap();
+        let sjis = used_codespace(b"90ms-RKSJ-H", 0, &predefined_data).unwrap();
         assert!(
             sjis.contains(&range(&[0x81, 0x40], &[0x9F, 0xFC])),
             "{sjis:?}"
@@ -895,8 +980,9 @@ mod tests {
         assert_eq!(space_len(&m, &sjis, b"A"), 1);
         assert_eq!(space_len(&m, &sjis, &[0x93, 0x8C]), 2);
         // Vertical uses horizontal's.
-        assert_eq!(used_codespace(b"90ms-RKSJ-V", 0).unwrap(), sjis);
-        let identity = used_codespace(b"Identity-H", 0).unwrap();
+        let used = |name: &[u8]| used_codespace(name, 0, &predefined_data);
+        assert_eq!(used(b"90ms-RKSJ-V").unwrap(), sjis);
+        let identity = used(b"Identity-H").unwrap();
         assert_eq!(identity, [range(&[0, 0], &[0xFF, 0xFF])]);
     }
 
@@ -917,7 +1003,7 @@ mod tests {
             b"/90ms-RKSJ-H usecmap 1 begincodespacerange <F040> <F9FC> endcodespacerange",
             0,
         );
-        let sjis = used_codespace(b"90ms-RKSJ-H", 0).unwrap();
+        let sjis = used_codespace(b"90ms-RKSJ-H", 0, &predefined_data).unwrap();
         assert_eq!(used.len(), sjis.len() + 1);
         assert!(used.contains(&range(&[0xF0, 0x40], &[0xF9, 0xFC])));
         // Ranges that can't be read leave no codespace: lengths that differ, five bytes,

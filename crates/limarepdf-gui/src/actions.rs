@@ -1391,7 +1391,7 @@ pub static ACTIONS: &[Action] = &[
         label: "Flatten annotations…",
         enabled: |c| c.doc && !c.busy,
         hint: "Make comments, notes, highlights and drawings part of the pages, as they \
-               look now, so they can't be changed or removed. Can be undone.",
+               look now, so they are no longer comments. Can be undone.",
         ..BASE
     },
     Action {
@@ -1411,7 +1411,7 @@ pub static ACTIONS: &[Action] = &[
         icon: icon::SIGNATURE,
         enabled: doc_idle,
         hint: "Draw the signatures, dates, ticks and other items put down with the Sign \
-               tool into the pages, so they can no longer be moved or removed.",
+               tool into the pages, so they can no longer be moved or removed as items.",
         ..BASE
     },
     Action {

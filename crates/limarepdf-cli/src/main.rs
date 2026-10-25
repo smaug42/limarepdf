@@ -938,7 +938,7 @@ enum FormCmd {
         /// A JSON object of values, as `limarepdf-cli form list --json` prints them
         #[arg(long, value_name = "FILE")]
         values: Option<PathBuf>,
-        /// Then flatten the form, so the values can't be changed
+        /// Then flatten the form, so the fields can no longer be filled in
         #[arg(long)]
         flatten: bool,
     },
@@ -947,8 +947,8 @@ enum FormCmd {
         #[command(flatten)]
         io: Io,
     },
-    /// Draw the fields into the pages as they look now and remove them, so the values
-    /// can no longer be changed
+    /// Draw the fields into the pages as they look now and remove them, so they can no
+    /// longer be filled in
     Flatten {
         #[command(flatten)]
         io: Io,
@@ -989,8 +989,8 @@ enum AnnotCmd {
         #[arg(long)]
         author: Option<String>,
     },
-    /// Draw the annotations into the pages as they look now and remove them, so they can
-    /// no longer be changed. Links and form fields are kept
+    /// Draw the annotations into the pages as they look now and remove them, so they are
+    /// no longer annotations (they become page content). Links and form fields are kept
     Flatten {
         #[command(flatten)]
         io: Io,

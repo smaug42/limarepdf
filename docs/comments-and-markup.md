@@ -126,7 +126,9 @@ for comments…. Leave it empty to save no name.
 ## Flatten comments into the pages
 
 ☰ > Document > Flatten annotations… draws all the annotations into the pages as they look now and removes them, so
-they can no longer be changed or removed in any reader. Their comment text is dropped. Links and form fields stay,
+they are no longer comments in any reader: they can't be changed or removed as comments. Their comment text is
+dropped. What was drawn is page content, so content editing can still move, resize or delete each as a whole
+([Move, resize or delete](content-editing.md#move-resize-or-delete)). Links and form fields stay,
 and so do file attachments. Undo brings them back until you close the document.
 
 ## How comments are drawn

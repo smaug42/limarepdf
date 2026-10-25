@@ -96,7 +96,12 @@ These come from hayro 0.8, the library that draws the pages:
 - Knockout groups are drawn as non-knockout.
 - Non-isolated groups are drawn as isolated, which changes colours where a blend mode such as Multiply is used
   inside the group.
-- Shading patterns that carry their own graphics state, and CMaps built on other CMaps, aren't supported.
+- Shading patterns that carry their own graphics state aren't supported.
+- A character map (CMap) stored in the file and built on another is drawn right only when its text names the
+  other with `usecmap` and that one is predefined (such as `90ms-RKSJ-H`). Built on a CMap stored in the file, the
+  font can't be read and its codes are drawn as single-byte letters, often the wrong ones; named only by the
+  map's `/UseCMap` entry, the other map is ignored, and its characters are drawn as crossed boxes (a missing character). Text selection,
+  search and copying read these maps right, as poppler does.
 - A code that a font's character map (CMap) leaves out is drawn as one byte, whatever the map's code ranges say,
   so in a font with two-byte codes the characters after it are drawn further along than poppler and pdf.js draw
   them. Text selection, search and redaction follow those readers; redaction also removes such text where

@@ -425,12 +425,15 @@ form XObject, and per inline image.
   common colour in a 3-point ring around its box, from a separate drawing of that part of the page in the current
   page colours.
 - **Adding** text, shapes or images draws them on top of the page. New text of several lines is written as one
-  text line each, their baselines 1.2 times the size apart (Acrobat's spacing), in one of the 12 standard fonts
-  with the WinAnsi encoding. A line with characters WinAnsi lacks (Polish, Czech, Vietnamese, Greek, Cyrillic and
-  so on) is written in the bundled Liberation face of that font instead, embedded in the file and cut down to the
-  characters used; one font object per face grows as more is typed. Characters Liberation can't write (right-to-left
-  and joined scripts, Chinese, Japanese, Korean) can't be typed. While it is typed, the app draws the text in the
-  Liberation face, which has the standard font's widths, so the caret and line length match the written result.
+  text line each, their baselines 1.2 times the size apart (Acrobat's spacing). In a standard font it is written
+  in one of the 12 standard fonts with the WinAnsi encoding; a line with characters WinAnsi lacks (Polish, Czech,
+  Vietnamese, Greek, Cyrillic and so on) is written in the bundled Liberation face of that font instead, embedded
+  in the file and cut down to the characters used; one font object per face grows as more is typed. While it is
+  typed, the app draws the text in the Liberation face, which has the standard font's widths, so the caret and
+  line length match the written result. The exception is text in an installed font (below), which is always
+  embedded, whatever its characters: Chinese, Japanese, Korean and single emoji are written only that way, in an
+  installed font that has them with outlines (`embed::installed_could_write`), and the app draws them in the
+  font's own file. Right-to-left and joined scripts and emoji sequences can't be typed in any font.
 - **Pictures** added (`add_image`) or replaced (`replace_image`) are stored as the file has them (a JPEG's bytes as
   they are) and turned upright for the EXIF or TIFF orientation by a `cm` from `imgs::orient_matrix` inside their
   box, as image pages, image watermarks and picture stamps are (`add_upright_image`). A replacement is fitted into

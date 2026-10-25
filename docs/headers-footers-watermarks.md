@@ -64,8 +64,10 @@ updates what you added instead of adding a second copy, one undo step each (a co
 steps back through the changes, and the section's settings follow. **Add another** keeps it and adds a new one.
 
 Any other change to the document ends this: the section shows Add to pages again, and the pages show the settings
-again once you change one. From then on, what was added is part of the pages: it can't be removed on its own, only
-with Undo.
+again once you change one. From then on, what was added is part of the pages: no command removes it from all its
+pages. Undo takes it back until you close the document, also after saving, and on each page its text and pictures
+can be edited or deleted like any other page content (see [Move, resize or
+delete](content-editing.md#move-resize-or-delete)).
 
 ## Characters
 

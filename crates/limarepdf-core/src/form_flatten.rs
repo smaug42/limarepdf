@@ -49,7 +49,7 @@ fn print_widget(pdf: &Pdf, d: &Dictionary) -> Flat {
 
 impl Pdf {
     /// Draw the form's widgets into the pages' content as they look now and remove them,
-    /// so the values can no longer be changed. `pages` (zero-based) limits this to some
+    /// so the fields can no longer be filled in. `pages` (zero-based) limits this to some
     /// pages; a field with widgets on other pages stays fillable there. Fields left with
     /// no widgets are removed, and the form itself once none are left. Hidden widgets are
     /// removed without being drawn. Refuses, with nothing changed, when a shown field's

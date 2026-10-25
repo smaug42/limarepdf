@@ -38,7 +38,8 @@ has marks asks first, since nothing under them has been removed.
 then checks that nothing readable is left under them; if anything is, nothing is changed and an error says what was
 found. A report lists what was removed from each page, and where the removed text can still be found elsewhere in
 the document (other pages, bookmarks, comments, form fields, document properties). Undo brings it all back until
-the document is closed; once saved, the removed content is gone from the file.
+the document is closed, also after saving; the file you saved doesn't hold the removed content, unless you save
+again after the Undo.
 
 Marks are standard PDF redaction marks, so marks made in other apps can be applied in LimarePDF, and the other way
 round. From the command line, `limarepdf-cli redact` marks, applies, or does both (see

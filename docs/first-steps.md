@@ -76,8 +76,10 @@ and Help.
   ask about each in turn. Save asks first when another app changed the file since you opened it.
 - While you work, LimarePDF keeps a private **recovery copy** of each document with unsaved changes. If the app
   stops unexpectedly, the next start offers them back ([Recovery copies](gui.md#recovery-copies)).
-- In a question, a **red button** means what it does can't be undone (such as applying redactions), or breaks a
-  document's digital signatures.
+- In a question, a **red button** means a choice to be sure of: it removes or discards something, replaces a file,
+  or breaks a document's digital signatures. Some can be undone while the document stays open: Undo brings back
+  what applying redactions removed, until you close the document, though a file you saved meanwhile no longer
+  holds it. Discarding changes or replacing a file can't be undone.
 
 ## Good to know
 

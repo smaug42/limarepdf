@@ -179,7 +179,13 @@ fn reads_text_through_a_compact_tounicode_map() {
 /// predefined CMap `cmap`, no ToUnicode map and no font program, as Japanese filings often
 /// are. The descendant says Adobe-Japan1 and makes CID 34 ("A") 500 wide, every other 1000.
 fn cjk(cmap: &str, hex: &str) -> Pdf {
+    cjk_in(hex, |_| cmap.into())
+}
+
+/// [`cjk`] with the font's `/Encoding` that `encoding` adds to the document.
+fn cjk_in(hex: &str, encoding: impl FnOnce(&mut lopdf::Document) -> Object) -> Pdf {
     let mut p = make(&format!("BT /F2 20 Tf 10 150 Td <{hex}> Tj ET"));
+    let cmap = encoding(&mut p.doc);
     let desc = p.doc.add_object(dictionary! {
         "Type" => "Font", "Subtype" => "CIDFontType0", "BaseFont" => "HeiseiMin-W3",
         "CIDSystemInfo" => dictionary! {
@@ -215,6 +221,52 @@ fn reads_text_through_predefined_cmaps() {
     // Adobe-Japan1's UCS-2 map turns into text.
     let p = cjk("90ms-RKSJ-H", "41938C8B9E");
     assert_eq!(p.page_text(0), "A東京");
+}
+
+/// An embedded CMap stream holding `text`, with `entries` in its dictionary.
+fn cmap_stream(doc: &mut lopdf::Document, entries: Dictionary, text: &str) -> lopdf::ObjectId {
+    let mut dict = dictionary! { "Type" => "CMap" };
+    dict.extend(&entries);
+    doc.add_object(Stream::new(dict, text.as_bytes().to_vec()))
+}
+
+/// BUG-33: an embedded CMap built on another, embedded or predefined, is read with it,
+/// whether its text names the other (`usecmap`) or only its `/UseCMap` entry does.
+#[test]
+fn reads_text_through_cmaps_built_on_others() {
+    // The base maps A to Z (CIDs 34 on); the CMap on it, a to z (CIDs 66 on).
+    const BASE: &str = "/CMapName /Limare-Base def 1 begincodespacerange <00> <FF> \
+        endcodespacerange 1 begincidrange <41> <5A> 34 endcidrange";
+    let base = |doc: &mut lopdf::Document| cmap_stream(doc, Dictionary::new(), BASE);
+    let on = "1 begincidrange <61> <7A> 66 endcidrange";
+    let named = format!("/Limare-Base usecmap {on}");
+    // Named in its text, and in its /UseCMap entry.
+    let p = cjk_in("4162", |doc| {
+        let b = base(doc);
+        cmap_stream(doc, dictionary! { "UseCMap" => b }, &named).into()
+    });
+    assert_eq!(p.page_text(0), "Ab");
+    // In its /UseCMap entry alone.
+    let p = cjk_in("4162", |doc| {
+        let b = base(doc);
+        cmap_stream(doc, dictionary! { "UseCMap" => b }, on).into()
+    });
+    assert_eq!(p.page_text(0), "Ab");
+    // A predefined CMap in its /UseCMap entry alone, with its codespace: "a" one byte,
+    // the kanji two.
+    let p = cjk_in("61938C", |doc| {
+        cmap_stream(doc, dictionary! { "UseCMap" => "90ms-RKSJ-H" }, on).into()
+    });
+    assert_eq!(p.page_text(0), "a東");
+    // Built on each other: read as far as the loop.
+    let p = cjk_in("4162", |doc| {
+        let b = base(doc);
+        let top = cmap_stream(doc, dictionary! { "UseCMap" => b }, &named);
+        let stream = doc.get_object_mut(b).unwrap().as_stream_mut().unwrap();
+        stream.dict.set("UseCMap", top);
+        top.into()
+    });
+    assert_eq!(p.page_text(0), "Ab");
 }
 
 #[test]

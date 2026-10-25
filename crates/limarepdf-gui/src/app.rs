@@ -1546,8 +1546,8 @@ impl App {
         if s.self_issued {
             text.push_str(
                 "\n\nOthers see you as an unknown signer until they trust your certificate: \
-                 send it to them from Edit > Digital IDs (Export, certificate only). LimarePDF shows \
-                 the same until you trust it.",
+                 send it to them from Document > Digital signatures > Digital IDs… (Export…, \
+                 Certificate only). LimarePDF shows the same until you trust it.",
             );
         }
         let bytes: Arc<[u8]> = Arc::from(s.bytes);
@@ -3599,8 +3599,8 @@ impl App {
                 Ask::new(
                     "Flatten annotations?",
                     "Comments, notes, highlights and drawings become part of the pages, as \
-                     they look now, and can no longer be changed or removed, here or in other \
-                     readers. Their comment text is dropped. Links and form fields stay. Undo \
+                     they look now, and stop being comments, here and in other readers. Their \
+                     comment text is dropped. Links and form fields stay. Undo \
                      brings them back until you close the document.",
                     Btn::primary("Flatten annotations"),
                 )
@@ -9289,6 +9289,24 @@ mod tests {
         let said = "The document is signed, but the ID couldn't be kept as the default (a test).";
         assert!(text.contains(said), "{text}");
         assert!(!app.tabs[0].dirty);
+    }
+
+    /// BUG-33: signed with a self-issued ID, the message says where to export its
+    /// certificate, as the menus have it.
+    #[test]
+    fn a_self_issued_signing_says_where_to_export_the_certificate() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, 1);
+        let (id, revision) = (app.tabs[0].id, app.tabs[0].revision);
+        let s = digital::Signed {
+            self_issued: true,
+            ..signed_copy()
+        };
+        app.signed(&ctx, s, id, revision);
+        let ids = actions::get(Act::DigitalIds);
+        let way = format!("{} > {} > {}", ids.group.name(), ids.submenu, ids.label);
+        let text = message(&app).1;
+        assert!(text.contains(&way), "{text}");
     }
 
     /// BUG-14: with a settings folder that can't be written, what is changed works for the

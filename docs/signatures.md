@@ -38,7 +38,10 @@ It doesn't by itself say who owns that key: the signature carries a certificate 
 a certificate with any name. Whether to believe the name is a separate question, called trust.
 
 It is not the same as [fill and sign](fill-and-sign.md), which puts a picture of your signature on the
-page. Anyone can copy a picture; a digital signature breaks if the document is changed.
+page. Anyone can copy a picture; a digital signature breaks if the bytes it signed are changed. A signed document can
+still be changed afterwards without breaking it, as long as the changes are saved after the signed bytes (which
+LimarePDF does): each one is then listed with the signature, and judged by whether the signer allowed it (see
+[Changes after signing](#changes-after-signing)).
 
 ## Requirements
 
@@ -133,7 +136,7 @@ characters that could disguise them (direction changes, invisible characters) be
 
 ## Trusting signers
 
-A valid signature proves the document is unchanged since a certain key signed it. Whose key that is, is a
+A valid signature proves the bytes it signed are unchanged since a certain key signed them. Whose key that is, is a
 separate question: anyone can make a digital ID with any name on it. LimarePDF answers it from your **trust list**, as
 Acrobat does from its trusted certificates. Each valid signature gets a **Trust** line in `limarepdf-cli verify`:
 

@@ -828,9 +828,11 @@ fn check_value(field: &Field, value: FieldValue) -> Result<FieldValue> {
             Ok(FieldValue::Choice(out))
         }
         (FieldKind::Button, _) => bail!("\"{name}\" is a push button; it has no value to set"),
-        (FieldKind::Signature, _) => {
-            bail!("\"{name}\" is a signature field; LimarePDF can't sign yet")
-        }
+        (FieldKind::Signature, _) => bail!(
+            "\"{name}\" is a signature field, which takes a digital signature rather than a \
+             value: sign it with Document > Digital signatures > Sign with digital ID in the \
+             app, or `limarepdf-cli sign --field \"{name}\"`"
+        ),
         _ => bail!("the value doesn't suit the field \"{name}\""),
     }
 }

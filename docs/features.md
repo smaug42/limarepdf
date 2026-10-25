@@ -18,7 +18,7 @@ with Acrobat are still to be tested.
   size or colour as in a word processor; move, resize, restyle and delete text, images and shapes; add text,
   shapes and images. Changes in the inspector apply as you make them.
 - **Fill in forms:** text fields, checkboxes, radio buttons and lists, in the app or from JSON on the command line;
-  flatten them so the values can't be changed.
+  flatten them so the fields can no longer be filled in.
 - **Fill and sign:** put a drawn, typed or picture signature, initials, the date, your name and ticks on any
   document, then fix them into the pages. Not a digital signature.
 - **Stamp pages:** headers, footers, page numbers, Bates numbers, and text or picture watermarks.
@@ -31,7 +31,11 @@ with Acrobat are still to be tested.
 - **Protect:** open and permissions passwords, RC4 or AES encryption, permission flags.
 - **Export and print:** pages as PNG or JPEG, text as a `.txt` file, and printing (through CUPS on Linux and macOS,
   the print spooler on Windows).
-- **Command line:** everything above, for scripts and batches.
+- **Command line:** `limarepdf-cli`, for scripts and batches, organises pages, fills in and flattens forms, adds
+  headers, footers, watermarks, stamps and Bates numbers, redacts, removes hidden information, protects, signs and
+  checks signatures, makes PDFs from images, shrinks and recognises scans, exports pages as images and text, and prints. Editing page
+  content, adding comments and Fill and sign are in the app only: the command line lists page objects, and lists,
+  removes and flattens comments ([Command line](cli.md)).
 - **Private:** no network connections, accounts or licence checks.
 
 ## What doesn't work yet
@@ -174,8 +178,10 @@ available.
   characters used (a few KB). One font per face grows as text is added; in a signed document, each save adds
   fonts of its own instead, so the signed part stays as it was. Text in an installed font is always embedded
   the same way (OpenType CFF fonts as such; a variable font at the weight chosen).
-- Headers, footers and watermarks are added to the page content. They are not annotations and cannot be removed one
-  by one later; use Undo before saving. The one just added can be changed until anything else changes.
+- Headers, footers and watermarks are added to the page content. They are not annotations, and no command removes
+  one from all its pages later: Undo takes it back until the document is closed (also after saving), and on each
+  page its text and pictures can be edited or deleted like other page content. The one just added can be changed
+  until anything else changes.
 - While a watermark or headers and footers are being set, the pages show them drawn over the content, also when
   they are set to go behind it, and in Liberation Sans, which has Helvetica's widths; once added, the pages show
   them as written.
@@ -250,9 +256,9 @@ pool of features other PDF tools have is in [ideas.md](developer/ideas.md).
 
 Done for now (see the Rendering row above). Left for a later round:
 
-- **hayro's own gaps** (knockout and non-isolated transparency groups, thin-line snapping, some shadings, CMaps that
-  use other CMaps, and installed fonts for plain fonts that aren't embedded, which hayro doesn't ask for yet),
-  listed in [Known to be wrong](rendering.md#known-to-be-wrong). They are documented here and in the build plan,
+- **hayro's own gaps** (knockout and non-isolated transparency groups, thin-line snapping, some shadings, CMaps
+  stored in the file and built on another one, and installed fonts for plain fonts that aren't embedded, which
+  hayro doesn't ask for yet), listed in [Known to be wrong](rendering.md#known-to-be-wrong). They are documented here and in the build plan,
   and not reported to hayro.
 - **A very large memory request:** on one test file hayro asks for 7.6 GB at once to fill a single shape at 96 dpi.
   On Linux it draws, since the memory is never used; on Windows, which doesn't promise memory it hasn't got, it

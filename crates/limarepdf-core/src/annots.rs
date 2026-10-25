@@ -375,8 +375,9 @@ impl Pdf {
     }
 
     /// Draw the annotations into the pages' content as they look now and remove them, so
-    /// they can no longer be changed or removed. `pages` (zero-based) limits this to some
-    /// pages. Links, form fields, file attachments, media and redaction marks are kept;
+    /// they are no longer annotations (each becomes a form XObject in the page's content,
+    /// which content editing can still move or delete). `pages` (zero-based) limits this
+    /// to some pages. Links, form fields, file attachments, media and redaction marks are kept;
     /// replies and popups go without being drawn, as do hidden annotations. Annotations
     /// without a drawing get LimarePDF's first. Returns how many were drawn. Refused, with
     /// nothing changed, when one of those is a text box whose text its font can't write

@@ -30,16 +30,24 @@ form). A document can be certified only before anyone else signs it.
 **Digital ID.** What you sign digital signatures with: a certificate and the private key that goes with it, kept
 in a password-protected file. You can make your own in LimarePDF or import one from an organisation.
 
-**Digital signature.** A signature made with a digital ID, which proves who signed and shows any change made to
-the document afterwards. Different from a picture of your signature (see Fill and sign).
+**Digital signature.** A signature made with a digital ID, which proves the part of the document it signed hasn't
+changed since that ID signed it, and shows any change saved afterwards. Who signed is only as certain as the
+signer's certificate: anyone can make an ID with any name, so the name is confirmed only when you trust the
+certificate (see Trust list). Different from a picture of your signature (see Fill and sign).
 
-**Embedded font.** A font stored inside the PDF, so the text looks the same on any computer. LimarePDF embeds the
-fonts it writes text in, cut down to the characters used.
+**Embedded font.** A font stored inside the PDF, so the text looks the same on any computer. Text LimarePDF writes in
+Helvetica, Times or Courier with only Western European characters uses the PDF standard font of that name, which
+every reader has and which isn't embedded. Other text is written in an embedded font, cut down to the characters
+used: Liberation (for characters the standard fonts lack), or the installed font it is typed in (which Chinese,
+Japanese, Korean and emoji always are).
 
 **Fill and sign.** Putting your signature, initials, the date or a tick on a document as pictures and text, as you
 would with a pen on paper. Not a digital signature: it doesn't prove who signed.
 
-**Flatten.** To draw annotations or form fields into the page as they look now, so they can no longer be changed.
+**Flatten.** To draw annotations or form fields into the page as they look now. They stop being annotations or
+fields: a field can no longer be filled in, and a comment can no longer be changed or removed as a comment, in any
+reader. What was drawn is ordinary page content, which content editing can still move, resize or delete as a whole
+(see [Move, resize or delete](content-editing.md#move-resize-or-delete)).
 
 **Form field.** A box in a form to fill in: a text field, checkbox, radio button or list.
 

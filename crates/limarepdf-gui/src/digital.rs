@@ -930,9 +930,9 @@ impl IdsWindow {
                     path.display()
                 );
                 let warnings: Vec<String> = unsure.iter().map(|w| unconfirmed_text(w)).collect();
-                let tail = "Recipients trust it in LimarePDF with Edit > Trusted certificates > \
-                            Add, or in their PDF app's trusted certificates, after checking the \
-                            fingerprint with you.";
+                let tail = "Recipients trust it in LimarePDF with Document > Digital signatures \
+                            > Trusted certificates… > Add certificate file…, or in their PDF \
+                            app's trusted certificates, after checking the fingerprint with you.";
                 self.note = Some(told(&head, &warnings, tail));
             }
             Err(e) => {
@@ -1360,8 +1360,9 @@ impl SignWindow {
                                 egui::Label::new(
                                     RichText::new(
                                         "Others see you as an unknown signer until they trust \
-                                         your certificate: send it to them from Digital IDs \
-                                         (Export, certificate only).",
+                                         your certificate: send it to them from Document > \
+                                         Digital signatures > Digital IDs… (Export…, \
+                                         Certificate only).",
                                     )
                                     .small()
                                     .weak(),
@@ -2383,6 +2384,38 @@ mod tests {
         let back = IdStore::new(dir.join("back"));
         back.import(&std::fs::read(&out).unwrap(), NEW, None)
             .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_saved_certificate_says_where_recipients_trust_it() {
+        let dir = scratch("export-cert");
+        let (store, id) = store_with_id(&dir);
+        let mut w = ids_window(store);
+        let form = Box::new(ExportForm {
+            id,
+            kind: ExportKind::Certificate,
+            password: Secret(String::new()),
+            fresh: true,
+            new_password: Secret(String::new()),
+            again: Secret(String::new()),
+            error: None,
+            focus: None,
+        });
+        let out = dir.join("jane.cer");
+        w.export_certificate(form, &out);
+        assert!(out.exists());
+        let (said, text) = w.note.clone().unwrap();
+        assert_eq!(said, Said::Done, "{text}");
+        // The way there, as the menus have it.
+        let trusted = crate::actions::get(crate::actions::Act::TrustedCertificates);
+        let way = format!(
+            "{} > {} > {} > Add certificate file…",
+            trusted.group.name(),
+            trusted.submenu,
+            trusted.label
+        );
+        assert!(text.contains(&way), "{text}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

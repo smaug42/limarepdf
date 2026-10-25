@@ -145,7 +145,8 @@ and `limarepdf-cli text`, so they always agree.
   Chinese, Japanese and Korean fonts without a ToUnicode map (common in files whose fonts aren't embedded) are read
   through their character map, as pdf.js does: a Unicode one (such as `UniJIS-UCS2-H`) gives the text directly;
   others (such as Shift-JIS `90ms-RKSJ-H`) give character numbers, which Adobe's tables for Japanese, Simplified and
-  Traditional Chinese and Korean turn into text. Their codes are split as the map says, one to four bytes each (a
+  Traditional Chinese and Korean turn into text. A character map stored in the file is read with the one it is
+  built on, predefined or also stored in the file. Their codes are split as the map says, one to four bytes each (a
   code the map leaves out takes as many bytes as the map's code ranges say, as poppler and pdf.js read it), and
   their widths found by character number, so highlights and selections sit on the right characters.
 - **Spaces:** a gap between words is a space, whether the file has a space character there or only moves the next
