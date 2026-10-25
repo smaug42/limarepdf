@@ -64,7 +64,7 @@ fn jane() -> NewId {
 #[track_caller]
 fn imports(file: &str, password: &str, cert: &str, key: &str, chain: usize) -> DigitalId {
     let s = store(&format!("import-{file}"));
-    let id = s.import(&p12(file), password, None).unwrap();
+    let id = s.import(&p12(file), password, None).unwrap().id;
     assert_eq!(id.cert.sha256, sha256_of(&cert_der(cert)), "{file}");
     assert_eq!(id.cert.key, key, "{file}");
     assert_eq!(id.chain.len(), chain, "{file}");
@@ -144,7 +144,10 @@ fn imports_expired_ids_but_marks_them() {
 #[test]
 fn import_takes_the_name_given() {
     let s = store("import-named");
-    let id = s.import(&p12("p256"), PASSWORD, Some("Work ID")).unwrap();
+    let id = s
+        .import(&p12("p256"), PASSWORD, Some("Work ID"))
+        .unwrap()
+        .id;
     assert_eq!(id.name, "work-id");
     assert_eq!(id.cert.display_name(), "Test Signer P-256");
     // The same ID twice is refused.
@@ -198,7 +201,7 @@ fn damaged_files_never_panic() {
         for i in (0..file.len()).step_by(3) {
             let mut f = file.clone();
             f[i] ^= 0x41;
-            if let Ok(id) = s.import(&f, PASSWORD, None) {
+            if let Ok(id) = s.import(&f, PASSWORD, None).map(|s| s.id) {
                 // Only the wrapping may differ: the ID itself must be the same.
                 let want = match name {
                     "legacy" => "rsa2048",
@@ -216,7 +219,9 @@ fn damaged_files_never_panic() {
 #[test]
 fn creates_self_signed_ids() {
     let s = store("create");
-    let id = s.create(&jane(), "correct horse").unwrap();
+    let made = s.create(&jane(), "correct horse").unwrap();
+    assert!(made.warnings.is_empty(), "{:?}", made.warnings);
+    let id = made.id;
     assert_eq!(id.name, "jane-doe");
     assert_eq!(id.path, s.dir().join("jane-doe.p12"));
     let c = &id.cert;
@@ -280,10 +285,10 @@ fn new_ids_need_a_good_password_and_name() {
 #[test]
 fn several_ids_and_the_default() {
     let s = store("several");
-    let first = s.create(&jane(), "correct horse").unwrap();
-    let second = s.create(&jane(), "battery staple").unwrap();
+    let first = s.create(&jane(), "correct horse").unwrap().id;
+    let second = s.create(&jane(), "battery staple").unwrap().id;
     assert_eq!(second.name, "jane-doe-2");
-    let other = s.import(&p12("p256"), PASSWORD, None).unwrap();
+    let other = s.import(&p12("p256"), PASSWORD, None).unwrap().id;
     let list = s.list();
     let names: Vec<_> = list.ids.iter().map(|i| (&*i.name, i.default)).collect();
     assert_eq!(
@@ -318,7 +323,7 @@ fn several_ids_and_the_default() {
 fn the_folder_lists_what_it_can() {
     let s = store("folder");
     assert!(s.list().ids.is_empty());
-    let id = s.create(&jane(), "correct horse").unwrap();
+    let id = s.create(&jane(), "correct horse").unwrap().id;
     std::fs::write(s.dir().join("garbage.p12"), b"not a PKCS#12 file").unwrap();
     // A file OpenSSL made (certificates encrypted) can't be listed without its password.
     std::fs::write(s.dir().join("openssl.p12"), p12("modern")).unwrap();
@@ -366,23 +371,24 @@ fn the_folder_lists_what_it_can() {
 #[test]
 fn export_and_import_elsewhere() {
     let s = store("export");
-    let id = s.create(&jane(), "correct horse").unwrap();
+    let id = s.create(&jane(), "correct horse").unwrap().id;
     let u = s.unlock(&id, "correct horse").unwrap();
     refused(u.to_p12("short"), "at least 8 characters");
     let file = u.to_p12("new password").unwrap();
     // Certificates are encrypted in exported files, as other apps write them.
     let elsewhere = store("export-elsewhere");
     wrong_password(elsewhere.import(&file, "correct horse", None));
-    let again = elsewhere.import(&file, "new password", None).unwrap();
+    let again = elsewhere.import(&file, "new password", None).unwrap().id;
     assert_eq!(again.cert, id.cert);
     assert_eq!(again.name, "jane-doe");
     // An imported ID with an authority exports with it.
     let s = store("export-chain");
-    let id = s.import(&p12("chain"), PASSWORD, None).unwrap();
+    let id = s.import(&p12("chain"), PASSWORD, None).unwrap().id;
     let file = s.unlock(&id, PASSWORD).unwrap().to_p12(PASSWORD).unwrap();
     let back = store("export-chain-back")
         .import(&file, PASSWORD, None)
-        .unwrap();
+        .unwrap()
+        .id;
     assert_eq!(back.chain, id.chain);
 }
 
@@ -395,7 +401,7 @@ fn export_and_import_elsewhere() {
 fn cross_check_with_openssl() {
     let dir = scratch("openssl");
     let s = IdStore::new(dir.join("ids"));
-    let id = s.create(&jane(), "correct horse").unwrap();
+    let id = s.create(&jane(), "correct horse").unwrap().id;
     let unlocked = s.unlock(&id, "correct horse").unwrap();
     let exported = unlocked.to_p12("export pässword").unwrap();
     let out = dir.join("exported.p12");

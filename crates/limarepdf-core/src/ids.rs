@@ -91,6 +91,16 @@ impl DigitalId {
     }
 }
 
+/// An ID [`IdStore::create`] or [`IdStore::import`] made: its file is written, so it is
+/// kept, even where `warnings` say what didn't fully work.
+#[derive(Debug)]
+pub struct Stored {
+    pub id: DigitalId,
+    /// In plain words, each one to follow "but": the system couldn't confirm the file is
+    /// safely on disk, or the ID couldn't be made the default.
+    pub warnings: Vec<String>,
+}
+
 /// The IDs in the folder, and why files there aren't listed.
 #[derive(Clone, Debug, Default)]
 pub struct IdList {
@@ -687,9 +697,9 @@ impl IdStore {
     }
 
     /// Makes a new self-signed ID (RSA 3072-bit, valid five years), protected by
-    /// `password`, and makes it the default. Takes a few seconds: run it off the UI
-    /// thread.
-    pub fn create(&self, new: &NewId, password: &str) -> Result<DigitalId> {
+    /// `password`, and makes it the default ([`Stored`]). Takes a few seconds: run it off
+    /// the UI thread.
+    pub fn create(&self, new: &NewId, password: &str) -> Result<Stored> {
         if let Some(why) = password_problem(password) {
             bail!("{why}");
         }
@@ -713,9 +723,10 @@ impl IdStore {
 
     /// Imports the ID in a `.p12` / `.pfx` file opened with `password`, keeping it under
     /// the same password with LimarePDF's own encryption, named `name` (by default the name in
-    /// its certificate), and makes it the default. Refused when LimarePDF couldn't sign with it;
-    /// an expired ID is imported (and can be exported), but LimarePDF won't sign with it.
-    pub fn import(&self, file: &[u8], password: &str, name: Option<&str>) -> Result<DigitalId> {
+    /// its certificate), and makes it the default ([`Stored`]). Refused when LimarePDF couldn't
+    /// sign with it; an expired ID is imported (and can be exported), but LimarePDF won't sign
+    /// with it.
+    pub fn import(&self, file: &[u8], password: &str, name: Option<&str>) -> Result<Stored> {
         if password.len() > MAX_PASSWORD {
             bail!("the password is too long");
         }
@@ -750,7 +761,8 @@ impl IdStore {
     }
 
     /// Writes a new ID file named after `base`, checks it reads back, and makes it the
-    /// default.
+    /// default. Once the file is written, the ID is kept: what goes wrong after that is a
+    /// warning, so that trying again never makes the ID twice.
     fn store(
         &self,
         key: &Key,
@@ -759,7 +771,7 @@ impl IdStore {
         base: &str,
         label: &str,
         password: &str,
-    ) -> Result<DigitalId> {
+    ) -> Result<Stored> {
         let chain_der: Vec<Vec<u8>> = chain.iter().map(|c| c.der.clone()).collect();
         let pkcs8 = key.to_pkcs8()?;
         let file = pkcs12::write(&pkcs8, &cert.der, &chain_der, label, password, false)?;
@@ -770,16 +782,39 @@ impl IdStore {
         }
         let name = self.free_name(base);
         let path = self.dir.join(format!("{name}.p12"));
-        crate::write_private(&path, &file)?;
-        let id = DigitalId {
+        let mut warnings = Vec::new();
+        if let Err(e) = crate::write_private(&path, &file) {
+            match e.downcast_ref::<crate::NotConfirmed>() {
+                Some(n) => warnings.push(format!(
+                    "your system couldn't confirm the ID's file is safely on disk ({})",
+                    n.why
+                )),
+                None => return Err(e),
+            }
+        }
+        let mut id = DigitalId {
             name,
             path,
             cert: cert.clone(),
             chain: chain.to_vec(),
             default: true,
         };
-        self.set_default(&id)?;
-        Ok(id)
+        if let Err(e) = self.set_default(&id) {
+            match e.downcast_ref::<crate::NotConfirmed>() {
+                Some(n) => warnings.push(format!(
+                    "your system couldn't confirm that its being the default for signing is \
+                     safely on disk ({})",
+                    n.why
+                )),
+                None => {
+                    id.default = false;
+                    warnings.push(format!(
+                        "it couldn't be made the default for signing ({e:#})"
+                    ));
+                }
+            }
+        }
+        Ok(Stored { id, warnings })
     }
 
     /// A file name for a new ID from `base` that no ID uses yet.
@@ -812,14 +847,25 @@ impl IdStore {
     }
 
     /// Deletes `id`'s file. This can't be undone: without a copy (exported `.p12`), the ID
-    /// can't sign again.
-    pub fn remove(&self, id: &DigitalId) -> Result<()> {
+    /// can't sign again. Returns warnings about what didn't fully work once the file was
+    /// deleted, in plain words.
+    pub fn remove(&self, id: &DigitalId) -> Result<Vec<String>> {
         std::fs::remove_file(&id.path)
             .with_context(|| format!("removing {}", id.path.display()))?;
+        let mut warnings = Vec::new();
         if self.default_name().as_deref() == Some(id.name.as_str()) {
-            let _ = std::fs::remove_file(self.dir.join(DEFAULT_FILE));
+            let file = self.dir.join(DEFAULT_FILE);
+            match std::fs::remove_file(&file) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                // Harmless: a default naming no ID is ignored.
+                Err(e) => warnings.push(format!(
+                    "{} still names it as the default for signing ({e}); LimarePDF ignores that",
+                    file.display()
+                )),
+            }
         }
-        Ok(())
+        Ok(warnings)
     }
 }
 
@@ -863,6 +909,51 @@ fn file_stem(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::atomic::tests::{on_folder_sync, unwatch};
+
+    /// BUG-14: once an ID's file is written, the ID is kept: a default that can't be set,
+    /// or a folder sync that fails, is a warning, and trying again finds the ID there
+    /// rather than making it twice.
+    #[test]
+    fn an_id_written_is_kept_with_warnings() {
+        let file = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/data/signatures/ids/p256.p12"
+        ))
+        .unwrap();
+        let password = "mpe-test-password";
+        let dir = std::env::temp_dir().join(format!("limarepdf-ids-kept-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let s = IdStore::new(&dir);
+        // The default can't be noted: a folder has its file's name.
+        std::fs::create_dir_all(dir.join(DEFAULT_FILE)).unwrap();
+        let made = s.import(&file, password, None).unwrap();
+        assert!(made.id.path.exists() && !made.id.default);
+        let [w] = &made.warnings[..] else {
+            panic!("{:?}", made.warnings);
+        };
+        let start = "it couldn't be made the default for signing (";
+        assert!(w.starts_with(start), "{w}");
+        assert_eq!(s.list().ids.len(), 1);
+        let again = format!("{:#}", s.import(&file, password, None).unwrap_err());
+        assert!(again.contains("already in LimarePDF"), "{again}");
+
+        // The folder syncs fail: the file and its being the default are in place, and
+        // both are said.
+        std::fs::remove_dir_all(&dir).unwrap();
+        on_folder_sync(|_| Err(std::io::Error::other("test failure")));
+        let made = s.import(&file, password, None);
+        unwatch();
+        let made = made.unwrap();
+        assert!(made.id.path.exists() && made.id.default);
+        assert_eq!(made.warnings.len(), 2, "{:?}", made.warnings);
+        for w in &made.warnings {
+            assert!(w.starts_with("your system couldn't confirm"), "{w}");
+            assert!(w.ends_with("(test failure)"), "{w}");
+        }
+        assert_eq!(s.default_id().map(|i| i.name), Some(made.id.name));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn file_stems() {

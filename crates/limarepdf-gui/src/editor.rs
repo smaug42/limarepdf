@@ -539,35 +539,124 @@ pub fn color_button(ui: &mut egui::Ui, c: &mut [f32; 3], name: &str) -> egui::Re
 }
 
 /// The colour button for text in `colors` (each once, the first the picker starts from):
-/// with more than one, it shows them side by side and says the colour is mixed. Returns
-/// the colour picked.
+/// with more than one, it shows them side by side and says the colour is mixed, and its
+/// picker offers each to make it all that colour. Returns the colour picked: anything
+/// done in the picker is a pick, even of the colour it started from, so picking the
+/// first colour of mixed text makes it all that colour; opening and closing it is not.
 fn text_color_button(ui: &mut egui::Ui, colors: &[[f32; 3]]) -> Option<[f32; 3]> {
+    use egui::widgets::color_picker::{color_picker_hsva_2d, Alpha};
     let was = colors.first().copied().unwrap_or([0.0; 3]);
-    let mut c = was;
     let mixed = colors.len() > 1;
-    let r = color_button(
-        ui,
-        &mut c,
+    let popup = ui.auto_id_with("text-colour");
+    let open = egui::Popup::is_id_open(ui.ctx(), popup);
+    let (rect, r) = ui.allocate_exact_size(ui.spacing().interact_size, Sense::click());
+    r.widget_info(|| egui::WidgetInfo::new(egui::WidgetType::ColorButton));
+    dialogs::set_name(
+        &r,
         if mixed {
             "Text colour (mixed)"
         } else {
             "Text colour"
         },
     );
-    if mixed {
-        // Over the swatch, inside the button's border.
-        let swatch = r.rect.shrink(2.0);
-        let w = swatch.width() / colors.len() as f32;
+    if ui.is_rect_visible(rect) {
+        let look = if open {
+            &ui.visuals().widgets.open
+        } else {
+            ui.style().interact(&r)
+        };
+        let rect = rect.expand(look.expansion);
+        // Each colour side by side, inside the button's border.
+        let inner = rect.shrink(1.0);
+        let w = inner.width() / colors.len().max(1) as f32;
         for (i, &c) in colors.iter().enumerate() {
-            let x = swatch.min.x + w * i as f32;
-            let band =
-                Rect::from_min_max(Pos2::new(x, swatch.min.y), Pos2::new(x + w, swatch.max.y));
-            let [r, g, b] = c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
-            ui.painter()
-                .rect_filled(band, 0.0, Color32::from_rgb(r, g, b));
+            let x = inner.min.x + w * i as f32;
+            let band = Rect::from_min_max(Pos2::new(x, inner.min.y), Pos2::new(x + w, inner.max.y));
+            ui.painter().rect_filled(band, 0.0, rgb32(c));
         }
+        let corners = look.corner_radius.at_most(2);
+        let border = (1.0, look.bg_fill);
+        ui.painter()
+            .rect_stroke(rect, corners, border, StrokeKind::Inside);
     }
-    (!same_color(c, was)).then_some(c)
+    // The colours there were when the picker opened, offered while it stays open.
+    let offered = popup.with("offered");
+    let hsva_id = popup.with("hsva");
+    if !open {
+        ui.data_mut(|d| {
+            d.remove::<Vec<[f32; 3]>>(offered);
+            d.remove::<egui::ecolor::Hsva>(hsva_id);
+        });
+    }
+    let mut chosen = None;
+    egui::Popup::menu(&r)
+        .id(popup)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            let offer = ui.data_mut(|d| d.get_temp_mut_or(offered, colors.to_vec()).clone());
+            // The picker keeps its own hue and saturation where the colour has none
+            // (black, greys), as egui's own colour button does.
+            let start = egui::Rgba::from_rgb(was[0], was[1], was[2]);
+            let mut hsva = ui
+                .data(|d| d.get_temp::<egui::ecolor::Hsva>(hsva_id))
+                .filter(|h| same_color(h.to_rgb(), was))
+                .unwrap_or_else(|| egui::ecolor::Hsva::from(start));
+            ui.spacing_mut().slider_width = PICKER_WIDTH;
+            let picker = ui.vertical(|ui| color_picker_hsva_2d(ui, &mut hsva, Alpha::Opaque));
+            ui.data_mut(|d| d.insert_temp(hsva_id, hsva));
+            // egui's picker ends with its colour area and hue slider: a press there picks
+            // the colour under the pointer, even the one the picker started from. A
+            // change made only by converting colours back and forth is no pick.
+            let s = ui.spacing();
+            let slid = PICKER_WIDTH + s.item_spacing.y + s.interact_size.y;
+            let r = picker.response.rect;
+            let sliders = Rect::from_min_max(Pos2::new(r.left(), r.bottom() - slid), r.max);
+            let pressed = ui.input(|i| {
+                let at = i.pointer.press_origin();
+                (i.pointer.any_down() || i.pointer.any_released())
+                    && at.is_some_and(|p| sliders.contains(p))
+            });
+            if pressed || (picker.inner && !same_color(hsva.to_rgb(), was)) {
+                let c = hsva.to_rgb();
+                // A colour the text has, to the eye, is that colour exactly.
+                let had = offer.iter().copied().find(|o| same_color(*o, c));
+                chosen = Some(had.unwrap_or(c));
+            }
+            if offer.len() > 1 {
+                ui.add_space(4.0);
+                ui.label("In the text");
+                ui.horizontal(|ui| {
+                    for (i, &c) in offer.iter().enumerate() {
+                        let size = ui.spacing().interact_size;
+                        let (rect, r) = ui.allocate_exact_size(size, Sense::click());
+                        let name = format!("Colour {} of {} in the text", i + 1, offer.len());
+                        r.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name)
+                        });
+                        dialogs::set_name(&r, &name);
+                        let look = ui.style().interact(&r);
+                        ui.painter().rect_filled(rect, 2.0, rgb32(c));
+                        let border = (look.fg_stroke.width, look.bg_stroke.color);
+                        ui.painter()
+                            .rect_stroke(rect, 2.0, border, StrokeKind::Inside);
+                        if r.on_hover_text("Make it all this colour").clicked() {
+                            chosen = Some(c);
+                            ui.close();
+                        }
+                    }
+                });
+            }
+        });
+    chosen
+}
+
+/// The width of the text colour picker's colour area and hue slider, as egui's own.
+const PICKER_WIDTH: f32 = 275.0;
+
+/// A colour, its parts from 0 to 1, as egui draws it.
+fn rgb32(c: [f32; 3]) -> Color32 {
+    let [r, g, b] = c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+    Color32::from_rgb(r, g, b)
 }
 
 /// Whether two colours are the same to the eye. The colour buttons store a colour back
@@ -1616,7 +1705,7 @@ impl Editor {
         if !edit.has_focus() && (le.refocus || in_inspector || picking) {
             // Not in the click's own frames: a list it opens shows from the next one.
             if settled(&ctx) && !picking && !in_inspector {
-                edit.request_focus();
+                page_text::give_back(&ctx, id);
                 le.refocus = false;
             } else {
                 le.refocus = true;
@@ -3765,7 +3854,7 @@ impl Editor {
                     // line editor, which then takes the keyboard back.
                     Some(a) => {
                         let end = a.text.text().chars().count();
-                        let sel = selection(ui.ctx(), a.id()).unwrap_or((end, end));
+                        let sel = page_text::held(ui.ctx(), a.id()).unwrap_or((end, end));
                         if styles_ui(ui, &mut a.text, sel, 4.0..=200.0) {
                             a.refocus = true;
                         }
@@ -4019,9 +4108,8 @@ impl Editor {
                 } else {
                     // What is selected in the line being edited on the page, else all of it.
                     let sel = match self.line_edit.as_ref() {
-                        Some(le) => {
-                            selection(ui.ctx(), line_edit_id(self.scope, le.page)).unwrap_or((0, 0))
-                        }
+                        Some(le) => page_text::held(ui.ctx(), line_edit_id(self.scope, le.page))
+                            .unwrap_or((0, 0)),
                         None => (0, insp.text.text().chars().count()),
                     };
                     styles_ui(ui, &mut insp.text, sel, 1.0..=400.0);

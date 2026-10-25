@@ -197,7 +197,7 @@ fn suffix() -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::collections::VecDeque;
@@ -219,7 +219,7 @@ mod tests {
 
     /// `f` is called in place of each folder sync on this thread, with the file replaced,
     /// until [`unwatch`].
-    fn on_folder_sync(f: impl FnMut(&Path) -> std::io::Result<()> + 'static) {
+    pub(crate) fn on_folder_sync(f: impl FnMut(&Path) -> std::io::Result<()> + 'static) {
         FOLDER_SYNC.with(|s| *s.borrow_mut() = Some(Box::new(f)));
     }
 
@@ -249,7 +249,7 @@ mod tests {
         OBSERVER.with(|o| *o.borrow_mut() = Some(Box::new(f)));
     }
 
-    fn unwatch() {
+    pub(crate) fn unwatch() {
         OBSERVER.with(|o| *o.borrow_mut() = None);
         FOLDER_SYNC.with(|s| *s.borrow_mut() = None);
     }

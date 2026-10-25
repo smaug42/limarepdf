@@ -52,7 +52,8 @@ take it off the list.
 **Save for next time** (on by default) keeps it in the list when LimarePDF starts again. Unticked, it stays in the
 list until LimarePDF closes, marked "until LimarePDF closes", and is then gone. Saved signatures are stored
 unencrypted in LimarePDF's settings folder (`signatures.txt`, and pictures copied into its `signatures` folder), on
-this computer only; taking a picture off the list deletes its copy.
+this computer only; taking a picture off the list deletes its copy. If it can't be saved there, a message says so,
+and it stays in the list until LimarePDF closes ([why](troubleshooting.md#settings-not-saved)).
 
 ## What you can put down
 

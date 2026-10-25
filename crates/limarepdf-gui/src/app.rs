@@ -21,7 +21,7 @@ use limarepdf_core::disk::{self, OnDisk};
 use limarepdf_core::render::{image_names, ImageFormat};
 use limarepdf_core::{
     parse_page_range, part_file_name, print, ImageImport, OcrResult, OpenPanel, Pdf, ScanResult,
-    SplitBy, TrustRole,
+    SplitBy, TrustEntry, TrustRole,
 };
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -441,6 +441,31 @@ pub fn not_confirmed(e: &anyhow::Error) -> bool {
     e.downcast_ref::<limarepdf_core::NotConfirmed>().is_some()
 }
 
+/// A write that replaced its file: done, or done but not confirmed on disk, with why the
+/// system couldn't confirm it (decision D7). Any other failure is returned.
+pub fn unconfirmed(r: anyhow::Result<()>) -> anyhow::Result<Option<String>> {
+    match r {
+        Ok(()) => Ok(None),
+        Err(e) => match e.downcast_ref::<limarepdf_core::NotConfirmed>() {
+            Some(n) => Ok(Some(n.why.clone())),
+            None => Err(e),
+        },
+    }
+}
+
+/// `why` the system couldn't confirm a file written is safely on disk, said after "but".
+pub fn unconfirmed_text(why: &str) -> String {
+    format!("your system couldn't confirm it is safely on disk ({why})")
+}
+
+/// What a change to the trust list adds to its sentence when the list was written but not
+/// confirmed on disk.
+fn trust_unsure(why: Option<String>) -> String {
+    why.map_or_else(String::new, |why| {
+        format!(", but your system couldn't confirm the trust list is safely on disk ({why})")
+    })
+}
+
 /// Why a document set to be saved with a password isn't signed: the signed file would be
 /// written without it.
 const PASSWORD_NOT_SIGNED: &str = "You set a password that applies when you save, and \
@@ -697,6 +722,9 @@ pub struct App {
     /// The window had the keyboard last frame: getting it back, the tabs' files are
     /// checked for changes made meanwhile.
     focused: bool,
+    /// The settings or recent files couldn't be saved, and that was said: once a session
+    /// ([`App::say_unsaved`]).
+    said_unsaved: bool,
     /// Dialogs waiting, in turn, for the one open to be answered (BUG-07).
     waiting: VecDeque<Dialog>,
     /// A file being read again with the password given for it: the dialogs waiting wait
@@ -770,6 +798,7 @@ impl App {
             opening: Vec::new(),
             replace_ok: None,
             focused: true,
+            said_unsaved: false,
             waiting: VecDeque::new(),
             retrying: None,
             searches: 0,
@@ -1081,7 +1110,7 @@ impl App {
         let Some(cert) = ask.cert().cloned() else {
             return false;
         };
-        let result = (|| -> limarepdf_core::Result<limarepdf_core::Added> {
+        let result = (|| -> limarepdf_core::Result<(limarepdf_core::Added, Option<String>)> {
             let path = limarepdf_core::TrustList::default_path().ok_or_else(|| {
                 anyhow::anyhow!(
                     "LimarePDF can't find its settings folder (HOME or APPDATA isn't set)"
@@ -1090,19 +1119,19 @@ impl App {
             let mut list = limarepdf_core::TrustList::load(&path)?;
             let label = ask.label.trim();
             let added = list.add(&cert.der, ask.role, (!label.is_empty()).then_some(label))?;
-            list.save(&path)?;
-            Ok(added)
+            Ok((added, unconfirmed(list.save(&path))?))
         })();
         match result {
-            Ok(added) => {
+            Ok((added, unsure)) => {
                 let was = match added {
                     limarepdf_core::Added::RoleChanged(old) => format!(" (instead of as {old})"),
                     limarepdf_core::Added::New => String::new(),
                 };
                 let name = limarepdf_core::display_line(ask.label.trim(), 80);
                 self.status = format!(
-                    "Now trusting \"{name}\" as {}{was}. {}",
+                    "Now trusting \"{name}\" as {}{was}{}. {}",
                     ask.role,
+                    trust_unsure(unsure),
                     sigs::TRUST_NOTE
                 );
                 self.retrust();
@@ -1213,7 +1242,7 @@ impl App {
 
     /// Takes the certificate with this SHA-256 fingerprint out of the trust list file.
     fn untrust(&mut self, sha256: &str) {
-        let result = (|| -> limarepdf_core::Result<limarepdf_core::TrustEntry> {
+        let result = (|| -> limarepdf_core::Result<(TrustEntry, Option<String>)> {
             let path = limarepdf_core::TrustList::default_path().ok_or_else(|| {
                 anyhow::anyhow!(
                     "LimarePDF can't find its settings folder (HOME or APPDATA isn't set)"
@@ -1226,14 +1255,14 @@ impl App {
             let e = list
                 .remove(i)
                 .ok_or_else(|| anyhow::anyhow!("it is no longer in the trust list"))?;
-            list.save(&path)?;
-            Ok(e)
+            Ok((e, unconfirmed(list.save(&path))?))
         })();
         match result {
-            Ok(e) => {
+            Ok((e, unsure)) => {
                 self.status = format!(
-                    "No longer trusting \"{}\". {}",
+                    "No longer trusting \"{}\"{}. {}",
                     limarepdf_core::display_line(&e.label, 80),
+                    trust_unsure(unsure),
                     sigs::TRUST_NOTE
                 );
             }
@@ -1243,6 +1272,21 @@ impl App {
             }
         }
         self.retrust();
+    }
+
+    /// Says what of LimarePDF's own couldn't be saved: a signature saved for next time
+    /// each time, anything else (settings, recent files) once a session.
+    fn say_unsaved(&mut self) {
+        if let Some(text) = self.settings.take_sign_unsaved() {
+            self.show(Dialog::Message("Not saved for next time".into(), text));
+        }
+        let once = self.settings.take_unsaved();
+        if let Some((title, text)) = once.or_else(|| self.recent.take_unsaved()) {
+            if !std::mem::replace(&mut self.said_unsaved, true) {
+                let text = format!("{text} This isn't said again until LimarePDF starts again.");
+                self.show(Dialog::Message(title, text));
+            }
+        }
     }
 
     /// Opens the version of the active document that its signature `i` signed, in a new
@@ -1480,6 +1524,9 @@ impl App {
         }
         if !s.confirmed {
             text.push_str(&format!("\n\n{NOT_CONFIRMED}"));
+        }
+        if let Some(why) = &s.default_unsaved {
+            text.push_str(&format!("\n\nThe document is signed, but {why}."));
         }
         if s.self_issued {
             text.push_str(
@@ -4313,8 +4360,9 @@ fn inspector_body(
             t.requested.push(Act::FinishSigning);
         }
         if t.ed.sign_kit != s.sign {
+            let kept = t.ed.sign_kit.kept_since(&s.sign);
             s.sign = t.ed.sign_kit.clone();
-            s.sign.save();
+            s.save_sign(kept);
         }
         if (
             t.ed.stamp_name_date,
@@ -5209,10 +5257,12 @@ impl eframe::App for App {
             t.ed.sign_kit.clone_from(&self.settings.sign);
             t.ed.sign_window(ui.ctx());
             if t.ed.sign_kit != self.settings.sign {
+                let kept = t.ed.sign_kit.kept_since(&self.settings.sign);
                 self.settings.sign = t.ed.sign_kit.clone();
-                self.settings.sign.save();
+                self.settings.save_sign(kept);
             }
         }
+        self.say_unsaved();
 
         // Surface errors raised by tab operations.
         if let Some(t) = self.tabs.get_mut(self.active) {
@@ -5279,8 +5329,12 @@ impl eframe::App for App {
     /// A normal exit (not a crash, which never gets here): no recovery copies are left.
     fn on_exit(&mut self) {
         self.end_recovery();
-        // The window's size, for the next start.
+        // The window's size, for the next start. With the window gone, a failure can only
+        // be said where the app was started from.
         self.settings.save();
+        if let Some((_, text)) = self.settings.take_unsaved() {
+            eprintln!("LimarePDF: {text}");
+        }
     }
 }
 
@@ -5631,7 +5685,7 @@ mod tests {
                 style: SignStyle::ALL[0],
             };
             let e = Entry { saved, keep: false };
-            app.settings.sign.add(role, e).unwrap();
+            assert_eq!(app.settings.sign.add(role, e), None);
         }
         app.act(&ctx, Act::Tool(Tool::Sign));
         clear_names(&mut app, &ctx, "Fill and sign", &mut bad);
@@ -5797,7 +5851,7 @@ mod tests {
                 style: SignStyle::ALL[0],
             };
             let e = Entry { saved, keep: false };
-            app.settings.sign.add(SignRole::Signature, e).unwrap();
+            assert_eq!(app.settings.sign.add(SignRole::Signature, e), None);
         }
         app.act(&ctx, Act::Tool(Tool::Sign));
         let toggled = |tree: &egui::accesskit::TreeUpdate, name: &str| {
@@ -6891,6 +6945,314 @@ mod tests {
             ]
         );
         assert_eq!((spans[3].0, spans[3].1), (11, 15));
+    }
+
+    /// A tab with "Walrus ate fish" at (100, 200) in 30-point Helvetica: "ate" in `other`,
+    /// the rest in `color`.
+    fn app_in_colours(ctx: &egui::Context, color: [f32; 3], other: [f32; 3]) -> App {
+        use limarepdf_core::{PartFont, TextPart};
+        let mut app = app_with(ctx, 1);
+        let part = |text: &str, color| TextPart {
+            text: text.into(),
+            font: PartFont::Choice(FontChoice::default()),
+            size: 30.0,
+            color,
+            rise: 0.0,
+        };
+        let parts = [
+            part("Walrus ", color),
+            part("ate", other),
+            part(" fish", color),
+        ];
+        assert!(app.tabs[0].edit(ctx, |p| p.add_text_parts(0, (100.0, 200.0), &parts)));
+        app
+    }
+
+    /// Page 1's line as it would be saved now: the colour of each run of its characters,
+    /// with where the run ends.
+    fn line_colours(app: &App) -> Vec<(usize, Option<[f32; 3]>)> {
+        let pdf = saved_pdf(&app.tabs[0]);
+        let objs = pdf.page_objects(0).unwrap();
+        let line = objs.iter().find(|o| o.text.is_some()).expect("the line");
+        let mut out: Vec<(usize, Option<[f32; 3]>)> = Vec::new();
+        for s in &line.spans {
+            match out.last_mut() {
+                Some(last) if last.1 == s.fill => last.0 = s.chars.1,
+                _ => out.push((s.chars.1, s.fill)),
+            }
+        }
+        out
+    }
+
+    /// Clicks in the open text colour picker's colour area at `at`, from its bottom left
+    /// corner (0, 0: black) to its top right (1, 1: the hue at its full).
+    fn click_in_colour_area(
+        app: &mut App,
+        ctx: &egui::Context,
+        frame: &mut dyn FnMut(&mut App, Vec<egui::Event>) -> egui::accesskit::TreeUpdate,
+        at: egui::Vec2,
+    ) {
+        let tree = frame(app, vec![]);
+        // Above the text's colours offered are egui's colour area, 275 points square, and
+        // its hue slider.
+        let label = tree
+            .nodes
+            .iter()
+            .find(|(_, n)| n.value() == Some("In the text"))
+            .and_then(|(_, n)| n.bounds())
+            .expect("the picker");
+        let s = ctx.global_style().spacing.clone();
+        let bottom = label.y0 as f32 - 4.0 - s.item_spacing.y;
+        let area_bottom = bottom - s.interact_size.y - s.item_spacing.y;
+        let corner = egui::pos2(label.x0 as f32, area_bottom);
+        let p = corner + egui::vec2(at.x, -at.y) * 275.0;
+        frame(app, vec![egui::Event::PointerMoved(p)]);
+        frame(app, vec![press(p, true)]);
+        frame(app, vec![press(p, false)]);
+    }
+
+    /// A26: in mixed-colour text, a colour picked makes it all that colour, the one the
+    /// picker starts from (the first) too, in one Undo step; opening and closing the
+    /// picker changes nothing.
+    #[test]
+    fn a_colour_picked_makes_mixed_text_one_colour() {
+        let (black, red) = ([0.0; 3], [1.0, 0.0, 0.0]);
+        let (one, two) = ("Colour 1 of 2 in the text", "Colour 2 of 2 in the text");
+        // At the colour area's foot, black to the eye; at its top right, red's hue at its
+        // full: each the colour the picker starts from.
+        let (foot, corner) = (egui::vec2(0.5, 0.001), egui::vec2(1.0, 1.0));
+        for (first, other, at_first) in [(black, red, foot), (red, black, corner)] {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            theme::install(&ctx);
+            let mut app = app_in_colours(&ctx, first, other);
+            app.act(&ctx, Act::Tool(Tool::Select));
+            // Undo leaves nothing selected.
+            let select_line = |app: &mut App| {
+                let t = &mut app.tabs[0];
+                let objs = t.ed.objects(&t.pdf, 0).to_vec();
+                let line = objs
+                    .iter()
+                    .position(|o| o.text.is_some())
+                    .expect("the line");
+                t.ed.select_object(0, line);
+                app.open_inspector();
+            };
+            select_line(&mut app);
+            let mixed = vec![(7, Some(first)), (10, Some(other)), (15, Some(first))];
+            assert_eq!(line_colours(&app), mixed);
+            let mut frame = |app: &mut App, events| window(app, &ctx, 1400.0, events);
+
+            // Opened and closed, by its button or Esc, the picker changes nothing, and adds
+            // no Undo step; Esc closes only the picker.
+            let esc = || vec![key_with(Key::Escape, egui::Modifiers::NONE)];
+            for by_esc in [false, true] {
+                click_named(&mut app, &ctx, "Text colour (mixed)");
+                let tree = settle(&mut app, &ctx);
+                assert!(node(&tree, two).is_some(), "no picker");
+                if by_esc {
+                    frame(&mut app, esc());
+                } else {
+                    click_named(&mut app, &ctx, "Text colour (mixed)");
+                }
+                let tree = settle(&mut app, &ctx);
+                assert!(node(&tree, one).is_none(), "still open");
+                assert!(node(&tree, "Text colour (mixed)").is_some(), "not selected");
+                assert_eq!(line_colours(&app), mixed, "{first:?} first");
+            }
+
+            // The first colour picked in the colour area: all of it that colour.
+            click_named(&mut app, &ctx, "Text colour (mixed)");
+            settle(&mut app, &ctx);
+            click_in_colour_area(&mut app, &ctx, &mut frame, at_first);
+            click_named(&mut app, &ctx, "Text colour");
+            settle(&mut app, &ctx);
+            assert_eq!(line_colours(&app), [(15, Some(first))], "{first:?} first");
+            // One Undo step, back and forth.
+            app.act(&ctx, Act::Undo);
+            assert_eq!(line_colours(&app), mixed, "{first:?} first");
+            app.act(&ctx, Act::Redo);
+            assert_eq!(line_colours(&app), [(15, Some(first))], "{first:?} first");
+            app.act(&ctx, Act::Undo);
+
+            // A colour the text has, picked from those offered: all of it that colour.
+            for (offered, color) in [(one, first), (two, other)] {
+                select_line(&mut app);
+                click_named(&mut app, &ctx, "Text colour (mixed)");
+                settle(&mut app, &ctx);
+                click_named(&mut app, &ctx, offered);
+                let tree = settle(&mut app, &ctx);
+                assert!(node(&tree, one).is_none(), "still open");
+                assert_eq!(line_colours(&app), [(15, Some(color))], "{color:?}");
+                app.act(&ctx, Act::Undo);
+                assert_eq!(line_colours(&app), mixed, "{color:?}");
+            }
+            // The adding of the line is the only step left.
+            app.act(&ctx, Act::Undo);
+            let objs = saved_pdf(&app.tabs[0]).page_objects(0).unwrap();
+            assert!(objs.iter().all(|o| o.text.is_none()), "{first:?} first");
+        }
+    }
+
+    /// Edits page 1's line on the page, "ate fish" selected (a double-click on "ate", then
+    /// Shift+End), with `frame`; returns the window's tree then.
+    fn edit_ate_fish(
+        app: &mut App,
+        frame: &mut dyn FnMut(&mut App, Vec<egui::Event>) -> egui::accesskit::TreeUpdate,
+    ) -> egui::accesskit::TreeUpdate {
+        let mut tree = frame(app, vec![]);
+        for _ in 0..4 {
+            tree = frame(app, vec![]);
+        }
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        let words = app.tabs[0].pdf.page_words(0).unwrap();
+        let ate = words.iter().find(|w| w.text == "ate").expect("ate").bbox;
+        let at = egui::vec2((ate[0] + ate[2]) / 2.0, (ate[1] + ate[3]) / 2.0);
+        let p = page.min + at * (page.width() / 612.0);
+        frame(app, vec![egui::Event::PointerMoved(p)]);
+        for _ in 0..2 {
+            frame(app, vec![press(p, true)]);
+            frame(app, vec![press(p, false)]);
+        }
+        for _ in 0..3 {
+            frame(app, vec![]);
+        }
+        frame(app, vec![key_with(Key::End, egui::Modifiers::SHIFT)]);
+        for _ in 0..2 {
+            tree = frame(app, vec![]);
+        }
+        let name = "Editing text: Walrus ate fish";
+        assert_eq!(node(&tree, name).map(|(_, f)| f), Some(true));
+        tree
+    }
+
+    /// Clicks the control named `name` in `tree` with `frame`, then lets two frames pass.
+    fn click_with(
+        app: &mut App,
+        frame: &mut dyn FnMut(&mut App, Vec<egui::Event>) -> egui::accesskit::TreeUpdate,
+        tree: &egui::accesskit::TreeUpdate,
+        name: &str,
+    ) -> egui::accesskit::TreeUpdate {
+        let p = middle(tree, name);
+        frame(app, vec![egui::Event::PointerMoved(p)]);
+        frame(app, vec![press(p, true)]);
+        frame(app, vec![press(p, false)]);
+        frame(app, vec![]);
+        frame(app, vec![])
+    }
+
+    /// A26: with characters selected in a line edited on the page, the first colour picked
+    /// makes those characters that colour and leaves the rest as it was.
+    #[test]
+    fn a_colour_picked_makes_mixed_selected_characters_one_colour() {
+        let (black, red) = ([0.0; 3], [1.0, 0.0, 0.0]);
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_in_colours(&ctx, black, red);
+        let time = std::cell::Cell::new(10.0);
+        let mut frame = |app: &mut App, events| timed_frame(app, &ctx, &time, events);
+        let none = egui::Modifiers::NONE;
+        // "ate fish" selected: red, then black.
+        let mut tree = edit_ate_fish(&mut app, &mut frame);
+        let name = "Editing text: Walrus ate fish";
+        // Red, the first, picked in the colour area.
+        click_with(&mut app, &mut frame, &tree, "Text colour (mixed)");
+        click_in_colour_area(&mut app, &ctx, &mut frame, egui::vec2(1.0, 1.0));
+        // Esc closes the picker; the line takes the keyboard back, the same characters
+        // selected, and they are red.
+        frame(&mut app, vec![key_with(Key::Escape, none)]);
+        for _ in 0..3 {
+            tree = frame(&mut app, vec![]);
+        }
+        let open = node(&tree, "Colour 1 of 2 in the text").is_some();
+        assert!(!open, "still open");
+        assert_eq!(node(&tree, name).map(|(_, f)| f), Some(true));
+        let one = node(&tree, "Text colour").is_some();
+        assert!(one, "the selection isn't one colour");
+        // Esc in the line keeps the edit.
+        frame(&mut app, vec![key_with(Key::Escape, none)]);
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        assert_eq!(line_colours(&app), [(7, Some(black)), (15, Some(red))]);
+        app.act(&ctx, Act::Undo);
+        let mixed = [(7, Some(black)), (10, Some(red)), (15, Some(black))];
+        assert_eq!(line_colours(&app), mixed);
+    }
+
+    /// The inspector's controls change what is selected in a line edited on the page,
+    /// although the line gives them the keyboard (egui then keeps only its caret): a size
+    /// from the list sizes the selected characters, and the line gets them back selected.
+    #[test]
+    fn a_size_picked_sizes_the_selected_characters_of_a_line() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_in_colours(&ctx, [0.0; 3], [1.0, 0.0, 0.0]);
+        let time = std::cell::Cell::new(10.0);
+        let mut frame = |app: &mut App, events| timed_frame(app, &ctx, &time, events);
+        let tree = edit_ate_fish(&mut app, &mut frame);
+        let tree = click_with(&mut app, &mut frame, &tree, "Font sizes");
+        click_with(&mut app, &mut frame, &tree, "12 pt");
+        let mut tree = frame(&mut app, vec![]);
+        for _ in 0..3 {
+            tree = frame(&mut app, vec![]);
+        }
+        let name = "Editing text: Walrus ate fish";
+        assert_eq!(node(&tree, name).map(|(_, f)| f), Some(true));
+        // Still selected: what is typed replaces it.
+        frame(&mut app, vec![egui::Event::Text("eats".into())]);
+        frame(&mut app, vec![key_with(Key::Escape, egui::Modifiers::NONE)]);
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        let (text, spans) = parts_of_line(&app);
+        assert_eq!(text, "Walrus eats");
+        let sizes: Vec<_> = spans.iter().map(|s| (s.0, s.1, s.3)).collect();
+        assert_eq!(sizes, [(0, 7, 30.0), (7, 11, 12.0)]);
+    }
+
+    /// As in a line edited on the page, a size picked for new text being typed sizes what
+    /// is selected in it, which stays selected.
+    #[test]
+    fn a_size_picked_sizes_the_selected_characters_of_new_text() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        app.act(&ctx, Act::Tool(Tool::Text));
+        let time = std::cell::Cell::new(10.0);
+        let mut frame = |app: &mut App, events| timed_frame(app, &ctx, &time, events);
+        let mut tree = frame(&mut app, vec![]);
+        for _ in 0..4 {
+            tree = frame(&mut app, vec![]);
+        }
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        let p = page.min + egui::vec2(100.0, 200.0) * (page.width() / 612.0);
+        frame(&mut app, vec![egui::Event::PointerMoved(p)]);
+        frame(&mut app, vec![press(p, true)]);
+        frame(&mut app, vec![press(p, false)]);
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        frame(&mut app, vec![egui::Event::Text("Walrus".into())]);
+        frame(&mut app, vec![key_with(Key::Home, egui::Modifiers::SHIFT)]);
+        let tree = frame(&mut app, vec![]);
+        let tree = click_with(&mut app, &mut frame, &tree, "Font sizes");
+        click_with(&mut app, &mut frame, &tree, "12 pt");
+        for _ in 0..4 {
+            frame(&mut app, vec![]);
+        }
+        // Still selected: what is typed replaces it.
+        frame(&mut app, vec![egui::Event::Text("Seal".into())]);
+        frame(&mut app, vec![key_with(Key::Escape, egui::Modifiers::NONE)]);
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        let (text, spans) = parts_of_line(&app);
+        assert_eq!(text, "Seal");
+        assert!(spans.iter().all(|s| s.3 == 12.0), "{spans:?}");
     }
 
     #[test]
@@ -8551,6 +8913,7 @@ mod tests {
             self_issued: false,
             certified: false,
             confirmed: true,
+            default_unsaved: None,
         }
     }
 
@@ -8621,6 +8984,83 @@ mod tests {
         assert_eq!(app.tabs[0].path.as_ref(), Some(&path));
         assert!(app.tabs[0].dirty, "marked saved");
         assert!(message(&app).1.contains(NOT_CONFIRMED));
+    }
+
+    /// BUG-14: an ID used that couldn't be kept as the default is said with the signing,
+    /// which is done all the same.
+    #[test]
+    fn a_default_not_kept_is_said_with_the_signing() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, 1);
+        let (id, revision) = (app.tabs[0].id, app.tabs[0].revision);
+        let s = digital::Signed {
+            default_unsaved: Some("the ID couldn't be kept as the default (a test)".into()),
+            ..signed_copy()
+        };
+        app.signed(&ctx, s, id, revision);
+        let (title, text) = message(&app);
+        assert_eq!(title, "Signed");
+        let said = "The document is signed, but the ID couldn't be kept as the default (a test).";
+        assert!(text.contains(said), "{text}");
+        assert!(!app.tabs[0].dirty);
+    }
+
+    /// BUG-14: with a settings folder that can't be written, what is changed works for the
+    /// session, and that it isn't kept is said once; a signature saved for next time that
+    /// can't be is said each time, and stays usable.
+    #[test]
+    fn settings_that_can_t_be_saved_are_said() {
+        use crate::signing::{Entry, Saved};
+        use limarepdf_core::{SignRole, SignStyle};
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let dir = test_dir("unwritable-settings");
+        // A file where the settings folder would be.
+        std::fs::write(dir.join("blocker"), "a file, not a folder").unwrap();
+        let folder = dir.join("blocker");
+        let settings = Settings::from_file(Some(folder.join("settings.txt")));
+        let mut app = App::with(settings, Recent::from_file(Some(folder.join("recent.txt"))));
+        let mut pdf = Pdf::new();
+        pdf.insert_blank(0, 612.0, 792.0).unwrap();
+        assert!(app.add_tab(&ctx, pdf, None, None, false));
+        app.act(&ctx, Act::Theme(egui::ThemePreference::Dark));
+        settle(&mut app, &ctx);
+        let (title, text) = message(&app);
+        assert_eq!(title, "Settings not saved");
+        let start = "LimarePDF couldn't save its settings (making ";
+        assert!(text.starts_with(start), "{text}");
+        assert!(text.ends_with("This isn't said again until LimarePDF starts again."));
+        assert_eq!(app.settings.theme, egui::ThemePreference::Dark);
+        app.dialog = Dialog::None;
+        // Once a session.
+        app.act(&ctx, Act::Theme(egui::ThemePreference::Light));
+        settle(&mut app, &ctx);
+        assert!(matches!(app.dialog, Dialog::None), "said again");
+        // A signature saved for next time, as the Create window adds it: said each time,
+        // and listed.
+        for (i, text) in ["Sam Lee", "S. Lee"].into_iter().enumerate() {
+            let saved = Saved::Typed {
+                text: text.into(),
+                style: SignStyle::ALL[0],
+            };
+            let e = Entry { saved, keep: true };
+            let mut kit = app.settings.sign.clone();
+            assert_eq!(kit.add(SignRole::Signature, e), None);
+            let kept = kit.kept_since(&app.settings.sign);
+            assert!(kept);
+            app.settings.sign = kit;
+            app.settings.save_sign(kept);
+            settle(&mut app, &ctx);
+            let (title, said) = message(&app);
+            assert_eq!(title, "Not saved for next time", "{i}");
+            let start = "What you saved for next time can be used until LimarePDF closes, but \
+                         LimarePDF couldn't save it (making ";
+            assert!(said.starts_with(start), "{said}");
+            assert_eq!(app.settings.sign.signatures.len(), i + 1);
+            app.dialog = Dialog::None;
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

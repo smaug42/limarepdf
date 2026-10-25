@@ -105,7 +105,21 @@ it under Password security in the inspector before saving.
 ### "The file was saved, but your system couldn't confirm it is safely on disk"
 
 The save worked, but the system couldn't confirm it is safely on the disk. If the computer lost power just then,
-save again; the document stays marked unsaved so that is one click.
+save again; the document stays marked unsaved so that is one click. When this happens while closing or quitting,
+the document stays open, and closing or quitting stops, so you can save it again first.
+
+### Settings not saved
+
+LimarePDF couldn't write to its settings folder (see [Where LimarePDF keeps things](#where-limarepdf-keeps-things)),
+usually because the folder or a file in it can't be written to. What you changed (the theme, your comment name,
+a signature) works until LimarePDF closes, but isn't there next time. The message comes once a session; one about
+a signature saved for next time comes each time. Check that the folder is yours and that the disk isn't full.
+
+"Settings not confirmed" means they were saved, but your system couldn't confirm they are safely on the disk:
+if the computer lost power just then, the latest changes may be lost.
+
+A digital ID made or imported that couldn't be made the default is still in your IDs; don't make or import it
+again. Choose **Make default** later, or pick it when you sign.
 
 ### LimarePDF closed unexpectedly
 

@@ -74,7 +74,8 @@ pub use embed::{bundled_face, installed_could_write, liberation, refusal, writab
 pub use fonts::{winansi_byte, Family, FontChoice};
 pub use forms::{Field, FieldKind, FieldValue, Widget};
 pub use ids::{
-    password_problem, DigitalId, IdList, IdStore, NewId, UnlockedId, WrongPassword, MIN_PASSWORD,
+    password_problem, DigitalId, IdList, IdStore, NewId, Stored, UnlockedId, WrongPassword,
+    MIN_PASSWORD,
 };
 pub use imgs::{image_dimensions, picture_preview, ImageImport};
 pub use labels::{LabelRange, LabelStyle};

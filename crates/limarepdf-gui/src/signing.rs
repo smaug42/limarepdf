@@ -195,11 +195,12 @@ impl SignKit {
         k
     }
 
-    pub fn save(&self) {
-        let Some(file) = &self.file else { return };
-        if let Some(dir) = file.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
+    /// Writes the kit to its file ([`crate::settings::write_own`]): why it couldn't be, or
+    /// why the system couldn't confirm it is safely on disk.
+    pub fn save(&self) -> anyhow::Result<Option<String>> {
+        let Some(file) = &self.file else {
+            return Ok(None);
+        };
         let mut text = format!("ink = {}\ndate = {}\n", self.color.name(), self.date.name());
         for (key, list) in [
             ("signature", &self.signatures),
@@ -209,7 +210,7 @@ impl SignKit {
                 text += &format!("{key} = {}\n", e.saved.line());
             }
         }
-        let _ = limarepdf_core::write_file(file, text.as_bytes());
+        crate::settings::write_own(file, text.as_bytes())
     }
 
     pub fn list(&self, role: SignRole) -> &[Entry] {
@@ -226,14 +227,26 @@ impl SignKit {
         }
     }
 
+    /// Whether a signature or initials was saved for next time since `before`.
+    pub fn kept_since(&self, before: &SignKit) -> bool {
+        let kept = |k: &SignKit| {
+            let all = k.signatures.iter().chain(&k.initials);
+            all.filter(|e| e.keep).cloned().collect::<Vec<_>>()
+        };
+        let was = kept(before);
+        kept(self).iter().any(|e| !was.contains(e))
+    }
+
     /// The folder remembered pictures are copied to.
     fn picture_dir(&self) -> Option<PathBuf> {
         Some(self.file.as_ref()?.parent()?.join("signatures"))
     }
 
     /// Put a signature or set of initials first in its list, copying a remembered picture
-    /// into the settings folder. The oldest beyond [`SAVED`] is dropped.
-    pub fn add(&mut self, role: SignRole, mut e: Entry) -> Result<(), String> {
+    /// into the settings folder. The oldest beyond [`SAVED`] is dropped. A picture that
+    /// can't be copied is kept for this session only: returns what to say then.
+    pub fn add(&mut self, role: SignRole, mut e: Entry) -> Option<String> {
+        let mut unkept = None;
         if let (true, Saved::Picture { path, .. }, Some(dir)) =
             (e.keep, &mut e.saved, self.picture_dir())
         {
@@ -249,10 +262,16 @@ impl SignKit {
                 SignRole::Initials => "initials",
             };
             let copy = dir.join(format!("{name}-{stamp}.{ext}"));
-            std::fs::create_dir_all(&dir)
-                .and_then(|_| std::fs::copy(&*path, &copy))
-                .map_err(|err| format!("Can't keep a copy of the picture: {err}"))?;
-            *path = copy;
+            match std::fs::create_dir_all(&dir).and_then(|_| std::fs::copy(&*path, &copy)) {
+                Ok(_) => *path = copy,
+                Err(err) => {
+                    e.keep = false;
+                    unkept = Some(format!(
+                        "The {name} can be used until LimarePDF closes, but LimarePDF couldn't \
+                         keep a copy of its picture for next time ({err})."
+                    ));
+                }
+            }
         }
         let list = self.list_mut(role);
         list.retain(|x| x.saved != e.saved);
@@ -261,7 +280,7 @@ impl SignKit {
         for d in dropped {
             self.forget(&d);
         }
-        Ok(())
+        unkept
     }
 
     /// Take a signature or set of initials out of its list, deleting its picture's copy.
@@ -997,16 +1016,10 @@ impl SignPane {
             Outcome::Done(e) => {
                 let (role, place) = (c.role, *place);
                 self.create = None;
-                match kit.add(role, e) {
-                    Ok(()) => {
-                        self.pick = SignPick::Saved(role, 0);
-                        place
-                    }
-                    Err(e) => {
-                        *error = Some(e);
-                        None
-                    }
-                }
+                // Usable now even when it couldn't be saved for next time, which is said.
+                *error = kit.add(role, e);
+                self.pick = SignPick::Saved(role, 0);
+                place
             }
         }
     }
@@ -1068,7 +1081,7 @@ mod tests {
         std::fs::write(&f, "ink = blue\n").unwrap();
         let other = f.with_file_name("other.txt");
         std::fs::hard_link(&f, &other).unwrap();
-        SignKit::from_file(Some(f.clone())).save();
+        assert_eq!(SignKit::from_file(Some(f.clone())).save().unwrap(), None);
         assert_eq!(std::fs::read_to_string(&other).unwrap(), "ink = blue\n");
         assert!(std::fs::read_to_string(&f)
             .unwrap()
@@ -1091,37 +1104,28 @@ mod tests {
             text: "Sam Lee".into(),
             style: SignStyle::Zeyada,
         };
-        k.add(
-            SignRole::Signature,
-            Entry {
-                saved: drawn.clone(),
-                keep: true,
-            },
-        )
-        .unwrap();
-        k.add(
-            SignRole::Initials,
-            Entry {
-                saved: typed.clone(),
-                keep: true,
-            },
-        )
-        .unwrap();
+        let drawn_entry = Entry {
+            saved: drawn.clone(),
+            keep: true,
+        };
+        assert_eq!(k.add(SignRole::Signature, drawn_entry), None);
+        let typed_entry = Entry {
+            saved: typed.clone(),
+            keep: true,
+        };
+        assert_eq!(k.add(SignRole::Initials, typed_entry), None);
         // Not remembered: listed now, gone next time.
         let other = Saved::Typed {
             text: "Sam".into(),
             style: SignStyle::Caveat,
         };
-        k.add(
-            SignRole::Signature,
-            Entry {
-                saved: other,
-                keep: false,
-            },
-        )
-        .unwrap();
+        let other = Entry {
+            saved: other,
+            keep: false,
+        };
+        assert_eq!(k.add(SignRole::Signature, other), None);
         assert_eq!(k.signatures.len(), 2);
-        k.save();
+        assert_eq!(k.save().unwrap(), None);
         let k = SignKit::from_file(Some(f));
         assert_eq!((k.color, k.date), (InkColor::Blue, DateStyle::MonthDayYear));
         assert_eq!(
@@ -1152,14 +1156,43 @@ mod tests {
             path: original.clone(),
             clear_paper: true,
         };
-        k.add(SignRole::Signature, Entry { saved, keep: true })
-            .unwrap();
+        let e = Entry { saved, keep: true };
+        assert_eq!(k.add(SignRole::Signature, e), None);
         let Saved::Picture { path: copy, .. } = k.signatures[0].saved.clone() else {
             panic!("not a picture");
         };
         assert!(copy.starts_with(dir.join("signatures")) && copy.exists());
         k.remove(SignRole::Signature, 0);
         assert!(!copy.exists() && original.exists());
+    }
+
+    /// BUG-14: a picture whose copy can't be kept is still listed, to use until the app
+    /// closes, and that is said; it isn't saved for next time.
+    #[test]
+    fn a_picture_that_can_t_be_copied_is_kept_for_the_session() {
+        let f = file("picture-unkept");
+        let dir = f.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&dir).unwrap();
+        let original = dir.join("mine.png");
+        std::fs::write(&original, b"not really a png").unwrap();
+        // A file where the pictures' folder would be.
+        std::fs::write(dir.join("signatures"), "a file, not a folder").unwrap();
+        let mut k = SignKit::from_file(Some(f.clone()));
+        let saved = Saved::Picture {
+            path: original.clone(),
+            clear_paper: true,
+        };
+        let said = k.add(SignRole::Signature, Entry { saved, keep: true });
+        let said = said.expect("not said");
+        let start = "The signature can be used until LimarePDF closes, but LimarePDF couldn't \
+                     keep a copy of its picture for next time (";
+        assert!(said.starts_with(start), "{said}");
+        let e = &k.signatures[0];
+        assert!(!e.keep);
+        assert!(matches!(&e.saved, Saved::Picture { path, .. } if *path == original));
+        assert_eq!(k.save().unwrap(), None);
+        assert!(SignKit::from_file(Some(f)).signatures.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -1170,8 +1203,8 @@ mod tests {
                 text: format!("Sam {i}"),
                 style: SignStyle::Cedarville,
             };
-            k.add(SignRole::Signature, Entry { saved, keep: true })
-                .unwrap();
+            let e = Entry { saved, keep: true };
+            assert_eq!(k.add(SignRole::Signature, e), None);
         }
         assert_eq!(k.signatures.len(), SAVED);
         assert!(matches!(&k.signatures[0].saved, Saved::Typed { text, .. } if text == "Sam 6"));

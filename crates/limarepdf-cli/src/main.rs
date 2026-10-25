@@ -2119,6 +2119,14 @@ fn choose_password(file: &Option<PathBuf>, prompt: &str) -> Result<Zeroizing<Str
     Ok(p)
 }
 
+/// Says on stderr what didn't fully work with an ID kept (made, imported or removed):
+/// the ID's change is done, so the command still succeeds.
+fn id_warnings(warnings: &[String]) {
+    for w in warnings {
+        eprintln!("warning: {w}");
+    }
+}
+
 /// The facts about an ID's certificate, indented under its heading.
 fn id_details(id: &DigitalId, clean: &dyn Fn(&str) -> String) -> Result<()> {
     let c = &id.cert;
@@ -2241,14 +2249,21 @@ fn run_id(cmd: IdCmd) -> Result<()> {
                     limarepdf_core::MIN_PASSWORD
                 ),
             )?;
-            let id = saved(store.create(&new, &password))?;
+            let made = saved(store.create(&new, &password))?;
+            let id = &made.id;
             out!(
-                "Made the digital ID \"{}\" ({}), in {}. It is the default for signing.",
+                "Made the digital ID \"{}\" ({}), in {}.{}",
                 clean(id.cert.display_name()),
                 id.name,
-                id.path.display()
+                id.path.display(),
+                if id.default {
+                    " It is the default for signing."
+                } else {
+                    ""
+                }
             );
-            id_details(&id, &clean)?;
+            id_warnings(&made.warnings);
+            id_details(id, &clean)?;
             out!("");
             out!(
                 "Keep the password safe: LimarePDF can't recover it, and without it the ID can't \
@@ -2279,14 +2294,21 @@ fn run_id(cmd: IdCmd) -> Result<()> {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
             let password = read_password(&password_file, &format!("Password of {file_name}: "))?;
-            let id = saved(store.import(&bytes, &password, name.as_deref()))?;
+            let made = saved(store.import(&bytes, &password, name.as_deref()))?;
+            let id = &made.id;
             out!(
-                "Imported the digital ID \"{}\" ({}), in {}. It is the default for signing.",
+                "Imported the digital ID \"{}\" ({}), in {}.{}",
                 clean(id.cert.display_name()),
                 id.name,
-                id.path.display()
+                id.path.display(),
+                if id.default {
+                    " It is the default for signing."
+                } else {
+                    ""
+                }
             );
-            id_details(&id, &clean)?;
+            id_warnings(&made.warnings);
+            id_details(id, &clean)?;
             out!("");
             out!(
                 "It keeps its password, now with LimarePDF's own encryption. {} still holds the ID: \
@@ -2396,8 +2418,9 @@ fn run_id(cmd: IdCmd) -> Result<()> {
                     return Ok(());
                 }
             }
-            saved(store.remove(&id))?;
+            let warnings = saved(store.remove(&id))?;
             out!("Removed the digital ID \"{label}\" ({}).", id.name);
+            id_warnings(&warnings);
         }
     }
     Ok(())
@@ -3413,7 +3436,8 @@ fn run(cmd: Cmd) -> Result<()> {
                 },
             )?;
             saved(limarepdf_core::write_file(&output, &signed.bytes))?;
-            store.set_default(&chosen)?;
+            // The PDF is written: a default that can't be kept is said apart from it.
+            let default = store.set_default(&chosen);
             let what = if certify.is_some() {
                 "Certified"
             } else {
@@ -3424,6 +3448,18 @@ fn run(cmd: Cmd) -> Result<()> {
                 limarepdf_core::display_line(&signed.field, 80),
                 output.display()
             );
+            if let Err(e) = default {
+                match e.downcast_ref::<limarepdf_core::NotConfirmed>() {
+                    Some(n) => eprintln!(
+                        "warning: your system couldn't confirm that the ID is now the default \
+                         for signing is safely on disk ({})",
+                        n.why
+                    ),
+                    None => eprintln!(
+                        "warning: the ID couldn't be kept as the default for signing: {e:#}"
+                    ),
+                }
+            }
             if signed.rewritten {
                 out!(
                     "The file's structure was damaged, or other PDF apps may show it \

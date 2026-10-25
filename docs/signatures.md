@@ -246,7 +246,10 @@ chooses the ID signing starts with; **Remove…** asks a second time (**Remove f
 exporting run in the background and the window shows when they are done. If one fails, its form comes back with
 what you typed and the reason: a wrong password under the password, anything else (such as a file that can't be
 read or written) at the end of the form. The passwords are cleared, as they always are once used, so type them
-again to try again. The same rules apply as on the command line, described below.
+again to try again. When the ID is kept but something after that didn't work (it couldn't be made the default,
+or your system couldn't confirm a file is safely on disk), the window says so in a warning: the ID is there, so
+don't make or import it again. The same rules apply as on the command line, described below, which prints such
+warnings starting with `warning:` and still succeeds.
 
 IDs are kept in the `ids` folder of LimarePDF's settings folder: `~/.config/limarepdf/ids/` on Linux,
 `~/Library/Application Support/limarepdf/ids/` on macOS, `%APPDATA%\limarepdf\ids\` on Windows. Each is one PKCS#12 file
@@ -330,7 +333,8 @@ have an exported copy. Signatures already made with it stay valid.
    [certify](#what-signing-does) the document (only before anyone has signed it).
 2. Click an empty signature field on the page, or drag a box where the signature goes (at least 12 points each
    way). The pane also lists the document's empty signature fields to pick from. Esc, or another tool, stops.
-3. In the window, pick the digital ID (the default is picked; expired IDs can't sign), type its password, and
+3. In the window, pick the digital ID (the default is picked; expired IDs can't sign), type its password (leave
+   it empty for an imported ID that has none), and
    optionally a reason and a location. **Show my saved signature beside the text** uses the first signature in
    your fill-and-sign list for the left part of the look; without one, your name is written in handwriting. For a
    certification, choose what others may do afterwards. **Digital IDs…** opens the Digital IDs window, to make or
@@ -369,7 +373,8 @@ The first puts your signature in a new box on page 2: 200 by 60 points, 350 poin
 top of the page as shown. The second signs the document's empty signature field named `Approver` (`limarepdf-cli verify`
 lists empty fields by name). LimarePDF asks for the ID's password; `--password-file` reads it from a file instead, and
 `--id` chooses another ID than the default (its number or name in `limarepdf-cli id list`). The ID you sign with becomes the
-default. `--reason` and `--location` are your own statements, shown with the signature by every reader. On the
+default; when that can't be noted, a `warning:` line says so after the signed file is written, and the command still
+succeeds. In the app, the Signed message says so. `--reason` and `--location` are your own statements, shown with the signature by every reader. On the
 command line, signing adds only the signature (and draws in fill-and-sign items).
 
 ### What signing does

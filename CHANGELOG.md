@@ -72,6 +72,26 @@
   is having no printers set up. On Linux and macOS a print job that the printing service doesn't take, or doesn't
   confirm, within 2 minutes is stopped, saying the job may have been sent and to check the printer's queue; until
   now it could keep other background work (Append PDFs, OCR, exports) from starting until LimarePDF was closed.
+- Choosing black for text in black and red (the first of its colours, which the colour picker starts from) did
+  nothing. A colour picked in the picker for text in several colours now makes it all that colour, the first one
+  too, in one undo step; opening and closing the picker changes nothing. The picker also offers the colours in
+  the text, to make it all one of them in a click.
+- Picking a font size, font or colour in the inspector while editing a line or typing new text on the page applied
+  only where the caret was, not to the characters selected, and the selection was lost. The selected characters
+  now change, and stay selected when the line takes the keyboard back.
+- An imported digital ID with no password couldn't sign or certify in the app, which asked for a password it
+  doesn't have. With the password left empty, the app now tries the ID without one; an ID that has a password
+  still asks for it.
+- Settings, recent files and saved signatures that couldn't be written (a settings folder you can't write to,
+  say) were dropped without a word. A message now says so once a session, and what you changed works until
+  LimarePDF closes; a signature saved for next time that can't be is said each time and stays usable, including
+  a picture LimarePDF couldn't copy, which was refused before.
+- Making or importing a digital ID whose being the default couldn't be noted was reported as failed although the
+  ID was kept, so trying again made a second copy. It is now reported as made, with a warning, in the app and on
+  the command line (`warning:` lines; the command succeeds). Changes to digital IDs, exports and the trust list
+  that your system couldn't confirm are safely on disk are reported as done with that warning, not as failures.
+  `limarepdf-cli sign` reports the signed file apart from the ID it couldn't keep as the default, instead of
+  failing after writing the file; the app's Signed message says so too.
 
 ### Added
 

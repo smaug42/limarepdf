@@ -82,7 +82,13 @@ text box has the keyboard, `App::shortcuts` leaves the undo keys to it, so the d
 inside a box. Each tab's text boxes take their ids from `Editor::scope` (the tab's id) and what they edit, and
 the inspector is drawn inside that id, so no two documents share a box's state. `page_text::fresh_history`, run
 before each frame's keys, starts a box's undo afresh whenever it gets the keyboard, except when an editor hands
-the keyboard back mid-typing (`page_text::hand_back`, a note after its colour is picked). The line underneath is
+the keyboard back mid-typing (`page_text::hand_back`, a note after its colour is picked). egui keeps only the
+caret of a `TextEdit` without the keyboard, so the inspector's style controls read the line's or new text's
+selection through `page_text::held`, which notes it while the box has the keyboard and gives it while a list, the
+size box or the colour picker has it; `page_text::give_back` selects it again as the box takes the keyboard back
+(BUG-12). The text colour button (`editor::text_color_button`) has its own pop-up around egui's
+`color_picker_hsva_2d`: a press on its colour area or hue slider is a pick even of the colour it started from, and
+mixed text offers its own colours to pick. The line underneath is
 covered in the colour the page worker (`worker.rs`, `Worker::sample`) finds around it, from a drawing of that
 part of the page in the current page colours.
 
@@ -175,7 +181,14 @@ user on Unix while written, synced, then renamed over the target, and on Unix th
 so a power cut can't undo it. When only that folder sync fails, the error is a `NotConfirmed`, a third outcome apart
 from saved and failed: the app and the CLI treat the file as the new one and warn that it may need saving again (the
 app keeps the document marked unsaved, and its recovery copy). A file system that can't sync folders at all counts as
-synced. Platform note: Windows has no call for syncing a folder, so there the file is synced before the rename and a
+synced. Writes of LimarePDF's own files say what happened too (BUG-14): `IdStore::create` and `import` return a
+`Stored` (the ID and warnings) once the ID's file is written, so a default that can't be noted, or a sync not
+confirmed, is a warning, never a failure that a second try would repeat; `IdStore::remove` returns its warnings;
+the app's ID window shows them (`Said::Warning`), the CLI prints `warning:` lines and succeeds, and the trust list,
+Make default and exports treat a `NotConfirmed` as done with a warning (`app::unconfirmed`). The app's settings,
+recent files and saved signatures go through `settings::write_own`; a failure is held (`Settings::take_unsaved`,
+`Recent::take_unsaved`) and `App::say_unsaved` shows it once a session, a signature saved for next time each time
+(`Settings::save_sign`, `SignKit::kept_since`); one at exit goes to stderr. Platform note: Windows has no call for syncing a folder, so there the file is synced before the rename and a
 power cut just after it can still lose the rename. Commands writing several files (split, page images) never
 replace one unasked: the whole list is worked out first (`Pdf::split_files`, `render::image_names`) and checked with
 `limarepdf_core::existing` (a broken link counts), then the app asks once (`Dialog::ConfirmReplace`, for either
@@ -208,11 +221,23 @@ the fourth audit's A01). Results from threads (reads, jobs, signing, files dropp
 Waiting "Cannot open file" messages are joined into one. A password sent from `Dialog::Password` sets
 `App::retrying` until that file's result comes back, so a wrong password is asked again (`App::ask_password`) before
 anything waiting. Closing the window with unsaved work puts the open dialog back at the front of the queue and asks
-`Dialog::ConfirmQuit` first. A password prompt says what it unlocks (`Unlock`): a tab's file to open (with its page)
+the quit question first (`App::quit_question`). A password prompt says what it unlocks (`Unlock`): a tab's file to open (with its page)
 or reload, or the next file of an Append PDFs (`Appending`, BUG-20), whose files `App::read_appending` reads in
 order on a thread until one needs a password or fails; `App::append_read` adds them in one step if the tab is still
 open. A file with a prompt open or waiting counts as being read (`App::reading`), so opening it again asks nothing
 more. Commands the user starts set `App::dialog` directly: the modal dialog blocks them while one is open.
+
+Closing and quitting (ENH-01) ask `Dialog::ConfirmClose(asked, quitting)`, Save (Save as… for a tab with no file) /
+Discard / Cancel; quitting with several unsaved documents asks `Dialog::ConfirmQuit` first, Review… / Discard all /
+Cancel. Save runs the ordinary `App::save`, so every save question still comes, and `App::closing` holds what
+follows: `Closing::Tab` (close the tab once saved, then bring back the one in front) or `Closing::Quit` (the tab
+being saved and the documents still to ask about). `App::close_step` runs at the end of `App::dialogs` whenever no
+dialog is open and no save question waits at the front of the queue (one the close request put there goes on first
+after Cancel). It closes the saved tab, asks about the next document or quits; a document still `Tab::unsaved`
+(the save cancelled, refused, failed, not confirmed on disk, or typing not kept) stops it. Nothing closes before
+the app quits, so stopping part way keeps every document open. Answering a quit question drops waiting save
+questions and a tab's closing in progress, since quitting asks about every unsaved document anyway. Tests never
+open the save chooser: `App::save_as` takes the tests' `SAVE_AS` instead.
 
 Crash recovery copies are kept by `crates/limarepdf-gui/src/recovery.rs`, in a private
 per-user state folder with one subfolder per running app, which holds a locked `lock` file while the app runs. A tab's

@@ -43,7 +43,10 @@ As in a word processor:
 - Bold over words that are partly bold makes them all bold; over words that are all bold, it takes the bold off.
   Italic works the same way. Words in a family without a bold or italic face stay as they are.
 - Where the selection mixes fonts, sizes or colours, the inspector shows that one blank: the font list with no
-  name, the size box empty, the colour button with the colours side by side. Bold and Italic show on only when all
+  name, the size box empty, the colour button with the colours side by side. A colour picked then makes the
+  selection all that colour, even the one the picker starts from (the first); the picker also offers the colours
+  in the text (**In the text**), to make it all one of them in a click. Opening and closing the picker changes
+  nothing. Bold and Italic show on only when all
   of it is bold or italic. Picking a value there sets all of it.
 - A change in the inspector shows on the line at once, the line stays in editing, and the keyboard comes back to
   it; the change is kept with the typing.

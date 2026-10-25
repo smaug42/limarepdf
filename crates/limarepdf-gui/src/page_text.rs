@@ -229,8 +229,41 @@ pub fn selection(ctx: &egui::Context, id: egui::Id) -> Option<(usize, usize)> {
     Some((r.secondary.index.0, r.primary.index.0))
 }
 
+/// Where what is selected in a text box is noted while it has the keyboard ([`held`]).
+const HELD: &str = "held-selection";
+
+/// What the inspector's style controls change in the text box `id`: what is selected
+/// there. egui keeps only the caret of a box without the keyboard, so while a list, the
+/// size box or the colour picker has it, this is what was selected when the box last had
+/// it; [`give_back`] selects that again.
+pub fn held(ctx: &egui::Context, id: egui::Id) -> Option<(usize, usize)> {
+    let note = id.with(HELD);
+    if ctx.memory(|m| m.has_focus(id)) {
+        let sel = selection(ctx, id);
+        ctx.data_mut(|d| match sel {
+            Some(s) => {
+                d.insert_temp(note, s);
+            }
+            None => d.remove::<(usize, usize)>(note),
+        });
+        sel
+    } else {
+        ctx.data(|d| d.get_temp(note))
+            .or_else(|| selection(ctx, id))
+    }
+}
+
+/// Give the text box `id` the keyboard back with what was selected in it ([`held`]).
+pub fn give_back(ctx: &egui::Context, id: egui::Id) {
+    if let Some(sel) = ctx.data(|d| d.get_temp(id.with(HELD))) {
+        select(ctx, id, sel);
+    }
+    ctx.memory_mut(|m| m.request_focus(id));
+}
+
 /// Select the characters `sel` (from the anchor to the caret) in the text editor `id`.
 pub fn select(ctx: &egui::Context, id: egui::Id, sel: (usize, usize)) {
+    ctx.data_mut(|d| d.insert_temp(id.with(HELD), sel));
     if let Some(mut st) = egui::TextEdit::load_state(ctx, id) {
         let range = egui::text::CCursorRange::two(
             egui::text::CCursor::new(sel.0),
@@ -695,8 +728,12 @@ impl PageText {
             on_grip = grab.contains_pointer();
         }
         self.refused.show(&ctx, &f.out, id);
+        if self.fresh {
+            // Nothing selected yet: none of an earlier text's selection held.
+            ctx.data_mut(|d| d.remove::<(usize, usize)>(id.with(HELD)));
+        }
         if self.fresh || (self.refocus && settled && !edit.has_focus()) {
-            edit.request_focus();
+            give_back(&ctx, id);
             let fresh = std::mem::take(&mut self.fresh);
             self.refocus = false;
             if fresh {
