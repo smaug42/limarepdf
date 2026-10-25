@@ -75,9 +75,9 @@ this list once it works. The feature table below has the details.
   them bold; double-click the line first. Page text has no underline or strike-through (underline and strike-out
   comments can be added over it).
 - A line turned on the page, and invisible recognised (OCR) text, are edited in a box over the line rather than
-  drawn where they are (a turned line's box shows its fonts, sizes and colours). Over a picture or a shaded
-  background, the line being edited is hidden under one flat colour, the one most common around it, until you
-  finish.
+  drawn where they are (a turned line's box shows its fonts, sizes and colours; the caret goes by the character
+  clicked). Over a picture or a shaded background, the line being edited is hidden under one flat colour, the one
+  most common around it, until you finish.
 - No spell checking.
 
 **Selecting and arranging**

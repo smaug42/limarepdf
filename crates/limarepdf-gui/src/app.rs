@@ -7061,6 +7061,94 @@ mod tests {
         assert_eq!((spans[3].0, spans[3].1), (11, 15));
     }
 
+    /// BUG-26: in a line turned on the page, a click with the Text tool puts the caret where
+    /// it falls along the line, and a double-click selects the word clicked, the line's
+    /// second "fish" too, whichever way the page is turned.
+    #[test]
+    fn a_click_in_a_turned_line_puts_the_caret_where_it_falls() {
+        use limarepdf_core::{PartFont, TextPart};
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        // Clicks `n` times with `tool` at `at` (the point of a word's box, in page points,
+        // from its middle by `along` of its length along the line), types `typed` and keeps
+        // it; the line's text then.
+        let edited = |turn: i64, tool, word: usize, along: f32, n: usize, typed: &str| {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            theme::install(&ctx);
+            let mut app = app_with(&ctx, 1);
+            let part = TextPart {
+                text: "fish and fish".into(),
+                font: PartFont::Choice(FontChoice::default()),
+                size: 30.0,
+                color: [0.0; 3],
+                rise: 0.0,
+            };
+            assert!(app.tabs[0].edit(&ctx, |p| p.add_text_parts(0, (230.0, 480.0), &[part])));
+            assert!(app.tabs[0].edit(&ctx, |p| p.rotate_pages(&[0], turn)));
+            app.act(&ctx, Act::Tool(tool));
+            let time = std::cell::Cell::new(10.0);
+            let frame = |app: &mut App, events| timed_frame(app, &ctx, &time, events);
+            let mut tree = frame(&mut app, vec![]);
+            for _ in 0..4 {
+                tree = frame(&mut app, vec![]);
+            }
+            let (page, _) = node(&tree, "Page 1").expect("the page");
+            let width = if turn % 180 == 0 { 612.0 } else { 792.0 };
+            let k = page.width() / width;
+            // The page turns clockwise, the line with it; its words in its own order.
+            let dir = match turn {
+                90 => egui::vec2(0.0, 1.0),
+                180 => egui::vec2(-1.0, 0.0),
+                _ => egui::vec2(0.0, -1.0),
+            };
+            let mid = |b: [f32; 4]| egui::pos2((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0);
+            let mut words = app.tabs[0].pdf.page_words(0).unwrap();
+            words.sort_by(|v, w| {
+                let along = |b| mid(b).to_vec2().dot(dir);
+                along(v.bbox).total_cmp(&along(w.bbox))
+            });
+            assert_eq!(words.len(), 3, "{words:?}");
+            let b = words[word].bbox;
+            let length = (b[2] - b[0]) * dir.x.abs() + (b[3] - b[1]) * dir.y.abs();
+            let at = mid(b) + dir * along * length;
+            let p = page.min + at.to_vec2() * k;
+            // In the 1400 × 800 window `timed_frame` draws.
+            let window = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 800.0));
+            assert!(window.contains(p), "{p:?} is out of view at {turn}°");
+            frame(&mut app, vec![egui::Event::PointerMoved(p)]);
+            for _ in 0..n {
+                frame(&mut app, vec![press(p, true)]);
+                frame(&mut app, vec![press(p, false)]);
+            }
+            for _ in 0..3 {
+                frame(&mut app, vec![]);
+            }
+            frame(&mut app, vec![egui::Event::Text(typed.into())]);
+            frame(&mut app, vec![key(Key::Escape)]);
+            for _ in 0..2 {
+                frame(&mut app, vec![]);
+            }
+            parts_of_line(&app).0
+        };
+        let turns = [90, 180, 270];
+        let got: Vec<(i64, String, String)> = turns
+            .iter()
+            .map(|&turn| {
+                // Just inside the end of "and": the caret after its "d".
+                let caret = edited(turn, Tool::Text, 1, 0.4, 1, "X");
+                (turn, caret, edited(turn, Tool::Read, 2, 0.0, 2, "cod"))
+            })
+            .collect();
+        let want = turns.map(|t| (t, "fish andX fish".into(), "fish and cod".into()));
+        assert_eq!(got, want);
+    }
+
     /// A tab with "Walrus ate fish" at (100, 200) in 30-point Helvetica: "ate" in `other`,
     /// the rest in `color`.
     fn app_in_colours(ctx: &egui::Context, color: [f32; 3], other: [f32; 3]) -> App {

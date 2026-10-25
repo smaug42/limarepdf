@@ -176,6 +176,15 @@
   now open in tabs of their own, whether LimarePDF is starting or already running, several at once too, asking
   for a password where one is needed; while the app offers recovery copies at start, they open once that window
   closes. A file Finder sends that can't be found is reported. Not yet tried on a Mac.
+- Spaces or a tab after a line's last word made the line's box reach past its text, over whatever came next: on
+  forms whose labels end in a tab, a click between two labels, or on the start of the next one, took the first
+  label, and editing it hid the next label until you finished. A line's box now ends at its last letter and
+  starts at its first, and the spaces stay in its text.
+- A click in a line turned on the page put the caret by how far across the page the click was rather than along
+  the line, so it landed in the wrong word, and a double-click on a word the line has twice selected another
+  word; in invisible recognised (OCR) text the caret was placed as if every character were the same width. The
+  caret now goes by the character clicked, and a double-click selects the word clicked, whichever way the line
+  runs.
 
 ### Added
 

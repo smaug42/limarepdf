@@ -834,6 +834,28 @@ fn drawn_in_place(o: &PageObject) -> bool {
     o.upright && !o.hidden && o.baseline.is_some()
 }
 
+/// The place between characters of line `o` nearest `p` (page points), for a line edited
+/// in a plain box: measured along the line, whichever way it runs on the page, by where
+/// its `n` characters are, or spread evenly along its box when that isn't known.
+fn caret_along(o: &PageObject, p: Pos2, n: usize) -> usize {
+    let b = o.bbox;
+    let (dx, dy) = o.dir.unwrap_or((1.0, 0.0));
+    let (x, y) = o.baseline.unwrap_or((b[0], b[3]));
+    let along = |px: f32, py: f32| (px - x) * dx + (py - y) * dy;
+    let at = along(p.x, p.y);
+    if o.stops.len() == n + 1 {
+        let off = |i: usize| (o.stops[i] - at).abs();
+        return (0..=n)
+            .min_by(|&i, &j| off(i).total_cmp(&off(j)))
+            .unwrap_or(0);
+    }
+    let ends = [(b[0], b[1]), (b[2], b[1]), (b[2], b[3]), (b[0], b[3])].map(|(x, y)| along(x, y));
+    let from = ends.iter().copied().fold(f32::MAX, f32::min);
+    let to = ends.iter().copied().fold(f32::MIN, f32::max);
+    let f = ((at - from) / (to - from).max(0.01)).clamp(0.0, 1.0);
+    (f * n as f32).round() as usize
+}
+
 /// What hides line `o` while it is edited: its box, with room for accents above and
 /// descenders below, in page points.
 fn cover_box(o: &PageObject) -> [f32; 4] {
@@ -1488,20 +1510,23 @@ impl Editor {
         on.sort_by(|v, w| v.bbox[0].total_cmp(&w.bbox[0]));
         let spans = word_spans(text);
         if !o.upright {
-            // A turned line's words don't run left to right on the page: the word under
-            // `p`, found by its text when the line has it once.
-            let inside = |w: &PageWord| {
+            // A turned line's words don't run left to right on the page: in the order they
+            // run along the line, the word under `p`.
+            let (dx, dy) = o.dir.unwrap_or((1.0, 0.0));
+            let along = |w: &PageWord| {
+                let b = w.bbox;
+                (b[0] + b[2]) / 2.0 * dx + (b[1] + b[3]) / 2.0 * dy
+            };
+            on.sort_by(|v, w| along(v).total_cmp(&along(w)));
+            let inside = |w: &&PageWord| {
                 let b = w.bbox;
                 p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3]
             };
-            let text_of =
-                |(a, b): (usize, usize)| text.chars().skip(a).take(b - a).collect::<String>();
-            let found = on.iter().find(|w| inside(w)).and_then(|w| {
-                let mut same = spans.iter().filter(|s| text_of(**s) == w.text);
-                let first = same.next()?;
-                same.next().is_none().then_some(*first)
-            });
-            return found.map_or(Pick::At(p, true), |(a, b)| Pick::Chars(a, b));
+            let under = on.iter().position(inside);
+            return match under.filter(|_| on.len() == spans.len()) {
+                Some(j) => Pick::Chars(spans[j].0, spans[j].1),
+                None => Pick::At(p, true),
+            };
         }
         let under = on.iter().position(|w| p.x >= w.bbox[0] && p.x <= w.bbox[2]);
         match under.filter(|_| on.len() == spans.len()) {
@@ -1698,9 +1723,7 @@ impl Editor {
                         let at = to_screen(p.x, p.y) - out.galley_pos;
                         out.galley.cursor_from_pos(at).index.0
                     } else {
-                        let n = insp.text.text().chars().count();
-                        let at = ((p.x - b[0]) / (b[2] - b[0]).max(0.01)).clamp(0.0, 1.0);
-                        (at * n as f32).round() as usize
+                        caret_along(&o, p, insp.text.text().chars().count())
                     };
                     if word {
                         word_around(insp.text.text(), i)
@@ -4567,6 +4590,26 @@ mod tests {
         let mut ed = Editor::default();
         assert_eq!(ed.objects(&pdf, 0).len(), 3);
         (pdf, ed)
+    }
+
+    /// BUG-25: the spaces after a label's last word don't reach over the next label: a
+    /// click between them is on neither, and editing the first doesn't hide the second.
+    #[test]
+    fn spaces_after_a_line_are_not_part_of_it() {
+        let mut pdf = limarepdf_core::Pdf::new();
+        pdf.insert_blank(0, 612.0, 792.0).unwrap();
+        for (at, text) in [(100.0, "Anrede      "), (145.0, "Titel")] {
+            let font = FontChoice::default();
+            pdf.add_text(0, (at, 300.0), text, font, 12.0, [0.0; 3])
+                .unwrap();
+        }
+        let mut ed = Editor::default();
+        let objs = ed.objects(&pdf, 0).to_vec();
+        let [label, next] = [0, 1].map(|i| objs[i].bbox);
+        let y = (label[1] + label[3]) / 2.0;
+        assert_eq!(ed.text_hit(0, Pos2::new(142.0, y), 0.5), None, "{label:?}");
+        assert_eq!(ed.text_hit(0, Pos2::new(147.0, y), 0.5), Some(1));
+        assert!(cover_box(&objs[0])[2] < next[0], "{label:?} hides {next:?}");
     }
 
     #[test]

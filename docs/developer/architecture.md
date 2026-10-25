@@ -435,7 +435,16 @@ form XObject, and per inline image.
   to 0.7 forward along it. Font, size and colour don't split a line: its parts in one style each are its spans
   (`PageObject::spans`: characters, font, size, colour, and rise, how far a part such as a superscript sits above
   the baseline of the line's largest text). A gap wider than 0.18 of the smaller text's size reads as a space,
-  which belongs to the part before it.
+  which belongs to the part before it. The line's box (`line_box`) covers its shows' boxes less those showing only
+  whitespace and less the whitespace at the line's two ends, cut off at the characters' measured positions; the
+  text keeps them (BUG-25: a label's tab in a larger font reached over the next label, which a click, the selection
+  and the edit cover then took as the first label's).
+- **Where a line's characters are** on the displayed page: `PageObject::dir`, the way the line runs (a unit vector),
+  and `PageObject::stops`, where each character starts along it from `baseline` and where the last ends, from the
+  same measured positions as search boxes (`caret_stops`). A line edited in a plain box (turned, or invisible OCR
+  text) puts the caret at the stop nearest a click, measured along `dir` (`editor::caret_along`), and a
+  double-click finds the word by the words' order along `dir`, a repeated word too (BUG-26: the caret went by how
+  far across the box the click was, which a quarter-turned line doesn't run along).
 - **Moving or resizing** wraps the object's drawing operators in `q <matrix> cm … Q`. What a text line's
   operators set between its shows (the font and colour of its parts) is set again after the `Q`, so the text
   after the line is drawn as before.

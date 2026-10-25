@@ -27,7 +27,8 @@ While you type:
 - The inspector shows the font, size and colour of what is selected, or of the character before the caret.
 
 A line turned on the page (not running left to right on screen) is edited in a box over the line instead, showing
-its fonts, sizes and colours; invisible recognised (OCR) text is edited in a plain box.
+its fonts, sizes and colours; invisible recognised (OCR) text is edited in a plain box. The caret goes by the
+character you clicked along the line, and a double-click selects the word you clicked, whichever way the line runs.
 
 ## Style words in a line
 

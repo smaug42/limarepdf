@@ -306,6 +306,53 @@ fn a_gap_read_as_a_space_is_kept() {
     assert!(near(before, after), "{before:?} then {after:?}");
 }
 
+/// BUG-25: spaces at a line's ends, in its own font or in a show of their own in another,
+/// don't widen its box over what is next to it (PDFBox 4320: a label's tab in Helvetica
+/// Bold covered the next label).
+#[test]
+fn spaces_at_a_lines_ends_are_not_in_its_box() {
+    let p = make(
+        "BT /F1 6 Tf 20 100 Td (Anrede) Tj /F2 25 Tf (   ) Tj ET \
+         BT /F1 6 Tf 50 100 Td (Titel) Tj ET \
+         BT /F1 20 Tf 20 150 Td (Name ) Tj ET \
+         BT /F1 20 Tf 20 50 Td (  lead) Tj ET",
+    );
+    let word = |w: &str| p.find_text_boxes(0, w).unwrap()[0];
+    for (text, w) in [
+        ("Anrede   ", "anrede"),
+        ("Name ", "name"),
+        ("  lead", "lead"),
+    ] {
+        let b = line(&p, text).bbox;
+        assert!(near(b, word(w)), "{text:?}: {b:?}, its word {:?}", word(w));
+    }
+    assert!(line(&p, "Anrede   ").bbox[2] < line(&p, "Titel").bbox[0]);
+}
+
+/// BUG-26: a line says which way it runs on the displayed page and where its characters
+/// are along it, from its baseline's start, on a turned page too.
+#[test]
+fn a_line_says_which_way_it_runs_and_where_its_characters_are() {
+    let mut p = make(MIXED);
+    p.rotate_pages(&[0], 90).unwrap();
+    let o = line(&p, "A bold word");
+    let close = |a: f32, b: f32| (a - b).abs() < 0.05;
+    let dir = o.dir.unwrap();
+    assert!(close(dir.0, 0.0) && close(dir.1, 1.0), "{dir:?}");
+    let stops = &o.stops;
+    assert_eq!(stops.len(), "A bold word".len() + 1);
+    assert!(close(stops[0], 0.0), "{stops:?}");
+    assert!(stops.windows(2).all(|w| w[1] > w[0]), "{stops:?}");
+    // "bold" starts and ends where the search finds it.
+    let bold = p.find_text_boxes(0, "bold").unwrap()[0];
+    let (_, y) = o.baseline.unwrap();
+    let (from, to) = (stops[2] + y, stops[6] + y);
+    assert!(
+        close(from, bold[1]) && close(to, bold[3]),
+        "{stops:?} {bold:?}"
+    );
+}
+
 #[test]
 fn a_restyled_word_reads_back_as_part_of_its_line() {
     let mut p = make(MIXED);

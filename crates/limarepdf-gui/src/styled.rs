@@ -821,6 +821,8 @@ mod tests {
             font_reusable: true,
             hidden: false,
             baseline: None,
+            dir: None,
+            stops: Vec::new(),
             upright: true,
             vertical: false,
             spans: vec![
