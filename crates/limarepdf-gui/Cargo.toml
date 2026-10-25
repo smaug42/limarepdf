@@ -21,6 +21,19 @@ egui-phosphor.workspace = true
 # Typed emoji made of several characters left out whole (page_text.rs); egui already uses it.
 unicode-segmentation = "1.13"
 
+# Finder's Open With and double-click (macos.rs); eframe, rfd and arboard already use both.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.3"
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSAppleEventDescriptor",
+    "NSAppleEventManager",
+    "NSNotification",
+    "NSObject",
+    "NSString",
+    "NSURL",
+] }
+
 [build-dependencies]
 # Embeds the icon in limarepdf.exe on Windows; does nothing on other platforms.
 winresource = { version = "0.1.34", default-features = false }

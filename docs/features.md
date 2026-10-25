@@ -115,7 +115,7 @@ available.
 
 | Area | Status | Notes |
 | --- | --- | --- |
-| Tabs, thumbnails, opening by drag and drop | Done | Dropping files doesn't work in Linux Wayland sessions yet ([workaround](troubleshooting.md#dropping-files-on-the-window-does-nothing)) |
+| Tabs, thumbnails, opening by drag and drop | Done | Dropping files doesn't work in Linux Wayland sessions yet ([workaround](troubleshooting.md#dropping-files-on-the-window-does-nothing)). Files opened from the file manager open in tabs, also while the app runs; on macOS (Finder's Open With, double-click, the Dock icon) not yet tried on a Mac |
 | Recent files | Done | Start screen and ☰ > File > Open recent; 10 files, kept on your computer only |
 | A file open in one tab; changes made elsewhere | Done | Opening an open file again (by any path or link) shows its tab. Save asks before replacing a file another app or tab changed (Save as… or Replace); a notice with Reload shows when you come back to the window after such a change; ☰ > File > Reload from disk. Not checked while LimarePDF has the keyboard, only on coming back, opening and saving. [Details](gui.md#saving) |
 | Notices about the document | Done | Password-protected, scanned pages, form fields, large files. [Details](gui.md#notices-about-the-document) |
@@ -331,7 +331,8 @@ installed. The archives stay, with the guide inside. Support for every system is
 built from exactly the versions in `Cargo.lock`; security problems are reported privately, as
 [SECURITY.md](../SECURITY.md) describes.
 
-- **Untested:** whether a PDF opened from Finder's Open With loads in LimarePDF, rather than just starting it.
+- **Untested:** opening PDFs from Finder (Open With, a double-click, the Dock icon) on a Mac. The app now opens
+  the files Finder sends, at start and while running, but this is only built and tested on Linux and by CI so far.
 - **Next:** an AUR package, a Homebrew cask in LimarePDF's own tap, and winget and Scoop manifests. Maybe Flatpak.
 - **Code signing** (macOS notarization, Windows Authenticode) needs certificates LimarePDF doesn't have yet, so those builds
   stay unsigned; the GPG signatures and attestations cover them meanwhile.

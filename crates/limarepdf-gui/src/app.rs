@@ -4,6 +4,7 @@ use crate::banners::Kind as BannerKind;
 use crate::dialogs::{self as dlg, Ask, Btn, Choice, Outcome, Shell};
 use crate::digital::{self, IdsWindow, SignOut, SignWindow};
 use crate::editor::{Action as EdAction, Tool};
+use crate::incoming::Incoming;
 use crate::inspector::{self, Apply, Section};
 use crate::markup;
 use crate::page_text;
@@ -749,6 +750,8 @@ pub struct App {
     searches: u64,
     /// Closing a tab or quitting, once a document is saved (ENH-01).
     closing: Option<Closing>,
+    /// Files the system asks to open, from Finder on macOS (BUG-28).
+    incoming: Incoming,
 }
 
 impl App {
@@ -762,6 +765,8 @@ impl App {
         cc.egui_ctx.set_theme(settings.theme);
         crate::font_list::warm(&cc.egui_ctx);
         let mut app = Self::with(settings, Recent::load());
+        app.incoming = Incoming::system().clone();
+        app.incoming.wake(&cc.egui_ctx);
         app.start_recovery(&cc.egui_ctx, files, page);
         app
     }
@@ -818,6 +823,7 @@ impl App {
             retrying: None,
             searches: 0,
             closing: None,
+            incoming: Incoming::default(),
         }
     }
 
@@ -4801,6 +4807,7 @@ impl eframe::App for App {
             images.sort();
             self.new_from_images(&ctx, &images);
         }
+        self.open_incoming(&ctx);
 
         // Guard against closing the window with unsaved work.
         let quit = ctx.input(|i| i.viewport().close_requested()) && !self.quit_ok;
@@ -11425,6 +11432,56 @@ mod tests {
         opened.sort_by(f32::total_cmp);
         assert_eq!(opened, [100.0, 200.0]);
         assert!(matches!(app.dialog, Dialog::None));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// BUG-28: files sent to open (Finder's Open With and double-click on macOS) open as the
+    /// command line's do, sent before the window exists or while it runs: several at once,
+    /// names with spaces and accents, one open already (its tab comes to the front), and a
+    /// protected one, whose password is asked for after the message about one not found.
+    #[test]
+    fn files_sent_to_open_open_as_the_command_lines_do() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("sent");
+        let (a, b) = (dir.join("a letter.pdf"), dir.join("Ünïcødé €.pdf"));
+        let locked = dir.join("locked one.pdf");
+        pages_file(&a, 100.0, 1, None);
+        pages_file(&b, 200.0, 1, None);
+        pages_file(&locked, 300.0, 1, Some("walrus"));
+        // Sent before the window exists: they wait for its first frame.
+        app.incoming.hand_in(vec![a.clone(), b.clone()], 0);
+        app.incoming.wake(&ctx);
+        app.open_incoming(&ctx);
+        wait_for(&mut app, &ctx, |a| a.tabs.len() == 2);
+        let mut opened = [widths(&app, 0)[0], widths(&app, 1)[0]];
+        opened.sort_by(f32::total_cmp);
+        assert_eq!(opened, [100.0, 200.0]);
+
+        // Sent while it runs.
+        let first = (0..2).find(|&i| widths(&app, i)[0] == 100.0).unwrap();
+        app.active = 1 - first;
+        app.incoming.hand_in(vec![a.clone(), locked.clone()], 1);
+        app.open_incoming(&ctx);
+        assert_eq!(
+            app.active, first,
+            "the open file's tab didn't come to the front"
+        );
+        assert_eq!(
+            message(&app),
+            (
+                CANNOT_OPEN,
+                "A file sent to LimarePDF to open couldn't be found."
+            )
+        );
+        app.dialog = Dialog::None;
+        app.next_dialog();
+        wait_for(&mut app, &ctx, |a| asked_password(a).is_some());
+        assert_eq!(asked_password(&app), Some(locked.clone()));
+        answer(&mut app, &ctx, "walrus", "Open");
+        wait_for(&mut app, &ctx, |a| a.tabs.len() == 3);
+        assert!(matches!(app.dialog, Dialog::None));
+        assert_eq!(app.incoming.take(), (Vec::new(), 0));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

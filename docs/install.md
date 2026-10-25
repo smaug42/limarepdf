@@ -53,7 +53,8 @@ replaces the old one; uninstall from Settings > Apps.
 ## macOS app
 
 Download `LimarePDF-<version>.dmg`, open it and drag LimarePDF to Applications. It is one app for both Apple Silicon
-and Intel Macs. LimarePDF then appears under Open With for PDF files.
+and Intel Macs. LimarePDF then appears under Open With for PDF files, and a PDF opened that way, or dropped on its
+Dock icon, opens in LimarePDF.
 
 LimarePDF is not signed with an Apple Developer ID yet, so the first start says Apple cannot check it: choose Done,
 then open System Settings > Privacy & Security, choose Open Anyway next to LimarePDF, and confirm.

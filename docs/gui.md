@@ -76,6 +76,9 @@ since a drawing takes several strokes.
 Open PDFs with the Open button, Ctrl+O, or by dropping them on the window. Image files (PNG, JPEG, TIFF) open as a
 new document with one page per image; the start screen's Make a PDF from images… does the same (see
 [Scans and OCR](scanning-and-ocr.md)). From a terminal, `limarepdf file.pdf --page 3` opens a file at page 3.
+Files opened with LimarePDF from the file manager (Open with, or a double-click when it is the default app; on
+macOS also dropping them on the Dock icon) open in tabs of their own, whether LimarePDF is starting or already
+running.
 
 On Linux in a Wayland session, dropping files on the window does nothing yet: see
 [Troubleshooting](troubleshooting.md#dropping-files-on-the-window-does-nothing).

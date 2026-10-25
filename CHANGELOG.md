@@ -171,6 +171,11 @@
   whatever the numbers could take different times depending on secret values, with some compilers and
   processors, which could leak information about the key (RUSTSEC-2026-0387). The other libraries LimarePDF is
   built from are updated to their latest compatible versions too.
+- On macOS, opening a PDF with LimarePDF from Finder (Open With, a double-click when it is the default app, or
+  dropping it on the Dock icon) started the app or brought it to the front without opening the file. Those files
+  now open in tabs of their own, whether LimarePDF is starting or already running, several at once too, asking
+  for a password where one is needed; while the app offers recovery copies at start, they open once that window
+  closes. A file Finder sends that can't be found is reported. Not yet tried on a Mac.
 
 ### Added
 

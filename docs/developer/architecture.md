@@ -313,6 +313,28 @@ in the inspector's properties and label prefix (`Tab::typing_in_forms`; the delt
 Reload was asked for is kept first (`Act::uses_document`), so the revision covers it, and agreeing to lose the
 changes made before still reloads. A change made between the check and the write is still replaced; there is no locking.
 
+Files reach the app from the command line (`read_args` in main.rs; on macOS an older system's `-psn_…` process
+number is skipped), drops on the window, and on macOS from Finder (BUG-28): Open With, a double-click and a drop on
+the Dock icon all send an "open documents" Apple Event (`aevt`/`odoc`), at launch or while running, and never as
+arguments. The usual route, an `NSApplicationDelegate` with `application:openURLs:`, is closed: winit 0.30 installs
+its own delegate and panics if another replaces it (winit issues 4015 and 4260; winit's own docs describe master,
+not 0.30). So `macos.rs` leaves the delegate alone and takes the event from `NSAppleEventManager`: `macos::listen`,
+called in `main` before the event loop, observes `NSApplicationWillFinishLaunchingNotification` (from the
+notification centre, not the delegate), and then installs its handler for `odoc` over AppKit's, which AppKit
+installs as launching finishes and which opens nothing without a delegate or document controller. Its handler
+reads the event's direct object (a list, or one item) as file URLs, coercing aliases and bookmarks, and hands the
+paths, with the count of items that aren't files, to `incoming::Incoming::system()`, a queue that wakes the window
+(`request_repaint`) once `App::new` has given it the context. Events can come before the window exists or after
+launch has finished (with the macOS 26 SDK, launch's own event can come after `applicationDidFinishLaunching`, as
+Mozilla's bug 2036237 found), so the queue takes paths at any time and `App::open_incoming` empties it each frame
+(and when the restore window closes) through `open_startup`, as command-line files open: while Recover unsaved
+changes asks, they wait in the queue; items that aren't files are reported as "Cannot open file". The calls
+objc2-foundation gates behind `objc2-core-services` (`setEventHandler:…`, `paramDescriptorForKeyword:`,
+`descriptorType`) are sent with `msg_send!` with their four-character codes as `u32`, to keep that crate out. Once
+eframe moves to winit 0.31, its delegate support may be the simpler route. Linux tests cover the queue and the
+app's side; the handler runs only on a Mac, so away from one it is only compiled (clippy for both Apple targets,
+CI's macOS builds).
+
 The app shows one dialog at a time (`App::dialog`), and nothing that arrives while one is open replaces it (BUG-07,
 the fourth audit's A01). Results from threads (reads, jobs, signing, files dropped on the window) go through
 `App::show`, which queues them in `App::waiting`; `App::next_dialog` opens the next once the dialog is answered.
