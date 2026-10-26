@@ -519,32 +519,38 @@ mod tests {
     };
 
     /// A job that keeps beating is waited for however long it takes; one that stops is let
-    /// go after the wait, the app free again while it goes on (PB-17).
+    /// go after the wait, the app free again while it goes on (PB-17). The beats come 50
+    /// times as often as the wait, and the stuck job sleeps three times as long, so a slow,
+    /// busy CI runner doesn't miss a beat (a 200 ms wait with beats every 100 ms failed on
+    /// macOS Intel).
     #[test]
     fn a_job_is_waited_for_while_it_gets_on() {
-        let within = Duration::from_millis(200);
+        let within = Duration::from_secs(1);
+        let start = Instant::now();
         let steady = while_beating(within, |beat| {
-            for _ in 0..5 {
-                std::thread::sleep(Duration::from_millis(100));
+            for _ in 0..100 {
+                std::thread::sleep(Duration::from_millis(20));
                 beat();
             }
             Ok("done")
         });
         assert_eq!(steady.unwrap(), "done");
+        // Longer than the wait: it was waited for because it kept beating.
+        assert!(start.elapsed() > within, "{:?}", start.elapsed());
         let (tx, rx) = std::sync::mpsc::channel();
         let start = Instant::now();
         let stuck = while_beating(within, move |beat| {
             beat();
-            std::thread::sleep(Duration::from_secs(2));
+            std::thread::sleep(Duration::from_secs(3));
             let _ = tx.send(());
             Ok(())
         });
         let waited = start.elapsed();
         let err = format!("{:#}", stuck.unwrap_err());
         assert!(err.contains("stopped waiting"), "{err}");
-        assert!(waited < Duration::from_secs(1), "{waited:?}");
+        assert!(waited < Duration::from_millis(2500), "{waited:?}");
         // The job itself goes on.
-        assert!(rx.recv_timeout(Duration::from_secs(5)).is_ok());
+        assert!(rx.recv_timeout(Duration::from_secs(10)).is_ok());
         // One that ends without saying (it panicked) is said too.
         let gone = while_beating::<()>(within, |_| panic!("lost"));
         assert!(format!("{:#}", gone.unwrap_err()).contains("without saying"));
