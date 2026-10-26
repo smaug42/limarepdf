@@ -251,8 +251,7 @@ impl Pdf {
                 let mut d = self.doc.clone();
                 if d.trailer.get(b"ID").is_err() {
                     // The standard security handler derives keys from the file identifier.
-                    let mut id = [0u8; 16];
-                    rand::Rng::fill(&mut rand::rng(), &mut id);
+                    let id = crate::pkcs12::random::<16>()?;
                     let s = Object::String(id.to_vec(), lopdf::StringFormat::Hexadecimal);
                     d.trailer.set("ID", vec![s.clone(), s]);
                 }

@@ -612,7 +612,7 @@ from the RustCrypto project unless noted, pinned to exact versions where they ar
 | `aes`, `cbc` | 0.9, 0.2.1 | stable | ID file encryption |
 | `des`, `rc2` | 0.9.0 | stable | reading older ID files only (3DES, RC2) |
 | `zeroize`, `subtle` | 1.9, 2.6 | stable | wiping secrets, constant-time comparison |
-| `getrandom` | 0.4 | stable | random numbers from the operating system |
+| `getrandom` | 0.4 | stable | random numbers from the operating system (also the AES-256 file key and a protected file's ID when it has none, through `pkcs12::random`) |
 | `rpassword` | 7.5.4 | stable, not RustCrypto | asking for passwords without showing them (command line) |
 
 "Pre-release" means their programming interface may still change, not that they are untested; they come from the

@@ -10,7 +10,6 @@ hayro.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 rayon.workspace = true
-rand.workspace = true
 image.workspace = true
 tiff.workspace = true
 fax = "0.3"
