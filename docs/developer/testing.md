@@ -86,7 +86,9 @@ releasing.md step 1's list). Batch 36's egui 0.37 (2026-10-26): every app test p
 `parts_of_a_line_share_its_baseline` (0.37 centres a part in its own line height; `page_text::job` reworked, the
 test extended to three lines of different sizes); `the_down_arrow_goes_through_a_menu` was added (the down arrow
 through an open menu's items, past one that is off, and round), and `text_boxes_refuse_at_the_caret_what_they_cant_write`
-gained 0.37's middle-click paste. The naming workarounds (`name_resize_handle`, `name_popups`), `dialogs::slider`,
+gained 0.37's middle-click paste; `selected_page_text_is_offered_for_middle_click_paste` (ENH-34: page text
+dragged over offered for PRIMARY once, on release, not during the drag; failed on the code before it) was added.
+Middle-click pasting into and out of LimarePDF on X11 and Wayland by hand: not run: deferred to the RC cycle. The naming workarounds (`name_resize_handle`, `name_popups`), `dialogs::slider`,
 the Tab wrap and the Image tab's arrows were unchanged and their tests pass.
 
 The comparison with poppler needs `pdftoppm` (poppler-utils) and curl. From `crates/limarepdf-core`, run

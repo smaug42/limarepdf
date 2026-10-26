@@ -327,7 +327,8 @@
 - Libraries moved to their new major versions: fax 0.3 (black-and-white pictures), lopdf 0.46 (reading and
   writing PDF files) and egui 0.37 (the app's window and controls). With egui 0.37, on Linux, text selected in
   another app or in a LimarePDF text box can be pasted into a text box with the middle mouse button, as in other
-  Linux apps (what a box can't write is left out with a note, as when typing), and trackpad scrolling springs back at the ends of the
+  Linux apps (what a box can't write is left out with a note, as when typing), and text selected on the page or
+  in a text box can be pasted into other apps the same way, and trackpad scrolling springs back at the ends of the
   document. The Phosphor icons are now part of LimarePDF itself rather than a separate library, and the
   packages include their licence (`FONT-LICENSE-Phosphor.txt`).
 

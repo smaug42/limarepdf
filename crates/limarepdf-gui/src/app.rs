@@ -738,6 +738,8 @@ pub struct App {
     /// The window had the keyboard last frame: getting it back, the tabs' files are
     /// checked for changes made meanwhile.
     focused: bool,
+    /// The tab and selection last offered for the PRIMARY selection ([`App::offer_selection`]).
+    offered: Option<(u64, Selection)>,
     /// The settings or recent files couldn't be saved, and that was said: once a session
     /// ([`App::say_unsaved`]).
     said_unsaved: bool,
@@ -818,6 +820,7 @@ impl App {
             opening: Vec::new(),
             replace_ok: None,
             focused: true,
+            offered: None,
             said_unsaved: false,
             waiting: VecDeque::new(),
             retrying: None,
@@ -2807,6 +2810,24 @@ impl App {
             ed.selection = Selection::None;
         }
         self.tabs[self.active].forms.reveal = Some(s);
+    }
+
+    /// Offers the page text selected in the tab in front for X11 and Wayland's PRIMARY
+    /// selection (pasted elsewhere with the middle button, as text selected in a text box
+    /// is), once it settles: not while a button is held, and once for each new selection
+    /// (ENH-34). Other platforms have no PRIMARY selection, and egui ignores it there.
+    fn offer_selection(&mut self, ctx: &egui::Context) {
+        let Some(t) = self.tabs.get(self.active) else {
+            return;
+        };
+        let same = |(id, s): &(u64, Selection)| *id == t.id && *s == t.ed.selection;
+        if self.offered.as_ref().is_some_and(same) || ctx.input(|i| i.pointer.any_down()) {
+            return;
+        }
+        if let Some(text) = t.ed.selected_text().filter(|s| !s.is_empty()) {
+            ctx.send_cmd(egui::OutputCommand::TextSelectionSettled(text));
+        }
+        self.offered = Some((t.id, t.ed.selection.clone()));
     }
 
     /// The front tab's toast, bottom centre above the status bar, until it times out, is
@@ -5436,6 +5457,7 @@ impl eframe::App for App {
         self.digital_windows(&ctx);
         self.dialogs(&ctx);
         dlg::name_popups(&ctx);
+        self.offer_selection(&ctx);
 
         let title = match self.tabs.get(self.active) {
             Some(t) => format!("{} - LimarePDF", t.title()),
@@ -8724,6 +8746,64 @@ mod tests {
         settled_at(&mut app, &ctx, 400.0);
         assert!(matches!(app.dialog, Dialog::About(_)));
         assert!(!egui::Popup::is_any_open(&ctx), "the menu stayed open");
+    }
+
+    /// ENH-34: text selected on the page is offered for X11 and Wayland's PRIMARY selection
+    /// (pasted elsewhere with the middle button) once it settles: not during the drag, and
+    /// once, not every frame after.
+    #[test]
+    fn selected_page_text_is_offered_for_middle_click_paste() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with_parts(&ctx);
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        let words = app.tabs[0].pdf.page_words(0).unwrap();
+        let at = |w: &limarepdf_core::PageWord| {
+            let b = w.bbox;
+            let mid = egui::vec2((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0);
+            page.min + mid * (page.width() / 612.0)
+        };
+        let (first, last) = (at(&words[0]), at(words.last().unwrap()));
+        let offered = |app: &mut App, events: Vec<egui::Event>| -> Vec<String> {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 800.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut frame = eframe::Frame::_new_kittest();
+            let mut out = ctx.run_ui(raw, |ui| eframe::App::ui(app, ui, &mut frame));
+            out.textures_delta.clear();
+            let commands = out.platform_output.commands.into_iter();
+            commands
+                .filter_map(|c| match c {
+                    egui::OutputCommand::TextSelectionSettled(s) => Some(s),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut sent = offered(&mut app, vec![egui::Event::PointerMoved(first)]);
+        sent.extend(offered(&mut app, vec![press(first, true)]));
+        for step in 1..=4 {
+            let p = first + (last - first) * step as f32 / 4.0;
+            sent.extend(offered(&mut app, vec![egui::Event::PointerMoved(p)]));
+        }
+        assert!(
+            app.tabs[0].ed.selection.words().is_some(),
+            "nothing selected"
+        );
+        assert!(sent.is_empty(), "offered during the drag: {sent:?}");
+        sent.extend(offered(&mut app, vec![press(last, false)]));
+        for _ in 0..3 {
+            sent.extend(offered(&mut app, vec![]));
+        }
+        let text = app.tabs[0].ed.selected_text().expect("the selected text");
+        assert!(text.contains("Walrus") && text.contains("ate"), "{text:?}");
+        assert_eq!(sent, [text]);
     }
 
     /// The down arrow goes through an open menu's items in order, past those that are off

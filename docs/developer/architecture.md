@@ -232,7 +232,9 @@ boxes and fill-and-sign text, always Helvetica, through `embed::check_writable` 
 `Pdf::set_annotation` for a box's new text, with the app leaving out at the caret what Helvetica can't write (the
 text box on the page in `Editor::writing_ui`, the inspector's Text box in `annot_inspector`, Fill and sign's Text
 in `SignPane::ui`, all through `page_text::leave_out_untypable` and `page_text::fixed_note`, which filter typed
-text, pastes, input-method text and middle-click pastes alike); headers, footers,
+text, pastes, input-method text and middle-click pastes alike; and the other way, `App::offer_selection` sends the
+page text selected in the tab in front as egui's `TextSelectionSettled` once it settles, which egui-winit puts in
+X11 and Wayland's PRIMARY selection); headers, footers,
 Bates numbers and watermarks through `Pdf::pen` and `inspector::stamp_text`; form values through
 `form_write::check_value`; stamp wording through `stamp_wording`; typed signatures through `typed_signature`; the
 signer's name on a signature's look through `sig_sign::shown_name` (left out when it can't be written). Comments,
