@@ -35,6 +35,23 @@ fn extreme_numbers_get_plain_answers() {
     assert!(!err.contains("internal error"), "stderr: {err}");
     assert!(!dir.join("bates.pdf").exists());
 
+    // More digits than any Bates number needs (PB-01): past 65,535 the padding panicked.
+    for digits in ["21", "70000"] {
+        let bates = run(&["bates", "in.pdf", "-o", "bates.pdf", "--digits", digits]);
+        let err = String::from_utf8_lossy(&bates.stderr);
+        assert_eq!(bates.status.code(), Some(1), "{digits}: {err}");
+        assert!(
+            err.contains("Bates numbers can have at most 20 digits"),
+            "{digits}: {err}"
+        );
+        assert!(!dir.join("bates.pdf").exists(), "{digits}");
+    }
+    let bates = run(&["bates", "in.pdf", "-o", "bates.pdf", "--digits", "20"]);
+    let err = String::from_utf8_lossy(&bates.stderr);
+    assert_eq!(bates.status.code(), Some(0), "stderr: {err}");
+    let written = limarepdf_core::Pdf::open(dir.join("bates.pdf"), None).unwrap();
+    assert!(written.page_text(1).contains("00000000000000000002"));
+
     let degrees = "9223372036854775800";
     let turn = ["rotate", "in.pdf", "-o", "turned.pdf", "--degrees", degrees];
     let rotate = run(&turn);

@@ -9384,6 +9384,37 @@ mod tests {
         }
     }
 
+    /// PB-07: in a signed document, text after an undo goes on growing the font this session
+    /// embedded; the undo's copy of the document doesn't make it look like a signed one.
+    #[test]
+    fn undo_in_a_signed_document_keeps_growing_the_sessions_font() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, 1);
+        let t = &mut app.tabs[0];
+        // Fonts are grown only when they were made since opening once the document holds a
+        // signature dictionary.
+        use lopdf::dictionary;
+        t.pdf.doc.add_object(dictionary! {
+            "Type" => "Sig", "ByteRange" => vec![0.into(), 0.into(), 0.into(), 0.into()],
+        });
+        let style = limarepdf_core::TextStyle::default();
+        let add = |t: &mut Tab, text: &'static str| {
+            assert!(t.edit(&ctx, |p| {
+                p.add_text_box(0, [20.0, 120.0, 280.0, 160.0], text, &style, "Sam")
+                    .map(|_| ())
+            }));
+        };
+        add(t, "Съешь");
+        add(t, "ещё");
+        t.undo(&ctx);
+        add(t, "этих");
+        let type0 = |o: &lopdf::Object| {
+            o.as_dict()
+                .is_ok_and(|d| d.get(b"Subtype").and_then(|s| s.as_name()).ok() == Some(b"Type0"))
+        };
+        assert_eq!(t.pdf.doc.objects.values().filter(|o| type0(o)).count(), 1);
+    }
+
     /// A watermark is drawn over the pages while its section is open, and nothing is written
     /// until Add to pages; then changes update it in place. Headers and footers likewise.
     #[test]

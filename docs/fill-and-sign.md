@@ -31,7 +31,7 @@ the pane), opens a window with three ways to make one:
   into curves and stay sharp at any zoom. In a narrow or short window the pad is smaller, at the same shape; what
   is drawn keeps its shape and comes out the same size on the page, also when the window is resized while drawing.
 - **Type:** type your name (it starts as your name for comments) and pick one of four handwriting styles (Caveat,
-  Cedarville Cursive, Homemade Apple and Zeyada), shown as they will look. Each has Latin characters, and Caveat
+  Cedarville Cursive, Homemade Apple and Zeyada), shown as they will look on white paper, the chosen one outlined. Each has Latin characters, and Caveat
   Cyrillic too; for a name a style can't show, the message names the styles that can, or draw it or use a picture.
 - **Image:** choose a photo or scan of your signature on paper (PNG, JPEG or TIFF). **Make the paper transparent**
   (on by default) keeps only the ink and cuts off the empty margins, so the signature sits on the page like ink. It

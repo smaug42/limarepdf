@@ -436,6 +436,27 @@ impl Previews {
     }
 }
 
+/// A signature's preview as a button: a white card that its paper fills, in both themes, so
+/// the paper never shows as a box on a tint (PB-09). Its outline is the accent colour when
+/// `selected`, the border colour under the pointer, and always there, so nothing moves.
+fn paper_button(ui: &mut egui::Ui, img: egui::Image<'_>, selected: Option<bool>) -> egui::Response {
+    let id = ui.next_auto_id();
+    let hovered = ui.ctx().read_response(id).is_some_and(|r| r.hovered());
+    let v = ui.visuals();
+    let outline = match (selected == Some(true), hovered) {
+        (true, _) => v.selection.stroke.color,
+        (false, true) => v.widgets.noninteractive.bg_stroke.color,
+        (false, false) => egui::Color32::TRANSPARENT,
+    };
+    let mut b = egui::Button::image(img)
+        .fill(egui::Color32::WHITE)
+        .stroke(egui::Stroke::new(2.0, outline));
+    if let Some(on) = selected {
+        b = b.selected(on);
+    }
+    ui.add(b)
+}
+
 /// How a new signature is made.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Way {
@@ -671,7 +692,7 @@ impl Create {
                 Some(tex) => {
                     let size = Previews::size(&tex, Vec2::new(room, 60.0));
                     let img = egui::Image::new((tex.id(), size));
-                    let r = ui.add(egui::Button::image(img).selected(self.style == style));
+                    let r = paper_button(ui, img, Some(self.style == style));
                     dialogs::set_name(&r, style.label());
                     r
                 }
@@ -1000,7 +1021,7 @@ pub fn menu_ui(ui: &mut egui::Ui, menu: &SignMenu, acts: &mut Vec<Act>) {
                 let r = match tex {
                     Some(tex) => {
                         let img = egui::Image::new((tex.id(), Previews::size(tex, PREVIEW)));
-                        ui.add(egui::Button::image(img))
+                        paper_button(ui, img, None)
                     }
                     None => ui.button("Picture not found"),
                 };
@@ -1129,7 +1150,7 @@ impl SignPane {
                             Some(tex) => {
                                 let size = Previews::size(&tex, PREVIEW);
                                 let img = egui::Image::new((tex.id(), size));
-                                let r = ui.add(egui::Button::image(img).selected(picked));
+                                let r = paper_button(ui, img, Some(picked));
                                 // Named as in the toolbar's list.
                                 let name = match role {
                                     SignRole::Signature => "Signature",
@@ -1504,6 +1525,22 @@ mod tests {
                 .expect("the window's widgets")
         }
 
+        /// Draws the window once more, and returns what it painted.
+        fn shapes(&mut self) -> Vec<egui::epaint::ClippedShape> {
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)),
+                ..Default::default()
+            };
+            let Win {
+                ctx, c, previews, ..
+            } = self;
+            let mut out = ctx.run_ui(raw, |_| {
+                c.show(ctx, previews, &mut InkColor::Black);
+            });
+            out.textures_delta.clear();
+            out.shapes
+        }
+
         /// Draws the window until it has settled.
         fn settled(&mut self) -> egui::accesskit::TreeUpdate {
             for _ in 0..4 {
@@ -1617,6 +1654,37 @@ mod tests {
         for (i, style) in SignStyle::ALL.into_iter().enumerate() {
             let on = [Toggled::False, Toggled::True][usize::from(i == 1)];
             assert_eq!(toggled(style.label()), Some(on), "{style:?}");
+        }
+    }
+
+    /// PB-09: each handwriting style is a white card, its preview's paper filling it, in both
+    /// themes and chosen or not, so the paper never shows as a box on a tint.
+    #[test]
+    fn handwriting_styles_are_white_cards_in_both_themes() {
+        for theme in [egui::Theme::Light, egui::Theme::Dark] {
+            let mut c = Create::new(SignRole::Signature, "Sam Lee");
+            c.way = Way::Type;
+            c.style = SignStyle::ALL[1];
+            let mut w = Win::new(c, Vec2::new(1000.0, 800.0), 1.0);
+            w.ctx.set_theme(theme);
+            let tree = w.settled();
+            let shapes = w.shapes();
+            for style in SignStyle::ALL {
+                let at = bounds(&tree, style.label());
+                let card = shapes.iter().find_map(|s| match &s.shape {
+                    egui::Shape::Rect(r)
+                        if (r.rect.min - at.min).length() < 1.5
+                            && (r.rect.max - at.max).length() < 1.5 =>
+                    {
+                        Some(r.fill)
+                    }
+                    _ => None,
+                });
+                // White, at the opacity the window fades in with.
+                let white =
+                    card.is_some_and(|c| c.r() == c.a() && c.g() == c.a() && c.b() == c.a());
+                assert!(white, "{theme:?}, {style:?}: {card:?}");
+            }
         }
     }
 

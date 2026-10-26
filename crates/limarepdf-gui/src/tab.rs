@@ -709,7 +709,7 @@ impl Tab {
         };
         let add = |p: &mut Pdf| {
             if let Some(b) = &base {
-                *p = Pdf::from_bytes(b, None)?;
+                p.reopen(b)?;
             }
             stamp_onto(p, &form, pages, picture)
         };
@@ -787,9 +787,7 @@ impl Tab {
         };
         // A panic leaves the document half changed, so it is put back like any other failure.
         if let Err(e) = crate::guard(|| f(&mut self.pdf)) {
-            if let Ok(p) = Pdf::from_bytes(&before, None) {
-                self.pdf = p;
-            }
+            let _ = self.pdf.reopen(&before);
             self.error = Some(format!("{e:#}"));
             return false;
         }
@@ -804,7 +802,7 @@ impl Tab {
             Ok(())
         });
         if let Err(e) = redrawn {
-            let back = Pdf::from_bytes(&before, None).map(|p| self.pdf = p);
+            let back = self.pdf.reopen(&before);
             let again = crate::guard(|| {
                 self.refresh(ctx);
                 Ok(())
@@ -1421,7 +1419,7 @@ impl Tab {
         let pdf = match step.pdf {
             Some(bytes) => {
                 let cur = self.pdf.snapshot().ok()?;
-                self.pdf = Pdf::from_bytes(&bytes, None).ok()?;
+                self.pdf.reopen(&bytes).ok()?;
                 Some(Arc::new(cur))
             }
             None => None,

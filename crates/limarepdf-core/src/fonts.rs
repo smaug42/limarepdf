@@ -863,6 +863,13 @@ impl<'a> FontCtx<'a> {
                 None => {}
             }
         }
+        // A code the CMap of a Type 0 font maps to no CID is drawn as no character: lopdf's
+        // encodings, those of simple fonts, would read `<0042>` as "B" (PB-06). A CID with
+        // no text (Identity-H's, with no ToUnicode map) is still read through them, which
+        // often gives the text meant (codes that are ASCII, as in pdf.js's bug951051).
+        if self.type0 && self.cid(code, raw.len()).is_none() {
+            return "\u{FFFD}".into();
+        }
         if let (Some(codes), [b]) = (&self.codes, raw) {
             if let Some(s) = &codes[*b as usize] {
                 return s.clone();
@@ -876,7 +883,7 @@ impl<'a> FontCtx<'a> {
             }
         }
         if self.type0 {
-            return "\u{FFFD}".repeat(raw.len() / 2);
+            return "\u{FFFD}".into();
         }
         raw.iter().map(|&b| b as char).collect()
     }

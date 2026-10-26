@@ -152,7 +152,9 @@ and `limarepdf-cli text`, so they always agree.
   Traditional Chinese and Korean turn into text. A character map stored in the file is read with the one it is
   built on, predefined or also stored in the file. Their codes are split as the map says, one to four bytes each (a
   code the map leaves out takes as many bytes as the map's code ranges say, as poppler and pdf.js read it), and
-  their widths found by character number, so highlights and selections sit on the right characters.
+  their widths found by character number, so highlights and selections sit on the right characters. A code the
+  map leaves out is drawn as no character, and reads as the replacement character �; so does one that is drawn
+  but whose text no map gives.
 - **Spaces:** a gap between words is a space, whether the file has a space character there or only moves the next
   word along (as justified text and many PDF makers do).
 - **Order:** words come in reading order worked out from where they sit on the page, not the order the file draws

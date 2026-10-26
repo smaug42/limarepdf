@@ -35,7 +35,8 @@ Bates numbers give every page of a set of documents its own number, such as `ACM
 numbering**, then set:
 
 - **Prefix** and **Suffix:** text before and after the number.
-- **Digits:** how many digits the number has, with zeros in front (6 at first).
+- **Digits:** how many digits the number has, with zeros in front (6 at first, up to 12; `limarepdf-cli bates
+  --digits` takes up to 20).
 - **Start:** the first page's number (1 at first). The numbers count the pages in the Pages box, from the first.
 
 Put `{bates}` where the number goes; without it, the number goes at the bottom right. Numbers go up to

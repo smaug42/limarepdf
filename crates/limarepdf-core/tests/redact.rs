@@ -268,6 +268,58 @@ fn reads_codes_of_its_own_cmap_by_the_codespace_as_other_readers_do() {
     assert_eq!(xs(&p, "D"), [[60.0, 80.0]]);
 }
 
+/// PB-06: a code the CMap of a Type 0 font maps to no CID reads as U+FFFD, one for each
+/// code, never through the one-byte encodings of simple fonts (`<0042>` read as "B").
+/// Identity-H codes are all CIDs: one without text keeps that reading, which in real files
+/// is often the text meant.
+#[test]
+fn codes_no_map_covers_read_as_replacement_characters() {
+    assert_eq!(sparse_cmap().page_text(0), "C\u{FFFD}AD");
+    // Unmapped codes of two bytes and of one.
+    let p = own_cmap(
+        "2 begincodespacerange <00> <7F> <8140> <9FFC> endcodespacerange",
+        "<41> 34 <8141> 36 <8142> 37",
+        "BT /F2 20 Tf 10 100 Td <41815042814181208142> Tj ET",
+    );
+    assert_eq!(p.page_text(0), "A\u{FFFD}\u{FFFD}C\u{FFFD}D");
+    // Identity-H, with a ToUnicode map that leaves `<0042>` out, and with none.
+    let identity = |gaps: bool| {
+        let mut p = make(&["BT /F2 20 Tf 10 100 Td <004100420043> Tj ET"]);
+        let desc = p.doc.add_object(dictionary! {
+            "Type" => "Font", "Subtype" => "CIDFontType2", "BaseFont" => "Gaps",
+            "CIDSystemInfo" => dictionary! {
+                "Registry" => Object::string_literal("Adobe"),
+                "Ordering" => Object::string_literal("Identity"),
+                "Supplement" => 0,
+            },
+        });
+        let mut font = dictionary! {
+            "Type" => "Font", "Subtype" => "Type0", "BaseFont" => "Gaps",
+            "Encoding" => "Identity-H", "DescendantFonts" => vec![desc.into()],
+        };
+        if gaps {
+            let map = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap \
+                       /CMapName /Gaps def /CMapType 2 def \
+                       1 begincodespacerange <0000> <FFFF> endcodespacerange \
+                       2 beginbfchar <0041> <0041> <0043> <0043> endbfchar \
+                       endcmap CMapName currentdict /CMap defineresource pop end end";
+            let map = p
+                .doc
+                .add_object(Stream::new(Dictionary::new(), map.as_bytes().to_vec()));
+            font.set("ToUnicode", map);
+        }
+        let font = p.doc.add_object(font);
+        let page = p.page_ids()[0];
+        p.doc.get_dictionary_mut(page).unwrap().set(
+            "Resources",
+            dictionary! { "Font" => dictionary! { "F2" => font } },
+        );
+        p.page_text(0)
+    };
+    assert_eq!(identity(true), "A\u{FFFD}C");
+    assert_eq!(identity(false), "ABC");
+}
+
 #[test]
 fn an_area_over_a_character_of_a_sparse_cmap_removes_it_where_other_readers_put_it() {
     // Over A where poppler reads it.

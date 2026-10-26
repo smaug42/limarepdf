@@ -961,11 +961,12 @@ impl Pdf {
     }
 
     /// How many fill-and-sign items (signatures, initials, marks and their text) are still
-    /// annotations, so they can be moved; [`Pdf::finish_signing`] draws them in.
+    /// annotations, so they can be moved; [`Pdf::finish_signing`] draws them in. Past the
+    /// annotations a page shows too (PB-02).
     pub fn sign_items(&self) -> usize {
         self.page_ids()
             .into_iter()
-            .flat_map(|p| self.annot_refs(p))
+            .flat_map(|p| self.all_annot_refs(p))
             .filter(|&id| self.doc.get_dictionary(id).is_ok_and(is_sign_item))
             .count()
     }
@@ -994,7 +995,7 @@ impl Pdf {
         let items: Vec<ObjectId> = self
             .page_ids()
             .into_iter()
-            .flat_map(|p| self.annot_refs(p))
+            .flat_map(|p| self.all_annot_refs(p))
             .filter(|&id| self.doc.get_dictionary(id).is_ok_and(is_sign_item))
             .collect();
         for &id in &items {

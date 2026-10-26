@@ -233,6 +233,31 @@
 - Redaction marks laid over each other counted the part they share twice, so a character beside the marks could
   be removed though only a fifth of it was under them. A character now goes when a quarter of it is under the
   marks taken together, however they overlap, as for a single mark.
+- `limarepdf-cli bates --digits` above 65,535 ended in "internal error". More than 20 digits (enough for the
+  largest Bates number) is now refused with a plain message, writing nothing.
+  ([#57](https://github.com/smaug42/limarepdf/issues/57))
+- On a page with more than 10,000 annotations, a fill-and-sign item past the first 10,000 wasn't counted, and
+  wasn't locked in place when a document someone had already signed was signed again. Every one is now counted
+  and locked; answering a comment past them works too (it said the comment was on no page).
+  ([#58](https://github.com/smaug42/limarepdf/issues/58))
+- In text that is copied, searched or exported, a character code that a font's own code map leaves out (drawn as
+  no character) read as an unrelated letter, `<0042>` as "B". It now reads as the replacement character �, as
+  does a code with a drawing but no text, which was left out (a hyphen between two words, say).
+  ([#59](https://github.com/smaug42/limarepdf/issues/59))
+- In a signed document, each undo of a text edit made the next edit start a new embedded font instead of
+  growing the one already made, so repeated edits and undos left several small fonts in the saved file. Undo,
+  and putting a failed change back, now keep growing the same font.
+  ([#60](https://github.com/smaug42/limarepdf/issues/60))
+- Remove hidden information showed kinds the document has none of greyed out but ticked, which read as "this will
+  be removed". They are now shown unticked; your choice comes back for documents that have them.
+  ([#61](https://github.com/smaug42/limarepdf/issues/61))
+- Create signature's Type tab showed the chosen handwriting style's white paper as a box on the button's tint.
+  Each style is now a white card, as the signature will look on paper, in light and dark themes alike, the chosen
+  one outlined; the saved signatures in the Fill and sign pane and the toolbar's menu look the same way.
+  ([#62](https://github.com/smaug42/limarepdf/issues/62))
+- Certify with digital ID needed scrolling in a window 800 points high, where Sign with digital ID fits. What
+  others may do afterwards is now chosen from a list, so it fits too.
+  ([#63](https://github.com/smaug42/limarepdf/issues/63))
 
 ### Added
 

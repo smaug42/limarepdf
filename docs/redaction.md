@@ -96,7 +96,7 @@ A file can carry information that isn't on any page, such as its author's name o
 
 1. Choose ☰ > Document > **Remove hidden information…**. It lists what the document carries besides its pages,
    with how many of each, in two groups: what is removed by default (ticked), and what is kept by default (often
-   wanted, so not ticked).
+   wanted, so not ticked). Kinds the document has none of are greyed out and unticked.
 2. Tick what to remove, and press **Remove**. A summary follows.
 3. Save.
 

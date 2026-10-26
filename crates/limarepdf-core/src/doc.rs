@@ -55,6 +55,17 @@ impl Pdf {
         Self::from_bytes(&bytes, password)
     }
 
+    /// Puts `bytes`, a copy of this same document from earlier in the session (as
+    /// [`Pdf::snapshot`] makes for undo), in its place. The fonts LimarePDF embedded this
+    /// session are kept, so a signed document goes on growing them rather than starting new
+    /// ones (PB-07); the copy keeps their ids. On an error nothing changes.
+    pub fn reopen(&mut self, bytes: &[u8]) -> Result<()> {
+        let made = self.made_fonts.clone();
+        *self = Self::from_bytes(bytes, None)?;
+        self.made_fonts = made;
+        Ok(())
+    }
+
     /// Reads a document. A file that reads with no pages is repaired (see
     /// [`Pdf::repaired`]): its objects are found by scanning the bytes, in case the
     /// cross-reference information is damaged, and a page tree other readers find pages in

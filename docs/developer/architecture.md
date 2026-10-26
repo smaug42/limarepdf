@@ -82,7 +82,14 @@ editing works on and reads the text that search, copying and export use, with it
 maps and Adobe's widths for the standard fonts (see [How text is read](../reading-and-finding.md#how-text-is-read)). CID
 fonts' character maps, and Adobe's tables from character numbers to Unicode, are read with hayro's CMap parser
 (`hayro_cmap`, reached through hayro, which carries the predefined maps); the predefined ones are read once per
-process (`fonts::predefined`).
+process (`fonts::predefined`). A Type 0 code that neither the ToUnicode map nor the character numbers give text
+for (`FontCtx::decode_raw`) reads as U+FFFD, one per code, when the CMap maps it to no character number (it is
+drawn as nothing; PB-06: lopdf's simple-font encodings read `<0042>` as "B"). A code that is a character number
+with no text (Identity-H with no ToUnicode map) still goes through lopdf's encodings first: in the corpus, files
+such as pdf.js's `bug951051.pdf` and `issue11915.pdf` use codes that are ASCII, which that reads as poppler does
+(poppler from the embedded TrueType program's cmap, which LimarePDF doesn't read yet), and U+FFFD for those
+regressed about 40 files. With PB-06's rule, the corpus's text changed in one file only (`issue1597.pdf`: a
+hyphen with no ToUnicode entry, dropped before, now U+FFFD).
 
 Simple fonts' codes without a ToUnicode entry are read through `own_encoding::simple_codes` (PB-23) when the
 font's `/Encoding` is a dictionary or is missing: the base is the named `/BaseEncoding`, else the embedded
@@ -184,7 +191,12 @@ one such font per face per document, rewritten in place as text is added: the ol
 subsetter first, so they keep their numbers and earlier text stays valid. The font dictionary's `/LimarePDF` entry
 records the face, the glyphs with their characters and a checksum of the font file; a font another app has
 changed since is left alone and a new one started. In a signed document only fonts made since it was opened
-(`Pdf::made_fonts`) are grown, as growing one a signed revision holds would show as a change to it. Characters
+(`Pdf::made_fonts`) are grown, as growing one a signed revision holds would show as a change to it. Going back to
+an earlier copy in the same session (undo and redo, a failed change put back, a stamp redone from its base) uses
+`Pdf::reopen`, which keeps that set (PB-07): ids survive a snapshot and reload, and signing opens the signed file
+in a new tab with no history, so no font of a signed revision can be in it; an id the copy lacks belongs to
+nothing signed, whatever takes it later. Reading the copy with `Pdf::from_bytes` started a new font each time.
+Characters
 are put together (NFC) first; right-to-left and shaped scripts are refused (Liberation has Hebrew). A face covers
 a character only when its glyph has an outline (`Face::outlined`, found once per glyph through skrifa), except
 characters meant to be blank (`embed::blank`: spaces, default-ignorable marks, the blank Braille pattern): a
@@ -281,8 +293,15 @@ the result's.
 Fill-and-sign signatures (`crates/limarepdf-core/src/sign.rs`) are stamp annotations whose artwork LimarePDF draws once:
 pen strokes smoothed into curves, typed names as the glyph outlines of a bundled handwriting font (read with the
 `skrifa` crate, so no font goes into the PDF), or a picture with its paper made transparent. Finish signing
-flattens just those annotations. The app's saved signatures and the Create signature window are in
-`crates/limarepdf-gui/src/signing.rs`.
+flattens just those annotations. Counting and locking them (`Pdf::sign_items`, `lock_sign_items`) walk every
+annotation a page lists (`all_annot_refs`, PB-02), not the 10,000 the app shows, as removal does; so does
+finding an annotation's page when it has no `/P` (`annot_page`). The app's saved signatures and the Create
+signature window are in `crates/limarepdf-gui/src/signing.rs`; every preview button is a white card that the
+preview's paper fills (`paper_button`, PB-09), with a 2-point outline always drawn (clear, the border colour
+under the pointer from the last frame's response, the accent when chosen), as a white fill hides the flat
+style's hover fill. Certify with digital ID's "Others may" is a list, not three choices, so it fits 800 points
+high as Sign does (PB-10, `digital::tests::sign_and_certify_fit_800_points_high` compares the space above their
+buttons).
 
 A picture's paper is made transparent by `clear_paper` (BUG-21): `paper_shade` finds the paper's shade in blocks of
 about a 24th of the picture (each block's 90th percentile, a block much darker than its neighbours taking theirs),

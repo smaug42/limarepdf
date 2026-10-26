@@ -340,7 +340,7 @@ have an exported copy. Signatures already made with it stay valid.
    it empty for an imported ID that has none), and
    optionally a reason and a location. **Show my saved signature beside the text** uses the first signature in
    your fill-and-sign list for the left part of the look; without one, your name is written in handwriting. For a
-   certification, choose what others may do afterwards. **Digital IDs…** opens the Digital IDs window, to make or
+   certification, choose what others may do afterwards from the **Others may** list. **Digital IDs…** opens the Digital IDs window, to make or
    import one.
 4. **Sign…** (or **Certify…**) asks where to save the signed document, suggesting `NAME-signed.pdf` beside the
    original, then signs in the background. The signed document opens in place of the one you signed, and is checked
