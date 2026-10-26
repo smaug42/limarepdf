@@ -181,8 +181,9 @@ OCR speed is in [Scans and OCR](../scanning-and-ocr.md#accuracy-and-speed).
   at its next [band](../rendering.md#large-drawings) instead of running to the end.
 - Edits re-save the document without compressing it, and undo keeps plain snapshots (a whole copy of the document
   per step, up to 1 GB per document, see [above](#memory-in-the-desktop-app)).
-- OCR, optimising, exporting images and printing run in the background. Search and Save don't yet: both run on the
-  window's thread and hold it for as long as they take ([measured below](#startup-and-responsiveness)).
+- OCR, optimising, exporting images, printing and search run in the background (search since batch 22: a thread
+  per tab, [below](#search)). Save doesn't yet: it runs on the window's thread and holds it for as long as it takes
+  ([measured below](#startup-and-responsiveness); ENH-35).
 - A [recovery copy](../gui.md#recovery-copies) is made at most once a minute per changed document. The window only
   copies the document in memory; a background thread turns that into a file and writes it. On the 200-page scan the
   copy in memory took 16 to 57 ms and making the file about 20 ms (138 MB, before writing it to disk); on the 1,000
@@ -190,6 +191,40 @@ OCR speed is in [Scans and OCR](../scanning-and-ocr.md#accuracy-and-speed).
   does, which takes longest on files with many objects: on a 13,000-object file 57 ms instead of 10 ms without it
   (measured 2026-10-19). While a copy is written, the app holds up to about two more copies of the document's size
   in memory.
+
+## Search
+
+Batch 22 (ENH-02) moved the app's search to a thread of its own, made each page's text read once for its matches,
+their snippets and their highlights together, and kept that text for the next queries (`TextIndex`). Measured on
+26 October 2026 on the machine above with the fourth audit's search component benchmark, like for like: its probe
+(`performance-probe.rs`) and its fixtures (12, 60, 120 and 300 pages of 38 short lines, "report" on each line; their
+checksums in `target/searchbench/`), the `ci-test` profile, two Rayon threads, the median of three runs. "Before"
+is HEAD at 1726ccc, "after" this change.
+
+| Pages (matches) | Before: the app's search, on the window's thread (`search`, then each page with matches read again for its boxes) | After: the first query, on the search thread (pages read once, boxes included) | After: the next query, the text already read | All page sizes, before / after |
+| --- | --- | --- | --- | --- |
+| 12 (468) | 20.1 ms (6.8 + 13.3) | 5.0 ms | 0.19 ms | 0.07 / 0.01 ms |
+| 60 (2,340) | 74.1 ms (24.5 + 49.6) | 23.3 ms | 0.86 ms | 1.5 / 0.06 ms |
+| 120 (4,680) | 153.6 ms (52.3 + 101.3) | 46.4 ms | 1.7 ms | 6.0 / 0.12 ms |
+| 300 (11,700) | 516 ms (172 + 344) | 121 ms | 4.0 ms | 58 / 0.37 ms |
+
+What they show:
+
+- The app's search did the work twice; it now reads each page once, and the window doesn't wait for it at all.
+  The probe's own `search` call alone went from 172 to 126 ms on 300 pages (page IDs collected once, not twice a
+  page); its second step, which reads each page again for its boxes through `find_text_matches`, is unchanged, but
+  the app no longer takes it.
+- Once read, the text answers another query in milliseconds: 4 ms for 11,700 matches on 300 pages, so typing more
+  of a word searches almost at once.
+- Collecting every page's size walked the page tree once a page (58 ms on 300 pages, growing with the square of the
+  page count); `Pdf::page_sizes` walks it once (0.37 ms).
+- The kept text took 22 MB for the 300 pages (73 KB a page of 38 lines: each character's folded and original form,
+  its place, and each piece's character positions). All tabs together are capped at 256 MB, about 3,500 such pages:
+  past that, the tab searched longest ago is let go first, then the pages already searched of a document bigger
+  than that alone, read again when next searched.
+- Handing the document to the search thread is a copy in memory, made once per change while a query is in the
+  field: 0.3 ms for text-300.pdf, 1.8 ms for the 17 MB scan-20.pdf and 1.0 ms for the corpus's largest file (5 MB,
+  107 pages), about 0.1 ms a megabyte (each the best of five).
 
 ## Startup and responsiveness
 
@@ -282,9 +317,25 @@ the frame then took about a millisecond; why it waited was not looked into.
 | The same on text-300.pdf | 218 / 236 ms (before the write 116 / 132 ms, writing 35 / 47 ms) |
 
 Before Save writes, it keeps the open box's typing and makes its checks; which of them takes the 116 ms on 300
-pages (5 ms on the letter) wasn't measured. Search and Save hold the window for their whole time: no frame, and so
-no busy sign, until they finish. The
-search is to move off the window's thread (ENH-02 in the build plan); Save has no such change yet.
+pages (5 ms on the letter) wasn't measured. Save holds the window for its whole time: no frame, and so no busy
+sign, until it finishes (ENH-35). Search held it too, until batch 22 (below).
+
+Search as you type (batch 22, measured the same day the same way, the release build of this change; the driver's
+`typed` mode: each run empties the field with Ctrl+A and Backspace and types "glacier", 50 ms between keys; 10 runs
+after the first search, which is reported apart as it reads every page; built times from the timing log). "Pause"
+is the last key to the search starting, "processing" the search starting to the frame showing the first match,
+"complete" to the frame with every match, "total" the last key to the first match's frame.
+
+| Document | First search after opening: processing, complete, total | Later searches: pause, processing, total (median / worst) |
+| --- | --- | --- |
+| text-120.pdf (1,487 matches) | 47, 74, 250 ms | 212 / 222, 41 / 60, 256 / 272 ms |
+| text-300.pdf (3,552 matches) | 37, 146, 246 ms | 210 / 223, 36 / 40, 248 / 253 ms |
+
+The window keeps drawing while a search runs: during the first search on 300 pages (145 ms from start to end) it
+built 5 frames, never more than 40 ms apart, where the search before held it for 506 ms with none. The later
+searches find the text already read, so their matches come in one group, and "complete" is "processing". Most of
+"processing" is the frame itself (the highlights and the results drawn), not the search, which takes 2 to 4 ms
+then ([above](#search)). Keys typed while a search runs weren't timed on their own here.
 
 ### Memory over repeated use
 

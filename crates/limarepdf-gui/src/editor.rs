@@ -905,6 +905,10 @@ fn word_spans(s: &str) -> Vec<(usize, usize)> {
     out
 }
 
+/// A search match on a page: the number of its hit, and its boxes there (displayed-page
+/// points).
+pub type Match = (usize, Vec<[f32; 4]>);
+
 pub struct Editor {
     pub tool: Tool,
     /// Pages, an object or words; see [`Selection`].
@@ -2300,7 +2304,7 @@ impl Editor {
         page: usize,
         r: Rect,
         k: f32,
-        matches: &[Vec<[f32; 4]>],
+        matches: &[Match],
         current: Option<usize>,
     ) {
         if !self.show_hidden && self.selected_object().is_some_and(|o| o.hidden) {
@@ -2314,12 +2318,13 @@ impl Editor {
                 Pos2::new(r.min.x + b[2] * k, r.min.y + b[3] * k),
             )
         };
-        // A match broken across lines has a box on each.
-        for (i, boxes) in matches.iter().enumerate() {
+        // A match broken across lines has a box on each; `current` is the current match's
+        // hit, which may go on from the page before.
+        for (hit, boxes) in matches {
             for b in boxes {
                 let sr = screen_rect(*b).expand(1.0);
                 painter.rect_filled(sr, 1.0, Color32::from_rgba_unmultiplied(255, 210, 0, 90));
-                if current == Some(i) {
+                if current == Some(*hit) {
                     let orange = Stroke::new(2.0, Color32::from_rgb(230, 120, 0));
                     painter.rect_stroke(sr, 1.0, orange, StrokeKind::Outside);
                 }

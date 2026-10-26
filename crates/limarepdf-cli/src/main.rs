@@ -3569,23 +3569,19 @@ fn run(cmd: Cmd) -> Result<()> {
             let p = open(&input, &password)?;
             let hits = p.search(&query)?;
             for h in &hits {
-                out!("p{}: …{}…", h.page + 1, shown(&h.snippet));
+                out!("page {}: {}", h.page + 1, shown(&h.snippet.to_string()));
             }
-            out!("{} match(es)", hits.len());
+            out!("{}", limarepdf_core::match_count(hits.len()));
             if boxes {
-                let mut pages: Vec<usize> = hits.iter().map(|h| h.page).collect();
-                pages.dedup();
-                for i in pages {
-                    for b in p.find_text_boxes(i, &query)? {
-                        out!(
-                            "p{} [{:.1} {:.1} {:.1} {:.1}]",
-                            i + 1,
-                            b[0],
-                            b[1],
-                            b[2],
-                            b[3]
-                        );
-                    }
+                for (i, b) in hits.iter().flat_map(|h| &h.boxes) {
+                    out!(
+                        "page {} [{:.1} {:.1} {:.1} {:.1}]",
+                        i + 1,
+                        b[0],
+                        b[1],
+                        b[2],
+                        b[3]
+                    );
                 }
             }
         }

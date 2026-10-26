@@ -25,7 +25,8 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
   (the document's outline) and Comments. Clicking a view opens it; clicking the open one folds the panel away, and
   clicking it again brings it back. Documents open on Pages, unless the file asks to open on its bookmarks. The
   same panel lists the document's digital signatures, from ☰ > Document > Digital signatures > Signatures in this
-  document. See [Bookmarks](reading-and-finding.md#bookmarks), [Search](reading-and-finding.md#find-words),
+  document. Pages are called by the document's page labels where it has them, unless ☰ > View > Use the
+  document's page labels is off. See [Bookmarks](reading-and-finding.md#bookmarks), [Search](reading-and-finding.md#find-words),
   [Comments](comments-and-markup.md#see-every-comment-and-reply) and [Digital signatures](signatures.md).
 - **Middle:** the pages, scrolling continuously. By default they fit the width between the side panels; zooming
   turns that off. Continuous, facing or single pages: see [Page layout](reading-and-finding.md#page-layout).
@@ -339,7 +340,8 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Ctrl+W | Close the tab |
 | Ctrl+P | Print |
 | Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) | Undo, redo |
-| Ctrl+F | Search |
+| Ctrl+F | Search: type, and the matches come once you pause |
+| Enter, Shift+Enter in a search field | Next, previous match (Enter before the pause searches at once) |
 | Ctrl+K | Command palette |
 | Ctrl+= , Ctrl+- | Zoom in, zoom out |
 | Ctrl+0, Ctrl+1 | Fit width on or off, actual size |

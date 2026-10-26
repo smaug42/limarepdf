@@ -509,32 +509,40 @@ impl Pdf {
 
     /// Displayed size in points, after applying the page rotation.
     pub fn page_size(&self, index: usize) -> Result<(f32, f32)> {
-        let id = *self
-            .page_ids()
-            .get(index)
-            .ok_or_else(|| anyhow!("no page {}", index + 1))?;
-        let [x0, y0, x1, y1] = self.page_box(id);
-        let (w, h) = (x1 - x0, y1 - y0);
-        Ok(if matches!(self.page_rotation(id), 90 | 270) {
-            (h, w)
-        } else {
-            (w, h)
-        })
+        let id = self.page_id_at(index)?;
+        Ok(self.shown_size(id, self.page_box(id)))
+    }
+
+    /// Every page's [`Pdf::page_size`], in order, with the pages listed once.
+    pub fn page_sizes(&self) -> Vec<(f32, f32)> {
+        self.page_ids()
+            .into_iter()
+            .map(|id| self.shown_size(id, self.page_box(id)))
+            .collect()
     }
 
     /// Like [`Pdf::page_size`], for the whole (media) box, as if the page weren't cropped.
     pub fn full_page_size(&self, index: usize) -> Result<(f32, f32)> {
-        let id = *self
-            .page_ids()
-            .get(index)
-            .ok_or_else(|| anyhow!("no page {}", index + 1))?;
-        let [x0, y0, x1, y1] = self.media_box(id);
+        let id = self.page_id_at(index)?;
+        Ok(self.shown_size(id, self.media_box(id)))
+    }
+
+    /// Every page's [`Pdf::full_page_size`], in order, with the pages listed once.
+    pub fn full_page_sizes(&self) -> Vec<(f32, f32)> {
+        self.page_ids()
+            .into_iter()
+            .map(|id| self.shown_size(id, self.media_box(id)))
+            .collect()
+    }
+
+    /// The size of page `id`'s box `[x0, y0, x1, y1]` as shown: turned with the page.
+    fn shown_size(&self, id: ObjectId, [x0, y0, x1, y1]: [f32; 4]) -> (f32, f32) {
         let (w, h) = (x1 - x0, y1 - y0);
-        Ok(if matches!(self.page_rotation(id), 90 | 270) {
+        if matches!(self.page_rotation(id), 90 | 270) {
             (h, w)
         } else {
             (w, h)
-        })
+        }
     }
 
     /// Push inherited page attributes down onto each page and flatten the page tree.

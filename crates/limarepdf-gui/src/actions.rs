@@ -132,6 +132,8 @@ pub enum Act {
     ToggleHidden,
     /// Tint every form field, and outline the required ones.
     ToggleFields,
+    /// Call pages by the document's page labels, or by their numbers.
+    TogglePageLabels,
     NextField,
     PrevField,
     /// Empty the form field with the keyboard.
@@ -250,6 +252,7 @@ impl Act {
             | Act::ToggleDock
             | Act::ToggleHidden
             | Act::ToggleFields
+            | Act::TogglePageLabels
             | Act::NextField
             | Act::PrevField
             | Act::ClearField
@@ -353,6 +356,8 @@ pub struct Ctx {
     pub pictures_too: bool,
     /// Recovery copies are kept.
     pub recovery: bool,
+    /// See [`Act::TogglePageLabels`].
+    pub page_labels: bool,
     /// An annotation is selected, and whether it may be changed.
     pub annot: bool,
     pub annot_locked: bool,
@@ -987,6 +992,17 @@ pub static ACTIONS: &[Action] = &[
         checked: Some(|c| c.hidden_text),
         hint: "Outline the invisible text added by OCR. Hover to read it; select it with \
                the arrow tool to correct it.",
+        ..BASE
+    },
+    Action {
+        act: Act::TogglePageLabels,
+        group: Group::View,
+        label: "Use the document's page labels",
+        enabled: always,
+        checked: Some(|c| c.page_labels),
+        hint: "Call pages by the numbering the document gives them, such as iii or A-1, \
+               in thumbnails, search results and bookmarks. Off numbers them 1, 2, 3 \
+               from the first page. The status bar shows both.",
         ..BASE
     },
     Action {

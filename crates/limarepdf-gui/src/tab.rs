@@ -1,11 +1,12 @@
 use crate::actions::{self, Act, Ctx};
 use crate::banners::{self, Banner};
-use crate::editor::{annot_tip, Action, Editor, StampPick, Tool, Typed};
+use crate::editor::{annot_tip, Action, Editor, Match, StampPick, Tool, Typed};
 use crate::icon;
 use crate::inspector::{Forms, Hf, Sec, Wm};
 use crate::markup::Mark;
 use crate::recovery::schedule::Schedule;
 use crate::recovery::TabId;
+use crate::search::{Found, Search, PAUSE};
 use crate::selection::Selection;
 use crate::settings::Layout;
 use crate::signatures::{self, Check, PanelAct, SigState};
@@ -17,10 +18,10 @@ use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptio
 use limarepdf_core::disk;
 use limarepdf_core::render::{Missing, MAX_REGION_SCALE};
 use limarepdf_core::{
-    Annot, BookmarkPlace, Encryption, ImageWatermark, LinkTarget, OutlineItem, Pdf, SearchHit,
-    Shape, ShapeLook, StampPlace,
+    Annot, BookmarkPlace, Encryption, ImageWatermark, LinkTarget, OutlineItem, Pdf, Query,
+    SearchHit, Shape, ShapeLook, StampPlace,
 };
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -53,6 +54,13 @@ pub enum Side {
     Bookmarks,
     Comments,
     Signatures,
+}
+
+/// Which match to make current when a search's matches come: see `Tab::to_hit`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ToHit {
+    From(usize),
+    Keep { page: usize, nth: usize },
 }
 
 /// One undo or redo step: the state to go back to.
@@ -282,11 +290,21 @@ pub struct Tab {
     last_line: Option<((usize, usize), u64, usize, f64)>,
     pub side: Side,
     pub query: String,
+    /// The search's matches so far, in page order, for the query and the document as they
+    /// are (see [`Tab::poll_search`]).
     pub hits: Vec<SearchHit>,
     pub hit_idx: usize,
-    /// The search matches on each page with hits: for each, a box per line it is on
-    /// (displayed-page points).
-    matches: HashMap<usize, Vec<Vec<[f32; 4]>>>,
+    pub search: Search,
+    /// The search matches on each page they are on: for each, a box per piece of each line
+    /// it is on there (displayed-page points), with the number of its hit.
+    matches: HashMap<usize, Vec<Match>>,
+    /// When the next matches come, make the first one at or after this page current and go
+    /// to it (typing a query); or keep the current one where it was, at this page and
+    /// match on it (searching again after an edit).
+    to_hit: Option<ToHit>,
+    /// Show the document's page labels, not the pages' numbers (View > Use the document's
+    /// page labels).
+    pub use_labels: bool,
     /// Scroll to this height on the `goto` page (points from its top), with `goto`.
     goto_y: Option<f32>,
     pub error: Option<String>,
@@ -435,7 +453,10 @@ impl Tab {
             query: String::new(),
             hits: Vec::new(),
             hit_idx: 0,
+            search: Search::new(ctx),
             matches: HashMap::new(),
+            to_hit: None,
+            use_labels: true,
             goto_y: None,
             error: None,
             broken: None,
@@ -497,8 +518,17 @@ impl Tab {
         self.sizes.len()
     }
 
-    /// What to call page `p` (0-based): its label, or its number.
+    /// What to call page `p` (0-based): its label, unless the document's labels aren't to
+    /// be shown ([`Tab::use_labels`]), or its number.
     pub fn page_name(&self, p: usize) -> String {
+        match self.use_labels {
+            true => self.page_label(p),
+            false => (p + 1).to_string(),
+        }
+    }
+
+    /// Page `p`'s label (0-based), or its number when the document has no labels.
+    pub fn page_label(&self, p: usize) -> String {
         self.labels
             .as_ref()
             .and_then(|l| l.get(p).cloned())
@@ -914,8 +944,7 @@ impl Tab {
                         t.0 = false;
                     }
                 }
-                self.hits.clear();
-                self.matches.clear();
+                self.search_changed(Some(pages));
                 self.ed.invalidate();
             }
             Err(e) => self.error = Some(e.to_string()),
@@ -1277,16 +1306,32 @@ impl Tab {
         }
     }
 
-    /// Mark every match of the last search for redaction: one mark per page.
+    /// Mark every match of the search for redaction: one mark per page. Every match counts,
+    /// so a search not finished, or for an older state of the document, is finished here
+    /// first.
     pub fn mark_results_for_redaction(&mut self, ctx: &egui::Context, author: &str) {
-        let marks: Vec<(usize, Vec<[f32; 4]>)> = self
-            .matches
-            .iter()
-            .map(|(p, m)| (*p, m.iter().flatten().copied().collect()))
-            .filter(|(_, b): &(usize, Vec<[f32; 4]>)| !b.is_empty())
-            .collect();
-        if marks.is_empty() {
+        if Query::new(&self.query).is_empty() {
             self.info = Some("Search first: there are no results to mark".into());
+            return;
+        }
+        let hits = if self.search.complete(&self.query) {
+            self.hits.clone()
+        } else {
+            match crate::guard(|| self.pdf.search(&self.query)) {
+                Ok(h) => h,
+                Err(e) => {
+                    self.error = Some(format!("{e:#}"));
+                    return;
+                }
+            }
+        };
+        let mut by_page: BTreeMap<usize, Vec<[f32; 4]>> = BTreeMap::new();
+        for (p, b) in hits.iter().flat_map(|h| &h.boxes) {
+            by_page.entry(*p).or_default().push(*b);
+        }
+        let marks: Vec<(usize, Vec<[f32; 4]>)> = by_page.into_iter().collect();
+        if marks.is_empty() {
+            self.info = Some("Nothing to mark: the search found no matches".into());
             return;
         }
         let pages: Vec<usize> = marks.iter().map(|(p, _)| *p).collect();
@@ -1468,8 +1513,7 @@ impl Tab {
                 self.ed.invalidate();
                 self.ed.selection.clear_object();
                 self.ed.adding = None;
-                self.hits.clear();
-                self.matches.clear();
+                self.search_changed(None);
                 let n = self.page_count();
                 self.ed.selection.retain_pages(n);
                 self.current = self.current.min(n.saturating_sub(1));
@@ -1839,57 +1883,422 @@ impl Tab {
         }
     }
 
+    /// Search for the query now, without waiting for a pause in the typing (Enter before
+    /// the pause, Find): the first match at or after the page being read when the query was
+    /// begun becomes current, and is shown, once it comes. An empty query clears the
+    /// results.
     pub fn run_search(&mut self) {
-        let n = self.query.chars().count();
-        timing::mark("search start", || format!("{n} characters"));
-        self.hit_idx = 0;
-        self.matches.clear();
-        match self.pdf.search(&self.query) {
-            Ok(h) => self.hits = h,
-            Err(e) => self.error = Some(e.to_string()),
+        self.note_query();
+        if Query::new(&self.query).is_empty() {
+            self.clear_search();
+            return;
         }
-        let pages: BTreeSet<usize> = self.hits.iter().map(|h| h.page).collect();
-        for p in pages {
-            if let Ok(b) = self.pdf.find_text_matches(p, &self.query) {
-                self.matches.insert(p, b);
+        self.to_hit = Some(ToHit::From(self.search.anchor));
+        self.start_search();
+    }
+
+    /// Search as you type, each frame: notice the query changing, search once the typing
+    /// pauses for [`PAUSE`] (an empty query clears the results at once), search again after
+    /// the document's text changed, and take in what the search found.
+    fn poll_search(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        // The matches shown are only ever the query's: a changed query's go at once.
+        if self.note_query() {
+            self.clear_search();
+            if !Query::new(&self.query).is_empty() {
+                self.search.typed = Some(now);
             }
         }
-        timing::mark("search end", || format!("{} hits", self.hits.len()));
-        if !self.hits.is_empty() {
-            self.show_hit();
+        if let Some(t) = self.search.typed {
+            let left = t + PAUSE - now;
+            if left <= 0.0 {
+                self.run_search();
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(left));
+            }
+        } else if self.search.stale() {
+            self.start_search();
+        }
+        self.take_search();
+    }
+
+    /// Notice a change to the query since the last look: a query begun from an empty one
+    /// starts from the page being read. Whether it changed.
+    fn note_query(&mut self) -> bool {
+        if self.query == self.search.seen {
+            return false;
+        }
+        if Query::new(&self.search.seen).is_empty() {
+            self.search.anchor = self.current;
+        }
+        self.search.seen.clone_from(&self.query);
+        true
+    }
+
+    /// Search the document as it is now for the query, from the start, in place of any
+    /// search running.
+    fn start_search(&mut self) {
+        let n = self.query.chars().count();
+        timing::mark("search start", || format!("{n} characters"));
+        self.hits.clear();
+        self.matches.clear();
+        self.hit_idx = 0;
+        self.search.start(&self.pdf, &self.query);
+    }
+
+    /// No search: the field was emptied.
+    fn clear_search(&mut self) {
+        self.search.stop();
+        self.hits.clear();
+        self.matches.clear();
+        self.hit_idx = 0;
+        self.to_hit = None;
+    }
+
+    /// The document's text changed, on `pages` (0-based) or on any page: the matches shown
+    /// no longer hold, so they go, and the search runs again on the next frame, keeping the
+    /// current match where it was.
+    fn search_changed(&mut self, pages: Option<&[usize]>) {
+        self.search.text_changed(pages);
+        if let Some((page, nth)) = self.current_match() {
+            self.to_hit = Some(ToHit::Keep { page, nth });
+        }
+        self.hits.clear();
+        self.matches.clear();
+        self.hit_idx = 0;
+    }
+
+    /// Take in the matches the search thread found for the search shown.
+    fn take_search(&mut self) {
+        for f in self.search.take() {
+            match f {
+                Found::Some { hits, upto, .. } => {
+                    let first = self.hits.is_empty();
+                    for h in hits {
+                        let i = self.hits.len();
+                        for (page, b) in &h.boxes {
+                            let on = self.matches.entry(*page).or_default();
+                            match on.last_mut() {
+                                Some((j, boxes)) if *j == i => boxes.push(*b),
+                                _ => on.push((i, vec![*b])),
+                            }
+                        }
+                        self.hits.push(h);
+                    }
+                    if first && !self.hits.is_empty() {
+                        timing::mark("search first hit", || format!("page {}", upto));
+                    }
+                    self.place_hit(Some(upto));
+                }
+                Found::Done { .. } => {
+                    timing::mark("search end", || format!("{} hits", self.hits.len()));
+                    self.place_hit(None);
+                }
+                Found::Failed { .. } => self.to_hit = None,
+            }
         }
     }
 
+    /// Make the match [`Tab::to_hit`] asks for current, once the matches it depends on have
+    /// come: those of the pages before `upto` (0-based) so far, or all of them (`None`).
+    fn place_hit(&mut self, upto: Option<usize>) {
+        let Some(want) = self.to_hit else {
+            return;
+        };
+        let done = upto.is_none();
+        let last = self.hits.len().checked_sub(1);
+        let pick = match want {
+            ToHit::From(from) => self
+                .hits
+                .iter()
+                .position(|h| h.page >= from)
+                .or(last.filter(|_| done).map(|_| 0)),
+            // The page's matches are all in once a later page's have come.
+            ToHit::Keep { page, nth } if done || upto.is_some_and(|u| u > page) => {
+                let on: Vec<usize> = (0..self.hits.len())
+                    .filter(|&i| self.hits[i].page == page)
+                    .collect();
+                on.get(nth)
+                    .or(on.last())
+                    .copied()
+                    .or_else(|| self.hits.iter().position(|h| h.page > page))
+                    .or(last.filter(|_| done))
+            }
+            ToHit::Keep { .. } => None,
+        };
+        if let Some(i) = pick {
+            self.hit_idx = i;
+            self.to_hit = None;
+            if matches!(want, ToHit::From(_)) {
+                self.show_hit();
+            }
+        } else if done {
+            self.to_hit = None;
+        }
+    }
+
+    /// Go to the next match (`delta` 1) or the one before (-1), round from the last to the
+    /// first.
     pub fn step_hit(&mut self, delta: isize) {
         if self.hits.is_empty() {
             return;
         }
         let n = self.hits.len() as isize;
         self.hit_idx = ((self.hit_idx as isize + delta).rem_euclid(n)) as usize;
+        self.to_hit = None;
         self.show_hit();
     }
 
-    /// The current hit's page, and which of that page's matches it is. Hits and matches
-    /// come from the same page text, so their counts agree; the index is clamped all the
-    /// same.
+    /// Make hit `i` current and go to it: its row was clicked, so the list stays where it is.
+    pub fn choose_hit(&mut self, i: usize) {
+        if i < self.hits.len() {
+            self.hit_idx = i;
+            self.to_hit = None;
+            self.show_hit();
+            self.search.reveal = false;
+        }
+    }
+
+    /// The current hit's page, and which of the hits on that page it is.
     fn current_match(&self) -> Option<(usize, usize)> {
         let h = self.hits.get(self.hit_idx)?;
         let nth = self.hits[..self.hit_idx]
             .iter()
             .filter(|o| o.page == h.page)
             .count();
-        let n = self.matches.get(&h.page).map_or(0, |v| v.len());
-        Some((h.page, nth.min(n.saturating_sub(1))))
+        Some((h.page, nth))
     }
 
-    /// Scroll to the current hit's match box, or to its page when it has none.
+    /// Scroll to the current hit's first box, or to its page when it has none, and to its
+    /// row in Search results.
     fn show_hit(&mut self) {
-        let Some((page, k)) = self.current_match() else {
+        let Some(h) = self.hits.get(self.hit_idx) else {
             return;
         };
+        let (page, y) = match h.boxes.first() {
+            Some((p, b)) => (*p, Some(b[1])),
+            None => (h.page, None),
+        };
         self.go_to(page);
-        let first = self.matches.get(&page).and_then(|v| v.get(k)?.first());
-        self.goto_y = first.map(|b| b[1]);
+        self.goto_y = y;
+        self.search.reveal = true;
+    }
+
+    /// Enter in a search field (`r`): search now if the typing hasn't been searched yet,
+    /// else go to the next match, or with Shift to the one before. Whether it was pressed.
+    pub fn search_keys(&mut self, ui: &egui::Ui, r: &egui::Response) -> bool {
+        if !r.has_focus() {
+            return false;
+        }
+        let (enter, back) = ui.input_mut(|i| {
+            let back = i.consume_key(egui::Modifiers::SHIFT, egui::Key::Enter);
+            (
+                back || i.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
+                back,
+            )
+        });
+        if !enter {
+            return false;
+        }
+        let searched = self.search.typed.is_none()
+            && self
+                .search
+                .asked
+                .as_ref()
+                .is_some_and(|(_, q)| *q == self.query);
+        if searched {
+            self.step_hit(if back { -1 } else { 1 });
+        } else {
+            self.run_search();
+        }
+        true
+    }
+
+    /// What Search results says of the search: how many matches, or that it is still
+    /// looking, or why it stopped.
+    fn results_said(&self) -> String {
+        if let Some(why) = &self.search.failed {
+            return format!("The search stopped: {why}");
+        }
+        if Query::new(&self.query).is_empty() {
+            return String::new();
+        }
+        let n = self.hits.len();
+        match (self.search.complete(&self.query), n) {
+            (true, n) => limarepdf_core::match_count(n),
+            (false, 0) => "Searching…".into(),
+            (false, n) => format!("Searching… {} so far", limarepdf_core::match_count(n)),
+        }
+    }
+
+    /// The Search results view: the search field, the steps between matches and their
+    /// count, then the matches under their pages' headings, the match in bold. Only the
+    /// rows in view are drawn, so a long list costs no more than a short one. True when
+    /// Mark all for redaction is pressed.
+    pub fn show_results(&mut self, ui: &mut egui::Ui) -> bool {
+        use egui::text::{LayoutJob, TextFormat, TextWrapping};
+        let r = ui.add(
+            egui::TextEdit::singleline(&mut self.query)
+                .desired_width(f32::INFINITY)
+                .return_key(None),
+        );
+        crate::dialogs::set_name(&r, "Search for");
+        self.search_keys(ui, &r);
+        // A query just typed, here or in the top bar, takes the old matches away before
+        // they are drawn.
+        self.poll_search(ui.ctx());
+        ui.horizontal(|ui| {
+            for (glyph, name, step) in [("◀", "Previous match", -1), ("▶", "Next match", 1)] {
+                let r = ui.button(glyph);
+                crate::dialogs::set_name(&r, name);
+                if r.on_hover_text(name).clicked() {
+                    self.step_hit(step);
+                }
+            }
+            ui.label(self.results_said());
+        });
+        let mut mark = false;
+        if !self.hits.is_empty() {
+            let a = actions::get(Act::MarkResultsRedact);
+            let label = "Mark all for redaction";
+            mark = theme::glyph_button(ui, a.icon, label)
+                .on_hover_text(a.hint)
+                .clicked();
+        }
+
+        // The rows: each page's heading, then its matches.
+        enum Row {
+            Page(usize),
+            Hit(usize),
+        }
+        let mut rows = Vec::with_capacity(self.hits.len() * 2);
+        for (i, h) in self.hits.iter().enumerate() {
+            if i == 0 || self.hits[i - 1].page != h.page {
+                rows.push(Row::Page(h.page));
+            }
+            rows.push(Row::Hit(i));
+        }
+        let line = ui.text_style_height(&egui::TextStyle::Body);
+        let (head_h, hit_h) = (line + 8.0, 2.0 * line + 8.0);
+        let mut tops = Vec::with_capacity(rows.len() + 1);
+        let mut y = 0.0;
+        for row in &rows {
+            tops.push(y);
+            y += match row {
+                Row::Page(_) => head_h,
+                Row::Hit(_) => hit_h,
+            };
+        }
+        let total = y;
+        let mut area = egui::ScrollArea::vertical()
+            .id_salt("search results")
+            .auto_shrink([false, false]);
+        if std::mem::take(&mut self.search.reveal) {
+            let at = rows
+                .iter()
+                .position(|r| matches!(r, Row::Hit(i) if *i == self.hit_idx));
+            if let Some(k) = at {
+                let room = ui.available_height();
+                area = area.vertical_scroll_offset((tops[k] - (room - hit_h) / 2.0).max(0.0));
+            }
+        }
+        let body = egui::TextStyle::Body.resolve(ui.style());
+        let bold = egui::FontId::new(body.size, theme::semibold());
+        let mut chosen = None;
+        area.show_viewport(ui, |ui, view| {
+            ui.set_min_height(total);
+            let (origin, w) = (ui.min_rect().min, ui.available_width());
+            let first = tops.partition_point(|&t| t + hit_h < view.min.y);
+            for (k, row) in rows.iter().enumerate().skip(first) {
+                if tops[k] > view.max.y {
+                    break;
+                }
+                let h = if matches!(row, Row::Page(_)) {
+                    head_h
+                } else {
+                    hit_h
+                };
+                let rect = Rect::from_min_size(origin + Vec2::new(0.0, tops[k]), Vec2::new(w, h));
+                let visuals = ui.visuals().clone();
+                match *row {
+                    Row::Page(p) => {
+                        let name = format!("Page {}", self.page_name(p));
+                        let id = ui.scope_id().with(("search results page", k));
+                        let resp = ui.interact(rect, id, Sense::hover());
+                        ui.painter().text(
+                            rect.left_center() + Vec2::new(4.0, 0.0),
+                            egui::Align2::LEFT_CENTER,
+                            &name,
+                            bold.clone(),
+                            visuals.strong_text_color(),
+                        );
+                        resp.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::Role::Label, true, &name)
+                        });
+                    }
+                    Row::Hit(i) => {
+                        let hit = &self.hits[i];
+                        let selected = i == self.hit_idx;
+                        let id = ui.scope_id().with(("search results hit", i));
+                        let resp = ui.interact(rect, id, Sense::click());
+                        let colour = if selected {
+                            visuals.selection.stroke.color
+                        } else {
+                            visuals.text_color()
+                        };
+                        if selected {
+                            ui.painter()
+                                .rect_filled(rect, 2.0, visuals.selection.bg_fill);
+                        } else if resp.hovered() {
+                            ui.painter().rect_filled(
+                                rect,
+                                2.0,
+                                visuals.widgets.hovered.weak_bg_fill,
+                            );
+                        }
+                        let s = hit.snippet.around(16, 48);
+                        let format = |font: &egui::FontId| TextFormat {
+                            font_id: font.clone(),
+                            color: colour,
+                            ..Default::default()
+                        };
+                        let dots = |cut: bool| if cut { "…" } else { "" };
+                        let mut job = LayoutJob::default();
+                        job.append(
+                            &format!("{}{}", dots(s.cut_before), s.before),
+                            0.0,
+                            format(&body),
+                        );
+                        job.append(&s.found, 0.0, format(&bold));
+                        job.append(
+                            &format!("{}{}", s.after, dots(s.cut_after)),
+                            0.0,
+                            format(&body),
+                        );
+                        job.wrap = TextWrapping {
+                            max_width: (w - 8.0).max(1.0),
+                            max_rows: 2,
+                            break_anywhere: false,
+                            overflow_character: Some('…'),
+                        };
+                        let galley = ui.painter().layout_job(job);
+                        ui.painter()
+                            .galley(rect.min + Vec2::new(4.0, 4.0), galley, colour);
+                        let name = format!("Page {}: {}", self.page_name(hit.page), hit.snippet);
+                        resp.widget_info(|| {
+                            egui::WidgetInfo::selected(egui::Role::Button, true, selected, &name)
+                        });
+                        if resp.clicked() {
+                            chosen = Some(i);
+                        }
+                    }
+                }
+            }
+        });
+        if let Some(i) = chosen {
+            self.choose_hit(i);
+        }
+        mark
     }
 
     // ------------------------------------------------------------ drawing
@@ -2310,6 +2719,7 @@ impl Tab {
     pub fn show_pages(&mut self, ui: &mut egui::Ui, base: &Ctx) {
         let ctx = ui.ctx().clone();
         self.collect(&ctx);
+        self.poll_search(&ctx);
         // Before the layout: setting the crop shows the pages whole.
         let previews = self.previews(&ctx);
         let ppp = ctx.pixels_per_point();
@@ -2412,7 +2822,7 @@ impl Tab {
             let top = row_of.get(p).and_then(|&r| row_top.get(r)).copied();
             area = area.vertical_scroll_offset((top.unwrap_or(0.0) + y * scale).max(0.0));
         }
-        let current = self.current_match();
+        let current = (self.hit_idx < self.hits.len()).then_some(self.hit_idx);
         let mut wanted: Vec<(Key, f32)> = Vec::new();
         let (mut want_tiles, mut keep_tiles) = (Vec::new(), HashSet::new());
         let mut tiled = false;
@@ -2483,9 +2893,8 @@ impl Tab {
                 } else {
                     self.draw_previews(ui, &previews, i, r, self.zoom * BASE);
                     let matches = self.matches.get(&i).map_or(&[][..], |v| v.as_slice());
-                    let cur = current.filter(|c| c.0 == i).map(|c| c.1);
                     self.ed
-                        .overlay(ui, &self.pdf, i, r, self.zoom * BASE, matches, cur);
+                        .overlay(ui, &self.pdf, i, r, self.zoom * BASE, matches, current);
                     let resp = self
                         .ed
                         .page_ui(ui, &self.pdf, self.id, i, r, self.zoom * BASE);

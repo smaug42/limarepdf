@@ -124,6 +124,38 @@ the render corpus (1,089 files) unreadable characters in
 extracted text fell from 225,473 to 191,418 (files with any from 123 to 106), 29 files' text changed, each checked
 against `pdftotext`, and none got worse.
 
+Search (`text.rs`, batch 22) reads a page once into a `PageText`: its words in reading order (`ordered_words`,
+through `Pdf::search_parts`, by page object so the page tree is walked once a search, not twice a page) with a
+space between them, each character folded (lowercase) and original, its text line and place there, the lines
+that join (for `joints`' hyphen and soft-hyphen skips) and each line's pieces, so a match's snippet and boxes come
+from the same reading as the match. `find_on` matches a page's text with the start of the next page's appended
+after a line break (as many characters as the query, three times over, for the skips), so a phrase or a
+hyphenated word across a page break is found on the page it starts on, with boxes on both pages; its `spill` (the
+next page's characters it took) is where the next page's matching starts, and `TextIndex::find` looks a page again
+from there when its own first match began inside them, so a match is never found twice and the result is what one
+reading of the whole text would give, a group of pages at a time or all at once. `TextIndex` keeps the pages read,
+by page object: `update` forgets the pages an edit changed, or all of them when the pages themselves changed.
+`Pdf::search` (the CLI) and `find_text_matches` (one page alone, no next page) use the same code. Snippets are cut
+at word boundaries (`tail`, `head`; `Snippet::around` cuts shorter for the app's rows), and `match_count` says the
+count in words for the app and the CLI.
+
+In the app, `search.rs` runs a tab's searches on a thread of its own, started with its first search and ended
+with the tab. `Tab::poll_search`, each frame, notices the query changing (`note_query`: a query begun from empty
+starts from the page being read), clears the old matches at once, and starts the search once the typing has paused
+for `PAUSE` (200 ms); Enter starts it at once (`Tab::search_keys`, the field's own Enter turned off with
+`return_key(None)`) and otherwise steps. Each search gets a number: the thread stops the one running, between pages,
+once a newer number is stored, takes only the newest of the jobs waiting (keeping the document a passed-over job
+brought, `merge`), and sends its matches a group of 16 pages at a time with the number; `Search::take` drops
+anything for another number, so an older query's matches are never shown. An edit (`soft_refresh`, `refresh`)
+calls `Tab::search_changed`: the matches go, the pages it changed are noted (`Search::text_changed`), and the next
+frame searches again, the document cloned for the thread only then and only with a query in the field, the current
+match kept by its page and place there (`ToHit::Keep`). The results view (`Tab::show_results`) checks the query
+again after its own field, before drawing, so a query typed in that frame shows no old rows; its rows are of fixed
+height (a page heading, a two-line match) and only those in view are drawn. Mark all for redaction uses the
+matches when the search for the query and the document as they are is complete (`Search::complete`), and otherwise
+runs `Pdf::search` itself first. The threads' indexes count against one budget (`fit_within`, 256 MB), letting go of
+the tab searched longest ago, then the pages already searched of the tab searching.
+
 Text LimarePDF writes (new and edited text, headers, footers, watermarks, stamps, text boxes, form values, the
 signature look, selected text as a plain page) goes through a pen (`embed::Pen`, from `Pdf::pen`): the standard
 font, WinAnsi-encoded through `fonts::winansi_byte`, while the text fits it, else the embedded font below.
@@ -559,7 +591,9 @@ length, a key by its name only when it types nothing: Enter, Esc, Tab, Backspace
 movement keys), `frame built` (end of `App::ui`, with egui's frame number and pass, the log
 then flushed), `page drawn` (`Tab::show_pages`, the first time a page is painted from a drawing at the scale it
 wants rather than a stand-in at another), `render start` and `end` (the worker, per page and tile), `open start`
-and `end` (the read thread), `search start` and `end` (`Tab::run_search`, the query by its length), `save start`
+and `end` (the read thread), `search start`, `search first hit` and `search end` (`Tab::start_search` and
+`take_search`, the query by its length, the matches by their count) and `search index` (the search thread, the
+text kept in bytes), `save start`
 and `end` (`save_now`, `save_appended`), `print dialog` (Print's `act`), `printers found` (`poll_loads`) and `exit`
 (`on_exit`). A frame is built before egui
 paints it and the window presents it, which the app can't see: the gap is measured from outside by screenshot

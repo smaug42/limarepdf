@@ -54,22 +54,33 @@ exported images and everything else keep the page's own colours.
 
 ## Find words
 
-1. Press Ctrl+F, type what you are looking for, and press Enter. (Or type in the Search field at the top right.)
-2. The Search results view on the left lists every match, with its page and the words around it. The matches are
-   highlighted on the pages, and the view goes to the first one.
-3. Click a match to go to it, or step through them with ◀ and ▶ (Previous match and Next match).
+1. Press Ctrl+F and type what you are looking for. (Or type in the Search field at the top right.)
+2. As soon as you pause typing, the Search results view on the left lists the matches, under a heading for each
+   page, with the words around each match and the match in bold. The matches are highlighted on the pages, and the
+   view goes to the first one on or after the page you were reading.
+3. Press Enter to go to the next match, and Shift+Enter for the one before; or click a match, or use ◀ and ▶
+   (Previous match and Next match). After the last match, Enter goes back to the first.
 
-Search ignores capitals, and treats any run of spaces as one space. A phrase can run across a line break: the
-break counts as a space, and the part on each line is highlighted. A word hyphenated at the end of a line is found
-whole, with or without its hyphen: "information" and "self-employed" find "infor-" + "mation" and "self-" +
-"employed". Soft hyphens are ignored.
+On a long document the matches come in page by page, with "Searching…" and the count so far; when it is done, the
+count reads "1 match", "12 matches" or "No matches". Changing what you typed starts again, and the old matches go at
+once. Emptying the field clears the results. If you change the document while searching, the results are brought
+up to date, and the match you were on stays the current one.
+
+Search ignores capitals, and treats any run of spaces as one space. A phrase can run across a line break, or from
+the bottom of one page to the top of the next: the break counts as a space, and the part on each line is
+highlighted. A word hyphenated at the end of a line or a page is found whole, with or without its hyphen:
+"information" and "self-employed" find "infor-" + "mation" and "self-" + "employed". Soft hyphens are ignored.
 
 Scanned pages have no text until you [recognise it](scanning-and-ocr.md#recognising-text-ocr). To remove every
 match from the document for good, press **Mark all for redaction** in Search results, then apply the marks (see
-[Redaction](redaction.md)).
+[Redaction](redaction.md)). It marks every match, even if the search is still running.
 
-On the command line, `limarepdf-cli search` lists the matches, and `--boxes` also prints where each one is on its
-page.
+The headings in Search results, like the page thumbnails, use the document's own page numbering when it has one
+(such as iii or A-1; see [Number pages your own way](organising-pages.md#number-pages-your-own-way)). To number the pages 1, 2, 3 from the first
+page instead, turn off ☰ > View > **Use the document's page labels**. The status bar shows both.
+
+On the command line, `limarepdf-cli search` lists the matches, one a line, as `page 3: …the words around it…`, then
+the count; `--boxes` also prints where each one is on its page.
 
 ## Bookmarks
 

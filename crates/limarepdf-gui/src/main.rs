@@ -20,6 +20,7 @@ mod page_text;
 mod panels;
 mod recent;
 mod recovery;
+mod search;
 mod selection;
 mod settings;
 mod signatures;

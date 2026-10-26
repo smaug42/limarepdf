@@ -1048,6 +1048,7 @@ impl App {
                 // A repaired file counts as changed until the repaired copy is saved.
                 t.dirty = dirty || t.pdf.repaired();
                 t.ed.form.highlight = self.settings.fields_shown;
+                t.use_labels = self.settings.page_labels;
                 t.ed.keep.clone_from(&self.settings.keep_tools);
                 // The document's own viewer preferences, else the app's defaults. A page
                 // asked for on the command line wins over the document's opening page.
@@ -2545,6 +2546,14 @@ impl App {
                 s.save();
                 for t in &mut self.tabs {
                     t.ed.form.highlight = s.fields_shown;
+                }
+            }
+            Act::TogglePageLabels => {
+                let s = &mut self.settings;
+                s.page_labels = !s.page_labels;
+                s.save();
+                for t in &mut self.tabs {
+                    t.use_labels = s.page_labels;
                 }
             }
             Act::NextField => self.tabs[self.active].ed.form.step(true),
@@ -4100,6 +4109,7 @@ impl App {
             page_look: self.settings.page_look,
             pictures_too: self.settings.pictures_too,
             recovery: self.settings.recovery,
+            page_labels: self.settings.page_labels,
             layout: self.settings.layout,
             cover: self.settings.cover,
             highlight: self.settings.highlight,
@@ -5066,14 +5076,16 @@ impl eframe::App for App {
                             let r = ui.add(
                                 egui::TextEdit::singleline(&mut t.query)
                                     .hint_text("Search")
-                                    .desired_width(180.0),
+                                    .desired_width(180.0)
+                                    .return_key(None),
                             );
                             dlg::set_name(&r, "Search");
                             if std::mem::take(&mut self.focus_search) {
                                 r.request_focus();
                             }
-                            if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                                t.run_search();
+                            // Typing shows the matches in Search results as they come.
+                            let typed = r.changed() && !t.query.trim().is_empty();
+                            if t.search_keys(ui, &r) || typed {
                                 searched = true;
                             }
                         } else {
@@ -5121,7 +5133,8 @@ impl eframe::App for App {
             let t = self.tabs.get(self.active);
             let status = |ui: &mut egui::Ui| {
                 if let Some(t) = t {
-                    let (n, name) = (t.current + 1, t.page_name(t.current));
+                    // Both, whichever the rest of the window shows.
+                    let (n, name) = (t.current + 1, t.page_label(t.current));
                     ui.label(if name == n.to_string() {
                         format!("Page {n} of {}", t.page_count())
                     } else {
@@ -5236,47 +5249,8 @@ impl eframe::App for App {
                         Side::Comments => t.show_comments(ui),
                         Side::Signatures => t.show_signatures(ui),
                         Side::Search => {
-                            let r = ui.text_edit_singleline(&mut t.query);
-                            dlg::set_name(&r, "Search for");
-                            let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-                            ui.horizontal(|ui| {
-                                if ui.button("Find").clicked() || enter {
-                                    t.run_search();
-                                }
-                                for (glyph, name, step) in
-                                    [("◀", "Previous match", -1), ("▶", "Next match", 1)]
-                                {
-                                    let r = ui.button(glyph);
-                                    dlg::set_name(&r, name);
-                                    if r.on_hover_text(name).clicked() {
-                                        t.step_hit(step);
-                                    }
-                                }
-                            });
-                            ui.label(format!("{} match(es)", t.hits.len()));
-                            if !t.hits.is_empty() {
-                                let a = actions::get(Act::MarkResultsRedact);
-                                let label = "Mark all for redaction";
-                                if theme::glyph_button(ui, a.icon, label)
-                                    .on_hover_text(a.hint)
-                                    .clicked()
-                                {
-                                    acts.push(Act::MarkResultsRedact);
-                                }
-                            }
-                            let mut jump = None;
-                            egui::ScrollArea::vertical().show(ui, |ui| {
-                                for (i, h) in t.hits.iter().enumerate() {
-                                    let text = format!("p{}  {}", h.page + 1, h.snippet);
-                                    if ui.selectable_label(i == t.hit_idx, text).clicked() {
-                                        jump = Some(i);
-                                    }
-                                }
-                            });
-                            if let Some(i) = jump {
-                                t.hit_idx = i;
-                                let p = t.hits[i].page;
-                                t.go_to(p);
+                            if t.show_results(ui) {
+                                acts.push(Act::MarkResultsRedact);
                             }
                         }
                     });
@@ -5788,6 +5762,7 @@ mod tests {
         }));
         app.tabs[0].query = "Walrus".into();
         app.tabs[0].run_search();
+        searched(&mut app, &ctx);
         assert!(!app.tabs[0].hits.is_empty());
         let mut bad = Vec::new();
         clear_names(&mut app, &ctx, "Read", &mut bad);
@@ -11642,6 +11617,316 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         panic!("nothing came");
+    }
+
+    // ------------------------------------------------ batch 22: search as you type
+
+    /// A tab whose pages hold `lines`, one line of text a page (none for "").
+    fn text_tab(app: &mut App, ctx: &egui::Context, lines: &[&str]) {
+        let mut pdf = Pdf::new();
+        for (i, line) in lines.iter().enumerate() {
+            pdf.insert_blank(i, 612.0, 792.0).unwrap();
+            if !line.is_empty() {
+                let font = FontChoice::default();
+                pdf.add_text(i, (72.0, 100.0), line, font, 20.0, [0.0; 3])
+                    .unwrap();
+            }
+        }
+        assert!(app.add_tab(ctx, pdf, None, None, false));
+    }
+
+    /// Draw frames with `frame` until the active tab's search has all its matches.
+    fn searched_with(app: &mut App, mut frame: impl FnMut(&mut App)) {
+        for _ in 0..500 {
+            frame(app);
+            let t = &app.tabs[app.active];
+            if t.search.complete(&t.query) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the search didn't finish");
+    }
+
+    fn searched(app: &mut App, ctx: &egui::Context) {
+        searched_with(app, |a| {
+            window(a, ctx, 1400.0, vec![]);
+        });
+    }
+
+    /// The window's search results: each page heading's and each row's name, in order.
+    fn result_rows(tree: &egui::accesskit::TreeUpdate) -> Vec<String> {
+        use egui::accesskit::Role;
+        let mut rows: Vec<(f64, String)> = tree
+            .nodes
+            .iter()
+            .filter_map(|(_, n)| {
+                // A label's text is its value.
+                let name = match n.role() {
+                    // Not the status bar's "Page 1 of 3".
+                    Role::Label => n
+                        .value()
+                        .filter(|v| v.starts_with("Page ") && !v.contains(" of "))?,
+                    Role::Button => n
+                        .label()
+                        .filter(|l| l.starts_with("Page ") && l.contains(": "))?,
+                    _ => return None,
+                };
+                Some((n.bounds().map_or(0.0, |b| b.y0), name.to_string()))
+            })
+            .collect();
+        rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+        rows.into_iter().map(|r| r.1).collect()
+    }
+
+    /// ENH-02: typing in the search field shows Search results at once, but searches only
+    /// once the typing pauses; then the matches come, read by page (ENH-03).
+    #[test]
+    fn search_waits_for_a_pause_in_the_typing() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        ctx.enable_accesskit();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        text_tab(&mut app, &ctx, &["Walrus here", "", "the walrus again"]);
+        let ty = Typist::new(&ctx);
+        ty.pause(&mut app);
+        app.act(&ctx, Act::Find);
+        ty.frame(&mut app, vec![]);
+        ty.frame(&mut app, vec![egui::Event::Text("walrus".into())]);
+        let t = &app.tabs[0];
+        assert_eq!(t.query, "walrus");
+        assert!(app.side.shown() && t.side == Side::Search);
+        assert!(t.search.asked.is_none() && t.hits.is_empty());
+        // A tenth of a second later, still nothing.
+        ty.frame(&mut app, vec![]);
+        ty.frame(&mut app, vec![]);
+        assert!(app.tabs[0].search.asked.is_none());
+        searched_with(&mut app, |a| {
+            ty.frame(a, vec![]);
+        });
+        let pages: Vec<usize> = app.tabs[0].hits.iter().map(|h| h.page).collect();
+        assert_eq!(pages, [0, 2]);
+        let tree = ty.pause(&mut app);
+        assert!(shows(&tree, "2 matches"));
+        assert_eq!(
+            result_rows(&tree),
+            [
+                "Page 1",
+                "Page 1: Walrus here",
+                "Page 3",
+                "Page 3: the walrus again"
+            ]
+        );
+    }
+
+    /// ENH-02 (the user's choice): typing goes to the first match at or after the page being
+    /// read, not to the document's first.
+    #[test]
+    fn typing_goes_to_the_first_match_from_the_page_being_read() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        ctx.enable_accesskit();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        text_tab(&mut app, &ctx, &["walrus", "", "", "walrus", ""]);
+        let ty = Typist::new(&ctx);
+        ty.pause(&mut app);
+        app.tabs[0].go_to(2);
+        ty.pause(&mut app);
+        assert_eq!(app.tabs[0].current, 2);
+        app.act(&ctx, Act::Find);
+        ty.frame(&mut app, vec![]);
+        ty.frame(&mut app, vec![egui::Event::Text("walrus".into())]);
+        searched_with(&mut app, |a| {
+            ty.frame(a, vec![]);
+        });
+        ty.pause(&mut app);
+        let t = &app.tabs[0];
+        assert_eq!((t.hit_idx, t.hits[t.hit_idx].page), (1, 3));
+        assert_eq!(t.current, 3);
+    }
+
+    /// ENH-02: Enter searches at once when the typing hasn't been searched yet, then goes to
+    /// the next match, Shift+Enter to the one before, round the ends; the field keeps the
+    /// keyboard. ◀ and ▶ step too.
+    #[test]
+    fn enter_and_the_arrows_step_through_the_matches() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        ctx.enable_accesskit();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        text_tab(&mut app, &ctx, &["walrus", "walrus", "walrus"]);
+        let ty = Typist::new(&ctx);
+        ty.pause(&mut app);
+        app.act(&ctx, Act::Find);
+        ty.frame(&mut app, vec![]);
+        ty.frame(&mut app, vec![egui::Event::Text("walrus".into())]);
+        let none = egui::Modifiers::NONE;
+        ty.frame(&mut app, vec![key_with(Key::Enter, none)]);
+        assert!(
+            app.tabs[0].search.asked.is_some(),
+            "Enter didn't search at once"
+        );
+        searched_with(&mut app, |a| {
+            ty.frame(a, vec![]);
+        });
+        assert_eq!(app.tabs[0].hit_idx, 0);
+        let mut steps = Vec::new();
+        for shift in [false, false, false, true] {
+            let m = if shift { egui::Modifiers::SHIFT } else { none };
+            ty.key(&mut app, Key::Enter, m);
+            steps.push(app.tabs[0].hit_idx);
+        }
+        assert_eq!(steps, [1, 2, 0, 2]);
+        let tree = ty.pause(&mut app);
+        ty.click(&mut app, middle(&tree, "Previous match"));
+        assert_eq!(app.tabs[0].hit_idx, 1);
+        let tree = ty.pause(&mut app);
+        ty.click(&mut app, middle(&tree, "Next match"));
+        assert_eq!(app.tabs[0].hit_idx, 2);
+        // A row clicked is the current match.
+        let tree = ty.pause(&mut app);
+        ty.click(&mut app, middle(&tree, "Page 1: walrus"));
+        assert_eq!(app.tabs[0].hit_idx, 0);
+    }
+
+    /// ENH-02: the matches shown are always the query's: changing the query takes the old
+    /// ones away at once, and emptying the field leaves none, with no search.
+    #[test]
+    fn matches_of_an_older_query_are_never_shown() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        ctx.enable_accesskit();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        text_tab(&mut app, &ctx, &["walrus", "walrus"]);
+        let ty = Typist::new(&ctx);
+        ty.pause(&mut app);
+        app.act(&ctx, Act::Find);
+        ty.frame(&mut app, vec![]);
+        ty.frame(&mut app, vec![egui::Event::Text("walrus".into())]);
+        searched_with(&mut app, |a| {
+            ty.frame(a, vec![]);
+        });
+        assert_eq!(app.tabs[0].hits.len(), 2);
+        let tree = ty.frame(&mut app, vec![egui::Event::Text("x".into())]);
+        assert!(app.tabs[0].hits.is_empty());
+        assert!(result_rows(&tree).is_empty());
+        searched_with(&mut app, |a| {
+            ty.frame(a, vec![]);
+        });
+        let tree = ty.pause(&mut app);
+        assert!(app.tabs[0].hits.is_empty() && shows(&tree, "No matches"));
+        app.tabs[0].query.clear();
+        ty.frame(&mut app, vec![]);
+        let t = &app.tabs[0];
+        assert!(t.hits.is_empty() && t.search.asked.is_none() && t.search.typed.is_none());
+    }
+
+    /// ENH-02: an edit searches again at once, the old matches gone meanwhile, and the
+    /// current match stays the one it was.
+    #[test]
+    fn an_edit_searches_again_and_keeps_the_current_match() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        ctx.enable_accesskit();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        text_tab(&mut app, &ctx, &["walrus", "", "walrus"]);
+        let t = &mut app.tabs[0];
+        t.query = "walrus".into();
+        t.run_search();
+        searched(&mut app, &ctx);
+        app.tabs[0].choose_hit(1);
+        let t = &mut app.tabs[0];
+        let font = FontChoice::default();
+        let add = |p: &mut Pdf| p.add_text(1, (72.0, 100.0), "walrus", font, 20.0, [0.0; 3]);
+        assert!(t.edit(&ctx, add));
+        assert!(t.hits.is_empty());
+        searched(&mut app, &ctx);
+        let t = &app.tabs[0];
+        let pages: Vec<usize> = t.hits.iter().map(|h| h.page).collect();
+        assert_eq!(pages, [0, 1, 2]);
+        assert_eq!(t.hits[t.hit_idx].page, 2);
+    }
+
+    /// Mark all for redaction marks every match, also while the search is still running.
+    #[test]
+    fn mark_all_for_redaction_marks_every_match_even_before_the_search_ends() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        text_tab(&mut app, &ctx, &["walrus", "", "walrus", "walrus"]);
+        let t = &mut app.tabs[0];
+        t.query = "walrus".into();
+        t.run_search();
+        t.mark_results_for_redaction(&ctx, "Tester");
+        let pages: Vec<usize> = t.pdf.redaction_marks().iter().map(|m| m.0).collect();
+        assert_eq!(pages, [0, 2, 3]);
+    }
+
+    /// ENH-36: View > Use the document's page labels chooses what pages are called in search
+    /// results, the thumbnails and a new bookmark; the status bar shows both either way.
+    #[test]
+    fn pages_are_called_by_their_labels_or_their_numbers() {
+        use limarepdf_core::{LabelRange, LabelStyle};
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        ctx.enable_accesskit();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        text_tab(&mut app, &ctx, &["walrus", "", "walrus"]);
+        let roman = LabelRange {
+            page: 0,
+            style: Some(LabelStyle::LowerRoman),
+            prefix: String::new(),
+            first: 1,
+        };
+        assert!(app.tabs[0].edit(&ctx, |p| p.set_label_ranges(&[roman])));
+        app.tabs[0].go_to(2);
+        settle(&mut app, &ctx);
+        let t = &mut app.tabs[0];
+        t.query = "walrus".into();
+        t.run_search();
+        searched(&mut app, &ctx);
+        let mut seen = Vec::new();
+        for labels in [true, false, true] {
+            if app.settings.page_labels != labels {
+                app.act(&ctx, Act::TogglePageLabels);
+            }
+            assert_eq!(app.tabs[0].use_labels, labels);
+            app.act(&ctx, Act::SearchView);
+            let tree = settle(&mut app, &ctx);
+            let rows = result_rows(&tree);
+            let status = shows(&tree, "Page iii (3 of 3)");
+            app.act(&ctx, Act::PagesView);
+            let tree = settle(&mut app, &ctx);
+            // The page shown is "Page 3" either way; its thumbnail is called as chosen.
+            let named = |name: &str| {
+                tree.nodes
+                    .iter()
+                    .filter(|(_, n)| n.label() == Some(name))
+                    .count()
+            };
+            seen.push((rows, status, [named("Page iii"), named("Page 3")]));
+        }
+        let rows = |third: &str| {
+            vec![
+                format!("Page {}", if third == "iii" { "i" } else { "1" }),
+                format!("Page {}: walrus", if third == "iii" { "i" } else { "1" }),
+                format!("Page {third}"),
+                format!("Page {third}: walrus"),
+            ]
+        };
+        assert_eq!(seen[0], (rows("iii"), true, [1, 1]));
+        assert_eq!(seen[1], (rows("3"), true, [0, 2]));
+        assert_eq!(seen[2], seen[0]);
+        // A new bookmark is called the same way.
+        app.act(&ctx, Act::TogglePageLabels);
+        app.act(&ctx, Act::Bookmarks);
+        click_named(&mut app, &ctx, "Add bookmark");
+        let titles: Vec<String> = app.tabs[0]
+            .pdf
+            .outline()
+            .into_iter()
+            .map(|i| i.title)
+            .collect();
+        assert_eq!(titles, ["Page 3"]);
     }
 
     /// One file opened by several paths at once, while the first is still being read, and

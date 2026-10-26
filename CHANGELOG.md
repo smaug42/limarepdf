@@ -7,9 +7,25 @@
 - An optional timing log, for measuring how quickly LimarePDF responds: start it with the environment variable
   `LIMAREPDF_TIMING` set to a file, and it writes there when the app starts, takes input, finishes each frame,
   first shows each page sharp, and starts and ends reading, drawing, searching and saving. Off unless asked for.
+- Search finds a phrase that runs from the bottom of one page to the top of the next, and a word hyphenated at the
+  end of a page, highlighting it on both pages.
+- View > Use the document's page labels: turned off, pages are numbered 1, 2, 3 from the first page in the
+  thumbnails, search results and new bookmarks, instead of by the document's own numbering (such as iii or A-1).
+  The status bar shows both. On unless turned off, and remembered.
 
 ### Changed
 
+- Search as you type: the matches come as soon as you pause typing, with no need to press Enter, and the window
+  stays responsive while a long document is searched, the matches coming in page by page. The view goes to the
+  first match on or after the page you are reading. Enter and Shift+Enter go to the next and previous match.
+  Changing the document brings the results up to date, keeping the match you were on. Searching again for
+  something else on the same document is much quicker, as each page is read only once. The Find button in Search
+  results is gone, as typing searches.
+- Search results are easier to read: the matches are listed under a heading for each page, each with whole words
+  around it, cut with "…", and the match in bold; the count reads "1 match", "12 matches" or "No matches".
+- `limarepdf-cli search` prints each match as `page 3: …the words around it…` and the count as "1 match" or
+  "N matches" ("No matches"), and `--boxes` as `page 3 [x0 y0 x1 y1]`.
+- Mark all for redaction marks every match of the search, even while it is still running.
 - The user guide's Features page is now a short summary of what LimarePDF can do. The detailed status of each
   feature, with its limits and what doesn't work yet, moved to the developer docs as
   [Features and status](docs/developer/feature-status.md).
