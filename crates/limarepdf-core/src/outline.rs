@@ -399,10 +399,9 @@ impl Pdf {
 
     /// Each page object's zero-based index.
     pub(crate) fn page_index(&self) -> HashMap<ObjectId, usize> {
-        self.doc
-            .get_pages()
-            .into_iter()
-            .map(|(n, id)| (id, n as usize - 1))
+        crate::doc::pages(&self.doc)
+            .enumerate()
+            .map(|(n, id)| (id, n))
             .collect()
     }
 }

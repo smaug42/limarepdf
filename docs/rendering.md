@@ -17,8 +17,9 @@ record is in [Testing](developer/testing.md#rendering).
 ## Damaged files
 
 A PDF file ends with a cross-reference table that says where each object starts. When that table is broken (offsets
-that point at the wrong bytes, a cross-reference stream that can't be decoded) or missing, LimarePDF finds the
-objects by reading through the file, as Acrobat, poppler and pdf.js do:
+that point at the wrong bytes, a cross-reference stream that can't be decoded) or missing, or when the file says the
+table starts elsewhere and the table found nearby doesn't lead to all the objects, LimarePDF finds the objects by
+reading through the file, as Acrobat, poppler and pdf.js do:
 
 - every `N G obj` header at the start of a line counts, except inside stream data, and a later copy of an object
   replaces an earlier one, as a later revision would;
@@ -41,7 +42,7 @@ find any pages in it.
 The app then shows a notice that the file was repaired and some content may be missing, with a Save as… button.
 The original file is never replaced without asking: a repaired document counts as changed, so closing it warns of
 unsaved changes, and Save asks whether to replace the original or save the repaired copy as a new file.
-`limarepdf-cli` prints a note on stderr, and writes only where `-o` says. Of about 1,100 test files collected from bug reports, 59 needed repair.
+`limarepdf-cli` prints a note on stderr, and writes only where `-o` says. Of about 1,100 test files collected from bug reports, 58 need repair.
 
 ### Files other apps may show differently
 

@@ -25,6 +25,19 @@ pub struct Pdf {
     pub(crate) made_fonts: HashSet<ObjectId>,
 }
 
+/// The document's pages in order: the page tree's entries whose object is a page. lopdf also
+/// lists an entry whose object is missing or isn't a page (one without `/Type /Page`) as a
+/// blank stand-in page. Those are passed over, as the renderer passes over a missing one, so
+/// a page number means the same page when editing as on screen, and a page tree with no real
+/// page is repaired (see [`Pdf::from_bytes`]).
+pub(crate) fn pages(doc: &Document) -> impl Iterator<Item = ObjectId> + '_ {
+    doc.page_iter().filter(|&id| {
+        doc.get_dictionary(id)
+            .and_then(Dictionary::get_type)
+            .is_ok_and(|t| t == b"Page")
+    })
+}
+
 /// Why a repaired document may read differently in other PDF apps.
 const REPAIRED: &str = "its cross-reference information is damaged, and LimarePDF rebuilt it";
 /// Why a document whose page tree was mended differs from what other readers show.
@@ -80,8 +93,12 @@ impl Pdf {
         // lopdf rebuilds a table it can't read at all by scanning, and then has no table
         // offset (a real one can't be 0: the header is there). Its scan ends a stream at the
         // first `endstream` and ignores `/Length`, so LimarePDF's own repair is used
-        // instead, and lopdf's only when that fails.
-        let rebuilt_by_lopdf = matches!(&opened, Ok(p) if p.doc.xref_start == 0);
+        // instead, and lopdf's only when that fails. So too when lopdf took a table it found
+        // near where the file says one is, and the file doesn't read as other apps read it:
+        // lopdf then passes over the objects that aren't where that table says.
+        let rebuilt_by_lopdf = matches!(&opened, Ok(p) if p.doc.xref_start == 0
+            || (p.doc.xref_recovery == Some(lopdf::xref::XrefRecovery::OffsetCorrected)
+                && p.differs.is_some()));
         if pages > 0 && !rebuilt_by_lopdf {
             return opened.map_err(cannot_open);
         }
@@ -420,11 +437,11 @@ impl Pdf {
     // -------------------------------------------------------------- pages
 
     pub fn page_count(&self) -> usize {
-        self.doc.get_pages().len()
+        pages(&self.doc).count()
     }
 
     pub fn page_ids(&self) -> Vec<ObjectId> {
-        self.doc.get_pages().into_values().collect()
+        pages(&self.doc).collect()
     }
 
     pub(crate) fn inherited(&self, id: ObjectId, key: &[u8]) -> Option<Object> {
@@ -650,6 +667,7 @@ impl Pdf {
                 bookmarks: d.bookmarks.clone(),
                 bookmark_table: d.bookmark_table.clone(),
                 xref_start: d.xref_start,
+                xref_recovery: d.xref_recovery,
                 encryption_state: d.encryption_state.clone(),
             },
             encryption: self.encryption.clone(),

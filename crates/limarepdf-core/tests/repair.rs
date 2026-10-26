@@ -96,6 +96,25 @@ fn wrong_offsets() {
 }
 
 #[test]
+fn offsets_wrong_from_part_way_through() {
+    // As pdf.js issue17147: from some point on, every offset, `startxref`'s included, points
+    // the same distance past its target. Enough entries still point at their objects for
+    // lopdf to take the table, near `startxref`, and pass over the objects it can't find
+    // there (the page's content and the information); they are found by scanning.
+    let (mut b, mut at) = body(&objects());
+    for o in &mut at[3..] {
+        *o += 19;
+    }
+    let xref = b.len();
+    table(&mut b, &at, "/Root 1 0 R /Info 5 0 R");
+    let pointer = b.len() - b"\n%%EOF\n".len() - xref.to_string().len();
+    b.truncate(pointer);
+    b.extend_from_slice(format!("{}\n%%EOF\n", xref + 19).as_bytes());
+    let pdf = opens_repaired(&b, None);
+    assert_eq!(pdf.info().title.as_deref(), Some("Damaged"));
+}
+
+#[test]
 fn no_table_at_all() {
     let (mut b, _) = body(&objects());
     b.extend_from_slice(b"trailer\n<< /Root 1 0 R /Info 5 0 R >>\n%%EOF\n");
@@ -403,6 +422,23 @@ fn a_page_whose_number_another_object_takes() {
     let (mut b, at) = body(&o);
     table(&mut b, &at, "/Root 1 0 R /Info 5 0 R");
     page_list_mended(&b);
+}
+
+#[test]
+fn a_page_missing_from_the_list_is_passed_over_as_it_is_drawn() {
+    // The page list names an object the file doesn't have between two pages. The renderer
+    // passes over it, so the pages must be the same two here, or a page number would mean
+    // another page when editing than on screen.
+    let mut o = objects();
+    o[1].1 = "<< /Type /Pages /Kids [3 0 R 9 0 R 6 0 R] /Count 3 >>".into();
+    o.push((6, page(300)));
+    let (mut b, at) = body(&o);
+    table(&mut b, &at, "/Root 1 0 R /Info 5 0 R");
+    let pdf = Pdf::from_bytes(&b, None).unwrap();
+    assert_eq!(pdf.page_count(), 2);
+    assert_eq!(pdf.page_size(1).unwrap(), (300.0, 100.0));
+    let hp = render::load(b, None).unwrap();
+    assert_eq!(render::Renderer::new(&hp).page_count(), 2);
 }
 
 #[test]

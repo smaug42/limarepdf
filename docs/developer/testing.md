@@ -109,7 +109,7 @@ differently; `summary.txt` has one line per file. The test fails when a file not
 (the known limits, each with its reason) differs. `SAVE_REOPEN_ONLY=issue12` limits the run. A full run takes about
 five minutes; on 2026-10-20, after the page-list repair, 1,082 of 1,089 files were the same, 1 differed (the known
 limit) and 6 were skipped (4 need a password, 1 doesn't open, and PDFBox 2363, where hayro asks for 7.6 GB at
-once to fill one shape at 96 dpi). To check that it catches failures, a scratch copy whose save dropped annotations, kept page 1
+once to fill one shape at 96 dpi); rerun on 2026-10-26 with lopdf 0.46, the same. To check that it catches failures, a scratch copy whose save dropped annotations, kept page 1
 unturned, cleared field values or drew a square on page 2 was flagged in every file where the breakage showed.
 
 The timings and memory figures in [Performance](performance.md) come from
@@ -451,7 +451,13 @@ without changes, or after an undo, nothing is added. With a comment added, every
 LimarePDF and by `pdfsig` alike, and LimarePDF reports the comment as allowed except where the document's certification or a
 signer's lock forbids comments; with a page changed, LimarePDF reports a change not allowed. LimarePDF declines to add to five:
 three damaged files, one hybrid file whose objects its PDF library would misread afterwards (see the limitations),
-and one whose signature was already broken (its byte range ran past the end of the file). A document LimarePDF signed and
+and one whose signature was already broken (its byte range ran past the end of the file). Rerun with lopdf 0.46
+(2026-10-26, a scratch checker, every sample unchanged and with a comment, against 0.45's build of the same tree):
+52 samples open (`malformed-pades.pdf` doesn't); unchanged, none gets anything added; with a comment, the hybrid
+file (`certified-no-change-permitted.pdf`) now saves, reported as a change its certification doesn't allow, and
+LimarePDF declines five: three damaged files, `pdf-eof.pdf`, and `hide.pdf` (built so that other apps read it
+differently). `modified_after_signature.pdf`'s comment came out allowed in some runs and not in others, on 0.45 too:
+the reason its earlier malformed additions give names whichever unreadable object is found first (backlog PB-27). A document LimarePDF signed and
 then saved with a comment and a filled-in field is in the `pdfsig` and OpenSSL cross-check above.
 
 A document LimarePDF signed with a self-signed digital ID, opened in Adobe Acrobat Reader on Windows, shows its signature

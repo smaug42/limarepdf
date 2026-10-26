@@ -59,7 +59,10 @@ focus after a Tab, offers it to the first enabled focusable widget on the dialog
 dialog and fail on a stop with no control.
 
 Damaged files are repaired in `crates/limarepdf-core/src/repair.rs` when lopdf reads a file with no pages, or had
-to rebuild its table itself (its own scan ignores `/Length`, so its result is kept only when the repair fails): it
+to rebuild its table itself (its own scan ignores `/Length`, so its result is kept only when the repair fails), or
+took a table it found near where `startxref` or `/Prev` points (`xref_recovery` is `OffsetCorrected`) and the file
+doesn't read as other apps read it (`Pdf::differs`): lopdf takes such a table when most of its entries point at
+their objects, and passes over the objects the others point past. The repair: it
 scans the bytes for `N G obj` headers (skipping stream data by a `/Length` followed by `endstream`, else to the
 first `endstream`; an indirect length is looked up among every `N G obj <integer> endobj` in the file, a first pass,
 taking the latest that fits and isn't inside the data its own value or the longest fitting one gives, so a copy
@@ -73,9 +76,15 @@ Two workarounds in `crates/limarepdf-core/src/doc.rs` read a corrected copy of a
 stay where they were, so nothing counts as repaired). `blank_null_encrypt` blanks a trailer's `/Encrypt null`, which
 lopdf takes as encryption. `pad_user_hash` handles a standard-security file at revision 3 or 4 whose `/U` is
 shorter than 32 bytes: readers compare only its first 16 bytes there, and some writers store just those (PDFBox's
-test file 1910), but lopdf 0.45 refuses any length but 32 (`InvalidHashLength`) and so reports a wrong password.
+test file 1910), but lopdf (0.46 too) refuses any length but 32 (`InvalidHashLength`) and so reports a wrong password.
 The copy has the encryption dictionary appended as an update with `/U` zero-padded to 32 bytes. The workaround
 stays until lopdf accepts the shorter `/U`; no issue has been filed upstream.
+
+A document's pages are its page tree's entries whose object is a `/Type /Page` dictionary (`doc::pages`, behind
+`Pdf::page_count`, `Pdf::page_ids` and `page_index`). lopdf's own list (`get_pages`, since 0.46) also counts an
+entry whose object is missing or isn't a typed dictionary, as a blank stand-in page; hayro passes over a missing one,
+so taking lopdf's list would shift page numbers between editing and drawing, and a tree with no real page would
+no longer be repaired.
 
 Page content is read by LimarePDF's own parser (`crates/limarepdf-core/src/objects.rs`), which splits it into the objects that
 editing works on and reads the text that search, copying and export use, with its own reader for fonts' ToUnicode

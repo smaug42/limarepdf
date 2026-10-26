@@ -9,7 +9,7 @@ license = "MIT OR Apache-2.0"
 rust-version = "1.95"
 
 [workspace.dependencies]
-lopdf = "0.45"
+lopdf = "0.46"
 hayro = { version = "0.8", features = ["embed-fonts"] }
 anyhow = "1"
 thiserror = "2"
