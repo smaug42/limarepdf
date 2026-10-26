@@ -1026,7 +1026,7 @@ pub fn menu_ui(ui: &mut egui::Ui, menu: &SignMenu, acts: &mut Vec<Act>) {
                     None => ui.button("Picture not found"),
                 };
                 let name = format!("{label} {}", i + 1);
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &name));
                 if r.clicked() {
                     acts.push(Act::SignWith(SignPick::Saved(role, i)));
                     ui.close();
@@ -1599,7 +1599,7 @@ mod tests {
                     w.size = size;
                     let tree = w.settled();
                     let screen = Rect::from_min_size(Pos2::ZERO, size).expand(0.5);
-                    let id = egui::Id::new(("dialog", "Create signature"));
+                    let id = egui::Id::unique(("dialog", "Create signature"));
                     let window = w.ctx.memory(|m| m.area_rect(id)).expect("the window");
                     let at = format!("{way:?} at {size:?}, scale {scale}");
                     assert!(screen.contains_rect(window), "{at}: window {window:?}");

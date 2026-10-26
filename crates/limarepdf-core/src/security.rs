@@ -3,7 +3,6 @@
 use crate::{Pdf, Result};
 use lopdf::encryption::crypt_filters::{Aes128CryptFilter, Aes256CryptFilter, CryptFilter};
 use lopdf::{Document, EncryptionState, EncryptionVersion, Permissions};
-use rand::Rng;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -99,8 +98,7 @@ impl Encryption {
             }
             Cipher::Aes256 => {
                 let f: Arc<dyn CryptFilter> = Arc::new(Aes256CryptFilter);
-                let mut key = [0u8; 32];
-                rand::rng().fill(&mut key);
+                let key = crate::pkcs12::random::<32>()?;
                 return Ok(EncryptionState::try_from(EncryptionVersion::V5 {
                     encrypt_metadata: true,
                     crypt_filters: BTreeMap::from([(b"StdCF".to_vec(), f)]),

@@ -213,6 +213,7 @@ pub fn leave_out_untypable(ui: &egui::Ui, single: bool, font: FontChoice) -> Opt
             let s = match e {
                 egui::Event::Text(s)
                 | egui::Event::Paste(s)
+                | egui::Event::MiddleClickPaste { text: s, .. }
                 | egui::Event::Ime(egui::ImeEvent::Commit(s)) => s,
                 _ => continue,
             };
@@ -303,7 +304,7 @@ const HANDED_BACK: &str = "typing-handed-back";
 /// in the inspector, say), keeping what Ctrl+Z can take back there.
 pub fn hand_back(ctx: &egui::Context, id: egui::Id) {
     ctx.memory_mut(|m| m.request_focus(id));
-    ctx.data_mut(|d| d.insert_temp(egui::Id::new(HANDED_BACK), id));
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique(HANDED_BACK), id));
 }
 
 /// Start the typing history of a text box that has just got the keyboard afresh, unless
@@ -313,7 +314,7 @@ pub fn hand_back(ctx: &egui::Context, id: egui::Id) {
 /// another document, field or comment, or text the document has since undone.
 pub fn fresh_history(ctx: &egui::Context, before: Option<egui::Id>) -> Option<egui::Id> {
     let now = ctx.memory(|m| m.focused());
-    let note = egui::Id::new(HANDED_BACK);
+    let note = egui::Id::unique(HANDED_BACK);
     let handed = ctx.data_mut(|d| {
         let id = d.get_temp::<egui::Id>(note);
         d.remove::<egui::Id>(note);
@@ -470,23 +471,27 @@ fn job(f: &mut egui::epaint::FontsView, text: &str, runs: &[Run]) -> (egui::text
     if let Some(line) = lines.last_mut().filter(|l| l.is_empty()) {
         line.push((text.len()..text.len(), run));
     }
-    // How far each font's baseline is below the top of a row of its own.
-    let mut ascents: Vec<(egui::FontId, f32)> = Vec::new();
-    let mut ascent = |f: &mut egui::epaint::FontsView, font: &egui::FontId| {
-        if let Some((_, a)) = ascents.iter().find(|(id, _)| id == font) {
-            return *a;
+    // How far each font's baseline is below the top of a row of its own, and the font's
+    // height (egui's height for such a row, before rounding).
+    let mut metrics: Vec<(egui::FontId, (f32, f32))> = Vec::new();
+    let mut metric = |f: &mut egui::epaint::FontsView, font: &egui::FontId| {
+        if let Some((_, m)) = metrics.iter().find(|(id, _)| id == font) {
+            return *m;
         }
         let probe = f.layout_job(egui::text::LayoutJob::single_section(
             "M".into(),
             egui::TextFormat::simple(font.clone(), Color32::WHITE),
         ));
-        let a = probe
+        let m = probe
             .rows
             .first()
-            .and_then(|row| Some(row.pos.y + row.glyphs.first()?.pos.y))
-            .unwrap_or(font.size * 0.9);
-        ascents.push((font.clone(), a));
-        a
+            .and_then(|row| {
+                let g = row.glyphs.first()?;
+                Some((row.pos.y + g.pos.y, g.font_height))
+            })
+            .unwrap_or((font.size * 0.9, font.size * LEADING));
+        metrics.push((font.clone(), m));
+        m
     };
     let mut job = egui::text::LayoutJob {
         text: text.to_string(),
@@ -500,39 +505,57 @@ fn job(f: &mut egui::epaint::FontsView, text: &str, runs: &[Run]) -> (egui::text
         rise: 0.0,
     };
     let run_of = |i: usize| runs.get(i).unwrap_or(&fallback);
-    // Each line's largest size, and how far its baseline is below the top of its row.
-    let measured: Vec<(f32, f32)> = lines
+    // Each line's largest size and the run of its first part in that size.
+    let biggest: Vec<(f32, usize)> = lines
         .iter()
         .map(|line| {
-            let size = line
-                .iter()
-                .map(|(_, i)| run_of(*i).font.size)
-                .fold(0.0, f32::max);
-            let top = line
-                .iter()
-                .map(|(_, i)| ascent(f, &run_of(*i).font))
-                .fold(0.0, f32::max);
-            (size, top)
+            line.iter().fold((0.0, 0), |big, &(_, i)| {
+                let size = run_of(i).font.size;
+                if size > big.0 {
+                    (size, i)
+                } else {
+                    big
+                }
+            })
         })
         .collect();
-    for (j, line) in lines.into_iter().enumerate() {
-        let (size, top) = measured[j];
-        // A row as high as puts the next line's baseline its gap below this one's; the
-        // last 1.2 times its size. Never so short that a part can't sit on the baseline.
-        let wanted = match measured.get(j + 1) {
-            Some(&(next, next_top)) => top + line_gap(size, next) - next_top,
+    // egui puts a part's baseline its ascent below the row's top, plus its `valign`'s share
+    // (top none, bottom all) of the row's height less the part's line height, plus half
+    // its line height less its font's: a part as high as the row is centred in it. So the
+    // line's biggest part, as high as the row, sets the baseline, and the rows are made as
+    // high as put each baseline its gap below the one before; the last 1.2 times its size.
+    // egui rounds the heights, so they are rounded here, and each baseline follows the
+    // rounded heights below it. Each row's height, and its baseline below its top:
+    let mut rows = vec![(0.0, 0.0); lines.len()];
+    let mut next: Option<(f32, f32)> = None;
+    for j in (0..lines.len()).rev() {
+        let (size, k) = biggest[j];
+        let r = run_of(k);
+        let (ascent, own) = metric(f, &r.font);
+        let height = match next {
+            Some((below, base)) => 2.0 * (line_gap(size, below) + ascent + r.rise - base) - own,
             None => LEADING * size,
-        };
-        let least = line
-            .iter()
-            .map(|(_, i)| top - ascent(f, &run_of(*i).font) - run_of(*i).rise)
-            .fold(0.0, f32::max);
-        let height = wanted.max(least);
+        }
+        .round()
+        .max(1.0);
+        let base = ascent + r.rise + 0.5 * (height - own);
+        rows[j] = (height, base);
+        next = Some((size, base));
+    }
+    for (j, line) in lines.into_iter().enumerate() {
+        let ((height, base), k) = (rows[j], biggest[j].1);
         for (bytes, i) in line {
             let r = run_of(i);
-            // egui puts a run's baseline its ascent plus the row's height less its own
-            // line height below the row's top, so this height puts it `top - rise` down.
-            let own = (ascent(f, &r.font) + height - top + r.rise).clamp(0.0, height);
+            let (ascent, own) = metric(f, &r.font);
+            // How far below its place in a row of its own the part goes: `base - rise`.
+            let down = base - r.rise - ascent;
+            let (valign, line_height) = if i == k {
+                (egui::Align::BOTTOM, height)
+            } else if down <= 0.5 * (height - own) {
+                (egui::Align::TOP, own + 2.0 * down)
+            } else {
+                (egui::Align::BOTTOM, 2.0 * (height - down) - own)
+            };
             job.sections.push(egui::text::LayoutSection {
                 leading_space: 0.0,
                 byte_range: ByteIndex(bytes.start)..ByteIndex(bytes.end),
@@ -540,13 +563,14 @@ fn job(f: &mut egui::epaint::FontsView, text: &str, runs: &[Run]) -> (egui::text
                     font_id: r.font.clone(),
                     coords: r.coords.clone(),
                     color: r.color,
-                    line_height: Some(own),
+                    line_height: Some(line_height.clamp(0.0, height)),
+                    valign,
                     ..Default::default()
                 },
             });
         }
     }
-    (job, measured.first().map_or(0.0, |m| m.1))
+    (job, rows.first().map_or(0.0, |r| r.1))
 }
 
 /// Draw `text` for typing (the editor `id`) with its first baseline's left end at
@@ -837,6 +861,25 @@ mod tests {
             .map(|r| r.pos.y + r.glyphs[0].pos.y)
             .collect();
         assert!(near(bases[1] - bases[0], 24.0) && near(bases[2] - bases[1], 24.0));
+        // Small above big above middling: each baseline its gap below the one before, and
+        // the big line's small part on its baseline.
+        let mixed = [
+            run(2, 10.0, 0.0),
+            run(2, 30.0, 0.0),
+            run(2, 8.0, 0.0),
+            run(2, 14.0, 0.0),
+        ];
+        let (galley, top) = super::galley(&ctx, "a\nbcd\nef", &mixed);
+        let base = |r: usize, g: usize| galley.rows[r].pos.y + galley.rows[r].glyphs[g].pos.y;
+        assert!(near(base(0, 0), top), "{} {top}", base(0, 0));
+        assert!(near(base(1, 0) - base(0, 0), line_gap(10.0, 30.0)));
+        assert!(
+            near(base(1, 2), base(1, 0)),
+            "{} {}",
+            base(1, 2),
+            base(1, 0)
+        );
+        assert!(near(base(2, 0) - base(1, 0), line_gap(30.0, 14.0)));
     }
 
     #[test]

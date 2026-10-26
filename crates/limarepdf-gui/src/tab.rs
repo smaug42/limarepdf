@@ -1,6 +1,7 @@
 use crate::actions::{self, Act, Ctx};
 use crate::banners::{self, Banner};
 use crate::editor::{annot_tip, Action, Editor, StampPick, Tool, Typed};
+use crate::icon;
 use crate::inspector::{Forms, Hf, Sec, Wm};
 use crate::markup::Mark;
 use crate::recovery::schedule::Schedule;
@@ -12,7 +13,6 @@ use crate::signing::SignPick;
 use crate::theme;
 use crate::worker::{Colours, Key, Sample, Worker, TILE};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptions, Vec2};
-use egui_phosphor::regular as icon;
 use limarepdf_core::disk;
 use limarepdf_core::render::{Missing, MAX_REGION_SCALE};
 use limarepdf_core::{
@@ -2166,7 +2166,7 @@ impl Tab {
         } else {
             (Pos2::new(x, sel.bottom() + 8.0), egui::Align2::CENTER_TOP)
         };
-        egui::Area::new(egui::Id::new(("floating-toolbar", self.id)))
+        egui::Area::new(egui::Id::unique(("floating-toolbar", self.id)))
             .fixed_pos(pos)
             .pivot(pivot)
             .constrain_to(view)
@@ -2184,7 +2184,7 @@ impl Tab {
                             let r = ui.add(dock);
                             r.widget_info(|| {
                                 egui::WidgetInfo::labeled(
-                                    egui::WidgetType::Button,
+                                    egui::Role::Button,
                                     true,
                                     "Dock controls on the right",
                                 )
@@ -2229,7 +2229,7 @@ impl Tab {
                         ui.add(egui::Label::new(&b.text).wrap());
                     };
                     let buttons = |ui: &mut egui::Ui| {
-                        let id = ui.id().with("banner buttons");
+                        let id = ui.scope_id().with("banner buttons");
                         let last = ui.data(|d| d.get_temp(id));
                         let width = crate::dialogs::reading_order(ui, last, |ui| {
                             if let Some((label, act)) = b.action() {
@@ -2249,7 +2249,7 @@ impl Tab {
                                 egui::Button::new(theme::icon(icon::X)).frame_when_inactive(false);
                             let r = ui.add(x);
                             r.widget_info(|| {
-                                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Dismiss")
+                                egui::WidgetInfo::labeled(egui::Role::Button, true, "Dismiss")
                             });
                             if r.on_hover_text("Dismiss").clicked() {
                                 close = Some(i);
@@ -2521,7 +2521,7 @@ impl Tab {
         });
         // Remember the place at the top of the view (the row's first page, and points down
         // the row), so a zoom change can keep it there.
-        let top = out.state.offset.y;
+        let top = out.state.clamped_offset().y;
         let r = row_top.partition_point(|&t| t <= top).saturating_sub(1);
         if let (Some(row), Some(&t)) = (rows.get(r), row_top.get(r)) {
             self.view = (row[0].0, (top - t) / scale);
@@ -2614,9 +2614,7 @@ impl Tab {
                         Sense::click_and_drag(),
                     );
                     let name = format!("Page {}", self.page_name(i));
-                    resp.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name)
-                    });
+                    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &name));
                     rects.push(rect);
                     // Dragging a thumbnail moves it, or the selected pages if it is one
                     // of them.
@@ -2945,7 +2943,7 @@ fn drag_feedback(ui: &egui::Ui, rects: &[Rect], target: Option<usize>, p: Pos2, 
     } else {
         format!("Move {n} pages")
     };
-    let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("thumb-drag"));
+    let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("thumb-drag"));
     let painter = ui.ctx().layer_painter(layer);
     let font = egui::FontId::proportional(12.0);
     let galley = painter.layout_no_wrap(text, font, ui.visuals().strong_text_color());

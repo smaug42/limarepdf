@@ -7,8 +7,11 @@ LimarePDF is dual-licensed under MIT or Apache-2.0, at your option. See [LICENSE
 
 ## Included works
 
-- **Icons:** Phosphor Icons (MIT, © Phosphor Icons), embedded as a font by `egui-phosphor`. The app icon is
-  Phosphor's file-pdf icon, drawn by `crates/limarepdf-gui/tools/make_icon.py`.
+- **Icons:** Phosphor Icons 2.1 (MIT, © 2020 Phosphor Icons), its regular and fill fonts included unmodified;
+  see `crates/limarepdf-gui/assets/fonts/`. The icon names' code points are from
+  [egui-phosphor](https://github.com/amPerl/egui-phosphor) 0.14.0 (MIT or Apache-2.0, © 2023 Romet Tagobert). The
+  app icon is Phosphor's file-pdf icon, drawn by `crates/limarepdf-gui/tools/make_icon.py`. Release archives
+  include the licence as `FONT-LICENSE-Phosphor.txt`.
 - **Interface font:** Inter 4.1 by The Inter Project Authors, SIL Open Font License 1.1, included unmodified; see
   `crates/limarepdf-gui/assets/fonts/`. Release archives include the licence as `FONT-LICENSE-Inter.txt`.
 - **Fonts for text typed on the page:** the Liberation fonts 2.1.5 (Sans, Serif and Mono, in four styles

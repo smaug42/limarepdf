@@ -10,6 +10,7 @@ mod digital;
 mod editor;
 mod fields;
 mod font_list;
+mod icon;
 mod incoming;
 mod inspector;
 #[cfg(target_os = "macos")]
@@ -84,6 +85,9 @@ fn main() -> eframe::Result {
             .with_maximized(settings.window_maximized)
             .with_min_inner_size(settings::WINDOW_MIN)
             .with_drag_and_drop(true),
+        // eframe's `system_fonts` is off (the workspace's Cargo.toml), so this would only
+        // install a stand-in that logs a hint at the first character no font has.
+        system_font_fallback: false,
         ..Default::default()
     };
     eframe::run_native(

@@ -17,7 +17,6 @@ anyhow.workspace = true
 eframe.workspace = true
 rayon.workspace = true
 rfd.workspace = true
-egui-phosphor.workspace = true
 # Typed emoji made of several characters left out whole (page_text.rs); egui already uses it.
 unicode-segmentation = "1.13"
 
@@ -33,6 +32,13 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSString",
     "NSURL",
 ] }
+
+# winit's default features, which eframe passed on until its own defaults were turned off
+# (the workspace's eframe entry): the window's title bar and borders on Wayland desktops that
+# don't draw them, such as GNOME, and libwayland loaded at run time. eframe already uses
+# winit; keep the version in step with eframe's.
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+winit = "0.30.13"
 
 [build-dependencies]
 # Embeds the icon in limarepdf.exe on Windows; does nothing on other platforms.
@@ -70,6 +76,7 @@ assets = [
     ["../../LICENSE-APACHE", "usr/share/doc/limarepdf/", "644"],
     ["../limarepdf-core/models/README.md", "usr/share/doc/limarepdf/OCR-MODEL.md", "644"],
     ["assets/fonts/OFL.txt", "usr/share/doc/limarepdf/FONT-LICENSE-Inter.txt", "644"],
+    ["assets/fonts/LICENSE-Phosphor.txt", "usr/share/doc/limarepdf/FONT-LICENSE-Phosphor.txt", "644"],
     ["../limarepdf-core/assets/fonts/OFL-Liberation.txt", "usr/share/doc/limarepdf/FONT-LICENSE-Liberation.txt", "644"],
     ["../limarepdf-core/assets/fonts/OFL-Caveat.txt", "usr/share/doc/limarepdf/FONT-LICENSE-Caveat.txt", "644"],
     ["../limarepdf-core/assets/fonts/OFL-CedarvilleCursive.txt", "usr/share/doc/limarepdf/FONT-LICENSE-CedarvilleCursive.txt", "644"],
@@ -96,6 +103,7 @@ assets = [
     { source = "../../LICENSE-APACHE", dest = "/usr/share/licenses/limarepdf/LICENSE-APACHE", mode = "644" },
     { source = "../limarepdf-core/models/README.md", dest = "/usr/share/doc/limarepdf/OCR-MODEL.md", mode = "644", doc = true },
     { source = "assets/fonts/OFL.txt", dest = "/usr/share/licenses/limarepdf/FONT-LICENSE-Inter.txt", mode = "644" },
+    { source = "assets/fonts/LICENSE-Phosphor.txt", dest = "/usr/share/licenses/limarepdf/FONT-LICENSE-Phosphor.txt", mode = "644" },
     { source = "../limarepdf-core/assets/fonts/OFL-Liberation.txt", dest = "/usr/share/licenses/limarepdf/FONT-LICENSE-Liberation.txt", mode = "644" },
     { source = "../limarepdf-core/assets/fonts/OFL-Caveat.txt", dest = "/usr/share/licenses/limarepdf/FONT-LICENSE-Caveat.txt", mode = "644" },
     { source = "../limarepdf-core/assets/fonts/OFL-CedarvilleCursive.txt", dest = "/usr/share/licenses/limarepdf/FONT-LICENSE-CedarvilleCursive.txt", mode = "644" },

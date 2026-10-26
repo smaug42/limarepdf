@@ -104,8 +104,9 @@ pub(crate) fn append_revision(original: &[u8], edited: &Document) -> Result<Appe
     inc.save_to(&mut bytes)
         .map_err(|e| anyhow!("writing the new revision failed: {e}"))?;
 
-    // Read it back before handing it out. lopdf reads a hybrid section's stream only while
-    // it is the newest section, so after a hybrid file it can miss objects.
+    // Read it back before handing it out. A hybrid file is named in the message: lopdf
+    // before 0.46 read a hybrid section's stream only while it was the newest section, so
+    // after a hybrid file it could miss objects, and that layout is still the likeliest to.
     let hybrid = sig_changes::newest_is_hybrid(original);
     let lost = |why: String| {
         if hybrid {

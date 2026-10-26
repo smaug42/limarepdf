@@ -270,12 +270,12 @@ impl Tab {
                 along_y && (at.x - b.min.x).abs() < GRAB,
             ]
         };
-        let id = egui::Id::new(("crop-box", self.id, page));
+        let id = egui::Id::unique(("crop-box", self.id, page));
         // The page and the room around it to take its edges.
         let resp = ui.interact(r.expand(GRAB), id, Sense::drag());
         resp.widget_info(|| {
             let name = format!("Crop box on page {}", page + 1);
-            egui::WidgetInfo::labeled(egui::WidgetType::Other, true, name)
+            egui::WidgetInfo::labeled(egui::Role::Unknown, true, name)
         });
         let grabbed = self
             .crop_drag

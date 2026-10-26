@@ -1020,25 +1020,25 @@ pub enum Hide {
     StrayFree,
     /// It is only in an object stream, with no entry at all.
     StrayUnlisted,
-    /// The other way round: only the stream of a hybrid revision that isn't the newest
-    /// lists it, which those apps read and lopdf doesn't.
+    /// Not hidden after all: only the stream of a hybrid revision that isn't the newest
+    /// lists it, which those apps read, and lopdf too since 0.46 (0.45 didn't). Not in
+    /// [`HIDES`].
     OlderHybrid,
 }
 
-pub const HIDES: [Hide; 5] = [
+/// The ways of hiding object 5 from apps that follow the specification.
+pub const HIDES: [Hide; 4] = [
     Hide::TableFree,
     Hide::StreamFree,
     Hide::StrayFree,
     Hide::StrayUnlisted,
-    Hide::OlderHybrid,
 ];
 
 /// A one-page contract with an empty signature field "Sign here". The page says "Pay one
 /// million"; object 5, its XObject resources, names a form that covers that with "Pay one
 /// hundred". `hide` makes apps following the specification read object 5 as deleted or
 /// missing, so they show "Pay one million" while lopdf on its own shows "Pay one
-/// hundred". With [`Hide::OlderHybrid`] those apps show "Pay one hundred" and lopdf misses
-/// object 5.
+/// hundred". With [`Hide::OlderHybrid`] those apps and lopdf all show "Pay one hundred".
 pub fn hidden_payment(hide: Hide) -> Vec<u8> {
     let mut w = Writer::new();
     w.obj(

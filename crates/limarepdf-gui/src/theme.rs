@@ -129,17 +129,20 @@ fn fonts() -> FontDefinitions {
     let regular = include_bytes!("../assets/fonts/Inter-Regular.ttf");
     let semi = include_bytes!("../assets/fonts/Inter-SemiBold.ttf");
     let mid = include_bytes!("../assets/fonts/Inter-Medium.ttf");
+    let phosphor = include_bytes!("../assets/fonts/Phosphor.ttf");
+    let phosphor_fill = include_bytes!("../assets/fonts/Phosphor-Fill.ttf");
     f.font_data
         .insert("Inter".into(), FontData::from_static(regular).into());
     f.font_data
         .insert("Inter-SemiBold".into(), FontData::from_static(semi).into());
     f.font_data
         .insert("Inter-Medium".into(), FontData::from_static(mid).into());
-    f.families
-        .entry(FontFamily::Proportional)
-        .or_default()
-        .insert(0, "Inter".into());
-    egui_phosphor::add_to_fonts(&mut f, egui_phosphor::Variant::Regular);
+    f.font_data
+        .insert("phosphor".into(), FontData::from_static(phosphor).into());
+    let text = f.families.entry(FontFamily::Proportional).or_default();
+    text.insert(0, "Inter".into());
+    // Second, so icons can sit in ordinary labels without Phosphor's blank a–z hiding Inter's.
+    text.insert(1, "phosphor".into());
     // The same list with SemiBold or Medium in front, so icons and symbols still resolve.
     let mut bold = f.families[&FontFamily::Proportional].clone();
     bold.insert(0, "Inter-SemiBold".into());
@@ -153,7 +156,7 @@ fn fonts() -> FontDefinitions {
     f.families.insert(icons(), icons_list.clone());
     f.font_data.insert(
         "phosphor-fill".into(),
-        egui_phosphor::Variant::Fill.font_data().into(),
+        FontData::from_static(phosphor_fill).into(),
     );
     icons_list[0] = "phosphor-fill".into();
     f.families.insert(icons_fill(), icons_list);
@@ -272,7 +275,7 @@ pub fn dialog_choices(s: &mut Style) {
 pub fn field(edit: egui::TextEdit<'_>) -> egui::TextEdit<'_> {
     edit.margin(Margin::symmetric(12, 0))
         .min_size(Vec2::new(0.0, DIALOG_CONTROL))
-        .vertical_align(egui::Align::Center)
+        .align(egui::Align2::LEFT_CENTER)
 }
 
 /// The accent colour.

@@ -192,7 +192,7 @@ fn loaded(
         return true;
     }
     let loads = ctx.data_mut(|d| {
-        d.get_temp_mut_or_default::<Loads>(egui::Id::new("typing fonts"))
+        d.get_temp_mut_or_default::<Loads>(egui::Id::unique("typing fonts"))
             .0
             .clone()
     });
@@ -208,14 +208,16 @@ fn loaded(
             let (loads, ctx, key) = (loads.clone(), ctx.clone(), key.to_string());
             std::thread::spawn(move || {
                 let load = match fetch() {
-                    Some((bytes, index)) => Load::Found {
-                        data: Arc::new(FontData {
-                            font: bytes,
-                            index,
-                            tweak: Default::default(),
-                        }),
-                        sent: false,
-                    },
+                    Some((bytes, index)) => {
+                        let data = match bytes {
+                            Cow::Borrowed(b) => FontData::from_static(b),
+                            Cow::Owned(v) => FontData::from_owned(v),
+                        };
+                        Load::Found {
+                            data: Arc::new(FontData { index, ..data }),
+                            sent: false,
+                        }
+                    }
                     None => Load::Missing {
                         limited: max.is_some(),
                     },
@@ -442,7 +444,7 @@ mod tests {
         let done = Instant::now() + Duration::from_secs(60);
         loop {
             frame(&ctx);
-            let loads = ctx.data_mut(|d| d.get_temp::<Loads>(egui::Id::new("typing fonts")));
+            let loads = ctx.data_mut(|d| d.get_temp::<Loads>(egui::Id::unique("typing fonts")));
             let looking = loads.is_some_and(|l| {
                 matches!(
                     l.0.lock()

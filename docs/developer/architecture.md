@@ -14,7 +14,11 @@ It uses:
 - [`hayro`](https://crates.io/crates/hayro) to draw pages, on the CPU (see [Rendering](../rendering.md)), and
   [`fontdb`](https://crates.io/crates/fontdb) to find installed fonts for fonts a file doesn't embed;
 - [`egui`](https://crates.io/crates/egui) for the interface, and [`rfd`](https://crates.io/crates/rfd) for file
-  dialogs;
+  dialogs. eframe's default features are off and the ones used listed (the workspace's `Cargo.toml`), so a new
+  default isn't taken unseen (0.37's `system_fonts` isn't, and `NativeOptions::system_font_fallback` is off with
+  it); winit, which eframe then gives only its X11 and Wayland features, is named in `limarepdf-gui`'s
+  `Cargo.toml` for its defaults (Wayland window decorations, libwayland loaded at run time), at eframe's version.
+  The icons are the Phosphor fonts in `crates/limarepdf-gui/assets/fonts/`, by name in `src/icon.rs`;
 - [`image`](https://crates.io/crates/image) for images;
 - [`ocrs`](https://github.com/robertknight/ocrs) for text recognition (see [Scans and OCR](../scanning-and-ocr.md));
   the usual scanner and OCR libraries, SANE and Tesseract, are C/C++, so LimarePDF doesn't drive scanners;
@@ -59,7 +63,10 @@ focus after a Tab, offers it to the first enabled focusable widget on the dialog
 dialog and fail on a stop with no control.
 
 Damaged files are repaired in `crates/limarepdf-core/src/repair.rs` when lopdf reads a file with no pages, or had
-to rebuild its table itself (its own scan ignores `/Length`, so its result is kept only when the repair fails): it
+to rebuild its table itself (its own scan ignores `/Length`, so its result is kept only when the repair fails), or
+took a table it found near where `startxref` or `/Prev` points (`xref_recovery` is `OffsetCorrected`) and the file
+doesn't read as other apps read it (`Pdf::differs`): lopdf takes such a table when most of its entries point at
+their objects, and passes over the objects the others point past. The repair: it
 scans the bytes for `N G obj` headers (skipping stream data by a `/Length` followed by `endstream`, else to the
 first `endstream`; an indirect length is looked up among every `N G obj <integer> endobj` in the file, a first pass,
 taking the latest that fits and isn't inside the data its own value or the longest fitting one gives, so a copy
@@ -73,9 +80,15 @@ Two workarounds in `crates/limarepdf-core/src/doc.rs` read a corrected copy of a
 stay where they were, so nothing counts as repaired). `blank_null_encrypt` blanks a trailer's `/Encrypt null`, which
 lopdf takes as encryption. `pad_user_hash` handles a standard-security file at revision 3 or 4 whose `/U` is
 shorter than 32 bytes: readers compare only its first 16 bytes there, and some writers store just those (PDFBox's
-test file 1910), but lopdf 0.45 refuses any length but 32 (`InvalidHashLength`) and so reports a wrong password.
+test file 1910), but lopdf (0.46 too) refuses any length but 32 (`InvalidHashLength`) and so reports a wrong password.
 The copy has the encryption dictionary appended as an update with `/U` zero-padded to 32 bytes. The workaround
 stays until lopdf accepts the shorter `/U`; no issue has been filed upstream.
+
+A document's pages are its page tree's entries whose object is a `/Type /Page` dictionary (`doc::pages`, behind
+`Pdf::page_count`, `Pdf::page_ids` and `page_index`). lopdf's own list (`get_pages`, since 0.46) also counts an
+entry whose object is missing or isn't a typed dictionary, as a blank stand-in page; hayro passes over a missing one,
+so taking lopdf's list would shift page numbers between editing and drawing, and a tree with no real page would
+no longer be repaired.
 
 Page content is read by LimarePDF's own parser (`crates/limarepdf-core/src/objects.rs`), which splits it into the objects that
 editing works on and reads the text that search, copying and export use, with its own reader for fonts' ToUnicode
@@ -121,7 +134,11 @@ Liberation fonts that `typing_fonts.rs` picks (same widths as Helvetica, Times a
 line with `Pdf::add_text_parts` as one undo step. A line being edited (`editor.rs`'s line editor, sharing
 `page_text`'s drawing) sits on `PageObject::baseline` and each part is drawn in the font
 `PageObject::keeps_font` says `Pdf::edit_text` will write it in: the part's own (installed, else its Liberation
-look-alike), the installed family it is from, or a standard one. Both edit a `styled::Styled`, the text with a
+look-alike), the installed family it is from, or a standard one. `page_text::job` puts a line's parts of
+different sizes and rises on one baseline, and each line's baseline `line_gap` below the one before, through
+egui's per-part line height and vertical alignment: egui (since 0.37) centres a part in a line height of its own,
+so each line's biggest part is made as high as the row and sets the baseline, and the others get the height and
+alignment that put them on it (`parts_of_a_line_share_its_baseline`). Both edit a `styled::Styled`, the text with a
 style per character: it keeps the styles through egui's plain-string `TextEdit` by comparing each frame's text
 with the last, applies Word's rules for style commands, gives the inspector its values (`None` where the
 selection mixes them), and hands core the line as `TextPart`s; `styled::History` is the undo inside the line,
@@ -214,7 +231,10 @@ Every path that writes typed text checks it the same way (BUG-24): new and edite
 boxes and fill-and-sign text, always Helvetica, through `embed::check_writable` in `Pdf::add_text_box` and in
 `Pdf::set_annotation` for a box's new text, with the app leaving out at the caret what Helvetica can't write (the
 text box on the page in `Editor::writing_ui`, the inspector's Text box in `annot_inspector`, Fill and sign's Text
-in `SignPane::ui`, all through `page_text::leave_out_untypable` and `page_text::fixed_note`); headers, footers,
+in `SignPane::ui`, all through `page_text::leave_out_untypable` and `page_text::fixed_note`, which filter typed
+text, pastes, input-method text and middle-click pastes alike; and the other way, `App::offer_selection` sends the
+page text selected in the tab in front as egui's `TextSelectionSettled` once it settles, which egui-winit puts in
+X11 and Wayland's PRIMARY selection); headers, footers,
 Bates numbers and watermarks through `Pdf::pen` and `inspector::stamp_text`; form values through
 `form_write::check_value`; stamp wording through `stamp_wording`; typed signatures through `typed_signature`; the
 signer's name on a signature's look through `sig_sign::shown_name` (left out when it can't be written). Comments,
@@ -340,7 +360,9 @@ signature, certificates, timestamps), over a small BER/DER reader, `asn1.rs`, th
 so signed attributes are never re-encoded before checking. The cryptography is RustCrypto's (`rsa`, `p256`, `p384`,
 `sha1`, `sha2`, `x509-cert`). What changed after each signature is worked out in `sig_changes.rs`: it reads the
 appended revisions' cross-reference sections itself (lopdf ignores free entries and repairs broken tables, which
-would hide changes), checks that lopdf reads the same objects, then compares each signed version with the next,
+would hide changes), checks that lopdf reads the same objects (in number order, so a revision with several faults
+always gives the same reason: saving compares the reasons before and after, and one naming another object would
+count as a new change), then compares each signed version with the next,
 judging every object that differs by each role it plays (page content, comment, form field, signature, document
 structure) against the signer's permissions. Trust is in `trust.rs`: the trust list file (`trust.txt` in the
 settings folder, whose location `limarepdf_core::settings_dir` gives both the app and the command line), and the chain
@@ -612,7 +634,7 @@ from the RustCrypto project unless noted, pinned to exact versions where they ar
 | `aes`, `cbc` | 0.9, 0.2.1 | stable | ID file encryption |
 | `des`, `rc2` | 0.9.0 | stable | reading older ID files only (3DES, RC2) |
 | `zeroize`, `subtle` | 1.9, 2.6 | stable | wiping secrets, constant-time comparison |
-| `getrandom` | 0.4 | stable | random numbers from the operating system |
+| `getrandom` | 0.4 | stable | random numbers from the operating system (also the AES-256 file key and a protected file's ID when it has none, through `pkcs12::random`) |
 | `rpassword` | 7.5.4 | stable, not RustCrypto | asking for passwords without showing them (command line) |
 
 "Pre-release" means their programming interface may still change, not that they are untested; they come from the

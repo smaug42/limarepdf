@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- A file whose cross-reference information (which says where each object is) goes wrong only part way through
+  could open with objects missing, such as a page's content or the document's title and author, and without
+  saying it was damaged. LimarePDF now rebuilds it by scanning the file, with the usual note that it was repaired.
+- A signature whose document was already changed in a way LimarePDF can't read named a different object each time
+  it was checked, so saving a comment into such a document sometimes asked about changes the signer didn't allow
+  and sometimes didn't. The reason now names the same object every time, and the save gives the same answer.
 - Ctrl+Z in a form field could bring back text typed in another document's field of the same name, and a new
   note could take back the text of the note typed before it on the page, both then saved. Each document's text
   boxes now keep their typing apart, and a box's own undo starts empty each time it gets the keyboard: what was
@@ -308,6 +314,23 @@
   installing instead of the app failing to start. The Intel macOS builds now say macOS 11 or later, as the
   Apple Silicon ones and the docs do (they said 10.12). The docs no longer say older Linux systems can use the
   archive: it needs the same glibc.
+- Black-and-white (fax) pictures more than 65,535 pixels wide are now read and written: redaction cuts them as it
+  does other pictures instead of removing them whole, and Optimise scans stores them instead of skipping them.
+- Signed documents with the older mixed (hybrid) cross-reference layout now save with their signatures kept, like
+  any other; for many of them LimarePDF had to write the whole file. A file in which only an older part of that
+  layout lists an object now reads as other apps read it.
+- Some files LimarePDF called damaged and rebuilt now open as they are written, since their cross-reference
+  information is read correctly; a few of them show the note that other apps may show them differently instead.
+- A line break written as it is inside a piece of page text (rare) now reads as a line feed, as the PDF format
+  says and as LimarePDF draws it. Parts of a page written after a picture and separated by null characters
+  (rare) can now be selected and edited.
+- Libraries moved to their new major versions: fax 0.3 (black-and-white pictures), lopdf 0.46 (reading and
+  writing PDF files) and egui 0.37 (the app's window and controls). With egui 0.37, on Linux, text selected in
+  another app or in a LimarePDF text box can be pasted into a text box with the middle mouse button, as in other
+  Linux apps (what a box can't write is left out with a note, as when typing), and text selected on the page or
+  in a text box can be pasted into other apps the same way, and trackpad scrolling springs back at the ends of the
+  document. The Phosphor icons are now part of LimarePDF itself rather than a separate library, and the
+  packages include their licence (`FONT-LICENSE-Phosphor.txt`).
 
 ## [0.9.0] - 2026-10-23
 

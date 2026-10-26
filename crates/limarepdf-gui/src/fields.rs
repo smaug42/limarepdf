@@ -67,7 +67,7 @@ impl Default for FormUi {
             focus: None,
             left: None,
             scroll: false,
-            scope: egui::Id::new("form"),
+            scope: egui::Id::unique("form"),
         }
     }
 }

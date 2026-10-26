@@ -1120,8 +1120,8 @@ fn shows_one_million(text: &str, what: impl std::fmt::Debug) {
     );
 }
 
-/// lopdf on its own holds object 5 in every [`Hide`] file but the hybrid one; LimarePDF drops
-/// it, as other apps do. In the hybrid file lopdf can't see object 5 at all.
+/// lopdf on its own holds object 5 in every [`HIDES`] file; LimarePDF drops it, as other apps
+/// do.
 #[test]
 fn limarepdf_shows_what_other_apps_show() {
     let control = Pdf::from_bytes(&hidden_payment(Hide::Not), None).unwrap();
@@ -1130,17 +1130,38 @@ fn limarepdf_shows_what_other_apps_show() {
     for hide in HIDES {
         let bytes = hidden_payment(hide);
         let lopdf = lopdf::Document::load_mem(&bytes).unwrap();
-        assert_eq!(
-            lopdf.objects.contains_key(&(5, 0)),
-            hide != Hide::OlderHybrid,
-            "{hide:?}"
-        );
+        assert!(lopdf.objects.contains_key(&(5, 0)), "{hide:?}");
         let pdf = Pdf::from_bytes(&bytes, None).unwrap();
         assert!(!pdf.doc.objects.contains_key(&(5, 0)), "{hide:?}");
         // The app and the CLI say so.
         assert!(pdf.differs().is_some(), "{hide:?}");
         shows_one_million(&pdf.page_text(0), hide);
     }
+}
+
+/// Object 5 listed only by an older hybrid revision's cross-reference stream: lopdf reads that
+/// stream as other apps do (0.45 didn't), so LimarePDF shows what they show, signs on top of
+/// the file, and checks another app's signature of it.
+#[test]
+fn an_older_hybrid_revision_reads_as_other_apps_read_it() {
+    let bytes = hidden_payment(Hide::OlderHybrid);
+    let lopdf = lopdf::Document::load_mem(&bytes).unwrap();
+    assert!(lopdf.objects.contains_key(&(5, 0)));
+    let pdf = Pdf::from_bytes(&bytes, None).unwrap();
+    assert_eq!(pdf.differs(), None);
+    assert!(pdf.page_text(0).contains("Pay one hundred"));
+
+    let s = sign(&bytes, &req(rsa(), field("Sign here")));
+    assert!(!s.rewritten);
+    assert!(s.bytes.starts_with(&bytes));
+    newest_is_good(&s.bytes, rsa());
+
+    let signed = sigkit::sign(&bytes, &id("rsa3072"), &Field::default(), &Cms::default());
+    let rep = report(&signed);
+    let [s] = &rep.signatures[..] else {
+        panic!("{} signatures", rep.signatures.len());
+    };
+    assert!(matches!(s.status, SigStatus::Valid), "{:?}", s.status);
 }
 
 /// Signing doesn't build on a file other apps read differently: it writes what LimarePDF shows
@@ -1318,16 +1339,22 @@ fn cross_check_hidden_content_with_poppler() {
             .expect("poppler installed");
         String::from_utf8_lossy(&out.stdout).into_owned()
     };
-    for hide in HIDES {
+    for hide in HIDES.into_iter().chain([Hide::OlderHybrid]) {
         let path = dir.join(format!("{hide:?}.pdf"));
-        // Apps disagree on the originals: poppler 26 follows the specification for the
-        // cross-reference stream and the hybrid file, but for the others it rebuilds the
-        // cross-reference by scanning and shows "Pay one hundred". So LimarePDF vouches for
-        // none of them as they are; what it signs reads the same everywhere.
+        // Apps disagree on the hiding originals: poppler 26 follows the specification for the
+        // cross-reference stream, but for the others it rebuilds the cross-reference by
+        // scanning and shows "Pay one hundred". So LimarePDF vouches for none of them as they
+        // are; what it signs reads the same everywhere. The hybrid file poppler reads as
+        // LimarePDF does, "Pay one hundred", and LimarePDF signs on top of it.
         let original = hidden_payment(hide);
         let signed = sign(&original, &req(rsa(), field("Sign here"))).bytes;
         std::fs::write(&path, &signed).unwrap();
-        shows_one_million(&run("pdftotext", &path), hide);
+        let text = run("pdftotext", &path);
+        if hide == Hide::OlderHybrid {
+            assert!(text.contains("Pay one hundred"), "{text:?}");
+        } else {
+            shows_one_million(&text, hide);
+        }
         let sigs = run("pdfsig", &path);
         assert_eq!(
             sigs.matches("Signature Validation: Signature is Valid.")

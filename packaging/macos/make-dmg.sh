@@ -40,6 +40,7 @@ cp target/package-docs/README.md target/package-docs/CHANGELOG.md target/package
 cp LICENSE-MIT LICENSE-APACHE "$res/"
 cp crates/limarepdf-core/models/README.md "$res/OCR-MODEL.md"
 cp crates/limarepdf-gui/assets/fonts/OFL.txt "$res/FONT-LICENSE-Inter.txt"
+cp crates/limarepdf-gui/assets/fonts/LICENSE-Phosphor.txt "$res/FONT-LICENSE-Phosphor.txt"
 for f in OFL-Liberation OFL-Caveat OFL-CedarvilleCursive LICENSE-HomemadeApple OFL-Zeyada; do
   cp "crates/limarepdf-core/assets/fonts/$f.txt" "$res/FONT-LICENSE-${f#*-}.txt"
 done

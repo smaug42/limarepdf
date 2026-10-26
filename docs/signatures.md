@@ -697,10 +697,10 @@ The full record, with the files used, is in [Testing](developer/testing.md#digit
 - Saving a signed document adds your changes after what was signed, so whatever you delete stays readable in the
   signed version; redaction and removing hidden information write the whole file instead, which breaks the
   signatures (see [Saving a signed document](#saving-a-signed-document)).
-- Encrypted signed documents, damaged ones and those with the older mixed (hybrid) cross-reference layout can be
-  saved only by writing the whole file, which breaks their signatures (LimarePDF asks first). For hybrid files, LimarePDF's PDF
-  library reads such a layout correctly only while it is the newest part of the file; LimarePDF detects when that would go
-  wrong by reading the result back, so some hybrid files do save with their signatures kept.
+- Encrypted signed documents and damaged ones can be saved only by writing the whole file, which breaks their
+  signatures (LimarePDF asks first). Those with the older mixed (hybrid) cross-reference layout save with their
+  signatures kept, like any other: LimarePDF reads every added part back before writing it, and if one wouldn't read
+  correctly, it says so and offers to write the whole file instead.
 - Objects LimarePDF writes again are written the way its PDF library writes them: a number stored as `612.0` comes out as
   `612`, and decimals beyond about seven significant digits are rounded. LimarePDF judges numbers by value, so this is no
   change to it; whether Acrobat agrees is to be confirmed in the round trips.
@@ -865,8 +865,9 @@ certificates a document carries never become trusted by being there.
   the reason it gives (see [Saving a signed document](#saving-a-signed-document)). Save as a new file to keep the
   signed original. On the command line the same cases stop with the reason and `--break-signatures` to go ahead.
 - **"uses the older mixed (hybrid) layout, and LimarePDF can't add to it reliably"**: the file was saved by a program
-  (often an older Acrobat) in a way LimarePDF's PDF library misreads once anything is added. Ask for a copy saved by a
-  current version, or add your changes in another editor.
+  (often an older Acrobat) in the older mixed layout, and what LimarePDF added to it didn't read back correctly, so
+  nothing was written. Please report it, with the document if you can; meanwhile ask for a copy saved by a current
+  version, or add your changes in another editor.
 
 ---
 

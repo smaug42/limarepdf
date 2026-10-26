@@ -64,7 +64,7 @@ pub fn choose(f: &mut FontChoice, family: Family) {
 /// list shows no name, as for text in several families. Returns whether a family was
 /// picked in the list, even `f`'s own.
 pub fn ui(ui: &mut egui::Ui, f: &mut FontChoice, blank: bool) -> bool {
-    let id = ui.id().with("fam");
+    let id = ui.scope_id().with("fam");
     let search_id = id.with("search");
     let name = if blank {
         String::new()

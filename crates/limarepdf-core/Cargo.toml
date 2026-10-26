@@ -10,10 +10,9 @@ hayro.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 rayon.workspace = true
-rand.workspace = true
 image.workspace = true
 tiff.workspace = true
-fax = "0.2"
+fax = "0.3"
 # Checking Flate data in full before hidden layers are removed (sanitise.rs); lopdf and hayro
 # already use it. The pure-Rust zlib-rs backend, as hayro has it, so no C zlib is used.
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }

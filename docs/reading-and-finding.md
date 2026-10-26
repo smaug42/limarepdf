@@ -121,6 +121,9 @@ More ways to select:
 Words are copied in reading order, with spaces between words and line breaks between lines and pages. Recognised
 (OCR) text is selected and copied like any other text. ☰ > Edit > Copy text does the same as Ctrl+C.
 
+On Linux, as in other Linux apps, the selected text can also be pasted into another app (or a LimarePDF text box)
+by clicking there with the middle mouse button, without copying it first.
+
 ### Print or save just the selection
 
 Right-click the selection and choose **Print selected text…** or **Save selected text…** (also under ☰ > Edit).

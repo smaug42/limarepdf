@@ -8,9 +8,9 @@
 
 use crate::banners::{self, Banner};
 use crate::dialogs::{self, fact, Btn, Outcome, Shell};
+use crate::icon;
 use crate::theme::{self, Tone};
 use eframe::egui::{self, Context, RichText, Ui};
-use egui_phosphor::regular as icon;
 use limarepdf_core::{
     display_line, CertInfo, DigitalSignature, FieldLock, LockAction, SigKind, SigStatus,
     SignatureReport, TimeSource, Trust, TrustList, TrustRole,
