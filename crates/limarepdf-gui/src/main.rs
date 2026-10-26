@@ -27,6 +27,7 @@ mod signing;
 mod styled;
 mod tab;
 mod theme;
+mod timing;
 mod typing_fonts;
 mod worker;
 
@@ -65,6 +66,7 @@ fn read_args(
 }
 
 fn main() -> eframe::Result {
+    timing::start();
     let (files, page) = read_args(std::env::args().skip(1), cfg!(target_os = "macos"));
     // Finder's Open With and double-click, from the first one, sent as the app launches.
     #[cfg(target_os = "macos")]

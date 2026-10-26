@@ -11,6 +11,7 @@ use crate::settings::Layout;
 use crate::signatures::{self, Check, PanelAct, SigState};
 use crate::signing::SignPick;
 use crate::theme;
+use crate::timing;
 use crate::worker::{Colours, Key, Sample, Worker, TILE};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, TextureOptions, Vec2};
 use limarepdf_core::disk;
@@ -1839,6 +1840,8 @@ impl Tab {
     }
 
     pub fn run_search(&mut self) {
+        let n = self.query.chars().count();
+        timing::mark("search start", || format!("{n} characters"));
         self.hit_idx = 0;
         self.matches.clear();
         match self.pdf.search(&self.query) {
@@ -1851,6 +1854,7 @@ impl Tab {
                 self.matches.insert(p, b);
             }
         }
+        timing::mark("search end", || format!("{} hits", self.hits.len()));
         if !self.hits.is_empty() {
             self.show_hit();
         }
@@ -2442,13 +2446,19 @@ impl Tab {
                 let (key, key_scale, tiles) = self.page_key(&ctx, i, self.zoom * BASE * ppp);
                 let failed = self.failed.contains_key(&i);
                 match self.pages.get(&i) {
-                    Some((_, tex)) => {
+                    Some((k, tex)) => {
                         painter.image(
                             tex.id(),
                             r,
                             Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
                             Color32::WHITE,
                         );
+                        if *k == key.1 && !self.stale.contains(&i) {
+                            let id = self.id;
+                            timing::once("page drawn", || {
+                                format!("tab {id} page {} at {k}", i + 1)
+                            });
+                        }
                     }
                     None if failed => {
                         failed_page(&painter, r, &self.failed[&i]);

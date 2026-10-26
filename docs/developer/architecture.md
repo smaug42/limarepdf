@@ -548,6 +548,27 @@ submenu's name before it in the weak colour ("Theme › Dark"), names the row `a
 readers ("Theme: Dark") and searches the label, submenu and group (`actions::matches`; BUG-34, audit A18). A test
 keeps every palette entry's name its own.
 
+The optional timing log (`crates/limarepdf-gui/src/timing.rs`, REL-07) is for measuring the app: with
+`LIMAREPDF_TIMING` naming a file, `main` starts it first thing, and each point calls `timing::mark` (or
+`timing::once`, for an event written only the first time with its detail) with a closure for the detail, so the
+log off costs one `OnceLock` check and no formatting. It is one process-wide log behind a mutex, so the render
+workers write to it without being handed anything. The points: `start` (in `main`), `app made` (end of `App::new`),
+`input` (each key, text, click, wheel and clipboard event, in `App::raw_input_hook`, at the start of the frame that
+takes it; pointer moves are left out, and what is typed is never written, as it may be a password: text by its
+length, a key by its name only when it types nothing: Enter, Esc, Tab, Backspace, Delete, Insert and the
+movement keys), `frame built` (end of `App::ui`, with egui's frame number and pass, the log
+then flushed), `page drawn` (`Tab::show_pages`, the first time a page is painted from a drawing at the scale it
+wants rather than a stand-in at another), `render start` and `end` (the worker, per page and tile), `open start`
+and `end` (the read thread), `search start` and `end` (`Tab::run_search`, the query by its length), `save start`
+and `end` (`save_now`, `save_appended`), `print dialog` (Print's `act`), `printers found` (`poll_loads`) and `exit`
+(`on_exit`). A frame is built before egui
+paints it and the window presents it, which the app can't see: the gap is measured from outside by screenshot
+polling ([Performance](performance.md#startup-and-responsiveness)). Lines are tab-separated: epoch and log-relative
+microseconds, event, detail. A file that can't be created, or a write that fails, is said once on stderr and the
+log stops; the app is never affected otherwise. Tested by `timing`'s own tests and
+`the_timing_log_follows_a_file_from_its_read_to_its_page_drawn`, which runs the log in a child test binary as it
+is the process's.
+
 ## Content editing
 
 How editing works in the page content (moved from [Editing text and pictures](../content-editing.md), which describes it in

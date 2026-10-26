@@ -16,6 +16,7 @@ use crate::settings::{Layout, Settings};
 use crate::signatures::{self as sigs, Check, SigState, TrustAsk, TrustedOut, TrustedWindow};
 use crate::tab::{Side, State, Tab};
 use crate::theme;
+use crate::timing;
 use crate::worker::Colours;
 use eframe::egui::{self, AtomExt as _, Key};
 use limarepdf_core::disk::{self, OnDisk};
@@ -770,6 +771,7 @@ impl App {
         app.incoming = Incoming::system().clone();
         app.incoming.wake(&cc.egui_ctx);
         app.start_recovery(&cc.egui_ctx, files, page);
+        timing::mark("app made", String::new);
         app
     }
 
@@ -939,6 +941,7 @@ impl App {
         let tx = self.tx.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
+            timing::mark("open start", || path.display().to_string());
             type Read = (Pdf, Option<Arc<[u8]>>, disk::Version);
             let open = || -> limarepdf_core::Result<Read> {
                 use anyhow::Context as _;
@@ -953,7 +956,12 @@ impl App {
                     .then(|| Arc::from(bytes));
                 Ok((pdf, signed, version))
             };
-            let msg = match crate::guard(open) {
+            let read = crate::guard(open);
+            timing::mark("open end", || {
+                let how = if read.is_ok() { "read" } else { "failed" };
+                format!("{} {how}", path.display())
+            });
+            let msg = match read {
                 Ok((pdf, signed, version)) => Loaded::Ok {
                     path,
                     pdf,
@@ -1714,6 +1722,10 @@ impl App {
                         Dialog::Print(_, s) if s.search == dlg::Search::Running(search) => Some(s),
                         _ => None,
                     });
+                    timing::mark("printers found", || match &found {
+                        Ok(list) => list.len().to_string(),
+                        Err(_) => "failed".into(),
+                    });
                     if let Some(s) = looking {
                         s.found(found);
                     }
@@ -2188,7 +2200,10 @@ impl App {
             return;
         };
         let tab = &mut self.tabs[self.active];
-        let confirmed = match limarepdf_core::write_file(&path, &bytes) {
+        timing::mark("save start", || path.display().to_string());
+        let written = limarepdf_core::write_file(&path, &bytes);
+        timing::mark("save end", || saved(&written).into());
+        let confirmed = match written {
             Ok(()) => true,
             Err(e) if not_confirmed(&e) => false,
             Err(e) => {
@@ -2218,7 +2233,10 @@ impl App {
         };
         let tab = &mut self.tabs[self.active];
         tab.pdf.set_encryption(tab.encryption.clone());
-        let confirmed = match crate::guard(|| tab.pdf.save(&path)) {
+        timing::mark("save start", || path.display().to_string());
+        let written = crate::guard(|| tab.pdf.save(&path));
+        timing::mark("save end", || saved(&written).into());
+        let confirmed = match written {
             Ok(()) => true,
             Err(e) if not_confirmed(&e) => false,
             Err(e) => {
@@ -2351,6 +2369,7 @@ impl App {
                 let selected = t.ed.selection.pages();
                 let file = t.title();
                 let selection = (a == Act::PrintSelection).then_some(dlg::Layout::Original);
+                timing::mark("print dialog", String::new);
                 self.dialog = Dialog::Print(
                     self.asked(),
                     Box::new(dlg::Print {
@@ -5467,10 +5486,25 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.last_title = title;
         }
+        timing::mark("frame built", || {
+            let (frame, pass) = (ctx.cumulative_frame_nr(), ctx.current_pass_index());
+            format!("{frame} pass {pass}")
+        });
+        timing::flush();
+    }
+
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        if timing::on() {
+            for d in raw.events.iter().filter_map(timing::input) {
+                timing::mark("input", || d);
+            }
+        }
     }
 
     /// A normal exit (not a crash, which never gets here): no recovery copies are left.
     fn on_exit(&mut self) {
+        timing::mark("exit", String::new);
+        timing::flush();
         self.end_recovery();
         // The window's size, for the next start. With the window gone, a failure can only
         // be said where the app was started from.
@@ -5485,6 +5519,15 @@ impl eframe::App for App {
 /// leaves out when the window's position isn't known, as on Wayland.
 fn window_size(i: &egui::InputState) -> egui::Vec2 {
     i.viewport_rect().size()
+}
+
+/// How a save went, for the timing log.
+fn saved(written: &limarepdf_core::Result<()>) -> &'static str {
+    match written {
+        Ok(()) => "saved",
+        Err(e) if not_confirmed(e) => "not confirmed",
+        Err(_) => "failed",
+    }
 }
 
 /// `one` when `n` is 1, else `many` with `{n}` replaced by the number.
@@ -10638,6 +10681,84 @@ mod tests {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         dir
+    }
+
+    /// The timing log (REL-07) by the whole route: a file opened and a key pressed with
+    /// `LIMAREPDF_TIMING` set are logged from the read to the first page drawn, and from the
+    /// key to the frame built after it. Run in a copy of the tests, as the log is the
+    /// process's.
+    #[test]
+    fn the_timing_log_follows_a_file_from_its_read_to_its_page_drawn() {
+        let dir = test_dir("timing");
+        let log = dir.join("timing.tsv");
+        pages_file(&dir.join("doc.pdf"), 300.0, 2, None);
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "app::tests::timed_with_the_log_on"])
+            .args(["--ignored", "--test-threads=1", "--nocapture"])
+            .env(timing::VAR, &log)
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&out.stdout).to_string()
+            + &String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success() && said.contains("1 passed"), "{said}");
+        let text = std::fs::read_to_string(&log).unwrap();
+        let lines: Vec<Vec<&str>> = text.lines().map(|l| l.split('\t').collect()).collect();
+        let at = |event: &str, detail: &str| {
+            let found = lines
+                .iter()
+                .position(|l| l[2] == event && l[3].starts_with(detail));
+            found.unwrap_or_else(|| panic!("no {event} {detail} in\n{text}"))
+        };
+        assert_eq!(at("start", ""), 0);
+        assert!(at("open start", "") < at("open end", ""));
+        assert!(at("open end", "") < at("render start", "page 1"));
+        assert!(at("render end", "page 1") < at("page drawn", "tab 1 page 1 at"));
+        let key = at("input", "key Escape down");
+        assert!(lines[key..].iter().any(|l| l[2] == "frame built"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The part of [`the_timing_log_follows_a_file_from_its_read_to_its_page_drawn`] run with
+    /// the log on; without it it does nothing.
+    #[test]
+    #[ignore = "run by the_timing_log_follows_a_file_from_its_read_to_its_page_drawn"]
+    fn timed_with_the_log_on() {
+        let Some(log) = std::env::var_os(timing::VAR) else {
+            return;
+        };
+        timing::start();
+        assert!(timing::on());
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let doc = Path::new(&log).with_file_name("doc.pdf");
+        open_and_wait(&mut app, &ctx, &doc, 1);
+        // A frame as eframe runs it: the input through the hook, then the window.
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let mut raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 800.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            eframe::App::raw_input_hook(app, &ctx, &mut raw);
+            let mut f = eframe::Frame::_new_kittest();
+            let mut out = ctx.run_ui(raw, |ui| eframe::App::ui(app, ui, &mut f));
+            out.textures_delta.clear();
+        };
+        let drawn = || std::fs::read_to_string(&log).is_ok_and(|t| t.contains("\tpage drawn\t"));
+        for _ in 0..500 {
+            frame(&mut app, vec![]);
+            if drawn() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(drawn(), "the first page was never drawn");
+        frame(&mut app, vec![key_with(Key::Escape, Default::default())]);
     }
 
     /// Runs the ignored test `test` in a copy of the tests with the stand-ins in `dir` first

@@ -2,6 +2,7 @@
 //! each thread owns its own (non-Send) render cache. Newest requests are served first
 //! so scrolling stays responsive.
 
+use crate::timing;
 use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::render::{self, Bitmap, Missing, Region, Renderer};
 use std::collections::BTreeSet;
@@ -240,6 +241,12 @@ impl Worker {
                         }
                     };
                     let (key, scale) = job;
+                    // Page (from 1), quantised scale (0 for a thumbnail) and tile, if one.
+                    let what = || match key.2 {
+                        None => format!("page {} at {}", key.0 + 1, key.1),
+                        Some((c, row)) => format!("page {} at {} tile {c},{row}", key.0 + 1, key.1),
+                    };
+                    timing::mark("render start", what);
                     let stop = || queue(&shared.0).stopped(&(key, colours));
                     let bitmap = match (&renderer, &*parsed) {
                         (Some(r), _) => {
@@ -265,6 +272,11 @@ impl Worker {
                         _ => Err("renderer unavailable".into()),
                     };
                     queue(&shared.0).finished(&(key, colours));
+                    timing::mark("render end", || match &bitmap {
+                        Ok(Some(_)) => what(),
+                        Ok(None) => format!("{} stopped", what()),
+                        Err(_) => format!("{} failed", what()),
+                    });
                     // Stopped: what couldn't be drawn is reported with the next job.
                     let bitmap = match bitmap.transpose() {
                         Some(b) => b,

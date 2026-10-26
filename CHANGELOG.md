@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- An optional timing log, for measuring how quickly LimarePDF responds: start it with the environment variable
+  `LIMAREPDF_TIMING` set to a file, and it writes there when the app starts, takes input, finishes each frame,
+  first shows each page sharp, and starts and ends reading, drawing, searching and saving. Off unless asked for.
+
 ### Fixed
 
 - When another app changed an open document within a split second of LimarePDF reading it, at the same size,

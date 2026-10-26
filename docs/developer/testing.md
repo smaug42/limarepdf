@@ -131,6 +131,15 @@ resident set, as `/usr/bin/time -v` reports it. The four rows for public test fi
 run, and `--only scan` runs only the tasks whose names contain `scan`. A full run takes about five minutes, and one
 of the test files needed about 10 GB of memory before pages were drawn in bands (about 1.5 GB since).
 
+The desktop app's startup and responsiveness figures in
+[Performance](performance.md#startup-and-responsiveness) (REL-07) come from the app's
+[timing log](architecture.md) and screenshot polling, driven by a script on an Xvfb display: each
+run starts the release app with its own settings and recovery folders, sends keys, clicks and the wheel through
+XTest (as `xdotool` does, without a process per key), reads the log as it grows, and captures a small part of the
+screen every 5 ms through Xlib to see when what the log reports is shown. The script and the reference set were
+kept under `target/perf/` (not in the repository) and the documents are described in performance.md with their
+checksums. Cold launches follow a page-cache drop (`echo 3 > /proc/sys/vm/drop_caches`, as root).
+
 ## The desktop app
 
 Its commands, selection rules and page moves are unit-tested, and the operations behind it are covered by the core
