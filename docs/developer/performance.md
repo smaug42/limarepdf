@@ -228,7 +228,9 @@ What they show:
 
 ## Startup and responsiveness
 
-Measured on 26 October 2026 as the release checks' baseline (REL-07), from which their thresholds are to be set:
+Measured on 26 October 2026 as the release checks' baseline (REL-07), from which their thresholds were set (accepted
+the same day, for this machine and setup only; search's total wait after batch 22: ≤ 450 ms worst, and its
+processing ≤ 300 ms, both met below):
 the release build of `add-enhancements-02` at edaf365 with the change that adds the [timing log](architecture.md),
 on the machine above (Intel Core i5-9600K, 6 cores, 15 GB of memory, NVMe SSD with btrfs, Linux
 7.3). The app ran on an Xvfb display (1600 × 1000, 24-bit, no window manager), where Mesa draws in software, as
