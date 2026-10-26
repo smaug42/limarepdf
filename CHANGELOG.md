@@ -308,6 +308,9 @@
   installing instead of the app failing to start. The Intel macOS builds now say macOS 11 or later, as the
   Apple Silicon ones and the docs do (they said 10.12). The docs no longer say older Linux systems can use the
   archive: it needs the same glibc.
+- Black-and-white (fax) pictures more than 65,535 pixels wide are now read and written: redaction cuts them as it
+  does other pictures instead of removing them whole, and Optimise scans stores them instead of skipping them.
+- Libraries moved to their new major versions: fax 0.3 (black-and-white pictures).
 
 ## [0.9.0] - 2026-10-23
 

@@ -303,7 +303,7 @@ fn encode(s: &Stream, px: Samples) -> Res<Stream> {
         }
         Codec::Ccitt { black_is_1 } => {
             let stride = px.stride();
-            let width = u16::try_from(px.w).map_err(|_| "the CCITT picture is too wide")?;
+            let width = u32::try_from(px.w).map_err(|_| "the CCITT picture is too wide")?;
             let mut enc = fax::encoder::Encoder::new(fax::VecWriter::new());
             for row in px.data.chunks_exact(stride) {
                 let pels = (0..px.w).map(|x| {
@@ -493,20 +493,34 @@ mod tests {
         assert!(s.is_clear([3, 1, 6, 2]) && !s.is_clear([2, 1, 6, 2]));
     }
 
-    /// The fax encoder counts a row's width in 16 bits; a wider picture is refused, not
-    /// written wrapped (PB-13). Reading refuses one first, so this guards the writing alone.
+    /// A fax picture wider than 16 bits can count is written and read back whole (fax 0.3
+    /// counts widths in 32 bits; 0.2's limit was refused, PB-13).
     #[test]
-    fn a_ccitt_picture_too_wide_to_write_is_refused() {
+    fn a_ccitt_picture_wider_than_16_bits_is_written() {
+        let w = 65_537;
+        let stride = w / 8 + 1;
+        // Clear bits are black: one black pixel a row, at the far end of row 0.
+        let mut data = vec![0xFF; stride * 2];
+        data[(w - 1) / 8] &= !(0x80 >> ((w - 1) % 8));
+        data[stride] &= !0x80;
         let px = Samples {
-            w: 65_536,
-            h: 1,
+            w,
+            h: 2,
             n: 1,
             bpc: 1,
-            data: vec![0; 8192],
+            data,
             codec: Codec::Ccitt { black_is_1: false },
         };
-        let err = encode(&Stream::new(Dictionary::new(), Vec::new()), px).unwrap_err();
-        assert!(err.contains("too wide"), "{err}");
+        let s = encode(&Stream::new(Dictionary::new(), Vec::new()), px).unwrap();
+        let crate::scan::Img::Bits(g) = crate::scan::decode_ccitt(&s, w as u32, 2).unwrap() else {
+            panic!("not read as black and white");
+        };
+        let black: Vec<_> = g
+            .enumerate_pixels()
+            .filter(|p| p.2[0] == 0)
+            .map(|p| (p.0, p.1))
+            .collect();
+        assert_eq!(black, vec![(w as u32 - 1, 0), (0, 1)]);
     }
 
     #[test]

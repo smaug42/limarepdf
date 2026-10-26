@@ -371,7 +371,9 @@ differences found to be LimarePDF's are the gaps under [Known to be wrong](../re
   content nothing places; PB-04) and, with `sanitise.rs`'s `form_values_of_fields_nested_32_deep_are_cleared` and
   `form_values_above_an_orphan_widget_are_cleared_or_refused`, one depth rule for every form walk (PB-05); and
   `redact_img`'s `a_ccitt_picture_too_wide_to_write_is_refused` (the encoder wrote a 3-byte stream for a picture
-  65,536 pixels wide; reading refuses one first, so only the guard is tested; PB-13). Then, the user's answers
+  65,536 pixels wide; PB-13; since batch 36's fax 0.3, which counts widths in 32 bits, replaced by
+  `a_ccitt_picture_wider_than_16_bits_is_written` and `scan`'s `a_ccitt_scan_wider_than_16_bits_is_stored`, round
+  trips at 65,537 pixels that failed on fax 0.2's refusal). Then, the user's answers
   (Q14, PB-25): `marks_laid_on_each_other_count_once` (a character a fifth under two coinciding marks was removed
   by the summed coverage) and `redact::tests::marks_that_overlap_count_once` (the union's share for overlapping,
   side-by-side, crossing and flat cases), both failing on the sum;

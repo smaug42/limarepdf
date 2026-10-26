@@ -493,7 +493,7 @@ pub(crate) fn decode_ccitt(s: &Stream, w: u32, h: u32) -> std::result::Result<Im
         return Err("only CCITT Group 4 images are supported".into());
     }
     let cols = p(b"Columns").unwrap_or(1728) as u32;
-    if cols != w || w > u16::MAX as u32 || h > u16::MAX as u32 {
+    if cols != w {
         return Err("unsupported CCITT image size".into());
     }
     if pixel_size(w as i64, h as i64).is_none() {
@@ -501,8 +501,8 @@ pub(crate) fn decode_ccitt(s: &Stream, w: u32, h: u32) -> std::result::Result<Im
     }
     let mut px = Vec::with_capacity((w * h) as usize);
     let data = s.content.iter().copied();
-    fax::decoder::decode_g4(data, w as u16, Some(h as u16), |line| {
-        px.extend(fax::decoder::pels(line, w as u16).map(|c| match c {
+    fax::decoder::decode_g4(data, w, Some(h), |line| {
+        px.extend(fax::decoder::pels(line, w).map(|c| match c {
             fax::Color::Black => 0u8,
             fax::Color::White => 255,
         }));
@@ -818,9 +818,6 @@ fn encode(old: &Stream, img: Img, quality: u8) -> std::result::Result<Stream, St
     let (w, h, content) = match img {
         Img::Bits(b) => {
             let (w, h) = b.dimensions();
-            if w > u16::MAX as u32 {
-                return Err("the image is too wide for CCITT".into());
-            }
             let mut enc = fax::encoder::Encoder::new(fax::VecWriter::new());
             for row in b.as_raw().chunks_exact(w as usize) {
                 let pels = row.iter().map(|&v| {
@@ -830,7 +827,7 @@ fn encode(old: &Stream, img: Img, quality: u8) -> std::result::Result<Stream, St
                         fax::Color::White
                     }
                 });
-                enc.encode_line(pels, w as u16)
+                enc.encode_line(pels, w)
                     .map_err(|_| "CCITT encoding failed")?;
             }
             let data = enc.finish().map_err(|_| "CCITT encoding failed")?.finish();
@@ -877,4 +874,26 @@ fn jpeg(
         .encode(px, w, h, color)
         .map_err(|e| format!("JPEG encoding failed: {e}"))?;
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A black-and-white scan wider than 16 bits can count is stored as CCITT and read
+    /// back whole (fax 0.3 counts widths in 32 bits; 0.2's limit was refused, PB-13).
+    #[test]
+    fn a_ccitt_scan_wider_than_16_bits_is_stored() {
+        let w = 65_537;
+        let black = [(w - 1, 0), (0, 1)];
+        let img = GrayImage::from_fn(w, 2, |x, y| {
+            image::Luma([if black.contains(&(x, y)) { 0 } else { 255 }])
+        });
+        let old = Stream::new(lopdf::Dictionary::new(), Vec::new());
+        let s = encode(&old, Img::Bits(img.clone()), 75).unwrap();
+        let Img::Bits(g) = decode_ccitt(&s, w, 2).unwrap() else {
+            panic!("not read as black and white");
+        };
+        assert!(g == img);
+    }
 }
