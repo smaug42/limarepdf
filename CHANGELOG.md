@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- When another app changed an open document within a split second of LimarePDF reading it, at the same size,
+  LimarePDF could miss the change (most likely on Windows), so Save wouldn't ask before replacing it and no notice
+  showed. A file changed so recently is now checked by its contents.
+
 ## [0.10.0] - 2026-10-26
 
 ### Fixed

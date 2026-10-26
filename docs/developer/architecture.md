@@ -409,8 +409,12 @@ canonicalised; on Unix also the same device and inode, so a hard link counts; th
 flight; a result checks again, for a tab that got the file meanwhile. Each tab keeps `Tab::disk`, the
 `disk::Version` of its file as last read (`disk::read`, the bytes and their metadata through one handle) or
 written (`Tab::wrote`): size, modified time, the Unix inode (saving renames a new file over the old one, so it has
-a new inode) and the SHA-256 of the bytes. `disk::compare` reads the file only when size, time or inode differ, and
-then calls it changed only when the bytes differ, so a touched or synced copy isn't a change. `App::save` checks
+a new inode), the SHA-256 of the bytes and when it was read. `disk::compare` reads the file only when size, time or
+inode differ, or when the file's time is less than 2 seconds older than the reading (git's "racy" rule, PB-28: a
+change in the same tick of the file's clock keeps the time, and Windows has no inode to tell it; FAT keeps times to
+2 seconds), and then calls it changed only when the bytes differ, so a touched or synced copy isn't a change. A
+file so read is stored with its new version, so it is read once more after a save or a fresh write, not every
+time. `App::save` checks
 before its other questions, and `App::save_target` again just before writing (Save, a signed document's appended
 save, Save as onto the tab's own file by any path); a changed file asks `Dialog::ConfirmStale` (Save as… or Replace;
 Replace stores that version in `App::replace_ok`, so the save then goes ahead unless the file changes again), and
