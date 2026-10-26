@@ -446,6 +446,16 @@ enum Cmd {
         /// text; default: your name in handwriting
         #[arg(long)]
         image: Option<PathBuf>,
+        /// Use only this part of the picture: its left, top, right and bottom edges in the
+        /// picture's pixels as it is shown (from its top left), such as the signature on a
+        /// photo of a whole sheet
+        #[arg(
+            long,
+            value_name = "L,T,R,B",
+            requires = "image",
+            allow_hyphen_values = true
+        )]
+        crop: Option<String>,
         /// The handwriting your name is shown in: 1 Caveat, 2 Cedarville Cursive, 3 Homemade
         /// Apple, 4 Zeyada
         #[arg(long, conflicts_with = "image", default_value_t = 1)]
@@ -2090,6 +2100,30 @@ fn id_store(folder: &IdFolder) -> Result<IdStore> {
         )
 }
 
+/// The part of picture `bytes` that `--crop L,T,R,B` gives in pixels of the picture as it is
+/// shown, as the shares of it [`SignArt::Picture`] takes.
+fn picture_part(crop: &str, bytes: &[u8]) -> Result<[f32; 4]> {
+    let bad = || format!("--crop {crop:?} should be L,T,R,B in the picture's pixels");
+    let v: Vec<f32> = crop
+        .split(',')
+        .map(|x| x.trim().parse())
+        .collect::<Result<_, _>>()
+        .with_context(bad)?;
+    let [l, t, r, b] = v[..] else {
+        bail!("{}", bad());
+    };
+    let (w, h) = limarepdf_core::image_dimensions(bytes)?;
+    let (w, h) = (w as f32, h as f32);
+    let inside = (0.0..=w).contains(&l) && (0.0..=h).contains(&t) && r <= w && b <= h;
+    if !(inside && l < r && t < b) {
+        bail!(
+            "--crop {crop:?} isn't a part of the picture, which is {w} by {h} pixels: give its \
+             left, top, right and bottom edges, left before right and top before bottom"
+        );
+    }
+    Ok([l / w, t / h, r / w, b / h])
+}
+
 /// A password: the first line of `file`, or asked for on the terminal without showing it.
 fn read_password(file: &Option<PathBuf>, prompt: &str) -> Result<Zeroizing<String>> {
     if let Some(f) = file {
@@ -3396,6 +3430,7 @@ fn run(cmd: Cmd) -> Result<()> {
             location,
             certify,
             image,
+            crop,
             style,
             password_file,
             folder,
@@ -3427,6 +3462,10 @@ fn run(cmd: Cmd) -> Result<()> {
                 ),
                 None => None,
             };
+            let crop = match (&crop, &picture) {
+                (Some(c), Some(b)) => Some(picture_part(c, b)?),
+                _ => None,
+            };
             let bytes =
                 std::fs::read(&input).with_context(|| format!("reading {}", input.display()))?;
             let store = id_store(&folder)?;
@@ -3452,7 +3491,7 @@ fn run(cmd: Cmd) -> Result<()> {
                 Some(b) => Some(SignArt::Picture {
                     bytes: b,
                     clear_paper: true,
-                    crop: None,
+                    crop,
                 }),
                 None if style != SignStyle::Caveat => Some(SignArt::Typed { text: &name, style }),
                 None => None,

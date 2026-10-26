@@ -27,8 +27,14 @@ dashes, curly quotes, euro and so on). Bytes it leaves undefined (other control 
 code points, as pdf.js reads them, so nothing is lost and field names differing only there stay apart; showing
 text strips control characters anyway (`display.rs`). `doc::encode_text` writes printable ASCII, tabs and line
 breaks as they are and anything else as UTF-16BE, so every string reads back unchanged. lopdf's own
-`decode_text_string` isn't used: its table drops tabs and line breaks. Font encodings in page content are separate
-(`fonts.rs`, `tounicode.rs`).
+`decode_text_string` isn't used: its table drops tabs and line breaks. Text that is only shown (document
+properties, bookmark titles, comments' contents, authors and subjects, field descriptions) goes through
+`doc::decode_shown_text` instead (`Pdf::shown_text_value`; PB-18): unmarked bytes that are valid UTF-8 with a
+character of more than one byte read as UTF-8, as the program that wrote them meant; in PDFDocEncoding those would
+be runs like "Ã©". Field names, values and options, page labels and signature details stay on `decode_text`, so a
+field is found by the name every reader finds. Windows-1252 can't be told from PDFDocEncoding (both define 0x80 to
+0x9F) and reads by the standard. Font encodings in page content are separate (`fonts.rs`, `tounicode.rs`,
+`own_encoding.rs`).
 
 Forms are read in `crates/limarepdf-core/src/forms.rs`. When a value changes, LimarePDF draws the field's appearance itself
 (`form_ap.rs`, written into the file by `form_write.rs`) rather than asking other readers to, so filled fields look
@@ -45,7 +51,12 @@ through `theme::field`), `columns` (two fields side by side, one under the other
 smaller in windows under 600 points wide. A button on a list's row is named with what the row is (`set_name`), and
 `list_rows` gives each row its own id for what it remembers. Tests draw a dialog with `dialogs::drawn_window` and
 check it with `fits` (inside the screen, its buttons inside it) and `unclear_names`. The command palette (`palette_ui` in `app.rs`) uses the same look
-without `Shell`, as a launcher with no title or buttons.
+without `Shell`, as a launcher with no title or buttons. Tab goes round a dialog (PB-15): at Tab on the last
+control egui gives up the keyboard (and marks it for the next control that asks), so `Shell::show`, finding no
+focus after a Tab, offers it to the first enabled focusable widget on the dialog's layer
+(`Memory::interested_in_focus`, which also clears egui's mark), or gives it outright when that is the only control
+(egui doesn't offer it back to the widget that just had it). The app's tests walk Tab through every question
+dialog and fail on a stop with no control.
 
 Damaged files are repaired in `crates/limarepdf-core/src/repair.rs` when lopdf reads a file with no pages, or had
 to rebuild its table itself (its own scan ignores `/Length`, so its result is kept only when the repair fails): it
@@ -72,6 +83,21 @@ maps and Adobe's widths for the standard fonts (see [How text is read](../readin
 fonts' character maps, and Adobe's tables from character numbers to Unicode, are read with hayro's CMap parser
 (`hayro_cmap`, reached through hayro, which carries the predefined maps); the predefined ones are read once per
 process (`fonts::predefined`).
+
+Simple fonts' codes without a ToUnicode entry are read through `own_encoding::simple_codes` (PB-23) when the
+font's `/Encoding` is a dictionary or is missing: the base is the named `/BaseEncoding`, else the embedded
+program's own encoding, else Standard, with `/Differences` over it, and each glyph name read by the Adobe Glyph
+List, `uniXXXX`/`uXXXX` and parts joined by `_` (`glyph_text`). The program's encoding comes from read-fonts (as
+`skrifa::raw`, the version skrifa uses, so no new dependency): `Type1Font`'s for `/FontFile`, the CFF encoding and
+charset for `/FontFile3 /Type1C` and OpenType CFF, and for TrueType that is symbolic or has no (3,1) cmap, each
+code's glyph by the (3,0) cmap (the code at 0, 0xF000, 0xF100 or 0xF200) or (1,0), named in `post`. The programs'
+tables are kept by a hash of the stream's bytes (256 programs), glyph names' text too. lopdf's glyph list and
+encoding tables are private, so they are reached through lopdf's own encoding reader: a font whose one difference
+is the name (`listed`), and fonts naming a base encoding (`named`). lopdf alone passes over an `/Encoding`
+dictionary without its optional `/Type` and drops every difference when one name isn't in its list, which this
+reading doesn't. A named `/Encoding` stays lopdf's. On the render corpus (1,089 files) unreadable characters in
+extracted text fell from 225,473 to 191,418 (files with any from 123 to 106), 29 files' text changed, each checked
+against `pdftotext`, and none got worse.
 
 Text LimarePDF writes (new and edited text, headers, footers, watermarks, stamps, text boxes, form values, the
 signature look, selected text as a plain page) goes through a pen (`embed::Pen`, from `Pdf::pen`): the standard
@@ -104,6 +130,13 @@ gamma-encoded as the page shows them, so every colour button converts at the bou
 underneath is
 covered in the colour the page worker (`worker.rs`, `Worker::sample`) finds around it, from a drawing of that
 part of the page in the current page colours.
+
+Gestures (PB-14): `Editor::escape` first lets go of a move, resize or turn (`drag`), a shape (`draw`), a pen stroke
+or a word selection being dragged (`text_drag`), changing nothing and keeping the tool; only then does Esc do what
+it did. egui forgets a drag whose widget isn't drawn, so the page a gesture is on (`Editor::gesture_page`) keeps
+its `page_ui` drawn by `Tab`'s page loop while it is out of view, and letting go ends the gesture there. The
+inspector's Text and Comment boxes keep a change when they lose the keyboard (PB-20), as Tab moves on to a button
+and `settled` waits while any widget has the keyboard.
 
 Typing not yet in the document (`Editor::pending`: new text, a note or text box, a line or the inspector's
 object changes, a form field, a comment's changes or a reply; the inspector's forms) goes in before anything uses
@@ -195,7 +228,23 @@ parser's objects: it rewrites each text-showing operator character by character,
 spacing numbers, cuts drawings into sub-paths, and redacts inside form XObjects as copies. Pictures are decoded,
 blacked out and saved again in `redact_img.rs`. Afterwards the pages are parsed again to check that nothing readable
 is left under the marks. Hidden information (metadata, scripts, attachments, hidden layers) is removed by
-`sanitise.rs`. See [Redaction](../redaction.md).
+`sanitise.rs`. See [Redaction](../redaction.md). A string is redacted character by character only when
+`FontCtx::drawn_alike` says every reader splits it the same way; else it goes whole. Besides hayro's split (the
+first mapped length) against the codespace's, it fails a code that also starts a longer one (`fonts::starts_longer`,
+PB-03): a longer code the CMap maps (poppler reads that) or a longer codespace range (pdf.js reads by those). Not
+caught: a longer mapping that starts with the same bytes but doesn't match the string's next ones (poppler then
+reads a longer unmapped code), as hayro-cmap can't list mappings; a CMap like that breaks its own codespace.
+Character coverage under several marks is the sum of each mark's share, capped at 1 (`share_under`), so marks
+that overlap count a part twice: it can only remove more (backlog PB-13, the boundary policy).
+
+Removing pages (`pages_gone.rs`) takes the alternative text off structure elements with content on a page that
+went (`strip_gone_alt`). A marked-content item's page is its own `/Pg`, the element's or the nearest parent's,
+else the pages the parent tree lists the element on, by each page's `/StructParents` (kept and removed pages
+alike; PB-04); content none of these places counts as on a page that went, so its text goes rather than the
+removal being refused. Object references (`OBJR`) aren't marked content and keep their old test. Form field walks
+share one depth rule (PB-05): fields at most `forms::MAX_DEPTH` (32) below the top field, their widgets one level
+further, as `form_nodes` reads them: `value_nodes` and `field_goes` refuse a node with kids deeper than that, and
+`orphan_widgets` a widget with more than 33 parents.
 
 Hidden layers (`Pdf::without_hidden`, BUG-16): content in a hidden layer still sets the graphics and text state
 for what follows it (ISO 32000-1, 8.11.3.2), so only its painting goes. Inside a hidden marked-content section,
@@ -238,7 +287,13 @@ pixels. The earlier "darkest 1%" estimate fell on the paper when the ink was und
 a whole sheet). `SignArt::Picture`'s `crop` (shares of the picture as seen, mapped to the stored pixels by
 `imgs::stored_point`) is applied first; the picture file is never changed, and the app saves the crop in
 `signatures.txt` as a `cropped` line, which older versions skip. `picture_view` gives the Create window the
-picture upright, at most 1200 pixels across.
+picture upright, at most 1200 pixels across. The window's picture takes the keyboard on a click or Tab, and
+`Create::cropper` moves the part with the arrow keys and sizes it by its right and bottom edges with Shift
+(`NUDGE`, 2% of the picture a press; Shift read from each key event); egui keeps the arrows for it
+(`set_focus_lock_filter`) from the frame after it took the keyboard. `limarepdf-cli sign --crop L,T,R,B` takes
+pixels of the picture as seen, turned into the same shares (`picture_part`, checked against
+`image_dimensions`). CMYK JPEGs are read by `rgb_alpha` through `image`, which follows Adobe's marker for
+inverted samples (PB-21), so they can be cleared and cropped too.
 
 Dates people see (Fill and sign's Today, the date under a signature, a stamp's name-and-date line, headers' and
 footers' `{date}`) come from `overlay::local_today` and `today_iso`, the computer's calendar date through chrono's
@@ -359,8 +414,12 @@ the user starts set `App::dialog` directly: the modal dialog blocks them while o
 dialog already open fills it in place, matched by a number, or is dropped: Print opens at once and
 `App::find_printers` lists the printers on a thread (`Loaded::Printers`, matched by search number to the Print
 dialog open or waiting, BUG-11); core's `print::run_within` bounds every CUPS command (`print::ASK_WITHIN` 10 s,
-`SEND_WITHIN` 2 minutes for `lp`, the whole process group killed). A Windows job the spooler doesn't take can't be
-stopped (backlog PB-17).
+`SEND_WITHIN` 2 minutes for `lp`, the whole process group killed). A Windows job makes synchronous spooler and GDI
+calls that can't be stopped, so `Pdf::print` runs it through `print::while_beating` (PB-17): `print_win::print`
+beats after each step (the printer's settings, opening it, starting the document, each page), and the wait gives
+up when no beat comes for `SEND_WITHIN`, leaving the thread to finish on its own, so `App::busy` clears and other
+background jobs run. The snapshot is taken before the thread starts, so the document isn't copied again. A page
+takes seconds to draw, so a long job isn't given up on.
 
 Closing and quitting (ENH-01) ask `Dialog::ConfirmClose(asked, quitting)`, Save (Save as… for a tab with no file) /
 Discard / Cancel; quitting with several unsaved documents asks `Dialog::ConfirmQuit` first, Review… / Discard all /

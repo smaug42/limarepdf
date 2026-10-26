@@ -396,6 +396,63 @@ fn replaced_pictures_are_upright_and_keep_their_shape_all_eight() {
     }
 }
 
+/// The made-up CMYK JPEG: 16 × 8, cyan on the left and red on the right, with Adobe's
+/// marker, its samples stored inverted.
+fn cmyk_jpeg() -> Vec<u8> {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/data/images/cmyk-cyan-red.jpg"
+    );
+    std::fs::read(path).unwrap()
+}
+
+/// A CMYK JPEG, as print work writes them, is shown in its own colours as a page, added,
+/// and replacing a picture (PB-19).
+#[test]
+fn cmyk_jpegs_become_pages_and_are_added_and_replace_pictures() {
+    let jpg = cmyk_jpeg();
+    let cyan = |c: [u8; 3]| c[0] < 90 && c[1] > 140 && c[2] > 140;
+    let red = |c: [u8; 3]| c[0] > 160 && c[1] < 90 && c[2] < 90;
+    // Its halves at `left` and `right` (points from the page's top left).
+    let halves = |s: &Shot, left: (f32, f32), right: (f32, f32), what: &str| {
+        let (l, r) = (s.px(left.0, left.1), s.px(right.0, right.1));
+        assert!(cyan(l), "{what}: left {l:?}");
+        assert!(red(r), "{what}: right {r:?}");
+    };
+    // A page 16 by 8 points at 72 dpi.
+    let mut p = import(std::slice::from_ref(&jpg), &at_dpi(72.0));
+    assert_size(&p, 0, (16.0, 8.0));
+    halves(&shot(&mut p, 0, 4.0), (4.0, 4.0), (12.0, 4.0), "page");
+    // Added in a box 160 by 80 points round the middle of the page's height.
+    let rect = [20.0, 60.0, 180.0, 140.0];
+    let mut p = Pdf::new();
+    p.insert_blank(0, 200.0, 200.0).unwrap();
+    p.add_image(0, rect, &jpg).unwrap();
+    halves(
+        &shot(&mut p, 0, 1.0),
+        (60.0, 100.0),
+        (140.0, 100.0),
+        "added",
+    );
+    // Replacing a picture of the same shape.
+    let blank = encode_png(&DynamicImage::ImageRgb8(RgbImage::from_pixel(
+        16,
+        8,
+        Rgb(BLACK),
+    )));
+    let mut p = Pdf::new();
+    p.insert_blank(0, 200.0, 200.0).unwrap();
+    p.add_image(0, rect, &blank).unwrap();
+    let id = p.page_objects(0).unwrap()[0].id;
+    p.replace_image(0, id, &jpg).unwrap();
+    halves(
+        &shot(&mut p, 0, 1.0),
+        (60.0, 100.0),
+        (140.0, 100.0),
+        "replaced",
+    );
+}
+
 /// Poppler draws added and replaced pictures upright too. Opt-in: needs `pdftoppm`.
 #[test]
 #[ignore]

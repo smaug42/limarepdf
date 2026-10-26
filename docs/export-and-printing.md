@@ -33,8 +33,10 @@ stopped, with a message saying it may have been sent: check the printer's queue 
 **Windows** prints through the print spooler. LimarePDF draws each page at the printer's resolution, at most 600 dpi
 and at most 268 million pixels (A0 is drawn at about 415 dpi, which the printer scales up). A page prints at actual
 size, shrunk to the printable area when it is larger, centred, and turned when a landscape page meets portrait
-paper or the reverse. A job the spooler doesn't take can't be stopped: other background work (Append PDFs, OCR,
-exports) waits until it ends or LimarePDF is closed.
+paper or the reverse. When the spooler takes no step for 2 minutes (a printer that doesn't answer, say), LimarePDF
+stops waiting and says so, and other background work (Append PDFs, OCR, exports) can go ahead. The job itself
+can't be stopped on Windows and may still print once the printer is ready: check the printer's queue before
+printing again.
 
 When LimarePDF draws the pages, annotations not flagged for printing are left out.
 

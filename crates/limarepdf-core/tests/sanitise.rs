@@ -446,12 +446,52 @@ fn orphan_below(parents: usize, looped: bool) -> Pdf {
     p
 }
 
-/// An orphan widget's parents more than 32 deep can't all be followed, so clearing form values
-/// refuses with nothing changed rather than leave a value behind (audit R07); up to 32 deep,
-/// and in a loop, every parent's value goes.
+/// A text widget `levels` fields below the form's listed top field, which holds a value.
+fn listed_below(levels: usize) -> Pdf {
+    let mut p = make("BT /F1 12 Tf 10 20 Td (Page text) Tj ET", Dictionary::new());
+    let mut kid = widget(&mut p, Dictionary::new());
+    for d in (0..levels).rev() {
+        let node = p.doc.add_object(dictionary! {
+            "T" => s(&format!("level-{d}")), "Kids" => vec![Object::Reference(kid)],
+        });
+        p.doc.get_dictionary_mut(kid).unwrap().set("Parent", node);
+        kid = node;
+    }
+    let top = p.doc.get_dictionary_mut(kid).unwrap();
+    top.set("FT", "Tx");
+    top.set("V", s("WALRUS-LISTED-TOP"));
+    p.doc.catalog_mut().unwrap().set(
+        "AcroForm",
+        dictionary! { "Fields" => vec![Object::Reference(kid)] },
+    );
+    p
+}
+
+/// Fields up to 32 deep below the top one, with their widgets one level further, are cleared,
+/// as page removal reaches them (PB-05); a field deeper than that is refused with nothing
+/// changed.
+#[test]
+fn form_values_of_fields_nested_32_deep_are_cleared() {
+    let mut p = listed_below(33);
+    Saved::of(&mut p.clone()).assert_kept(&["WALRUS-LISTED-TOP"]);
+    let rep = p.remove_hidden(&[Hidden::FormValues]).unwrap();
+    assert_eq!(rep.count(Hidden::FormValues), 1, "{rep:?}");
+    Saved::of(&mut p).assert_gone(&["WALRUS"]);
+
+    let mut p = listed_below(34);
+    let before = p.clone().snapshot().unwrap();
+    let err = format!("{:#}", p.remove_hidden(&[Hidden::FormValues]).unwrap_err());
+    assert!(err.contains("nested more than 32 deep"), "{err}");
+    assert_eq!(p.clone().snapshot().unwrap(), before);
+}
+
+/// An orphan widget's parents more than 32 deep below the top one can't all be followed, so
+/// clearing form values refuses with nothing changed rather than leave a value behind (audit
+/// R07); up to 32 deep (33 parents, as for a listed field, PB-05), and in a loop, every
+/// parent's value goes.
 #[test]
 fn form_values_above_an_orphan_widget_are_cleared_or_refused() {
-    let mut p = orphan_below(33, false);
+    let mut p = orphan_below(34, false);
     let before = p.clone().snapshot().unwrap();
     for err in [
         p.check_remove_hidden(&[Hidden::FormValues]).unwrap_err(),
@@ -462,7 +502,7 @@ fn form_values_above_an_orphan_widget_are_cleared_or_refused() {
     }
     assert_eq!(p.clone().snapshot().unwrap(), before);
 
-    for mut p in [orphan_below(32, false), orphan_below(3, true)] {
+    for mut p in [orphan_below(33, false), orphan_below(3, true)] {
         Saved::of(&mut p).assert_kept(&["WALRUS-ORPHAN-TOP"]);
         let rep = p.remove_hidden(&[Hidden::FormValues]).unwrap();
         assert_eq!(rep.count(Hidden::FormValues), 1, "{rep:?}");

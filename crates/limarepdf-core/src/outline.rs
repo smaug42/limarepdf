@@ -1,6 +1,6 @@
 //! The document outline (bookmarks) and the destinations it points to.
 
-use crate::doc::{decode_text, encode_text};
+use crate::doc::{decode_shown_text, encode_text};
 use crate::{trees, Pdf, Result};
 use anyhow::{bail, Context};
 use lopdf::{dictionary, Dictionary, Object, ObjectId, StringFormat};
@@ -306,7 +306,7 @@ impl Pdf {
                 .ok()
                 .and_then(|o| self.doc.dereference(o).ok())
                 .and_then(|(_, o)| o.as_str().ok())
-                .map(decode_text)
+                .map(decode_shown_text)
                 .unwrap_or_default();
             // Titles sometimes carry line breaks, tabs or runs of spaces; show them on
             // one line with single spaces.

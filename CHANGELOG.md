@@ -193,8 +193,49 @@
   keep changing it, outside the 1 GB undo limit, so a large document could hold more than the limit. The copy is
   now the undo step's own, counted in the limit; when a very large document leaves no room for it, the section
   stops changing what was added, saying so, and what was added stays on the pages.
+- Text in many embedded fonts without a map to Unicode, mostly from TeX and other programs that give a font its
+  own encoding, read as the wrong characters or control codes in search, selection, copying and exported text:
+  ” as ", – as {, accents as Ø, ligatures as boxes. LimarePDF now reads such a font's characters from the font
+  itself (Type 1, CFF and TrueType), as other readers do, where the document doesn't say how its codes are
+  encoded. An encoding that lists its characters but leaves out an optional entry, or names one character by a
+  name LimarePDF doesn't know, is no longer passed over whole. Across LimarePDF's test documents this fixed the
+  text of 29 files (17 now read with no unreadable character at all), and made none worse.
+- Document properties, bookmark titles, comments and form field descriptions that another program wrote in
+  UTF-8 without saying so read as strings like "CafÃ©". They now read as written. Field names and values still
+  read as the standard says, as other readers find them.
+- Esc pressed while moving, resizing or turning an object, drawing a shape or a pen stroke, or selecting words by
+  dragging didn't stop it: the move was still made when the button was let go, and words were selected again.
+  Esc now cancels what is being dragged, changing nothing, and the tool stays for another try; Esc again leaves
+  it as before.
+- An object being moved when its page scrolled out of view (with the keyboard, say) stayed half-moved after the
+  button was let go: it was shown in its new place but not moved, and its toolbar didn't come back. The move now
+  ends when the button is let go, wherever the pointer is.
+- Tab in the inspector's Text or Comment box moved on to the next control but didn't keep what was typed until
+  something else was clicked. It is now kept as the box is left, as clicking away does.
+- Tab in a dialog stopped once on nothing after the last control before going back to the first. It now goes
+  straight round, and Shift+Tab the other way.
+- On Windows, a print job the print spooler never took (a printer that doesn't answer, say) kept the app busy
+  until it closed: appending files, recognising text and exports waited for it. LimarePDF now stops waiting when
+  the spooler takes no step for two minutes, as it does for printing on Linux and macOS, and says the job may
+  still print, so check the printer's queue before printing again.
+- Deleting or extracting pages of a tagged document could leave the alternative text of content on the pages
+  that went, where the structure tree gives its page only through the page's own index of its tags. That index
+  is now read too, and alternative text whose page can't be told at all goes, rather than stay.
+- A form whose fields are nested 33 levels deep could have its pages removed, but removing hidden information or
+  redacting over its fields refused it as nested too deep. Fields up to 32 levels deep, with their widgets one
+  below, are now handled by all of them alike; deeper ones are refused by all.
+- Redaction treated text in a font whose code map breaks its own layout (a code that also starts a longer one)
+  as readable character by character, though readers split such text differently, so text another reader shows
+  under a mark could stay. Such text now goes with its whole string, as other text LimarePDF can't place does.
 
 ### Added
+
+- `limarepdf-cli sign --image` takes `--crop L,T,R,B`, the part of the picture to use in its pixels (from the
+  top left), so the signature on a photo of a whole sheet can be used without cropping it first.
+- In Fill and sign's Create signature, Image tab, the part of the picture used can be chosen from the keyboard:
+  with the picture focused (Tab, or a click), the arrow keys move the part and Shift with an arrow key sizes it.
+- A CMYK JPEG of a signature (from some print workflows) can now have its paper made transparent and part of it
+  chosen, as other pictures can; before, it could only be used whole.
 
 - Closing a document with unsaved changes, or quitting, now offers Save (Save as… for a document with no file
   yet, such as a new or recovered one), Discard or Cancel, instead of only discarding the changes. Saving asks the

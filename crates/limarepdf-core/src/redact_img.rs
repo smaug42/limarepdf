@@ -303,6 +303,7 @@ fn encode(s: &Stream, px: Samples) -> Res<Stream> {
         }
         Codec::Ccitt { black_is_1 } => {
             let stride = px.stride();
+            let width = u16::try_from(px.w).map_err(|_| "the CCITT picture is too wide")?;
             let mut enc = fax::encoder::Encoder::new(fax::VecWriter::new());
             for row in px.data.chunks_exact(stride) {
                 let pels = (0..px.w).map(|x| {
@@ -313,7 +314,7 @@ fn encode(s: &Stream, px: Samples) -> Res<Stream> {
                         fax::Color::White
                     }
                 });
-                enc.encode_line(pels, px.w as u16)
+                enc.encode_line(pels, width)
                     .map_err(|_| "CCITT encoding failed")?;
             }
             let data = enc.finish().map_err(|_| "CCITT encoding failed")?.finish();
@@ -490,6 +491,22 @@ mod tests {
         s.clear([3, 1, 6, 2]);
         assert_eq!(s.data, vec![0xFF, 0xFF, 0b1110_0011, 0xFF]);
         assert!(s.is_clear([3, 1, 6, 2]) && !s.is_clear([2, 1, 6, 2]));
+    }
+
+    /// The fax encoder counts a row's width in 16 bits; a wider picture is refused, not
+    /// written wrapped (PB-13). Reading refuses one first, so this guards the writing alone.
+    #[test]
+    fn a_ccitt_picture_too_wide_to_write_is_refused() {
+        let px = Samples {
+            w: 65_536,
+            h: 1,
+            n: 1,
+            bpc: 1,
+            data: vec![0; 8192],
+            codec: Codec::Ccitt { black_is_1: false },
+        };
+        let err = encode(&Stream::new(Dictionary::new(), Vec::new()), px).unwrap_err();
+        assert!(err.contains("too wide"), "{err}");
     }
 
     #[test]

@@ -203,6 +203,26 @@ impl<'a> Shell<'a> {
                 });
             body(ui)
         });
+        // At Tab on the last control egui gives up the keyboard, and finds the first control
+        // only at the next Tab: it goes straight round instead (PB-15). Being offered first,
+        // the first control takes the keyboard egui means to give on; the only one, which
+        // egui doesn't offer it back to, is given it.
+        let tab = ctx.input(|i| i.key_pressed(Key::Tab) && i.modifiers.is_none());
+        if tab && r.is_top_modal && ctx.memory(|m| m.focused().is_none()) {
+            let first = ctx.viewport(|v| {
+                let mut widgets = v.this_pass.widgets.get_layer(layer);
+                let first = widgets.find(|w| w.enabled && w.sense.is_focusable());
+                first.map(|w| w.id)
+            });
+            if let Some(id) = first {
+                ctx.memory_mut(|m| {
+                    m.interested_in_focus(id, layer);
+                    if m.focused().is_none() {
+                        m.request_focus(id);
+                    }
+                });
+            }
+        }
         let esc = self.esc
             && r.is_top_modal
             && !r.any_popup_open

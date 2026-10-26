@@ -502,7 +502,7 @@ impl Pdf {
         let text = |key: &[u8]| {
             d.get(key)
                 .ok()
-                .and_then(|o| self.text_value(o))
+                .and_then(|o| self.shown_text_value(o))
                 .unwrap_or_default()
         };
         let date = |key: &[u8]| {

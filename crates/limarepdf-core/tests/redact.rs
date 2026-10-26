@@ -334,6 +334,36 @@ fn characters_of_a_cmap_without_a_codespace_go_with_their_whole_string() {
     assert_eq!(xs(&p, "D"), [[10.0, 30.0]]);
 }
 
+/// A code mapped at one length that also starts a longer code: LimarePDF and hayro read the
+/// shorter, poppler the longer mapping and pdf.js the longer codespace range (PB-03). Where
+/// the characters are isn't certain, so a mark over where another reader shows D takes
+/// the whole string.
+#[test]
+fn a_code_that_also_starts_a_longer_one_goes_with_its_whole_string() {
+    // Poppler: C (`<4143>`) at x 10 to 30, D at 30 to 50. LimarePDF: A to 20, B (`<43>`) to
+    // 40, D to 60.
+    let mut p = own_cmap(
+        "1 begincodespacerange <00> <FF> endcodespacerange",
+        "<41> 34 <4143> 36 <43> 35 <44> 37",
+        "BT /F2 20 Tf 10 100 Td <414344> Tj ET",
+    );
+    assert_eq!(xs(&p, "D"), [[40.0, 60.0]]);
+    let rep = p.redact(&[(0, [31.0, 80.0, 39.0, 108.0])]).unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    assert!(!p.page_text(0).contains('D'), "{}", p.page_text(0));
+    // pdf.js: `<8140>` (unmapped, by the codespace) to x 30, D to 50; LimarePDF and hayro
+    // take the mapped one-byte `<81>` (A), then B (`<40>`) and D.
+    let mut p = own_cmap(
+        "2 begincodespacerange <00> <7F> <8140> <9FFC> endcodespacerange",
+        "<81> 34 <40> 35 <44> 37",
+        "BT /F2 20 Tf 10 100 Td <814044> Tj ET",
+    );
+    assert_eq!(xs(&p, "D"), [[40.0, 60.0]]);
+    let rep = p.redact(&[(0, [31.0, 80.0, 39.0, 108.0])]).unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    assert!(!p.page_text(0).contains('D'), "{}", p.page_text(0));
+}
+
 #[test]
 fn keeps_tj_spacing_and_later_strings_in_place() {
     let mut p = make(&["BT /F1 20 Tf 30 100 Td [(Sec) -200 (retX) 50 (Yzw)] TJ ET"]);

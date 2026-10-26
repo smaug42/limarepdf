@@ -2423,19 +2423,22 @@ impl Tab {
             let spine = rect.min.x + avail_w / 2.0;
             let first = row_top.partition_point(|&t| t < vp.min.y).saturating_sub(1);
             let on_view = (first..rows.len()).take_while(|&r| row_top[r] <= vp.max.y);
-            for i in on_view.flat_map(|r| rows[r].iter().copied()) {
-                let (i, place) = i;
-                visible.0 = visible.0.min(i);
-                visible.1 = visible.1.max(i);
+            let page_rect = |i: usize, place: Place| {
                 let x = match place {
                     Place::Middle => spine - page_w[i] / 2.0,
                     Place::Left => spine - GAP / 2.0 - page_w[i],
                     Place::Right => spine + GAP / 2.0,
                 };
-                let r = Rect::from_min_size(
+                Rect::from_min_size(
                     Pos2::new(x, rect.min.y + page_top(i).unwrap_or(0.0)),
                     Vec2::new(page_w[i], page_h[i]),
-                );
+                )
+            };
+            for i in on_view.flat_map(|r| rows[r].iter().copied()) {
+                let (i, place) = i;
+                visible.0 = visible.0.min(i);
+                visible.1 = visible.1.max(i);
+                let r = page_rect(i, place);
                 painter.add(theme::page_shadow(dark).as_shape(r, 0));
                 painter.rect_filled(r, 0.0, paper);
                 let (key, key_scale, tiles) = self.page_key(&ctx, i, self.zoom * BASE * ppp);
@@ -2493,6 +2496,21 @@ impl Tab {
                 {
                     wanted.push((key, key_scale));
                 }
+            }
+            // A move, shape or pen stroke under way on a page now out of view: the page still
+            // takes the pointer, so it follows and letting go ends it (PB-14).
+            let held = self
+                .ed
+                .gesture_page()
+                .filter(|&g| g < visible.0 || g > visible.1);
+            let held = held.and_then(|g| {
+                let row = rows.get(*row_of.get(g)?)?;
+                row.iter().copied().find(|&(i, _)| i == g)
+            });
+            if let Some((g, place)) = held.filter(|_| self.crop_view.is_none()) {
+                let r = page_rect(g, place);
+                self.ed
+                    .page_ui(ui, &self.pdf, self.id, g, r, self.zoom * BASE);
             }
             if self.ed.selecting_words(ui.ctx()) {
                 edge_scroll(ui);

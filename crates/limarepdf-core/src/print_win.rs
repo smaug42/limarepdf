@@ -6,7 +6,7 @@
 
 use crate::print::{place, to_bgra, PrintOptions, Printer, Sheet, Sides};
 use crate::render::{self, Renderer};
-use crate::{Pdf, Result};
+use crate::Result;
 use anyhow::anyhow;
 use std::ptr::{null, null_mut};
 use windows_sys::Win32::Graphics::Gdi::{
@@ -171,14 +171,23 @@ impl Drop for Dc {
     }
 }
 
-pub(crate) fn print(pdf: &mut Pdf, pages: &[usize], o: &PrintOptions) -> Result<String> {
+/// Prints `pages` of the document `snapshot` ([`crate::Pdf::print_snapshot`]), calling `beat`
+/// after each step the spooler takes, so the wait for it can tell a job getting on from a
+/// stuck one ([`crate::print::while_beating`]).
+pub(crate) fn print(
+    snapshot: Vec<u8>,
+    pages: &[usize],
+    o: &PrintOptions,
+    beat: &dyn Fn(),
+) -> Result<String> {
     let name = match &o.printer {
         Some(n) => n.clone(),
         None => default_printer().ok_or_else(|| anyhow!("no default printer is set"))?,
     };
     let wname = wide(&name);
     let dm = settings(&wname, o)?;
-    let hp = render::load(pdf.print_snapshot()?, None)?;
+    beat();
+    let hp = render::load(snapshot, None)?;
     let r = Renderer::new(&hp);
     for &i in pages {
         r.page_size(i)?;
@@ -189,6 +198,7 @@ pub(crate) fn print(pdf: &mut Pdf, pages: &[usize], o: &PrintOptions) -> Result<
     if dc.is_null() {
         return Err(os_error("opening the printer"));
     }
+    beat();
     let dc = Dc(dc);
     let title = wide(if o.title.is_empty() {
         "LimarePDF"
@@ -205,12 +215,14 @@ pub(crate) fn print(pdf: &mut Pdf, pages: &[usize], o: &PrintOptions) -> Result<
     if job <= 0 {
         return Err(os_error("starting the print job"));
     }
+    beat();
     for &i in pages {
         if let Err(e) = page(&dc, &r, i) {
             // SAFETY: a document was started on this DC.
             unsafe { AbortDoc(dc.0) };
             return Err(e.context(format!("page {}", i + 1)));
         }
+        beat();
     }
     // SAFETY: a document was started on this DC.
     if unsafe { EndDoc(dc.0) } <= 0 {

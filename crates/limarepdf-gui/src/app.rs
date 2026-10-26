@@ -7727,6 +7727,133 @@ mod tests {
         assert_eq!(ed.tool, Tool::Text);
     }
 
+    /// A drag on page 1 from page point `from` to `to` in four steps, with Esc pressed
+    /// after the second when `esc`, then let go.
+    fn drag_on_page(
+        app: &mut App,
+        ctx: &egui::Context,
+        from: (f32, f32),
+        to: (f32, f32),
+        esc: bool,
+    ) {
+        let (min, k) = page_on_screen(app, ctx);
+        let at = |(x, y): (f32, f32)| min + egui::vec2(x, y) * k;
+        let (a, b) = (at(from), at(to));
+        window(app, ctx, 1400.0, vec![egui::Event::PointerMoved(a)]);
+        window(app, ctx, 1400.0, vec![press(a, true)]);
+        for i in 1..=4 {
+            let p = a + (b - a) * (i as f32 / 4.0);
+            window(app, ctx, 1400.0, vec![egui::Event::PointerMoved(p)]);
+            if esc && i == 2 {
+                let key = key_with(Key::Escape, egui::Modifiers::NONE);
+                window(app, ctx, 1400.0, vec![key]);
+            }
+        }
+        window(app, ctx, 1400.0, vec![press(b, false)]);
+        settle(app, ctx);
+    }
+
+    /// A move whose page goes out of view before the button is let go still ends when it is
+    /// (PB-14): nothing is left being dragged, and the line is where the move put it.
+    #[test]
+    fn a_drag_ends_when_let_go_with_its_page_out_of_view() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let courier = FontChoice::from_name("Courier");
+        assert!(app.tabs[0].edit(&ctx, |p| {
+            p.add_text(0, (100.0, 200.0), "Walrus seal", courier, 40.0, [0.0; 3])?;
+            p.insert_blank(2, 612.0, 792.0)
+        }));
+        let place = |app: &App| app.tabs[0].pdf.find_text_boxes(0, "Walrus").unwrap();
+        let before = place(&app);
+        app.act(&ctx, Act::Tool(Tool::Select));
+        let (min, k) = page_on_screen(&mut app, &ctx);
+        let at = |x: f32, y: f32| min + egui::vec2(x, y) * k;
+        window(&mut app, &ctx, 1400.0, click_at(at(150.0, 190.0)));
+        settle(&mut app, &ctx);
+        window(
+            &mut app,
+            &ctx,
+            1400.0,
+            vec![egui::Event::PointerMoved(at(150.0, 190.0))],
+        );
+        window(&mut app, &ctx, 1400.0, vec![press(at(150.0, 190.0), true)]);
+        for y in [210.0, 230.0, 250.0] {
+            window(
+                &mut app,
+                &ctx,
+                1400.0,
+                vec![egui::Event::PointerMoved(at(150.0, y))],
+            );
+        }
+        assert!(app.tabs[0].ed.dragging());
+        // Page 2 at the top of the view: page 1 is no longer drawn.
+        app.tabs[0].go_to(2);
+        let mut tree = window(&mut app, &ctx, 1400.0, vec![]);
+        for _ in 0..3 {
+            tree = window(&mut app, &ctx, 1400.0, vec![]);
+        }
+        // Its thumbnail in the side panel has the same name.
+        let page_1 = node(&tree, "Page 1").filter(|(r, _)| r.width() > 500.0);
+        assert!(page_1.is_none_or(|(r, _)| r.max.y < 0.0), "page 1 in view");
+        window(&mut app, &ctx, 1400.0, vec![press(at(150.0, 250.0), false)]);
+        settle(&mut app, &ctx);
+        assert!(
+            !app.tabs[0].ed.dragging(),
+            "still dragging after the button was let go"
+        );
+        assert_ne!(place(&app), before, "the move was lost");
+    }
+
+    /// Esc during a move, a pen stroke or a word selection made by dragging cancels it,
+    /// whatever the pointer does after (PB-14): nothing moves or is drawn, and the tool
+    /// stays for another try.
+    #[test]
+    fn esc_cancels_a_drag_under_way() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let courier = FontChoice::from_name("Courier");
+        assert!(app.tabs[0].edit(&ctx, |p| {
+            p.add_text(0, (100.0, 200.0), "Walrus seal", courier, 40.0, [0.0; 3])
+        }));
+        let place = |app: &App| app.tabs[0].pdf.find_text_boxes(0, "Walrus").unwrap();
+        let before = place(&app);
+
+        // A move with the arrow.
+        app.act(&ctx, Act::Tool(Tool::Select));
+        let (min, k) = page_on_screen(&mut app, &ctx);
+        window(
+            &mut app,
+            &ctx,
+            1400.0,
+            click_at(min + egui::vec2(150.0, 190.0) * k),
+        );
+        settle(&mut app, &ctx);
+        assert!(app.tabs[0].ed.sel().is_some(), "the line is selected");
+        drag_on_page(&mut app, &ctx, (150.0, 190.0), (150.0, 400.0), true);
+        assert_eq!(place(&app), before, "moved after Esc");
+        assert!(!app.tabs[0].ed.dragging());
+
+        // A pen stroke: nothing drawn; the pen stays, and a stroke after draws.
+        app.act(&ctx, Act::Tool(Tool::Pen));
+        drag_on_page(&mut app, &ctx, (100.0, 300.0), (300.0, 350.0), true);
+        assert!(app.tabs[0].pdf.annotations().is_empty(), "drawn after Esc");
+        assert_eq!(app.tabs[0].ed.tool, Tool::Pen);
+        drag_on_page(&mut app, &ctx, (100.0, 300.0), (300.0, 350.0), false);
+        assert_eq!(app.tabs[0].pdf.annotations().len(), 1);
+
+        // Words selected by dragging with the read tool: none left selected.
+        app.act(&ctx, Act::Tool(Tool::Read));
+        drag_on_page(&mut app, &ctx, (102.0, 190.0), (340.0, 190.0), true);
+        let ed = &app.tabs[0].ed;
+        assert!(ed.selection.words().is_none(), "{:?}", ed.selection);
+        assert!(!ed.dragging());
+    }
+
     /// A window with one page, drawn until settled: the page's screen place for page
     /// points, and its pixels per point.
     fn page_on_screen(app: &mut App, ctx: &egui::Context) -> (egui::Pos2, f32) {
@@ -8059,6 +8186,47 @@ mod tests {
         let tree = typed(&mut app, "Seal😀");
         assert!(noted(&tree, page_text::REFUSED), "no note in Fill and sign");
         assert_eq!(app.tabs[0].ed.sign.text, "Seal");
+    }
+
+    /// Tab in the inspector's multi-line Text box moves on to the next control, as in every
+    /// other field, and keeps what was typed; it types no tab (PB-20).
+    #[test]
+    fn tab_leaves_the_inspector_s_text_box() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let (min, k) = page_on_screen(&mut app, &ctx);
+        let none = egui::Modifiers::NONE;
+        app.act(&ctx, Act::Tool(Tool::TextBox));
+        window(
+            &mut app,
+            &ctx,
+            1400.0,
+            click_at(min + egui::vec2(100.0, 100.0) * k),
+        );
+        window(&mut app, &ctx, 1400.0, vec![]);
+        window(
+            &mut app,
+            &ctx,
+            1400.0,
+            vec![egui::Event::Text("Walrus".into())],
+        );
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::Escape, none)]);
+        settle(&mut app, &ctx);
+        app.act(&ctx, Act::Tool(Tool::Select));
+        let t = &mut app.tabs[0];
+        let id = t.pdf.annotations()[0].id;
+        t.ed.annots(&t.pdf, 0);
+        t.ed.selection = Selection::Annot { page: 0, id };
+        click_named(&mut app, &ctx, "Text");
+        // A click moves egui's clock on: the typist's starts after it.
+        let ty = Typist::new(&ctx);
+        ty.frame(&mut app, vec![egui::Event::Text(" ate fish".into())]);
+        ty.key(&mut app, Key::Tab, none);
+        let tree = ty.pause(&mut app);
+        assert_eq!(focused_text(&tree), None, "still typing in a box");
+        assert_eq!(comments(&app), ["Walrus ate fish"]);
     }
 
     /// BUG-39: a text box another app wrote in Chinese can't be drawn again in Helvetica, so
@@ -8636,13 +8804,15 @@ mod tests {
                 for _ in 0..buttons.len() + 12 {
                     let tree = dialog_frame(&mut app, &ctx, size, scale, vec![key(Key::Tab)]);
                     let focus = tree.nodes.iter().find(|(id, _)| *id == tree.focus);
-                    if let Some(name) = focus.and_then(|(_, n)| n.label()) {
-                        reached.push(name.to_string());
-                    }
+                    reached.push(focus.and_then(|(_, n)| n.label()).map(str::to_string));
                 }
                 for b in &buttons {
-                    assert!(reached.iter().any(|r| r == b), "{at}: Tab missed {b}");
+                    let b = Some(b.to_string());
+                    assert!(reached.contains(&b), "{at}: Tab missed {b:?}");
                 }
+                // Once on the controls, Tab stays on them, round and round (PB-15).
+                let on = reached.iter().skip_while(|r| r.is_none());
+                assert!(on.clone().all(Option::is_some), "{at}: {reached:?}");
                 // Tab may have opened Details; Esc closes the dialog all the same.
                 if let Some(id) = ctx.memory(|m| m.focused()) {
                     ctx.memory_mut(|m| m.surrender_focus(id));
@@ -11770,6 +11940,37 @@ mod tests {
         );
         assert_eq!(app.settings.author.as_deref(), Some("Pat Example"));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Tab goes round a dialog's controls, from the last straight back to the first, and
+    /// Shift+Tab the other way (PB-15): egui alone stops once on the window after the last
+    /// control and then skips the first.
+    #[test]
+    fn tab_goes_round_a_dialog_s_controls() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let ty = Typist::new(&ctx);
+        app.act(&ctx, Act::CommentName);
+        ty.pause(&mut app);
+        let mut walk = |modifiers| {
+            let mut reached = Vec::new();
+            for _ in 0..4 {
+                let tree = ty.key(&mut app, Key::Tab, modifiers);
+                let focus = tree.nodes.iter().find(|(id, _)| *id == tree.focus);
+                let name = focus.and_then(|(_, n)| n.label()).unwrap_or("(none)");
+                reached.push(name.to_string());
+            }
+            reached
+        };
+        let (mut ok, mut cancel) = ("Save", "Cancel");
+        if !dlg::ACTION_FIRST {
+            (ok, cancel) = (cancel, ok);
+        }
+        // From the name, which has the keyboard when the dialog opens.
+        assert_eq!(walk(egui::Modifiers::NONE), [ok, cancel, "Name", ok]);
+        assert_eq!(walk(egui::Modifiers::SHIFT), ["Name", cancel, ok, "Name"]);
     }
 
     /// The window, drawn once as the system asks it to close.

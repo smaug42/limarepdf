@@ -902,7 +902,7 @@ impl Pdf {
         let get = |k: &[u8]| -> Option<String> {
             let o = dict?.get(k).ok()?;
             let (_, o) = self.doc.dereference(o).ok()?;
-            o.as_str().ok().map(decode_text)
+            o.as_str().ok().map(decode_shown_text)
         };
         Info {
             title: get(b"Title"),
@@ -1100,6 +1100,19 @@ pub(crate) fn decode_text(b: &[u8]) -> String {
                 _ => c as char,
             })
             .collect()
+    }
+}
+
+/// [`decode_text`] for text that is only shown (properties, bookmark titles, comments, field
+/// descriptions), never used to find something: unmarked bytes that are valid UTF-8 with a
+/// character of more than one byte are read as UTF-8, as the program that wrote them meant
+/// (PB-18). In PDFDocEncoding such bytes are runs like "Ã©", which text hardly ever holds.
+/// Windows-1252 can't be told from PDFDocEncoding this way, so it reads by the standard.
+pub(crate) fn decode_shown_text(b: &[u8]) -> String {
+    let marked = b.starts_with(&[0xFE, 0xFF]) || b.starts_with(&[0xEF, 0xBB, 0xBF]);
+    match std::str::from_utf8(b) {
+        Ok(s) if !marked && !s.is_ascii() => s.to_owned(),
+        _ => decode_text(b),
     }
 }
 
