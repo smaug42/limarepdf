@@ -142,7 +142,7 @@ a dialog's only field), Tab reaching each button, and Esc closing it without act
 list, forms and running work), Sign and Certify, Signature details, the Trust question, Trusted certificates and
 Recover unsaved changes are checked the same way for size, names and Esc. Create signature's Type tab was
 captured in the light and dark themes for batch 35 (PB-09, the styles as white cards, the chosen one outlined; the
-guide's `create-signature.png` replaced): awaiting the user's review. The redesigned window
+guide's `create-signature.png` replaced): reviewed and accepted by the user, 2026-10-25. The redesigned window
 (top bar, inspector, command palette, right-click menus, floating toolbar, thumbnail dragging, collapsing inspector)
 has been used by hand on Linux. Later additions (recent files, document notices, fit width, the theme button, crop)
 were checked by screenshot under a virtual X server; not every one has been clicked through by hand. Of the newest:
