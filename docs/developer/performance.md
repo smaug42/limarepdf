@@ -181,9 +181,10 @@ OCR speed is in [Scans and OCR](../scanning-and-ocr.md#accuracy-and-speed).
   at its next [band](../rendering.md#large-drawings) instead of running to the end.
 - Edits re-save the document without compressing it, and undo keeps plain snapshots (a whole copy of the document
   per step, up to 1 GB per document, see [above](#memory-in-the-desktop-app)).
-- OCR, optimising, exporting images, printing and search run in the background (search since batch 22: a thread
-  per tab, [below](#search)). Save doesn't yet: it runs on the window's thread and holds it for as long as it takes
-  ([measured below](#startup-and-responsiveness); ENH-35).
+- OCR, optimising, exporting images, printing, search and saving run in the background (search since batch 22: a
+  thread per tab, [below](#search); saving since batch 37, ENH-35: a thread per save, which writes a copy of the
+  document, [measured below](#startup-and-responsiveness)). A save's questions and checks still come first on the
+  window's thread.
 - A [recovery copy](../gui.md#recovery-copies) is made at most once a minute per changed document. The window only
   copies the document in memory; a background thread turns that into a file and writes it. On the 200-page scan the
   copy in memory took 16 to 57 ms and making the file about 20 ms (138 MB, before writing it to disk); on the 1,000
@@ -319,8 +320,31 @@ the frame then took about a millisecond; why it waited was not looked into.
 | The same on text-300.pdf | 218 / 236 ms (before the write 116 / 132 ms, writing 35 / 47 ms) |
 
 Before Save writes, it keeps the open box's typing and makes its checks; which of them takes the 116 ms on 300
-pages (5 ms on the letter) wasn't measured. Save holds the window for its whole time: no frame, and so no busy
-sign, until it finishes (ENH-35). Search held it too, until batch 22 (below).
+pages (5 ms on the letter) wasn't measured in the baseline. Save holds the window for its whole time: no frame, and
+so no busy sign, until it finishes (ENH-35). Search held it too, until batch 22 (below).
+
+Save on a thread of its own (batch 37, ENH-35, measured the same day the same way, the release build of this
+change; 10 runs each, built times). Split with temporary points in the timing log, the 116 ms before the write
+were: keeping the box's typing 7 ms (the edit itself), checking the file hadn't changed elsewhere 8 to 9 ms (the
+file read once in full, as its time was within 2 s of when it was read: the reference copy is made just before
+the app opens it; [PB-28](architecture.md)), and counting the document's redaction marks 63 ms. That count, and the
+same one after every change, went through the whole page list once for every page (the annotation listing looked
+each page up by its number); it now goes through it once. Before this change, once a file had been saved (its time then always within 2 s of
+the reading after the write) or was opened just after a change, every save read it in full twice before writing
+and once after, as a file found unchanged never became the version known; it now does, and the version after
+writing is read on the save's thread.
+
+| Ctrl+S with an Add text box open | To the busy sign's frame | To the saved frame | Writing (on its thread) |
+| --- | --- | --- | --- |
+| letter.pdf | 4.3 / 35.5 ms | 37.6 / 71.0 ms | 9.2 / 12.3 ms |
+| text-300.pdf | 34.1 / 50.7 ms | 84.9 / 108.3 ms | 48.0 / 52.2 ms |
+
+The busy sign showed in all 20 runs (the frame after Ctrl+S's). On the window's thread a save now holds it for
+keeping the typing, its checks and the copy of the document (0.6 ms on text-300.pdf); the write and reading the
+file back take place on the save's thread. A 300-page signed document (text-300.pdf signed with a test ID) asks
+first, as typed text is a change its signature doesn't allow: Ctrl+S to the question, adding the changes after
+what was signed included, took about 42 ms (one run, built). Typing while a save is written wasn't measured: on
+these documents the write takes about 50 ms.
 
 Search as you type (batch 22, measured the same day the same way, the release build of this change; the driver's
 `typed` mode: each run empties the field with Ctrl+A and Backspace and types "glacier", 50 ms between keys; 10 runs

@@ -120,6 +120,11 @@ Close this tab; other tabs carry on.
 Save (Ctrl+S) writes the document over its file; Save As (Ctrl+Shift+S) writes a new file and leaves the original
 as it was. Your file is only changed when you save.
 
+The file is written in the background: while it is, the status bar shows **Saving** with the file's name, and you
+can go on reading and editing. A change made meanwhile isn't in the saved file, so the document stays marked
+unsaved. Saving it again, closing it or quitting waits for the save to finish, and Reload and signing it are
+available again once it has.
+
 A file is open in one tab at a time: opening it again, by any path or link to it, brings its tab to the front.
 Before saving over the file, LimarePDF checks it still holds what LimarePDF last read or saved there. If another
 app (or another LimarePDF window) changed it since, Save asks first: **Save as…** writes your version to a new

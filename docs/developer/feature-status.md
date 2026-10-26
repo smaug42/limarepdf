@@ -101,8 +101,6 @@ this list once it works. The feature table below has the details.
 
 - No export to Word or Excel, no comparing documents, no PDF/A.
 - Search has no Replace, and no options to match capitals or whole words only.
-- Saving a long document stops the window for a moment (a fifth of a second for 300 pages), with nothing shown
-  meanwhile.
 - Text recognition (OCR) reads Latin script only.
 - No autosave or custom shortcuts, and English only (unsaved work is kept in recovery copies).
 - Support for every system is provisional ([requirements](../install.md#requirements)): tested by hand mostly on
@@ -193,6 +191,11 @@ available.
 - While a watermark or headers and footers are being set, the pages show them drawn over the content, also when
   they are set to go behind it, and in Liberation Sans, which has Helvetica's widths; once added, the pages show
   them as written.
+- Saving writes the file on a thread of its own, with a busy sign in the status bar, while the window carries on
+  (since batch 37, ENH-35): the document can be changed meanwhile, and the tab then stays unsaved; saving it again,
+  closing it and quitting wait for the save, and Reload and signing are off until it ends. While it writes, the
+  app holds a second copy of the document in memory. The save's questions and checks still come first, on the
+  window's thread (on 300 pages about 20 ms, a signed document's added changes about 30 ms).
 - Saving rewrites the whole file, except for digitally signed documents, whose changes are added after what was
   signed so the signatures stay valid ([details](../signatures.md#saving-a-signed-document)). It writes a temporary file
   beside the document, readable only by you (on Linux and macOS) when it replaces a file, then puts it in the

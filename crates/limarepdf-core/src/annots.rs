@@ -249,8 +249,12 @@ impl Annot {
 impl Pdf {
     /// The annotations on every page, page by page in the file's order.
     pub fn annotations(&self) -> Vec<Annot> {
-        (0..self.page_count())
-            .flat_map(|i| self.page_annotations(i).unwrap_or_default())
+        let ids = self.page_ids();
+        (0..ids.len())
+            .flat_map(|i| {
+                self.annotations_in(i, ids[i], self.annot_refs(ids[i]))
+                    .unwrap_or_default()
+            })
             .collect()
     }
 
@@ -258,7 +262,7 @@ impl Pdf {
     /// drawn in).
     pub fn page_annotations(&self, page_index: usize) -> Result<Vec<Annot>> {
         let page = self.page_id_at(page_index)?;
-        self.annotations_in(page_index, self.annot_refs(page))
+        self.annotations_in(page_index, page, self.annot_refs(page))
     }
 
     /// Every annotation on every page, without [`Pdf::annot_refs`]'s limit: for removing
@@ -267,14 +271,21 @@ impl Pdf {
         let ids = self.page_ids();
         (0..ids.len())
             .flat_map(|i| {
-                self.annotations_in(i, self.all_annot_refs(ids[i]))
+                self.annotations_in(i, ids[i], self.all_annot_refs(ids[i]))
                     .unwrap_or_default()
             })
             .collect()
     }
 
-    fn annotations_in(&self, page_index: usize, refs: Vec<ObjectId>) -> Result<Vec<Annot>> {
-        let page = self.page_id_at(page_index)?;
+    /// The annotations `refs` of page `page`, number `page_index` (zero-based). The page is
+    /// given, not looked up by number: listing every page's annotations would otherwise go
+    /// through the page tree once a page (ENH-35: 63 ms on 300 pages).
+    fn annotations_in(
+        &self,
+        page_index: usize,
+        page: ObjectId,
+        refs: Vec<ObjectId>,
+    ) -> Result<Vec<Annot>> {
         let (vd, _, _) = self.vis_down(page);
         let to_vis = mx::inv(vd).ok_or_else(|| anyhow!("degenerate page transform"))?;
         Ok(refs

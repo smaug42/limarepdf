@@ -186,7 +186,7 @@ fn trim(steps: &mut Vec<Step>, link: &mut Option<Stamped>, budget: usize) -> Opt
 }
 
 /// See [`Tab::state`].
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct State {
     revision: u64,
     undo: usize,
@@ -1863,9 +1863,10 @@ impl Tab {
         self.banners.insert(at, b);
     }
 
-    /// The document was just written to `path`, which becomes its file, as it now is there.
-    pub fn wrote(&mut self, path: PathBuf) {
-        self.disk = disk::version(&path).ok();
+    /// The document was just written to `path`, which becomes its file, as it now is there
+    /// (`version`, read back after writing; `None` when it couldn't be).
+    pub fn wrote(&mut self, path: PathBuf, version: Option<disk::Version>) {
+        self.disk = version;
         self.changed_on_disk = None;
         self.drop_banner(banners::Kind::ChangedOnDisk);
         self.path = Some(path);

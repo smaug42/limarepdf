@@ -445,8 +445,9 @@ a new inode), the SHA-256 of the bytes and when it was read. `disk::compare` rea
 inode differ, or when the file's time is less than 2 seconds older than the reading (git's "racy" rule, PB-28: a
 change in the same tick of the file's clock keeps the time, and Windows has no inode to tell it; FAT keeps times to
 2 seconds), and then calls it changed only when the bytes differ, so a touched or synced copy isn't a change. A
-file so read is stored with its new version, so it is read once more after a save or a fresh write, not every
-time. `App::save` checks
+file so read and found unchanged is stored with its new version, by `App::check_disk`'s result and by the save's
+own check (`App::stale`, since batch 37: before, a file saved once was read in full at every check of every later
+save), so it is read once more after a save or a fresh write, not every time. `App::save` checks
 before its other questions, and `App::save_target` again just before writing (Save, a signed document's appended
 save, Save as onto the tab's own file by any path); a changed file asks `Dialog::ConfirmStale` (Save as… or Replace;
 Replace stores that version in `App::replace_ok`, so the save then goes ahead unless the file changes again), and
@@ -516,6 +517,36 @@ after Cancel). It closes the saved tab, asks about the next document or quits; a
 the app quits, so stopping part way keeps every document open. Answering a quit question drops waiting save
 questions and a tab's closing in progress, since quitting asks about every unsaved document anyway. Tests never
 open the save chooser: `App::save_as` takes the tests' `SAVE_AS` instead.
+
+Saving writes on a thread of its own (ENH-35, batch 37; `app/save.rs`). The window's thread does what comes
+before the write as it always did: keeping the typing, the questions (`App::save`, `save_unmarked`, `save_signed`,
+with `append_edits` for a signed document), and `App::save_target`'s checks. Then `save_now` hands
+`App::start_save` a copy of the document with its password set (`save::Write::Whole`), or `save_appended` the
+bytes with the edits added (`Write::Appended`); the thread writes them (`Pdf::save` prunes, compresses and
+encrypts the copy, so the tab's own document is no longer compressed by a save), reads the file back
+(`disk::read`, the bytes for the signature check and the version for `Tab::wrote`), and sends `Loaded::Saved`.
+`App::saves` holds each save being written (`save::Running`: its tab, number, the tab's `State` when handed over,
+the password to check the saved signatures with), shown by the status bar's busy sign (`App::busy_sign`).
+`App::saved` applies the result as the old synchronous save did, with the same messages through `App::show` (a
+dialog may be open by then): Save failed, Saved, not confirmed, the status. The tab counts as saved only when its
+`State` is the one handed over and the write was confirmed; changed meanwhile (any edit, Undo, a password) it stays
+`dirty`, keeps `scrubbed` and keeps its recovery copy (`saved_copy` not confirmed). The tab's `State` changes with
+the result (`dirty`, `path`), so a question asked about the tab while it saved, whose `Asked` held the state before,
+is moved on to the state after (`Dialog::asked_mut`), and its answer still acts. While a tab's save is written:
+Save or Save as again is remembered (`save_again`, Save as winning) and run once it ends (`save::AfterSave::Save`,
+the tab brought to the front for its questions; dropped if the save failed, which says so); `close_asking` waits
+(`AfterSave::Close`, which then asks as usual); `App::quit` and the window's close request wait for every save
+(`AfterSave::Quit`, the close cancelled); `close_step` keeps its `Closing` while the save it waits for is written,
+and doesn't quit while any other is; `App::after_save` runs the first one ready at the end of `App::dialogs`, with
+no dialog open or waiting. Reload, Sign with digital ID and Certify are off (`Ctx::saving`) and refused in `act`
+with a message (a banner's Reload, placing a signature box); `Loaded::Disk` results for a tab being saved are left
+out, as its own save is replacing the file. `on_exit` joins the save threads (`finish_saves`), so a system
+shutting the app down doesn't cut a write short. Tests hold the next save's write until they say go
+(`App::save_gate`) and wait for it with `saves_done`.
+
+Listing annotations (`Pdf::annotations`, and `every_annotation` for the redaction marks counted after every change
+and before every save) passes each page's id to `annotations_in`; looked up by number (`page_id_at`, which builds
+the page list) it went through the page tree once a page, 63 ms on 300 pages (batch 37).
 
 Crash recovery copies are kept by `crates/limarepdf-gui/src/recovery.rs`, in a private
 per-user state folder with one subfolder per running app, which holds a locked `lock` file while the app runs. A tab's
@@ -594,7 +625,8 @@ wants rather than a stand-in at another), `render start` and `end` (the worker, 
 and `end` (the read thread), `search start`, `search first hit` and `search end` (`Tab::start_search` and
 `take_search`, the query by its length, the matches by their count) and `search index` (the search thread, the
 text kept in bytes), `save start`
-and `end` (`save_now`, `save_appended`), `print dialog` (Print's `act`), `printers found` (`poll_loads`) and `exit`
+and `end` (the save's thread, since batch 37) and `save shown` (the status bar drawing a save's busy sign, once per
+save, by its number), `print dialog` (Print's `act`), `printers found` (`poll_loads`) and `exit`
 (`on_exit`). A frame is built before egui
 paints it and the window presents it, which the app can't see: the gap is measured from outside by screenshot
 polling ([Performance](performance.md#startup-and-responsiveness)). Lines are tab-separated: epoch and log-relative

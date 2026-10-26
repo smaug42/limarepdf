@@ -320,6 +320,8 @@ pub struct Ctx {
     pub file: bool,
     /// A background job (OCR, optimising, exporting, printing) is running.
     pub busy: bool,
+    /// The active tab's save is being written.
+    pub saving: bool,
     pub can_undo: bool,
     pub can_redo: bool,
     /// Words are selected with the read tool.
@@ -400,8 +402,13 @@ fn doc(c: &Ctx) -> bool {
 fn idle(c: &Ctx) -> bool {
     c.doc && !c.busy
 }
+/// The document's file, which waits while it is saved.
 fn file(c: &Ctx) -> bool {
-    c.file && !c.busy
+    c.file && !c.busy && !c.saving
+}
+/// Signing, which replaces the tab with the signed file: not while the tab is saved.
+fn signable(c: &Ctx) -> bool {
+    c.doc && !c.busy && !c.saving
 }
 fn undo(c: &Ctx) -> bool {
     c.can_undo
@@ -1462,7 +1469,7 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Document,
         label: "Sign with digital ID…",
         icon: icon::SEAL_CHECK,
-        enabled: doc_idle,
+        enabled: signable,
         sep: true,
         hint: "Sign so that others can check who signed and whether anything changed \
                afterwards. The signed document is saved as a new file.",
@@ -1474,7 +1481,7 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Document,
         label: "Certify…",
         icon: icon::CERTIFICATE,
-        enabled: doc_idle,
+        enabled: signable,
         hint: "Sign as the document's author, choosing what others may change afterwards. \
                Only before anyone has signed it.",
         submenu: "Digital signatures",

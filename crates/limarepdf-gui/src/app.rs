@@ -31,6 +31,9 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
 mod recover;
+mod save;
+
+use save::{AfterSave, Write};
 
 pub const IMAGE_EXTS: [&str; 5] = ["png", "jpg", "jpeg", "tif", "tiff"];
 
@@ -151,6 +154,8 @@ enum Loaded {
         title: &'static str,
         result: Result<(Pdf, bool, String), String>,
     },
+    /// A save's thread finished writing (ENH-35).
+    Saved(Box<save::Saved>),
 }
 
 /// Summary of an OCR run for the user, and whether any page changed.
@@ -335,6 +340,16 @@ enum Closing {
     },
 }
 
+impl Closing {
+    /// The tab whose save it waits for.
+    fn saved(&self) -> Option<u64> {
+        match self {
+            Closing::Tab { tab, .. } => Some(*tab),
+            Closing::Quit { saving, .. } => *saving,
+        }
+    }
+}
+
 /// The dialogs left: settings live in the inspector.
 enum Dialog {
     None,
@@ -411,6 +426,31 @@ impl Dialog {
             Dialog::ConfirmSaveDisallowed(s) => Some(&s.asked),
             Dialog::ConfirmPrintFields(q) => Some(&q.asked),
             Dialog::ConfirmAppendForms(q) => Some(&q.asked),
+            _ => None,
+        }
+    }
+
+    /// The same, to change.
+    fn asked_mut(&mut self) -> Option<&mut Asked> {
+        match self {
+            Dialog::ConfirmClose(a, _)
+            | Dialog::ConfirmReplace(a, ..)
+            | Dialog::ConfirmFlatten(a)
+            | Dialog::ConfirmFlattenAnnots(a)
+            | Dialog::ConfirmSaveSigned(a, ..)
+            | Dialog::ConfirmSaveRepaired(a)
+            | Dialog::ConfirmApplyRedactions(a, _)
+            | Dialog::ConfirmFinishSigning(a, _)
+            | Dialog::RemoveHidden(a, _)
+            | Dialog::ConfirmSaveMarks(a, ..)
+            | Dialog::Print(a, _)
+            | Dialog::SaveSelection(a, _)
+            | Dialog::ConfirmSignRecovered(a)
+            | Dialog::ConfirmStale(a, _)
+            | Dialog::ConfirmReload(a) => Some(a),
+            Dialog::ConfirmSaveDisallowed(s) => Some(&mut s.asked),
+            Dialog::ConfirmPrintFields(q) => Some(&mut q.asked),
+            Dialog::ConfirmAppendForms(q) => Some(&mut q.asked),
             _ => None,
         }
     }
@@ -755,6 +795,14 @@ pub struct App {
     closing: Option<Closing>,
     /// Files the system asks to open, from Finder on macOS (BUG-28).
     incoming: Incoming,
+    /// Saves being written on their threads (ENH-35), and the number of the last one.
+    saves: Vec<save::Running>,
+    saves_made: u64,
+    /// What waits for a save to end.
+    after_saves: Vec<AfterSave>,
+    /// Tests: the next save's thread waits for this before writing.
+    #[cfg(test)]
+    save_gate: Option<Receiver<()>>,
 }
 
 impl App {
@@ -829,6 +877,11 @@ impl App {
             searches: 0,
             closing: None,
             incoming: Incoming::default(),
+            saves: Vec::new(),
+            saves_made: 0,
+            after_saves: Vec::new(),
+            #[cfg(test)]
+            save_gate: None,
         }
     }
 
@@ -1664,6 +1717,10 @@ impl App {
                 }
                 Loaded::Disk(found) => {
                     for (id, known, now) in found {
+                        // Its own save is replacing the file.
+                        if self.saving(id) {
+                            continue;
+                        }
                         let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
                             continue;
                         };
@@ -1795,6 +1852,7 @@ impl App {
                     }
                     self.show(Dialog::Message(title.into(), text));
                 }
+                Loaded::Saved(s) => self.saved(ctx, *s),
             }
         }
         self.next_dialog();
@@ -2159,16 +2217,24 @@ impl App {
 
     /// The file at `path` as it now is, when it is tab `i`'s own file and another app or
     /// tab changed it since the tab last read or saved it, unless the user said to replace
-    /// that version.
-    fn stale(&self, i: usize, path: &Path) -> Option<disk::Version> {
-        let t = self.tabs.get(i)?;
+    /// that version. A file found unchanged becomes the version known, read later: one
+    /// whose time was too close to the reading to trust (PB-28) is then read once, not at
+    /// every check.
+    fn stale(&mut self, i: usize, path: &Path) -> Option<disk::Version> {
+        let t = self.tabs.get_mut(i)?;
         let (own, known) = (t.path.as_deref()?, t.disk.as_ref()?);
         if !disk::same_file(own, path) {
             return None;
         }
-        let Ok(OnDisk::Changed(now)) = disk::compare(path, known) else {
-            return None;
+        let now = match disk::compare(path, known) {
+            Ok(OnDisk::Changed(now)) => now,
+            Ok(OnDisk::Same(now)) => {
+                t.disk = Some(now);
+                return None;
+            }
+            _ => return None,
         };
+        let t = &self.tabs[i];
         let ok = self.replace_ok.as_ref();
         let ok = ok.is_some_and(|(id, v)| *id == t.id && v.same_bytes(&now));
         (!ok).then_some(now)
@@ -2180,10 +2246,10 @@ impl App {
         let Some(t) = self.tabs.get(self.active) else {
             return false;
         };
-        let Some(path) = path.or(t.path.as_deref()) else {
+        let Some(path) = path.map(Path::to_path_buf).or_else(|| t.path.clone()) else {
             return false;
         };
-        let Some(now) = self.stale(self.active, path) else {
+        let Some(now) = self.stale(self.active, &path) else {
             return false;
         };
         let t = &mut self.tabs[self.active];
@@ -2194,92 +2260,30 @@ impl App {
         true
     }
 
-    /// Writes a signed document whose edits were added after what was signed (`bytes`).
-    /// The signatures stay, and the saved file becomes what later saves add to.
+    /// Writes a signed document whose edits were added after what was signed (`bytes`), on
+    /// a thread ([`App::start_save`]). The signatures stay, and the saved file becomes what
+    /// later saves add to.
     fn save_appended(&mut self, ctx: &egui::Context, as_new: bool, bytes: Vec<u8>) {
         let Some(path) = self.save_target(as_new) else {
             return;
         };
-        let tab = &mut self.tabs[self.active];
-        timing::mark("save start", || path.display().to_string());
-        let written = limarepdf_core::write_file(&path, &bytes);
-        timing::mark("save end", || saved(&written).into());
-        let confirmed = match written {
-            Ok(()) => true,
-            Err(e) if not_confirmed(&e) => false,
-            Err(e) => {
-                self.dialog = Dialog::Message("Save failed".into(), format!("{e:#}"));
-                return;
-            }
-        };
-        self.status = format!(
-            "Saved {}; the changes were added after what was signed, so the signatures stay",
-            path.display()
-        );
-        self.recent.add(&path);
-        self.replace_ok = None;
-        tab.dirty = !confirmed;
-        tab.scrubbed = false;
-        tab.wrote(path);
-        self.check_signatures(ctx, self.active, Arc::from(bytes), None);
-        self.saved_copy(self.active, confirmed);
-        if !confirmed {
-            self.dialog = Dialog::Message("Saved, not confirmed".into(), NOT_CONFIRMED.into());
-        }
+        self.start_save(ctx, path, Write::Appended(bytes), Some(None));
     }
 
+    /// Writes the whole document, on a thread ([`App::start_save`]).
     fn save_now(&mut self, ctx: &egui::Context, as_new: bool) {
         let Some(path) = self.save_target(as_new) else {
             return;
         };
         let tab = &mut self.tabs[self.active];
         tab.pdf.set_encryption(tab.encryption.clone());
-        timing::mark("save start", || path.display().to_string());
-        let written = crate::guard(|| tab.pdf.save(&path));
-        timing::mark("save end", || saved(&written).into());
-        let confirmed = match written {
-            Ok(()) => true,
-            Err(e) if not_confirmed(&e) => false,
-            Err(e) => {
-                self.dialog = Dialog::Message("Save failed".into(), format!("{e:#}"));
-                return;
-            }
-        };
-        self.status = format!("Saved {}", path.display());
-        self.recent.add(&path);
-        self.replace_ok = None;
-        tab.dirty = !confirmed;
-        tab.scrubbed = false;
-        // The saved file is the repaired copy, with nothing left to repair, and it reads the
-        // same in every app.
-        tab.repaired = false;
-        tab.banners
-            .retain(|b| !matches!(b.kind, BannerKind::Repaired | BannerKind::OtherApps));
-        // The saved copy's signatures are already broken: no need to ask again.
-        tab.signed = false;
-        // The Signatures tab describes the file, so check the saved one (a saved recovered
-        // copy's too, which was never checked).
+        // The Signatures tab describes the file, so the saved one is checked (a saved
+        // recovered copy's too, which was never checked).
         let password = tab.encryption.as_ref().map(|e| e.user_password.clone());
         let recheck =
             tab.sigs.is_some() || (tab.recovered.is_some() && tab.pdf.signature_count() > 0);
-        let saved = recheck.then(|| std::fs::read(&path));
-        tab.wrote(path);
-        match saved {
-            Some(Ok(bytes)) => self.check_signatures(ctx, self.active, Arc::from(bytes), password),
-            Some(Err(e)) => {
-                let t = &mut self.tabs[self.active];
-                if let Some(s) = t.sigs.as_mut() {
-                    s.check =
-                        Check::Failed(format!("LimarePDF can't read the saved file again: {e}"));
-                    t.sig_banner();
-                }
-            }
-            None => {}
-        }
-        self.saved_copy(self.active, confirmed);
-        if !confirmed {
-            self.dialog = Dialog::Message("Saved, not confirmed".into(), NOT_CONFIRMED.into());
-        }
+        let pdf = Box::new(tab.pdf.clone());
+        self.start_save(ctx, path, Write::Whole(pdf), recheck.then_some(password));
     }
 
     /// Run a command (`name` is for messages) so that a panic in it can't close the app with
@@ -2350,6 +2354,19 @@ impl App {
                 if let Some(files) = Self::pick_images() {
                     self.new_from_images(ctx, &files);
                 }
+            }
+            Act::Save | Act::SaveAs if has && self.saving(self.tabs[self.active].id) => {
+                self.save_again(a == Act::SaveAs);
+            }
+            // Reading the file again, or replacing the tab with a signed one, waits for the
+            // tab's save (its commands are off meanwhile; a banner's Reload isn't).
+            Act::Reload | Act::SignDigital | Act::Certify | Act::DigitalPlaced
+                if has && self.saving(self.tabs[self.active].id) =>
+            {
+                self.show(Dialog::Message(
+                    "Still saving".into(),
+                    "This document is still being saved. Try again once it is saved.".into(),
+                ));
             }
             Act::Save => self.save(ctx, false),
             Act::SaveAs => self.save(ctx, true),
@@ -2487,14 +2504,7 @@ impl App {
             Act::CloseTab if has => self.close_asking(self.active),
             Act::ToggleRecovery => self.toggle_recovery(),
             Act::ShowRecoveryFile => self.show_leftover(),
-            Act::Quit => {
-                if let Some(q) = self.quit_question() {
-                    self.dialog = q;
-                } else {
-                    self.quit_ok = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-            }
+            Act::Quit => self.quit(ctx),
             Act::About => self.dialog = Dialog::About(about::Page::Main),
             Act::Theme(p) => {
                 ctx.set_theme(p);
@@ -3324,9 +3334,24 @@ impl App {
         false
     }
 
-    /// Close tab `i`, asking first when it has unsaved work.
+    /// Quit, asking first when there is unsaved work; a save being written ends first.
+    fn quit(&mut self, ctx: &egui::Context) {
+        if !self.saves.is_empty() {
+            self.wait_for_saves(AfterSave::Quit);
+        } else if let Some(q) = self.quit_question() {
+            self.dialog = q;
+        } else {
+            self.quit_ok = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    /// Close tab `i`, asking first when it has unsaved work; once its save ends, when one
+    /// is being written.
     fn close_asking(&mut self, i: usize) {
-        if self.tabs[i].unsaved() {
+        if self.saving(self.tabs[i].id) {
+            self.wait_for_saves(AfterSave::Close(self.tabs[i].id));
+        } else if self.tabs[i].unsaved() {
             self.dialog = Dialog::ConfirmClose(Asked::of(&self.tabs[i]), false);
         } else {
             self.close_tab(i);
@@ -3362,6 +3387,8 @@ impl App {
         let unsaved = |app: &Self, id| app.tabs.iter().any(|t| t.id == id && t.unsaved());
         match self.closing.take() {
             None => {}
+            // Its save is being written: wait for it.
+            Some(c) if c.saved().is_some_and(|tab| self.saving(tab)) => self.closing = Some(c),
             Some(Closing::Tab { tab, front }) => {
                 if unsaved(self, tab) {
                     return;
@@ -3383,6 +3410,11 @@ impl App {
                         self.closing = Some(Closing::Quit { saving: None, rest });
                         return;
                     }
+                }
+                // Another tab's save is still being written.
+                if !self.saves.is_empty() {
+                    self.closing = Some(Closing::Quit { saving: None, rest });
+                    return;
                 }
                 self.quit_ok = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -4084,6 +4116,10 @@ impl App {
         {
             self.close_step(ctx);
         }
+        // What waited for a save goes on, one at a time, as each may ask something.
+        if matches!(self.dialog, Dialog::None) && self.waiting.is_empty() {
+            self.after_save(ctx);
+        }
         self.next_dialog();
     }
 
@@ -4102,6 +4138,10 @@ impl App {
     fn state(&self, ctx: &egui::Context) -> Ctx {
         let mut c = Ctx {
             busy: self.busy || self.sign_window.as_ref().is_some_and(SignWindow::busy),
+            saving: self
+                .tabs
+                .get(self.active)
+                .is_some_and(|t| self.saving(t.id)),
             side: self.side.shown(),
             inspector: self.inspector.shown(),
             docked: self.settings.controls_docked,
@@ -4868,7 +4908,11 @@ impl eframe::App for App {
 
         // Guard against closing the window with unsaved work.
         let quit = ctx.input(|i| i.viewport().close_requested()) && !self.quit_ok;
-        if let Some(q) = quit.then(|| self.quit_question()).flatten() {
+        if quit && !self.saves.is_empty() {
+            // A save being written ends first; then quitting goes on as usual.
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.wait_for_saves(AfterSave::Quit);
+        } else if let Some(q) = quit.then(|| self.quit_question()).flatten() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             // Asked first: a question open comes back after Cancel.
             let open = std::mem::replace(&mut self.dialog, q);
@@ -5131,6 +5175,7 @@ impl eframe::App for App {
         // and the zoom at the right.
         egui::Panel::bottom("status").show(ui, |ui| {
             let t = self.tabs.get(self.active);
+            let busy = self.busy_sign();
             let status = |ui: &mut egui::Ui| {
                 if let Some(t) = t {
                     // Both, whichever the rest of the window shows.
@@ -5144,6 +5189,13 @@ impl eframe::App for App {
                         ui.separator();
                         ui.label("will be encrypted on save");
                     }
+                }
+                // The busy sign while a save is written.
+                if let Some((n, text)) = &busy {
+                    ui.separator();
+                    ui.add(egui::Spinner::new());
+                    ui.label(text);
+                    timing::once("save shown", || n.to_string());
                 }
                 if !self.status.is_empty() {
                     ui.separator();
@@ -5477,6 +5529,8 @@ impl eframe::App for App {
 
     /// A normal exit (not a crash, which never gets here): no recovery copies are left.
     fn on_exit(&mut self) {
+        // Quitting waits for saves, but the system may end the app regardless.
+        self.finish_saves();
         timing::mark("exit", String::new);
         timing::flush();
         self.end_recovery();
@@ -9389,6 +9443,7 @@ mod tests {
             std::env::temp_dir().join(format!("limarepdf-app-{}-typed.pdf", std::process::id()));
         app.tabs[0].path = Some(path.clone());
         app.act(&ctx, Act::Save);
+        saves_done(&mut app, &ctx);
         let back = Pdf::from_bytes(&std::fs::read(&path).unwrap(), None).unwrap();
         let _ = std::fs::remove_file(&path);
         let texts: Vec<String> = back.annotations().into_iter().map(|a| a.contents).collect();
@@ -9519,6 +9574,7 @@ mod tests {
             std::env::temp_dir().join(format!("limarepdf-app-{}-props.pdf", std::process::id()));
         app.tabs[0].path = Some(path.clone());
         app.act(&ctx, Act::Save);
+        saves_done(&mut app, &ctx);
         let back = Pdf::from_bytes(&std::fs::read(&path).unwrap(), None).unwrap();
         let _ = std::fs::remove_file(&path);
         assert_eq!(back.info().title.as_deref(), Some("Walrus notes!?"));
@@ -11078,6 +11134,7 @@ mod tests {
             app.tabs[i].path = Some(path.clone());
             app.act(&ctx, Act::Save);
         }
+        saves_done(&mut app, &ctx);
         let back = paths.map(|p| {
             let pdf = Pdf::open(&p, None).unwrap();
             let _ = std::fs::remove_file(&p);
@@ -11576,10 +11633,12 @@ mod tests {
         app.active = 0;
         fill(&mut app, &ctx, "Name", "First tab saved");
         app.act(&ctx, Act::Save);
+        saves_done(&mut app, &ctx);
         assert_eq!(field_in(&path, "Name"), "First tab saved");
         app.active = app.tabs.len() - 1;
         fill(&mut app, &ctx, "Notes", "Second tab saved");
         app.act(&ctx, Act::Save);
+        saves_done(&mut app, &ctx);
         assert_eq!(field_in(&path, "Name"), "First tab saved");
         assert_eq!(app.tabs.len(), 1, "a second tab of the file");
         assert_eq!(app.tabs[app.active].id, first);
@@ -11601,6 +11660,7 @@ mod tests {
         form_file(&path, "Other app");
         fill(&mut app, &ctx, "Notes", "Ours");
         app.act(&ctx, Act::Save);
+        saves_done(&mut app, &ctx);
         assert_eq!(field_in(&path, "Name"), "Other app", "replaced");
         assert!(app.tabs[0].dirty, "the change counts as saved");
         assert_eq!(saved_field(&app.tabs[0], "Notes"), "Ours", "lost");
@@ -11617,6 +11677,14 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         panic!("nothing came");
+    }
+
+    /// Takes in the results of the saves being written (ENH-35), once they are all written,
+    /// and runs the dialogs once: what waited for them (closing, quitting) goes on there.
+    pub(super) fn saves_done(app: &mut App, ctx: &egui::Context) {
+        wait_for(app, ctx, |a| a.saves.is_empty());
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| app.dialogs(ui.ctx()));
+        out.textures_delta.clear();
     }
 
     // ------------------------------------------------ batch 22: search as you type
@@ -11987,6 +12055,7 @@ mod tests {
         std::fs::rename(dir.join("copy"), &path).unwrap();
         fill(&mut app, &ctx, "Notes", "Ours");
         app.act(&ctx, Act::Save);
+        saves_done(&mut app, &ctx);
         assert!(matches!(app.dialog, Dialog::None), "the same bytes");
         assert_eq!(field_in(&path, "Notes"), "Ours");
 
@@ -11994,6 +12063,7 @@ mod tests {
         let theirs = std::fs::read(&path).unwrap();
         fill(&mut app, &ctx, "Notes", "Ours again");
         app.act(&ctx, Act::Save);
+        assert!(app.saves.is_empty(), "it saved without asking");
         assert!(matches!(app.dialog, Dialog::ConfirmStale(..)));
         let banner = |app: &App| {
             let b = app.tabs[0].banners.iter();
@@ -12008,12 +12078,14 @@ mod tests {
 
         app.act(&ctx, Act::Save);
         click(&mut app, &ctx, "Replace");
+        saves_done(&mut app, &ctx);
         assert_eq!(field_in(&path, "Name"), "AlphaUnique");
         assert_eq!(field_in(&path, "Notes"), "Ours again");
         assert!(!app.tabs[0].dirty);
         assert_eq!(banner(&app), 0);
         fill(&mut app, &ctx, "Notes", "Third");
         app.act(&ctx, Act::Save);
+        saves_done(&mut app, &ctx);
         assert!(matches!(app.dialog, Dialog::None), "its own save");
         assert_eq!(field_in(&path, "Notes"), "Third");
 
@@ -12021,6 +12093,7 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         fill(&mut app, &ctx, "Notes", "Fourth");
         app.act(&ctx, Act::Save);
+        saves_done(&mut app, &ctx);
         assert!(matches!(app.dialog, Dialog::None));
         assert_eq!(field_in(&path, "Notes"), "Fourth");
         std::fs::remove_dir_all(&dir).unwrap();
@@ -12085,6 +12158,7 @@ mod tests {
         // Its Save replaces the file without asking: it is what was read.
         fill(&mut app, &ctx, "Notes", "After reload");
         app.act(&ctx, Act::Save);
+        saves_done(&mut app, &ctx);
         assert!(matches!(app.dialog, Dialog::None));
         assert_eq!(field_in(&path, "Notes"), "After reload");
 
@@ -12623,6 +12697,7 @@ mod tests {
         // Save, about a tab behind the one in front.
         app.close_asking(2);
         click(&mut app, &ctx, "Save");
+        saves_done(&mut app, &ctx);
         assert_eq!(pages_in(&c), 2, "not saved");
         assert_eq!(ids(&app), [front, new], "the saved tab wasn't closed");
         assert_eq!(app.tabs[app.active].id, front, "the tab in front changed");
@@ -12634,6 +12709,7 @@ mod tests {
         SAVE_AS.with(|s| s.set(Some(dir.join("new"))));
         app.close_asking(1);
         click(&mut app, &ctx, "Save as…");
+        saves_done(&mut app, &ctx);
         assert_eq!(pages_in(&dir.join("new.pdf")), 2, "not saved as a file");
         assert_eq!(ids(&app), [front]);
         assert!(app.tabs[0].dirty && !a.exists(), "the tab left changed");
@@ -12652,6 +12728,7 @@ mod tests {
         let failing = unsaved_tab(&mut app, &ctx, Some(dir.join("gone").join("a.pdf")));
         app.close_asking(0);
         click(&mut app, &ctx, "Save");
+        saves_done(&mut app, &ctx);
         assert!(matches!(&app.dialog, Dialog::Message(t, _) if t == "Save failed"));
         click(&mut app, &ctx, "OK");
         assert!(
@@ -12719,6 +12796,7 @@ mod tests {
         click(&mut app, &ctx, "Review…");
         assert_eq!(asked(&app), Some(1));
         click(&mut app, &ctx, "Save");
+        saves_done(&mut app, &ctx);
         assert_eq!(pages_in(&files[0]), 2, "not saved");
         assert_eq!(asked(&app), Some(2), "didn't go on to the next");
         click(&mut app, &ctx, "Cancel");
@@ -12735,6 +12813,7 @@ mod tests {
         assert_eq!(asked(&app), Some(3));
         assert!(!app.quit_ok, "quit with a document not yet asked about");
         click(&mut app, &ctx, "Save");
+        saves_done(&mut app, &ctx);
         assert_eq!(pages_in(&files[2]), 2);
         assert!(app.quit_ok, "didn't quit");
         assert!(!files[1].exists(), "the discarded document was saved");
@@ -12762,7 +12841,9 @@ mod tests {
         close_window(&mut app, &ctx);
         click(&mut app, &ctx, "Review…");
         click(&mut app, &ctx, "Save");
+        saves_done(&mut app, &ctx);
         click(&mut app, &ctx, "Save");
+        saves_done(&mut app, &ctx);
         assert!(matches!(&app.dialog, Dialog::Message(t, _) if t == "Save failed"));
         click(&mut app, &ctx, "OK");
         assert!(!app.quit_ok, "quit with a document that failed to save");
@@ -12803,6 +12884,7 @@ mod tests {
             "the save's question is gone"
         );
         click(&mut app, &ctx, "Replace original");
+        saves_done(&mut app, &ctx);
         assert_eq!(pages_in(&path), 2);
         assert_eq!(ids(&app), [front], "the saved tab wasn't closed");
         // Quitting from the middle of a save: Review asks about each document once.
@@ -12820,6 +12902,218 @@ mod tests {
         }
         assert_eq!(asked, [front, other]);
         assert!(app.quit_ok);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// ENH-35: the file is written on a thread of its own, the next save's held back by
+    /// the test until it says go. The window meanwhile keeps drawing frames, with the busy
+    /// sign, and the tab is unsaved until the write is done; then it says Saved, as before.
+    #[test]
+    fn saving_writes_on_its_own_thread_while_the_window_keeps_drawing() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("save-thread");
+        let path = dir.join("a.pdf");
+        unsaved_tab(&mut app, &ctx, Some(path.clone()));
+        let (go, gate) = channel();
+        app.save_gate = Some(gate);
+        app.act(&ctx, Act::Save);
+        let tree = settle(&mut app, &ctx);
+        assert!(shows(&tree, "Saving a.pdf…"), "no busy sign");
+        assert!(!path.exists(), "written before the window drew");
+        assert!(app.tabs[0].dirty, "saved before it was written");
+        go.send(()).unwrap();
+        saves_done(&mut app, &ctx);
+        let tree = settle(&mut app, &ctx);
+        assert!(!shows(&tree, "Saving a.pdf…"), "the busy sign stayed");
+        assert_eq!(app.status, format!("Saved {}", path.display()));
+        assert_eq!(pages_in(&path), 2);
+        assert!(!app.tabs[0].dirty);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// ENH-35: the document can be changed while it is written. The file gets it as it was
+    /// when saved, and the tab, changed since, stays unsaved. A question asked about the
+    /// tab meanwhile still acts on it once the save is done.
+    #[test]
+    fn a_document_changed_while_it_is_saved_stays_unsaved() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("save-changed");
+        let path = dir.join("form.pdf");
+        form_file(&path, "AlphaUnique");
+        open_and_wait(&mut app, &ctx, &path, 1);
+        fill(&mut app, &ctx, "Notes", "Saved");
+        let (go, gate) = channel();
+        app.save_gate = Some(gate);
+        app.act(&ctx, Act::Save);
+        fill(&mut app, &ctx, "Notes", "After");
+        app.act(&ctx, Act::FlattenForm);
+        assert!(matches!(app.dialog, Dialog::ConfirmFlatten(_)));
+        go.send(()).unwrap();
+        saves_done(&mut app, &ctx);
+        assert_eq!(field_in(&path, "Notes"), "Saved");
+        assert!(
+            app.tabs[0].dirty,
+            "a change made during the save counts as saved"
+        );
+        assert_eq!(saved_field(&app.tabs[0], "Notes"), "After");
+        click(&mut app, &ctx, "Flatten form");
+        assert!(
+            matches!(app.dialog, Dialog::None),
+            "the question no longer applied"
+        );
+        assert!(app.tabs[0].pdf.form_fields().is_empty(), "not flattened");
+        // Saved again, with nothing changed during the save, it is saved.
+        app.act(&ctx, Act::Save);
+        saves_done(&mut app, &ctx);
+        assert!(!app.tabs[0].dirty);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// ENH-35: Save chosen again while the tab's save is written saves again once it ends,
+    /// with what changed meanwhile; Reload and signing wait, saying so.
+    #[test]
+    fn saving_again_reloading_and_signing_wait_for_the_save() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("save-again");
+        let path = dir.join("a.pdf");
+        unsaved_tab(&mut app, &ctx, Some(path.clone()));
+        let (go, gate) = channel();
+        app.save_gate = Some(gate);
+        app.act(&ctx, Act::Save);
+        let c = app.state(&ctx);
+        for a in [Act::Reload, Act::SignDigital, Act::Certify] {
+            assert!(!(actions::get(a).enabled)(&c), "{a:?} on while saving");
+        }
+        app.act(&ctx, Act::Reload);
+        assert_eq!(message(&app).0, "Still saving");
+        app.dialog = Dialog::None;
+        assert!(app.tabs[0].edit(&ctx, |p| p.insert_blank(2, 300.0, 500.0)));
+        app.act(&ctx, Act::Save);
+        assert_eq!(app.saves.len(), 1, "two saves of a tab at once");
+        go.send(()).unwrap();
+        wait_for(&mut app, &ctx, |a| a.saves.is_empty());
+        assert_eq!(pages_in(&path), 2);
+        assert!(app.tabs[0].dirty);
+        // The second save starts once the first has ended.
+        saves_done(&mut app, &ctx);
+        assert!(app.after_saves.is_empty());
+        saves_done(&mut app, &ctx);
+        assert_eq!(pages_in(&path), 3);
+        assert!(!app.tabs[0].dirty);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// ENH-35: closing the tab, quitting and closing the window wait for a save being
+    /// written, then go on as usual (here with nothing left unsaved, without asking). At
+    /// exit, a save still being written is finished first.
+    #[test]
+    fn closing_and_quitting_wait_for_a_save() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let dir = test_dir("save-close");
+        let path = dir.join("a.pdf");
+        let start = |path: &Path| {
+            let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+            unsaved_tab(&mut app, &ctx, Some(path.to_path_buf()));
+            let (go, gate) = channel();
+            app.save_gate = Some(gate);
+            app.act(&ctx, Act::Save);
+            (app, go)
+        };
+        let (mut app, go) = start(&path);
+        app.close_asking(0);
+        assert_eq!(app.tabs.len(), 1, "closed before it was saved");
+        assert!(
+            matches!(app.dialog, Dialog::None),
+            "asked about a tab being saved"
+        );
+        go.send(()).unwrap();
+        saves_done(&mut app, &ctx);
+        assert!(app.tabs.is_empty(), "not closed once saved");
+        assert_eq!(pages_in(&path), 2);
+
+        for close in [false, true] {
+            let (mut app, go) = start(&path);
+            if close {
+                close_window(&mut app, &ctx);
+            } else {
+                app.act(&ctx, Act::Quit);
+            }
+            assert!(
+                !app.quit_ok && matches!(app.dialog, Dialog::None),
+                "{close}"
+            );
+            go.send(()).unwrap();
+            saves_done(&mut app, &ctx);
+            assert!(app.quit_ok, "didn't quit once saved ({close})");
+        }
+
+        std::fs::remove_file(&path).unwrap();
+        let (mut app, go) = start(&path);
+        let later = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            go.send(()).unwrap();
+        });
+        eframe::App::on_exit(&mut app);
+        assert_eq!(pages_in(&path), 2, "the exit didn't wait for the save");
+        later.join().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// ENH-35: a check of the files, done when the window comes back to the front, that
+    /// ends while a tab's own save replaces its file doesn't say another app changed it.
+    #[test]
+    fn a_file_check_during_its_save_is_left_out() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("save-check");
+        let path = dir.join("form.pdf");
+        form_file(&path, "AlphaUnique");
+        open_and_wait(&mut app, &ctx, &path, 1);
+        fill(&mut app, &ctx, "Notes", "Ours");
+        let (go, gate) = channel();
+        app.save_gate = Some(gate);
+        app.act(&ctx, Act::Save);
+        let known = app.tabs[0].disk.clone().unwrap();
+        form_file(&dir.join("other.pdf"), "Other");
+        let other = disk::version(&dir.join("other.pdf")).unwrap();
+        let found = vec![(app.tabs[0].id, known, OnDisk::Changed(other))];
+        app.tx.send(Loaded::Disk(found)).unwrap();
+        app.poll_loads(&ctx);
+        let mut b = app.tabs[0].banners.iter();
+        assert!(
+            !b.any(|b| b.kind == BannerKind::ChangedOnDisk),
+            "said changed"
+        );
+        go.send(()).unwrap();
+        saves_done(&mut app, &ctx);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A file whose time changed, or is too close to its reading to trust (PB-28), is read
+    /// in full at each check; found unchanged, it becomes the version known, so that Save
+    /// doesn't read the whole file again at every check before writing (ENH-35's
+    /// measurement).
+    #[test]
+    fn a_file_found_unchanged_becomes_the_version_known() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("save-known");
+        let path = dir.join("form.pdf");
+        form_file(&path, "AlphaUnique");
+        open_and_wait(&mut app, &ctx, &path, 1);
+        let before = app.tabs[0].disk.clone();
+        // Touched, as a sync tool might: the same bytes with a new time.
+        let f = std::fs::File::options().write(true).open(&path).unwrap();
+        f.set_modified(std::time::SystemTime::now()).unwrap();
+        drop(f);
+        assert!(app.stale(0, &path).is_none());
+        assert_ne!(app.tabs[0].disk, before, "the file read again isn't known");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

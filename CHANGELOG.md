@@ -26,6 +26,12 @@
 - `limarepdf-cli search` prints each match as `page 3: …the words around it…` and the count as "1 match" or
   "N matches" ("No matches"), and `--boxes` as `page 3 [x0 y0 x1 y1]`.
 - Mark all for redaction marks every match of the search, even while it is still running.
+- Save writes the file in the background, with a busy sign in the status bar, so the window no longer freezes
+  while a large document is saved; you can go on working, and a change made meanwhile leaves the document marked
+  unsaved. Saving again, closing the document or quitting waits for the save to finish. Saving a long document
+  also starts sooner, as LimarePDF no longer reads the whole file again at every check before writing.
+- Changes to long documents are quicker: after each change LimarePDF went through the whole page list once for
+  every page while looking for redaction marks (about 60 ms on 300 pages, more on longer ones); now once.
 - The user guide's Features page is now a short summary of what LimarePDF can do. The detailed status of each
   feature, with its limits and what doesn't work yet, moved to the developer docs as
   [Features and status](docs/developer/feature-status.md).
