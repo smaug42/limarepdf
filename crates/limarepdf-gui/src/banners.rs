@@ -2,8 +2,8 @@
 //! document was opened, each with at most one action and a way to dismiss it.
 
 use crate::actions::Act;
+use crate::icon;
 use crate::theme::Tone;
-use egui_phosphor::regular as icon;
 use limarepdf_core::render::Missing;
 use limarepdf_core::{FieldKind, ObjectKind, Pdf};
 use std::collections::BTreeSet;

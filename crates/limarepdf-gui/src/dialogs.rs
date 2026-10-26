@@ -142,7 +142,7 @@ pub struct Shell<'a> {
 impl<'a> Shell<'a> {
     pub fn new(title: &'a str) -> Self {
         Shell {
-            id: egui::Id::new(("dialog", title)),
+            id: egui::Id::unique(("dialog", title)),
             title,
             file: None,
             width: 470.0,
@@ -152,7 +152,7 @@ impl<'a> Shell<'a> {
     /// Tells apart dialogs that may share a title.
     pub fn id(self, salt: impl Hash + std::fmt::Debug) -> Self {
         Shell {
-            id: egui::Id::new(("dialog", salt)),
+            id: egui::Id::unique(("dialog", salt)),
             ..self
         }
     }
@@ -394,7 +394,7 @@ pub fn list_row(ui: &mut Ui, text: impl FnOnce(&mut Ui), buttons: impl FnOnce(&m
             }
             // The buttons in a box at the right as wide as they were when last drawn; when
             // that changed, the frame is drawn again.
-            let id = ui.id().with("row buttons");
+            let id = ui.scope_id().with("row buttons");
             let last: Option<f32> = ui.data(|d| d.get_temp(id));
             ui.horizontal_top(|ui| {
                 let room = ui.available_width() - ui.spacing().item_spacing.x;
@@ -650,7 +650,7 @@ pub fn footer(ui: &mut Ui, note: Option<RichText>, buttons: &[Btn]) -> Option<us
             let row = egui::vec2(ui.available_width(), theme::DIALOG_CONTROL);
             let layout = egui::Layout::right_to_left(Align::Center);
             ui.allocate_ui_with_layout(row, layout, |ui| {
-                let id = ui.id().with("footer buttons");
+                let id = ui.scope_id().with("footer buttons");
                 let last = ui.data(|d| d.get_temp(id));
                 let width = reading_order(ui, last, |ui| {
                     for i in ordered(buttons) {
@@ -1503,7 +1503,7 @@ mod tests {
         }
 
         fn window(&self) -> egui::Rect {
-            let id = egui::Id::new(("dialog", "Print"));
+            let id = egui::Id::unique(("dialog", "Print"));
             self.ctx.memory(|m| m.area_rect(id)).expect("the window")
         }
     }
@@ -1681,7 +1681,7 @@ mod tests {
                 detail: "From /home/sam/Documents, 3 pages, kept until 1 December".into(),
             })
             .collect();
-        let id = egui::Id::new(("dialog", "Recover unsaved changes"));
+        let id = egui::Id::unique(("dialog", "Recover unsaved changes"));
         for size in [
             (400.0, 800.0),
             (400.0, 300.0),

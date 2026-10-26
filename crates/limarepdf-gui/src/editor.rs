@@ -3,6 +3,7 @@
 
 use crate::dialogs;
 use crate::fields::FormUi;
+use crate::icon;
 use crate::page_text::{self, selection, PageText};
 use crate::selection::{ObjKind, Selection, WordAt};
 use crate::signing::{SignKit, SignPane, SignPick};
@@ -10,7 +11,6 @@ use crate::styled::{History, Styled};
 use crate::theme;
 use crate::typing_fonts::Wanted;
 use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
-use egui_phosphor::regular as icon;
 use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::{
     words_text, Annot, AnnotKind, FieldValue, FontChoice, Link, LinkTarget, ObjectKind, PageObject,
@@ -378,7 +378,7 @@ fn rotate_cursor(ctx: &egui::Context) {
     ctx.set_cursor_icon(CursorIcon::None);
     let painter = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Tooltip,
-        egui::Id::new("rotate-cursor"),
+        egui::Id::unique("rotate-cursor"),
     ));
     painter.circle(
         at,
@@ -488,7 +488,7 @@ fn size_box(
     size: Option<f32>,
     range: std::ops::RangeInclusive<f32>,
 ) -> Option<f32> {
-    let id = ui.id().with("size-box");
+    let id = ui.scope_id().with("size-box");
     // What was typed, kept only once something has been.
     let typed = ui.data(|d| d.get_temp::<String>(id));
     let mut text = typed
@@ -499,7 +499,7 @@ fn size_box(
             .id(id)
             .desired_width(52.0),
     );
-    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Font size"));
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "Font size"));
     let edited = typed.is_some() || r.changed();
     let mut chosen = None;
     if r.lost_focus() && edited {
@@ -529,7 +529,7 @@ fn size_box(
         })
         .0
         .on_hover_text("Font sizes")
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Font sizes"));
+        .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Font sizes"));
     ui.label("pt");
     chosen
 }
@@ -578,7 +578,7 @@ fn text_color_button(ui: &mut egui::Ui, colors: &[[f32; 3]]) -> Option<[f32; 3]>
     let popup = ui.auto_id_with("text-colour");
     let open = egui::Popup::is_id_open(ui.ctx(), popup);
     let (rect, r) = ui.allocate_exact_size(ui.spacing().interact_size, Sense::click());
-    r.widget_info(|| egui::WidgetInfo::new(egui::WidgetType::ColorButton));
+    r.widget_info(|| egui::WidgetInfo::new(egui::Role::ColorWell));
     dialogs::set_name(
         &r,
         if mixed {
@@ -660,7 +660,7 @@ fn text_color_button(ui: &mut egui::Ui, colors: &[[f32; 3]]) -> Option<[f32; 3]>
                         let (rect, r) = ui.allocate_exact_size(size, Sense::click());
                         let name = format!("Colour {} of {} in the text", i + 1, offer.len());
                         r.widget_info(|| {
-                            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name)
+                            egui::WidgetInfo::labeled(egui::Role::Button, true, &name)
                         });
                         dialogs::set_name(&r, &name);
                         let look = ui.style().interact(&r);
@@ -1099,7 +1099,7 @@ impl Default for Editor {
             digital_error: None,
             page_colours: PageColours::Normal,
             cover: None,
-            scope: egui::Id::new("editor"),
+            scope: egui::Id::unique("editor"),
         }
     }
 }
@@ -1235,7 +1235,7 @@ fn resize(orig: [f32; 4], h: usize, dx: f32, dy: f32, keep_aspect: bool) -> [f32
 impl Editor {
     /// The editor of tab `tab` (its [`crate::tab::Tab::id`]).
     pub fn for_tab(tab: u64) -> Self {
-        let scope = egui::Id::new(("tab", tab));
+        let scope = egui::Id::unique(("tab", tab));
         let mut ed = Self {
             scope,
             ..Self::default()
@@ -2388,10 +2388,10 @@ impl Editor {
         }
         let screen_rect =
             |b: [f32; 4]| Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3]));
-        let id = ui.id().with(("page-edit", tab_id, page));
+        let id = ui.scope_id().with(("page-edit", tab_id, page));
         let mut resp = ui.interact(r, id, Sense::click_and_drag());
         resp.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Other, true, format!("Page {}", page + 1))
+            egui::WidgetInfo::labeled(egui::Role::Unknown, true, format!("Page {}", page + 1))
         });
         if resp.secondary_clicked() {
             let p = resp.interact_pointer_pos().map(to_pt);
@@ -3573,7 +3573,7 @@ impl Editor {
                     "Keep tool active"
                 });
             r.widget_info(|| {
-                egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, "Keep tool active")
+                egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, "Keep tool active")
             });
             if r.clicked() {
                 if on {
@@ -4190,7 +4190,7 @@ impl Editor {
                     insp.text.sync(&typed, sel.map(|s| s.1));
                     let r = &out.response.response;
                     r.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Text")
+                        egui::WidgetInfo::labeled(egui::Role::TextInput, true, "Text")
                     });
                     self.text_refused.show(ui.ctx(), &out, id);
                     if self.focus_text {
@@ -4478,7 +4478,7 @@ mod tests {
         focus: Option<bool>,
         events: Vec<egui::Event>,
     ) -> bool {
-        let id = egui::Id::new("size test");
+        let id = egui::Id::unique("size test");
         let field = ctx.data(|d| d.get_temp::<egui::Id>(id));
         match (focus, field) {
             (Some(true), Some(f)) => ctx.memory_mut(|m| m.request_focus(f)),
@@ -4492,7 +4492,7 @@ mod tests {
         };
         let mut out = ctx.run_ui(raw, |ui| {
             ui.push_id(id, |ui| {
-                ui.data_mut(|d| d.insert_temp(id, ui.id().with("size-box")));
+                ui.data_mut(|d| d.insert_temp(id, ui.scope_id().with("size-box")));
                 chosen = size_ui(ui, size, 1.0..=400.0);
             });
         });

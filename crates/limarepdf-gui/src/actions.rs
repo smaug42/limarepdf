@@ -3,12 +3,12 @@
 //! does is in `App::act`.
 
 use crate::editor::Tool;
+use crate::icon;
 use crate::markup::{self, Mark};
 use crate::selection::{ObjKind, Selection};
 use crate::settings::{Layout, PageLook};
 use crate::signing::SignPick;
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, ThemePreference};
-use egui_phosphor::regular as icon;
 use limarepdf_core::page_colours::PageColours;
 use limarepdf_core::SignRole;
 
@@ -1641,7 +1641,7 @@ pub fn context_buttons(
                 .min_size(egui::vec2(26.0, 26.0));
             let r = ui.add(b);
             let name = a.label.trim_end_matches('…');
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name));
             if r.on_hover_text(tooltip(ui.ctx(), a)).clicked() {
                 acts.push(a.act);
             }

@@ -80,8 +80,9 @@ jobs:
           cp -r docs "$dir/docs"
           # Attribution and licence for the OCR model built into the binaries.
           cp crates/limarepdf-core/models/README.md "$dir/OCR-MODEL.md"
-          # Licence for the Inter font built into limarepdf.
+          # Licences for the Inter and Phosphor (icons) fonts built into limarepdf.
           cp crates/limarepdf-gui/assets/fonts/OFL.txt "$dir/FONT-LICENSE-Inter.txt"
+          cp crates/limarepdf-gui/assets/fonts/LICENSE-Phosphor.txt "$dir/FONT-LICENSE-Phosphor.txt"
           # Licences for the fonts built into limarepdf-core: Liberation (text typed on the
           # page, and embedded in PDFs) and the handwriting fonts (typed signatures).
           for f in OFL-Liberation OFL-Caveat OFL-CedarvilleCursive LICENSE-HomemadeApple OFL-Zeyada; do

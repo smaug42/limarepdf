@@ -150,6 +150,9 @@
         <File Source="crates\limarepdf-gui\assets\fonts\OFL.txt" Name="FONT-LICENSE-Inter.txt" />
       </Component>
       <Component Directory="INSTALLFOLDER">
+        <File Source="crates\limarepdf-gui\assets\fonts\LICENSE-Phosphor.txt" Name="FONT-LICENSE-Phosphor.txt" />
+      </Component>
+      <Component Directory="INSTALLFOLDER">
         <File Source="crates\limarepdf-core\assets\fonts\OFL-Liberation.txt" Name="FONT-LICENSE-Liberation.txt" />
       </Component>
       <Component Directory="INSTALLFOLDER">

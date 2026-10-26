@@ -87,6 +87,8 @@ this list once it works. The feature table below has the details.
 - Merging doesn't carry over the bookmarks of the files added, and their form fields only drawn onto their pages:
   they can't be filled in afterwards. A file with an answer LimarePDF can't draw (text in characters it can't
   write in a field yet, a radio button with no drawing of its own) can't be appended.
+- On Linux, text selected on the page can't be pasted elsewhere with the middle mouse button, as text selected in
+  a text box can; copy it with Ctrl+C.
 
 **Forms, signatures and printing**
 

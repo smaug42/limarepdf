@@ -324,8 +324,12 @@
 - A line break written as it is inside a piece of page text (rare) now reads as a line feed, as the PDF format
   says and as LimarePDF draws it. Parts of a page written after a picture and separated by null characters
   (rare) can now be selected and edited.
-- Libraries moved to their new major versions: fax 0.3 (black-and-white pictures) and lopdf 0.46 (reading and
-  writing PDF files).
+- Libraries moved to their new major versions: fax 0.3 (black-and-white pictures), lopdf 0.46 (reading and
+  writing PDF files) and egui 0.37 (the app's window and controls). With egui 0.37, on Linux, text selected in
+  another app or in a LimarePDF text box can be pasted into a text box with the middle mouse button, as in other
+  Linux apps (what a box can't write is left out with a note, as when typing), and trackpad scrolling springs back at the ends of the
+  document. The Phosphor icons are now part of LimarePDF itself rather than a separate library, and the
+  packages include their licence (`FONT-LICENSE-Phosphor.txt`).
 
 ## [0.9.0] - 2026-10-23
 

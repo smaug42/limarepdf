@@ -1,9 +1,9 @@
 //! The About window: version, "Made in Canada", links, contributors and credits.
 
 use crate::dialogs::{self, Btn, Shell};
+use crate::icon;
 use crate::theme;
 use eframe::egui::{self, Align, Context, Layout, TextureHandle, TextureOptions, Ui};
-use egui_phosphor::regular as icon;
 
 const WEBSITE: &str = "https://github.com/smaug42/limarepdf";
 const LICENCE: &str = "https://github.com/smaug42/limarepdf/blob/main/docs/licence.md";
@@ -35,7 +35,7 @@ fn version_text() -> String {
 
 /// A picture built into the app, made into a texture once and kept in egui's memory.
 fn texture(ctx: &Context, name: &str, png: &'static [u8]) -> Option<TextureHandle> {
-    let id = egui::Id::new(("about-texture", name));
+    let id = egui::Id::unique(("about-texture", name));
     if let Some(t) = ctx.data(|d| d.get_temp::<TextureHandle>(id)) {
         return Some(t);
     }
@@ -72,7 +72,7 @@ fn app_icon(ctx: &Context) -> Option<TextureHandle> {
 /// A row of widgets centred in the width available. egui lays a row out from the left,
 /// so the row's width from the last frame sets the space before it.
 pub fn centred_row(ui: &mut Ui, id: &str, add: impl FnOnce(&mut Ui)) {
-    let id = ui.id().with(id);
+    let id = ui.scope_id().with(id);
     let last: Option<f32> = ui.data(|d| d.get_temp(id));
     ui.horizontal(|ui| {
         let room = ui.available_width();
@@ -189,7 +189,7 @@ fn main_page(ui: &mut Ui, page: &mut Page) {
         });
     };
     // Two rows when the window is narrower than the row of all four was.
-    let whole: Option<f32> = ui.data(|d| d.get_temp(ui.id().with("about-links")));
+    let whole: Option<f32> = ui.data(|d| d.get_temp(ui.scope_id().with("about-links")));
     if whole.is_some_and(|w| w > ui.available_width()) {
         row(ui, "about-links-1", &links[..2]);
         row(ui, "about-links-2", &links[2..]);

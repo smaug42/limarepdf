@@ -22,6 +22,7 @@ NEEDED = [
     "LICENSE-APACHE",
     "OCR-MODEL.md",
     "FONT-LICENSE-Inter.txt",
+    "FONT-LICENSE-Phosphor.txt",
     "FONT-LICENSE-Liberation.txt",
     "FONT-LICENSE-Caveat.txt",
     "FONT-LICENSE-CedarvilleCursive.txt",

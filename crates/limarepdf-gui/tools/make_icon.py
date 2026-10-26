@@ -1,12 +1,12 @@
 # Makes the app icon (docs/images/icon.png and crates/limarepdf-gui/assets/icon.ico) from
 # Phosphor's file-pdf glyph, the icon on the start page card, in the light theme's accent.
 # Needs Pillow. Run from the repository root:
-#   python3 crates/limarepdf-gui/tools/make_icon.py <path to egui-phosphor's res/Phosphor.ttf>
-import sys
+#   python3 crates/limarepdf-gui/tools/make_icon.py
 from PIL import Image, ImageDraw, ImageFont
 
 ACCENT = (37, 99, 235, 255)  # theme.rs, light palette
-GLYPH = ""  # egui_phosphor::regular::FILE_PDF
+FONT = "crates/limarepdf-gui/assets/fonts/Phosphor.ttf"
+GLYPH = ""  # icon::FILE_PDF (src/icon.rs)
 MASTER = 2048
 FILL = 0.92  # share of the canvas the glyph's longer side takes
 ICO_SIZES = [256, 64, 48, 40, 32, 24, 20, 16]
@@ -20,7 +20,7 @@ def fitted_font(path):
 
 
 def main():
-    font = fitted_font(sys.argv[1])
+    font = fitted_font(FONT)
     left, top, right, bottom = font.getbbox(GLYPH)
     at = ((MASTER - (right - left)) / 2 - left, (MASTER - (bottom - top)) / 2 - top)
     master = Image.new("RGBA", (MASTER, MASTER), (0, 0, 0, 0))

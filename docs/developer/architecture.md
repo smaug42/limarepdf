@@ -14,7 +14,11 @@ It uses:
 - [`hayro`](https://crates.io/crates/hayro) to draw pages, on the CPU (see [Rendering](../rendering.md)), and
   [`fontdb`](https://crates.io/crates/fontdb) to find installed fonts for fonts a file doesn't embed;
 - [`egui`](https://crates.io/crates/egui) for the interface, and [`rfd`](https://crates.io/crates/rfd) for file
-  dialogs;
+  dialogs. eframe's default features are off and the ones used listed (the workspace's `Cargo.toml`), so a new
+  default isn't taken unseen (0.37's `system_fonts` isn't, and `NativeOptions::system_font_fallback` is off with
+  it); winit, which eframe then gives only its X11 and Wayland features, is named in `limarepdf-gui`'s
+  `Cargo.toml` for its defaults (Wayland window decorations, libwayland loaded at run time), at eframe's version.
+  The icons are the Phosphor fonts in `crates/limarepdf-gui/assets/fonts/`, by name in `src/icon.rs`;
 - [`image`](https://crates.io/crates/image) for images;
 - [`ocrs`](https://github.com/robertknight/ocrs) for text recognition (see [Scans and OCR](../scanning-and-ocr.md));
   the usual scanner and OCR libraries, SANE and Tesseract, are C/C++, so LimarePDF doesn't drive scanners;
@@ -130,7 +134,11 @@ Liberation fonts that `typing_fonts.rs` picks (same widths as Helvetica, Times a
 line with `Pdf::add_text_parts` as one undo step. A line being edited (`editor.rs`'s line editor, sharing
 `page_text`'s drawing) sits on `PageObject::baseline` and each part is drawn in the font
 `PageObject::keeps_font` says `Pdf::edit_text` will write it in: the part's own (installed, else its Liberation
-look-alike), the installed family it is from, or a standard one. Both edit a `styled::Styled`, the text with a
+look-alike), the installed family it is from, or a standard one. `page_text::job` puts a line's parts of
+different sizes and rises on one baseline, and each line's baseline `line_gap` below the one before, through
+egui's per-part line height and vertical alignment: egui (since 0.37) centres a part in a line height of its own,
+so each line's biggest part is made as high as the row and sets the baseline, and the others get the height and
+alignment that put them on it (`parts_of_a_line_share_its_baseline`). Both edit a `styled::Styled`, the text with a
 style per character: it keeps the styles through egui's plain-string `TextEdit` by comparing each frame's text
 with the last, applies Word's rules for style commands, gives the inspector its values (`None` where the
 selection mixes them), and hands core the line as `TextPart`s; `styled::History` is the undo inside the line,
@@ -223,7 +231,8 @@ Every path that writes typed text checks it the same way (BUG-24): new and edite
 boxes and fill-and-sign text, always Helvetica, through `embed::check_writable` in `Pdf::add_text_box` and in
 `Pdf::set_annotation` for a box's new text, with the app leaving out at the caret what Helvetica can't write (the
 text box on the page in `Editor::writing_ui`, the inspector's Text box in `annot_inspector`, Fill and sign's Text
-in `SignPane::ui`, all through `page_text::leave_out_untypable` and `page_text::fixed_note`); headers, footers,
+in `SignPane::ui`, all through `page_text::leave_out_untypable` and `page_text::fixed_note`, which filter typed
+text, pastes, input-method text and middle-click pastes alike); headers, footers,
 Bates numbers and watermarks through `Pdf::pen` and `inspector::stamp_text`; form values through
 `form_write::check_value`; stamp wording through `stamp_wording`; typed signatures through `typed_signature`; the
 signer's name on a signature's look through `sig_sign::shown_name` (left out when it can't be written). Comments,

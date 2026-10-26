@@ -4,6 +4,7 @@ use crate::banners::Kind as BannerKind;
 use crate::dialogs::{self as dlg, Ask, Btn, Choice, Outcome, Shell};
 use crate::digital::{self, IdsWindow, SignOut, SignWindow};
 use crate::editor::{Action as EdAction, Tool};
+use crate::icon;
 use crate::incoming::Incoming;
 use crate::inspector::{self, Apply, Section};
 use crate::markup;
@@ -17,7 +18,6 @@ use crate::tab::{Side, State, Tab};
 use crate::theme;
 use crate::worker::Colours;
 use eframe::egui::{self, AtomExt as _, Key};
-use egui_phosphor::regular as icon;
 use limarepdf_core::disk::{self, OnDisk};
 use limarepdf_core::render::{image_names, ImageFormat};
 use limarepdf_core::{
@@ -636,7 +636,7 @@ fn fold_level(prev: usize, room: f32, need: impl Fn(usize) -> f32) -> usize {
 
 /// An accessible name for a control showing only an icon.
 fn named(label: &str) -> egui::WidgetInfo {
-    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label)
+    egui::WidgetInfo::labeled(egui::Role::Button, true, label)
 }
 
 /// Names the resize handle egui gives `panel` (by its id) and leaves unnamed, once egui
@@ -644,7 +644,7 @@ fn named(label: &str) -> egui::WidgetInfo {
 /// panel's id with "__resize"; the naming tests fail if that changes. It can't be moved
 /// with the keyboard (egui's limit).
 fn name_resize_handle(ctx: &egui::Context, panel: &str, name: &str) {
-    let id = egui::Id::new(panel).with("__resize");
+    let id = egui::Id::unique(panel).with("__resize");
     if ctx.viewport(|v| v.this_pass.widgets.get(id).is_some()) {
         ctx.accesskit_node_builder(id, |n| {
             n.set_role(egui::accesskit::Role::Splitter);
@@ -2843,7 +2843,7 @@ impl App {
         };
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(toast.until - now));
         let (mut undo, mut close) = (false, false);
-        egui::Area::new(egui::Id::new("toast"))
+        egui::Area::new(egui::Id::unique("toast"))
             .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -40.0])
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
@@ -4142,7 +4142,7 @@ impl App {
         // In the dialogs' look, as a launcher: no title or buttons (option A of the mockup).
         let frame = egui::Frame::window(&ctx.global_style()).inner_margin(16);
         let width = (ctx.content_rect().width() - 32.0).clamp(240.0, 480.0);
-        let modal = egui::Modal::new(egui::Id::new("palette"))
+        let modal = egui::Modal::new(egui::Id::unique("palette"))
             .frame(frame)
             .show(ctx, |ui| {
                 ui.set_width(width);
@@ -4217,7 +4217,7 @@ impl App {
         // the keyboard goes back to the button that opened it.
         if self.popout && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
             self.popout = false;
-            if let Some(id) = ctx.data(|d| d.get_temp(egui::Id::new(POPOUT_OPENER))) {
+            if let Some(id) = ctx.data(|d| d.get_temp(egui::Id::unique(POPOUT_OPENER))) {
                 ctx.memory_mut(|m| m.request_focus(id));
             }
             return;
@@ -4428,7 +4428,7 @@ fn inspector_strip(
         }
         let options = "Options for the selection or the document";
         let r = icon_button(ui, icon::SLIDERS_HORIZONTAL, options);
-        ui.data_mut(|d| d.insert_temp(egui::Id::new(POPOUT_OPENER), r.id));
+        ui.data_mut(|d| d.insert_temp(egui::Id::unique(POPOUT_OPENER), r.id));
         clicked.1 = r.clicked();
     });
     clicked
@@ -4514,7 +4514,7 @@ fn inspector_popout(
 ) -> (Option<inspector::Apply>, bool) {
     let mut apply = None;
     let height = (strip.height() - 16.0).max(120.0);
-    let area = egui::Area::new(egui::Id::new("inspector-popout"))
+    let area = egui::Area::new(egui::Id::unique("inspector-popout"))
         .order(egui::Order::Foreground)
         .fixed_pos(egui::pos2(strip.left() - 4.0, strip.top() + 4.0))
         .pivot(egui::Align2::RIGHT_TOP)
@@ -4579,7 +4579,7 @@ fn palette_row(
     let size = egui::vec2(ui.available_width(), theme::DIALOG_CONTROL);
     let (rect, r) = ui.allocate_exact_size(size, sense);
     let spoken = actions::spoken_title(a);
-    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, &spoken));
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, &spoken));
     dlg::set_name(&r, &spoken);
     if !ui.is_rect_visible(rect) {
         return r;
@@ -4700,7 +4700,7 @@ fn empty_state(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
     };
     let size = egui::vec2(440.0, 310.0 + extra).min(room.size() - egui::vec2(32.0, 32.0));
     let card = egui::Rect::from_center_size(room.center(), size.max(egui::vec2(1.0, 1.0)));
-    let id = egui::Id::new("empty-card");
+    let id = egui::Id::unique("empty-card");
     let r = ui
         .interact(card, id, egui::Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -4878,7 +4878,7 @@ impl eframe::App for App {
             let enabled = (a.enabled)(&c);
             let r = ui.add_enabled(enabled, b);
             let name = a.label.trim_end_matches('…');
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, name));
             if r.on_hover_text(tip).clicked() {
                 acts.push(act);
             }
@@ -5883,7 +5883,7 @@ mod tests {
             let (field, focused) = node(&tree, "Command").expect("the field");
             assert!(focused, "{width}: the keyboard isn't in the field");
             assert!(field.height() >= theme::DIALOG_CONTROL - 0.5, "{width}");
-            let id = egui::Id::new("palette");
+            let id = egui::Id::unique("palette");
             let at = ctx.memory(|m| m.area_rect(id)).expect("the window");
             let inset = 16.0 + ctx.global_style().visuals.window_stroke.width;
             assert!((field.left() - at.left() - inset).abs() < 1.0, "{width}");
@@ -8186,6 +8186,21 @@ mod tests {
         let tree = typed(&mut app, "Seal😀");
         assert!(noted(&tree, page_text::REFUSED), "no note in Fill and sign");
         assert_eq!(app.tabs[0].ed.sign.text, "Seal");
+        // Alike when pasted with the middle button (X11 and Wayland's PRIMARY selection,
+        // since egui 0.37), past the end of the text.
+        let p = middle(&tree, "Text to place");
+        let paste = egui::Event::MiddleClickPaste {
+            pos: p,
+            text: "中 ate".into(),
+        };
+        window(
+            &mut app,
+            &ctx,
+            1400.0,
+            vec![egui::Event::PointerMoved(p), paste],
+        );
+        window(&mut app, &ctx, 1400.0, vec![]);
+        assert_eq!(app.tabs[0].ed.sign.text, "Seal ate");
     }
 
     /// Tab in the inspector's multi-line Text box moves on to the next control, as in every
@@ -8709,6 +8724,39 @@ mod tests {
         settled_at(&mut app, &ctx, 400.0);
         assert!(matches!(app.dialog, Dialog::About(_)));
         assert!(!egui::Popup::is_any_open(&ctx), "the menu stayed open");
+    }
+
+    /// The down arrow goes through an open menu's items in order, past those that are off
+    /// (Show cover page alone, outside facing pages), and round to the first, staying in
+    /// the menu (egui 0.37 reworked arrow keys in menus). The keyboard moves a frame after
+    /// the key.
+    #[test]
+    fn the_down_arrow_goes_through_a_menu() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        click_named(&mut app, &ctx, "Page layout");
+        settled_at(&mut app, &ctx, 1400.0);
+        assert!(egui::Popup::is_any_open(&ctx), "the menu didn't open");
+        let mut reached = Vec::new();
+        for _ in 0..4 {
+            let down = key_with(Key::ArrowDown, egui::Modifiers::NONE);
+            window(&mut app, &ctx, 1400.0, vec![down]);
+            let tree = window(&mut app, &ctx, 1400.0, vec![]);
+            let focus = tree.nodes.iter().find(|(id, _)| *id == tree.focus);
+            reached.push(focus.and_then(|(_, n)| n.label()).unwrap_or("").to_string());
+        }
+        assert_eq!(
+            reached,
+            [
+                "Continuous pages",
+                "Facing pages",
+                "Single page",
+                "Continuous pages"
+            ]
+        );
+        assert!(egui::Popup::is_any_open(&ctx), "the menu closed");
     }
 
     /// G08: every question and message the app asks, wide, narrow and short, at each scale,

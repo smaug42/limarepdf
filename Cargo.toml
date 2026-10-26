@@ -15,10 +15,20 @@ anyhow = "1"
 thiserror = "2"
 rayon = "1"
 clap = { version = "4", features = ["derive"] }
-eframe = "0.36"
+# Default features off so new defaults aren't taken unseen (0.37's `system_fonts` loads
+# fonts from the system); these are 0.36's defaults, with `clipboard` named since 0.37
+# (web_screen_reader, for web builds only, left out).
+eframe = { version = "0.37", default-features = false, features = [
+    "accesskit",
+    "clipboard",
+    "default_fonts",
+    "links",
+    "wayland",
+    "wgpu",
+    "x11",
+] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 tiff = "0.11"
-egui-phosphor = { version = "0.14", features = ["regular", "fill"] }
 rfd = "0.17"
 serde_json = "1"
 

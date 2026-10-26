@@ -16,7 +16,9 @@ How a release is made, for maintainers.
      `-- --ignored cross_check`); move to a new major version only as planned work. After a hayro upgrade, run the
      two ignored transparency group tests (`non_isolated_group_blends_against_page_backdrop`,
      `knockout_group_replaces_earlier_objects`); after an egui upgrade, check the workarounds that rely on egui's
-     internal ids, `dialogs::slider`'s number box, and whether winit now takes drops on Wayland; after a winit
+     internal ids, `dialogs::slider`'s number box, and whether winit now takes drops on Wayland, compare eframe's
+     default features with the ones the workspace lists (a new default is taken only by choice), and keep
+     `limarepdf-gui`'s winit entry at the winit version eframe uses; after a winit
      upgrade, whether it now handles Finder's "open documents" event or lets an app set its own delegate, either
      of which changes `macos.rs` (see [How it is built](architecture.md), BUG-28);
    - check that the user guide's screenshots (`docs/images/`) still show the app as it is, and retake any that
