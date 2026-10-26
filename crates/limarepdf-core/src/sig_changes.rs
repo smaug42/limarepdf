@@ -20,7 +20,7 @@ use crate::sig_verify::{is_white, FieldLock, Lexer, Permissions, Tok, Versions};
 use crate::Pdf;
 use lopdf::xref::XrefEntry;
 use lopdf::{Dictionary, Document, Object, ObjectId, Stream, StringFormat};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 
 // ---------------------------------------------------------------- report types
@@ -778,9 +778,9 @@ fn header_id(bytes: &[u8], offset: usize) -> Option<ObjectId> {
 }
 
 /// Whether the newest cross-reference section of `bytes` is a hybrid one (a table whose
-/// trailer names a cross-reference stream too, `/XRefStm`). lopdf reads such a section's
-/// stream only while it is the newest, so a revision appended after it would hide the
-/// objects the stream lists.
+/// trailer names a cross-reference stream too, `/XRefStm`). lopdf before 0.46 read such a
+/// section's stream only while it was the newest, so a revision appended after it hid the
+/// objects the stream lists; the read-back after appending still names the layout.
 pub(crate) fn newest_is_hybrid(bytes: &[u8]) -> bool {
     last_startxref(bytes)
         .and_then(|at| read_section(bytes, at).ok())
@@ -1176,9 +1176,11 @@ fn compare_versions(
 ) -> Vec<Seen> {
     let malformed = |why: String| vec![never(ChangeKind::Malformed(why), None)];
     let bytes = versions.bytes;
-    // Which objects the sections change, and which they free, newest entry first.
+    // Which objects the sections change, and which they free, newest entry first. Objects
+    // are checked in number order, so a revision with several faults always gives the same
+    // reason (a reason naming another object would read as a new change when saving).
     let effective = |secs: &[&Section]| {
-        let mut m: HashMap<u32, Entry> = HashMap::new();
+        let mut m: BTreeMap<u32, Entry> = BTreeMap::new();
         for s in secs {
             for &(num, e) in &s.entries {
                 if num != 0 {
@@ -1188,7 +1190,7 @@ fn compare_versions(
         }
         m
     };
-    let freed = |m: &HashMap<u32, Entry>| -> HashSet<u32> {
+    let freed = |m: &BTreeMap<u32, Entry>| -> HashSet<u32> {
         m.iter()
             .filter(|(_, e)| **e == Entry::Free)
             .map(|(n, _)| *n)
@@ -1267,7 +1269,7 @@ fn compare_versions(
         }
     }
     // Everything else reads as before, except objects held in a rewritten object stream.
-    let nums: HashSet<u32> = old_table.keys().chain(new_table.keys()).copied().collect();
+    let nums: BTreeSet<u32> = old_table.keys().chain(new_table.keys()).copied().collect();
     for num in nums {
         if newest.contains_key(&num) {
             continue;
@@ -1288,7 +1290,7 @@ fn compare_versions(
             return malformed(format!("LimarePDF can't read object {num} reliably"));
         }
     }
-    let ids = |v: &Version| -> HashSet<ObjectId> { v.pdf.doc.objects.keys().copied().collect() };
+    let ids = |v: &Version| -> BTreeSet<ObjectId> { v.pdf.doc.objects.keys().copied().collect() };
     for id in ids(&old).union(&ids(&new)) {
         if changed.contains(&id.0) {
             continue;

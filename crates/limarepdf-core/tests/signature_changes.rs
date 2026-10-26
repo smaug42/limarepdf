@@ -650,6 +650,29 @@ fn pointing_back_into_the_signed_part_is_refused() {
     ));
 }
 
+/// With several objects that don't read as their entries say, the reason names the same one
+/// (the lowest number) every time the file is checked, so saving it doesn't take a reason
+/// that merely names another object for a new change (DSS modified_after_signature.pdf).
+#[test]
+fn a_malformed_revision_gives_the_same_reason_each_time() {
+    let b = approve(&base_pdf());
+    let d = Document::load_mem(&b).unwrap();
+    let c = contents(&b);
+    let p = page(&d);
+    let at = b.len() + usize::from(!b.ends_with(b"\n"));
+    let num = d.max_id + 1;
+    let wrong = append_raw(&b, &[(num, b"<< >>")], &[], &[(c.0, at), (p.0, at)], "");
+    let low = c.0.min(p.0);
+    for _ in 0..20 {
+        let got = changes(&wrong);
+        assert!(
+            matches!(&got[..], [(ChangeKind::Malformed(w), _)]
+                if *w == format!("object {low} isn't where its cross-reference entry says")),
+            "{got:#?}"
+        );
+    }
+}
+
 #[test]
 fn data_after_the_last_revision_is_refused() {
     let mut b = fill(&approve(&form(&["Name"])), "Name", "Jane");

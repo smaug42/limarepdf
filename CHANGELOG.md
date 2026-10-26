@@ -7,6 +7,9 @@
 - A file whose cross-reference information (which says where each object is) goes wrong only part way through
   could open with objects missing, such as a page's content or the document's title and author, and without
   saying it was damaged. LimarePDF now rebuilds it by scanning the file, with the usual note that it was repaired.
+- A signature whose document was already changed in a way LimarePDF can't read named a different object each time
+  it was checked, so saving a comment into such a document sometimes asked about changes the signer didn't allow
+  and sometimes didn't. The reason now names the same object every time, and the save gives the same answer.
 - Ctrl+Z in a form field could bring back text typed in another document's field of the same name, and a new
   note could take back the text of the note typed before it on the page, both then saved. Each document's text
   boxes now keep their typing apart, and a box's own undo starts empty each time it gets the keyboard: what was

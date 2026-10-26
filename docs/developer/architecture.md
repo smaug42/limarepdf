@@ -349,7 +349,9 @@ signature, certificates, timestamps), over a small BER/DER reader, `asn1.rs`, th
 so signed attributes are never re-encoded before checking. The cryptography is RustCrypto's (`rsa`, `p256`, `p384`,
 `sha1`, `sha2`, `x509-cert`). What changed after each signature is worked out in `sig_changes.rs`: it reads the
 appended revisions' cross-reference sections itself (lopdf ignores free entries and repairs broken tables, which
-would hide changes), checks that lopdf reads the same objects, then compares each signed version with the next,
+would hide changes), checks that lopdf reads the same objects (in number order, so a revision with several faults
+always gives the same reason: saving compares the reasons before and after, and one naming another object would
+count as a new change), then compares each signed version with the next,
 judging every object that differs by each role it plays (page content, comment, form field, signature, document
 structure) against the signer's permissions. Trust is in `trust.rs`: the trust list file (`trust.txt` in the
 settings folder, whose location `limarepdf_core::settings_dir` gives both the app and the command line), and the chain

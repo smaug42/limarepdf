@@ -457,7 +457,9 @@ and one whose signature was already broken (its byte range ran past the end of t
 file (`certified-no-change-permitted.pdf`) now saves, reported as a change its certification doesn't allow, and
 LimarePDF declines five: three damaged files, `pdf-eof.pdf`, and `hide.pdf` (built so that other apps read it
 differently). `modified_after_signature.pdf`'s comment came out allowed in some runs and not in others, on 0.45 too:
-the reason its earlier malformed additions give names whichever unreadable object is found first (backlog PB-27). A document LimarePDF signed and
+the reason its earlier malformed additions gave named whichever unreadable object was found first. Fixed (the
+objects are checked in number order; `a_malformed_revision_gives_the_same_reason_each_time`): six runs since give
+the same results, that comment allowed. A document LimarePDF signed and
 then saved with a comment and a filled-in field is in the `pdfsig` and OpenSSL cross-check above.
 
 A document LimarePDF signed with a self-signed digital ID, opened in Adobe Acrobat Reader on Windows, shows its signature
