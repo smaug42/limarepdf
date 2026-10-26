@@ -53,7 +53,8 @@ To remove information that isn't on any page, such as the author's name or hidde
 For each area:
 
 - **Text**, visible or invisible (such as a scanned page's recognised text layer): each character at least a quarter
-  under the area is removed. The characters left keep their exact places on the line.
+  under the area is removed (under the areas taken together, where marks overlap: a part two marks share counts
+  once). The characters left keep their exact places on the line.
 - **Pictures**, scanned pages included: the pixels under the area are blacked out in the picture itself, which is
   then saved again (JPEG pictures as JPEG at about their own quality, black-and-white scans as CCITT, others without
   loss). Pixels only partly under the area are blacked out too. A picture's transparency (soft mask) is cut the same
@@ -95,7 +96,7 @@ A file can carry information that isn't on any page, such as its author's name o
 
 1. Choose ☰ > Document > **Remove hidden information…**. It lists what the document carries besides its pages,
    with how many of each, in two groups: what is removed by default (ticked), and what is kept by default (often
-   wanted, so not ticked).
+   wanted, so not ticked). Kinds the document has none of are greyed out and unticked.
 2. Tick what to remove, and press **Remove**. A summary follows.
 3. Save.
 

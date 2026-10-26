@@ -30,6 +30,8 @@ const PREVIEW: Vec2 = Vec2::new(190.0, 48.0);
 /// and the most points it takes up there.
 const VIEW: u32 = 1200;
 const VIEW_SIZE: Vec2 = Vec2::new(480.0, 240.0);
+/// How far an arrow key moves or sizes the part of a picture used, as a share of it.
+const NUDGE: f32 = 0.02;
 
 /// A saved signature or set of initials.
 #[derive(Clone, PartialEq, Debug)]
@@ -434,6 +436,27 @@ impl Previews {
     }
 }
 
+/// A signature's preview as a button: a white card that its paper fills, in both themes, so
+/// the paper never shows as a box on a tint (PB-09). Its outline is the accent colour when
+/// `selected`, the border colour under the pointer, and always there, so nothing moves.
+fn paper_button(ui: &mut egui::Ui, img: egui::Image<'_>, selected: Option<bool>) -> egui::Response {
+    let id = ui.next_auto_id();
+    let hovered = ui.ctx().read_response(id).is_some_and(|r| r.hovered());
+    let v = ui.visuals();
+    let outline = match (selected == Some(true), hovered) {
+        (true, _) => v.selection.stroke.color,
+        (false, true) => v.widgets.noninteractive.bg_stroke.color,
+        (false, false) => egui::Color32::TRANSPARENT,
+    };
+    let mut b = egui::Button::image(img)
+        .fill(egui::Color32::WHITE)
+        .stroke(egui::Stroke::new(2.0, outline));
+    if let Some(on) = selected {
+        b = b.selected(on);
+    }
+    ui.add(b)
+}
+
 /// How a new signature is made.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Way {
@@ -669,7 +692,7 @@ impl Create {
                 Some(tex) => {
                     let size = Previews::size(&tex, Vec2::new(room, 60.0));
                     let img = egui::Image::new((tex.id(), size));
-                    let r = ui.add(egui::Button::image(img).selected(self.style == style));
+                    let r = paper_button(ui, img, Some(self.style == style));
                     dialogs::set_name(&r, style.label());
                     r
                 }
@@ -747,11 +770,14 @@ impl Create {
     fn cropper(&mut self, ui: &mut egui::Ui, tex: &TextureHandle) {
         let s = tex.size_vec2();
         let max = Vec2::new(ui.available_width().min(VIEW_SIZE.x), VIEW_SIZE.y);
-        let (rect, resp) =
-            ui.allocate_exact_size(s * (max.x / s.x).min(max.y / s.y), Sense::drag());
+        let size = s * (max.x / s.x).min(max.y / s.y);
+        let (rect, resp) = ui.allocate_exact_size(size, Sense::click_and_drag());
+        if resp.clicked() || resp.drag_started() {
+            resp.request_focus();
+        }
         dialogs::set_name(
             &resp,
-            "Picture: drag around the signature to use only that part",
+            "Picture: drag around the signature, or use the arrow keys, to use only that part",
         );
         let painter = ui.painter_at(rect.expand(2.0));
         let whole = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
@@ -779,6 +805,53 @@ impl Create {
                     self.crop = Some(c);
                     self.error = None;
                 }
+            }
+        }
+        // With the keyboard on the picture, the arrow keys move the part used (the middle
+        // half to begin with), and Shift with them sizes it by its right and bottom edges.
+        if resp.has_focus() {
+            let arrows = egui::EventFilter {
+                horizontal_arrows: true,
+                vertical_arrows: true,
+                ..Default::default()
+            };
+            ui.memory_mut(|m| m.set_focus_lock_filter(resp.id, arrows));
+            let (mut dx, mut dy, mut size) = (0.0, 0.0, false);
+            ui.input(|i| {
+                for e in &i.events {
+                    let egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } = e
+                    else {
+                        continue;
+                    };
+                    let (x, y) = match key {
+                        egui::Key::ArrowLeft => (-1.0, 0.0),
+                        egui::Key::ArrowRight => (1.0, 0.0),
+                        egui::Key::ArrowUp => (0.0, -1.0),
+                        egui::Key::ArrowDown => (0.0, 1.0),
+                        _ => continue,
+                    };
+                    (dx, dy) = (dx + x, dy + y);
+                    size |= modifiers.shift;
+                }
+            });
+            if dx != 0.0 || dy != 0.0 {
+                let [l, t, r, b] = self.crop.unwrap_or([0.25, 0.25, 0.75, 0.75]);
+                let c = if size {
+                    let r = (r + dx * NUDGE).clamp(l + NUDGE, 1.0);
+                    [l, t, r, (b + dy * NUDGE).clamp(t + NUDGE, 1.0)]
+                } else {
+                    let (w, h) = (r - l, b - t);
+                    let l = (l + dx * NUDGE).clamp(0.0, 1.0 - w);
+                    let t = (t + dy * NUDGE).clamp(0.0, 1.0 - h);
+                    [l, t, l + w, t + h]
+                };
+                self.crop = Some(c);
+                self.error = None;
             }
         }
         if let Some(c) = self.drag.map(boxed).or(self.crop) {
@@ -809,7 +882,7 @@ impl Create {
             {
                 self.crop = None;
             }
-            ui.label("Drag over the picture to use part of it.");
+            ui.label("Drag over the picture, or use the arrow keys, to use part of it.");
         });
     }
 
@@ -948,7 +1021,7 @@ pub fn menu_ui(ui: &mut egui::Ui, menu: &SignMenu, acts: &mut Vec<Act>) {
                 let r = match tex {
                     Some(tex) => {
                         let img = egui::Image::new((tex.id(), Previews::size(tex, PREVIEW)));
-                        ui.add(egui::Button::image(img))
+                        paper_button(ui, img, None)
                     }
                     None => ui.button("Picture not found"),
                 };
@@ -1077,7 +1150,7 @@ impl SignPane {
                             Some(tex) => {
                                 let size = Previews::size(&tex, PREVIEW);
                                 let img = egui::Image::new((tex.id(), size));
-                                let r = ui.add(egui::Button::image(img).selected(picked));
+                                let r = paper_button(ui, img, Some(picked));
                                 // Named as in the toolbar's list.
                                 let name = match role {
                                     SignRole::Signature => "Signature",
@@ -1403,7 +1476,8 @@ mod tests {
     }
 
     const DRAWING: &str = "Drawing area: sign with the mouse or a pen";
-    const PICTURE: &str = "Picture: drag around the signature to use only that part";
+    const PICTURE: &str =
+        "Picture: drag around the signature, or use the arrow keys, to use only that part";
 
     /// The Create window on a screen `size` points big, at `scale` pixels per point.
     struct Win {
@@ -1449,6 +1523,22 @@ mod tests {
             out.platform_output
                 .accesskit_update
                 .expect("the window's widgets")
+        }
+
+        /// Draws the window once more, and returns what it painted.
+        fn shapes(&mut self) -> Vec<egui::epaint::ClippedShape> {
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)),
+                ..Default::default()
+            };
+            let Win {
+                ctx, c, previews, ..
+            } = self;
+            let mut out = ctx.run_ui(raw, |_| {
+                c.show(ctx, previews, &mut InkColor::Black);
+            });
+            out.textures_delta.clear();
+            out.shapes
         }
 
         /// Draws the window until it has settled.
@@ -1567,6 +1657,37 @@ mod tests {
         }
     }
 
+    /// PB-09: each handwriting style is a white card, its preview's paper filling it, in both
+    /// themes and chosen or not, so the paper never shows as a box on a tint.
+    #[test]
+    fn handwriting_styles_are_white_cards_in_both_themes() {
+        for theme in [egui::Theme::Light, egui::Theme::Dark] {
+            let mut c = Create::new(SignRole::Signature, "Sam Lee");
+            c.way = Way::Type;
+            c.style = SignStyle::ALL[1];
+            let mut w = Win::new(c, Vec2::new(1000.0, 800.0), 1.0);
+            w.ctx.set_theme(theme);
+            let tree = w.settled();
+            let shapes = w.shapes();
+            for style in SignStyle::ALL {
+                let at = bounds(&tree, style.label());
+                let card = shapes.iter().find_map(|s| match &s.shape {
+                    egui::Shape::Rect(r)
+                        if (r.rect.min - at.min).length() < 1.5
+                            && (r.rect.max - at.max).length() < 1.5 =>
+                    {
+                        Some(r.fill)
+                    }
+                    _ => None,
+                });
+                // White, at the opacity the window fades in with.
+                let white =
+                    card.is_some_and(|c| c.r() == c.a() && c.g() == c.a() && c.b() == c.a());
+                assert!(white, "{theme:?}, {style:?}: {card:?}");
+            }
+        }
+    }
+
     /// G02: strokes are kept in the full-size pad's points, so a stroke drawn wide stays as it
     /// was when the window narrows, and one drawn on the narrower pad lands where it would on
     /// the full-size one; the saved signature holds them unchanged.
@@ -1652,6 +1773,53 @@ mod tests {
         w.pointer(whole, Some(true));
         w.pointer(whole, Some(false));
         assert_eq!(w.c.crop, None);
+    }
+
+    /// The part used is chosen from the keyboard too (PB-21): with the picture focused, the
+    /// arrow keys move the part (the middle half to begin with) and Shift with them sizes it,
+    /// always inside the picture.
+    #[test]
+    fn the_arrow_keys_choose_the_part_used() {
+        use egui::Key;
+        let picture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/images/icon.png");
+        let mut c = Create::new(SignRole::Signature, "Sam Lee");
+        c.way = Way::Picture;
+        c.picture = Some(picture);
+        c.clear_paper = false;
+        let mut w = Win::new(c, Vec2::new(1000.0, 800.0), 1.0);
+        let view = bounds(&w.settled(), PICTURE);
+        // A click gives the picture the keyboard and chooses nothing. (egui keeps the arrows
+        // for it from the frame after it took the keyboard.)
+        w.pointer(view.center(), Some(true));
+        w.pointer(view.center(), Some(false));
+        w.settled();
+        assert_eq!(w.c.crop, None);
+        let key = |key, modifiers| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        let none = egui::Modifiers::NONE;
+        w.frame(vec![key(Key::ArrowRight, none)]);
+        let near = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4);
+        let crop = w.c.crop.expect("no part chosen");
+        assert!(near(crop, [0.27, 0.25, 0.77, 0.75]), "{crop:?}");
+        w.frame(vec![key(Key::ArrowDown, egui::Modifiers::SHIFT)]);
+        let crop = w.c.crop.unwrap();
+        assert!(near(crop, [0.27, 0.25, 0.77, 0.77]), "{crop:?}");
+        // Held against the picture's edges.
+        for _ in 0..30 {
+            w.frame(vec![key(Key::ArrowLeft, none), key(Key::ArrowUp, none)]);
+        }
+        let crop = w.c.crop.unwrap();
+        assert!(near(crop, [0.0, 0.0, 0.5, 0.52]), "{crop:?}");
+        for _ in 0..30 {
+            w.frame(vec![key(Key::ArrowLeft, egui::Modifiers::SHIFT)]);
+        }
+        let crop = w.c.crop.unwrap();
+        assert!(near(crop, [0.0, 0.0, NUDGE, 0.52]), "{crop:?}");
     }
 
     #[test]

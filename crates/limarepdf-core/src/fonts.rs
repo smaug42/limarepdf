@@ -1,5 +1,6 @@
 //! Font information needed to measure and decode text in page content.
 
+use crate::own_encoding;
 use crate::std14;
 use crate::tounicode::ToUnicode;
 use hayro::hayro_interpret::hayro_cmap::{load_embedded, BfString, CMap, CMapName, CidFamily};
@@ -124,6 +125,9 @@ pub(crate) struct FontCtx<'a> {
     pub type0: bool,
     pub base: String,
     enc: Option<Encoding<'a>>,
+    /// A simple font's text of each code where LimarePDF reads the encoding itself (an
+    /// `/Encoding` dictionary, or the program's own encoding): consulted before `enc`.
+    codes: Option<own_encoding::Codes>,
     /// The font's ToUnicode map, read by LimarePDF (lopdf rejects many that are laid out
     /// differently from the usual template). Consulted before `enc`.
     to_unicode: Option<ToUnicode>,
@@ -360,6 +364,20 @@ fn drawn_len(m: &CMap, bytes: &[u8]) -> Option<usize> {
     None
 }
 
+/// Whether a code longer than `n` bytes also starts `bytes`, where [`space_len`] reads `n`:
+/// one `m` maps, which poppler reads instead, or one of a longer range of `space`, which
+/// pdf.js reads instead (PB-03). Only a CMap breaking its own codespace has either.
+fn starts_longer(m: &CMap, space: &[Space], bytes: &[u8], n: usize) -> bool {
+    let mut code = bytes[..n].iter().fold(0, |c, &b| c << 8 | b as u32);
+    for k in n + 1..=bytes.len().min(4) {
+        code = code << 8 | bytes[k - 1] as u32;
+        if m.lookup_cid_code(code, k as u8).is_some() {
+            return true;
+        }
+    }
+    space.iter().any(|s| s.n > n && s.starts(&bytes[..n]))
+}
+
 /// The codespace of CMap `data`, with those of the predefined CMaps it uses (`usecmap`),
 /// `depth` deep in them. `data` is a CMap's text, or one of hayro-cmap's predefined CMaps
 /// in its own binary form. Empty when none can be read.
@@ -557,6 +575,7 @@ impl<'a> FontCtx<'a> {
             type0,
             base,
             enc: dict.get_font_encoding(doc).ok(),
+            codes: None,
             to_unicode,
             cmap: None,
             space: Vec::new(),
@@ -646,6 +665,7 @@ impl<'a> FontCtx<'a> {
                 ctx.cid_text = family.and_then(|f| predefined(f.ucs2_cmap()?));
             }
         } else {
+            ctx.codes = own_encoding::simple_codes(doc, dict);
             ctx.first = dict
                 .get(b"FirstChar")
                 .ok()
@@ -769,7 +789,8 @@ impl<'a> FontCtx<'a> {
     /// [`FontCtx::codes`] reads them. hayro, which draws, takes a code the CMap doesn't map
     /// as one byte, whatever the codespace says, so the characters after it are drawn
     /// elsewhere. Where the two agree, poppler and pdf.js read the string the same way too,
-    /// unless the CMap breaks its own codespace.
+    /// unless the CMap breaks its own codespace with a code that also starts a longer one
+    /// ([`starts_longer`]): such a string isn't drawn alike either.
     pub fn drawn_alike(&self, bytes: &[u8]) -> bool {
         let Some(m) = self.cmap.as_ref() else {
             return true;
@@ -780,7 +801,7 @@ impl<'a> FontCtx<'a> {
         let mut rest = bytes;
         while !rest.is_empty() {
             let n = space_len(m, &self.space, rest);
-            if drawn_len(m, rest) != Some(n) {
+            if drawn_len(m, rest) != Some(n) || starts_longer(m, &self.space, rest, n) {
                 return false;
             }
             rest = &rest[n..];
@@ -842,6 +863,18 @@ impl<'a> FontCtx<'a> {
                 None => {}
             }
         }
+        // A code the CMap of a Type 0 font maps to no CID is drawn as no character: lopdf's
+        // encodings, those of simple fonts, would read `<0042>` as "B" (PB-06). A CID with
+        // no text (Identity-H's, with no ToUnicode map) is still read through them, which
+        // often gives the text meant (codes that are ASCII, as in pdf.js's bug951051).
+        if self.type0 && self.cid(code, raw.len()).is_none() {
+            return "\u{FFFD}".into();
+        }
+        if let (Some(codes), [b]) = (&self.codes, raw) {
+            if let Some(s) = &codes[*b as usize] {
+                return s.clone();
+            }
+        }
         if let Some(e) = &self.enc {
             if let Ok(s) = e.bytes_to_string(raw) {
                 if !s.is_empty() || raw.is_empty() {
@@ -850,14 +883,18 @@ impl<'a> FontCtx<'a> {
             }
         }
         if self.type0 {
-            return "\u{FFFD}".repeat(raw.len() / 2);
+            return "\u{FFFD}".into();
         }
         raw.iter().map(|&b| b as char).collect()
     }
 
     /// True when text can be re-encoded for this very font with plain ASCII:
-    /// a simple, non-subset font with a standard encoding.
+    /// a simple, non-subset font with a standard encoding, not Symbol or ZapfDingbats,
+    /// whose built-in encodings aren't (PB-25).
     pub fn reusable(&self) -> bool {
+        if std14::symbolic_char(&self.base, b' ').is_some() {
+            return false;
+        }
         let subset = self.base.len() > 7
             && self.base.as_bytes()[6] == b'+'
             && self.base[..6].chars().all(|c| c.is_ascii_uppercase());
@@ -923,6 +960,24 @@ mod tests {
         assert_eq!(ctx.width(u32::MAX, 4), 500.0);
         assert!(ctx.wmap.len() <= MAX_CID as usize + 1, "{}", ctx.wmap.len());
         assert!(ctx.wmap.keys().all(|&c| c <= MAX_CID));
+    }
+
+    /// Text is written back in a font of the file as ASCII only where codes mean their ASCII
+    /// characters: not in Symbol or ZapfDingbats, whose own encodings put α and ✔ there
+    /// (PB-25).
+    #[test]
+    fn symbol_fonts_are_not_written_as_ascii() {
+        let doc = Document::with_version("1.7");
+        let font =
+            |base: &str| dictionary! { "Type" => "Font", "Subtype" => "Type1", "BaseFont" => base };
+        for (base, reusable) in [
+            ("Helvetica", true),
+            ("Symbol", false),
+            ("ZapfDingbats", false),
+        ] {
+            let f = font(base);
+            assert_eq!(FontCtx::new(&doc, &f).reusable(), reusable, "{base}");
+        }
     }
 
     #[test]

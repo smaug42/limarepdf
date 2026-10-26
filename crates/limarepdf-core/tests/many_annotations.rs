@@ -225,6 +225,25 @@ fn a_reply_past_those_shown_goes_with_its_comment() {
     s.assert_kept(&["MARKER-OTHER", "MARKER-OTHER-REPLY"]);
 }
 
+/// A comment past those shown, without the `/P` naming its page, is still found on its
+/// page: answering it works (it was "on no page").
+#[test]
+fn a_comment_past_those_shown_can_be_answered() {
+    let mut p = page("");
+    fill(&mut p);
+    let last = add(&mut p, note([20, 20, 40, 40], "MARKER-LAST"));
+    let mut list = annots(&p);
+    list.push(last.into());
+    set_annots(&mut p, list);
+
+    let reply = p.add_reply(last, "MARKER-ANSWER", "Sam").unwrap();
+    let d = p.doc.get_dictionary(reply).unwrap();
+    assert_eq!(
+        d.get(b"P").unwrap().as_reference().unwrap(),
+        p.page_ids()[0]
+    );
+}
+
 /// Ghostscript, reading the redacted output on its own:
 /// `cargo test -p limarepdf-core --test many_annotations -- --ignored cross_check`.
 /// Poppler can't: it refuses a page listing 10,000 annotations or more as malformed.

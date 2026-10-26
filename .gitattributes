@@ -1,3 +1,7 @@
 # PDFs are byte-exact: a signature covers the bytes as they are, so a line-ending change
 # on checkout (Windows autocrlf) breaks it.
 *.pdf binary
+# Test font programs: a Type 1 font's encrypted part follows its text, so line endings
+# changed on checkout would break it.
+*.pfa binary
+*.cff binary

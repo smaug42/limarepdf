@@ -187,7 +187,9 @@ impl Pdf {
                     if chain.contains(&p) {
                         break;
                     }
-                    if chain.len() > MAX_DEPTH {
+                    // The widget and its parents, the top one at most MAX_DEPTH above the
+                    // widget's own field, as for a listed field (PB-05).
+                    if chain.len() > MAX_DEPTH + 1 {
                         bail!("the form's fields are nested more than {MAX_DEPTH} deep");
                     }
                     chain.push(p);

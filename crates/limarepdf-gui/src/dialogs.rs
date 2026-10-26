@@ -203,6 +203,26 @@ impl<'a> Shell<'a> {
                 });
             body(ui)
         });
+        // At Tab on the last control egui gives up the keyboard, and finds the first control
+        // only at the next Tab: it goes straight round instead (PB-15). Being offered first,
+        // the first control takes the keyboard egui means to give on; the only one, which
+        // egui doesn't offer it back to, is given it.
+        let tab = ctx.input(|i| i.key_pressed(Key::Tab) && i.modifiers.is_none());
+        if tab && r.is_top_modal && ctx.memory(|m| m.focused().is_none()) {
+            let first = ctx.viewport(|v| {
+                let mut widgets = v.this_pass.widgets.get_layer(layer);
+                let first = widgets.find(|w| w.enabled && w.sense.is_focusable());
+                first.map(|w| w.id)
+            });
+            if let Some(id) = first {
+                ctx.memory_mut(|m| {
+                    m.interested_in_focus(id, layer);
+                    if m.focused().is_none() {
+                        m.request_focus(id);
+                    }
+                });
+            }
+        }
         let esc = self.esc
             && r.is_top_modal
             && !r.any_popup_open
@@ -1061,7 +1081,9 @@ pub fn remove_hidden(ctx: &Context, file: Option<&str>, s: &mut RemoveHidden) ->
     })
 }
 
-/// A checkbox for each kind of hidden information, saying how many the document has.
+/// A checkbox for each kind of hidden information, saying how many the document has. One
+/// the document has none of is greyed out and unticked, as nothing of it is removed; the
+/// choice stays for documents that have it (PB-08).
 fn hidden_kinds(ui: &mut Ui, kinds: &mut [(limarepdf_core::Hidden, usize, bool)]) {
     for (h, n, on) in kinds {
         let found = if *n == 0 {
@@ -1069,9 +1091,11 @@ fn hidden_kinds(ui: &mut Ui, kinds: &mut [(limarepdf_core::Hidden, usize, bool)]
         } else {
             format!("{n} found")
         };
+        let mut none = false;
+        let shown = if *n == 0 { &mut none } else { on };
         ui.add_enabled(
             *n > 0,
-            egui::Checkbox::new(on, format!("{} ({found})", h.label())),
+            egui::Checkbox::new(shown, format!("{} ({found})", h.label())),
         );
     }
 }
@@ -1749,6 +1773,29 @@ mod tests {
         assert!(removed.bottom() <= kind(Hidden::Metadata).top());
         assert!(kind(Hidden::PrivateData).bottom() <= kept.top());
         assert!(kept.bottom() <= kind(Hidden::Comments).top());
+    }
+
+    /// PB-08: a kind the document has none of is greyed out and unticked, though chosen; one
+    /// it has shows the choice.
+    #[test]
+    fn hidden_kinds_the_document_lacks_are_unticked() {
+        use egui::accesskit::Toggled;
+        use limarepdf_core::Hidden;
+        let mut s = RemoveHidden {
+            kinds: vec![(Hidden::Metadata, 0, true), (Hidden::Scripts, 2, true)],
+        };
+        let tree = drawn(egui::vec2(1200.0, 800.0), |ctx| {
+            remove_hidden(ctx, None, &mut s);
+        });
+        let node = |name: String| {
+            let n = tree.nodes.iter().find(|(_, n)| n.label() == Some(&name));
+            n.map(|(_, n)| (n.toggled(), n.is_disabled()))
+        };
+        let none = node(format!("{} (none)", Hidden::Metadata.label()));
+        assert_eq!(none, Some((Some(Toggled::False), true)));
+        let found = node(format!("{} (2 found)", Hidden::Scripts.label()));
+        assert_eq!(found, Some((Some(Toggled::True), false)));
+        assert!(s.kinds[0].2, "the choice is kept");
     }
 
     /// Batch 7b: recovered documents are rows of one list, each with its buttons beside

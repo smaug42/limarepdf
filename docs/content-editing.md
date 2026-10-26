@@ -195,7 +195,6 @@ detail is in [How it is built](developer/architecture.md#content-editing).
 - Inline images can be moved, resized and deleted, but not replaced. Pages whose inline images cannot be located
   safely are refused rather than risk losing them.
 - Replacing an image fits the new picture inside the old box, centred, upright as a photo's own orientation asks.
-  CMYK JPEGs are not supported.
 - Rotating objects, grouping, changing the stacking order, and copying and pasting between pages are not implemented.
 - Moving an object does not move links or annotations over it.
 - Text inside a form XObject (a reusable block of page content) is searched and selected like other text, but it is

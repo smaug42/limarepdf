@@ -414,14 +414,13 @@ fn stroke_ops(points: &[(f32, f32)], width: f32, bounds: &mut Bounds) -> String 
     s
 }
 
-/// A picture's samples as 8-bit RGB with alpha, if it has a form that can be read so
-/// (all but CMYK JPEGs).
+/// A picture's samples as 8-bit RGB with alpha, if it has a form that can be read so.
+/// CMYK JPEGs are read through `image`, which follows Adobe's marker for samples stored
+/// inverted (PB-21).
 fn rgb_alpha(r: &Raster) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
     let (w, h) = (r.w as usize, r.h as usize);
     let (rgb, alpha) = match &r.pixels {
-        Pixels::Jpeg {
-            data, components, ..
-        } if *components != 4 => {
+        Pixels::Jpeg { data, .. } => {
             let img = image::load_from_memory_with_format(data, image::ImageFormat::Jpeg)
                 .map_err(|e| anyhow!("cannot decode the picture: {e}"))?;
             (img.to_rgb8().into_raw(), None)
@@ -458,7 +457,6 @@ fn rgb_alpha(r: &Raster) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
             };
             (rgb, alpha.clone())
         }
-        _ => bail!("LimarePDF can't read this picture's colours (a CMYK JPEG)"),
     };
     if rgb.len() < w * h * 3 || alpha.as_ref().is_some_and(|a| a.len() < w * h) {
         bail!("the picture is shorter than its size says");
@@ -963,11 +961,12 @@ impl Pdf {
     }
 
     /// How many fill-and-sign items (signatures, initials, marks and their text) are still
-    /// annotations, so they can be moved; [`Pdf::finish_signing`] draws them in.
+    /// annotations, so they can be moved; [`Pdf::finish_signing`] draws them in. Past the
+    /// annotations a page shows too (PB-02).
     pub fn sign_items(&self) -> usize {
         self.page_ids()
             .into_iter()
-            .flat_map(|p| self.annot_refs(p))
+            .flat_map(|p| self.all_annot_refs(p))
             .filter(|&id| self.doc.get_dictionary(id).is_ok_and(is_sign_item))
             .count()
     }
@@ -996,7 +995,7 @@ impl Pdf {
         let items: Vec<ObjectId> = self
             .page_ids()
             .into_iter()
-            .flat_map(|p| self.annot_refs(p))
+            .flat_map(|p| self.all_annot_refs(p))
             .filter(|&id| self.doc.get_dictionary(id).is_ok_and(is_sign_item))
             .collect();
         for &id in &items {
@@ -1373,6 +1372,26 @@ mod tests {
         assert!(rgb_alpha(&raw("DeviceGray", 1, 10, 3, vec![0; 4])).is_err());
         let cmyk = raw("DeviceCMYK", 8, 2, 1, vec![0, 0, 0, 0, 0, 0, 0, 255]);
         assert_eq!(rgb_alpha(&cmyk).unwrap().0, vec![255, 255, 255, 0, 0, 0]);
+    }
+
+    /// A CMYK JPEG (cyan on the left, red on the right, its samples stored inverted as
+    /// Adobe's marker says) is read in its colours, so it can be cleared and cropped (PB-21).
+    #[test]
+    fn cmyk_jpegs_are_read() {
+        let jpg = include_bytes!("../tests/data/images/cmyk-cyan-red.jpg");
+        let r = crate::imgs::decode(jpg).unwrap().remove(0);
+        let (rgb, alpha) = rgb_alpha(&r).unwrap();
+        assert!(alpha.is_none());
+        let px = |x: usize, y: usize| {
+            let i = (y * 16 + x) * 3;
+            [rgb[i], rgb[i + 1], rgb[i + 2]]
+        };
+        let (left, right) = (px(3, 4), px(12, 4));
+        assert!(left[0] < 90 && left[1] > 140 && left[2] > 140, "{left:?}");
+        assert!(
+            right[0] > 160 && right[1] < 90 && right[2] < 90,
+            "{right:?}"
+        );
     }
 
     #[test]

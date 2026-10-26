@@ -422,7 +422,7 @@ impl Pdf {
             Err(_) => self
                 .page_ids()
                 .into_iter()
-                .find(|&p| self.annot_refs(p).contains(&id))
+                .find(|&p| self.all_annot_refs(p).contains(&id))
                 .ok_or_else(|| anyhow!("the annotation is on no page")),
         }
     }

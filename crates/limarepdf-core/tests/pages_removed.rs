@@ -635,6 +635,70 @@ fn alternative_text_goes_with_its_page_however_the_tree_reaches_it() {
     }
 }
 
+/// Elements with marked content and no page given anywhere (PB-04): the parent tree tells
+/// their page by each page's `/StructParents`, and one it doesn't list may be on the page that
+/// went, so its text goes too rather than the removal being refused.
+#[test]
+fn alternative_text_of_content_with_no_page_goes_by_the_parent_tree() {
+    let mut p = two_marked_pages([1, 2]);
+    let pages = p.page_ids();
+    let root = p.doc.new_object_id();
+    let on_1 = elem(
+        &mut p,
+        "P",
+        root,
+        dictionary! { "K" => 0, "Alt" => s("Kept by the parent tree") },
+    );
+    let on_2 = elem(
+        &mut p,
+        "P",
+        root,
+        dictionary! { "K" => 0, "Alt" => s("WALRUS-PARENT-TREE-ALT") },
+    );
+    let unsure = elem(
+        &mut p,
+        "P",
+        root,
+        dictionary! {
+            "K" => dictionary! { "Type" => "MCR", "MCID" => 1 },
+            "ActualText" => s("WALRUS-UNSURE-ACTUAL"),
+        },
+    );
+    let list = p.doc.add_object(vec![Object::Reference(on_2)]);
+    p.doc.objects.insert(
+        root,
+        dictionary! {
+            "Type" => "StructTreeRoot",
+            "K" => vec![on_1.into(), on_2.into(), unsure.into()],
+            "ParentTree" => dictionary! {
+                "Nums" => vec![0.into(), vec![Object::Reference(on_1)].into(), 1.into(), list.into()],
+            },
+        }
+        .into(),
+    );
+    for (i, page) in pages.iter().enumerate() {
+        let d = p.doc.get_dictionary_mut(*page).unwrap();
+        d.set("StructParents", i as i64);
+    }
+    let catalog = p.doc.catalog_mut().unwrap();
+    catalog.set("StructTreeRoot", root);
+    catalog.set("MarkInfo", dictionary! { "Marked" => true });
+    let before = Saved::of(&mut p.clone());
+    before.assert_kept(&[
+        "Kept by the parent tree",
+        "WALRUS-PARENT-TREE-ALT",
+        "WALRUS-UNSURE-ACTUAL",
+    ]);
+    let mut part = p.extract(&[0]).unwrap();
+    let mut deleted = p.clone();
+    deleted.delete_pages(&[1]).unwrap();
+    for out in [&mut part, &mut deleted] {
+        let saved = Saved::of(out);
+        saved.assert_gone(&["WALRUS"]);
+        saved.assert_kept(&["Kept by the parent tree"]);
+    }
+}
+
 /// Two pages, with a field whose only widget is on page 2, `levels` fields below the form's
 /// top-level field, which holds a value.
 fn deep_field(levels: usize) -> Pdf {
@@ -681,12 +745,16 @@ fn page_removal_refuses_a_form_nested_too_deep_to_follow() {
 
     let mut p = deep_field(33);
     let mut part = p.extract(&[0]).unwrap();
+    let mut kept = p.clone();
     p.delete_pages(&[1]).unwrap();
     for out in [&mut part, &mut p] {
         let saved = Saved::of(out);
         saved.assert_gone(&["WALRUS"]);
         assert!(saved.fields().is_empty());
     }
+    // The same form stays whole when its page does (PB-05).
+    kept.delete_pages(&[0]).unwrap();
+    Saved::of(&mut kept).assert_kept(&["WALRUS-DEEP-VALUE"]);
 }
 
 /// Two pages, with a named destination to page 2 `levels` kids down the name tree (one of

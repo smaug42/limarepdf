@@ -3425,6 +3425,13 @@ impl Editor {
         self.text_drag
     }
 
+    /// The page a move, resize, turn, shape or pen stroke being dragged is on.
+    pub fn gesture_page(&self) -> Option<usize> {
+        let drag = self.drag.as_ref().map(|d| d.page);
+        let draw = self.draw.as_ref().map(|d| d.page);
+        drag.or(draw).or(self.pen_stroke.as_ref().map(|s| s.page))
+    }
+
     /// The pointer is moving, resizing, drawing or selecting something.
     pub fn dragging(&self) -> bool {
         self.drag.is_some() || self.draw.is_some() || self.text_drag
@@ -3482,10 +3489,21 @@ impl Editor {
         }
     }
 
-    /// Esc: keep the new text, note, text box or line being typed on the page, or clear a
-    /// selected annotation, or the word or object selection (read tool); otherwise leave a
-    /// drawing tool for the arrow, or with the arrow clear the selection.
+    /// Esc: let go of a move, resize, turn, shape, pen stroke or word selection being dragged,
+    /// changing nothing (the tool stays); else keep the new text, note, text box or line being
+    /// typed on the page, or clear a selected annotation, or the word or object selection
+    /// (read tool); otherwise leave a drawing tool for the arrow, or with the arrow clear the
+    /// selection.
     pub fn escape(&mut self) {
+        if self.dragging() || self.pen_stroke.is_some() {
+            self.drag = None;
+            self.draw = None;
+            self.pen_stroke = None;
+            if std::mem::take(&mut self.text_drag) {
+                self.selection.clear_words();
+            }
+            return;
+        }
         if self.adding.is_some() {
             self.finish_adding();
             self.adding = None;
@@ -3708,11 +3726,13 @@ impl Editor {
             self.text_refused.show(ui.ctx(), &out, id);
             dialogs::set_name(&out.response.response, label);
             // Changes are kept as they are made, each finished one a step to undo; the
-            // comment when it is left.
+            // comment when it is left, by Tab too, which puts the keyboard on the next
+            // control (PB-20).
+            let left = out.response.response.lost_focus();
             if theme::glyph_button(ui, icon::TRASH, "Delete").clicked() {
                 self.actions.push(Action::DeleteAnnot(a.page, a.id));
                 done = true;
-            } else if !e.same_as(&now) && settled(ui.ctx()) {
+            } else if !e.same_as(&now) && (settled(ui.ctx()) || left) {
                 self.actions.push(Action::SetAnnot(a.page, a.id, e.clone()));
                 done = true;
             }

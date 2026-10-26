@@ -300,6 +300,42 @@ pub fn lp_args(o: &PrintOptions, paper: Option<&str>) -> Vec<String> {
     a
 }
 
+/// Runs `job` on a thread of its own, which calls the beat it is given each time it gets
+/// on, and waits for it while it beats at least every `within`. A job that stops beating is
+/// left to finish on its own: a Windows print job stuck in the print spooler can't be
+/// stopped, and waiting for it would hold up the app's other work until it closes (PB-17).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn while_beating<T: Send + 'static>(
+    within: Duration,
+    job: impl FnOnce(&dyn Fn()) -> Result<T> + Send + 'static,
+) -> Result<T> {
+    use std::sync::mpsc::{channel, RecvTimeoutError};
+    let (tx, rx) = channel::<Option<Result<T>>>();
+    let beats = tx.clone();
+    std::thread::spawn(move || {
+        let beat = move || {
+            let _ = beats.send(None);
+        };
+        let out = job(&beat);
+        let _ = tx.send(Some(out));
+    });
+    loop {
+        match rx.recv_timeout(within) {
+            Ok(Some(out)) => return out,
+            Ok(None) => {}
+            Err(RecvTimeoutError::Timeout) => bail!(
+                "the printer didn't take the document within {} seconds, so LimarePDF stopped \
+                 waiting. Check the printer's queue before printing again: the job may still \
+                 print once the printer is ready",
+                within.as_secs()
+            ),
+            Err(RecvTimeoutError::Disconnected) => {
+                bail!("the print job stopped without saying how it went")
+            }
+        }
+    }
+}
+
 /// Run `program` (normally `lp`) with `args`, writing `data` to its standard input.
 /// Returns what it printed, such as "request id is Office-42 (1 file(s))". It is stopped
 /// if it takes longer than [`SEND_WITHIN`] to take the document, or then to answer.
@@ -367,13 +403,19 @@ impl Pdf {
     }
 
     /// Print `pages` (0-based): with CUPS, returning `lp`'s reply, or on Windows through
-    /// the print spooler, returning the job number.
+    /// the print spooler, returning the job number. Gives up waiting, as `lp` is given up
+    /// on, when the spooler takes no step for [`SEND_WITHIN`] ([`while_beating`]).
     pub fn print(&mut self, pages: &[usize], opts: &PrintOptions) -> Result<String> {
         if pages.is_empty() {
             bail!("no pages selected");
         }
         #[cfg(windows)]
-        return crate::print_win::print(self, pages, opts);
+        {
+            let (data, pages, opts) = (self.print_snapshot()?, pages.to_vec(), opts.clone());
+            while_beating(SEND_WITHIN, move |beat| {
+                crate::print_win::print(data, &pages, &opts, beat)
+            })
+        }
         #[cfg(not(windows))]
         {
             let data = self.print_data(pages, opts.as_image)?;
@@ -475,6 +517,44 @@ mod tests {
         offset: (150, 150),
         dpi: (600, 600),
     };
+
+    /// A job that keeps beating is waited for however long it takes; one that stops is let
+    /// go after the wait, the app free again while it goes on (PB-17). The beats come 50
+    /// times as often as the wait, and the stuck job sleeps three times as long, so a slow,
+    /// busy CI runner doesn't miss a beat (a 200 ms wait with beats every 100 ms failed on
+    /// macOS Intel).
+    #[test]
+    fn a_job_is_waited_for_while_it_gets_on() {
+        let within = Duration::from_secs(1);
+        let start = Instant::now();
+        let steady = while_beating(within, |beat| {
+            for _ in 0..100 {
+                std::thread::sleep(Duration::from_millis(20));
+                beat();
+            }
+            Ok("done")
+        });
+        assert_eq!(steady.unwrap(), "done");
+        // Longer than the wait: it was waited for because it kept beating.
+        assert!(start.elapsed() > within, "{:?}", start.elapsed());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let start = Instant::now();
+        let stuck = while_beating(within, move |beat| {
+            beat();
+            std::thread::sleep(Duration::from_secs(3));
+            let _ = tx.send(());
+            Ok(())
+        });
+        let waited = start.elapsed();
+        let err = format!("{:#}", stuck.unwrap_err());
+        assert!(err.contains("stopped waiting"), "{err}");
+        assert!(waited < Duration::from_millis(2500), "{waited:?}");
+        // The job itself goes on.
+        assert!(rx.recv_timeout(Duration::from_secs(10)).is_ok());
+        // One that ends without saying (it panicked) is said too.
+        let gone = while_beating::<()>(within, |_| panic!("lost"));
+        assert!(format!("{:#}", gone.unwrap_err()).contains("without saying"));
+    }
 
     #[test]
     fn small_page_prints_at_actual_size_centred() {

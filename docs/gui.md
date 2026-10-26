@@ -59,7 +59,9 @@ other tools:
 | Comment: note, text box, rectangle, ellipse, line, pen | Annotations other readers list as comments | [Comments and markup](comments-and-markup.md) |
 | Comment: stamp | Approved, Draft, your own wording or a picture | [Stamps](headers-footers-watermarks.md#stamps) |
 
-Esc always returns to the read tool, and LimarePDF always starts with it. With a tool other than the read tool on,
+Esc always returns to the read tool, and LimarePDF always starts with it. Pressed while something is being dragged
+(a move, a resize, a shape, a pen stroke or a word selection), Esc first cancels that, changing nothing, and the
+tool stays; Esc again leaves it. With a tool other than the read tool on,
 hold Ctrl and click to follow a link, fill in a field or select a comment.
 
 ### Keep tool active
@@ -347,11 +349,11 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Ctrl+Shift+H | Highlight the selected text |
 | Arrow keys (Shift for 10 points) | Move the selected object |
 | Ctrl+A, Ctrl+C | Select all text on the page, copy it (read tool) |
-| Esc | Cancel: close an open list, menu or colour picker (only that), finish (and keep) new text, a line, a note, a text box or a form field being typed, clear the selection, or leave a tool for the read tool |
+| Esc | Cancel: close an open list, menu or colour picker (only that), cancel a move, resize, shape, pen stroke or word selection being dragged (only that), finish (and keep) new text, a line, a note, a text box or a form field being typed, clear the selection, or leave a tool for the read tool |
 | Ctrl+B, Ctrl+I | Bold, Italic for the words selected in new text being typed (Add text) or a line being edited on the page; with nothing selected, the word at the caret, or what is typed next between words |
 | Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) while typing new text, a line, a note, a text box, a form field or in any box of the inspector | Undo, redo the typing there (and the styles, in new text and lines), not the document |
 | Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |
-| Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the top bar, tabs, bottom bar and panels left to right; inside a dialog, its fields and then its buttons. Space or Enter presses the button. In a form, Tab moves between its fields; Ctrl+K reaches every command |
+| Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the top bar, tabs, bottom bar and panels left to right; inside a dialog, its fields and then its buttons, from the last straight back to the first. Leaving one of the inspector's boxes by Tab keeps what was typed. Space or Enter presses the button. In a form, Tab moves between its fields; Ctrl+K reaches every command |
 
 ### Screen readers
 

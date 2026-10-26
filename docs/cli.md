@@ -258,7 +258,8 @@ name, such as `jane-doe`), the name in its certificate, or its SHA-256 fingerpri
 | `limarepdf-cli sign in.pdf -o signed.pdf --field Approver --reason "Approved" --location Ottawa` | Add your reason and location, shown with the signature |
 | `limarepdf-cli sign in.pdf -o signed.pdf --page 1 --rect 50,700,200,60 --certify forms` | Certify the document as its author: `no-changes`, `forms` (others may fill in and sign) or `comments` (and comment). Only before anyone signs |
 | `limarepdf-cli sign in.pdf -o signed.pdf --field Approver --id work` | Sign with another ID than the default |
-| `limarepdf-cli sign in.pdf -o signed.pdf --field Approver --image signature.png` | Show a picture of your handwritten signature beside the text, instead of your name in handwriting (`--style 1` to `4` picks the handwriting) |
+| `limarepdf-cli sign in.pdf -o signed.pdf --field Approver --image signature.png` | Show a picture of your handwritten signature beside the text, instead of your name in handwriting (`--style 1` to `4` picks the handwriting). The paper around the ink is made transparent |
+| `limarepdf-cli sign in.pdf -o signed.pdf --field Approver --image sheet.jpg --crop 900,2400,1700,2700` | Use only part of the picture: its left, top, right and bottom edges in the picture's pixels, counted from its top left as it is shown (an image viewer shows them), such as the signature on a photo of a whole sheet |
 
 `limarepdf-cli sign` asks for the ID's password (or reads it with `--password-file FILE`) and takes `--id-folder` like
 `limarepdf-cli id`. The signature is added after the file's existing bytes, so earlier signatures stay valid, and the signed

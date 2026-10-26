@@ -1410,17 +1410,29 @@ impl SignWindow {
                 )
                 .wrap(),
             );
-            dialogs::group(ui, "Others may", |ui| {
-                for (p, text) in [
-                    (Permissions::NoChanges, "Make no changes"),
-                    (Permissions::FormFilling, "Fill in forms and sign"),
-                    (
-                        Permissions::FormFillingAndComments,
-                        "Fill in forms, sign and add comments",
-                    ),
-                ] {
-                    ui.radio_value(&mut self.permissions, p, text);
-                }
+            ui.add_space(dialogs::FIELD_GAP);
+            // A list rather than three choices one under another, so Certify fits where Sign
+            // does (PB-10).
+            let choices = [
+                (Permissions::NoChanges, "Make no changes"),
+                (Permissions::FormFilling, "Fill in forms and sign"),
+                (
+                    Permissions::FormFillingAndComments,
+                    "Fill in forms, sign and add comments",
+                ),
+            ];
+            let shown = choices.iter().find(|(p, _)| *p == self.permissions);
+            let wide = ui.available_width();
+            dialogs::field(ui, "Others may", |ui| {
+                egui::ComboBox::from_id_salt("certify permissions")
+                    .selected_text(shown.map(|(_, t)| *t).unwrap_or_default())
+                    .width(wide)
+                    .show_ui(ui, |ui| {
+                        for (p, text) in choices {
+                            ui.selectable_value(&mut self.permissions, p, text);
+                        }
+                    })
+                    .response
             });
         }
         ui.add_space(dialogs::FIELD_GAP);
@@ -2069,6 +2081,39 @@ mod tests {
             !cancelled(&mut w),
             "Esc closed a window with a reason typed"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// PB-10: Sign and Certify fit a 1200 × 800 window without scrolling, with a
+    /// self-issued ID's note: the last line is as far above the buttons as in Sign, which
+    /// fits (squeezed into a scrolling area, it comes closer).
+    #[test]
+    fn sign_and_certify_fit_800_points_high() {
+        use crate::dialogs::drawn_window;
+        let (mut w, dir) = window("fit-800");
+        let mut gaps = Vec::new();
+        for certify in [false, true] {
+            w.certify = certify;
+            let (tree, _) = drawn_window(egui::vec2(1200.0, 800.0), |ctx| {
+                w.ui(ctx);
+            });
+            let rect = |found: &dyn Fn(&egui::accesskit::Node) -> bool| {
+                let (_, n) = tree.nodes.iter().find(|(_, n)| found(n)).unwrap();
+                let b = n.bounds().unwrap();
+                egui::Rect::from_min_max(
+                    egui::pos2(b.x0 as f32, b.y0 as f32),
+                    egui::pos2(b.x1 as f32, b.y1 as f32),
+                )
+            };
+            let last = rect(&|n| {
+                n.role() == egui::accesskit::Role::Label
+                    && n.value()
+                        .is_some_and(|v| v.contains("The signature covers this document"))
+            });
+            let cancel = rect(&|n| n.label() == Some("Cancel"));
+            gaps.push(cancel.top() - last.bottom());
+        }
+        assert!(gaps[1] >= gaps[0] - 0.5, "Certify scrolls: {gaps:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -1,6 +1,6 @@
 //! Interactive forms (AcroForm): the fields, their values and where their widgets are.
 
-use crate::doc::decode_text;
+use crate::doc::{decode_shown_text, decode_text};
 use crate::form_write::parse_da;
 use crate::matrix::{self as mx, M};
 use crate::Pdf;
@@ -232,9 +232,6 @@ impl Pdf {
             let Ok(d) = p.doc.get_dictionary(id) else {
                 return Ok(());
             };
-            if depth > MAX_DEPTH {
-                anyhow::bail!("the form's fields are nested more than {MAX_DEPTH} deep");
-            }
             let sig = match d.get(b"FT").and_then(|o| o.as_name()) {
                 Ok(ft) => ft == b"Sig",
                 Err(_) => sig,
@@ -244,7 +241,13 @@ impl Pdf {
                 .get(b"Kids")
                 .ok()
                 .and_then(|o| p.doc.dereference(o).ok())
-                .and_then(|(_, o)| o.as_array().ok());
+                .and_then(|(_, o)| o.as_array().ok())
+                .filter(|k| !k.is_empty());
+            // A field's widgets may be one level below the deepest field, as
+            // [`Pdf::form_nodes`] reads them (PB-05).
+            if kids.is_some() && depth > MAX_DEPTH {
+                anyhow::bail!("the form's fields are nested more than {MAX_DEPTH} deep");
+            }
             for k in kids.into_iter().flatten() {
                 if let Ok(k) = k.as_reference() {
                     walk(p, k, sig, depth + 1, seen, out)?;
@@ -451,7 +454,7 @@ impl Pdf {
             options,
             read_only: ff & READ_ONLY != 0,
             required: ff & REQUIRED != 0,
-            tooltip: d.get(b"TU").ok().and_then(|o| self.text_value(o)),
+            tooltip: d.get(b"TU").ok().and_then(|o| self.shown_text_value(o)),
             text_size: inh.da.as_deref().map_or(0.0, |da| parse_da(da).1),
             widgets: ws,
         })
@@ -581,6 +584,15 @@ impl Pdf {
                 Some(decode_text(&data))
             }
             _ => None,
+        }
+    }
+
+    /// [`Pdf::text_value`] for text that is only shown, never used to find something
+    /// ([`decode_shown_text`]).
+    pub(crate) fn shown_text_value(&self, o: &Object) -> Option<String> {
+        match self.doc.dereference(o).ok()?.1 {
+            Object::String(s, _) => Some(decode_shown_text(s)),
+            _ => self.text_value(o),
         }
     }
 

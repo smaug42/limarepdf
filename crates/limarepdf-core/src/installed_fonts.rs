@@ -528,6 +528,23 @@ mod tests {
         assert_eq!(index, 0);
     }
 
+    /// A font file read for drawing is held only while a renderer holds it: the list keeps a
+    /// weak reference, so a file that turns out not to be readable as a font goes too
+    /// (PB-13).
+    #[test]
+    fn font_files_go_when_nothing_holds_them() {
+        let fonts = bundled();
+        let (id, _) = fonts.find_id(&query("Zeyada")).unwrap();
+        let held = |f: &InstalledFonts| {
+            let data = f.data.lock().unwrap();
+            data.get(&id).and_then(Weak::upgrade).is_some()
+        };
+        let found = fonts.find(&query("Zeyada")).unwrap();
+        assert!(held(&fonts));
+        drop(found);
+        assert!(!held(&fonts));
+    }
+
     #[test]
     fn named_is_the_font_or_its_widths() {
         // The bundled Liberation fonts stand in for installed ones here.

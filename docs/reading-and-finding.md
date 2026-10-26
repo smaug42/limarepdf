@@ -141,14 +141,20 @@ LimarePDF reads the text from the page content itself, the same way for search, 
 and `limarepdf-cli text`, so they always agree.
 
 - **Characters:** taken from the font's ToUnicode map, which says what text each character code stands for, and
-  otherwise from its encoding. Ligatures such as "ﬁ" come out as their letters, so searching for "find" finds it.
+  otherwise from its encoding. Where the file gives no base encoding, an embedded font's own encoding is the base,
+  as the standard says and other readers do: the names the font gives its glyphs say what each code is (TeX's
+  fonts put ” where the standard encoding has ", and – where it has {). The standard Symbol and ZapfDingbats fonts
+  have encodings of their own too, so their Greek letters, maths signs and dingbats read as such. Ligatures such as
+  "ﬁ" come out as their letters, so searching for "find" finds it.
   Chinese, Japanese and Korean fonts without a ToUnicode map (common in files whose fonts aren't embedded) are read
   through their character map, as pdf.js does: a Unicode one (such as `UniJIS-UCS2-H`) gives the text directly;
   others (such as Shift-JIS `90ms-RKSJ-H`) give character numbers, which Adobe's tables for Japanese, Simplified and
   Traditional Chinese and Korean turn into text. A character map stored in the file is read with the one it is
   built on, predefined or also stored in the file. Their codes are split as the map says, one to four bytes each (a
   code the map leaves out takes as many bytes as the map's code ranges say, as poppler and pdf.js read it), and
-  their widths found by character number, so highlights and selections sit on the right characters.
+  their widths found by character number, so highlights and selections sit on the right characters. A code the
+  map leaves out is drawn as no character, and reads as the replacement character �; so does one that is drawn
+  but whose text no map gives.
 - **Spaces:** a gap between words is a space, whether the file has a space character there or only moves the next
   word along (as justified text and many PDF makers do).
 - **Order:** words come in reading order worked out from where they sit on the page, not the order the file draws
@@ -163,8 +169,8 @@ and `limarepdf-cli text`, so they always agree.
 
 Limits:
 
-- Fonts with no ToUnicode map and a custom encoding (some Type 3 fonts, and some fonts made by old software) can
-  give the wrong characters.
+- Fonts with no ToUnicode map and a custom encoding whose glyph names don't say what they are (some Type 3 fonts,
+  fonts not embedded, and fonts whose glyphs are named only by number) can give the wrong characters.
 - CID fonts with no ToUnicode map whose character map can't be read, or that use their own character numbers
   rather than Adobe's tables, come out as "�" or the wrong characters. A file that names Adobe's tables but numbers
   its characters otherwise reads wrong in pdf.js too.

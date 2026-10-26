@@ -268,6 +268,58 @@ fn reads_codes_of_its_own_cmap_by_the_codespace_as_other_readers_do() {
     assert_eq!(xs(&p, "D"), [[60.0, 80.0]]);
 }
 
+/// PB-06: a code the CMap of a Type 0 font maps to no CID reads as U+FFFD, one for each
+/// code, never through the one-byte encodings of simple fonts (`<0042>` read as "B").
+/// Identity-H codes are all CIDs: one without text keeps that reading, which in real files
+/// is often the text meant.
+#[test]
+fn codes_no_map_covers_read_as_replacement_characters() {
+    assert_eq!(sparse_cmap().page_text(0), "C\u{FFFD}AD");
+    // Unmapped codes of two bytes and of one.
+    let p = own_cmap(
+        "2 begincodespacerange <00> <7F> <8140> <9FFC> endcodespacerange",
+        "<41> 34 <8141> 36 <8142> 37",
+        "BT /F2 20 Tf 10 100 Td <41815042814181208142> Tj ET",
+    );
+    assert_eq!(p.page_text(0), "A\u{FFFD}\u{FFFD}C\u{FFFD}D");
+    // Identity-H, with a ToUnicode map that leaves `<0042>` out, and with none.
+    let identity = |gaps: bool| {
+        let mut p = make(&["BT /F2 20 Tf 10 100 Td <004100420043> Tj ET"]);
+        let desc = p.doc.add_object(dictionary! {
+            "Type" => "Font", "Subtype" => "CIDFontType2", "BaseFont" => "Gaps",
+            "CIDSystemInfo" => dictionary! {
+                "Registry" => Object::string_literal("Adobe"),
+                "Ordering" => Object::string_literal("Identity"),
+                "Supplement" => 0,
+            },
+        });
+        let mut font = dictionary! {
+            "Type" => "Font", "Subtype" => "Type0", "BaseFont" => "Gaps",
+            "Encoding" => "Identity-H", "DescendantFonts" => vec![desc.into()],
+        };
+        if gaps {
+            let map = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap \
+                       /CMapName /Gaps def /CMapType 2 def \
+                       1 begincodespacerange <0000> <FFFF> endcodespacerange \
+                       2 beginbfchar <0041> <0041> <0043> <0043> endbfchar \
+                       endcmap CMapName currentdict /CMap defineresource pop end end";
+            let map = p
+                .doc
+                .add_object(Stream::new(Dictionary::new(), map.as_bytes().to_vec()));
+            font.set("ToUnicode", map);
+        }
+        let font = p.doc.add_object(font);
+        let page = p.page_ids()[0];
+        p.doc.get_dictionary_mut(page).unwrap().set(
+            "Resources",
+            dictionary! { "Font" => dictionary! { "F2" => font } },
+        );
+        p.page_text(0)
+    };
+    assert_eq!(identity(true), "A\u{FFFD}C");
+    assert_eq!(identity(false), "ABC");
+}
+
 #[test]
 fn an_area_over_a_character_of_a_sparse_cmap_removes_it_where_other_readers_put_it() {
     // Over A where poppler reads it.
@@ -332,6 +384,58 @@ fn characters_of_a_cmap_without_a_codespace_go_with_their_whole_string() {
     assert!(!shows_pair(&p, [0x00, 0x41]));
     assert!(!shows_pair(&p, [0x00, 0x43]));
     assert_eq!(xs(&p, "D"), [[10.0, 30.0]]);
+}
+
+/// A code mapped at one length that also starts a longer code: LimarePDF and hayro read the
+/// shorter, poppler the longer mapping and pdf.js the longer codespace range (PB-03). Where
+/// the characters are isn't certain, so a mark over where another reader shows D takes
+/// the whole string.
+#[test]
+fn a_code_that_also_starts_a_longer_one_goes_with_its_whole_string() {
+    // Poppler: C (`<4143>`) at x 10 to 30, D at 30 to 50. LimarePDF: A to 20, B (`<43>`) to
+    // 40, D to 60.
+    let mut p = own_cmap(
+        "1 begincodespacerange <00> <FF> endcodespacerange",
+        "<41> 34 <4143> 36 <43> 35 <44> 37",
+        "BT /F2 20 Tf 10 100 Td <414344> Tj ET",
+    );
+    assert_eq!(xs(&p, "D"), [[40.0, 60.0]]);
+    let rep = p.redact(&[(0, [31.0, 80.0, 39.0, 108.0])]).unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    assert!(!p.page_text(0).contains('D'), "{}", p.page_text(0));
+    // pdf.js: `<8140>` (unmapped, by the codespace) to x 30, D to 50; LimarePDF and hayro
+    // take the mapped one-byte `<81>` (A), then B (`<40>`) and D.
+    let mut p = own_cmap(
+        "2 begincodespacerange <00> <7F> <8140> <9FFC> endcodespacerange",
+        "<81> 34 <40> 35 <44> 37",
+        "BT /F2 20 Tf 10 100 Td <814044> Tj ET",
+    );
+    assert_eq!(xs(&p, "D"), [[40.0, 60.0]]);
+    let rep = p.redact(&[(0, [31.0, 80.0, 39.0, 108.0])]).unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    assert!(!p.page_text(0).contains('D'), "{}", p.page_text(0));
+}
+
+/// Two marks laid on each other over the last fifth of S and nearly all of e (Q14, PB-13):
+/// S is a fifth under them, not two fifths, so it stays; e goes, and nothing readable is
+/// left under them.
+#[test]
+fn marks_laid_on_each_other_count_once() {
+    let mut p = make(&["BT /F1 20 Tf 30 100 Td (Seal) Tj ET"]);
+    let s = p.find_text_boxes(0, "S").unwrap()[0];
+    let e = p.find_text_boxes(0, "e").unwrap()[0];
+    let mark = [
+        s[2] - 0.2 * (s[2] - s[0]),
+        s[1] - 10.0,
+        e[2] - 0.5,
+        s[3] + 10.0,
+    ];
+    let rep = p.redact(&[(0, mark), (0, mark)]).unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    assert_eq!(rep.pages[0].chars, 1);
+    let text = p.page_text(0).replace(' ', "");
+    assert_eq!(text, "Sal");
+    assert!(near(p.find_text_boxes(0, "S").unwrap()[0], s));
 }
 
 #[test]

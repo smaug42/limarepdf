@@ -74,7 +74,7 @@ The Comment button's menu also holds the rectangle, ellipse, line and pen tools.
 - **Pen:** drag to draw; a click makes a dot. Strokes started within 1.5 seconds of the last one, on the same page,
   join the same drawing, so a word, or a circle with a tick, is one annotation. Each stroke is still its own undo
   step. The inspector sets the pen's colour and width. The pen stays on until you press Esc or pick another tool,
-  since a drawing takes several strokes. Points closer together than about a third of a point to the line drawn
+  since a drawing takes several strokes; Esc during a stroke drops only that stroke, and the pen stays. Points closer together than about a third of a point to the line drawn
   are dropped, which keeps files small.
 - **Draw on page (permanent):** with this switched on in the inspector, the rectangle, ellipse and line tools draw
   into the page content instead, as part of the page rather than as comments. Those shapes are selected with the

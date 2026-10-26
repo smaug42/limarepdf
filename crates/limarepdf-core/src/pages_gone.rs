@@ -5,6 +5,7 @@
 //! file holds nothing of those pages.
 
 use crate::forms::MAX_DEPTH;
+use crate::trees;
 use crate::{Pdf, Result};
 use anyhow::bail;
 use lopdf::{Dictionary, Object, ObjectId};
@@ -257,9 +258,6 @@ impl Pdf {
         if !seen.insert(id) {
             return Ok(false);
         }
-        if depth > MAX_DEPTH {
-            bail!("the form's fields are nested more than {MAX_DEPTH} deep");
-        }
         let kids: Vec<ObjectId> = self
             .doc
             .get_dictionary(id)
@@ -271,6 +269,11 @@ impl Pdf {
             .unwrap_or_default();
         if kids.is_empty() {
             return Ok(false);
+        }
+        // A field's widgets may be one level below the deepest field, as
+        // [`Pdf::form_nodes`] reads them (PB-05).
+        if depth > MAX_DEPTH {
+            bail!("the form's fields are nested more than {MAX_DEPTH} deep");
         }
         let mut all = true;
         for k in kids {
@@ -340,10 +343,12 @@ impl Pdf {
     /// and off every element above one, as their text describes it too; also when an element
     /// has content on kept pages (decision D3). An element is on a page that went by its own
     /// `/Pg`, or by a content item of its `/K`: marked content on that page (the item's `/Pg`,
-    /// else the element's, else the nearest parent's), or an object reference to something
-    /// that went. Items are followed whether they are held directly or as objects of their
-    /// own, in an array or not (audit R06). Each element is looked at once, so loops in the
-    /// tree end, and as nothing is followed by recursion there is no depth to stop at.
+    /// else the element's, else the nearest parent's, else the pages the parent tree lists the
+    /// element on; content none of them places counts as on a page that went, PB-04), or an
+    /// object reference to something that went. Items are followed whether they are held
+    /// directly or as objects of their own, in an array or not (audit R06). Each element is
+    /// looked at once, so loops in the tree end, and as nothing is followed by recursion there
+    /// is no depth to stop at.
     fn strip_gone_alt(&mut self, gone: &Gone) {
         let doc = &self.doc;
         let elems: HashSet<ObjectId> = doc
@@ -387,7 +392,51 @@ impl Pdf {
                 page_of.insert(id, page);
             }
         }
+        // The pages the parent tree lists each element's marked content on, by each page's
+        // `/StructParents` (PB-04), the pages that went included.
+        let tree = doc
+            .catalog()
+            .ok()
+            .and_then(|c| c.get(b"StructTreeRoot").ok())
+            .and_then(|o| doc.dereference(o).ok())
+            .and_then(|(_, o)| o.as_dict().ok())
+            .and_then(|d| d.get(b"ParentTree").ok());
+        let mut tree_pages: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
+        for page in self
+            .page_ids()
+            .into_iter()
+            .chain(gone.pages.iter().copied())
+        {
+            let key = doc
+                .get_dictionary(page)
+                .ok()
+                .and_then(|d| d.get(b"StructParents").ok())
+                .and_then(|o| o.as_i64().ok());
+            let (Some(tree), Some(key)) = (tree, key) else {
+                continue;
+            };
+            let list = trees::number(doc, tree, key).found();
+            let list = list.as_ref().and_then(|l| doc.dereference(l).ok());
+            for e in list
+                .and_then(|(_, l)| l.as_array().ok())
+                .into_iter()
+                .flatten()
+            {
+                if let Ok(e) = e.as_reference() {
+                    tree_pages.entry(e).or_default().push(page);
+                }
+            }
+        }
         let gone_page = |p: Option<ObjectId>| p.is_some_and(|p| gone.pages.contains(&p));
+        // Marked content of element `e` on page `p`, if given: else on the pages the parent
+        // tree lists it on. Content the tree doesn't place either may be on a page that went
+        // (a lookup that gave up places nothing), so it counts as there.
+        let content_gone = |e: ObjectId, p: Option<ObjectId>| match p {
+            Some(_) => gone_page(p),
+            None => tree_pages
+                .get(&e)
+                .is_none_or(|ps| ps.iter().any(|p| gone.pages.contains(p))),
+        };
         // Elements with content on a page that went, and each element's parents: its `/P`, and
         // the elements listing it in their `/K`.
         let mut todo = Vec::new();
@@ -411,15 +460,17 @@ impl Pdf {
                     continue;
                 };
                 match item {
-                    Object::Integer(_) => on_gone |= gone_page(own),
+                    Object::Integer(_) => on_gone |= content_gone(e, own),
                     Object::Dictionary(k) => match id.filter(|id| elems.contains(id)) {
                         Some(kid) => parents.entry(kid).or_default().push(e),
                         // A marked-content or object reference.
-                        None => {
-                            let obj = reference(k, b"Obj");
-                            on_gone |= obj.is_some_and(|o| gone.objects.contains(&o))
-                                || gone_page(reference(k, b"Pg").or(own));
-                        }
+                        None => match reference(k, b"Obj") {
+                            Some(o) => {
+                                on_gone |= gone.objects.contains(&o)
+                                    || gone_page(reference(k, b"Pg").or(own))
+                            }
+                            None => on_gone |= content_gone(e, reference(k, b"Pg").or(own)),
+                        },
                     },
                     _ => {}
                 }

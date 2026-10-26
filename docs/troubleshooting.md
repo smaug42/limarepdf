@@ -176,6 +176,13 @@ settings, then press Try again in Print. Printing on paper has only been tried o
 LimarePDF waits 10 seconds for the system to list the printers. On Linux, check that CUPS is running (for example
 with `systemctl status cups`), then press Try again.
 
+### "The printer didn't take the document" or "the printing service didn't confirm the job"
+
+LimarePDF waits up to two minutes for the printer or printing service to take a job, then stops waiting so you can
+go on working. The job may still be in the queue and print once the printer is ready (switched on, back on the
+network, out of pause). Check the printer's queue in your system's printer settings before printing again, or the
+document may come out twice.
+
 ## Digital signatures
 
 ### A signature shows "not confirmed" or "NOT TRUSTED"

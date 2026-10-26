@@ -127,6 +127,9 @@ fn matrix(m: [f32; 6]) -> String {
     )
 }
 
+/// The most digits a Bates number is padded to: `u64::MAX` has 20.
+pub const MAX_BATES_DIGITS: usize = 20;
+
 #[derive(Clone, Debug)]
 pub struct Bates {
     pub prefix: String,
@@ -198,7 +201,8 @@ impl HeaderFooter {
                 b.prefix,
                 b.start.saturating_add(seq as u64),
                 b.suffix,
-                w = b.digits
+                // Formatting panics past a width of 65,535 (PB-01).
+                w = b.digits.min(MAX_BATES_DIGITS)
             )
         });
         let expand = |t: &str| {
@@ -420,6 +424,9 @@ impl Pdf {
             bail!("page {} does not exist", bad + 1);
         }
         if let Some(b) = &hf.bates {
+            if b.digits > MAX_BATES_DIGITS {
+                bail!("Bates numbers can have at most {MAX_BATES_DIGITS} digits");
+            }
             let after_first = idx.len().saturating_sub(1) as u64;
             if b.start.checked_add(after_first).is_none() {
                 bail!("the Bates numbers would go past {}", u64::MAX);

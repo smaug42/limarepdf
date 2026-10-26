@@ -380,6 +380,34 @@ fn text_beyond_western_european_added_after_signing_keeps_the_signature_valid() 
     assert_eq!(embedded_maps(&b.bytes).len(), 2);
 }
 
+/// PB-07: text added after going back to an earlier copy (as undo does) grows the font this
+/// session embedded instead of starting another, and the signature still allows the edits.
+#[test]
+fn going_back_to_an_earlier_copy_keeps_growing_the_sessions_font() {
+    let s = sign(&base_pdf(), &req(rsa(), new_box(0))).bytes;
+    let style = limarepdf_core::TextStyle::default();
+    let mut p = Pdf::from_bytes(&s, None).unwrap();
+    let add = |p: &mut Pdf, t: &str, y: f32| {
+        p.add_text_box(0, [20.0, y, 280.0, y + 40.0], t, &style, "Jane")
+            .unwrap();
+    };
+    add(&mut p, "Съешь же", 120.0);
+    let earlier = p.snapshot().unwrap();
+    add(&mut p, "ещё этих", 60.0);
+    p.reopen(&earlier).unwrap();
+    add(&mut p, "Zażółć gęślą jaźń", 60.0);
+    let a = append_edits(&s, &p).unwrap();
+    assert!(a.disallowed.is_none(), "{:?}", a.disallowed);
+    let rep = report(&a.bytes);
+    assert_eq!(rep.signatures[0].status, SigStatus::Valid);
+    assert!(
+        rep.signatures[0].changes_allowed(),
+        "{:?}",
+        rep.signatures[0].changes
+    );
+    assert_eq!(embedded_maps(&a.bytes).len(), 1);
+}
+
 #[test]
 fn signs_an_empty_signature_field() {
     let doc = form_doc(&[("Approver", None)], false);
@@ -684,6 +712,44 @@ fn fill_and_sign_items_are_finished_or_locked() {
         })
         .all(|d| d.get(b"F").and_then(Object::as_i64).unwrap_or(0) & 128 != 0);
     assert!(locked);
+}
+
+/// PB-02: a fill-and-sign item past the first 10,000 annotations of its page, which the
+/// app shows, is counted, drawn in, and locked like any other.
+#[test]
+fn fill_and_sign_items_past_the_annotations_shown_are_counted_and_locked() {
+    let crowd = |p: &mut Pdf| {
+        let page = p.page_ids()[0];
+        let had = p.doc.get_dictionary(page).unwrap().get(b"Annots");
+        let mut notes = had.map_or(Vec::new(), |a| a.as_array().unwrap().clone());
+        notes.extend((0..10_000).map(|_| {
+            p.doc
+                .add_object(dictionary! {
+                    "Type" => "Annot", "Subtype" => "Text",
+                    "Rect" => vec![0.into(), 0.into(), 5.into(), 5.into()],
+                })
+                .into()
+        }));
+        p.doc.get_dictionary_mut(page).unwrap().set("Annots", notes);
+        p.add_sign_text(0, (200.0, 150.0), "Jane Doe", InkColor::Blue, "Jane")
+            .unwrap()
+    };
+    let base = base_pdf();
+    let mut p = Pdf::from_bytes(&base, None).unwrap();
+    crowd(&mut p);
+    assert_eq!(p.sign_items(), 1);
+    let s = sign_document(&base, Some(&p), &req(rsa(), new_box(0))).unwrap();
+    assert_eq!(s.finished_items, 1);
+    // Signed before: locked in place.
+    let s1 = sign(&base, &req(rsa(), new_box(0)));
+    let mut p = Pdf::from_bytes(&s1.bytes, None).unwrap();
+    let item = crowd(&mut p);
+    assert_eq!(p.sign_items(), 1);
+    let s2 = sign_document(&s1.bytes, Some(&p), &req(p256(), new_box(1))).unwrap();
+    newest_is_good(&s2.bytes, p256());
+    let after = Pdf::from_bytes(&s2.bytes, None).unwrap();
+    let flags = after.doc.get_dictionary(item).unwrap().get(b"F");
+    assert!(flags.and_then(Object::as_i64).unwrap_or(0) & 128 != 0);
 }
 
 #[test]

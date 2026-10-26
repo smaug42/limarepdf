@@ -102,6 +102,68 @@ fn every_place_reads_pdfdocencoding() {
     assert_eq!(p.page_labels().unwrap(), ["Annex — 1"]);
 }
 
+/// Text a program wrote in UTF-8 without the byte order mark (PB-18): where it is only
+/// shown (properties, bookmarks, comments, field descriptions), valid UTF-8 with a
+/// character of more than one byte is read as UTF-8; names used to find a field, values
+/// and plain ASCII read by the standard as before.
+#[test]
+fn unmarked_utf8_is_read_where_text_is_only_shown() {
+    let utf8 = "Café — “ok” €5".as_bytes();
+    let mut p = Pdf::new();
+    p.insert_blank(0, 300.0, 200.0).unwrap();
+    let page = p.page_ids()[0];
+    let info = p.doc.add_object(dictionary! {
+        "Title" => raw(utf8), "Author" => raw(b"Ren\xe9e"), "Subject" => raw(b"Plain"),
+    });
+    p.doc.trailer.set("Info", info);
+    let outline = p.doc.new_object_id();
+    let item = p.doc.add_object(dictionary! {
+        "Title" => raw(utf8), "Parent" => outline, "Dest" => vec![page.into(), "Fit".into()],
+    });
+    p.doc.objects.insert(
+        outline,
+        dictionary! { "Type" => "Outlines", "First" => item, "Last" => item, "Count" => 1 }.into(),
+    );
+    let field = p.doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Widget", "FT" => "Tx",
+        "T" => raw("Café".as_bytes()), "TU" => raw(utf8), "V" => raw(utf8),
+        "Rect" => vec![10.into(), 10.into(), 200.into(), 30.into()], "P" => page,
+    });
+    let note = p.doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Text", "Contents" => raw(utf8),
+        "T" => raw("Łukasz".as_bytes()),
+        "Rect" => vec![50.into(), 150.into(), 70.into(), 170.into()],
+    });
+    p.doc
+        .get_dictionary_mut(page)
+        .unwrap()
+        .set("Annots", vec![field.into(), note.into()]);
+    let fields: Vec<Object> = vec![field.into()];
+    let form = p.doc.add_object(dictionary! { "Fields" => fields });
+    let cat = p.doc.catalog_mut().unwrap();
+    cat.set("Outlines", outline);
+    cat.set("AcroForm", form);
+    let p = reopened(&mut p);
+
+    let shown = "Café — “ok” €5";
+    let info = p.info();
+    assert_eq!(info.title.as_deref(), Some(shown));
+    assert_eq!(
+        info.author.as_deref(),
+        Some("Renée"),
+        "Latin-1 bytes aren't UTF-8"
+    );
+    assert_eq!(info.subject.as_deref(), Some("Plain"));
+    assert_eq!(p.outline()[0].title, shown);
+    let note = p.annotations().into_iter().find(|a| a.contents == shown);
+    assert_eq!(note.expect("the comment").author, "Łukasz");
+    let f = &p.form_fields()[0];
+    assert_eq!(f.tooltip.as_deref(), Some(shown));
+    // The name and the value read by the standard, as every reader finds them.
+    assert_eq!(f.name, "CafÃ©");
+    assert!(matches!(&f.value, FieldValue::Text(v) if v.starts_with("CafÃ©")));
+}
+
 #[test]
 fn edits_and_saves_keep_the_characters() {
     let mut p = file();

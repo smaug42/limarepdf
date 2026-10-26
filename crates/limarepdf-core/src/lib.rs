@@ -34,6 +34,7 @@ mod objects;
 mod ocr;
 mod outline;
 mod overlay;
+mod own_encoding;
 pub mod page_colours;
 mod pagerange;
 mod pages_gone;
