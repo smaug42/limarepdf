@@ -199,7 +199,10 @@
   itself (Type 1, CFF and TrueType), as other readers do, where the document doesn't say how its codes are
   encoded. An encoding that lists its characters but leaves out an optional entry, or names one character by a
   name LimarePDF doesn't know, is no longer passed over whole. Across LimarePDF's test documents this fixed the
-  text of 29 files (17 now read with no unreadable character at all), and made none worse.
+  text of 29 files (17 now read with no unreadable character at all), and made none worse. Text in the standard
+  Symbol and ZapfDingbats fonts, when the file doesn't include them, read as Latin letters ("abg" for "αβγ", "4"
+  for "✔"); it now reads as the characters shown, and a form value typed in a field set in one of them is no longer
+  drawn in it as the wrong symbols.
 - Document properties, bookmark titles, comments and form field descriptions that another program wrote in
   UTF-8 without saying so read as strings like "CafÃ©". They now read as written. Field names and values still
   read as the standard says, as other readers find them.
@@ -227,6 +230,9 @@
 - Redaction treated text in a font whose code map breaks its own layout (a code that also starts a longer one)
   as readable character by character, though readers split such text differently, so text another reader shows
   under a mark could stay. Such text now goes with its whole string, as other text LimarePDF can't place does.
+- Redaction marks laid over each other counted the part they share twice, so a character beside the marks could
+  be removed though only a fifth of it was under them. A character now goes when a quarter of it is under the
+  marks taken together, however they overlap, as for a single mark.
 
 ### Added
 

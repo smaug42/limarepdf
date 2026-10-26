@@ -53,7 +53,8 @@ To remove information that isn't on any page, such as the author's name or hidde
 For each area:
 
 - **Text**, visible or invisible (such as a scanned page's recognised text layer): each character at least a quarter
-  under the area is removed. The characters left keep their exact places on the line.
+  under the area is removed (under the areas taken together, where marks overlap: a part two marks share counts
+  once). The characters left keep their exact places on the line.
 - **Pictures**, scanned pages included: the pixels under the area are blacked out in the picture itself, which is
   then saved again (JPEG pictures as JPEG at about their own quality, black-and-white scans as CCITT, others without
   loss). Pixels only partly under the area are blacked out too. A picture's transparency (soft mask) is cut the same

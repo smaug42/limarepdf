@@ -1,12 +1,15 @@
 //! Glyph widths of the standard PDF fonts, for text set in one of them when the
-//! document does not give the widths, and for text LimarePDF adds in Helvetica.
+//! document does not give the widths, and for text LimarePDF adds in Helvetica; and the
+//! characters of Symbol's and ZapfDingbats' built-in encodings, for reading their text.
 //!
 //! The tables are generated from Adobe's Core 14 AFM files by `tools/gen_std14.py`.
 //! Modified: only the advance widths (WX) are kept, as tables indexed by code: of the
 //! characters in the Windows-1252 set for Helvetica and Times, and of the codes of their
 //! built-in encodings for Symbol and ZapfDingbats; 0 marks a code with no character. The
 //! oblique and Courier fonts are left out: oblique widths are the upright ones, and
-//! Courier is 600 throughout.
+//! Courier is 600 throughout. For Symbol and ZapfDingbats each code's glyph name (N) is
+//! kept too, as the character it names (by the Adobe Glyph List, and for ZapfDingbats the
+//! ITC Zapf Dingbats Glyph List), in tables indexed by code; NUL marks a code with none.
 //!
 //! Helvetica.afm: Copyright (c) 1985, 1987, 1989, 1990, 1997 Adobe Systems Incorporated.  All Rights Reserved.Helvetica is a trademark of Linotype-Hell AG and/or its subsidiaries.
 //! Helvetica-Bold.afm: Copyright (c) 1985, 1987, 1989, 1990, 1997 Adobe Systems Incorporated.  All Rights Reserved.Helvetica is a trademark of Linotype-Hell AG and/or its subsidiaries.
@@ -26,6 +29,42 @@
 //! the AFM files are prominently noted in the modified file(s); and that this
 //! paragraph is not modified. Adobe Systems has no responsibility or obligation
 //! to support the use of the AFM files.
+//!
+//! ZapfDingbats' characters are from the ITC Zapf Dingbats Glyph List, whose notice follows,
+//! unmodified:
+//!
+//! Copyright 2002-2019 Adobe (http://www.adobe.com/).
+//!
+//! Redistribution and use in source and binary forms, with or
+//! without modification, are permitted provided that the
+//! following conditions are met:
+//!
+//! Redistributions of source code must retain the above
+//! copyright notice, this list of conditions and the following
+//! disclaimer.
+//!
+//! Redistributions in binary form must reproduce the above
+//! copyright notice, this list of conditions and the following
+//! disclaimer in the documentation and/or other materials
+//! provided with the distribution.
+//!
+//! Neither the name of Adobe nor the names of its contributors
+//! may be used to endorse or promote products derived from this
+//! software without specific prior written permission.
+//!
+//! THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND
+//! CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+//! INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+//! MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+//! DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+//! CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+//! SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+//! NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+//! LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+//! HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+//! CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+//! OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+//! SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 /// Width (1/1000 em) of `c` in the standard font named `base`, or `None` when the table
 /// has no width for it. Courier is 600; a font that is neither Times nor Courier is
@@ -66,6 +105,21 @@ pub(crate) fn symbolic_width(base: &str, code: u32) -> Option<f32> {
     };
     let w = *table.get((code as usize).checked_sub(32)?)?;
     (w > 0).then_some(w as f32)
+}
+
+/// The character of `code` in the built-in encoding of Symbol or ZapfDingbats (PB-25);
+/// `None` for other fonts and for codes the font has no glyph for.
+pub(crate) fn symbolic_char(base: &str, code: u8) -> Option<char> {
+    let b = base.to_ascii_lowercase();
+    let table = if b.contains("dingbats") {
+        &ZAPF_DINGBATS_TEXT
+    } else if b.contains("symbol") {
+        &SYMBOL_TEXT
+    } else {
+        return None;
+    };
+    let c = *table.get((code as usize).checked_sub(32)?)?;
+    (c != '\0').then_some(c)
 }
 
 /// The Windows-1252 code of `c`, from 32 up.
@@ -240,6 +294,74 @@ const ZAPF_DINGBATS: [u16; 224] = [
     788, 788, 788, 788, 894, 838, 1016, 458, 748, 924, 748, 918, 927, 928, 928, 834, // 208-223
     873, 828, 924, 924, 917, 930, 931, 463, 883, 836, 836, 867, 867, 696, 696, 874, // 224-239
     0, 874, 760, 946, 771, 865, 771, 888, 967, 888, 831, 873, 927, 970, 918, 0, // 240-255
+];
+
+/// Symbol: the character of each code of its built-in encoding 32..=255, by its
+/// glyph's name; NUL where the code has none.
+#[rustfmt::skip]
+const SYMBOL_TEXT: [char; 224] = [
+    '\u{0020}', '\u{0021}', '\u{2200}', '\u{0023}', '\u{2203}', '\u{0025}', '\u{0026}', '\u{220B}', // 32-39
+    '\u{0028}', '\u{0029}', '\u{2217}', '\u{002B}', '\u{002C}', '\u{2212}', '\u{002E}', '\u{002F}', // 40-47
+    '\u{0030}', '\u{0031}', '\u{0032}', '\u{0033}', '\u{0034}', '\u{0035}', '\u{0036}', '\u{0037}', // 48-55
+    '\u{0038}', '\u{0039}', '\u{003A}', '\u{003B}', '\u{003C}', '\u{003D}', '\u{003E}', '\u{003F}', // 56-63
+    '\u{2245}', '\u{0391}', '\u{0392}', '\u{03A7}', '\u{2206}', '\u{0395}', '\u{03A6}', '\u{0393}', // 64-71
+    '\u{0397}', '\u{0399}', '\u{03D1}', '\u{039A}', '\u{039B}', '\u{039C}', '\u{039D}', '\u{039F}', // 72-79
+    '\u{03A0}', '\u{0398}', '\u{03A1}', '\u{03A3}', '\u{03A4}', '\u{03A5}', '\u{03C2}', '\u{2126}', // 80-87
+    '\u{039E}', '\u{03A8}', '\u{0396}', '\u{005B}', '\u{2234}', '\u{005D}', '\u{22A5}', '\u{005F}', // 88-95
+    '\u{F8E5}', '\u{03B1}', '\u{03B2}', '\u{03C7}', '\u{03B4}', '\u{03B5}', '\u{03C6}', '\u{03B3}', // 96-103
+    '\u{03B7}', '\u{03B9}', '\u{03D5}', '\u{03BA}', '\u{03BB}', '\u{00B5}', '\u{03BD}', '\u{03BF}', // 104-111
+    '\u{03C0}', '\u{03B8}', '\u{03C1}', '\u{03C3}', '\u{03C4}', '\u{03C5}', '\u{03D6}', '\u{03C9}', // 112-119
+    '\u{03BE}', '\u{03C8}', '\u{03B6}', '\u{007B}', '\u{007C}', '\u{007D}', '\u{223C}', '\0', // 120-127
+    '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', // 128-135
+    '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', // 136-143
+    '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', // 144-151
+    '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', // 152-159
+    '\u{20AC}', '\u{03D2}', '\u{2032}', '\u{2264}', '\u{2044}', '\u{221E}', '\u{0192}', '\u{2663}', // 160-167
+    '\u{2666}', '\u{2665}', '\u{2660}', '\u{2194}', '\u{2190}', '\u{2191}', '\u{2192}', '\u{2193}', // 168-175
+    '\u{00B0}', '\u{00B1}', '\u{2033}', '\u{2265}', '\u{00D7}', '\u{221D}', '\u{2202}', '\u{2022}', // 176-183
+    '\u{00F7}', '\u{2260}', '\u{2261}', '\u{2248}', '\u{2026}', '\u{F8E6}', '\u{F8E7}', '\u{21B5}', // 184-191
+    '\u{2135}', '\u{2111}', '\u{211C}', '\u{2118}', '\u{2297}', '\u{2295}', '\u{2205}', '\u{2229}', // 192-199
+    '\u{222A}', '\u{2283}', '\u{2287}', '\u{2284}', '\u{2282}', '\u{2286}', '\u{2208}', '\u{2209}', // 200-207
+    '\u{2220}', '\u{2207}', '\u{F6DA}', '\u{F6D9}', '\u{F6DB}', '\u{220F}', '\u{221A}', '\u{22C5}', // 208-215
+    '\u{00AC}', '\u{2227}', '\u{2228}', '\u{21D4}', '\u{21D0}', '\u{21D1}', '\u{21D2}', '\u{21D3}', // 216-223
+    '\u{25CA}', '\u{2329}', '\u{F8E8}', '\u{F8E9}', '\u{F8EA}', '\u{2211}', '\u{F8EB}', '\u{F8EC}', // 224-231
+    '\u{F8ED}', '\u{F8EE}', '\u{F8EF}', '\u{F8F0}', '\u{F8F1}', '\u{F8F2}', '\u{F8F3}', '\u{F8F4}', // 232-239
+    '\0', '\u{232A}', '\u{222B}', '\u{2320}', '\u{F8F5}', '\u{2321}', '\u{F8F6}', '\u{F8F7}', // 240-247
+    '\u{F8F8}', '\u{F8F9}', '\u{F8FA}', '\u{F8FB}', '\u{F8FC}', '\u{F8FD}', '\u{F8FE}', '\0', // 248-255
+];
+
+/// ZapfDingbats: the character of each code of its built-in encoding 32..=255, by its
+/// glyph's name; NUL where the code has none.
+#[rustfmt::skip]
+const ZAPF_DINGBATS_TEXT: [char; 224] = [
+    '\u{0020}', '\u{2701}', '\u{2702}', '\u{2703}', '\u{2704}', '\u{260E}', '\u{2706}', '\u{2707}', // 32-39
+    '\u{2708}', '\u{2709}', '\u{261B}', '\u{261E}', '\u{270C}', '\u{270D}', '\u{270E}', '\u{270F}', // 40-47
+    '\u{2710}', '\u{2711}', '\u{2712}', '\u{2713}', '\u{2714}', '\u{2715}', '\u{2716}', '\u{2717}', // 48-55
+    '\u{2718}', '\u{2719}', '\u{271A}', '\u{271B}', '\u{271C}', '\u{271D}', '\u{271E}', '\u{271F}', // 56-63
+    '\u{2720}', '\u{2721}', '\u{2722}', '\u{2723}', '\u{2724}', '\u{2725}', '\u{2726}', '\u{2727}', // 64-71
+    '\u{2605}', '\u{2729}', '\u{272A}', '\u{272B}', '\u{272C}', '\u{272D}', '\u{272E}', '\u{272F}', // 72-79
+    '\u{2730}', '\u{2731}', '\u{2732}', '\u{2733}', '\u{2734}', '\u{2735}', '\u{2736}', '\u{2737}', // 80-87
+    '\u{2738}', '\u{2739}', '\u{273A}', '\u{273B}', '\u{273C}', '\u{273D}', '\u{273E}', '\u{273F}', // 88-95
+    '\u{2740}', '\u{2741}', '\u{2742}', '\u{2743}', '\u{2744}', '\u{2745}', '\u{2746}', '\u{2747}', // 96-103
+    '\u{2748}', '\u{2749}', '\u{274A}', '\u{274B}', '\u{25CF}', '\u{274D}', '\u{25A0}', '\u{274F}', // 104-111
+    '\u{2750}', '\u{2751}', '\u{2752}', '\u{25B2}', '\u{25BC}', '\u{25C6}', '\u{2756}', '\u{25D7}', // 112-119
+    '\u{2758}', '\u{2759}', '\u{275A}', '\u{275B}', '\u{275C}', '\u{275D}', '\u{275E}', '\0', // 120-127
+    '\u{2768}', '\u{2769}', '\u{276A}', '\u{276B}', '\u{276C}', '\u{276D}', '\u{276E}', '\u{276F}', // 128-135
+    '\u{2770}', '\u{2771}', '\u{2772}', '\u{2773}', '\u{2774}', '\u{2775}', '\0', '\0', // 136-143
+    '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', // 144-151
+    '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', // 152-159
+    '\0', '\u{2761}', '\u{2762}', '\u{2763}', '\u{2764}', '\u{2765}', '\u{2766}', '\u{2767}', // 160-167
+    '\u{2663}', '\u{2666}', '\u{2665}', '\u{2660}', '\u{2460}', '\u{2461}', '\u{2462}', '\u{2463}', // 168-175
+    '\u{2464}', '\u{2465}', '\u{2466}', '\u{2467}', '\u{2468}', '\u{2469}', '\u{2776}', '\u{2777}', // 176-183
+    '\u{2778}', '\u{2779}', '\u{277A}', '\u{277B}', '\u{277C}', '\u{277D}', '\u{277E}', '\u{277F}', // 184-191
+    '\u{2780}', '\u{2781}', '\u{2782}', '\u{2783}', '\u{2784}', '\u{2785}', '\u{2786}', '\u{2787}', // 192-199
+    '\u{2788}', '\u{2789}', '\u{278A}', '\u{278B}', '\u{278C}', '\u{278D}', '\u{278E}', '\u{278F}', // 200-207
+    '\u{2790}', '\u{2791}', '\u{2792}', '\u{2793}', '\u{2794}', '\u{2192}', '\u{2194}', '\u{2195}', // 208-215
+    '\u{2798}', '\u{2799}', '\u{279A}', '\u{279B}', '\u{279C}', '\u{279D}', '\u{279E}', '\u{279F}', // 216-223
+    '\u{27A0}', '\u{27A1}', '\u{27A2}', '\u{27A3}', '\u{27A4}', '\u{27A5}', '\u{27A6}', '\u{27A7}', // 224-231
+    '\u{27A8}', '\u{27A9}', '\u{27AA}', '\u{27AB}', '\u{27AC}', '\u{27AD}', '\u{27AE}', '\u{27AF}', // 232-239
+    '\0', '\u{27B1}', '\u{27B2}', '\u{27B3}', '\u{27B4}', '\u{27B5}', '\u{27B6}', '\u{27B7}', // 240-247
+    '\u{27B8}', '\u{27B9}', '\u{27BA}', '\u{27BB}', '\u{27BC}', '\u{27BD}', '\u{27BE}', '\0', // 248-255
 ];
 
 #[cfg(test)]

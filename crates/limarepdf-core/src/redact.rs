@@ -132,13 +132,52 @@ fn share_1d(a0: f32, a1: f32, b0: f32, b1: f32) -> f32 {
     ((a1.min(b1) - a0.max(b0)).max(0.0) / (a1 - a0)).min(1.0)
 }
 
-/// The share of box `a` under the marks, up to 1.
+/// The part of `[a0, a1]` inside `[b0, b1]`, as shares of `[a0, a1]` from its start; for a
+/// span with no length, all of it or nothing, as [`share_1d`] has it.
+fn part_1d(a0: f32, a1: f32, b0: f32, b1: f32) -> Option<(f32, f32)> {
+    if a1 - a0 < EPS {
+        return (share_1d(a0, a1, b0, b1) > 0.0).then_some((0.0, 1.0));
+    }
+    let lo = ((a0.max(b0) - a0) / (a1 - a0)).max(0.0);
+    let hi = ((a1.min(b1) - a0) / (a1 - a0)).min(1.0);
+    (hi > lo).then_some((lo, hi))
+}
+
+/// The share of box `a` under the marks: of their union, so marks that overlap count what
+/// they share once (Q14, PB-13; a sum counted it twice and removed characters only a fifth
+/// under two marks laid on each other). Measured in vertical slabs between the marks' edges.
 fn share_under(a: [f32; 4], marks: &[[f32; 4]]) -> f32 {
-    marks
+    let parts: Vec<[f32; 4]> = marks
         .iter()
-        .map(|b| share_1d(a[0], a[2], b[0], b[2]) * share_1d(a[1], a[3], b[1], b[3]))
-        .sum::<f32>()
-        .min(1.0)
+        .filter_map(|b| {
+            let (x0, x1) = part_1d(a[0], a[2], b[0], b[2])?;
+            let (y0, y1) = part_1d(a[1], a[3], b[1], b[3])?;
+            Some([x0, y0, x1, y1])
+        })
+        .collect();
+    let mut xs: Vec<f32> = parts.iter().flat_map(|p| [p[0], p[2]]).collect();
+    xs.sort_by(f32::total_cmp);
+    xs.dedup();
+    let mut area = 0.0;
+    for w in xs.windows(2) {
+        let mid = (w[0] + w[1]) / 2.0;
+        let mut ys: Vec<(f32, f32)> = parts
+            .iter()
+            .filter(|p| p[0] <= mid && mid <= p[2])
+            .map(|p| (p[1], p[3]))
+            .collect();
+        ys.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let (mut covered, mut top) = (0.0, 0.0f32);
+        for (lo, hi) in ys {
+            let lo = lo.max(top);
+            if hi > lo {
+                covered += hi - lo;
+                top = hi;
+            }
+        }
+        area += (w[1] - w[0]) * covered;
+    }
+    area.min(1.0)
 }
 
 /// Whether a character's box (normalised) is under the marks enough to be removed.
@@ -1619,5 +1658,32 @@ mod tests {
             1.0,
             "a flat line inside"
         );
+    }
+
+    /// Marks that overlap count what they share once (Q14, PB-13): the share is of their
+    /// union, not their sum.
+    #[test]
+    fn marks_that_overlap_count_once() {
+        let fifth = [0.0, 0.0, 2.0, 10.0];
+        let b = [0.0, 0.0, 10.0, 10.0];
+        let near = |a: f32, w: f32| (a - w).abs() < 1e-5;
+        assert!(near(share_under(b, &[fifth, fifth]), 0.2));
+        // Two halves side by side, and two overlapping by half of each.
+        let (left, right) = ([0.0, 0.0, 5.0, 10.0], [5.0, 0.0, 10.0, 10.0]);
+        assert!(near(share_under(b, &[left, right]), 1.0));
+        assert!(near(
+            share_under(b, &[[0.0, 0.0, 4.0, 10.0], [2.0, 0.0, 6.0, 10.0]]),
+            0.6
+        ));
+        // Crossing bands: 0.3 + 0.3 less the 0.09 they share.
+        let (across, down) = ([0.0, 0.0, 10.0, 3.0], [0.0, 0.0, 3.0, 10.0]);
+        assert!(near(share_under(b, &[across, down]), 0.51));
+        // A character a fifth under each of two marks laid on each other stays.
+        assert!(!char_under(b, &[fifth, fifth]));
+        // Flat lines: inside a mark, or not.
+        let flat = [2.0, 5.0, 4.0, 5.0];
+        assert!(near(share_under(flat, &[left, left]), 1.0));
+        assert!(near(share_under(flat, &[[0.0, 0.0, 3.0, 10.0]]), 0.5));
+        assert_eq!(share_under(flat, &[[0.0, 6.0, 10.0, 9.0]]), 0.0);
     }
 }

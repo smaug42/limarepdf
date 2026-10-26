@@ -86,7 +86,10 @@ process (`fonts::predefined`).
 
 Simple fonts' codes without a ToUnicode entry are read through `own_encoding::simple_codes` (PB-23) when the
 font's `/Encoding` is a dictionary or is missing: the base is the named `/BaseEncoding`, else the embedded
-program's own encoding, else Standard, with `/Differences` over it, and each glyph name read by the Adobe Glyph
+program's own encoding, else for Symbol and ZapfDingbats their built-in ones (`std14::symbolic_char`, PB-25;
+tables generated with the widths by `tools/gen_std14.py` from the AFM glyph names, through the Adobe Glyph List
+and Adobe's ITC Zapf Dingbats Glyph List, whose BSD notice is in `std14.rs`), else Standard, with `/Differences`
+over it, and each glyph name read by the Adobe Glyph
 List, `uniXXXX`/`uXXXX` and parts joined by `_` (`glyph_text`). The program's encoding comes from read-fonts (as
 `skrifa::raw`, the version skrifa uses, so no new dependency): `Type1Font`'s for `/FontFile`, the CFF encoding and
 charset for `/FontFile3 /Type1C` and OpenType CFF, and for TrueType that is symbolic or has no (3,1) cmap, each
@@ -95,7 +98,9 @@ tables are kept by a hash of the stream's bytes (256 programs), glyph names' tex
 encoding tables are private, so they are reached through lopdf's own encoding reader: a font whose one difference
 is the name (`listed`), and fonts naming a base encoding (`named`). lopdf alone passes over an `/Encoding`
 dictionary without its optional `/Type` and drops every difference when one name isn't in its list, which this
-reading doesn't. A named `/Encoding` stays lopdf's. On the render corpus (1,089 files) unreadable characters in
+reading doesn't. A named `/Encoding` stays lopdf's. `FontCtx::reusable` (writing a form value back in the
+field's own font as ASCII) is false for Symbol and ZapfDingbats, whose codes don't mean their ASCII characters. On
+the render corpus (1,089 files) unreadable characters in
 extracted text fell from 225,473 to 191,418 (files with any from 123 to 106), 29 files' text changed, each checked
 against `pdftotext`, and none got worse.
 
@@ -234,8 +239,10 @@ first mapped length) against the codespace's, it fails a code that also starts a
 PB-03): a longer code the CMap maps (poppler reads that) or a longer codespace range (pdf.js reads by those). Not
 caught: a longer mapping that starts with the same bytes but doesn't match the string's next ones (poppler then
 reads a longer unmapped code), as hayro-cmap can't list mappings; a CMap like that breaks its own codespace.
-Character coverage under several marks is the sum of each mark's share, capped at 1 (`share_under`), so marks
-that overlap count a part twice: it can only remove more (backlog PB-13, the boundary policy).
+Character and drawing-part coverage is the share of the box under the marks' union (`share_under`, Q14): each
+mark clipped to the box (`part_1d`; a flat box is all in or all out by its middle), the union's area summed in
+vertical slabs between the marks' edges. It was the sum of each mark's share, capped at 1, which counted a part
+two marks share twice and removed characters only a fifth under two marks laid on each other.
 
 Removing pages (`pages_gone.rs`) takes the alternative text off structure elements with content on a page that
 went (`strip_gone_alt`). A marked-content item's page is its own `/Pg`, the element's or the nearest parent's,

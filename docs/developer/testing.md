@@ -369,7 +369,12 @@ differences found to be LimarePDF's are the gaps under [Known to be wrong](../re
   content nothing places; PB-04) and, with `sanitise.rs`'s `form_values_of_fields_nested_32_deep_are_cleared` and
   `form_values_above_an_orphan_widget_are_cleared_or_refused`, one depth rule for every form walk (PB-05); and
   `redact_img`'s `a_ccitt_picture_too_wide_to_write_is_refused` (the encoder wrote a 3-byte stream for a picture
-  65,536 pixels wide; reading refuses one first, so only the guard is tested; PB-13).
+  65,536 pixels wide; reading refuses one first, so only the guard is tested; PB-13). Then, the user's answers
+  (Q14, PB-25): `marks_laid_on_each_other_count_once` (a character a fifth under two coinciding marks was removed
+  by the summed coverage) and `redact::tests::marks_that_overlap_count_once` (the union's share for overlapping,
+  side-by-side, crossing and flat cases), both failing on the sum;
+  `own_encoding.rs`'s `symbol_and_zapfdingbats_read_by_their_own_encodings` and `fonts`'
+  `symbol_fonts_are_not_written_as_ascii`, failing on the old code.
 - Marks made by LimarePDF were not yet opened in Acrobat or other apps, nor marks made by them applied in LimarePDF.
 
 ### Scanning and OCR

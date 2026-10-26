@@ -882,8 +882,12 @@ impl<'a> FontCtx<'a> {
     }
 
     /// True when text can be re-encoded for this very font with plain ASCII:
-    /// a simple, non-subset font with a standard encoding.
+    /// a simple, non-subset font with a standard encoding, not Symbol or ZapfDingbats,
+    /// whose built-in encodings aren't (PB-25).
     pub fn reusable(&self) -> bool {
+        if std14::symbolic_char(&self.base, b' ').is_some() {
+            return false;
+        }
         let subset = self.base.len() > 7
             && self.base.as_bytes()[6] == b'+'
             && self.base[..6].chars().all(|c| c.is_ascii_uppercase());
@@ -949,6 +953,24 @@ mod tests {
         assert_eq!(ctx.width(u32::MAX, 4), 500.0);
         assert!(ctx.wmap.len() <= MAX_CID as usize + 1, "{}", ctx.wmap.len());
         assert!(ctx.wmap.keys().all(|&c| c <= MAX_CID));
+    }
+
+    /// Text is written back in a font of the file as ASCII only where codes mean their ASCII
+    /// characters: not in Symbol or ZapfDingbats, whose own encodings put α and ✔ there
+    /// (PB-25).
+    #[test]
+    fn symbol_fonts_are_not_written_as_ascii() {
+        let doc = Document::with_version("1.7");
+        let font =
+            |base: &str| dictionary! { "Type" => "Font", "Subtype" => "Type1", "BaseFont" => base };
+        for (base, reusable) in [
+            ("Helvetica", true),
+            ("Symbol", false),
+            ("ZapfDingbats", false),
+        ] {
+            let f = font(base);
+            assert_eq!(FontCtx::new(&doc, &f).reusable(), reusable, "{base}");
+        }
     }
 
     #[test]

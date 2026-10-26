@@ -113,6 +113,45 @@ fn a_symbolic_truetype_program_s_glyph_names_are_read_without_a_pdf_encoding() {
     assert_eq!(text(&page("TrueType", Some(file), None, 4, SHOWN)), READ);
 }
 
+/// A page showing `content` in `/F1`, the standard font `base` without a program, with
+/// `encoding` if any.
+fn standard(base: &str, encoding: Option<Object>, content: &str) -> Pdf {
+    let mut p = Pdf::new();
+    p.insert_blank(0, 300.0, 200.0).unwrap();
+    let mut font = dictionary! { "Type" => "Font", "Subtype" => "Type1", "BaseFont" => base };
+    if let Some(e) = encoding {
+        font.set("Encoding", e);
+    }
+    let font = p.doc.add_object(font);
+    let page = p.page_ids()[0];
+    let s = p.doc.add_object(Stream::new(
+        Dictionary::new(),
+        format!("BT /F1 20 Tf 10 100 Td {content} Tj ET").into_bytes(),
+    ));
+    let d = p.doc.get_dictionary_mut(page).unwrap();
+    d.set("Contents", s);
+    d.set(
+        "Resources",
+        dictionary! { "Font" => dictionary! { "F1" => font } },
+    );
+    p
+}
+
+/// Symbol and ZapfDingbats have encodings of their own, which a PDF without an `/Encoding`
+/// for them means (PB-25): their Greek letters, maths and dingbats read as such, not as the
+/// Latin letters at those codes in the standard encoding.
+#[test]
+fn symbol_and_zapfdingbats_read_by_their_own_encodings() {
+    assert_eq!(text(&standard("Symbol", None, "(abg \\042)")), "αβγ ∀");
+    assert_eq!(text(&standard("ZapfDingbats", None, "(4n)")), "✔■");
+    // Differences over it, without a base.
+    let enc = dictionary! { "Differences" => vec![97.into(), "Psi".into()] };
+    assert_eq!(text(&standard("Symbol", Some(enc.into()), "(ab)")), "Ψβ");
+    // A named encoding is still the PDF's.
+    let p = standard("Symbol", Some("WinAnsiEncoding".into()), "(ab)");
+    assert_eq!(text(&p), "ab");
+}
+
 #[test]
 fn a_font_without_a_program_reads_by_the_standard_encoding_as_before() {
     assert_eq!(text(&page("Type1", None, None, 32, "<2241>")), "\"A");

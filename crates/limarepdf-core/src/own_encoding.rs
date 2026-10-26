@@ -1,7 +1,8 @@
 //! The text of a simple font's codes where the PDF's `/Encoding` is a dictionary or leaves the
 //! base to the font program (PB-23). An embedded program has an encoding of its own, which
 //! the standard makes the base when the PDF names none: TeX's fonts put ” at 0x22 and – at
-//! 0x7B, where the standard encoding has " and {. Glyph names give the text, by the Adobe
+//! 0x7B, where the standard encoding has " and {. Symbol and ZapfDingbats, standard fonts
+//! usually not embedded, have built-in encodings of their own too (PB-25, `std14`). Glyph names give the text, by the Adobe
 //! Glyph List (`quotedblright`), `uniXXXX` or `uXXXX` names, and their parts joined by `_`.
 //! lopdf reads the other encodings. Its own reading of an `/Encoding` dictionary passes over
 //! one without its optional `/Type`, and over all its `/Differences` when one name isn't in
@@ -29,8 +30,8 @@ const KEPT_NAMES: usize = 1 << 16;
 
 /// The text of each code of simple font `font`, when its `/Encoding` is a dictionary, or is
 /// missing and the font has a program with an encoding of its own (symbolic or without a
-/// Unicode cmap, for TrueType). `None` leaves the encoding to lopdf: a named one, or none for
-/// a font without a program.
+/// Unicode cmap, for TrueType) or is Symbol or ZapfDingbats. `None` leaves the encoding to
+/// lopdf: a named one, or none for another font without a program.
 pub(crate) fn simple_codes(doc: &Document, font: &Dictionary) -> Option<Codes> {
     let deref = |o| deref(doc, o);
     let encoding = font.get(b"Encoding").ok().and_then(deref);
@@ -45,10 +46,11 @@ pub(crate) fn simple_codes(doc: &Document, font: &Dictionary) -> Option<Codes> {
         .and_then(deref)
         .and_then(|o| o.as_name().ok())
         .and_then(named);
+    let own = || own_codes(doc, font).map(|c| c.to_vec());
     let mut codes: Codes = match base {
         Some(table) => table,
-        None => match own_codes(doc, font) {
-            Some(codes) => codes.to_vec(),
+        None => match own().or_else(|| symbolic(doc, font)) {
+            Some(codes) => codes,
             None if dict.is_some() => named(b"StandardEncoding")?,
             None => return None,
         },
@@ -71,6 +73,17 @@ pub(crate) fn simple_codes(doc: &Document, font: &Dictionary) -> Option<Codes> {
         }
     }
     Some(codes)
+}
+
+/// The built-in encoding of Symbol or ZapfDingbats, for such a font with no program LimarePDF
+/// can read (PB-25); `None` for other fonts.
+fn symbolic(doc: &Document, font: &Dictionary) -> Option<Codes> {
+    let base = font.get(b"BaseFont").ok().and_then(|o| deref(doc, o))?;
+    let base = std::str::from_utf8(base.as_name().ok()?).ok()?;
+    let codes: Codes = (0..=255u8)
+        .map(|c| crate::std14::symbolic_char(base, c).map(String::from))
+        .collect();
+    codes.iter().any(Option::is_some).then_some(codes)
 }
 
 fn deref<'a>(doc: &'a Document, o: &'a Object) -> Option<&'a Object> {

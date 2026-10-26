@@ -143,8 +143,9 @@ and `limarepdf-cli text`, so they always agree.
 - **Characters:** taken from the font's ToUnicode map, which says what text each character code stands for, and
   otherwise from its encoding. Where the file gives no base encoding, an embedded font's own encoding is the base,
   as the standard says and other readers do: the names the font gives its glyphs say what each code is (TeX's
-  fonts put ” where the standard encoding has ", and – where it has {). Ligatures such as "ﬁ" come out as their
-  letters, so searching for "find" finds it.
+  fonts put ” where the standard encoding has ", and – where it has {). The standard Symbol and ZapfDingbats fonts
+  have encodings of their own too, so their Greek letters, maths signs and dingbats read as such. Ligatures such as
+  "ﬁ" come out as their letters, so searching for "find" finds it.
   Chinese, Japanese and Korean fonts without a ToUnicode map (common in files whose fonts aren't embedded) are read
   through their character map, as pdf.js does: a Unicode one (such as `UniJIS-UCS2-H`) gives the text directly;
   others (such as Shift-JIS `90ms-RKSJ-H`) give character numbers, which Adobe's tables for Japanese, Simplified and

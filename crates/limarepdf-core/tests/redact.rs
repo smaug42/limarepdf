@@ -364,6 +364,28 @@ fn a_code_that_also_starts_a_longer_one_goes_with_its_whole_string() {
     assert!(!p.page_text(0).contains('D'), "{}", p.page_text(0));
 }
 
+/// Two marks laid on each other over the last fifth of S and nearly all of e (Q14, PB-13):
+/// S is a fifth under them, not two fifths, so it stays; e goes, and nothing readable is
+/// left under them.
+#[test]
+fn marks_laid_on_each_other_count_once() {
+    let mut p = make(&["BT /F1 20 Tf 30 100 Td (Seal) Tj ET"]);
+    let s = p.find_text_boxes(0, "S").unwrap()[0];
+    let e = p.find_text_boxes(0, "e").unwrap()[0];
+    let mark = [
+        s[2] - 0.2 * (s[2] - s[0]),
+        s[1] - 10.0,
+        e[2] - 0.5,
+        s[3] + 10.0,
+    ];
+    let rep = p.redact(&[(0, mark), (0, mark)]).unwrap();
+    assert!(rep.left.is_empty(), "{:?}", rep.left);
+    assert_eq!(rep.pages[0].chars, 1);
+    let text = p.page_text(0).replace(' ', "");
+    assert_eq!(text, "Sal");
+    assert!(near(p.find_text_boxes(0, "S").unwrap()[0], s));
+}
+
 #[test]
 fn keeps_tj_spacing_and_later_strings_in_place() {
     let mut p = make(&["BT /F1 20 Tf 30 100 Td [(Sec) -200 (retX) 50 (Yzw)] TJ ET"]);
