@@ -86,7 +86,8 @@ and Help.
 - **Privacy:** LimarePDF never connects to the network. A link to a website asks first, then opens in your
   browser.
 - **An early version:** LimarePDF is being tested, mostly on Linux so far. Before relying on a feature, check
-  [what doesn't work yet](features.md#what-doesnt-work-yet), and keep a copy of important documents.
+  [what doesn't work yet](developer/feature-status.md#what-doesnt-work-yet), and keep a copy of important
+  documents.
 - **Your settings** (theme, recent files, your name for comments, saved signatures, digital IDs) are kept on your
   computer only ([where](troubleshooting.md#where-limarepdf-keeps-things)).
 - **Help:** tooltips explain every button, this guide covers every task, and
@@ -111,9 +112,9 @@ Every command lists its options with `limarepdf-cli <command> --help`; the
 
 ## Where to go next
 
-Check [what works and what doesn't](features.md) next, then go to the task you need in the
+See [everything LimarePDF can do](features.md) next, then go to the task you need in the
 [user guide](README.md#everyday-tasks).
 
 ---
 
-[← Install LimarePDF](install.md) · [User guide](README.md) · [Features and status →](features.md)
+[← Install LimarePDF](install.md) · [User guide](README.md) · [Features →](features.md)

@@ -192,4 +192,4 @@ Limits:
 
 ---
 
-[← Features and status](features.md) · [User guide](README.md) · [Organising pages →](organising-pages.md)
+[← Features](features.md) · [User guide](README.md) · [Organising pages →](organising-pages.md)

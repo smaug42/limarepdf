@@ -85,7 +85,7 @@ the chosen font doesn't have, and emoji it draws only in colour, can't be typed 
 says so. When another font could have the character (Chinese or an emoji in Helvetica, say, or a letter an
 installed font lacks), the note names the font in use and asks you to choose an installed font that has it. The
 same goes for editing a line and the inspector's text field (see
-[What doesn't work yet](features.md#what-doesnt-work-yet)).
+[What doesn't work yet](developer/feature-status.md#what-doesnt-work-yet)).
 
 To put the same text on every page, such as page numbers or DRAFT, use
 [headers, footers and watermarks](headers-footers-watermarks.md).

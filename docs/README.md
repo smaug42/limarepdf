@@ -9,7 +9,7 @@ no network connection, no subscription. This guide takes you from installing it 
 
 1. [Install LimarePDF](install.md): download it and start it for the first time.
 2. [First steps](first-steps.md): open a document, find your way around, make a change and save it.
-3. [Features and status](features.md): what LimarePDF does today, and what it can't do yet.
+3. [Features](features.md): everything LimarePDF can do for you.
 
 ## Everyday tasks
 

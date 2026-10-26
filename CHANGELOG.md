@@ -8,6 +8,12 @@
   `LIMAREPDF_TIMING` set to a file, and it writes there when the app starts, takes input, finishes each frame,
   first shows each page sharp, and starts and ends reading, drawing, searching and saving. Off unless asked for.
 
+### Changed
+
+- The user guide's Features page is now a short summary of what LimarePDF can do. The detailed status of each
+  feature, with its limits and what doesn't work yet, moved to the developer docs as
+  [Features and status](docs/developer/feature-status.md).
+
 ### Fixed
 
 - When another app changed an open document within a split second of LimarePDF reading it, at the same size,
@@ -1229,12 +1235,12 @@ follow links and bookmarks, and select text without changing tools.
   477-page manual. See [Performance](docs/developer/performance.md).
 - Release notes on GitHub end with a link to every change since the previous version.
 - Installers and packages (a macOS app, Linux packages, Homebrew) are planned for once the app is more complete;
-  see [Features and status](docs/features.md#packaging).
+  see [Features and status](docs/developer/feature-status.md#packaging).
 
 ## [0.3.0] - 2026-10-13
 
 MPE is still a test release: most testing has been on Linux. See
-[Features and status](docs/features.md) for what works and its limits.
+[Features and status](docs/developer/feature-status.md) for what works and its limits.
 
 ### Desktop app
 
