@@ -90,6 +90,19 @@ fn own(o: &PageObject, i: usize, text: &str) -> TextPart {
         size: s.font_size,
         color: s.fill.unwrap_or(BLACK),
         rise: s.rise,
+        from: None,
+    }
+}
+
+/// Part `i` of line `o`, with the line's characters `chars` (unchanged), in the span's
+/// own style.
+fn own_chars(o: &PageObject, i: usize, chars: (usize, usize)) -> TextPart {
+    let text: String = o.text.as_deref().unwrap().chars().collect::<Vec<_>>()[chars.0..chars.1]
+        .iter()
+        .collect();
+    TextPart {
+        from: Some(chars.0),
+        ..own(o, i, &text)
     }
 }
 
@@ -366,6 +379,7 @@ fn a_restyled_word_reads_back_as_part_of_its_line() {
             size: 24.0,
             color: RED,
             rise: 0.0,
+            from: None,
         },
         own(&o, 2, " word"),
     ];
@@ -601,6 +615,7 @@ fn new_text_can_be_added_in_parts() {
         size,
         color: BLACK,
         rise,
+        from: None,
     };
     p.add_text_parts(
         0,
@@ -629,4 +644,239 @@ fn new_text_can_be_added_in_parts() {
     assert!(p
         .add_text_parts(0, (20.0, 50.0), &[part("", "Helvetica", 20.0, 0.0)])
         .is_err());
+}
+
+/// `o`'s characters `chars` in Helvetica Bold.
+fn bold(o: &PageObject, chars: (usize, usize)) -> TextPart {
+    TextPart {
+        font: PartFont::Choice(FontChoice::from_name("Helvetica-Bold")),
+        from: None,
+        ..own_chars(o, 0, chars)
+    }
+}
+
+/// Line `o` of page 1 written in `parts` ([`Pdf::edit_texts`]): the ids it says couldn't
+/// keep their own characters' font.
+fn write(p: &mut Pdf, o: &PageObject, parts: Vec<TextPart>) -> Vec<usize> {
+    let edit = TextEdit::in_parts(parts);
+    p.edit_texts(0, &[(o.id, edit)]).unwrap()
+}
+
+/// `o`'s first part, its characters 0 to 4 and 7 to 13 as they are, and 4 to 7 in `middle`.
+fn around(o: &PageObject, middle: TextPart) -> Vec<TextPart> {
+    vec![own_chars(o, 0, (0, 4)), middle, own_chars(o, 0, (7, 13))]
+}
+
+/// Words made bold in a line in a font that can't be reused (a subset): the words around
+/// them keep that font, their shows cut out of the line's at the spaces, rather than being
+/// written again in a standard font.
+#[test]
+fn restyling_words_keeps_the_rest_of_their_part_in_its_own_font() {
+    let mut p = make("BT /F3 20 Tf 20 100 Td (one two three) Tj ET\n");
+    let o = line(&p, "one two three");
+    let parts = around(&o, bold(&o, (4, 7)));
+    assert!(o.keeps_font(&parts[0]) && o.keeps_font(&parts[2]));
+    assert_eq!(write(&mut p, &o, parts), Vec::<usize>::new());
+    let subset = "ABCDEF+Helvetica-Oblique";
+    assert_eq!(
+        styles(&line(&p, "one two three")),
+        [
+            style(subset, 20.0, BLACK, 0.0, "one "),
+            style("Helvetica-Bold", 20.0, BLACK, 0.0, "two"),
+            style(subset, 20.0, BLACK, 0.0, " three"),
+        ]
+    );
+    let c = content(&p);
+    let cut = c.contains("[(one )] TJ") && c.contains("[( three)] TJ");
+    assert!(cut, "{c}");
+}
+
+/// A word whose size alone changes keeps its own font too, and a word cut out of a `TJ`
+/// keeps its spacing numbers: a kern between its letters, and the big gaps read as spaces
+/// going with the words before them (the space after the bigger word grows with it).
+#[test]
+fn a_word_cut_out_of_a_tj_keeps_its_spacing_numbers() {
+    let mut p = make("BT /F3 20 Tf 20 100 Td [(one) -400 (tw) 20 (o) -400 (three)] TJ ET\n");
+    let o = line(&p, "one two three");
+    let bigger = TextPart {
+        size: 30.0,
+        ..own_chars(&o, 0, (4, 7))
+    };
+    assert!(write(&mut p, &o, around(&o, bigger)).is_empty());
+    let c = content(&p);
+    assert!(
+        c.contains("[(one) -400] TJ") && c.contains("[(tw) 20(o) -400] TJ"),
+        "{c}"
+    );
+    assert!(c.contains("[(three)] TJ"), "{c}");
+    let o = line(&p, "one two three");
+    let fonts: Vec<(&str, f32)> = (o.spans.iter())
+        .map(|s| (s.font_name.as_str(), s.font_size))
+        .collect();
+    let subset = "ABCDEF+Helvetica-Oblique";
+    assert_eq!(fonts, [(subset, 20.0), (subset, 30.0), (subset, 20.0)]);
+}
+
+/// A gap between two shows read as a space stays where the line is cut after it, so the
+/// word after it starts where it did.
+#[test]
+fn a_gap_between_shows_stays_where_a_line_is_cut() {
+    let mut p = make("BT /F3 20 Tf 20 100 Td (one) Tj 40 0 Td (two) Tj ET\n");
+    let o = line(&p, "one two");
+    let was = p.page_words(0).unwrap()[1].bbox;
+    write(&mut p, &o, vec![own_chars(&o, 0, (0, 4)), bold(&o, (4, 7))]);
+    let o = line(&p, "one two");
+    assert_eq!(o.spans[0].font_name, "ABCDEF+Helvetica-Oblique");
+    let now = p.page_words(0).unwrap()[1].bbox;
+    assert!((now[0] - was[0]).abs() < 0.5, "{was:?} → {now:?}");
+}
+
+/// A font (a subset of Helvetica) whose code `a` reads as "x y" and `b` as "z".
+fn coded_together() -> Pdf {
+    let mut p = make("BT /F6 20 Tf 20 100 Td (ab) Tj ET\n");
+    let cmap = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap \
+                /CMapName /T def 1 begincodespacerange <00> <FF> endcodespacerange \
+                2 beginbfchar <61> <007800200079> <62> <007A> endbfchar endcmap \
+                CMapName currentdict /CMap defineresource pop end end";
+    let map = p
+        .doc
+        .add_object(Stream::new(Dictionary::new(), cmap.as_bytes().to_vec()));
+    let font = p.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "ABCDEF+Helvetica",
+        "Encoding" => "WinAnsiEncoding", "ToUnicode" => map,
+    });
+    let page = p.page_ids()[0];
+    let res = p.doc.get_dictionary_mut(page).unwrap();
+    let fonts = res.get_mut(b"Resources").unwrap().as_dict_mut().unwrap();
+    let fonts = fonts.get_mut(b"Font").unwrap().as_dict_mut().unwrap();
+    fonts.set("F6", font);
+    p
+}
+
+/// Characters one code shows together can't be parted: the words kept apart from them are
+/// written in a standard font instead, and the edit says which line that happened to.
+#[test]
+fn characters_coded_together_fall_back_and_are_reported() {
+    let mut p = coded_together();
+    let o = line(&p, "x yz");
+    let parts = vec![own_chars(&o, 0, (0, 2)), bold(&o, (2, 4))];
+    assert_eq!(write(&mut p, &o, parts), [o.id]);
+    let o = line(&p, "x yz");
+    assert_eq!(o.spans[0].font_name, "Helvetica");
+    assert_eq!(o.spans[1].font_name, "Helvetica-Bold");
+}
+
+/// A space made by a move (a spacing number inside a `TJ`, or a gap between shows) where
+/// the line is cut before it goes at the end of the word before it: at the start of the
+/// show after, it would read as no space (a number just big enough to read as a space
+/// inside a `TJ` isn't a gap between shows), and the words would run together.
+#[test]
+fn a_space_made_by_a_move_goes_with_the_word_before_it() {
+    let subset = "ABCDEF+Helvetica-Oblique";
+    let mut p = make("BT /F3 20 Tf 20 100 Td [(one) -160 (two) -160 (three)] TJ ET\n");
+    let o = line(&p, "one two three");
+    assert!(write(&mut p, &o, around(&o, bold(&o, (4, 7)))).is_empty());
+    let o = line(&p, "one two three");
+    let fonts: Vec<&str> = o.spans.iter().map(|s| s.font_name.as_str()).collect();
+    assert_eq!(fonts, [subset, "Helvetica-Bold", subset]);
+    assert!(content(&p).contains("[(two) -160] TJ"), "{}", content(&p));
+    // A word a show of its own, the space after it a gap before the next show.
+    let mut p = make("BT /F3 20 Tf 20 100 Td (one) Tj 40 0 Td (two) Tj ET\n");
+    let o = line(&p, "one two");
+    let parts = vec![bold(&o, (0, 3)), own_chars(&o, 0, (3, 7))];
+    assert!(write(&mut p, &o, parts).is_empty());
+    let o = line(&p, "one two");
+    let fonts: Vec<&str> = o.spans.iter().map(|s| s.font_name.as_str()).collect();
+    assert_eq!(fonts, ["Helvetica-Bold", subset]);
+}
+
+/// Several lines of a page change in one edit, given in any order: each by its id as the
+/// page was, the words around the bold ones in their own font.
+#[test]
+fn several_lines_of_a_page_change_in_one_edit() {
+    let mut p = make(
+        "BT /F3 20 Tf 20 150 Td (first line here) Tj ET\n\
+         BT /F3 20 Tf 20 100 Td (second line here) Tj ET\n",
+    );
+    let (a, b) = (line(&p, "first line here"), line(&p, "second line here"));
+    let edit = |o: &PageObject, at: usize| {
+        let n = o.text.as_deref().unwrap().chars().count();
+        TextEdit::in_parts(vec![
+            own_chars(o, 0, (0, at)),
+            bold(o, (at, at + 4)),
+            own_chars(o, 0, (at + 4, n)),
+        ])
+    };
+    let edits = [(b.id, edit(&b, 7)), (a.id, edit(&a, 6))];
+    assert!(p.edit_texts(0, &edits).unwrap().is_empty());
+    for text in ["first line here", "second line here"] {
+        let o = line(&p, text);
+        let fonts: Vec<&str> = o.spans.iter().map(|s| s.font_name.as_str()).collect();
+        let subset = "ABCDEF+Helvetica-Oblique";
+        assert_eq!(fonts, [subset, "Helvetica-Bold", subset], "{text}");
+    }
+    // One line twice is refused, with nothing changed.
+    let before = content(&p);
+    let o = line(&p, "first line here");
+    let twice = [(o.id, edit(&o, 6)), (o.id, edit(&o, 6))];
+    assert!(p.edit_texts(0, &twice).is_err());
+    assert_eq!(content(&p), before);
+}
+
+/// A part of a line's own characters keeps its font only when it ends at spaces (or the
+/// ends of its part), so that no word is parted.
+#[test]
+fn own_characters_keep_their_font_only_when_cut_at_spaces() {
+    let p = make("BT /F3 20 Tf 20 100 Td (one two three) Tj ET\n");
+    let o = line(&p, "one two three");
+    assert!(o.keeps_font(&own_chars(&o, 0, (4, 7))));
+    assert!(o.keeps_font(&own_chars(&o, 0, (3, 8))));
+    assert!(!o.keeps_font(&own_chars(&o, 0, (0, 2))));
+    assert!(!o.keeps_font(&own_chars(&o, 0, (5, 13))));
+    // Text that isn't those characters doesn't.
+    let other = TextPart {
+        from: Some(0),
+        ..own(&o, 0, "two ")
+    };
+    assert!(!o.keeps_font(&other));
+}
+
+/// Each word says which text line it is in and where; words inside a form XObject are in
+/// no line of the page's own.
+#[test]
+fn words_say_which_line_they_are_in() {
+    let mut p = make(MIXED);
+    let form = p.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), 300.into(), 200.into()],
+        },
+        b"BT /F1 20 Tf 20 40 Td (Inside) Tj ET".to_vec(),
+    ));
+    let page = p.page_ids()[0];
+    let res = p.doc.get_dictionary_mut(page).unwrap();
+    let res = res.get_mut(b"Resources").unwrap().as_dict_mut().unwrap();
+    res.set("XObject", dictionary! { "Fm" => form });
+    let s = p.doc.add_object(Stream::new(
+        Dictionary::new(),
+        format!("{MIXED}/Fm Do\n").into_bytes(),
+    ));
+    p.doc
+        .get_dictionary_mut(page)
+        .unwrap()
+        .set("Contents", Object::Reference(s));
+    let spots: Vec<(String, Option<usize>, (usize, usize))> = (p.page_words(0).unwrap())
+        .into_iter()
+        .map(|w| (w.text, w.object, w.chars))
+        .collect();
+    let at = |t: &str, o: Option<usize>, c: (usize, usize)| (t.to_string(), o, c);
+    assert_eq!(
+        spots,
+        [
+            at("A", Some(0), (0, 1)),
+            at("bold", Some(0), (2, 6)),
+            at("word", Some(0), (7, 11)),
+            at("Inside", None, (0, 6)),
+        ]
+    );
 }

@@ -79,6 +79,7 @@ pub const STACK: &str = "\u{E466}";
 pub const STACK_PLUS: &str = "\u{EDF6}";
 pub const STAMP: &str = "\u{EA48}";
 pub const TEXT_AA: &str = "\u{E6EE}";
+pub const TEXT_B: &str = "\u{E5BE}";
 pub const TEXT_ITALIC: &str = "\u{E5C0}";
 pub const TEXTBOX: &str = "\u{EB0A}";
 pub const TEXT_STRIKETHROUGH: &str = "\u{E5C2}";

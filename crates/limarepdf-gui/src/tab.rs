@@ -39,6 +39,10 @@ const UNDO_BUDGET: usize = 1 << 30;
 /// Edits to the words of one line of page text this soon (seconds) after the last one,
 /// with nothing else in between, are one undo step, as typing is in a word processor.
 const MERGE_PAUSE: f64 = 5.0;
+/// Said when words left as they were around a change couldn't keep their own font
+/// (`Pdf::edit_texts`).
+const SIMILAR_FONT: &str =
+    "Some words around the change are now in a similar font: their own couldn't be kept";
 /// egui points at zoom 1.0 per PDF point (96 dpi logical).
 const BASE: f32 = 96.0 / 72.0;
 /// Highest zoom: 6400%, as Acrobat.
@@ -1009,8 +1013,15 @@ impl Tab {
                                 && now - at < MERGE_PAUSE
                         });
                     let kept = self.ed.sel() == Some((p, id));
-                    let edit = |pdf: &mut Pdf| pdf.edit_text(p, id, &te);
+                    let mut lost = false;
+                    let edit = |pdf: &mut Pdf| {
+                        lost = !pdf.edit_texts(p, &[(id, te)])?.is_empty();
+                        Ok(())
+                    };
                     if self.edit_inner(ctx, Redraw::Pages(&[p]), false, merge, edit) {
+                        if lost {
+                            self.info = Some(SIMILAR_FONT.into());
+                        }
                         // The line keeps its place unless the edit had to move it to the
                         // end of the page's content.
                         let objs = self.ed.objects(&self.pdf, p);
@@ -1026,6 +1037,27 @@ impl Tab {
                         }
                         self.last_line =
                             words_only.then_some(((p, at), self.revision, self.undo.len(), now));
+                    }
+                }
+                Action::Restyle(changes, left) => {
+                    let pages: Vec<usize> = changes.iter().map(|(p, _)| *p).collect();
+                    let (sel, was) = (self.ed.selection.clone(), self.ed.selected_text());
+                    let mut lost = false;
+                    // Every page in one change, so Undo takes it all back together.
+                    let edit = |pdf: &mut Pdf| {
+                        for (p, edits) in &changes {
+                            lost |= !pdf.edit_texts(*p, edits)?.is_empty();
+                        }
+                        Ok(())
+                    };
+                    if self.edit_pages(ctx, &pages, edit) {
+                        self.ed.reselect(&self.pdf, sel, was);
+                        let said: Vec<String> = (left.said().into_iter())
+                            .chain(lost.then(|| SIMILAR_FONT.to_string()))
+                            .collect();
+                        if !said.is_empty() {
+                            self.info = Some(said.join(". "));
+                        }
                     }
                 }
                 Action::PathStyle(p, id, st) => {

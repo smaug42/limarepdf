@@ -174,7 +174,20 @@ alignment that put them on it (`parts_of_a_line_share_its_baseline`). Both edit 
 style per character: it keeps the styles through egui's plain-string `TextEdit` by comparing each frame's text
 with the last, applies Word's rules for style commands, gives the inspector its values (`None` where the
 selection mixes them), and hands core the line as `TextPart`s; `styled::History` is the undo inside the line,
-which takes Ctrl+Z and Ctrl+Y before the `TextEdit` does. Every other text box uses egui's own undo. While any
+which takes Ctrl+Z and Ctrl+Y before the `TextEdit` does. `Styled` keeps where each character was in the line as
+read (`origins`, `None` once typed); `Styled::owned` keeps those of runs still as read, cut back to whole words
+as read and as typed (letters typed onto a word change it), and `parts_in` gives them `TextPart::from`, so
+untouched words keep their shows. Words selected with the read tool are restyled through `chosen::Chosen`, made
+by `Editor::sync_chosen` at the start of each frame when the selection changes: each `PageWord` says its text
+line (`object`, `None` inside a form XObject) and characters, so each line touched gets a `Styled` and its
+selected ranges (words with only spaces between them one range), collected in a `styled::Across`, which the
+inspector's `styles_ui` changes through the `styled::Restyle` trait as it changes one line (`InLine`): Bold and
+Italic by Word's rule over the whole selection, blanks where any line mixes a value. Invisible lines, words in
+form XObjects and vertical writing are counted (`chosen::Left`) and said. Changes go in as `Typed::Words` (one
+`Action::Restyle`, every page's `edit_texts` in one undo step); `Editor::reselect` selects the same words again
+after the edit's `invalidate`, only if they still read the same. Ctrl+B and Ctrl+I are commands
+(`Editor::switch_style`, also for a line selected with the arrow) and page-only keys, left to a text box with
+the keyboard. Every other text box uses egui's own undo. While any
 text box has the keyboard, `App::shortcuts` leaves the undo keys to it, so the document's Undo never runs from
 inside a box. Each tab's text boxes take their ids from `Editor::scope` (the tab's id) and what they edit, and
 the inspector is drawn inside that id, so no two documents share a box's state. `page_text::fresh_history`, run
@@ -686,7 +699,20 @@ form XObject, and per inline image.
   part keeps the font of the span it names when its text is that span's, unchanged (its shows are copied as they
   were, with their character spacing, word spacing and scaling, and a gap read as a space put back as the same
   move), or when the font can be reused and the text is ASCII (`PageObject::keeps_font`); otherwise it is written
-  as above, the parts in one font sharing one font object. A line in one style whose words alone change, in a
+  as above, the parts in one font sharing one font object. A part that is some of its span's own characters,
+  unchanged (`TextPart::from`, where they start in the line as read), and starts and ends at a space or an end
+  of its span (`cuttable`), keeps them as they were: `shows_cut` cuts the span's shows between character codes,
+  read with the page's `FontCtx` exactly as the parser reads them (a code's decoded characters, a spacing number
+  under -150 read as a space, the gap after a show), each spacing number going with the character before it (at
+  a show's start, the one after). It gives up (`None`) on a cut through a code (a ligature, or a ToUnicode entry
+  of several characters), through a string `codes_known` and `drawn_alike` don't vouch for, or when the
+  characters don't add up to the piece's; the part is then written as above and the line reported. A space made
+  by a move that would start a cut part goes at the end of the part before instead (`then_move`): at a show's
+  start it reads as no space. `Pdf::edit_texts` makes several lines of a page in one parse and one commit (the
+  shows of every line taken out, each line's `Following` in the page's order, the lines on top in the order
+  given), the parts of all its lines sharing the fonts they add (`written_lines`); `edit_text` is it for one
+  line. Before committing, each line written with cut shows is read back as the page will be (`misread`, by its
+  operators' place): one that reads as other words is written again without cutting, and reported. A line in one style whose words alone change, in a
   font that can be reused, is still changed in place. While a line is edited on the page, the app makes the same test as it goes
   (`TextEdit::keeps_font`) and draws the line in the font it will have: the line's own font installed on the
   computer, or else the Liberation face of its kind, when the font is kept; the installed family's font, or the

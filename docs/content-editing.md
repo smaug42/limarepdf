@@ -54,9 +54,27 @@ As in a word processor:
   it; the change is kept with the typing.
 
 Finishing (Esc, Enter, Tab or clicking elsewhere) leaves nothing selected, as in a word processor. A line selected
-as a whole with the arrow takes the inspector's font, size and colour as a whole, with the same blanks for what it
-mixes; to change its words, double-click it or use **Edit text**, and it is edited on the page here too. With the
-arrow, the line stays selected when you finish.
+as a whole with the arrow takes the inspector's font, size and colour, and Ctrl+B and Ctrl+I, as a whole, with the
+same blanks for what it mixes; to change its words, double-click it or use **Edit text**, and it is edited on the
+page here too. With the arrow, the line stays selected when you finish.
+
+## Style words you select while reading
+
+You don't need to open a line to style its words. Select them with the read tool, as you would to copy them (drag
+over them, across lines and pages if you like), then:
+
+- press Ctrl+B for Bold or Ctrl+I for Italic, or use **B** and ***I*** on the floating toolbar or in the right-click
+  menu;
+- or pick a font, size or colour in the inspector, headed **Selected text**.
+
+The words stay selected, so you can go on changing them. Bold and Italic work over the whole selection as they do in
+a line, and the inspector shows a value blank where the selection mixes it. Each change is one undo step, however
+many lines and pages it covers.
+
+The words around the ones you change are left exactly as they were, in their own font, even one LimarePDF can't
+write new text in. Words whose size or colour is all you change keep their font too; Bold, Italic or another font
+writes them in that font. Invisible recognised (OCR) text, text inside a block of page content reused as a whole,
+and vertical writing keep their look; a short notice says when part of the selection was left that way.
 
 ## Add text
 
@@ -152,8 +170,9 @@ the page itself.
 - **Moving or resizing** places the object anew, leaving its drawing as it is.
 - **A line of text** is one object whatever its styles: a bold word or a superscript in it is a part of the line,
   not an object of its own.
-- **Editing text** keeps each part's own font when it can: a part left as it was is written exactly as it was,
-  and a changed part in a plain standard font keeps it for plain text. Otherwise that part is written again in its
+- **Editing text** keeps each part's own font when it can: a part left as it was is written exactly as it was, so
+  are whole words left as they were beside words you changed, and a changed part in a plain standard font keeps it
+  for plain text. Otherwise that part is written again in its
   size and colour, in the font you chose, else in the installed family its font comes from, else in the nearest of
   Helvetica, Times and Courier, the line staying in place. While you edit a line it is drawn in the fonts it will
   have, and the old line underneath is hidden in the colour around it.
@@ -175,9 +194,12 @@ detail is in [How it is built](developer/architecture.md#content-editing).
 
 - Text objects are lines recovered from the content stream by heuristics, not paragraphs. There is no reflow and no
   multi-line editing. Text boxes are estimated from font metrics, so they can be slightly off for unusual fonts.
-- Text in embedded subset fonts, and in CID (Type 0) fonts, cannot keep its font when edited: it is written in the
-  installed family the font is from when LimarePDF can embed it, else it becomes Helvetica, Times or Courier (or
-  their Liberation face, as new text is), and the inspector says so. Text written anew is limited to Latin, Greek
+- Text in embedded subset fonts, and in CID (Type 0) fonts, cannot keep its font where it is changed: a word you
+  change (or change some of the letters of) is written in the installed family the font is from when LimarePDF
+  can embed it, else in Helvetica, Times or Courier (or their Liberation face, as new text is), and the inspector
+  says so. The words left as they were around it keep their font, except where the page's font shows letters on
+  both sides of a space together, or the line would read differently once parted: then they are written in the
+  similar font too, and a notice says so. Text written anew is limited to Latin, Greek
   and Cyrillic, and Chinese, Japanese and Korean in an installed font that has them: the app doesn't let others
   be typed, and a line that already has them (Chinese in a line that becomes Helvetica, say) can't be written
   anew; the change is refused with a message naming them. Right-to-left and shaped scripts (Hebrew, Arabic,
@@ -194,8 +216,9 @@ detail is in [How it is built](developer/architecture.md#content-editing).
   edited in a box over the line, and invisible text in a plain box.
 - A part of a line written again (changed text in a font LimarePDF can't keep, or another font chosen) loses its
   own character and word spacing and horizontal scaling; parts left as they were keep theirs.
-- Words can be styled only in a line being edited, not by selecting them with the read tool. There is no
-  underline or strike-through for page text.
+- There is no underline or strike-through for page text. Styling words doesn't rewrap: bold or larger words make
+  their line longer and the rest of it moves along, and highlights, links and redaction marks over them stay where
+  they were. The space after a word you make larger can grow with it.
 - Editing text does not change its width: longer text can overlap its neighbours.
 - Where the text after a changed line starts is worked out from the font's character widths. Where a file doesn't
   give them for a font that isn't one of the standard 14, or a CID font's characters can't be told apart, they are

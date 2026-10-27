@@ -227,6 +227,23 @@ What they show:
   field: 0.3 ms for text-300.pdf, 1.8 ms for the 17 MB scan-20.pdf and 1.0 ms for the corpus's largest file (5 MB,
   107 pages), about 0.1 ms a megabyte (each the best of five).
 
+## Styling selected words
+
+Batch 24 (ENH-05) writes every changed line of a page in one parse and one commit (`Pdf::edit_texts`), each line
+with the selected word written anew and the words around it cut out of its own shows, and every cut line read back
+before the commit. Measured on 26 October 2026 on the machine above with a throwaway release-built probe
+(`target/b24perf/`) on REL-07's `text-300.pdf`: the second word of every line made bold, as the read tool's
+selection writes it, the median of five runs.
+
+| Selection | Lines | `edit_texts` | The pages' words and objects read again after (the app's next frame) |
+| --- | --- | --- | --- |
+| One page | 49 | 4.0 ms | 3.3 ms |
+| 20 pages | 980 | 80 ms | 69 ms |
+
+No line fell back to a similar font. The change runs on the window's thread with the undo step and the pages'
+redraw, as every edit does; at these rates a whole 300-page document would take about two seconds there, which
+is recorded, not a threshold (6.3 has none for edits).
+
 ## Startup and responsiveness
 
 Measured on 26 October 2026 as the release checks' baseline (REL-07), from which their thresholds were set (accepted

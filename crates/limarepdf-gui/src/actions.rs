@@ -45,6 +45,11 @@ pub enum Act {
     PrintSelection,
     /// Save the selected words as a PDF (cropped pages or plain text) or a text file.
     SaveSelection,
+    /// Bold on or off for the selected words, or the line selected with the arrow, by
+    /// Word's rule: all bold becomes not bold, anything else all bold.
+    Bold,
+    /// Italic on or off, as [`Act::Bold`].
+    Italic,
     /// Mark the selected words, in the colour last chosen for the kind.
     Mark(Mark),
     /// Choose the colour for highlights, or (`line`) for the other marks: an index into
@@ -182,6 +187,8 @@ impl Act {
             | Act::Print
             | Act::PrintSelection
             | Act::SaveSelection
+            | Act::Bold
+            | Act::Italic
             | Act::Undo
             | Act::Redo
             | Act::Mark(_)
@@ -439,6 +446,10 @@ fn fixed_text(c: &Ctx) -> bool {
 fn text_object(c: &Ctx) -> bool {
     c.object && matches!(c.obj_kind, Some(ObjKind::Text | ObjKind::HiddenText))
 }
+/// Selected words, or a line of visible page text selected: what Bold and Italic change.
+fn styleable(c: &Ctx) -> bool {
+    (c.words || (c.object && c.obj_kind == Some(ObjKind::Text))) && !c.busy
+}
 fn deletable(c: &Ctx) -> bool {
     c.object || c.pages || (c.annot && !c.annot_locked)
 }
@@ -614,6 +625,25 @@ pub static ACTIONS: &[Action] = &[
         icon: icon::SELECTION_ALL,
         keys: &[k(C, Key::A)],
         enabled: text_tool,
+        ..BASE
+    },
+    Action {
+        act: Act::Bold,
+        group: Group::Edit,
+        label: "Bold",
+        icon: icon::TEXT_B,
+        keys: &[k(C, Key::B)],
+        enabled: styleable,
+        sep: true,
+        ..BASE
+    },
+    Action {
+        act: Act::Italic,
+        group: Group::Edit,
+        label: "Italic",
+        icon: icon::TEXT_ITALIC,
+        keys: &[k(C, Key::I)],
+        enabled: styleable,
         ..BASE
     },
     Action {
@@ -1571,6 +1601,7 @@ pub fn context_items(sel: &Selection) -> &'static [&'static [Act]] {
     match sel {
         Selection::Words { .. } => &[
             &[Act::Copy, Act::SelectAllText],
+            &[Act::Bold, Act::Italic],
             &[Act::Mark(Mark::Highlight)],
             &[Act::MarkRedact],
             &[Act::PrintSelection, Act::SaveSelection],
@@ -1659,7 +1690,16 @@ pub fn context_buttons(
             ui.separator();
         }
         for a in group {
-            let b = egui::Button::new(crate::theme::icon(a.icon).size(16.0))
+            let glyph = match a.act {
+                // A bold B and a slanted I with serifs, as the inspector and word
+                // processors show them; the icon is drawn inside some padding.
+                Act::Bold => egui::RichText::new("B")
+                    .family(crate::theme::semibold())
+                    .size(16.0),
+                Act::Italic => crate::theme::icon(a.icon).size(19.0),
+                _ => crate::theme::icon(a.icon).size(16.0),
+            };
+            let b = egui::Button::new(glyph)
                 .frame_when_inactive(false)
                 .min_size(egui::vec2(26.0, 26.0));
             let r = ui.add(b);

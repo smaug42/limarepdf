@@ -5,6 +5,7 @@ mod about;
 mod actions;
 mod app;
 mod banners;
+mod chosen;
 mod dialogs;
 mod digital;
 mod editor;

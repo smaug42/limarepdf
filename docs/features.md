@@ -16,7 +16,7 @@ source.
   pages to dark, sepia or high-contrast colours for easier reading.
 - **Find anything:** search a whole document as you type, with every match highlighted on the page.
 - **Edit text where it is:** double-click a line to change it, and make words bold, italic, or another font, size
-  or colour.
+  or colour, or just select them as you read and press Ctrl+B.
 - **Add and arrange content:** add text, pictures and shapes, and move, resize, restyle or delete what is already
   on the page.
 - **Comment and mark up:** highlights, notes, text boxes, shapes, arrows, freehand drawing and replies.

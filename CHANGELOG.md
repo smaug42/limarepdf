@@ -12,6 +12,11 @@
 - View > Use the document's page labels: turned off, pages are numbered 1, 2, 3 from the first page in the
   thumbnails, search results and new bookmarks, instead of by the document's own numbering (such as iii or A-1).
   The status bar shows both. On unless turned off, and remembered.
+- Style words while you read, as in a word processor: select them with the read tool, across lines and pages
+  too, then press Ctrl+B or Ctrl+I, use Bold and Italic on the floating toolbar or in the right-click menu, or pick
+  a font, size or colour in the inspector, headed Selected text. The words stay selected, and each change is one
+  undo step. Invisible recognised text, text in a block of page content reused as a whole and vertical writing
+  are left as they were, and a notice says so.
 
 ### Changed
 
@@ -49,6 +54,11 @@
   no longer makes it disappear on the dark theme.
 - The Italic button shows a slanted I with serifs, as word processors do, instead of something that read as a
   slash, and the Bold button's B is now bold.
+- Changing some of the words in a line, by typing or styling, keeps the words left as they were in their own font,
+  even an embedded font LimarePDF can't write new text in. Before, the rest of their part of the line was written
+  again in a similar font. Where that can't be done, the words are written in the similar font as before, and a
+  notice says so.
+- Ctrl+B and Ctrl+I also make a line selected with the arrow bold or italic, as the inspector's buttons do.
 - The user guide's Features page is now a short summary of what LimarePDF can do. The detailed status of each
   feature, with its limits and what doesn't work yet, moved to the developer docs as
   [Features and status](docs/developer/feature-status.md).

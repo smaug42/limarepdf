@@ -1,13 +1,14 @@
 //! Content editing state and interaction: selecting, moving and resizing objects, inserting text, images
 //! and shapes, and the inspector panel.
 
+use crate::chosen::{Chosen, Left};
 use crate::dialogs;
 use crate::fields::FormUi;
 use crate::icon;
 use crate::page_text::{self, selection, PageText};
 use crate::selection::{ObjKind, Selection, WordAt};
 use crate::signing::{SignKit, SignPane, SignPick};
-use crate::styled::{History, Styled};
+use crate::styled::{History, InLine, Restyle, Styled};
 use crate::theme;
 use crate::typing_fonts::Wanted;
 use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
@@ -146,16 +147,19 @@ pub enum Typed {
     Comment,
     /// A reply to it.
     Reply,
+    /// The look of words selected with the read tool, changed in the inspector.
+    Words,
 }
 
 impl Typed {
-    pub const ALL: [Typed; 6] = [
+    pub const ALL: [Typed; 7] = [
         Typed::Text,
         Typed::Writing,
         Typed::Object,
         Typed::Field,
         Typed::Comment,
         Typed::Reply,
+        Typed::Words,
     ];
 }
 
@@ -170,6 +174,7 @@ enum Kept {
     Field(String),
     Comment,
     Reply(String),
+    Words(Box<Chosen>),
 }
 
 /// A note or text box being typed: a new one at `rect` (displayed-page points), or the
@@ -254,6 +259,9 @@ pub enum Action {
     /// A line's change; true when only its words changed, not their styles, so it can join
     /// a recent change of the same line.
     EditText(usize, usize, TextEdit, bool),
+    /// Words selected with the read tool restyled: each page's changed lines, by object, and
+    /// the lines with selected words left as they were. The words stay selected.
+    Restyle(Vec<(usize, Vec<(usize, TextEdit)>)>, Left),
     PathStyle(usize, usize, PathStyle),
     /// Set the named form field, drawn on these pages.
     SetField(Vec<usize>, String, FieldValue),
@@ -780,18 +788,17 @@ fn text_change(text: &Styled, o: &PageObject) -> TextEdit {
 }
 
 /// The font list across the panel, then Bold, Italic, size (within `sizes`) and colour in a
-/// row, for what a style command with `sel` selected changes in `text`: each shows blank
-/// where that mixes values. `in_pdf` names the PDF fonts of text already in the PDF.
-/// Returns whether one was used.
+/// row, for what a style command changes in `text`: each shows blank where that mixes
+/// values. `in_pdf` names the PDF fonts of text already in the PDF. Returns whether one was
+/// used.
 fn styles_ui(
     ui: &mut egui::Ui,
-    text: &mut Styled,
-    sel: (usize, usize),
+    text: &mut dyn Restyle,
     sizes: std::ops::RangeInclusive<f32>,
     in_pdf: &[String],
 ) -> bool {
-    let shown = text.shown(sel);
-    let first = text.first(sel);
+    let shown = text.shown();
+    let first = text.first();
     let was = FontChoice {
         bold: shown.bold,
         italic: shown.italic,
@@ -805,27 +812,27 @@ fn styles_ui(
         crate::font_list::styles(ui, &mut font);
         let size = size_row(ui, |ui| size_box(ui, shown.size, sizes));
         if let Some(size) = size {
-            text.set_size(sel, size);
+            text.set_size(size);
             used = true;
         }
-        if let Some(c) = text_color_button(ui, &text.colors(sel)) {
-            text.set_color(sel, c);
+        if let Some(c) = text_color_button(ui, &text.colors()) {
+            text.set_color(c);
             used = true;
         }
     });
     if picked {
         // Each character takes the family's face nearest its own.
         if shown.font.is_none() || font.family != was.family {
-            text.set_family(sel, font.family);
+            text.set_family(font.family);
             used = true;
         }
     } else {
         if font.bold != was.bold {
-            text.bold(sel);
+            text.bold();
             used = true;
         }
         if font.italic != was.italic {
-            text.italic(sel);
+            text.italic();
             used = true;
         }
     }
@@ -877,7 +884,7 @@ fn part_font<'a>(o: &'a PageObject, text: &Styled, part: &TextPart) -> Wanted<'a
 /// when it can't keep its own: the installed family it is from ([`FontChoice::of_font`]),
 /// once the installed fonts have been read (at start, on another thread), else the nearest
 /// standard font.
-fn font_of(name: &str) -> FontChoice {
+pub(crate) fn font_of(name: &str) -> FontChoice {
     limarepdf_core::typefaces_ready()
         .then(|| FontChoice::installed_font(name, &limarepdf_core::typefaces()))
         .flatten()
@@ -989,6 +996,9 @@ pub struct Editor {
     pub width: f32,
     pub pending_image: Option<(Vec<u8>, f32)>,
     insp: Option<Insp>,
+    /// The words selected with the read tool, as the inspector and Bold and Italic
+    /// restyle them ([`Editor::sync_chosen`]).
+    chosen: Option<Chosen>,
     /// A line of page text being edited on the page (read tool).
     line_edit: Option<LineEdit>,
     /// Page text just added, which the read tool lets move and resize until something
@@ -1106,6 +1116,7 @@ impl Default for Editor {
             width: 1.5,
             pending_image: None,
             insp: None,
+            chosen: None,
             line_edit: None,
             loose: None,
             keep: Vec::new(),
@@ -1321,6 +1332,7 @@ impl Editor {
         self.drag = None;
         self.draw = None;
         self.insp = None;
+        self.chosen = None;
         self.line_edit = None;
         self.words.clear();
         self.selection.clear_words();
@@ -1437,6 +1449,11 @@ impl Editor {
                 let a = self.reply_to()?;
                 (a, Kept::Reply(std::mem::take(&mut self.reply)))
             }
+            Typed::Words => {
+                let c = self.chosen.take_if(|c| c.changed())?;
+                let restyle = Action::Restyle(c.changes(), c.left);
+                (restyle, Kept::Words(Box::new(c)))
+            }
         };
         self.actions.push(action);
         Some(Held(held))
@@ -1454,6 +1471,7 @@ impl Editor {
             Kept::Field(original) => self.form.uncommit(original),
             Kept::Comment => {}
             Kept::Reply(r) => self.reply = r,
+            Kept::Words(c) => self.chosen = Some(*c),
         }
     }
 
@@ -1477,8 +1495,9 @@ impl Editor {
 
     /// Whether something typed isn't in the document yet: new text, a note or text box
     /// being typed on the page, a form field being typed in, the selected comment's
-    /// changes in the inspector, or a reply to it not yet added. Saving keeps it first,
-    /// and closing asks, as for unsaved changes.
+    /// changes in the inspector, a reply to it not yet added, or the selected words'
+    /// look changed in the inspector. Saving keeps it first, and closing asks, as for
+    /// unsaved changes.
     pub fn pending(&self) -> bool {
         self.adding.as_ref().is_some_and(PageText::has_text)
             || self.writing.as_ref().is_some_and(Writing::changed)
@@ -1486,6 +1505,7 @@ impl Editor {
             || self.annot_changes().is_some()
             || self.reply_to().is_some()
             || self.insp_change().is_some()
+            || self.chosen.as_ref().is_some_and(Chosen::changed)
     }
 
     /// The selected comment's changes in the inspector, as the change that applies them.
@@ -3447,10 +3467,9 @@ impl Editor {
         }
     }
 
-    /// Whether the inspector shows the editor's section: a selected object or comment, or
-    /// a tool that adds content (its options). Otherwise it shows pages or the document;
-    /// selected words have no settings of their own (their commands are on the floating or
-    /// docked toolbar and the right-click menu).
+    /// Whether the inspector shows the editor's section: a selected object or comment,
+    /// selected words whose look can change (their font, Bold, Italic, size and colour), or
+    /// a tool that adds content (its options). Otherwise it shows pages or the document.
     pub fn owns_panel(&self) -> bool {
         matches!(
             self.tool,
@@ -3468,11 +3487,12 @@ impl Editor {
                 | Tool::DigitalSign
         ) || self.sel().is_some()
             || self.selection.annot().is_some()
+            || self.words_panel()
     }
 
     /// The inspector's heading for the editor's section, as it shows them: the selected
-    /// comment, else the tool's options, else the selected object ("Comment", "New
-    /// rectangle", "Text").
+    /// comment or words, else the tool's options, else the selected object ("Comment",
+    /// "Selected text", "New rectangle", "Text").
     pub fn heading(&self) -> String {
         if self.selection.annot().is_some() {
             return match self.selected_annot() {
@@ -3480,6 +3500,9 @@ impl Editor {
                 Some(a) => a.label(),
                 None => "Comment".into(),
             };
+        }
+        if self.words_panel() {
+            return "Selected text".into();
         }
         self.tool_heading()
             .or_else(|| self.object_heading())
@@ -3734,6 +3757,99 @@ impl Editor {
         self.line_edit = None;
         let o = key.and_then(|key| Some((key, self.objs.get(&key.0)?.get(key.1)?)));
         self.insp = o.map(|(key, o)| Insp::of(key, o));
+    }
+
+    /// Keep the words selected with the read tool ready to restyle ([`Chosen`]), read from
+    /// `pdf` when the selection changes. The last selection's changes are kept first, as
+    /// clicking away keeps them.
+    pub fn sync_chosen(&mut self, pdf: &limarepdf_core::Pdf) {
+        let words = self.selection.words();
+        if words.is_some() && self.chosen.as_ref().map(|c| c.words) == words {
+            return;
+        }
+        self.keep(Typed::Words);
+        self.chosen = None;
+        let Some(words) = words else {
+            return;
+        };
+        let mut c = Chosen::new(words);
+        for p in words.0 .0..=words.1 .0 {
+            let n = self.words(pdf, p).len();
+            self.objects(pdf, p);
+            if let Some(range) = self.selection.words_on(p, n) {
+                c.add_page(p, &self.words[&p][range], &self.objs[&p]);
+            }
+        }
+        self.chosen = Some(c);
+    }
+
+    /// Whether the inspector shows the selected words' look: some of them can be restyled.
+    fn words_panel(&self) -> bool {
+        let words = self.selection.words();
+        words.is_some()
+            && (self.chosen.as_ref()).is_some_and(|c| c.restylable() && Some(c.words) == words)
+    }
+
+    /// Bold (with `bold` false, Italic) on or off by Word's rule, as one undo step: for the
+    /// words selected with the read tool, or the line of page text selected with the arrow.
+    /// Returns what to say when none of the selected words can change.
+    pub fn switch_style(&mut self, pdf: &limarepdf_core::Pdf, bold: bool) -> Option<String> {
+        if self.selection.words().is_some() {
+            self.sync_chosen(pdf);
+            let c = self.chosen.as_mut()?;
+            if !c.restylable() {
+                return c.left.said();
+            }
+            match bold {
+                true => c.text.bold(),
+                false => c.text.italic(),
+            }
+            self.keep(Typed::Words);
+            return None;
+        }
+        let (page, id) = self.sel()?;
+        let visible = self.objs.get(&page)?.get(id)?;
+        if visible.kind != ObjectKind::Text || visible.hidden {
+            return None;
+        }
+        self.sync_insp();
+        let insp = self.insp.as_mut()?;
+        let all = (0, insp.text.text().chars().count());
+        match bold {
+            true => insp.text.bold(all),
+            false => insp.text.italic(all),
+        }
+        self.commit_insp();
+        None
+    }
+
+    /// After a change to the document, select again the words `sel` selected, as the page
+    /// reads now, when they still read `was`; else nothing is selected, rather than other
+    /// words.
+    pub fn reselect(&mut self, pdf: &limarepdf_core::Pdf, sel: Selection, was: Option<String>) {
+        let Selection::Words { anchor, end } = sel else {
+            return;
+        };
+        self.extend_words(pdf, anchor);
+        self.extend_words(pdf, end);
+        self.selection = Selection::Words { anchor, end };
+        if self.selected_text() != was {
+            self.selection.clear_words();
+        }
+    }
+
+    /// The look of the words selected with the read tool, across lines and pages: the font
+    /// list, Bold, Italic, size and colour, each blank where the words mix it. Each
+    /// finished change is kept at once as one undo step, and the words stay selected.
+    fn words_ui(&mut self, ui: &mut egui::Ui) {
+        let Some(c) = self.chosen.as_mut() else {
+            return;
+        };
+        ui.add_space(4.0);
+        styles_ui(ui, &mut c.text, 1.0..=400.0, &c.in_pdf);
+        if settled(ui.ctx()) {
+            self.keep(Typed::Words);
+        }
     }
 
     /// The selected annotation: what and whose it is, and its colour, opacity and comment,
@@ -4079,7 +4195,11 @@ impl Editor {
                     Some(a) => {
                         let end = a.text.text().chars().count();
                         let sel = page_text::held(ui.ctx(), a.id()).unwrap_or((end, end));
-                        if styles_ui(ui, &mut a.text, sel, 4.0..=200.0, &[]) {
+                        let mut text = InLine {
+                            text: &mut a.text,
+                            sel,
+                        };
+                        if styles_ui(ui, &mut text, 4.0..=200.0, &[]) {
                             a.refocus = true;
                         }
                     }
@@ -4222,7 +4342,11 @@ impl Editor {
                 text_style_ui(ui, &mut self.box_style);
                 return;
             }
-            // A selected object shows its properties below.
+            // Selected words show their look; a selected object its properties below.
+            Tool::Select | Tool::Read if self.words_panel() => {
+                self.words_ui(ui);
+                return;
+            }
             Tool::Select | Tool::Read => {}
         }
 
@@ -4255,7 +4379,11 @@ impl Editor {
                         None => (0, insp.text.text().chars().count()),
                     };
                     let in_pdf = pdf_fonts(&obj, sel);
-                    styles_ui(ui, &mut insp.text, sel, 1.0..=400.0, &in_pdf);
+                    let mut text = InLine {
+                        text: &mut insp.text,
+                        sel,
+                    };
+                    styles_ui(ui, &mut text, 1.0..=400.0, &in_pdf);
                 }
                 if self.line_edit.is_none() {
                     // The line being edited on the page watches its own changes.
@@ -4521,6 +4649,8 @@ mod tests {
             text: "w".into(),
             bbox: [x, y, x + 20.0, y + 10.0],
             line,
+            object: None,
+            chars: (0, 1),
         }
     }
 

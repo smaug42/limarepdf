@@ -2596,6 +2596,13 @@ impl App {
                 let t = &mut self.tabs[self.active];
                 t.ed.select_all_words(&t.pdf, t.current);
             }
+            Act::Bold | Act::Italic => {
+                let t = &mut self.tabs[self.active];
+                if let Some(said) = t.ed.switch_style(&t.pdf, a == Act::Bold) {
+                    t.info = Some(said);
+                }
+                t.apply_actions(ctx);
+            }
             Act::DeleteObject => self.tabs[self.active].ed.delete_selected(),
             Act::DeleteSelection => {
                 if self.tabs[self.active].ed.has_object() {
@@ -4323,7 +4330,12 @@ impl App {
         let mut acts = Vec::new();
         ctx.input_mut(|i| {
             for (a, k) in actions::shortcuts() {
-                let page_only = matches!(a.act, Act::Copy | Act::SelectAllText);
+                // Commands for what is selected on the page, which a text box with the
+                // keyboard takes for its own text.
+                let page_only = matches!(
+                    a.act,
+                    Act::Copy | Act::SelectAllText | Act::Bold | Act::Italic
+                );
                 let global = k.modifiers.command && !page_only;
                 let in_box = typing && matches!(a.act, Act::Undo | Act::Redo);
                 let closes = picking && a.act == Act::Escape;
@@ -4886,6 +4898,10 @@ impl eframe::App for App {
         let colours = self.colours(&ctx);
         for t in &mut self.tabs {
             t.set_colours(colours);
+        }
+        // Words selected with the read tool, ready for the inspector to restyle.
+        if let Some(t) = self.tabs.get_mut(self.active) {
+            t.guarded(|t| t.ed.sync_chosen(&t.pdf));
         }
 
         // Files dropped onto the window.
@@ -6947,6 +6963,7 @@ mod tests {
             size,
             color,
             rise: 0.0,
+            from: None,
         };
         let parts = [
             part("Walrus ", sans, 40.0, [0.0; 3]),
@@ -7294,6 +7311,7 @@ mod tests {
                 size: 30.0,
                 color: [0.0; 3],
                 rise: 0.0,
+                from: None,
             };
             assert!(app.tabs[0].edit(&ctx, |p| p.add_text_parts(0, (230.0, 480.0), &[part])));
             assert!(app.tabs[0].edit(&ctx, |p| p.rotate_pages(&[0], turn)));
@@ -7366,6 +7384,7 @@ mod tests {
             size: 30.0,
             color,
             rise: 0.0,
+            from: None,
         };
         let parts = [
             part("Walrus ", color),
@@ -13474,5 +13493,313 @@ mod tests {
         );
         assert!(app.tabs[0].state() == state);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // ------------------------------------------- batch 24: formatting selected words
+
+    /// The font of the lines here: a subset of Helvetica Oblique, which new text can't be
+    /// written in, so text written again comes out in another font.
+    const SUBSET: &str = "ABCDEF+Helvetica-Oblique";
+
+    /// A tab whose lines, all 20 points in [`SUBSET`], are on page 1 "one two three" and
+    /// "four five six" ("five" red), and on page 2 "seven eight nine" and the invisible
+    /// (recognised) "hidden words".
+    fn subset_tab(app: &mut App, ctx: &egui::Context) {
+        use lopdf::{dictionary, Dictionary, Object, Stream};
+        let mut pdf = Pdf::new();
+        let contents = [
+            "BT /F3 20 Tf 72 700 Td (one two three) Tj ET\n\
+             BT /F3 20 Tf 72 650 Td (four ) Tj 1 0 0 rg (five) Tj 0 0 0 rg ( six) Tj ET",
+            "BT /F3 20 Tf 72 700 Td (seven eight nine) Tj ET\n\
+             BT 3 Tr /F3 20 Tf 72 600 Td (hidden words) Tj ET",
+        ];
+        for (i, c) in contents.iter().enumerate() {
+            pdf.insert_blank(i, 612.0, 792.0).unwrap();
+            let font = pdf.doc.add_object(dictionary! {
+                "Type" => "Font", "Subtype" => "Type1", "BaseFont" => SUBSET,
+                "Encoding" => "WinAnsiEncoding",
+            });
+            let s = (pdf.doc).add_object(Stream::new(Dictionary::new(), c.as_bytes().to_vec()));
+            let page = pdf.page_ids()[i];
+            let d = pdf.doc.get_dictionary_mut(page).unwrap();
+            d.set("Contents", Object::Reference(s));
+            let fonts = dictionary! { "F3" => font };
+            d.set("Resources", dictionary! { "Font" => fonts });
+        }
+        assert!(app.add_tab(ctx, pdf, None, None, false));
+    }
+
+    /// Page `page`'s lines in `pdf`, by their text: each part's text and font, parts next
+    /// to each other in one font (in two font objects, or two colours) together.
+    fn line_fonts(pdf: &Pdf, page: usize) -> Vec<Vec<(String, String)>> {
+        let mut lines: Vec<Vec<(String, String)>> = (pdf.page_objects(page).unwrap())
+            .into_iter()
+            .filter_map(|o| {
+                let text: Vec<char> = o.text?.chars().collect();
+                let mut parts: Vec<(String, String)> = Vec::new();
+                for s in &o.spans {
+                    let words: String = text[s.chars.0..s.chars.1].iter().collect();
+                    match parts.last_mut() {
+                        Some((t, f)) if *f == s.font_name => t.push_str(&words),
+                        _ => parts.push((words, s.font_name.clone())),
+                    }
+                }
+                Some(parts)
+            })
+            .collect();
+        lines.sort();
+        lines
+    }
+
+    /// The text of the toast for the tab in front, if one shows.
+    fn toast(app: &App) -> Option<String> {
+        let front = app.tabs.get(app.active).map(|t| t.id);
+        let t = app.toasts.iter().find(|t| Some(t.tab) == front)?;
+        Some(t.text.clone())
+    }
+
+    /// Lines of parts, each part's text and font, as [`line_fonts`] gives them.
+    fn fonts_are(lines: &[&[(&str, &str)]]) -> Vec<Vec<(String, String)>> {
+        let line = |parts: &&[(&str, &str)]| {
+            (parts.iter())
+                .map(|(t, f)| (t.to_string(), f.to_string()))
+                .collect()
+        };
+        lines.iter().map(line).collect()
+    }
+
+    /// A window with the subset tab and the words from `anchor` to `end` selected with the
+    /// read tool.
+    fn words_selected(
+        ctx: &egui::Context,
+        anchor: crate::selection::WordAt,
+        end: crate::selection::WordAt,
+    ) -> App {
+        ctx.enable_accesskit();
+        theme::install(ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        subset_tab(&mut app, ctx);
+        settle(&mut app, ctx);
+        app.tabs[0].ed.selection = Selection::Words { anchor, end };
+        settle(&mut app, ctx);
+        app
+    }
+
+    /// D1's 1.0 baseline (ENH-05): words selected with the read tool across lines and pages,
+    /// then Ctrl+B. Those words are bold and still selected; the words around them keep
+    /// their own font, the subset, as do the other lines; the same after saving and
+    /// reopening; one Undo takes it all back.
+    #[test]
+    fn ctrl_b_makes_words_selected_across_lines_and_pages_bold() {
+        let ctx = egui::Context::default();
+        let mut app = words_selected(&ctx, (0, 2), (1, 1));
+        let (undo, before) = (app.tabs[0].history().1, line_fonts(&app.tabs[0].pdf, 0));
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::B, CTRL)]);
+        settle(&mut app, &ctx);
+        let bold = "Helvetica-BoldOblique";
+        let page_1 = fonts_are(&[
+            &[("four five six", bold)],
+            &[("one two ", SUBSET), ("three", bold)],
+        ]);
+        let page_2 = fonts_are(&[
+            &[("hidden words", SUBSET)],
+            &[("seven eight", bold), (" nine", SUBSET)],
+        ]);
+        let t = &app.tabs[0];
+        assert_eq!(line_fonts(&t.pdf, 0), page_1);
+        assert_eq!(line_fonts(&t.pdf, 1), page_2);
+        let selected = Selection::Words {
+            anchor: (0, 2),
+            end: (1, 1),
+        };
+        assert_eq!(t.ed.selection, selected, "not kept");
+        assert_eq!(toast(&app), None);
+        let t = &app.tabs[0];
+        let saved = saved_pdf(t);
+        assert_eq!(line_fonts(&saved, 0), page_1);
+        assert_eq!(line_fonts(&saved, 1), page_2);
+        assert_eq!(t.history().1, undo + 1, "not one step");
+        app.act(&ctx, Act::Undo);
+        assert_eq!(line_fonts(&app.tabs[0].pdf, 0), before);
+        assert_eq!(app.tabs[0].history().1, undo);
+    }
+
+    /// Bold and Italic follow Word's rule across the whole selection: some of it bold
+    /// makes all of it bold; all of it bold takes the bold off. Italic over words all in
+    /// an oblique font takes the slant off.
+    #[test]
+    fn bold_and_italic_follow_words_rule_across_lines() {
+        let ctx = egui::Context::default();
+        let mut app = words_selected(&ctx, (0, 2), (0, 2));
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::B, CTRL)]);
+        settle(&mut app, &ctx);
+        // "two three four": "three" bold already, so all of it bold.
+        app.tabs[0].ed.selection = Selection::Words {
+            anchor: (0, 1),
+            end: (0, 3),
+        };
+        settle(&mut app, &ctx);
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::B, CTRL)]);
+        settle(&mut app, &ctx);
+        let bold = "Helvetica-BoldOblique";
+        let lines = line_fonts(&app.tabs[0].pdf, 0);
+        let want = fonts_are(&[
+            &[("four", bold), (" five six", SUBSET)],
+            &[("one ", SUBSET), ("two three", bold)],
+        ]);
+        assert_eq!(lines, want);
+        // All of it bold: the bold comes off.
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::B, CTRL)]);
+        settle(&mut app, &ctx);
+        let lines = line_fonts(&app.tabs[0].pdf, 0);
+        let fonts: Vec<&str> = (lines.iter().flatten())
+            .filter(|(t, _)| ["two three", "four"].contains(&t.as_str()))
+            .map(|(_, f)| f.as_str())
+            .collect();
+        let oblique = "Helvetica-Oblique";
+        assert_eq!(fonts, [oblique, oblique], "{lines:?}");
+        // Italic over oblique words: upright.
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::I, CTRL)]);
+        settle(&mut app, &ctx);
+        let lines = line_fonts(&app.tabs[0].pdf, 0);
+        assert!(
+            (lines.iter().flatten()).any(|(t, f)| t == "two three" && f == "Helvetica"),
+            "{lines:?}"
+        );
+    }
+
+    /// The inspector shows the selected words' look, headed "Selected text", blank where
+    /// they mix it; a colour picked makes them all that colour, keeping their font, as one
+    /// undo step, and they stay selected.
+    #[test]
+    fn the_inspector_restyles_selected_words_and_a_pick_unifies_their_colour() {
+        let ctx = egui::Context::default();
+        let mut app = words_selected(&ctx, (0, 3), (0, 5));
+        app.open_inspector();
+        settle(&mut app, &ctx);
+        assert_eq!(inspector::title(&app.tabs[0]), "Selected text");
+        let undo = app.tabs[0].history().1;
+        let mut frame = |app: &mut App, events| window(app, &ctx, 1400.0, events);
+        click_named(&mut app, &ctx, "Text colour (mixed)");
+        settle(&mut app, &ctx);
+        click_in_colour_area(&mut app, &ctx, &mut frame, egui::vec2(0.0, 0.0));
+        click_named(&mut app, &ctx, "Text colour");
+        settle(&mut app, &ctx);
+        let t = &app.tabs[0];
+        let line = (t.pdf.page_objects(0).unwrap().into_iter())
+            .find(|o| o.text.as_deref() == Some("four five six"))
+            .expect("the line");
+        let looks: Vec<(&str, Option<[f32; 3]>)> = (line.spans.iter())
+            .map(|s| (s.font_name.as_str(), s.fill))
+            .collect();
+        let black = |&(f, c): &(&str, Option<[f32; 3]>)| f == SUBSET && c == Some([0.0; 3]);
+        assert!(looks.iter().all(black), "{looks:?}");
+        assert_eq!(t.history().1, undo + 1, "not one step");
+        assert!(t.ed.selection.words().is_some(), "not kept");
+        assert_eq!(inspector::title(t), "Selected text");
+    }
+
+    /// Words that can't be restyled are left as they were and said: invisible recognised
+    /// text beside visible words, and a selection of only invisible text, which changes
+    /// nothing.
+    #[test]
+    fn invisible_words_in_the_selection_are_left_as_they_were_and_said() {
+        let ctx = egui::Context::default();
+        let mut app = words_selected(&ctx, (1, 2), (1, 4));
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::B, CTRL)]);
+        settle(&mut app, &ctx);
+        let page_2 = fonts_are(&[
+            &[("hidden words", SUBSET)],
+            &[("seven eight ", SUBSET), ("nine", "Helvetica-BoldOblique")],
+        ]);
+        assert_eq!(line_fonts(&app.tabs[0].pdf, 1), page_2);
+        let said = "Not changed: 1 line of invisible recognised text";
+        assert_eq!(toast(&app).as_deref(), Some(said));
+        // Only invisible words: nothing changes, and that is said.
+        app.toasts.clear();
+        app.tabs[0].ed.selection = Selection::Words {
+            anchor: (1, 3),
+            end: (1, 4),
+        };
+        settle(&mut app, &ctx);
+        let history = app.tabs[0].history();
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::B, CTRL)]);
+        settle(&mut app, &ctx);
+        assert_eq!(app.tabs[0].history(), history);
+        assert_eq!(toast(&app).as_deref(), Some(said));
+        assert_ne!(inspector::title(&app.tabs[0]), "Selected text");
+    }
+
+    /// Ctrl+B and Ctrl+I also change a line selected whole with the arrow, as its
+    /// inspector's buttons do.
+    #[test]
+    fn ctrl_b_makes_a_line_selected_with_the_arrow_bold() {
+        let ctx = egui::Context::default();
+        let mut app = words_selected(&ctx, (0, 0), (0, 0));
+        let t = &mut app.tabs[0];
+        t.ed.set_tool(Tool::Select);
+        let id = (t.pdf.page_objects(0).unwrap().into_iter())
+            .find(|o| o.text.as_deref() == Some("one two three"))
+            .expect("the line")
+            .id;
+        t.ed.select_object(0, id);
+        settle(&mut app, &ctx);
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::B, CTRL)]);
+        settle(&mut app, &ctx);
+        let lines = line_fonts(&app.tabs[0].pdf, 0);
+        let bold = "Helvetica-BoldOblique";
+        assert_eq!(lines[1], fonts_are(&[&[("one two three", bold)]])[0]);
+    }
+
+    /// The floating toolbar over selected words has Bold and Italic.
+    #[test]
+    fn the_floating_toolbar_has_bold_and_italic_for_selected_words() {
+        let ctx = egui::Context::default();
+        let mut app = words_selected(&ctx, (0, 0), (0, 1));
+        let tree = settle(&mut app, &ctx);
+        assert!(node(&tree, "Italic").is_some());
+        click_named(&mut app, &ctx, "Bold");
+        settle(&mut app, &ctx);
+        let lines = line_fonts(&app.tabs[0].pdf, 0);
+        let bold = "Helvetica-BoldOblique";
+        let want = fonts_are(&[&[("one two", bold), (" three", SUBSET)]]);
+        assert_eq!(lines[1], want[0]);
+    }
+
+    /// The line editor keeps the words left as they were in their own font too: Ctrl+B on a
+    /// word double-clicked makes that word bold, the rest of the line staying in the subset.
+    #[test]
+    fn the_line_editor_keeps_untouched_words_in_their_own_font() {
+        let ctx = egui::Context::default();
+        let mut app = words_selected(&ctx, (0, 0), (0, 0));
+        app.tabs[0].ed.selection = Selection::None;
+        let time = std::cell::Cell::new(10.0);
+        let mut tree = timed_frame(&mut app, &ctx, &time, vec![]);
+        for _ in 0..25 {
+            tree = timed_frame(&mut app, &ctx, &time, vec![]);
+        }
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        let k = page.width() / 612.0;
+        // "two", from about 111 to 142 points across, its baseline 92 down.
+        let p = page.min + egui::vec2(125.0, 86.0) * k;
+        timed_frame(&mut app, &ctx, &time, vec![egui::Event::PointerMoved(p)]);
+        for _ in 0..2 {
+            timed_frame(&mut app, &ctx, &time, vec![press(p, true)]);
+            timed_frame(&mut app, &ctx, &time, vec![press(p, false)]);
+        }
+        for _ in 0..3 {
+            timed_frame(&mut app, &ctx, &time, vec![]);
+        }
+        timed_frame(&mut app, &ctx, &time, vec![key_with(Key::B, CTRL)]);
+        let esc = key_with(Key::Escape, egui::Modifiers::NONE);
+        timed_frame(&mut app, &ctx, &time, vec![esc]);
+        for _ in 0..2 {
+            timed_frame(&mut app, &ctx, &time, vec![]);
+        }
+        let lines = line_fonts(&app.tabs[0].pdf, 0);
+        let bold = "Helvetica-BoldOblique";
+        let want = fonts_are(&[&[("one ", SUBSET), ("two", bold), (" three", SUBSET)]]);
+        assert_eq!(lines[1], want[0]);
+        assert_eq!(toast(&app), None);
     }
 }
