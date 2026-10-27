@@ -4599,36 +4599,22 @@ fn inspector_heading(title: &str) -> egui::RichText {
         .family(theme::medium())
 }
 
-/// The side panel's heading (`label`, "Pages · 3"; `name` for screen readers): a menu of
-/// the panel's views, `shown` marked.
-fn side_views(ui: &mut egui::Ui, shown: Side, label: &str, name: &str, acts: &mut Vec<Act>) {
-    const VIEWS: [(Side, Act); 5] = [
-        (Side::Pages, Act::PagesView),
-        (Side::Search, Act::SearchView),
-        (Side::Bookmarks, Act::Bookmarks),
-        (Side::Comments, Act::Comments),
-        (Side::Signatures, Act::Signatures),
-    ];
-    let muted = theme::muted(ui.visuals().dark_mode);
-    let text = egui::RichText::new(label).size(12.0).color(muted);
-    let caret = theme::icon(icon::CARET_DOWN).size(10.0).color(muted);
-    let b = egui::Button::new((text, caret)).frame_when_inactive(false);
-    egui::containers::menu::MenuButton::from_button(b)
-        .ui(ui, |ui| {
-            for (side, act) in VIEWS {
-                let a = actions::get(act);
-                let item = (theme::icon(a.icon).size(16.0), a.label);
-                let r = ui.add(egui::Button::selectable(side == shown, item));
-                dlg::set_name(&r, a.label);
-                if r.clicked() {
-                    acts.push(act);
-                    ui.close();
-                }
-            }
-        })
-        .0
-        .on_hover_text("What the panel shows")
-        .widget_info(|| named(&format!("Side panel: {name}")));
+/// The side panel's views, top to bottom on the strip at the window's left edge: each with
+/// the command that shows it, for its icon, and its name.
+const SIDE_VIEWS: [(Side, Act, &str); 5] = [
+    (Side::Pages, Act::PagesView, "Pages"),
+    (Side::Search, Act::SearchView, "Search results"),
+    (Side::Bookmarks, Act::Bookmarks, "Bookmarks"),
+    (Side::Comments, Act::Comments, "Comments"),
+    (Side::Signatures, Act::Signatures, "Digital signatures"),
+];
+
+/// What the side panel calls its view `side`.
+fn side_name(side: Side) -> &'static str {
+    SIDE_VIEWS
+        .iter()
+        .find(|(s, ..)| *s == side)
+        .map_or("", |(.., name)| name)
 }
 
 /// The zoom in the status bar, "Fit width · 96%" while it follows the width: a menu of the
@@ -5394,8 +5380,50 @@ impl eframe::App for App {
             });
         self.regions.add(Region::Status, status.response.rect);
 
-        // The side panel at the left (its views chosen by its heading, or from the band),
-        // pages first.
+        // The strip at the window's left edge: an icon for each of the side panel's views.
+        // Clicking another view opens it; clicking the one open folds the panel away, and
+        // again brings it back (the user chose the strip over tabs in the panel, 2026-10-27:
+        // it stays when the panel is closed or folded away by a narrow window).
+        if has {
+            let t = &self.tabs[self.active];
+            let open = self.side.shown();
+            let mut pick = None;
+            let strip = egui::Panel::left("nav-rail")
+                .resizable(false)
+                .exact_size(RAIL_WIDTH)
+                .show(ui, |ui| {
+                    regions::name(ui, Region::Navigation);
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(6.0);
+                        for (side, act, name) in SIDE_VIEWS {
+                            let on = open && t.side == side;
+                            let glyph = theme::icon(actions::get(act).icon).size(18.0);
+                            let b = egui::Button::new(glyph)
+                                .selected(on)
+                                .frame_when_inactive(on)
+                                .min_size(egui::vec2(28.0, 28.0));
+                            let r = ui.add(b);
+                            r.widget_info(|| {
+                                egui::WidgetInfo::selected(egui::Role::Button, true, on, name)
+                            });
+                            if r.on_hover_text(name).clicked() {
+                                pick = Some(side);
+                            }
+                        }
+                    });
+                });
+            self.regions.add(Region::Navigation, strip.response.rect);
+            if let Some(side) = pick {
+                if open && t.side == side {
+                    self.side.set_open(false);
+                    self.keep_panels();
+                } else {
+                    self.show_view(side);
+                }
+            }
+        }
+
+        // The side panel, beside the strip: pages first.
         if has && self.side.shown() {
             let active = self.active;
             panels::edge_keys(ui, "side", true);
@@ -5405,20 +5433,15 @@ impl eframe::App for App {
                 .min_size(panels::NARROWEST)
                 .show(ui, |ui| {
                     let t = &mut self.tabs[active];
-                    let heading = match t.side {
-                        Side::Pages => "Pages",
-                        Side::Search => "Search results",
-                        Side::Bookmarks => "Bookmarks",
-                        Side::Comments => "Comments",
-                        Side::Signatures => "Digital signatures",
-                    };
+                    let heading = side_name(t.side);
                     regions::name_as(ui, egui::accesskit::Role::Navigation, heading);
                     ui.add_space(4.0);
                     let label = match t.side {
                         Side::Pages => format!("{heading} · {}", t.page_count()),
                         _ => heading.to_string(),
                     };
-                    side_views(ui, t.side, &label, heading, &mut acts);
+                    let muted = theme::muted(ui.visuals().dark_mode);
+                    ui.label(egui::RichText::new(label).size(12.0).color(muted));
                     ui.add_space(4.0);
                     t.guarded(|t| match t.side {
                         Side::Pages => t.show_thumbs(ui, &c),
@@ -6238,10 +6261,11 @@ mod tests {
         app.act(&ctx, Act::Tool(Tool::Sign));
         let names = focusable(&mut app, &ctx, 1400.0);
         assert!(names.contains(&Some("Finish signing…".into())));
+        // (The strip's view of the document's signatures is no signing.)
         let digital = names
             .iter()
             .flatten()
-            .find(|n| n.to_lowercase().contains("digital"));
+            .find(|n| n.to_lowercase().contains("digital") && *n != "Digital signatures");
         assert_eq!(digital, None);
         // Signing and certifying are still in Document > Digital signatures.
         for act in [Act::SignDigital, Act::Certify] {
@@ -6288,7 +6312,11 @@ mod tests {
             "Find",
             "Select",
             "Show planned features",
-            "Side panel: Pages",
+            "Pages",
+            "Search results",
+            "Bookmarks",
+            "Comments",
+            "Digital signatures",
             "Page 1",
         ];
         assert_eq!(reached[..bars.len()], bars);
@@ -6335,7 +6363,7 @@ mod tests {
             Some("File"),
             Some("Untitled, unsaved"),
             Some("Edit"),
-            Some("Side panel: Pages"),
+            Some("Pages"),
             None,
             Some("Collapse the inspector"),
         ];
@@ -6356,7 +6384,7 @@ mod tests {
         assert!(!app.tabs[0].page_ring, "still outlined after a click");
 
         // Back the other way, to where the keyboard was last in each region.
-        let side = Some("Side panel: Pages");
+        let side = Some("Pages");
         assert_eq!(f6(&mut app, &ctx, true).as_deref(), side);
         assert_eq!(f6(&mut app, &ctx, true).as_deref(), Some("Edit"));
         let doc = Some("Untitled, unsaved");
@@ -6389,13 +6417,14 @@ mod tests {
         let mut app = app_with(&ctx, 1);
         settled_at(&mut app, &ctx, 700.0);
         assert!(!app.side.shown() && !app.inspector.shown());
-        // The side panel folded away is no region until View > Pages panel brings it back.
+        // The side panel folded away, its strip stays, to bring it back.
         let round = [
             Some("Expand the inspector"),
             Some("Show planned features"),
             Some("File"),
             Some("Untitled, unsaved"),
             Some("Edit"),
+            Some("Pages"),
             None,
         ];
         for want in round {
@@ -6584,6 +6613,7 @@ mod tests {
             (Role::TabList, "Tabs"),
             (Role::Toolbar, "Edit commands"),
             (Role::Region, "Notices"),
+            (Role::Navigation, "Navigation"),
             (Role::Navigation, "Pages"),
             (Role::Main, "Document"),
             (Role::Complementary, "Inspector"),
@@ -6619,14 +6649,14 @@ mod tests {
         let mut app = app_with(&ctx, 1);
         settled_at(&mut app, &ctx, 1400.0);
         let (none, shift) = (egui::Modifiers::NONE, egui::Modifiers::SHIFT);
-        // Each panel's width from where its edge is: the side panel's from the window's
-        // left, the inspector's from its right.
+        // Each panel's width from where its edge is: the side panel's after the strip, the
+        // inspector's from the window's right.
         for (edge, wider, narrower, width) in [
             (
                 "Side panel width",
                 Key::ArrowRight,
                 Key::ArrowLeft,
-                (|x: f32| x) as fn(f32) -> f32,
+                (|x: f32| x - RAIL_WIDTH) as fn(f32) -> f32,
             ),
             ("Inspector width", Key::ArrowLeft, Key::ArrowRight, |x| {
                 1400.0 - x
@@ -6777,7 +6807,7 @@ mod tests {
             assert!(named, "{label}");
             // The names and one row of groups above the panels, as short as the Font
             // group's two rows allow.
-            let below = node(&tree, "Side panel: Pages").expect("the side panel").0;
+            let (below, _) = node(&tree, "Collapse the inspector").expect("the inspector");
             let tall = below.top() - b.y0 as f32;
             assert!(tall < 125.0, "{label}: {tall}");
             for g in band.groups() {
@@ -6796,11 +6826,11 @@ mod tests {
         ctx.enable_accesskit();
         theme::install(&ctx);
         let mut app = app_with(&ctx, 1);
-        // From the band's names to the side panel below the commands.
+        // From the band's names to the inspector below the commands.
         let depth = |tree: &egui::accesskit::TreeUpdate| {
             let top = node(tree, "Edit").expect("Edit").0.top();
-            let side = node(tree, "Side panel: Pages").expect("the side panel").0;
-            side.top() - top
+            let (below, _) = node(tree, "Collapse the inspector").expect("the inspector");
+            below.top() - top
         };
         let tree = settled_at(&mut app, &ctx, 1400.0);
         let (full, find) = (depth(&tree), node(&tree, "Find").expect("Find").0);
@@ -6941,6 +6971,36 @@ mod tests {
                 assert!(back, "{case}, {button}: the keyboard isn't back");
             }
         }
+    }
+
+    /// The strip at the left edge shows each of the side panel's views, saying which is
+    /// shown; the one shown again folds the panel away, and the strip stays to bring it
+    /// back.
+    #[test]
+    fn the_strip_shows_each_view_and_folds_the_panel() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        // Pressed, as screen readers say it.
+        let selected = |tree: &egui::accesskit::TreeUpdate, name: &str| {
+            let (_, n) = (tree.nodes.iter())
+                .find(|(_, n)| n.label() == Some(name) && n.role() == egui::accesskit::Role::Button)
+                .expect("the view's button");
+            n.toggled() == Some(egui::accesskit::Toggled::True)
+        };
+        for (side, _, name) in SIDE_VIEWS.into_iter().skip(1) {
+            click_named(&mut app, &ctx, name);
+            let tree = settled_at(&mut app, &ctx, 1400.0);
+            assert!(app.side.shown() && app.tabs[0].side == side, "{name}");
+            assert!(selected(&tree, name), "{name} doesn't say it's shown");
+        }
+        click_named(&mut app, &ctx, "Digital signatures");
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert!(!app.side.shown(), "the panel stayed");
+        assert!(!selected(&tree, "Digital signatures"));
+        click_named(&mut app, &ctx, "Bookmarks");
+        assert!(app.side.shown() && app.tabs[0].side == Side::Bookmarks);
     }
 
     /// ENH-38: Find opens Search results with the keyboard in its field; Edit text with no
