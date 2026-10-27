@@ -47,7 +47,8 @@ own, such as "Theme › Dark" and "Page colours › Dark", and typing the submen
 ## The tools
 
 Documents open with the read tool, Read and select text (the text cursor). It selects text, follows links, fills in
-forms, edits a line of text when you double-click it, and selects pictures, shapes and comments to move them. The
+forms, edits a line of text when you double-click it, and selects pictures, shapes and comments to move them
+(Shift+click for several pictures and shapes). The
 other tools:
 
 | Tool | What it does | See |
@@ -358,7 +359,8 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Arrow keys (Shift for 10 points) | Move the selected objects |
 | Ctrl+A, Ctrl+C | Select all text on the page, copy it (read tool) |
 | Ctrl+A (arrow) | Select every object on the page |
-| Shift+click, Shift+drag (arrow) | Add an object to the selection or take it out; add what a rectangle holds |
+| Shift+click (read tool: pictures and shapes; arrow: any object) | Add an object to the selection or take it out |
+| Shift+drag (arrow) | Add what a rectangle holds to the selection |
 | Esc | Cancel: close an open list, menu or colour picker (only that), cancel a move, resize, shape, pen stroke, selection rectangle or word selection being dragged (only that), finish (and keep) new text, a line, a note, a text box or a form field being typed, clear the selection, or leave a tool for the read tool |
 | Ctrl+B, Ctrl+I | Bold, Italic for the words selected with the read tool, or the lines selected with the arrow; in new text being typed (Add text) or a line being edited on the page, for the words selected there, or with nothing selected, the word at the caret, or what is typed next between words |
 | Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) while typing new text, a line, a note, a text box, a form field or in any box of the inspector | Undo, redo the typing there (and the styles, in new text and lines), not the document |

@@ -223,8 +223,11 @@ fallback for a line read back differently). With the arrow (`page_ui`'s `start_a
 rule) or with Shift away from the held objects starts a `Marquee`, selecting what is wholly inside it
 (`inside_rect`, invisible text only while shown) on release (`marquee_done`; Shift adds), and a press on a held
 object moves them all (`start_move`: `Drag::group`, the box round them all as `orig` and `cur`; `held_boxes` draws
-them moved). Ctrl+A is `Act::SelectAllObjects` (the arrow's), sharing the key with the read tool's `SelectAllText`
-by being enabled for another tool, and a page-only key left to a text box. Several held get no handles: each is
+them moved). The read tool's Shift+click toggles a picture or shape too, unless words are selected, which it
+extends. With both tools a drag begins (`page_ui`'s `begins`) only once the pointer is further from the press than
+egui's click distance: egui takes a press held still for 0.8 s for a drag, so it waits in `Editor::still`, and let
+go before it moves it is a click (`still_click`). Ctrl+A is `Act::SelectAllObjects` (the arrow's), sharing the
+key with the read tool's `SelectAllText` by being enabled for another tool, and a page-only key left to a text box. Several held get no handles: each is
 outlined and a dashed box drawn round them all. Core changes several objects of a page in one rewrite
 (`Pdf::set_object_boxes`, `transform_objects`, `delete_objects`, `set_path_styles`, the one-object functions calls
 of them), the ids as the page is before the call, refusing all if any is refused; `pick_all` maps each operator to

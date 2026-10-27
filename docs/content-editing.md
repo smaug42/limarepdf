@@ -128,8 +128,9 @@ A photo shows upright, the way it was taken, even when the camera or phone was t
 
 With the read tool:
 
-- **Pictures and shapes:** click one to select it. Drag it to move it, and drag a handle to resize it (Shift keeps
-  the proportions). Arrow keys move it by 1 point, or 10 with Shift. Delete or Backspace deletes it.
+- **Pictures and shapes:** click one to select it, and Shift+click more to [select several](#select-several-objects).
+  Drag it to move it, and drag a handle to resize it (Shift keeps the proportions). Arrow keys move it by 1 point,
+  or 10 with Shift. Delete or Backspace deletes it.
 - **Page text:** double-click the line, then choose **Move or resize text** on its toolbar. The line gets handles:
   drag it or them, or use the arrow keys, until you click away or select something else. Text you have just added
   can be moved straight away in the same way.
@@ -143,14 +144,16 @@ nudge.
 
 ## Select several objects
 
-With the arrow:
+Hold **Shift** and click pictures and shapes to add them to the selection. Shift+click one again to take it out. A
+click without Shift selects that one alone. This works with the read tool, which a document opens with, and with
+the arrow, which selects lines of page text this way too.
 
-- Hold **Shift** and click objects to add them to the selection. Shift+click one again to take it out. A click
-  without Shift selects that one alone.
-- Or drag a rectangle from an empty part of the page: everything wholly inside it is selected, nothing it only
+With the arrow you can also:
+
+- Drag a rectangle from an empty part of the page: everything wholly inside it is selected, nothing it only
   touches. Hold Shift to add what it holds to the selection. A drag that starts on a background or a scanned page
   that isn't selected draws a rectangle too, so it isn't moved by accident.
-- **Ctrl+A** selects everything on the page.
+- Press **Ctrl+A** to select everything on the page.
 
 Each selected object is outlined, with a dashed box round them all. Drag any one of them, or use the arrow keys, to
 move them together; Delete or Backspace deletes them all. The inspector says how many there are and what they are.

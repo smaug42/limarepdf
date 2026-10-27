@@ -1158,6 +1158,10 @@ pub struct Editor {
     draw: Option<Draw>,
     /// A rectangle being dragged out with the arrow, selecting what is wholly inside it.
     marquee: Option<Marquee>,
+    /// A press held still on a page (its page point): egui takes one held a while for a
+    /// drag, but the arrow and the read tool start one only once the pointer moves further
+    /// than a click can, and one let go before that is a click.
+    still: Option<(usize, Pos2)>,
     /// New text being typed on the page (Add text).
     pub adding: Option<PageText>,
     /// The note about a character a box in the inspector refused.
@@ -1282,6 +1286,7 @@ impl Default for Editor {
             drag: None,
             draw: None,
             marquee: None,
+            still: None,
             adding: None,
             text_refused: page_text::Refused::default(),
             insp_rect: Rect::NOTHING,
@@ -2858,6 +2863,25 @@ impl Editor {
         let htol = 6.0 / k;
         let shift = ui.input(|i| i.modifiers.shift);
         let area = (r.width() / k) * (r.height() / k);
+        // Where a drag with the arrow or the read tool begins, the frame it does: once the
+        // pointer has gone further from the press than a click can. One let go before that,
+        // however long it was held, is a click there.
+        let origin = ui.input(|i| i.pointer.press_origin());
+        let far = {
+            let click = ui.ctx().options(|o| o.input_options.max_click_dist);
+            let at = ui.input(|i| i.pointer.latest_pos());
+            origin.zip(at).is_some_and(|(a, b)| a.distance(b) > click)
+        };
+        if resp.drag_started() {
+            self.still = origin.map(|p| (page, to_pt(p)));
+        }
+        let ours = |s: &mut (usize, Pos2)| s.0 == page;
+        let begins = ((resp.drag_started() || resp.dragged()) && far)
+            .then(|| self.still.take_if(ours).map(|s| s.1))
+            .flatten();
+        let still_click = (resp.drag_stopped())
+            .then(|| self.still.take_if(ours).map(|s| s.1))
+            .flatten();
 
         // current selection box on this page: an object's, or an annotation's that the
         // arrow can move
@@ -3051,10 +3075,8 @@ impl Editor {
                         }
                     }
                 }
-                if resp.drag_started() {
-                    if let Some(p) = ui.input(|i| i.pointer.press_origin()).map(to_pt) {
-                        start_arrange(self, p, false);
-                    }
+                if let Some(p) = begins {
+                    start_arrange(self, p, false);
                 }
                 if resp.dragged() {
                     if let Some(pos) = resp.interact_pointer_pos() {
@@ -3070,21 +3092,23 @@ impl Editor {
                 }
                 // A click selects what is under it, alone; Shift+click adds an object to
                 // those selected, or takes it out, and does nothing on a comment.
-                if resp.clicked() {
-                    if let Some(p) = resp.interact_pointer_pos().map(to_pt) {
-                        let h = sized_box.and_then(|b| self.handle_hit(b, p, htol));
-                        if h.is_none() {
-                            let annot = self.annot_at(pdf, page, p).map(|a| a.id);
-                            match (annot, self.hit(page, p, tol)) {
-                                (Some(_), _) if shift => {}
-                                (Some(id), _) => self.selection = Selection::Annot { page, id },
-                                (None, Some(i)) if shift => self.toggle_object(page, i),
-                                (None, Some(i)) => self.select_object(page, i),
-                                (None, None) if shift => {}
-                                (None, None) => {
-                                    self.selection.clear_object();
-                                    self.selection.clear_annot();
-                                }
+                let click = (resp.clicked())
+                    .then(|| resp.interact_pointer_pos().map(to_pt))
+                    .flatten()
+                    .or(still_click);
+                if let Some(p) = click {
+                    let h = sized_box.and_then(|b| self.handle_hit(b, p, htol));
+                    if h.is_none() {
+                        let annot = self.annot_at(pdf, page, p).map(|a| a.id);
+                        match (annot, self.hit(page, p, tol)) {
+                            (Some(_), _) if shift => {}
+                            (Some(id), _) => self.selection = Selection::Annot { page, id },
+                            (None, Some(i)) if shift => self.toggle_object(page, i),
+                            (None, Some(i)) => self.select_object(page, i),
+                            (None, None) if shift => {}
+                            (None, None) => {
+                                self.selection.clear_object();
+                                self.selection.clear_annot();
                             }
                         }
                     }
@@ -3146,16 +3170,16 @@ impl Editor {
                 // A drag selects the words between the press and the pointer, in reading
                 // order, across pages: whichever visible page the pointer is over (held
                 // inside the view, which scrolls at its edges) moves the end. A drag that
-                // starts on the selected picture, shape or comment moves it instead. A
+                // starts on the selected pictures, shapes or comment moves them instead. A
                 // click clears or selects a picture, shape or comment, Shift+click
-                // extends, a double-click edits a line of page text (or selects a word
-                // where there is none) and a triple-click selects a line.
-                if resp.drag_started() {
-                    let p = ui.input(|i| i.pointer.press_origin()).map(to_pt);
-                    if let Some(p) = p.filter(|&p| grabs(self, p)) {
+                // extends the words or adds a picture or shape, a double-click edits a
+                // line of page text (or selects a word where there is none) and a
+                // triple-click selects a line.
+                if let Some(p) = begins {
+                    if grabs(self, p) {
                         start_arrange(self, p, true);
                     } else {
-                        self.start_word_drag(page, p, &words);
+                        self.start_word_drag(page, Some(p), &words);
                     }
                 }
                 if self.drag.is_some() {
@@ -3192,22 +3216,23 @@ impl Editor {
                     } else if let Some(i) = nearest(click_at()) {
                         self.selection = Selection::word((page, i));
                     }
-                } else if resp.clicked() {
+                } else if let Some(p) = resp.clicked().then(click_at).flatten().or(still_click) {
                     // A click on a comment or markup selects it, as one off the text on a
                     // picture or shape does; a drag still selects the text under them.
-                    let annot = click_at()
-                        .filter(|_| !shift)
-                        .and_then(|p| self.annot_at(pdf, page, p))
-                        .map(|a| a.id);
-                    let object = click_at()
-                        .filter(|_| !shift)
-                        .and_then(|p| object_at(self, p));
-                    match (annot, object, nearest(click_at())) {
+                    // Shift+click extends the words selected; else, as with the arrow, it
+                    // adds a picture or shape to those selected or takes it out, and
+                    // changes nothing elsewhere.
+                    let annot = (!shift)
+                        .then(|| self.annot_at(pdf, page, p).map(|a| a.id))
+                        .flatten();
+                    let object = object_at(self, p);
+                    let extend = shift && self.selection.words().is_some();
+                    match (annot, object, nearest(Some(p))) {
                         (Some(id), _, _) => self.selection = Selection::Annot { page, id },
+                        (None, _, Some(i)) if extend => self.extend_words(pdf, (page, i)),
+                        (None, Some(i), _) if shift => self.toggle_object(page, i),
                         (None, Some(i), _) => self.select_object(page, i),
-                        (None, None, Some(i)) if shift && self.selection.words().is_some() => {
-                            self.extend_words(pdf, (page, i));
-                        }
+                        _ if shift && self.selection.objects().is_some() => {}
                         _ => {
                             self.selection.clear_words();
                             self.selection.clear_annot();
@@ -3724,10 +3749,11 @@ impl Editor {
                     self.selection = Selection::word((page, i));
                     return;
                 }
-                // A picture or shape, as a click selects them.
+                // A picture or shape, as a click selects them; one of those selected keeps
+                // them all.
                 self.objects(pdf, page);
                 if let Some(i) = self.read_hit(page, p, tol, area) {
-                    if self.sel() != Some((page, i)) {
+                    if !self.selection.holds(page, i) {
                         self.select_object(page, i);
                     }
                     return;

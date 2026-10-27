@@ -17,7 +17,8 @@
   a font, size or colour in the inspector, headed Selected text. The words stay selected, and each change is one
   undo step. Invisible recognised text, text in a block of page content reused as a whole and vertical writing
   are left as they were, and a notice says so.
-- Select several objects with the arrow: Shift+click to add one or take it out, drag a rectangle round them (what
+- Select several objects: Shift+click to add one or take it out, with the read tool for pictures and shapes and
+  with the arrow for anything, page text included. With the arrow you can also drag a rectangle round them (what
   is wholly inside it is selected; Shift adds), or press Ctrl+A for everything on the page. They move together (a
   drag, the arrow keys, the inspector's X and Y), take the inspector's font, size, colour, Bold and Italic (the
   lines of text among them) and fill, outline and width (the shapes), blank or mixed where they differ, and
@@ -82,6 +83,9 @@
   showed. A file changed so recently is now checked by its contents.
 - A line or shape thinner than half a point, such as a hairline rule, couldn't be moved ("the object would become
   too small"). It moves now; only resizing something to that size is refused.
+- A click held down for about a second before letting go didn't count as a click: with the read tool it selected
+  a word near a picture instead of the picture. A click is now a click however long it is held, until the
+  pointer moves.
 
 ## [0.10.0] - 2026-10-26
 

@@ -8316,6 +8316,17 @@ mod tests {
 
     /// Click at page point `at` (x, y) on the page in view, Shift held or not.
     fn click_page(app: &mut App, ctx: &egui::Context, at: (f32, f32), shift: bool) {
+        click_held(app, ctx, at, shift, 0);
+    }
+
+    /// [`click_page`], the button held a second without moving: longer than egui takes a
+    /// press for a click, so it is a drag that goes nowhere.
+    fn slow_click_page(app: &mut App, ctx: &egui::Context, at: (f32, f32), shift: bool) {
+        click_held(app, ctx, at, shift, 60);
+    }
+
+    /// Click at page point `at`, the button held down for `frames` frames of 1/60 s.
+    fn click_held(app: &mut App, ctx: &egui::Context, at: (f32, f32), shift: bool, frames: usize) {
         let (min, k) = page_on_screen(app, ctx);
         let p = min + egui::vec2(at.0, at.1) * k;
         let m = match shift {
@@ -8324,6 +8335,9 @@ mod tests {
         };
         window_held(app, ctx, vec![egui::Event::PointerMoved(p)], m);
         window_held(app, ctx, vec![press(p, true)], m);
+        for _ in 0..frames {
+            window_held(app, ctx, vec![], m);
+        }
         window_held(app, ctx, vec![press(p, false)], m);
         window_held(app, ctx, vec![], egui::Modifiers::NONE);
         settle(app, ctx);
@@ -8742,6 +8756,117 @@ mod tests {
         window(&mut app, &ctx, 1400.0, right((325.0, 275.0)));
         settle(&mut app, &ctx);
         assert_eq!(held(&app), Some((0, vec![5])));
+    }
+
+    /// ENH-06: the read tool, the one a document opens with, selects several pictures and
+    /// shapes as the arrow does: Shift+click adds one or takes it out, and Shift+click away
+    /// from them changes nothing. The ones selected move together and a right-click on one
+    /// keeps them. With words selected, Shift+click still extends the words.
+    #[test]
+    fn the_read_tool_selects_several_pictures_and_shapes() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = objects_tab(&ctx);
+        assert_eq!(app.tabs[0].ed.tool, Tool::Read);
+        click_page(&mut app, &ctx, (340.0, 90.0), false);
+        assert_eq!(held(&app), Some((0, vec![0])), "the shape");
+        click_page(&mut app, &ctx, (350.0, 190.0), true);
+        assert_eq!(held(&app), Some((0, vec![0, 4])), "the picture added");
+        assert_eq!(app.tabs[0].ed.heading(), "2 objects");
+        click_page(&mut app, &ctx, (500.0, 40.0), true);
+        assert_eq!(held(&app), Some((0, vec![0, 4])), "Shift+click on nothing");
+        click_page(&mut app, &ctx, (100.0, 87.0), true);
+        assert_eq!(held(&app), Some((0, vec![0, 4])), "Shift+click on text");
+        // Dragged by the shape, both move.
+        let before = boxes(&app, 0);
+        drag_page(&mut app, &ctx, (340.0, 90.0), (360.0, 100.0), false);
+        let after = boxes(&app, 0);
+        for i in [0, 4] {
+            let d = (after[i][0] - before[i][0], after[i][1] - before[i][1]);
+            assert!(
+                (d.0 - 20.0).abs() < 0.6 && (d.1 - 10.0).abs() < 0.6,
+                "object {i} moved by {d:?}"
+            );
+        }
+        assert_eq!(held(&app), Some((0, vec![0, 4])), "still selected");
+        // A right-click on one of them keeps them, for the menu for them.
+        let (min, k) = page_on_screen(&mut app, &ctx);
+        let p = min + egui::vec2(370.0, 200.0) * k;
+        let button = |pressed| egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let right = vec![egui::Event::PointerMoved(p), button(true), button(false)];
+        window(&mut app, &ctx, 1400.0, right);
+        settle(&mut app, &ctx);
+        assert_eq!(held(&app), Some((0, vec![0, 4])), "after a right-click");
+        let esc = key_with(Key::Escape, egui::Modifiers::NONE);
+        window(&mut app, &ctx, 1400.0, vec![esc]);
+        settle(&mut app, &ctx);
+        assert_eq!(held(&app), Some((0, vec![0, 4])), "after Esc");
+        // Away from the right-click, which a click there would make a double-click.
+        click_page(&mut app, &ctx, (400.0, 225.0), true);
+        assert_eq!(held(&app), Some((0, vec![0])), "the picture taken out");
+        // With words selected, Shift+click on a picture extends them, as before.
+        drag_page(&mut app, &ctx, (75.0, 87.0), (120.0, 87.0), false);
+        assert!(app.tabs[0].ed.selection.words().is_some(), "words selected");
+        click_page(&mut app, &ctx, (340.0, 180.0), true);
+        assert!(app.tabs[0].ed.selection.words().is_some(), "words extended");
+        assert_eq!(held(&app), None);
+    }
+
+    /// ENH-06: a click held down longer than egui takes for a click is still one, with the
+    /// read tool and with the arrow: Shift adds the object under it or takes it out, and
+    /// without Shift it selects it alone, a background included, or clears the selection on
+    /// nothing.
+    #[test]
+    fn a_slow_click_is_still_a_click() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = objects_tab(&ctx);
+        slow_click_page(&mut app, &ctx, (340.0, 90.0), false);
+        assert_eq!(held(&app), Some((0, vec![0])), "read tool: the shape");
+        slow_click_page(&mut app, &ctx, (350.0, 190.0), true);
+        assert_eq!(
+            held(&app),
+            Some((0, vec![0, 4])),
+            "read tool: the picture added"
+        );
+        slow_click_page(&mut app, &ctx, (350.0, 190.0), true);
+        assert_eq!(
+            held(&app),
+            Some((0, vec![0])),
+            "read tool: the picture taken out"
+        );
+        app.act(&ctx, Act::Tool(Tool::Select));
+        click_page(&mut app, &ctx, (340.0, 90.0), false);
+        slow_click_page(&mut app, &ctx, (350.0, 190.0), true);
+        assert_eq!(held(&app), Some((0, vec![0, 4])), "the picture added");
+        slow_click_page(&mut app, &ctx, (500.0, 40.0), true);
+        assert_eq!(held(&app), Some((0, vec![0, 4])), "Shift on nothing");
+        slow_click_page(&mut app, &ctx, (350.0, 190.0), true);
+        assert_eq!(held(&app), Some((0, vec![0])), "the picture taken out");
+        slow_click_page(&mut app, &ctx, (325.0, 275.0), false);
+        assert_eq!(held(&app), Some((0, vec![5])), "the group alone");
+        slow_click_page(&mut app, &ctx, (500.0, 40.0), false);
+        assert_eq!(held(&app), None, "on nothing");
+        // A background, covering the page, which a drag doesn't take.
+        let st = limarepdf_core::PathStyle {
+            fill: Some([0.9, 0.9, 0.9]),
+            stroke: None,
+            line_width: 1.0,
+        };
+        let page = [0.0, 0.0, 612.0, 792.0];
+        let rect = |p: &mut Pdf| p.add_shape(0, limarepdf_core::Shape::Rect, page, &st);
+        assert!(app.tabs[0].edit(&ctx, rect));
+        settle(&mut app, &ctx);
+        let n = boxes(&app, 0).len();
+        slow_click_page(&mut app, &ctx, (500.0, 400.0), false);
+        assert_eq!(held(&app), Some((0, vec![n - 1])), "the background");
     }
 
     fn press(p: egui::Pos2, pressed: bool) -> egui::Event {
