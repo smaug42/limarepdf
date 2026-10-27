@@ -1,16 +1,15 @@
-//! The window's regions, which F6 and Shift+F6 move the keyboard between (ENH-10): the top
-//! bar, the tabs, the commands, the document's notices, navigation, the page, the inspector
-//! and the status bar, in the order they are on screen. Each is found by where it was drawn
-//! this frame, and a control belongs to the region its middle is in.
+//! The window's regions, which F6 and Shift+F6 move the keyboard between (ENH-10): the
+//! tabs, the commands, the document's notices, navigation, the page, the inspector and the
+//! status bar, in the order they are on screen. Each is found by where it was drawn this
+//! frame, and a control belongs to the region its middle is in.
 
 use eframe::egui::{self, accesskit::Role, Id, Rect};
 
 /// A part of the window the keyboard can be moved to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Region {
-    TopBar,
     Tabs,
-    /// The band's names and its groups of commands (ENH-38).
+    /// The document's commands, the band's names and its groups of commands (ENH-38).
     Commands,
     /// The document's notices above the pages, while there are any.
     Notices,
@@ -25,8 +24,7 @@ pub enum Region {
 
 impl Region {
     /// F6's order; it goes round from the last to the first.
-    pub const ORDER: [Region; 8] = [
-        Region::TopBar,
+    pub const ORDER: [Region; 7] = [
         Region::Tabs,
         Region::Commands,
         Region::Notices,
@@ -38,11 +36,10 @@ impl Region {
 
     /// The order a control's region is looked for in: those drawn over another first (the
     /// notices and the inspector's pop-out over the pages).
-    const LOOKUP: [Region; 8] = [
+    const LOOKUP: [Region; 7] = [
         Region::Notices,
         Region::Inspector,
         Region::Navigation,
-        Region::TopBar,
         Region::Tabs,
         Region::Commands,
         Region::Status,
@@ -56,7 +53,6 @@ impl Region {
     /// Its role and name for screen readers.
     pub fn named(self) -> (Role, &'static str) {
         match self {
-            Region::TopBar => (Role::Toolbar, "Top bar"),
             Region::Tabs => (Role::TabList, "Tabs"),
             Region::Commands => (Role::Toolbar, "Commands"),
             Region::Notices => (Role::Region, "Notices"),
@@ -247,16 +243,15 @@ mod tests {
             [
                 Region::Inspector,
                 Region::Status,
-                Region::TopBar,
                 Region::Tabs,
                 Region::Commands,
                 Region::Notices,
                 Region::Navigation,
             ]
         );
-        let before: Vec<_> = round(Region::TopBar, -1).collect();
+        let before: Vec<_> = round(Region::Tabs, -1).collect();
         assert_eq!(before[..2], [Region::Status, Region::Inspector]);
-        assert_eq!(before.last(), Some(&Region::Tabs));
+        assert_eq!(before.last(), Some(&Region::Commands));
         let after: Vec<_> = round(Region::Tabs, 1).collect();
         assert_eq!(after[..2], [Region::Commands, Region::Notices]);
     }

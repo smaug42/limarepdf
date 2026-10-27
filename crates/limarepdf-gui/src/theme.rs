@@ -457,22 +457,12 @@ pub fn bar_frame(style: &Style) -> egui::Frame {
     egui::Frame::side_top_panel(style).inner_margin(Margin::symmetric(12, 3))
 }
 
-/// Frame for the top row: LimarePDF's mark and the document commands.
-pub fn top_frame(style: &Style) -> egui::Frame {
-    egui::Frame::side_top_panel(style).inner_margin(Margin {
-        left: 16,
-        right: 16,
-        top: 12,
-        bottom: 6,
-    })
-}
-
-/// Frame for the row of document tabs, which stand on its lower edge.
+/// Frame for the row of document tabs at the window's top, which stand on its lower edge.
 pub fn tabs_frame(style: &Style) -> egui::Frame {
     egui::Frame::side_top_panel(style).inner_margin(Margin {
-        left: 16,
-        right: 16,
-        top: 2,
+        left: 10,
+        right: 10,
+        top: 6,
         bottom: 0,
     })
 }

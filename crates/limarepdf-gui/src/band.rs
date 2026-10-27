@@ -592,52 +592,38 @@ const BUTTON: f32 = 28.0;
 /// doesn't fold and unfold it by turns.
 const UNFOLD_MARGIN: f32 = 12.0;
 
-/// The band's names, the chosen one shown as such, a click choosing another; and at the
-/// right the button that makes the commands compact (`compact`) or full again, greyed while
-/// a short window keeps them compact (`forced`). Returns whether that button was clicked.
-pub fn names(ui: &mut egui::Ui, band: &mut Band, compact: bool, forced: bool) -> bool {
-    let mut toggled = false;
-    let mut names = |ui: &mut egui::Ui| {
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 3.0;
-            for b in Band::ALL {
-                if name_tab(ui, b.name(), *band == b).clicked() {
-                    *band = b;
-                }
+/// The band's names, the chosen one shown as such; a click chooses another.
+pub fn names(ui: &mut egui::Ui, band: &mut Band) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 3.0;
+        for b in Band::ALL {
+            if name_tab(ui, b.name(), *band == b).clicked() {
+                *band = b;
             }
-        });
-    };
-    let toggle = |ui: &mut egui::Ui| {
-        let a = actions::get(Act::ToggleCompact);
-        let glyph = if compact {
-            icon::CARET_DOWN
-        } else {
-            icon::CARET_UP
-        };
-        let b = egui::Button::new(theme::icon(glyph).size(14.0))
-            .frame_when_inactive(false)
-            .min_size(egui::vec2(24.0, 24.0));
-        let r = ui.add_enabled(!forced, b);
-        r.widget_info(|| {
-            egui::WidgetInfo::selected(egui::Role::CheckBox, !forced, compact, a.label)
-        });
-        let tip = match (forced, compact) {
-            (true, _) => "Compact while the window is short",
-            (false, true) => "Full commands, with their names",
-            (false, false) => "Compact commands: on one row, as icons",
-        };
-        toggled = r.on_hover_text(tip).on_disabled_hover_text(tip).clicked();
-    };
-    // The names first, for Tab's order, leaving room for the button at the right.
-    ui.horizontal(|ui| {
-        let room = ui.available_width() - 32.0;
-        ui.scope(|ui| {
-            ui.set_max_width(room);
-            names(ui);
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), toggle);
+        }
     });
-    toggled
+}
+
+/// The button that makes the commands compact (`compact`) or full again, greyed while a
+/// short window keeps them compact (`forced`). Returns whether it was clicked.
+pub fn compact_toggle(ui: &mut egui::Ui, compact: bool, forced: bool) -> bool {
+    let a = actions::get(Act::ToggleCompact);
+    let glyph = if compact {
+        icon::CARET_DOWN
+    } else {
+        icon::CARET_UP
+    };
+    let b = egui::Button::new(theme::icon(glyph).size(14.0))
+        .frame_when_inactive(false)
+        .min_size(egui::vec2(24.0, 24.0));
+    let r = ui.add_enabled(!forced, b);
+    r.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, !forced, compact, a.label));
+    let tip = match (forced, compact) {
+        (true, _) => "Compact while the window is short",
+        (false, true) => "Full commands, with their names",
+        (false, false) => "Compact commands: on one row, as icons",
+    };
+    r.on_hover_text(tip).on_disabled_hover_text(tip).clicked()
 }
 
 /// A band's name above it: its background and an accent line under it when chosen.

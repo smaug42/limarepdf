@@ -675,6 +675,9 @@ pub struct App {
     clip: Option<(Clip, egui::Id)>,
     /// The width of the status bar's controls at its right, as last drawn.
     status_width: Option<f32>,
+    /// The width of Print and the compact commands button, at the commands' right, as last
+    /// drawn.
+    commands_right: Option<f32>,
     /// The desktop's accent colour being read off the window's thread ([`App::read_accent`]).
     accent_read: Option<Receiver<Option<egui::Color32>>>,
     /// The window has been fitted to its monitor, at the first frame the monitor's size was known.
@@ -796,6 +799,7 @@ impl App {
             band: Band::default(),
             clip: None,
             status_width: None,
+            commands_right: None,
             accent_read: None,
             fitted: false,
             regions: Regions::default(),
@@ -4506,19 +4510,6 @@ impl App {
     }
 }
 
-/// LimarePDF's icon at the left of the top row, as the desktop shows it.
-fn brand(ui: &mut egui::Ui) {
-    let size = egui::vec2(24.0, 24.0);
-    match about::app_icon(ui.ctx()) {
-        Some(t) => {
-            ui.add(egui::Image::new((t.id(), size)));
-        }
-        None => {
-            ui.allocate_exact_size(size, egui::Sense::hover());
-        }
-    }
-}
-
 /// A thin upright line between groups of buttons in a row.
 fn divider(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(11.0, 20.0), egui::Sense::hover());
@@ -5163,8 +5154,8 @@ impl eframe::App for App {
         let recent_files: Vec<PathBuf> = self.recent.existing().into_iter().cloned().collect();
         let recent: Vec<&PathBuf> = recent_files.iter().collect();
 
-        // A command's button in the top row: its icon and label, or its icon alone, named;
-        // its label, shortcut and hint as the tooltip.
+        // A document command's button in the commands' row: its icon and label, or its icon
+        // alone, named; its label, shortcut and hint as the tooltip.
         let quick =
             |ui: &mut egui::Ui, act: Act, glyph: &str, label: Option<&str>, acts: &mut Vec<Act>| {
                 let a = actions::get(act);
@@ -5174,7 +5165,7 @@ impl eframe::App for App {
                     None => egui::Button::new(glyph),
                 }
                 .frame_when_inactive(false)
-                .min_size(egui::vec2(32.0, 32.0));
+                .min_size(egui::vec2(28.0, 28.0));
                 let enabled = (a.enabled)(&c);
                 let r = ui.add_enabled(enabled, b);
                 let name = a.label.trim_end_matches('…');
@@ -5192,43 +5183,6 @@ impl eframe::App for App {
             .tabs
             .get_mut(self.active)
             .map(|t| t.ed.sign.menu(&ctx, &self.settings.sign));
-
-        // The top row (build plan 2.2): LimarePDF's icon, then File (every command), Open,
-        // Save, Undo, Redo and Print. (The file's name is on its tab and in the window's
-        // title.)
-        let top = egui::Panel::top("topbar")
-            .frame(theme::top_frame(ui.style()))
-            .show_separator_line(!has)
-            .show(ui, |ui| {
-                regions::name(ui, Region::TopBar);
-                // Narrow windows keep the buttons, their labels going.
-                let room = ui.available_width();
-                let label = |text: &'static str| (room >= 560.0).then_some(text);
-                ui.horizontal(|ui| {
-                    brand(ui);
-                    ui.add_space(12.0);
-                    ui.spacing_mut().item_spacing.x = 2.0;
-                    let glyph = theme::icon(icon::LIST).size(16.0);
-                    let file = match label("File") {
-                        Some(text) => egui::Button::new((glyph, text)),
-                        None => egui::Button::new(glyph),
-                    }
-                    .frame_when_inactive(false)
-                    .min_size(egui::vec2(32.0, 32.0));
-                    egui::containers::menu::MenuButton::from_button(file)
-                        .ui(ui, |ui| Self::menu(ui, &c, &recent, &mut acts))
-                        .0
-                        .on_hover_text("Every command, by kind")
-                        .widget_info(|| named("File"));
-                    quick(ui, Act::Open, icon::FOLDER_OPEN, label("Open"), &mut acts);
-                    quick(ui, Act::Save, icon::FLOPPY_DISK, label("Save"), &mut acts);
-                    divider(ui);
-                    quick(ui, Act::Undo, icon::ARROW_U_UP_LEFT, None, &mut acts);
-                    quick(ui, Act::Redo, icon::ARROW_U_UP_RIGHT, None, &mut acts);
-                    quick(ui, Act::Print, icon::PRINTER, label("Print"), &mut acts);
-                });
-            });
-        self.regions.add(Region::TopBar, top.response.rect);
 
         // The tab whose close button was clicked, closed at the end of the frame: the rest
         // of it is drawn for the tabs as they were (`has`, `c`).
@@ -5274,51 +5228,102 @@ impl eframe::App for App {
                     }
                 });
             self.regions.add(Region::Tabs, tabs.response.rect);
-
-            // The commands (ENH-38): the band's names, and the chosen one's groups; compact
-            // when chosen, or while the window is short.
-            let active = self.active;
-            let t = &mut self.tabs[active];
-            let chosen = &mut self.band;
-            let short = ctx.content_rect().height() < SHORT_HEIGHT;
-            let compact = c.compact || short;
-            let commands = egui::Panel::top("commands")
-                .frame(theme::commands_frame(ui.style()))
-                .show(ui, |ui| {
-                    let name = format!("{} commands", chosen.name());
-                    regions::name_as(ui, egui::accesskit::Role::Toolbar, &name);
-                    let names = egui::Margin {
-                        left: 14,
-                        right: 14,
-                        top: 4,
-                        bottom: 0,
-                    };
-                    let toggled = egui::Frame::new()
-                        .inner_margin(names)
-                        .show(ui, |ui| band::names(ui, chosen, compact, short))
-                        .inner;
-                    if toggled {
-                        acts.push(Act::ToggleCompact);
-                    }
-                    egui::Frame::new()
-                        .inner_margin(egui::Margin::symmetric(8, 4))
-                        .show(ui, |ui| {
-                            let mut font = |ui: &mut egui::Ui, planned: &dyn Fn(&mut egui::Ui)| {
-                                t.guarded(|t| t.ed.font_band(ui, planned, compact));
-                            };
-                            let mut parts = band::Parts {
-                                c: &c,
-                                sign: sign_menu.as_ref(),
-                                font: &mut font,
-                                compact,
-                            };
-                            band::show(ui, *chosen, &mut parts, &mut acts)
-                        })
-                        .inner
-                });
-            t.ed.keep_typing = commands.inner;
-            self.regions.add(Region::Commands, commands.response.rect);
         }
+
+        // The commands (ENH-38), below the tabs: one row of the document's own commands as
+        // icons (the File menu with every command, Open, Save, Undo, Redo), the band's names,
+        // and Print and the button for compact commands at the right (the user's layout,
+        // 2026-10-27, for a shorter window top); under it the chosen band's groups, compact
+        // when chosen or while the window is short. (The file's name is on its tab and in
+        // the window's title.)
+        let short = ctx.content_rect().height() < SHORT_HEIGHT;
+        let compact = c.compact || short;
+        let room = ctx.content_rect().width();
+        let label = |text: &'static str| (room >= 560.0).then_some(text);
+        let active = self.active;
+        let chosen = &mut self.band;
+        let right_last = &mut self.commands_right;
+        let mut tab = self.tabs.get_mut(active);
+        let commands = egui::Panel::top("commands")
+            .frame(theme::commands_frame(ui.style()))
+            .show(ui, |ui| {
+                let name = match has {
+                    true => format!("{} commands", chosen.name()),
+                    false => "Commands".into(),
+                };
+                regions::name_as(ui, egui::accesskit::Role::Toolbar, &name);
+                let row = egui::Margin {
+                    left: 10,
+                    right: 10,
+                    top: 4,
+                    bottom: 0,
+                };
+                let mut toggled = false;
+                egui::Frame::new().inner_margin(row).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        let file = egui::Button::new(theme::icon(icon::LIST).size(16.0))
+                            .frame_when_inactive(false)
+                            .min_size(egui::vec2(28.0, 28.0));
+                        egui::containers::menu::MenuButton::from_button(file)
+                            .ui(ui, |ui| Self::menu(ui, &c, &recent, &mut acts))
+                            .0
+                            .on_hover_text("File: every command, by kind")
+                            .widget_info(|| named("File"));
+                        quick(ui, Act::Open, icon::FOLDER_OPEN, None, &mut acts);
+                        quick(ui, Act::Save, icon::FLOPPY_DISK, None, &mut acts);
+                        divider(ui);
+                        quick(ui, Act::Undo, icon::ARROW_U_UP_LEFT, None, &mut acts);
+                        quick(ui, Act::Redo, icon::ARROW_U_UP_RIGHT, None, &mut acts);
+                        divider(ui);
+                        // The names, leaving room for the controls at the right as they
+                        // were last drawn; then those, in reading order.
+                        let right = right_last.unwrap_or(110.0);
+                        if has {
+                            let names = (ui.available_width() - right - 8.0).max(0.0);
+                            ui.scope(|ui| {
+                                ui.set_max_width(names);
+                                band::names(ui, chosen);
+                            });
+                        }
+                        let end = egui::Layout::right_to_left(egui::Align::Center);
+                        ui.with_layout(end, |ui| {
+                            let width = dlg::reading_order(ui, *right_last, |ui| {
+                                quick(ui, Act::Print, icon::PRINTER, label("Print"), &mut acts);
+                                if has {
+                                    toggled = band::compact_toggle(ui, compact, short);
+                                }
+                            });
+                            *right_last = Some(width);
+                        });
+                    });
+                });
+                if toggled {
+                    acts.push(Act::ToggleCompact);
+                }
+                let Some(t) = tab.as_deref_mut() else {
+                    return Vec::new();
+                };
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(8, 4))
+                    .show(ui, |ui| {
+                        let mut font = |ui: &mut egui::Ui, planned: &dyn Fn(&mut egui::Ui)| {
+                            t.guarded(|t| t.ed.font_band(ui, planned, compact));
+                        };
+                        let mut parts = band::Parts {
+                            c: &c,
+                            sign: sign_menu.as_ref(),
+                            font: &mut font,
+                            compact,
+                        };
+                        band::show(ui, *chosen, &mut parts, &mut acts)
+                    })
+                    .inner
+            });
+        if let Some(t) = tab {
+            t.ed.keep_typing = commands.inner;
+        }
+        self.regions.add(Region::Commands, commands.response.rect);
 
         // The status bar: what is selected or the tool in use, and messages, at the left;
         // the page, Show planned features and the zoom at the right.
@@ -6293,13 +6298,12 @@ mod tests {
         // Redo is disabled, as nothing was undone, and Paste, Copy and the Font group as
         // nothing is typed or selected; planned features are no Tab stops.
         let bars = [
+            "Untitled, unsaved",
+            "Close Untitled",
             "File",
             "Open",
             "Save",
             "Undo",
-            "Print",
-            "Untitled, unsaved",
-            "Close Untitled",
             "Edit",
             "Insert",
             "Review",
@@ -6307,6 +6311,7 @@ mod tests {
             "Forms and sign",
             "Protect",
             "View",
+            "Print",
             "Compact commands",
             "Edit text",
             "Find",
@@ -6360,9 +6365,8 @@ mod tests {
         let round = [
             Some("Collapse the inspector"),
             Some("Show planned features"),
-            Some("File"),
             Some("Untitled, unsaved"),
-            Some("Edit"),
+            Some("File"),
             Some("Pages"),
             None,
             Some("Collapse the inspector"),
@@ -6386,23 +6390,18 @@ mod tests {
         // Back the other way, to where the keyboard was last in each region.
         let side = Some("Pages");
         assert_eq!(f6(&mut app, &ctx, true).as_deref(), side);
-        assert_eq!(f6(&mut app, &ctx, true).as_deref(), Some("Edit"));
-        let doc = Some("Untitled, unsaved");
-        assert_eq!(f6(&mut app, &ctx, true).as_deref(), doc);
         assert_eq!(f6(&mut app, &ctx, true).as_deref(), Some("File"));
         let tab = key_with(Key::Tab, egui::Modifiers::NONE);
         window(&mut app, &ctx, 1400.0, vec![tab]);
         let tree = window(&mut app, &ctx, 1400.0, vec![]);
         assert_eq!(focused_name(&ctx, &tree).as_deref(), Some("Open"));
-        let status = Some("Show planned features");
-        assert_eq!(f6(&mut app, &ctx, true).as_deref(), status);
+        let doc = Some("Untitled, unsaved");
+        assert_eq!(f6(&mut app, &ctx, true).as_deref(), doc);
         assert_eq!(f6(&mut app, &ctx, false).as_deref(), Some("Open"));
 
         // A notice is a region of its own, between the commands and navigation.
         app.tabs[0].show_banner(crate::banners::changed_on_disk());
         settled_at(&mut app, &ctx, 1400.0);
-        assert_eq!(f6(&mut app, &ctx, false).as_deref(), doc);
-        assert_eq!(f6(&mut app, &ctx, false).as_deref(), Some("Edit"));
         assert_eq!(f6(&mut app, &ctx, false).as_deref(), Some("Reload"));
         assert_eq!(f6(&mut app, &ctx, false).as_deref(), side);
     }
@@ -6421,9 +6420,8 @@ mod tests {
         let round = [
             Some("Expand the inspector"),
             Some("Show planned features"),
-            Some("File"),
             Some("Untitled, unsaved"),
-            Some("Edit"),
+            Some("File"),
             Some("Pages"),
             None,
         ];
@@ -6506,12 +6504,12 @@ mod tests {
             // Round to the commands, then along them.
             let mut tree = ty.key(&mut app, Key::F6, none);
             for _ in 0..8 {
-                if focused_name(&ctx, &tree).as_deref() == Some("Edit") {
+                if focused_name(&ctx, &tree).as_deref() == Some("File") {
                     break;
                 }
                 tree = ty.key(&mut app, Key::F6, none);
             }
-            for _ in 0..20 {
+            for _ in 0..30 {
                 if focused_name(&ctx, &tree).as_deref() == Some("Bold") {
                     break;
                 }
@@ -6609,7 +6607,6 @@ mod tests {
                 .any(|(_, n)| n.role() == role && n.label() == Some(label))
         };
         for (role, label) in [
-            (Role::Toolbar, "Top bar"),
             (Role::TabList, "Tabs"),
             (Role::Toolbar, "Edit commands"),
             (Role::Region, "Notices"),
@@ -6786,6 +6783,19 @@ mod tests {
         ctx.enable_accesskit();
         theme::install(&ctx);
         let mut app = app_with(&ctx, 1);
+        // One row under the tabs: the document's commands, the names, then Print and the
+        // compact commands button at the right edge.
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        let at = |name: &str| node(&tree, name).expect(name).0;
+        let (file, edit, print) = (at("File"), at("Edit"), at("Print"));
+        let (caret, doc) = (at("Compact commands"), at("Untitled, unsaved"));
+        for r in [edit, print, caret] {
+            let level = (r.center().y - file.center().y).abs() < 4.0;
+            assert!(level, "{r:?} beside {file:?}");
+        }
+        assert!(doc.bottom() <= file.top(), "the tabs aren't above");
+        assert!(file.right() < edit.left() && edit.right() < print.left());
+        assert!(print.right() <= caret.left() && caret.right() > 1350.0);
         let tab = |tree: &egui::accesskit::TreeUpdate, name: &str| {
             let (_, n) = (tree.nodes.iter())
                 .find(|(_, n)| n.role() == Role::Tab && n.label() == Some(name))
