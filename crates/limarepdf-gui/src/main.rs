@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod about;
+mod accent;
 mod actions;
 mod app;
 mod band;

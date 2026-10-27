@@ -124,7 +124,7 @@ pub fn styles(ui: &mut egui::Ui, f: &mut FontChoice) {
     let square = |b: egui::Button<'static>, on: bool| {
         b.selected(on)
             .frame_when_inactive(true)
-            .min_size(egui::vec2(30.0, 28.0))
+            .min_size(egui::vec2(26.0, 26.0))
     };
     let b = egui::RichText::new("B").family(crate::theme::semibold());
     let b = square(egui::Button::new(b), bold);

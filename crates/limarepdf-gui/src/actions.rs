@@ -6,7 +6,7 @@ use crate::editor::Tool;
 use crate::icon;
 use crate::markup::{self, Mark};
 use crate::selection::{ObjKind, Selection};
-use crate::settings::{Layout, PageLook};
+use crate::settings::{Accent, Layout, PageLook};
 use crate::signing::SignPick;
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, ThemePreference};
 use limarepdf_core::page_colours::PageColours;
@@ -148,6 +148,10 @@ pub enum Act {
     TogglePageLabels,
     /// Show the features planned but not built where they will be, greyed (ENH-41).
     TogglePlanned,
+    /// The band's commands on one row, as icons, or full.
+    ToggleCompact,
+    /// The accent colour: the desktop's, or LimarePDF's.
+    Accent(Accent),
     NextField,
     PrevField,
     /// Empty the form field with the keyboard.
@@ -276,6 +280,8 @@ impl Act {
             | Act::ToggleFields
             | Act::TogglePageLabels
             | Act::TogglePlanned
+            | Act::ToggleCompact
+            | Act::Accent(_)
             | Act::NextField
             | Act::PrevField
             | Act::ClearField
@@ -391,6 +397,9 @@ pub struct Ctx {
     pub page_labels: bool,
     /// See [`Act::TogglePlanned`].
     pub planned: bool,
+    /// See [`Act::ToggleCompact`]: the setting, whatever a short window does.
+    pub compact: bool,
+    pub accent: Accent,
     /// Text is being typed on the page: new text, a line of page text, a note or a text
     /// box, open whether or not it has the keyboard just now.
     pub typing: bool,
@@ -1116,6 +1125,17 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::ToggleCompact,
+        group: Group::View,
+        label: "Compact commands",
+        icon: icon::CARET_UP,
+        enabled: always,
+        checked: Some(|c| c.compact),
+        hint: "The commands on one row, as icons: their names show on hover. Short windows \
+               show them so anyway.",
+        ..BASE
+    },
+    Action {
         act: Act::ToggleFields,
         group: Group::View,
         label: "Highlight fields",
@@ -1176,6 +1196,26 @@ pub static ACTIONS: &[Action] = &[
         enabled: always,
         checked: Some(|c| c.theme == ThemePreference::Dark),
         submenu: "Theme",
+        ..BASE
+    },
+    Action {
+        act: Act::Accent(Accent::Desktop),
+        group: Group::View,
+        label: "Desktop",
+        enabled: always,
+        checked: Some(|c| c.accent == Accent::Desktop),
+        hint: "The accent colour your desktop uses, where it says one; else LimarePDF's.",
+        submenu: "Accent colour",
+        ..BASE
+    },
+    Action {
+        act: Act::Accent(Accent::LimarePdf),
+        group: Group::View,
+        label: "LimarePDF",
+        enabled: always,
+        checked: Some(|c| c.accent == Accent::LimarePdf),
+        hint: "LimarePDF's own teal.",
+        submenu: "Accent colour",
         ..BASE
     },
     Action {

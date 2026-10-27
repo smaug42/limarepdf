@@ -99,6 +99,7 @@ pub const STACK: &str = "\u{E466}";
 pub const STACK_PLUS: &str = "\u{EDF6}";
 pub const STAMP: &str = "\u{EA48}";
 pub const SWAP: &str = "\u{E83C}";
+pub const SWATCHES: &str = "\u{E5B8}";
 pub const TAG: &str = "\u{E478}";
 pub const TEXT_AA: &str = "\u{E6EE}";
 pub const TEXT_ALIGN_LEFT: &str = "\u{E484}";

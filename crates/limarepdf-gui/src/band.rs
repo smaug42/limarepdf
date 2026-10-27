@@ -13,7 +13,7 @@ use crate::actions::{self, Act, Ctx};
 use crate::editor::Tool;
 use crate::icon;
 use crate::markup::{self, Mark};
-use crate::settings::{Layout, PageLook};
+use crate::settings::{Accent, Layout, PageLook};
 use crate::signing::SignMenu;
 use crate::theme;
 use eframe::egui::{self, Rect, RichText, ThemePreference};
@@ -530,6 +530,11 @@ static VIEW: &[Group] = &[
                 ],
             ),
             menu(
+                "Accent colour",
+                icon::SWATCHES,
+                &[Act::Accent(Accent::Desktop), Act::Accent(Accent::LimarePdf)],
+            ),
+            menu(
                 "Page colours",
                 icon::PALETTE,
                 &[
@@ -549,6 +554,7 @@ static VIEW: &[Group] = &[
                     Act::ToggleFields,
                     Act::TogglePageLabels,
                     Act::TogglePlanned,
+                    Act::ToggleCompact,
                 ],
             ),
         ],
@@ -566,28 +572,72 @@ pub struct Parts<'a> {
     /// The saved signatures for Fill and sign's menu.
     pub sign: Option<&'a SignMenu>,
     pub font: &'a mut FontGroup<'a>,
+    /// The commands on one row, as icons ([`Act::ToggleCompact`], or a short window).
+    pub compact: bool,
 }
 
-/// The height of a group's controls: the Font group's two rows.
-const CONTROLS: f32 = 64.0;
+/// The height of a group's controls: the Font group's two rows, or one row when compact.
+fn controls(compact: bool) -> f32 {
+    if compact {
+        BUTTON
+    } else {
+        54.0
+    }
+}
 /// The room at either side of a group, inside its divider.
-const PAD: f32 = 12.0;
+const PAD: f32 = 10.0;
 /// The height of a button.
-const BUTTON: f32 = 32.0;
+const BUTTON: f32 = 28.0;
 /// Extra room a folded group needs before it comes back, so that a width at the boundary
 /// doesn't fold and unfold it by turns.
 const UNFOLD_MARGIN: f32 = 12.0;
 
-/// The band's names, the chosen one shown as such; a click chooses another.
-pub fn names(ui: &mut egui::Ui, band: &mut Band) {
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 3.0;
-        for b in Band::ALL {
-            if name_tab(ui, b.name(), *band == b).clicked() {
-                *band = b;
+/// The band's names, the chosen one shown as such, a click choosing another; and at the
+/// right the button that makes the commands compact (`compact`) or full again, greyed while
+/// a short window keeps them compact (`forced`). Returns whether that button was clicked.
+pub fn names(ui: &mut egui::Ui, band: &mut Band, compact: bool, forced: bool) -> bool {
+    let mut toggled = false;
+    let mut names = |ui: &mut egui::Ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            for b in Band::ALL {
+                if name_tab(ui, b.name(), *band == b).clicked() {
+                    *band = b;
+                }
             }
-        }
+        });
+    };
+    let toggle = |ui: &mut egui::Ui| {
+        let a = actions::get(Act::ToggleCompact);
+        let glyph = if compact {
+            icon::CARET_DOWN
+        } else {
+            icon::CARET_UP
+        };
+        let b = egui::Button::new(theme::icon(glyph).size(14.0))
+            .frame_when_inactive(false)
+            .min_size(egui::vec2(24.0, 24.0));
+        let r = ui.add_enabled(!forced, b);
+        r.widget_info(|| {
+            egui::WidgetInfo::selected(egui::Role::CheckBox, !forced, compact, a.label)
+        });
+        let tip = match (forced, compact) {
+            (true, _) => "Compact while the window is short",
+            (false, true) => "Full commands, with their names",
+            (false, false) => "Compact commands: on one row, as icons",
+        };
+        toggled = r.on_hover_text(tip).on_disabled_hover_text(tip).clicked();
+    };
+    // The names first, for Tab's order, leaving room for the button at the right.
+    ui.horizontal(|ui| {
+        let room = ui.available_width() - 32.0;
+        ui.scope(|ui| {
+            ui.set_max_width(room);
+            names(ui);
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), toggle);
     });
+    toggled
 }
 
 /// A band's name above it: its background and an accent line under it when chosen.
@@ -606,7 +656,7 @@ fn name_tab(ui: &mut egui::Ui, name: &str, on: bool) -> egui::Response {
     let galley = ui
         .painter()
         .layout_no_wrap(name.into(), egui::FontId::new(14.0, family), color);
-    let size = galley.size() + egui::vec2(24.0, 14.0);
+    let size = galley.size() + egui::vec2(24.0, 10.0);
     let (rect, r) = ui.allocate_exact_size(size, egui::Sense::click());
     if ui.is_rect_visible(rect) {
         let p = ui.painter();
@@ -642,8 +692,11 @@ pub fn show(ui: &mut egui::Ui, band: Band, parts: &mut Parts, acts: &mut Vec<Act
     let planned = parts.c.planned;
     let groups: Vec<&Group> = band.groups().iter().filter(|g| g.shown(planned)).collect();
     let order = fold_order(&groups);
-    // The groups' widths as last drawn, and their folded buttons'; estimated until drawn.
-    let key = |what: &str, i: usize| egui::Id::unique(("band-width", band.name(), what, i));
+    // The groups' widths as last drawn, and their folded buttons', full or compact;
+    // estimated until drawn.
+    let compact = parts.compact;
+    let key =
+        |what: &str, i: usize| egui::Id::unique(("band-width", band.name(), what, i, compact));
     let width = |what: &str, i: usize, guess: f32| {
         ui.data(|d| d.get_temp::<f32>(key(what, i)))
             .unwrap_or(guess)
@@ -659,7 +712,7 @@ pub fn show(ui: &mut egui::Ui, band: Band, parts: &mut Parts, acts: &mut Vec<Act
             .sum()
     };
     let room = ui.available_width();
-    let level = egui::Id::unique(("band-folded", band.name()));
+    let level = egui::Id::unique(("band-folded", band.name(), compact));
     let before = ui.data(|d| d.get_temp::<usize>(level)).unwrap_or(0);
     let folded = fold_level(before, groups.len(), room, need);
     ui.data_mut(|d| d.insert_temp(level, folded));
@@ -725,13 +778,14 @@ fn group_ui(
     divide: bool,
 ) -> Rect {
     let dark = ui.visuals().dark_mode;
+    let height = controls(parts.compact);
     let r = ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
         ui.add_space(PAD);
-        ui.spacing_mut().item_spacing = egui::vec2(3.0, 6.0);
-        let row = egui::vec2(ui.available_width(), CONTROLS);
+        ui.spacing_mut().item_spacing = egui::vec2(3.0, 4.0);
+        let row = egui::vec2(ui.available_width(), height);
         let layout = egui::Layout::left_to_right(egui::Align::Center);
         ui.allocate_ui_with_layout(row, layout, |ui| {
-            ui.set_min_height(CONTROLS);
+            ui.set_min_height(height);
             field_look(ui.style_mut());
             items(ui, g, parts, acts);
         });
@@ -758,10 +812,11 @@ fn field_look(s: &mut egui::Style) {
 
 /// A group without room: a button with its name, which opens its controls.
 fn folded_group(ui: &mut egui::Ui, g: &Group, parts: &mut Parts, acts: &mut Vec<Act>) -> Rect {
-    let row = egui::vec2(ui.available_width(), CONTROLS);
+    let height = controls(parts.compact);
+    let row = egui::vec2(ui.available_width(), height);
     let centred = egui::Layout::left_to_right(egui::Align::Center);
     let r = ui.allocate_ui_with_layout(row, centred, |ui| {
-        ui.set_min_height(CONTROLS);
+        ui.set_min_height(height);
         ui.add_space(2.0);
         let caret = egui::Atom::from(theme::icon(icon::CARET_DOWN).size(10.0));
         let label = (g.name, caret);
@@ -786,17 +841,20 @@ fn folded_group(ui: &mut egui::Ui, g: &Group, parts: &mut Parts, acts: &mut Vec<
 
 /// A group's controls, in a row.
 fn items(ui: &mut egui::Ui, g: &Group, parts: &mut Parts, acts: &mut Vec<Act>) {
-    let c = parts.c;
+    let (c, compact) = (parts.c, parts.compact);
+    let button = |ui: &mut egui::Ui, b: &Button, acts: &mut Vec<Act>| {
+        button(ui, b, c, acts, compact);
+    };
     for item in g.items {
         match item {
-            Item::Button(b) => button(ui, b, c, acts),
-            Item::Planned(p) if c.planned => planned(ui, p),
+            Item::Button(b) => button(ui, b, acts),
+            Item::Planned(p) if c.planned => planned(ui, p, compact),
             Item::Planned(_) => {}
             Item::Font => {
                 let show = c.planned;
                 (parts.font)(ui, &|ui| {
                     if show {
-                        planned_style(ui, &UNDERLINE, "U");
+                        planned_style(ui, &UNDERLINE, "U", compact);
                     }
                 });
             }
@@ -807,7 +865,7 @@ fn items(ui: &mut egui::Ui, g: &Group, parts: &mut Parts, acts: &mut Vec<Act>) {
                     icon: icon::SIGNATURE,
                     menu: &[],
                 };
-                button(ui, &sign, c, acts);
+                button(ui, &sign, acts);
                 if let Some(m) = parts.sign {
                     caret(ui, "Fill and sign choices", |ui| {
                         crate::signing::menu_ui(ui, m, acts);
@@ -832,7 +890,7 @@ fn items(ui: &mut egui::Ui, g: &Group, parts: &mut Parts, acts: &mut Vec<Act>) {
                     icon: icon::HIGHLIGHTER,
                     menu: &[],
                 };
-                button(ui, &mark, c, acts);
+                button(ui, &mark, acts);
                 caret(ui, "Highlight options", |ui| markup::menu(ui, c, acts));
             }
         }
@@ -849,18 +907,21 @@ fn is_on(act: Act, c: &Ctx) -> bool {
 
 /// A command's button, and the caret for its menu; or, with no command, a button that
 /// opens the menu. Shown pressed while the command is on, or a tool in its menu is in use
-/// (a menu's ticked choices don't press it).
-fn button(ui: &mut egui::Ui, b: &Button, c: &Ctx, acts: &mut Vec<Act>) {
+/// (a menu's ticked choices don't press it). `compact`: its icon alone, named on hover.
+fn button(ui: &mut egui::Ui, b: &Button, c: &Ctx, acts: &mut Vec<Act>, compact: bool) {
     let tool = |a: &Act| matches!(a, Act::Tool(_)) && is_on(*a, c);
     let on = b.act.is_some_and(|a| is_on(a, c)) || b.menu.iter().any(tool);
     let glyph = theme::icon(b.icon).size(16.0);
     let Some(act) = b.act else {
         let enabled = b.menu.iter().any(|&a| (actions::get(a).enabled)(c));
         let caret = egui::Atom::from(theme::icon(icon::CARET_DOWN).size(10.0));
-        let button = egui::Button::new((glyph, b.label, caret))
-            .frame_when_inactive(on)
-            .selected(on)
-            .min_size(egui::vec2(0.0, BUTTON));
+        let button = match compact {
+            true => egui::Button::new((glyph, caret)),
+            false => egui::Button::new((glyph, b.label, caret)),
+        }
+        .frame_when_inactive(on)
+        .selected(on)
+        .min_size(egui::vec2(0.0, BUTTON));
         ui.add_enabled_ui(enabled, |ui| {
             let (r, _) = egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
                 for &a in b.menu {
@@ -868,15 +929,20 @@ fn button(ui: &mut egui::Ui, b: &Button, c: &Ctx, acts: &mut Vec<Act>) {
                 }
             });
             r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, b.label));
+            if compact {
+                r.on_hover_text(b.label);
+            }
         });
         return;
     };
     let a = actions::get(act);
     let enabled = (a.enabled)(c);
-    let button = egui::Button::new((glyph, b.label))
-        .frame_when_inactive(on)
-        .selected(on)
-        .min_size(egui::vec2(0.0, BUTTON));
+    let button = match compact {
+        true => egui::Button::new(glyph).min_size(egui::vec2(BUTTON, BUTTON)),
+        false => egui::Button::new((glyph, b.label)).min_size(egui::vec2(0.0, BUTTON)),
+    }
+    .frame_when_inactive(on)
+    .selected(on);
     let r = ui.add_enabled(enabled, button);
     r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, b.label));
     let tip = actions::tooltip(ui.ctx(), a);
@@ -905,12 +971,14 @@ fn caret(ui: &mut egui::Ui, name: &str, menu: impl FnOnce(&mut egui::Ui)) {
 }
 
 /// A planned feature's button: greyed, marked Planned, never run, and no Tab stop.
-fn planned(ui: &mut egui::Ui, p: &Planned) {
+fn planned(ui: &mut egui::Ui, p: &Planned, compact: bool) {
     let glyph = theme::icon(p.icon).size(16.0);
     let tag = planned_tag(ui);
-    let button = egui::Button::new((glyph, p.label, tag))
-        .frame_when_inactive(false)
-        .min_size(egui::vec2(0.0, BUTTON));
+    let button = match compact {
+        true => egui::Button::new(glyph).min_size(egui::vec2(BUTTON, BUTTON)),
+        false => egui::Button::new((glyph, p.label, tag)).min_size(egui::vec2(0.0, BUTTON)),
+    }
+    .frame_when_inactive(false);
     let r = ui.add_enabled(false, button);
     let name = p.name();
     r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, false, &name));
@@ -918,11 +986,15 @@ fn planned(ui: &mut egui::Ui, p: &Planned) {
 }
 
 /// A planned text style's button in the Font group: its letter underlined, greyed and
-/// marked Planned.
-fn planned_style(ui: &mut egui::Ui, p: &Planned, letter: &str) {
+/// marked Planned (`compact`: the letter alone, named on hover).
+fn planned_style(ui: &mut egui::Ui, p: &Planned, letter: &str, compact: bool) {
     let text = RichText::new(letter).size(15.0).underline();
     let tag = planned_tag(ui);
-    let button = egui::Button::new((text, tag)).min_size(egui::vec2(30.0, 28.0));
+    let button = match compact {
+        true => egui::Button::new(text),
+        false => egui::Button::new((text, tag)),
+    }
+    .min_size(egui::vec2(26.0, 26.0));
     let r = ui.add_enabled(false, button);
     let name = p.name();
     r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, false, &name));

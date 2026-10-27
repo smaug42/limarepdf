@@ -2450,12 +2450,15 @@ dependencies = [
  "limarepdf-core",
  "lopdf",
  "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "rayon",
  "rfd",
  "unicode-segmentation",
+ "windows-sys 0.61.2",
  "winit",
  "winresource",
+ "zbus",
 ]
 
 [[package]]

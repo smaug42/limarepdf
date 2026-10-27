@@ -2,7 +2,9 @@
 //! mode. Light or dark follows the system unless chosen in View > Theme.
 //!
 //! Spacing uses a 4/8 px scale, corners are 6 px (8 px on windows), widgets are flat (no
-//! borders; dialogs outline theirs, [`dialog_style`]), and there is one accent colour.
+//! borders; dialogs outline theirs, [`dialog_style`]), and there is one accent colour: the
+//! desktop's where it says one and the user follows it (View > Accent colour), else
+//! LimarePDF's teal ([`set_accent`], `accent.rs`).
 
 use eframe::egui::{
     self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Margin, RichText,
@@ -15,6 +17,7 @@ pub const RADIUS: u8 = 6;
 pub const WINDOW_RADIUS: u8 = 8;
 
 /// Colours for one theme.
+#[derive(Clone, Copy)]
 struct Palette {
     /// The accent: selection, focus, links, the active tool.
     accent: Color32,
@@ -77,12 +80,78 @@ const DARK: Palette = Palette {
     shadow: Color32::from_black_alpha(110),
 };
 
-fn palette(dark: bool) -> &'static Palette {
-    if dark {
-        &DARK
-    } else {
-        &LIGHT
+/// The desktop's accent colour, used for LimarePDF's teal when the user follows the
+/// desktop and it says one ([`set_accent`]).
+static DESKTOP_ACCENT: std::sync::RwLock<Option<Color32>> = std::sync::RwLock::new(None);
+
+fn palette(dark: bool) -> Palette {
+    let p = if dark { DARK } else { LIGHT };
+    match DESKTOP_ACCENT.read().ok().and_then(|a| *a) {
+        Some(a) => p.with_accent(a, dark),
+        None => p,
     }
+}
+
+impl Palette {
+    /// This palette with `accent` (the desktop's) for the teal: dark enough to read on the
+    /// light theme's surfaces and to carry white text, or light enough to read on the dark
+    /// theme's; the faint backgrounds of chosen and hovered things mixed from it.
+    fn with_accent(self, accent: Color32, dark: bool) -> Palette {
+        let toward = if dark { Color32::WHITE } else { Color32::BLACK };
+        let ground = if dark { self.surface } else { Color32::WHITE };
+        let mut a = accent;
+        for _ in 0..20 {
+            if contrast(a, ground) >= 4.5 {
+                break;
+            }
+            a = mix(a, toward, 0.08);
+        }
+        let (faint, pressed) = if dark { (0.30, 0.42) } else { (0.14, 0.24) };
+        Palette {
+            accent: a,
+            accent_bg: mix(self.surface, a, faint),
+            widget_hover: mix(self.surface, a, faint),
+            widget_active: mix(self.surface, a, pressed),
+            ..self
+        }
+    }
+}
+
+/// `a` with `t` (0 to 1) of `b` mixed in.
+fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let m = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8;
+    Color32::from_rgb(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
+}
+
+/// The contrast ratio of two colours, 1 to 21, as the Web Content Accessibility Guidelines
+/// reckon it (4.5 for ordinary text).
+fn contrast(a: Color32, b: Color32) -> f32 {
+    let lum = |c: Color32| {
+        let lin = |v: u8| {
+            let v = f32::from(v) / 255.0;
+            if v <= 0.04045 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+    };
+    let (x, y) = (lum(a), lum(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+
+/// Use `accent` (the desktop's) for LimarePDF's teal, or the teal again (`None`), in both
+/// themes' styles.
+pub fn set_accent(ctx: &egui::Context, accent: Option<Color32>) {
+    if let Ok(mut a) = DESKTOP_ACCENT.write() {
+        if *a == accent {
+            return;
+        }
+        *a = accent;
+    }
+    ctx.set_style_of(Theme::Light, style(false));
+    ctx.set_style_of(Theme::Dark, style(true));
 }
 
 /// Font family for headings and the document name (Inter SemiBold).
@@ -312,11 +381,17 @@ pub fn surface(dark: bool) -> Color32 {
 
 /// The shading over selected words on the page, which stays light in either theme: the
 /// workspace's selected-text colour, the words showing through.
+/// With the desktop's accent, its light tint.
 pub fn text_shading(dark: bool) -> Color32 {
+    let alpha = if dark { 150 } else { 140 };
+    if let Some(a) = DESKTOP_ACCENT.read().ok().and_then(|a| *a) {
+        let c = mix(Color32::WHITE, a, 0.4);
+        return Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), alpha);
+    }
     if dark {
-        Color32::from_rgba_unmultiplied(181, 214, 223, 150)
+        Color32::from_rgba_unmultiplied(181, 214, 223, alpha)
     } else {
-        Color32::from_rgba_unmultiplied(170, 208, 222, 140)
+        Color32::from_rgba_unmultiplied(170, 208, 222, alpha)
     }
 }
 
@@ -350,7 +425,7 @@ pub fn primary_button(text: &str) -> egui::Button<'static> {
     let label = RichText::new(text.to_owned())
         .color(Color32::WHITE)
         .family(semibold());
-    egui::Button::new(label).fill(LIGHT.accent)
+    egui::Button::new(label).fill(palette(false).accent)
 }
 
 /// A button for a main action that loses work or breaks signatures: white text on red in
@@ -407,4 +482,30 @@ pub fn commands_frame(style: &Style) -> egui::Frame {
     egui::Frame::side_top_panel(style)
         .fill(palette(style.visuals.dark_mode).surface)
         .inner_margin(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A desktop accent too pale or too dark to read is darkened on the light theme (enough
+    /// for white text on it too) or lightened on the dark one; one that reads is kept; the
+    /// faint backgrounds come from it.
+    #[test]
+    fn a_desktop_accent_is_made_readable() {
+        let pale = Color32::from_rgb(250, 220, 90);
+        let light = LIGHT.with_accent(pale, false);
+        assert!(contrast(light.accent, Color32::WHITE) >= 4.5);
+        assert_ne!(light.accent, pale);
+        let navy = Color32::from_rgb(20, 30, 90);
+        let dark = DARK.with_accent(navy, true);
+        assert!(contrast(dark.accent, DARK.surface) >= 4.5);
+        let blue = Color32::from_rgb(0, 95, 184);
+        assert_eq!(LIGHT.with_accent(blue, false).accent, blue);
+        let faint = LIGHT.with_accent(blue, false).accent_bg;
+        assert!(faint.b() > faint.r() && faint.r() > 200, "{faint:?}");
+        // The teal itself reads on both.
+        assert!(contrast(LIGHT.accent, Color32::WHITE) >= 4.5);
+        assert!(contrast(DARK.accent, DARK.surface) >= 4.5);
+    }
 }

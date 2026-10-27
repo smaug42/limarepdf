@@ -95,6 +95,15 @@ impl Layout {
     }
 }
 
+/// The accent colour: the desktop's where it says one, else LimarePDF's teal; or always
+/// LimarePDF's.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Accent {
+    #[default]
+    Desktop,
+    LimarePdf,
+}
+
 /// How pages are coloured on screen: a fixed mode, or Dark while the app's theme is dark.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PageLook {
@@ -205,6 +214,9 @@ pub struct Settings {
     /// Features planned but not built show, greyed, where they will be (ENH-41; on unless
     /// turned off).
     pub show_planned: bool,
+    /// The band's commands on one row, as icons (their names on hover); off unless chosen.
+    pub compact_commands: bool,
+    pub accent: Accent,
     /// The window's size in points when it isn't maximized, and whether it was maximized,
     /// when the app last closed.
     pub window: [f32; 2],
@@ -271,6 +283,8 @@ impl Settings {
             fields_shown: true,
             page_labels: true,
             show_planned: true,
+            compact_commands: false,
+            accent: Accent::Desktop,
             window: WINDOW_DEFAULT,
             window_maximized: false,
             file,
@@ -336,6 +350,13 @@ impl Settings {
                 "form_fields" => s.fields_shown = value != "plain",
                 "page_names" => s.page_labels = value != "numbers",
                 "planned_features" => s.show_planned = value != "hidden",
+                "commands" => s.compact_commands = value == "compact",
+                "accent_colour" => {
+                    s.accent = match value {
+                        "limarepdf" => Accent::LimarePdf,
+                        _ => Accent::Desktop,
+                    }
+                }
                 "window" => {
                     let size = value.split_once('x').and_then(|(w, h)| {
                         window_size([w.trim().parse().ok()?, h.trim().parse().ok()?])
@@ -453,6 +474,16 @@ impl Settings {
         );
         let planned = if self.show_planned { "shown" } else { "hidden" };
         text += &format!("planned_features = {planned}\n");
+        let commands = if self.compact_commands {
+            "compact"
+        } else {
+            "full"
+        };
+        let accent = match self.accent {
+            Accent::Desktop => "desktop",
+            Accent::LimarePdf => "limarepdf",
+        };
+        text += &format!("commands = {commands}\naccent_colour = {accent}\n");
         text += &format!(
             "window = {} x {}\nwindow_maximized = {}\n",
             self.window[0], self.window[1], self.window_maximized
@@ -633,6 +664,25 @@ mod tests {
         assert!(!Settings::from_file(Some(f.clone())).show_planned);
         std::fs::write(&f, "planned_features = walrus\n").unwrap();
         assert!(Settings::from_file(Some(f)).show_planned);
+    }
+
+    /// The band's commands full unless made compact, and the desktop's accent unless
+    /// LimarePDF's is chosen; both kept.
+    #[test]
+    fn compact_commands_and_the_accent_are_remembered() {
+        let f = file("commands");
+        let mut s = Settings::from_file(Some(f.clone()));
+        assert!(!s.compact_commands);
+        assert_eq!(s.accent, Accent::Desktop);
+        (s.compact_commands, s.accent) = (true, Accent::LimarePdf);
+        s.save();
+        let s = Settings::from_file(Some(f.clone()));
+        assert!(s.compact_commands);
+        assert_eq!(s.accent, Accent::LimarePdf);
+        std::fs::write(&f, "commands = walrus\naccent_colour = walrus\n").unwrap();
+        let s = Settings::from_file(Some(f));
+        assert!(!s.compact_commands);
+        assert_eq!(s.accent, Accent::Desktop);
     }
 
     #[test]

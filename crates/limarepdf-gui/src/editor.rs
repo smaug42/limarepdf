@@ -990,14 +990,16 @@ fn text_change(text: &Styled, o: &PageObject) -> TextEdit {
 
 /// Edit's Font group (ENH-38) for what a style command changes in `text`: the font list
 /// and size (within `sizes`) in a row, then Bold, Italic, `planned` (the planned styles)
-/// and the colour; each shows blank where that mixes values. `in_pdf` names the PDF fonts
-/// of text already in the PDF. Returns whether one was used.
+/// and the colour below them, or beside them when `compact`; each shows blank where that
+/// mixes values. `in_pdf` names the PDF fonts of text already in the PDF. Returns whether
+/// one was used.
 fn styles_ui(
     ui: &mut egui::Ui,
     text: &mut dyn Restyle,
     sizes: std::ops::RangeInclusive<f32>,
     in_pdf: &[String],
     planned: &dyn Fn(&mut egui::Ui),
+    compact: bool,
 ) -> bool {
     let shown = text.shown();
     let first = text.first();
@@ -1009,7 +1011,7 @@ fn styles_ui(
     let mut font = was;
     let mut used = false;
     let mut picked = false;
-    ui.vertical(|ui| {
+    ui.with_layout(look_layout(compact), |ui| {
         ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
         ui.horizontal(|ui| {
             picked = font_field(ui, |ui| {
@@ -1046,6 +1048,15 @@ fn styles_ui(
         }
     }
     used
+}
+
+/// The Font group's two rows: one above the other, or side by side when `compact`.
+fn look_layout(compact: bool) -> egui::Layout {
+    if compact {
+        egui::Layout::left_to_right(egui::Align::Center)
+    } else {
+        egui::Layout::top_down(egui::Align::Min)
+    }
 }
 
 /// The font list, as wide as the Font group's first row leaves room for.
@@ -4568,11 +4579,12 @@ impl Editor {
     /// the read tool; the line of page text selected or being edited (what is selected in
     /// it); the lines among several objects. With none of them, the next new text's look,
     /// greyed. Changes apply as they are made, each finished one an undo step
-    /// ([`Self::settle_look`]); the typing stays open and takes the keyboard back.
-    pub fn font_band(&mut self, ui: &mut egui::Ui, planned: &dyn Fn(&mut egui::Ui)) {
+    /// ([`Self::settle_look`]); the typing stays open and takes the keyboard back. `compact`:
+    /// on one row.
+    pub fn font_band(&mut self, ui: &mut egui::Ui, planned: &dyn Fn(&mut egui::Ui), compact: bool) {
         if self.tool == Tool::Text {
             let Some(a) = self.adding.as_mut() else {
-                self.next_text_look(ui, planned);
+                self.next_text_look(ui, planned, compact);
                 return;
             };
             let end = a.text.text().chars().count();
@@ -4581,14 +4593,14 @@ impl Editor {
                 text: &mut a.text,
                 sel,
             };
-            if styles_ui(ui, &mut text, 4.0..=200.0, &[], planned) {
+            if styles_ui(ui, &mut text, 4.0..=200.0, &[], planned, compact) {
                 a.refocus = true;
             }
             return;
         }
         if self.chosen_now().is_some_and(Chosen::restylable) {
             if let Some(c) = self.chosen.as_mut() {
-                styles_ui(ui, &mut c.text, 1.0..=400.0, &c.in_pdf, planned);
+                styles_ui(ui, &mut c.text, 1.0..=400.0, &c.in_pdf, planned, compact);
                 return;
             }
         }
@@ -4612,15 +4624,20 @@ impl Editor {
                 text: &mut insp.text,
                 sel,
             };
-            styles_ui(ui, &mut text, 1.0..=400.0, &in_pdf, planned);
+            styles_ui(ui, &mut text, 1.0..=400.0, &in_pdf, planned, compact);
             return;
         }
-        ui.add_enabled_ui(false, |ui| self.next_text_look(ui, planned));
+        ui.add_enabled_ui(false, |ui| self.next_text_look(ui, planned, compact));
     }
 
     /// The look of the next new text, in the band's Font group.
-    fn next_text_look(&mut self, ui: &mut egui::Ui, planned: &dyn Fn(&mut egui::Ui)) {
-        ui.vertical(|ui| {
+    fn next_text_look(
+        &mut self,
+        ui: &mut egui::Ui,
+        planned: &dyn Fn(&mut egui::Ui),
+        compact: bool,
+    ) {
+        ui.with_layout(look_layout(compact), |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
             ui.horizontal(|ui| {
                 font_field(ui, |ui| {
@@ -5821,7 +5838,7 @@ mod tests {
 
     /// The band's Font group for `ed`'s selection, drawn alone.
     fn band_tree(ed: &mut Editor) -> egui::accesskit::TreeUpdate {
-        drawn_tree(ed, |ed, ui| ed.font_band(ui, &|_| {}))
+        drawn_tree(ed, |ed, ui| ed.font_band(ui, &|_| {}, false))
     }
 
     /// What `draw` draws of `ed`, alone in a window, settled.

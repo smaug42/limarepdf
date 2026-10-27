@@ -32,6 +32,18 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSString",
     "NSURL",
 ] }
+# The system's accent colour (accent.rs); eframe's winit already uses it.
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSColor",
+    "NSColorSpace",
+    "objc2-core-foundation",
+] }
+
+# The colour Windows uses for its accents, from the registry (accent.rs); limarepdf-core
+# already uses it.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry"] }
 
 # winit's default features, which eframe passed on until its own defaults were turned off
 # (the workspace's eframe entry): the window's title bar and borders on Wayland desktops that
@@ -39,6 +51,9 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
 # winit; keep the version in step with eframe's.
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 winit = "0.30.13"
+# The desktop's accent colour from the desktop portal over D-Bus (accent.rs); accesskit's
+# screen reader support already uses it.
+zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
 
 [build-dependencies]
 # Embeds the icon in limarepdf.exe on Windows; does nothing on other platforms.

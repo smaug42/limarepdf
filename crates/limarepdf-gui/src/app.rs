@@ -1,4 +1,5 @@
 use crate::about;
+use crate::accent;
 use crate::actions::{self, menu_item, tooltip, Act, Action, Ctx, Group, ACTIONS};
 use crate::band::{self, Band};
 use crate::banners::Kind as BannerKind;
@@ -14,7 +15,7 @@ use crate::panels::{self, Panel};
 use crate::recent::Recent;
 use crate::regions::{self, Region, Regions};
 use crate::selection::Selection;
-use crate::settings::{Layout, Settings};
+use crate::settings::{Accent, Layout, Settings};
 use crate::signatures::{self as sigs, Check, SigState, TrustAsk, TrustedOut, TrustedWindow};
 use crate::tab::{Side, State, Tab};
 use crate::theme;
@@ -603,6 +604,8 @@ const NARROW_WIDTH: f32 = 960.0;
 /// Below this window width the side panel folds away by itself (View > Pages panel brings
 /// it back).
 const SIDE_NARROW_WIDTH: f32 = 760.0;
+/// Below this window height the commands are compact by themselves (Compact commands).
+const SHORT_HEIGHT: f32 = 600.0;
 
 /// Copy or Paste in the band, for the text being typed: asked of the system once the typing
 /// has the keyboard back ([`App::clipboard`]).
@@ -672,6 +675,8 @@ pub struct App {
     clip: Option<(Clip, egui::Id)>,
     /// The width of the status bar's controls at its right, as last drawn.
     status_width: Option<f32>,
+    /// The desktop's accent colour being read off the window's thread ([`App::read_accent`]).
+    accent_read: Option<Receiver<Option<egui::Color32>>>,
     /// The window has been fitted to its monitor, at the first frame the monitor's size was known.
     fitted: bool,
     /// The window's regions, which F6 moves the keyboard between (ENH-10).
@@ -742,6 +747,15 @@ impl App {
         cc.egui_ctx.set_theme(settings.theme);
         crate::font_list::warm(&cc.egui_ctx);
         let mut app = Self::with(settings, Recent::load());
+        // The desktop's accent before the first frame, unless the desktop is slow to say:
+        // then it comes in as soon as it is known.
+        app.read_accent(&cc.egui_ctx);
+        if let Some(rx) = &app.accent_read {
+            if let Ok(accent) = rx.recv_timeout(std::time::Duration::from_millis(300)) {
+                theme::set_accent(&cc.egui_ctx, accent);
+                app.accent_read = None;
+            }
+        }
         app.incoming = Incoming::system().clone();
         app.incoming.wake(&cc.egui_ctx);
         app.start_recovery(&cc.egui_ctx, files, page);
@@ -782,6 +796,7 @@ impl App {
             band: Band::default(),
             clip: None,
             status_width: None,
+            accent_read: None,
             fitted: false,
             regions: Regions::default(),
             keyboard: None,
@@ -2463,6 +2478,15 @@ impl App {
                 self.settings.show_planned = !self.settings.show_planned;
                 self.settings.save();
             }
+            Act::ToggleCompact => {
+                self.settings.compact_commands = !self.settings.compact_commands;
+                self.settings.save();
+            }
+            Act::Accent(accent) => {
+                self.settings.accent = accent;
+                self.settings.save();
+                self.read_accent(ctx);
+            }
             Act::Palette => self.palette = Some(Palette::default()),
             Act::NextRegion => self.regions.step = 1,
             Act::PrevRegion => self.regions.step = -1,
@@ -2791,6 +2815,32 @@ impl App {
         if t.ed.selection.pages().is_none() {
             t.ed.selection = Selection::pages_from([t.current].into());
         }
+    }
+
+    /// Use the desktop's accent colour, read again now, if the user follows it; else
+    /// LimarePDF's teal. Read on a thread where the desktop can be slow to say
+    /// ([`accent::asks_slowly`]), the result taken in as the window is drawn.
+    fn read_accent(&mut self, ctx: &egui::Context) {
+        if self.settings.accent == Accent::LimarePdf {
+            self.accent_read = None;
+            theme::set_accent(ctx, None);
+            return;
+        }
+        if !accent::asks_slowly() {
+            theme::set_accent(ctx, accent::desktop());
+            return;
+        }
+        if self.accent_read.is_some() {
+            return;
+        }
+        let (tx, rx) = channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            // Gone when the app has gone; nothing to tell then.
+            let _ = tx.send(accent::desktop());
+            ctx.request_repaint();
+        });
+        self.accent_read = Some(rx);
     }
 
     /// Copy or Paste clicked in the band for the text being typed: once that text has the
@@ -4220,6 +4270,8 @@ impl App {
             recovery: self.settings.recovery,
             page_labels: self.settings.page_labels,
             planned: self.settings.show_planned,
+            compact: self.settings.compact_commands,
+            accent: self.settings.accent,
             layout: self.settings.layout,
             cover: self.settings.cover,
             highlight: self.settings.highlight,
@@ -5014,8 +5066,16 @@ impl eframe::App for App {
         let focused = ctx.input(|i| i.focused);
         if focused && !self.focused {
             self.check_disk(&ctx, None);
+            // The desktop's accent may have changed meanwhile, too.
+            self.read_accent(&ctx);
         }
         self.focused = focused;
+        if let Some(Ok(accent)) = self.accent_read.as_ref().map(|rx| rx.try_recv()) {
+            self.accent_read = None;
+            if self.settings.accent == Accent::Desktop {
+                theme::set_accent(&ctx, accent);
+            }
+        }
         self.recovery_tick(&ctx);
         // Page colours follow the setting and, when automatic, the app's theme.
         let colours = self.colours(&ctx);
@@ -5229,33 +5289,42 @@ impl eframe::App for App {
                 });
             self.regions.add(Region::Tabs, tabs.response.rect);
 
-            // The commands (ENH-38): the band's names, and the chosen one's groups.
+            // The commands (ENH-38): the band's names, and the chosen one's groups; compact
+            // when chosen, or while the window is short.
             let active = self.active;
             let t = &mut self.tabs[active];
             let chosen = &mut self.band;
+            let short = ctx.content_rect().height() < SHORT_HEIGHT;
+            let compact = c.compact || short;
             let commands = egui::Panel::top("commands")
                 .frame(theme::commands_frame(ui.style()))
                 .show(ui, |ui| {
                     let name = format!("{} commands", chosen.name());
                     regions::name_as(ui, egui::accesskit::Role::Toolbar, &name);
+                    let names = egui::Margin {
+                        left: 14,
+                        right: 14,
+                        top: 4,
+                        bottom: 0,
+                    };
+                    let toggled = egui::Frame::new()
+                        .inner_margin(names)
+                        .show(ui, |ui| band::names(ui, chosen, compact, short))
+                        .inner;
+                    if toggled {
+                        acts.push(Act::ToggleCompact);
+                    }
                     egui::Frame::new()
-                        .inner_margin(egui::Margin::symmetric(14, 6))
-                        .show(ui, |ui| band::names(ui, chosen));
-                    egui::Frame::new()
-                        .inner_margin(egui::Margin {
-                            left: 8,
-                            right: 8,
-                            top: 2,
-                            bottom: 8,
-                        })
+                        .inner_margin(egui::Margin::symmetric(8, 4))
                         .show(ui, |ui| {
                             let mut font = |ui: &mut egui::Ui, planned: &dyn Fn(&mut egui::Ui)| {
-                                t.guarded(|t| t.ed.font_band(ui, planned));
+                                t.guarded(|t| t.ed.font_band(ui, planned, compact));
                             };
                             let mut parts = band::Parts {
                                 c: &c,
                                 sign: sign_menu.as_ref(),
                                 font: &mut font,
+                                compact,
                             };
                             band::show(ui, *chosen, &mut parts, &mut acts)
                         })
@@ -6214,6 +6283,7 @@ mod tests {
             "Forms and sign",
             "Protect",
             "View",
+            "Compact commands",
             "Edit text",
             "Find",
             "Select",
@@ -6715,6 +6785,61 @@ mod tests {
                 assert!(node(&tree, &first).is_some(), "{}: no {first}", band.name());
             }
         }
+    }
+
+    /// Compact commands, from the button at the right of the band's names: the groups on one
+    /// row, their buttons icons named for screen readers and on hover; a short window makes
+    /// them compact by itself, its button greyed meanwhile.
+    #[test]
+    fn compact_commands_put_the_band_on_one_row() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        // From the band's names to the side panel below the commands.
+        let depth = |tree: &egui::accesskit::TreeUpdate| {
+            let top = node(tree, "Edit").expect("Edit").0.top();
+            let side = node(tree, "Side panel: Pages").expect("the side panel").0;
+            side.top() - top
+        };
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        let (full, find) = (depth(&tree), node(&tree, "Find").expect("Find").0);
+        click_named(&mut app, &ctx, "Compact commands");
+        assert!(app.settings.compact_commands);
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        let compact = depth(&tree);
+        assert!(compact < full - 20.0, "{compact} beside {full}");
+        let small = node(&tree, "Find").expect("Find named").0;
+        let narrower = small.width() < find.width() - 20.0;
+        assert!(narrower, "{small:?} beside {find:?}");
+        click_named(&mut app, &ctx, "Compact commands");
+        assert!(!app.settings.compact_commands);
+
+        // A short window: compact, the button greyed.
+        let short = |app: &mut App| {
+            let raw = || egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 560.0),
+                )),
+                ..Default::default()
+            };
+            let mut f = eframe::Frame::_new_kittest();
+            let mut tree = None;
+            for _ in 0..5 {
+                let mut out = ctx.run_ui(raw(), |ui| eframe::App::ui(app, ui, &mut f));
+                out.textures_delta.clear();
+                tree = out.platform_output.accesskit_update;
+            }
+            tree.expect("the window")
+        };
+        let tree = short(&mut app);
+        assert!(depth(&tree) < full - 20.0, "full in a short window");
+        let (_, button) = (tree.nodes.iter())
+            .find(|(_, n)| n.label() == Some("Compact commands"))
+            .expect("the button");
+        assert!(button.is_disabled(), "the button isn't greyed");
+        assert!(!app.settings.compact_commands, "the choice changed");
     }
 
     /// ENH-41: planned features show greyed in their groups, named as planned; a click on
