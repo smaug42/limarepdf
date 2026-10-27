@@ -4454,29 +4454,17 @@ impl App {
     }
 }
 
-/// LimarePDF's mark at the left of the top row: an L on the accent, and the name (`named`).
-fn brand(ui: &mut egui::Ui, named: bool) {
-    let dark = ui.visuals().dark_mode;
-    let accent = theme::accent(dark);
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(25.0, 25.0), egui::Sense::hover());
-    let p = ui.painter();
-    p.rect_filled(rect, 5, accent);
-    let letter = egui::FontId::new(15.0, theme::medium());
-    let ground = ui.visuals().panel_fill;
-    p.text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        "L",
-        letter,
-        ground,
-    );
-    if !named {
-        return;
+/// LimarePDF's icon at the left of the top row, as the desktop shows it.
+fn brand(ui: &mut egui::Ui) {
+    let size = egui::vec2(24.0, 24.0);
+    match about::app_icon(ui.ctx()) {
+        Some(t) => {
+            ui.add(egui::Image::new((t.id(), size)));
+        }
+        None => {
+            ui.allocate_exact_size(size, egui::Sense::hover());
+        }
     }
-    let name = egui::RichText::new("LimarePDF")
-        .family(theme::medium())
-        .color(accent);
-    ui.add(egui::Label::new(name).selectable(false));
 }
 
 /// A thin upright line between groups of buttons in a row.
@@ -5159,7 +5147,7 @@ impl eframe::App for App {
             .get_mut(self.active)
             .map(|t| t.ed.sign.menu(&ctx, &self.settings.sign));
 
-        // The top row (build plan 2.2): LimarePDF's mark, then File (every command), Open,
+        // The top row (build plan 2.2): LimarePDF's icon, then File (every command), Open,
         // Save, Undo, Redo and Print. (The file's name is on its tab and in the window's
         // title.)
         let top = egui::Panel::top("topbar")
@@ -5167,13 +5155,12 @@ impl eframe::App for App {
             .show_separator_line(!has)
             .show(ui, |ui| {
                 regions::name(ui, Region::TopBar);
-                // Narrow windows keep the buttons, their labels going first, then the name
-                // beside the mark.
+                // Narrow windows keep the buttons, their labels going.
                 let room = ui.available_width();
-                let label = |text: &'static str| (room >= 620.0).then_some(text);
+                let label = |text: &'static str| (room >= 560.0).then_some(text);
                 ui.horizontal(|ui| {
-                    brand(ui, room >= 480.0);
-                    ui.add_space(16.0);
+                    brand(ui);
+                    ui.add_space(12.0);
                     ui.spacing_mut().item_spacing.x = 2.0;
                     let glyph = theme::icon(icon::LIST).size(16.0);
                     let file = match label("File") {
@@ -5800,7 +5787,7 @@ mod tests {
             let tree = settled_at(&mut app, &ctx, width);
             assert_eq!(dlg::unclear_names(&tree), [""; 0], "at {width}");
             let names = focusable(&mut app, &ctx, width);
-            for name in ["File", "Open", "Save", "Print", "Home", "View"] {
+            for name in ["File", "Open", "Save", "Print", "Edit", "View"] {
                 assert!(names.contains(&Some(name.into())), "no {name} at {width}");
             }
         }
@@ -5972,7 +5959,7 @@ mod tests {
         assert!(egui::Popup::is_any_open(&ctx), "the menu isn't open");
         note_unclear(&tree, "Fill and sign choices", &mut bad);
         app.act(&ctx, Act::Tool(Tool::Read));
-        app.band = Band::Home;
+        app.band = Band::Edit;
 
         // The font and size lists, the menu and the command search, open.
         let esc = vec![key_with(Key::Escape, egui::Modifiers::NONE)];
@@ -6115,7 +6102,7 @@ mod tests {
         let value = font.and_then(|(_, n)| n.value());
         assert_eq!(value, Some("Helvetica"));
 
-        // As Home's Font group lays them out: the font and size, then the styles.
+        // As Edit's Font group lays them out: the font and size, then the styles.
         let reached = tab_walk(&mut app, &ctx, 1400.0, 80);
         let look = [
             "Font",
@@ -6220,7 +6207,7 @@ mod tests {
             "Print",
             "Untitled, unsaved",
             "Close Untitled",
-            "Home",
+            "Edit",
             "Insert",
             "Review",
             "Pages",
@@ -6277,7 +6264,7 @@ mod tests {
             Some("Show planned features"),
             Some("File"),
             Some("Untitled, unsaved"),
-            Some("Home"),
+            Some("Edit"),
             Some("Side panel: Pages"),
             None,
             Some("Collapse the inspector"),
@@ -6301,7 +6288,7 @@ mod tests {
         // Back the other way, to where the keyboard was last in each region.
         let side = Some("Side panel: Pages");
         assert_eq!(f6(&mut app, &ctx, true).as_deref(), side);
-        assert_eq!(f6(&mut app, &ctx, true).as_deref(), Some("Home"));
+        assert_eq!(f6(&mut app, &ctx, true).as_deref(), Some("Edit"));
         let doc = Some("Untitled, unsaved");
         assert_eq!(f6(&mut app, &ctx, true).as_deref(), doc);
         assert_eq!(f6(&mut app, &ctx, true).as_deref(), Some("File"));
@@ -6317,7 +6304,7 @@ mod tests {
         app.tabs[0].show_banner(crate::banners::changed_on_disk());
         settled_at(&mut app, &ctx, 1400.0);
         assert_eq!(f6(&mut app, &ctx, false).as_deref(), doc);
-        assert_eq!(f6(&mut app, &ctx, false).as_deref(), Some("Home"));
+        assert_eq!(f6(&mut app, &ctx, false).as_deref(), Some("Edit"));
         assert_eq!(f6(&mut app, &ctx, false).as_deref(), Some("Reload"));
         assert_eq!(f6(&mut app, &ctx, false).as_deref(), side);
     }
@@ -6338,7 +6325,7 @@ mod tests {
             Some("Show planned features"),
             Some("File"),
             Some("Untitled, unsaved"),
-            Some("Home"),
+            Some("Edit"),
             None,
         ];
         for want in round {
@@ -6420,7 +6407,7 @@ mod tests {
             // Round to the commands, then along them.
             let mut tree = ty.key(&mut app, Key::F6, none);
             for _ in 0..8 {
-                if focused_name(&ctx, &tree).as_deref() == Some("Home") {
+                if focused_name(&ctx, &tree).as_deref() == Some("Edit") {
                     break;
                 }
                 tree = ty.key(&mut app, Key::F6, none);
@@ -6525,7 +6512,7 @@ mod tests {
         for (role, label) in [
             (Role::Toolbar, "Top bar"),
             (Role::TabList, "Tabs"),
-            (Role::Toolbar, "Home commands"),
+            (Role::Toolbar, "Edit commands"),
             (Role::Region, "Notices"),
             (Role::Navigation, "Pages"),
             (Role::Main, "Document"),
@@ -6691,7 +6678,7 @@ mod tests {
     }
 
     /// ENH-38: each of the band's names, a tab that says it is the one shown, shows its
-    /// groups, each named under its controls.
+    /// groups, with no names under them.
     #[test]
     fn the_band_shows_each_names_groups() {
         use egui::accesskit::Role;
@@ -6718,9 +6705,14 @@ mod tests {
             let label = format!("{} commands", band.name());
             let named = (tree.nodes.iter()).any(|(_, n)| n.label() == Some(label.as_str()));
             assert!(named, "{label}");
+            // The names and one row of groups above the panels, as short as the Font
+            // group's two rows allow.
+            let below = node(&tree, "Side panel: Pages").expect("the side panel").0;
+            let tall = below.top() - b.y0 as f32;
+            assert!(tall < 125.0, "{label}: {tall}");
             for g in band.groups() {
-                let shown = (tree.nodes.iter()).any(|(_, n)| n.value() == Some(g.name));
-                assert!(shown, "{}: no {}", band.name(), g.name);
+                let first = g.first_name();
+                assert!(node(&tree, &first).is_some(), "{}: no {first}", band.name());
             }
         }
     }
@@ -6760,7 +6752,7 @@ mod tests {
             let shown = (tree.nodes.iter()).find(|(_, n)| planned(&n.label().map(str::to_string)));
             assert!(shown.is_none(), "{}: {shown:?}", band.name());
         }
-        app.band = Band::Home;
+        app.band = Band::Edit;
         let tree = settled_at(&mut app, &ctx, 1400.0);
         // Those before the planned ones stay where they were.
         let now = node(&tree, "Paste").map(|(r, _)| r);
@@ -8311,7 +8303,7 @@ mod tests {
         for name in geometry {
             assert!(node(&tree, name).is_none(), "{name} is shown");
         }
-        // No text box: the words are edited on the page, their look in Home's Font group
+        // No text box: the words are edited on the page, their look in Edit's Font group
         // above. The inspector says what the line is.
         let text_box = tree
             .nodes
@@ -12909,7 +12901,10 @@ mod tests {
     }
 
     /// The only tab, unsaved, closed by its button: Cancel keeps it, Discard closes it,
-    /// and Save saves it and then closes it, leaving the start screen (DA01).
+    /// and Save saves it and then closes it, leaving the start screen (DA01). The save is
+    /// written on its thread (ENH-35), here held as a slow disk would: the tab stays until
+    /// it is written, however long that takes (macOS and Windows CI were slower than the
+    /// test's frames, after 0.10.0).
     #[test]
     fn closing_the_only_unsaved_tab_by_its_button() {
         let ctx = egui::Context::default();
@@ -12923,8 +12918,16 @@ mod tests {
             close_by_button(&mut app, &ctx, "a.pdf *");
             let asked = matches!(app.dialog, Dialog::ConfirmClose(..));
             assert!(asked, "{answer}: didn't ask");
+            let (go, gate) = channel();
+            app.save_gate = Some(gate);
             click(&mut app, &ctx, answer);
             settle(&mut app, &ctx);
+            if answer == "Save" {
+                assert_eq!(app.tabs.len(), 1, "closed before it was saved");
+                go.send(()).unwrap();
+                saves_done(&mut app, &ctx);
+                settle(&mut app, &ctx);
+            }
             assert_eq!(app.tabs.is_empty(), answer != "Cancel", "{answer}");
             assert_eq!(file.exists(), answer == "Save", "{answer}");
             if answer == "Cancel" {

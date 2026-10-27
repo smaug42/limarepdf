@@ -1,9 +1,11 @@
-//! The command band (ENH-38, build plan 2.2): the names Home, Insert, Review, Pages, Forms
-//! and sign, Protect and View, and below them the chosen one's groups of labelled
-//! commands, each group named under its controls. Every button runs a command from the
-//! registry ([`crate::actions`]), which says whether it is available and whether it is on;
-//! a caret beside a button opens related commands. Features planned but not built show
-//! greyed where they will be, marked Planned, and run nothing (ENH-41). Groups without room
+//! The command band (ENH-38, build plan 2.2): the names Edit (the mockup's Home, renamed by
+//! the user, 2026-10-27), Insert, Review, Pages, Forms and sign, Protect and View, and below
+//! them the chosen one's groups of labelled commands, divided (their names show only once
+//! folded: the user, 2026-10-27, as the band was tall and the groups read as what they are).
+//! Every button runs a command from the registry ([`crate::actions`]), which says whether it
+//! is available and whether it is on; a caret beside a button opens related commands.
+//! Features planned but not built show greyed where they will be, marked Planned, and run
+//! nothing (ENH-41). Groups without room
 //! fold, from the right, into a button with the group's name that opens them; groups of
 //! planned features alone are left out first.
 
@@ -22,7 +24,7 @@ use limarepdf_core::SignRole;
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Band {
     #[default]
-    Home,
+    Edit,
     Insert,
     Review,
     Pages,
@@ -33,7 +35,7 @@ pub enum Band {
 
 impl Band {
     pub const ALL: [Band; 7] = [
-        Band::Home,
+        Band::Edit,
         Band::Insert,
         Band::Review,
         Band::Pages,
@@ -44,7 +46,7 @@ impl Band {
 
     pub fn name(self) -> &'static str {
         match self {
-            Band::Home => "Home",
+            Band::Edit => "Edit",
             Band::Insert => "Insert",
             Band::Review => "Review",
             Band::Pages => "Pages",
@@ -56,7 +58,7 @@ impl Band {
 
     pub fn groups(self) -> &'static [Group] {
         match self {
-            Band::Home => HOME,
+            Band::Edit => EDIT,
             Band::Insert => INSERT,
             Band::Review => REVIEW,
             Band::Pages => PAGES,
@@ -93,11 +95,23 @@ impl Group {
     fn all_planned(&self) -> bool {
         self.items.iter().all(|i| matches!(i, Item::Planned(_)))
     }
+
+    /// The name screen readers give its first control.
+    #[cfg(test)]
+    pub fn first_name(&self) -> String {
+        match &self.items[0] {
+            Item::Button(b) => b.label.into(),
+            Item::Font => "Font".into(),
+            Item::Sign => "Fill and sign".into(),
+            Item::Marks => "Highlight".into(),
+            Item::Planned(p) => p.name(),
+        }
+    }
 }
 
 pub enum Item {
     Button(Button),
-    /// Home's font list and size, Bold, Italic and the text colour, for the text selected
+    /// Edit's font list and size, Bold, Italic and the text colour, for the text selected
     /// or being typed (the editor's), with the planned Underline and Strike-through.
     Font,
     /// Fill and sign, its menu the saved signatures and initials, the date, name and marks.
@@ -248,7 +262,7 @@ pub const FILE_PLANNED: [&Planned; 2] = [
     },
 ];
 
-static HOME: &[Group] = &[
+static EDIT: &[Group] = &[
     group(
         "Clipboard",
         &[
@@ -542,7 +556,7 @@ static VIEW: &[Group] = &[
     group("Optional assistance", &[Item::Planned(&YOUR_AI)]),
 ];
 
-/// Draws Home's Font group for the text it acts on, calling the function it is given
+/// Draws Edit's Font group for the text it acts on, calling the function it is given
 /// between Italic and the colour (the planned Underline and Strike-through).
 pub type FontGroup<'a> = dyn FnMut(&mut egui::Ui, &dyn Fn(&mut egui::Ui)) + 'a;
 
@@ -651,7 +665,7 @@ pub fn show(ui: &mut egui::Ui, band: Band, parts: &mut Parts, acts: &mut Vec<Act
     ui.data_mut(|d| d.insert_temp(level, folded));
 
     let mut keep = Vec::new();
-    // The groups' tops in line, their names under controls of one height.
+    // The groups' tops in line, their controls of one height.
     let row = egui::Layout::left_to_right(egui::Align::Min);
     ui.with_layout(row, |ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
@@ -701,7 +715,7 @@ fn fold_level(prev: usize, n: usize, room: f32, need: impl Fn(usize) -> f32) -> 
     folded
 }
 
-/// One group: its controls, its name under them, and a divider at its right (`divide`).
+/// One group: its controls, and a divider at its right (`divide`).
 /// Returns where it is.
 fn group_ui(
     ui: &mut egui::Ui,
@@ -713,22 +727,13 @@ fn group_ui(
     let dark = ui.visuals().dark_mode;
     let r = ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
         ui.add_space(PAD);
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(3.0, 6.0);
-            let row = egui::vec2(ui.available_width(), CONTROLS);
-            let layout = egui::Layout::left_to_right(egui::Align::Center);
-            let controls = ui.allocate_ui_with_layout(row, layout, |ui| {
-                ui.set_min_height(CONTROLS);
-                field_look(ui.style_mut());
-                items(ui, g, parts, acts);
-            });
-            let name = RichText::new(g.name).size(11.0).color(theme::muted(dark));
-            let w = controls.response.rect.width();
-            let centred = egui::Layout::top_down(egui::Align::Center);
-            ui.allocate_ui_with_layout(egui::vec2(w, 14.0), centred, |ui| {
-                ui.set_width(w);
-                ui.add(egui::Label::new(name).selectable(false));
-            });
+        ui.spacing_mut().item_spacing = egui::vec2(3.0, 6.0);
+        let row = egui::vec2(ui.available_width(), CONTROLS);
+        let layout = egui::Layout::left_to_right(egui::Align::Center);
+        ui.allocate_ui_with_layout(row, layout, |ui| {
+            ui.set_min_height(CONTROLS);
+            field_look(ui.style_mut());
+            items(ui, g, parts, acts);
         });
         ui.add_space(PAD);
     });
@@ -977,10 +982,10 @@ mod tests {
         assert_eq!(fold_level(5, 5, 1000.0, need), 0);
     }
 
-    /// Home's groups of planned features alone fold before its built commands.
+    /// Edit's groups of planned features alone fold before its built commands.
     #[test]
     fn planned_groups_fold_first() {
-        let groups: Vec<&Group> = Band::Home.groups().iter().collect();
+        let groups: Vec<&Group> = Band::Edit.groups().iter().collect();
         let order = fold_order(&groups);
         let names: Vec<&str> = order.iter().map(|&i| groups[i].name).collect();
         let want = ["Arrange", "Text flow", "Editing", "Font", "Clipboard"];

@@ -61,7 +61,8 @@ pub fn leaf(ctx: &Context) -> Option<TextureHandle> {
     )
 }
 
-fn app_icon(ctx: &Context) -> Option<TextureHandle> {
+/// LimarePDF's icon, as the desktop shows it.
+pub fn app_icon(ctx: &Context) -> Option<TextureHandle> {
     texture(
         ctx,
         "app-icon",

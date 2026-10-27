@@ -988,7 +988,7 @@ fn text_change(text: &Styled, o: &PageObject) -> TextEdit {
     TextEdit::in_parts(parts)
 }
 
-/// Home's Font group (ENH-38) for what a style command changes in `text`: the font list
+/// Edit's Font group (ENH-38) for what a style command changes in `text`: the font list
 /// and size (within `sizes`) in a row, then Bold, Italic, `planned` (the planned styles)
 /// and the colour; each shows blank where that mixes values. `in_pdf` names the PDF fonts
 /// of text already in the PDF. Returns whether one was used.
@@ -4562,7 +4562,7 @@ impl Editor {
         facts(ui, "words-look", &[editing, font, size]);
     }
 
-    /// Home's Font group (ENH-38): the font list, size, Bold, Italic, `planned` (the planned
+    /// Edit's Font group (ENH-38): the font list, size, Bold, Italic, `planned` (the planned
     /// styles) and the colour, for the text they change: the new text being typed (what
     /// is selected in it) or, before it, the next new text's look; the words selected with
     /// the read tool; the line of page text selected or being edited (what is selected in
@@ -5901,7 +5901,7 @@ mod tests {
             "",
             "blank: 1 pt and 3 pt"
         );
-        // Their text's size is mixed, and blank in Home's Font group.
+        // Their text's size is mixed, and blank in Edit's Font group.
         assert!(said("Mixed"), "12 and 20");
         let band = band_tree(&mut ed);
         let size = (band.nodes.iter()).find(|(_, n)| n.label() == Some("Font size"));
