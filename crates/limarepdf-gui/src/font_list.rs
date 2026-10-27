@@ -113,18 +113,25 @@ pub fn ui(ui: &mut egui::Ui, f: &mut FontChoice, blank: bool, in_pdf: &[String])
     r.inner.unwrap_or(false)
 }
 
-/// The Bold and Italic buttons for the font `f`, off for a face its family lacks.
+/// The Bold and Italic buttons for the font `f`, off for a face its family lacks: a heavy
+/// B and a slanted I with serifs.
 pub fn styles(ui: &mut egui::Ui, f: &mut FontChoice) {
     let t = f.typeface();
     let has = |bold: bool, italic: bool| t.as_ref().is_none_or(|t| t.has(bold, italic));
     let mut bold = f.bold;
-    let b = egui::Button::selectable(bold, egui::RichText::new("B").strong());
+    let size = ui.style().text_styles[&egui::TextStyle::Button].size;
+    let b = egui::RichText::new("B").family(crate::theme::semibold());
+    let b = egui::Button::selectable(bold, b);
     let r = ui.add_enabled(has(!f.bold, f.italic), b);
     if r.clicked() {
         bold = !bold;
     }
     dialogs::set_name(&r, "Bold");
-    let i = egui::Button::selectable(f.italic, egui::RichText::new("I").italics());
+    // A slanted I with serifs, as word processors show it: the interface font's I,
+    // slanted, reads as a slash. The icon is drawn inside some padding, so a little larger
+    // to stand as tall as the B.
+    let i = crate::theme::icon(crate::icon::TEXT_ITALIC).size(size + 3.0);
+    let i = egui::Button::selectable(f.italic, i);
     let r = ui.add_enabled(has(bold, !f.italic), i);
     if r.clicked() {
         f.italic = !f.italic;
@@ -255,6 +262,44 @@ mod tests {
         assert!(!times.iter().any(|(f, _, _)| *f == Family::Helvetica));
         let (none, _) = offered("no font is called this");
         assert!(none.is_empty());
+    }
+
+    /// Italic shows a slanted capital I with serifs, as word processors do (the interface
+    /// font's I slanted read as a slash); Bold a B in the semibold face (egui's strong text
+    /// was only brighter). Screen readers still say Italic and Bold.
+    #[test]
+    fn italic_shows_a_slanted_i_with_serifs() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        crate::theme::install(&ctx);
+        let mut f = FontChoice::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.horizontal(|ui| styles(ui, &mut f));
+        });
+        out.textures_delta.clear();
+        let painted: Vec<(String, egui::FontFamily)> = out
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => {
+                    let family = t.galley.job.sections.first()?.format.font_id.family.clone();
+                    Some((t.galley.text().to_string(), family))
+                }
+                _ => None,
+            })
+            .collect();
+        let italic = (crate::icon::TEXT_ITALIC.to_string(), crate::theme::icons());
+        assert!(painted.contains(&italic), "{painted:?}");
+        // egui's strong text is only brighter: the B is in the semibold face.
+        let bold = ("B".to_string(), crate::theme::semibold());
+        assert!(painted.contains(&bold), "{painted:?}");
+        let tree = out.platform_output.accesskit_update.expect("the buttons");
+        for name in ["Bold", "Italic"] {
+            assert!(
+                tree.nodes.iter().any(|(_, n)| n.label() == Some(name)),
+                "{name}"
+            );
+        }
     }
 
     #[test]

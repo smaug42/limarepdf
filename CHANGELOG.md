@@ -47,6 +47,8 @@
   leaves the line selected, so the inspector goes back to what it showed before.
 - The text colour button is now an A over a bar of the colour, with a ▾, as word processors show it; black text
   no longer makes it disappear on the dark theme.
+- The Italic button shows a slanted I with serifs, as word processors do, instead of something that read as a
+  slash, and the Bold button's B is now bold.
 - The user guide's Features page is now a short summary of what LimarePDF can do. The detailed status of each
   feature, with its limits and what doesn't work yet, moved to the developer docs as
   [Features and status](docs/developer/feature-status.md).
