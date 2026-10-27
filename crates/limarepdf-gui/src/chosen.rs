@@ -1,6 +1,7 @@
-//! Words selected with the read tool, as Bold, Italic and the inspector's font, size and
-//! colour change them (ENH-05): each line the words are in, its text as styled, and the
-//! characters selected there, written back as the lines' changes in one undo step.
+//! Words selected with the read tool, or lines of page text selected with the arrow, as
+//! Bold, Italic and the inspector's font, size and colour change them (ENH-05, ENH-06):
+//! each line the words are in, its text as styled, and the characters selected there,
+//! written back as the lines' changes in one undo step.
 
 use crate::editor::font_of;
 use crate::selection::WordAt;
@@ -46,11 +47,21 @@ impl Left {
     }
 }
 
-/// Words selected with the read tool, ready to restyle.
+/// What a [`Chosen`] was made from.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Of {
+    /// Words selected with the read tool: the first and last.
+    Words((WordAt, WordAt)),
+    /// Objects selected with the arrow, the lines of page text among them restyled whole:
+    /// their page and indices.
+    Lines(usize, Vec<usize>),
+}
+
+/// Words or lines selected, ready to restyle.
 #[derive(Clone, Debug)]
 pub struct Chosen {
-    /// The selection's first and last word, as it was when this was made.
-    pub words: (WordAt, WordAt),
+    /// The selection, as it was when this was made.
+    pub of: Of,
     /// Each line restyled: its page and object, and its text as it is in the document.
     lines: Vec<(usize, usize, Styled)>,
     /// The lines' text as restyled, and what is selected in each, in the same order.
@@ -61,10 +72,10 @@ pub struct Chosen {
 }
 
 impl Chosen {
-    /// Nothing yet of the selection from `words.0` to `words.1`.
-    pub fn new(words: (WordAt, WordAt)) -> Self {
+    /// Nothing yet of the selection `of`.
+    pub fn new(of: Of) -> Self {
         Self {
-            words,
+            of,
             lines: Vec::new(),
             text: Across::default(),
             in_pdf: Vec::new(),
@@ -111,16 +122,44 @@ impl Chosen {
                     _ => ranges.push((a, b)),
                 }
             }
-            for s in &o.spans {
-                let selected = ranges.iter().any(|&(a, b)| s.chars.0 < b && a < s.chars.1);
-                if selected && !self.in_pdf.contains(&s.font_name) {
-                    self.in_pdf.push(s.font_name.clone());
-                }
-            }
-            let text = Styled::of(o, font_of);
-            self.lines.push((page, id, text.clone()));
-            self.text.lines.push((text, ranges));
+            self.add_line(page, id, o, ranges);
         }
+    }
+
+    /// The lines of page text among objects `ids` of page `page`, whose objects are `objs`,
+    /// each whole. Invisible lines and vertical writing are counted as left as they were;
+    /// other objects aren't text and aren't counted.
+    pub fn add_lines(&mut self, page: usize, ids: &[usize], objs: &[PageObject]) {
+        for &id in ids {
+            let Some(o) = objs.get(id).filter(|o| o.kind == ObjectKind::Text) else {
+                continue;
+            };
+            if o.hidden {
+                self.left.hidden += 1;
+                continue;
+            }
+            if o.vertical {
+                self.left.vertical += 1;
+                continue;
+            }
+            let n = o.text.as_deref().unwrap_or("").chars().count();
+            if n > 0 {
+                self.add_line(page, id, o, vec![(0, n)]);
+            }
+        }
+    }
+
+    /// Line `o`, object `id` of page `page`, with characters `ranges` selected.
+    fn add_line(&mut self, page: usize, id: usize, o: &PageObject, ranges: Vec<(usize, usize)>) {
+        for s in &o.spans {
+            let selected = ranges.iter().any(|&(a, b)| s.chars.0 < b && a < s.chars.1);
+            if selected && !self.in_pdf.contains(&s.font_name) {
+                self.in_pdf.push(s.font_name.clone());
+            }
+        }
+        let text = Styled::of(o, font_of);
+        self.lines.push((page, id, text.clone()));
+        self.text.lines.push((text, ranges));
     }
 
     /// Whether any of the selected words can be restyled.

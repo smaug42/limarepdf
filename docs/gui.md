@@ -52,7 +52,7 @@ other tools:
 
 | Tool | What it does | See |
 | --- | --- | --- |
-| Select, move and resize objects (the arrow, in ☰ > Tools) | Selects any object, page text and full-page pictures included | [Editing](content-editing.md#move-resize-or-delete) |
+| Select, move and resize objects (the arrow, in ☰ > Tools) | Selects any object, page text and full-page pictures included; several with Shift+click, a rectangle or Ctrl+A | [Editing](content-editing.md#move-resize-or-delete), [several](content-editing.md#select-several-objects) |
 | Add text | Click and type new text | [Add text](content-editing.md#add-text) |
 | Add image | Choose a picture, then drag a box | [Add a picture](content-editing.md#add-a-picture) |
 | Redact | Drag a box to mark an area for redaction | [Redaction](redaction.md) |
@@ -294,6 +294,7 @@ What you select decides what the inspector, the right-click menu and the floatin
 | Nothing | The document: properties, opening view, password security, the form (when there is one), crop, watermark, headers/footers/Bates, OCR, optimise scanned pages, export pages as images, split into files, and buttons for export text, print and append PDFs |
 | Pages (click thumbnails; Shift for a range, Ctrl for one more) | Rotate, delete, extract to a new tab, insert images or a blank page after them, page labels from the first selected page, and the crop, watermark, headers/footers, OCR and optimise tools with the pages filled in ([Organising pages](organising-pages.md)) |
 | An object, a comment, or a tool that adds content | That object's or tool's options, headed by what it is (Text, Image, Text box, New rectangle). For a line of text being edited, or new text being typed, the font, Bold, Italic, size and colour of the words selected in it, blank where they mix values ([Style words in a line](content-editing.md#style-words-in-a-line)). An object's position and size are in its **Position and size** section, which stays open or closed as you left it |
+| Several objects (the arrow) | Headed by how many (3 objects), with a line saying what they are: the look of the lines of text among them and of the shapes, blank or mixed where they differ, their position (X and Y) and Delete ([Select several objects](content-editing.md#select-several-objects)) |
 | Words | Their look, headed **Selected text**: the font, Bold, Italic, size and colour, blank where they mix values ([Style words you select while reading](content-editing.md#style-words-you-select-while-reading)); invisible recognised text alone has none, and the inspector stays on the document or pages. Copy, Bold, Italic, highlight, redact, print and save the selection from the floating toolbar (or the docked buttons) and the right-click menu |
 
 The inspector holds controls, with at most a short line about state (such as how many areas are marked); how to
@@ -352,12 +353,14 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Ctrl+0, Ctrl+1 | Fit width on or off, actual size |
 | Ctrl+scroll, pinch | Zoom |
 | PageUp, PageDown, Home, End | Previous, next, first, last page |
-| Delete, Backspace | Delete the selected object, comment or mark, or the selected pages |
+| Delete, Backspace | Delete the selected objects, comment or mark, or the selected pages |
 | Ctrl+Shift+H | Highlight the selected text |
-| Arrow keys (Shift for 10 points) | Move the selected object |
+| Arrow keys (Shift for 10 points) | Move the selected objects |
 | Ctrl+A, Ctrl+C | Select all text on the page, copy it (read tool) |
-| Esc | Cancel: close an open list, menu or colour picker (only that), cancel a move, resize, shape, pen stroke or word selection being dragged (only that), finish (and keep) new text, a line, a note, a text box or a form field being typed, clear the selection, or leave a tool for the read tool |
-| Ctrl+B, Ctrl+I | Bold, Italic for the words selected with the read tool, or a line selected with the arrow; in new text being typed (Add text) or a line being edited on the page, for the words selected there, or with nothing selected, the word at the caret, or what is typed next between words |
+| Ctrl+A (arrow) | Select every object on the page |
+| Shift+click, Shift+drag (arrow) | Add an object to the selection or take it out; add what a rectangle holds |
+| Esc | Cancel: close an open list, menu or colour picker (only that), cancel a move, resize, shape, pen stroke, selection rectangle or word selection being dragged (only that), finish (and keep) new text, a line, a note, a text box or a form field being typed, clear the selection, or leave a tool for the read tool |
+| Ctrl+B, Ctrl+I | Bold, Italic for the words selected with the read tool, or the lines selected with the arrow; in new text being typed (Add text) or a line being edited on the page, for the words selected there, or with nothing selected, the word at the caret, or what is typed next between words |
 | Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) while typing new text, a line, a note, a text box, a form field or in any box of the inspector | Undo, redo the typing there (and the styles, in new text and lines), not the document |
 | Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |
 | Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the top bar, tabs, bottom bar and panels left to right; inside a dialog, its fields and then its buttons, from the last straight back to the first. Leaving one of the inspector's boxes by Tab keeps what was typed. Space or Enter presses the button. In a form, Tab moves between its fields; Ctrl+K reaches every command |

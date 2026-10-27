@@ -7,7 +7,7 @@ use crate::markup::Mark;
 use crate::recovery::schedule::Schedule;
 use crate::recovery::TabId;
 use crate::search::{Found, Search, PAUSE};
-use crate::selection::Selection;
+use crate::selection::{ObjKind, Selection};
 use crate::settings::Layout;
 use crate::signatures::{self, Check, PanelAct, SigState};
 use crate::signing::SignPick;
@@ -43,6 +43,18 @@ const MERGE_PAUSE: f64 = 5.0;
 /// (`Pdf::edit_texts`).
 const SIMILAR_FONT: &str =
     "Some words around the change are now in a similar font: their own couldn't be kept";
+
+/// A change to `n` objects, `done`: when several were changed and it failed, the message
+/// says that one of them couldn't be (`what`: "moved") and nothing was changed.
+fn several(done: limarepdf_core::Result<()>, n: usize, what: &str) -> limarepdf_core::Result<()> {
+    use anyhow::Context;
+    match n {
+        0 | 1 => done,
+        _ => done.with_context(|| {
+            format!("One of the selected objects couldn't be {what}, so none of them was")
+        }),
+    }
+}
 /// egui points at zoom 1.0 per PDF point (96 dpi logical).
 const BASE: f32 = 96.0 / 72.0;
 /// Highest zoom: 6400%, as Acrobat.
@@ -960,19 +972,37 @@ impl Tab {
         let acts = std::mem::take(&mut self.ed.actions);
         for a in acts {
             match a {
-                Action::SetBox(p, id, b) => {
-                    self.edit_pages(ctx, &[p], |pdf| pdf.set_object_bbox(p, id, b));
+                Action::SetBox(p, boxes) => {
+                    let set = |pdf: &mut Pdf| {
+                        let done = pdf.set_object_boxes(p, &boxes);
+                        several(done, boxes.len(), "moved")
+                    };
+                    if self.edit_pages(ctx, &[p], set) {
+                        // Each is to be found where it was put.
+                        let to: HashMap<usize, [f32; 4]> = boxes.into_iter().collect();
+                        self.ed.selection.expect(p, |h| {
+                            if let Some(&b) = to.get(&h.id) {
+                                h.bbox = b;
+                            }
+                        });
+                    }
                 }
-                Action::Delete(p, id) => {
-                    if self.edit_pages(ctx, &[p], |pdf| pdf.delete_object(p, id)) {
+                Action::Delete(p, ids) => {
+                    let delete =
+                        |pdf: &mut Pdf| several(pdf.delete_objects(p, &ids), ids.len(), "deleted");
+                    if self.edit_pages(ctx, &[p], delete) {
                         self.ed.selection.clear_object();
-                        self.notice = Some("Deleted the object".into());
+                        self.notice = Some(match ids.len() {
+                            1 => "Deleted the object".into(),
+                            n => format!("Deleted {n} objects"),
+                        });
                     }
                 }
                 Action::AddShape(p, shape, rect) => {
                     let st = self.ed.style_for_new();
+                    let from = self.ed.objects(&self.pdf, p).len();
                     if self.edit_pages(ctx, &[p], |pdf| pdf.add_shape(p, shape, rect, &st)) {
-                        self.after_insert(p);
+                        self.after_insert(p, from);
                     }
                 }
                 Action::AddText(p, pos, text) => {
@@ -985,16 +1015,18 @@ impl Tab {
                     };
                     // Finished by choosing another tool: that tool stays.
                     let placing = matches!(self.ed.tool, Tool::Text | Tool::Read);
+                    let from = self.ed.objects(&self.pdf, p).len();
                     if self.edit_pages(ctx, &[p], add) && placing {
-                        self.after_insert(p);
+                        self.after_insert(p, from);
                     }
                 }
                 Action::AddImage(p, rect) => {
                     let Some((bytes, _)) = self.ed.pending_image.clone() else {
                         continue;
                     };
+                    let from = self.ed.objects(&self.pdf, p).len();
                     if self.edit_pages(ctx, &[p], |pdf| pdf.add_image(p, rect, &bytes)) {
-                        self.after_insert(p);
+                        self.after_insert(p, from);
                     }
                 }
                 Action::ReplaceImage(p, id, bytes) => {
@@ -1012,7 +1044,7 @@ impl Tab {
                                 && depth == self.undo.len()
                                 && now - at < MERGE_PAUSE
                         });
-                    let kept = self.ed.sel() == Some((p, id));
+                    let (kept, loose) = (self.ed.sel() == Some((p, id)), self.ed.selection.loose());
                     let mut lost = false;
                     let edit = |pdf: &mut Pdf| {
                         lost = !pdf.edit_texts(p, &[(id, te)])?.is_empty();
@@ -1022,8 +1054,15 @@ impl Tab {
                         if lost {
                             self.info = Some(SIMILAR_FONT.into());
                         }
-                        // The line keeps its place unless the edit had to move it to the
-                        // end of the page's content.
+                        // Still selected unless something else was picked meanwhile, the
+                        // line is found again reading as typed (`Editor::objects`).
+                        self.ed.selection.expect(p, |h| {
+                            if h.id == id {
+                                h.text = Some(want.clone());
+                            }
+                        });
+                        // It keeps its place unless the edit had to move it to the end of
+                        // the page's content.
                         let objs = self.ed.objects(&self.pdf, p);
                         let same = objs.get(id).and_then(|o| o.text.as_deref()) == Some(&want);
                         let at = if same {
@@ -1031,9 +1070,10 @@ impl Tab {
                         } else {
                             objs.len().saturating_sub(1)
                         };
-                        // Still selected unless something else was picked meanwhile.
-                        if kept {
+                        // Read back otherwise than typed, it is where the edit put it.
+                        if kept && self.ed.sel().is_none() {
                             self.ed.select_object(p, at);
+                            self.ed.selection.set_loose(loose);
                         }
                         self.last_line =
                             words_only.then_some(((p, at), self.revision, self.undo.len(), now));
@@ -1060,8 +1100,11 @@ impl Tab {
                         }
                     }
                 }
-                Action::PathStyle(p, id, st) => {
-                    self.edit_pages(ctx, &[p], |pdf| pdf.set_path_style(p, id, &st));
+                Action::PathStyle(p, styles) => {
+                    let set = |pdf: &mut Pdf| {
+                        several(pdf.set_path_styles(p, &styles), styles.len(), "restyled")
+                    };
+                    self.edit_pages(ctx, &[p], set);
                 }
                 Action::SetField(pages, name, v) => {
                     let ok = self.edit_pages(ctx, &pages, |pdf| pdf.set_field(&name, v));
@@ -1388,10 +1431,10 @@ impl Tab {
         self.ed.placed(new);
     }
 
-    /// New page content was put down, the last object on its page: see
-    /// [`Editor::placed`].
-    fn after_insert(&mut self, page: usize) {
-        self.ed.select_last(&self.pdf, page);
+    /// New page content was put down, the objects on its page from `from` on (the lines of
+    /// new text, say), which are selected together: see [`Editor::placed`].
+    fn after_insert(&mut self, page: usize, from: usize) {
+        self.ed.select_new(&self.pdf, page, from);
         let new = self.ed.selection.clone();
         self.ed.placed(new);
     }
@@ -2557,10 +2600,17 @@ impl Tab {
         c.can_redo = self.can_redo();
         c.words = self.ed.selected_text().is_some();
         c.object = self.ed.has_object();
-        c.obj_kind = match self.ed.selection {
-            Selection::Object { kind, .. } => Some(kind),
+        let held = self
+            .ed
+            .selection
+            .objects()
+            .map_or(&[][..], |(_, held)| held);
+        c.obj_kind = match held {
+            [one] => Some(one.kind),
             _ => None,
         };
+        c.obj_text = (held.iter()).any(|h| matches!(h.kind, ObjKind::Text | ObjKind::HiddenText));
+        c.obj_lines = held.iter().any(|h| h.kind == ObjKind::Text);
         c.pages = self.ed.selection.pages().is_some();
         c.tool = Some(self.ed.tool);
         c.annot_tool = Some(self.ed.annot_tool);

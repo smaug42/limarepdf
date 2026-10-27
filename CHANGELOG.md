@@ -17,6 +17,12 @@
   a font, size or colour in the inspector, headed Selected text. The words stay selected, and each change is one
   undo step. Invisible recognised text, text in a block of page content reused as a whole and vertical writing
   are left as they were, and a notice says so.
+- Select several objects with the arrow: Shift+click to add one or take it out, drag a rectangle round them (what
+  is wholly inside it is selected; Shift adds), or press Ctrl+A for everything on the page. They move together (a
+  drag, the arrow keys, the inspector's X and Y), take the inspector's font, size, colour, Bold and Italic (the
+  lines of text among them) and fill, outline and width (the shapes), blank or mixed where they differ, and
+  delete together, each change one undo step. A drag that starts on a background or a scanned page that isn't
+  selected draws a rectangle, so it isn't moved by accident.
 
 ### Changed
 
@@ -59,6 +65,10 @@
   again in a similar font. Where that can't be done, the words are written in the similar font as before, and a
   notice says so.
 - Ctrl+B and Ctrl+I also make a line selected with the arrow bold or italic, as the inspector's buttons do.
+- New text of several lines is selected as one when you finish typing it, so it moves together; before, only its
+  last line was selected.
+- The right-click menu's Copy the object's text is now Copy the selected text lines, and copies several lines in
+  reading order.
 - Selected text is shaded as one smooth area, as in a word processor: a band along each line, the spaces between
   words included, the lines of a paragraph meeting, instead of a box around each word.
 - The user guide's Features page is now a short summary of what LimarePDF can do. The detailed status of each
@@ -70,6 +80,8 @@
 - When another app changed an open document within a split second of LimarePDF reading it, at the same size,
   LimarePDF could miss the change (most likely on Windows), so Save wouldn't ask before replacing it and no notice
   showed. A file changed so recently is now checked by its contents.
+- A line or shape thinner than half a point, such as a hairline rule, couldn't be moved ("the object would become
+  too small"). It moves now; only resizing something to that size is refused.
 
 ## [0.10.0] - 2026-10-26
 

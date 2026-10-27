@@ -41,11 +41,13 @@ pub enum Act {
     Redo,
     Copy,
     SelectAllText,
+    /// Select every object on the page in front, with the arrow.
+    SelectAllObjects,
     /// Print the selected words, as cropped pages or as plain text.
     PrintSelection,
     /// Save the selected words as a PDF (cropped pages or plain text) or a text file.
     SaveSelection,
-    /// Bold on or off for the selected words, or the line selected with the arrow, by
+    /// Bold on or off for the selected words, or the lines selected with the arrow, by
     /// Word's rule: all bold becomes not bold, anything else all bold.
     Bold,
     /// Italic on or off, as [`Act::Bold`].
@@ -71,9 +73,9 @@ pub enum Act {
     RemoveHidden,
     /// Set the name written into comments and markup.
     CommentName,
-    /// Delete the selected object, or the selected pages.
+    /// Delete the selected objects, or the selected pages.
     DeleteSelection,
-    /// Copy the text of the selected text object.
+    /// Copy the text of the selected lines of page text, in reading order.
     CopyObjectText,
     /// Put the keyboard in the inspector's text box for the selected text object.
     EditObjectText,
@@ -227,6 +229,7 @@ impl Act {
             | Act::Quit
             | Act::Copy
             | Act::SelectAllText
+            | Act::SelectAllObjects
             | Act::MarkColor { .. }
             | Act::CommentName
             | Act::CopyObjectText
@@ -333,13 +336,17 @@ pub struct Ctx {
     pub can_redo: bool,
     /// Words are selected with the read tool.
     pub words: bool,
-    /// An object is selected.
+    /// Objects are selected, one or several.
     pub object: bool,
-    /// The selected object can be moved with the current tool: page text only with the
+    /// The selected objects can be moved with the current tool: page text only with the
     /// arrow, or just after it was added.
     pub object_moves: bool,
-    /// What the selected object is.
+    /// What the selected object is, when one is selected.
     pub obj_kind: Option<ObjKind>,
+    /// Some of the selected objects are lines of page text, visible or not.
+    pub obj_text: bool,
+    /// Some of the selected objects are lines of visible page text.
+    pub obj_lines: bool,
     /// Pages are selected in the thumbnails.
     pub pages: bool,
     pub tool: Option<Tool>,
@@ -441,14 +448,23 @@ fn nudgeable(c: &Ctx) -> bool {
 }
 /// Page text selected with the read tool, which moves only with the arrow.
 fn fixed_text(c: &Ctx) -> bool {
-    text_object(c) && !c.object_moves
+    one_line(c) && !c.object_moves
 }
-fn text_object(c: &Ctx) -> bool {
+/// One line of page text selected.
+fn one_line(c: &Ctx) -> bool {
     c.object && matches!(c.obj_kind, Some(ObjKind::Text | ObjKind::HiddenText))
 }
-/// Selected words, or a line of visible page text selected: what Bold and Italic change.
+/// Lines of page text among the selected objects.
+fn lines_among(c: &Ctx) -> bool {
+    c.object && c.obj_text
+}
+/// Selected words, or lines of visible page text among the selected objects: what Bold and
+/// Italic change.
 fn styleable(c: &Ctx) -> bool {
-    (c.words || (c.object && c.obj_kind == Some(ObjKind::Text))) && !c.busy
+    (c.words || (c.object && c.obj_lines)) && !c.busy
+}
+fn arrow_tool(c: &Ctx) -> bool {
+    c.doc && c.tool == Some(Tool::Select)
 }
 fn deletable(c: &Ctx) -> bool {
     c.object || c.pages || (c.annot && !c.annot_locked)
@@ -628,6 +644,17 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::SelectAllObjects,
+        group: Group::Edit,
+        label: "Select all on the page",
+        icon: icon::SELECTION_ALL,
+        keys: &[k(C, Key::A)],
+        enabled: arrow_tool,
+        hint: "Every picture, shape and line of text on the page, to move, restyle or \
+               delete together.",
+        ..BASE
+    },
+    Action {
         act: Act::Bold,
         group: Group::Edit,
         label: "Bold",
@@ -730,7 +757,7 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Edit,
         label: "Edit text",
         icon: icon::PENCIL_SIMPLE,
-        enabled: text_object,
+        enabled: one_line,
         sep: true,
         hint: "Change the words of the selected line of page text.",
         ..BASE
@@ -756,9 +783,9 @@ pub static ACTIONS: &[Action] = &[
     Action {
         act: Act::CopyObjectText,
         group: Group::Edit,
-        label: "Copy the object's text",
+        label: "Copy the selected text lines",
         icon: icon::COPY,
-        enabled: text_object,
+        enabled: lines_among,
         ..BASE
     },
     Action {
@@ -1607,7 +1634,7 @@ pub fn context_items(sel: &Selection) -> &'static [&'static [Act]] {
             &[Act::PrintSelection, Act::SaveSelection],
         ],
         Selection::Annot { .. } => &[&[Act::DeleteSelection]],
-        Selection::Object { .. } => &[
+        Selection::Objects { .. } => &[
             &[
                 Act::EditObjectText,
                 Act::MoveText,
@@ -1761,12 +1788,34 @@ mod tests {
         }
     }
 
+    /// Each shortcut does one thing: two commands share one only when no tool has both
+    /// (Ctrl+A selects all text with the read tool, all objects with the arrow).
     #[test]
     fn shortcuts_are_unique() {
+        let tools = [Tool::Read, Tool::Select, Tool::Text, Tool::Rect, Tool::Note];
+        let both = |a: &Action, b: &Action| {
+            tools.iter().any(|&t| {
+                let c = Ctx {
+                    doc: true,
+                    tool: Some(t),
+                    ..Ctx::default()
+                };
+                (a.enabled)(&c) && (b.enabled)(&c)
+            })
+        };
         let all = shortcuts();
         for (i, (a, k)) in all.iter().enumerate() {
             for (b, j) in &all[i + 1..] {
-                assert!(k != j, "{:?} and {:?} share a shortcut", a.act, b.act);
+                let apart = a.act == Act::SelectAllText && b.act == Act::SelectAllObjects;
+                assert!(
+                    k != j || apart,
+                    "{:?} and {:?} share a shortcut",
+                    a.act,
+                    b.act
+                );
+                if k == j {
+                    assert!(!both(a, b), "{:?} and {:?} are on together", a.act, b.act);
+                }
             }
         }
     }
@@ -1781,10 +1830,10 @@ mod tests {
 
     #[test]
     fn context_menus_list_registered_commands() {
-        let object = Selection::Object {
+        let object = Selection::Objects {
             page: 0,
-            id: 0,
-            kind: ObjKind::Path,
+            held: Vec::new(),
+            loose: false,
         };
         let words = Selection::word((0, 0));
         let annot = Selection::Annot {

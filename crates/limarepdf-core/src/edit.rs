@@ -518,6 +518,7 @@ fn closed(mut ops: Vec<Operation>, depth_left: usize) -> Vec<Operation> {
 /// the text matrix back before that show; as `Tm` sets the line matrix too, which the old
 /// shows never changed, another `Tm` puts that back before the next line move. Not after
 /// vertical writing, whose end isn't known (it is measured as if it ran across).
+#[derive(Clone, Copy)]
 struct Following {
     /// The show that carries on from the line, and the first line move after it.
     show: Option<usize>,
@@ -573,6 +574,19 @@ impl Following {
             return None;
         };
         Some(op("Tm", m.iter().map(|&x| r(x)).collect()))
+    }
+
+    /// What goes in before which operators after several lines, `fs` in the page's order:
+    /// for each operator, what each line puts in before it ([`Following::before`]), the
+    /// later lines' last. Found once, so a page of many lines is gone through once.
+    fn all(fs: impl IntoIterator<Item = Following>) -> HashMap<usize, Vec<Operation>> {
+        let mut out: HashMap<usize, Vec<Operation>> = HashMap::new();
+        for f in fs {
+            for i in [f.show, f.line].into_iter().flatten() {
+                out.entry(i).or_default().extend(f.before(i));
+            }
+        }
+        out
     }
 }
 
@@ -680,6 +694,27 @@ impl Pdf {
         Ok(mul(mul(inv, d_vis), vd))
     }
 
+    /// The objects `ids` name, in the order given, which must be the page's order (ids
+    /// ascending); and for each of the page's operators, which of them it belongs to. An id
+    /// given twice is refused, as is one whose operators another of them has.
+    fn pick_all(
+        parsed: &Parsed,
+        ids: impl IntoIterator<Item = usize>,
+    ) -> Result<(Vec<Obj>, Vec<Option<usize>>)> {
+        let mut owner = vec![None; parsed.ops.len()];
+        let mut objs = Vec::new();
+        for (k, id) in ids.into_iter().enumerate() {
+            let obj = Self::pick(parsed, id)?;
+            for slot in &mut owner[obj.first..=obj.last] {
+                if slot.replace(k).is_some() {
+                    bail!("object {id} was given twice, or shares its content with another one");
+                }
+            }
+            objs.push(obj.clone());
+        }
+        Ok((objs, owner))
+    }
+
     /// Move and/or resize an object so that its bounding box becomes `new_box` (displayed-page points, y down).
     pub fn set_object_bbox(
         &mut self,
@@ -687,42 +722,91 @@ impl Pdf {
         id: usize,
         new_box: [f32; 4],
     ) -> Result<()> {
+        self.set_object_boxes(page_index, &[(id, new_box)])
+    }
+
+    /// Move and/or resize several objects of one page at once, each so that its bounding box
+    /// becomes the one given (displayed-page points, y down), in one rewrite of the page's
+    /// content: the ids are as the page is now. If any can't be changed, nothing is.
+    pub fn set_object_boxes(
+        &mut self,
+        page_index: usize,
+        boxes: &[(usize, [f32; 4])],
+    ) -> Result<()> {
         let objs = self.page_objects(page_index)?;
-        let old = objs
-            .get(id)
-            .ok_or_else(|| anyhow!("object {id} no longer exists"))?
-            .bbox;
-        let (ow, oh) = (old[2] - old[0], old[3] - old[1]);
-        let (nw, nh) = (new_box[2] - new_box[0], new_box[3] - new_box[1]);
-        if nw < 0.5 || nh < 0.5 {
-            bail!("the object would become too small");
-        }
-        let sx = if ow > 1e-3 { nw / ow } else { 1.0 };
-        let sy = if oh > 1e-3 { nh / oh } else { 1.0 };
-        let d = [
-            sx,
-            0.0,
-            0.0,
-            sy,
-            new_box[0] - old[0] * sx,
-            new_box[1] - old[1] * sy,
-        ];
-        self.transform_object(page_index, id, d)
+        let moves = boxes
+            .iter()
+            .map(|&(id, new_box)| {
+                let old = objs
+                    .get(id)
+                    .ok_or_else(|| anyhow!("object {id} no longer exists"))?
+                    .bbox;
+                let (ow, oh) = (old[2] - old[0], old[3] - old[1]);
+                let (nw, nh) = (new_box[2] - new_box[0], new_box[3] - new_box[1]);
+                // Only making it that small is refused: a hairline moves as thin as it is.
+                let shrunk = |n: f32, o: f32| n < 0.5 && n < o - 1e-3;
+                if shrunk(nw, ow) || shrunk(nh, oh) {
+                    bail!("the object would become too small");
+                }
+                let sx = if ow > 1e-3 { nw / ow } else { 1.0 };
+                let sy = if oh > 1e-3 { nh / oh } else { 1.0 };
+                let d = [
+                    sx,
+                    0.0,
+                    0.0,
+                    sy,
+                    new_box[0] - old[0] * sx,
+                    new_box[1] - old[1] * sy,
+                ];
+                Ok((id, d))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.transform_objects(page_index, &moves)
     }
 
     /// Apply `d_vis` (a matrix in displayed-page space, y down) to an object.
     pub fn transform_object(&mut self, page_index: usize, id: usize, d_vis: M) -> Result<()> {
+        self.transform_objects(page_index, &[(id, d_vis)])
+    }
+
+    /// Apply a matrix in displayed-page space (y down) to each of several objects of one
+    /// page, in one rewrite of its content: the ids are as the page is now. If any can't be
+    /// changed, nothing is.
+    pub fn transform_objects(&mut self, page_index: usize, moves: &[(usize, M)]) -> Result<()> {
         let (page, parsed) = self.load_edit(page_index)?;
         let (vd, _, _) = self.vis_down(page);
-        let obj = Self::pick(&parsed, id)?.clone();
-        let d = Self::user_delta(vd, d_vis)?;
-        let ictm = mx::inv(obj.ctm)
-            .ok_or_else(|| anyhow!("the object has a degenerate transform and cannot be edited"))?;
-        let m = mul(mul(obj.ctm, d), ictm);
-        let mut following = Following::of(&parsed.ops, &obj);
-        let mut out: Vec<Operation> = Vec::with_capacity(parsed.ops.len() + 8);
+        let mut moves = moves.to_vec();
+        moves.sort_by_key(|&(id, _)| id);
+        let (objs, owner) = Self::pick_all(&parsed, moves.iter().map(|&(id, _)| id))?;
+        let ms = (objs.iter().zip(&moves))
+            .map(|(obj, &(_, d_vis))| {
+                let d = Self::user_delta(vd, d_vis)?;
+                let ictm = mx::inv(obj.ctm).ok_or_else(|| {
+                    anyhow!("the object has a degenerate transform and cannot be edited")
+                })?;
+                Ok(mul(mul(obj.ctm, d), ictm))
+            })
+            .collect::<Result<Vec<M>>>()?;
+        let following: Vec<Following> =
+            objs.iter().map(|o| Following::of(&parsed.ops, o)).collect();
+        // A moved line puts the text matrix back itself for a show that carries on from it
+        // (below): only the line move after that needs putting back.
+        let fixes = Following::all(following.iter().map(|f| Following { show: None, ..*f }));
+        let fix = |i: usize| fixes.get(&i).into_iter().flatten().cloned();
+        let mut out: Vec<Operation> = Vec::with_capacity(parsed.ops.len() + 8 * objs.len());
         for (i, o) in parsed.ops.iter().enumerate() {
-            out.extend(following.before(i));
+            let Some(k) = owner[i] else {
+                out.extend(fix(i));
+                out.push(o.clone());
+                continue;
+            };
+            let (obj, m) = (&objs[k], ms[k]);
+            // A moved line is written whole at its first operator: what goes in before the
+            // others would go into nothing.
+            if obj.text.is_some() && i > obj.first {
+                continue;
+            }
+            out.extend(fix(i));
             if i == obj.first && obj.kind != ObjectKind::Text {
                 out.push(op("q", vec![]));
                 out.push(cm(m));
@@ -763,7 +847,7 @@ impl Pdf {
                 }
                 // Restore the text matrix the following operators expect: here, as BT has
                 // just reset it, and the line matrix later if a show carries on first.
-                let tm = match following.show.take() {
+                let tm = match following[k].show {
                     Some(_) => t.tm_end,
                     None => t.tlm_end,
                 };
@@ -775,9 +859,6 @@ impl Pdf {
                 ]);
                 continue;
             }
-            if obj.text.is_some() && i > obj.first && i <= obj.last {
-                continue;
-            }
             out.push(o.clone());
             if i == obj.last && obj.kind != ObjectKind::Text {
                 out.push(op("Q", vec![]));
@@ -787,17 +868,24 @@ impl Pdf {
     }
 
     pub fn delete_object(&mut self, page_index: usize, id: usize) -> Result<()> {
+        self.delete_objects(page_index, &[id])
+    }
+
+    /// Delete several objects of one page at once, in one rewrite of its content: the ids
+    /// are as the page is now. If any can't be deleted, nothing is.
+    pub fn delete_objects(&mut self, page_index: usize, ids: &[usize]) -> Result<()> {
         let (page, parsed) = self.load_edit(page_index)?;
-        let obj = Self::pick(&parsed, id)?.clone();
-        let following = Following::of(&parsed.ops, &obj);
+        let mut ids = ids.to_vec();
+        ids.sort_unstable();
+        let (objs, owner) = Self::pick_all(&parsed, ids)?;
+        let fixes = Following::all(objs.iter().map(|o| Following::of(&parsed.ops, o)));
         let mut out = Vec::with_capacity(parsed.ops.len());
         for (i, o) in parsed.ops.iter().enumerate() {
-            out.extend(following.before(i));
-            let inside = i >= obj.first && i <= obj.last;
-            if !inside {
+            out.extend(fixes.get(&i).into_iter().flatten().cloned());
+            let Some(obj) = owner[i].map(|k| &objs[k]) else {
                 out.push(o.clone());
                 continue;
-            }
+            };
             match obj.kind {
                 ObjectKind::Text => {
                     let t = obj.text.as_ref().unwrap();
@@ -976,13 +1064,14 @@ impl Pdf {
             .map(|(o, _)| (o.first, Following::of(&parsed.ops, o)))
             .collect();
         following.sort_by_key(|(first, _)| *first);
+        let fixes = Following::all(following.into_iter().map(|(_, f)| f));
         let mut shows: HashMap<usize, (Show, usize)> = HashMap::new();
         for (k, (_, t)) in lines.iter().enumerate() {
             shows.extend(t.runs.iter().map(|r| (r.op, (r.show, k))));
         }
         let mut out = Vec::with_capacity(parsed.ops.len() + 8 * edits.len());
         for (i, o) in parsed.ops.iter().enumerate() {
-            out.extend(following.iter().filter_map(|(_, f)| f.before(i)));
+            out.extend(fixes.get(&i).into_iter().flatten().cloned());
             match shows.get(&i) {
                 Some(&(show, k)) => {
                     out.extend(move_only(show));
@@ -1198,38 +1287,56 @@ impl Pdf {
     }
 
     pub fn set_path_style(&mut self, page_index: usize, id: usize, st: &PathStyle) -> Result<()> {
+        self.set_path_styles(page_index, &[(id, *st)])
+    }
+
+    /// Restyle several paths of one page at once, in one rewrite of its content: the ids are
+    /// as the page is now. If any isn't a path, nothing is changed.
+    pub fn set_path_styles(
+        &mut self,
+        page_index: usize,
+        styles: &[(usize, PathStyle)],
+    ) -> Result<()> {
         let (page, parsed) = self.load_edit(page_index)?;
-        let obj = Self::pick(&parsed, id)?.clone();
-        let p = obj
-            .path
-            .clone()
-            .ok_or_else(|| anyhow!("object {id} is not a path"))?;
-        let scale = obj.ctm[0].hypot(obj.ctm[1]).max(1e-6);
-        let paint = match (st.fill.is_some(), st.stroke.is_some()) {
-            (true, true) => match (p.evenodd, p.closed) {
-                (false, false) => "B",
-                (true, false) => "B*",
-                (false, true) => "b",
-                (true, true) => "b*",
-            },
-            (true, false) => {
-                if p.evenodd {
-                    "f*"
-                } else {
-                    "f"
-                }
-            }
-            (false, true) => {
-                if p.closed {
-                    "s"
-                } else {
-                    "S"
-                }
-            }
-            (false, false) => "n",
-        };
-        let mut out = Vec::with_capacity(parsed.ops.len() + 6);
+        let mut styles = styles.to_vec();
+        styles.sort_by_key(|&(id, _)| id);
+        let (objs, owner) = Self::pick_all(&parsed, styles.iter().map(|&(id, _)| id))?;
+        let paints = (objs.iter().zip(&styles))
+            .map(|(obj, (id, st))| {
+                let p = (obj.path.as_ref()).ok_or_else(|| anyhow!("object {id} is not a path"))?;
+                Ok(match (st.fill.is_some(), st.stroke.is_some()) {
+                    (true, true) => match (p.evenodd, p.closed) {
+                        (false, false) => "B",
+                        (true, false) => "B*",
+                        (false, true) => "b",
+                        (true, true) => "b*",
+                    },
+                    (true, false) => {
+                        if p.evenodd {
+                            "f*"
+                        } else {
+                            "f"
+                        }
+                    }
+                    (false, true) => {
+                        if p.closed {
+                            "s"
+                        } else {
+                            "S"
+                        }
+                    }
+                    (false, false) => "n",
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut out = Vec::with_capacity(parsed.ops.len() + 6 * objs.len());
         for (i, o) in parsed.ops.iter().enumerate() {
+            let Some(k) = owner[i] else {
+                out.push(o.clone());
+                continue;
+            };
+            let (obj, st, paint) = (&objs[k], &styles[k].1, paints[k]);
+            let scale = obj.ctm[0].hypot(obj.ctm[1]).max(1e-6);
             if i == obj.first {
                 out.push(op("q", vec![]));
                 if let Some(f) = st.fill {

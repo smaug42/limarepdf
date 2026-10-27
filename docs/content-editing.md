@@ -141,6 +141,27 @@ so that clicking a scan doesn't pick it up. A drag that starts anywhere else sti
 included: click to select, drag to move, drag a handle to resize (Shift keeps the proportions), and arrow keys to
 nudge.
 
+## Select several objects
+
+With the arrow:
+
+- Hold **Shift** and click objects to add them to the selection. Shift+click one again to take it out. A click
+  without Shift selects that one alone.
+- Or drag a rectangle from an empty part of the page: everything wholly inside it is selected, nothing it only
+  touches. Hold Shift to add what it holds to the selection. A drag that starts on a background or a scanned page
+  that isn't selected draws a rectangle too, so it isn't moved by accident.
+- **Ctrl+A** selects everything on the page.
+
+Each selected object is outlined, with a dashed box round them all. Drag any one of them, or use the arrow keys, to
+move them together; Delete or Backspace deletes them all. The inspector says how many there are and what they are.
+Its font, size, colour, Bold and Italic change the lines of text among them, each line as a whole, and Fill,
+Outline and width change the shapes; a value they don't share shows blank or mixed. X and Y under **Position** move
+them all. Right-click one of them for Copy the selected text lines (in reading order) and Delete. Each change is
+one undo step.
+
+Several objects are selected on one page at a time. They move, restyle and delete together, but are resized one at
+a time. Comments and markup are selected one at a time, never with page objects.
+
 ## Change size, font and colour in the inspector
 
 The inspector is headed by what is selected (Text, Image, Shape). For text it shows the font list, then Bold,
@@ -159,7 +180,7 @@ text that isn't a size leaves the size as it was.
 ## After you put something down
 
 Add text and Add image put one thing down and then give way to the read tool, with the new item selected so you
-can adjust it. To add several in a row, pin the tool (see [Keep tool active](gui.md#keep-tool-active)). Everything
+can adjust it: new text of several lines is selected as one, so it moves together. To add several in a row, pin the tool (see [Keep tool active](gui.md#keep-tool-active)). Everything
 can be undone with Ctrl+Z, up to 20 steps back ([fewer on very large documents](gui.md#undo)).
 
 ## How it works

@@ -208,9 +208,36 @@ underneath is
 covered in the colour the page worker (`worker.rs`, `Worker::sample`) finds around it, from a drawing of that
 part of the page in the current page colours.
 
-Gestures (PB-14): `Editor::escape` first lets go of a move, resize or turn (`drag`), a shape (`draw`), a pen stroke
-or a word selection being dragged (`text_drag`), changing nothing and keeping the tool; only then does Esc do what
-it did. egui forgets a drag whose widget isn't drawn, so the page a gesture is on (`Editor::gesture_page`) keeps
+Selected objects (ENH-06, batch 25; design `limarepdf-multiselect-design.md`) are one `Selection::Objects`: a page
+and one or more `selection::Selected` (the object's index in `Pdf::page_objects`, its kind, box and a line's text),
+in the order selected, with `loose` (page text among them moves with the read tool: text just added, Move or resize
+text). `Selection::object` gives the object only when one is held, so everything built for one (handles, line
+editing, Replace image, the one-object inspector) is unchanged. An index is only good until the page changes: a
+deleted object drops out of the list and a rewritten line goes to its end. So after every change the objects are
+found again (`Selection::refind`, run by `Editor::objects` whenever it reads a page's objects anew): at its index
+when the object there fits (kind, text, a box meeting the one held, `Selected::fits`), else the fitting one
+overlapping it most, else it is let go, never swapped for another. A change says first where each will be or what
+it will read (`Selection::expect`: `Tab`'s `SetBox` gives the boxes, `EditText` the typed text, keeping its own
+fallback for a line read back differently). With the arrow (`page_ui`'s `start_arrange`), Shift+click toggles one
+(`Editor::toggle_object`), a press on nothing, on a background not held (`Editor::background`, the read tool's 80 %
+rule) or with Shift away from the held objects starts a `Marquee`, selecting what is wholly inside it
+(`inside_rect`, invisible text only while shown) on release (`marquee_done`; Shift adds), and a press on a held
+object moves them all (`start_move`: `Drag::group`, the box round them all as `orig` and `cur`; `held_boxes` draws
+them moved). Ctrl+A is `Act::SelectAllObjects` (the arrow's), sharing the key with the read tool's `SelectAllText`
+by being enabled for another tool, and a page-only key left to a text box. Several held get no handles: each is
+outlined and a dashed box drawn round them all. Core changes several objects of a page in one rewrite
+(`Pdf::set_object_boxes`, `transform_objects`, `delete_objects`, `set_path_styles`, the one-object functions calls
+of them), the ids as the page is before the call, refusing all if any is refused; `pick_all` maps each operator to
+its object, and `Following::all` finds once what goes in before which operator after them (also for
+`edit_texts`), so a page of 27,000 objects is gone through once. The inspector for several (`Editor::group_ui`)
+restyles their lines through a `Chosen` made from them (`chosen::Of::Lines`, each line whole, as batch 24's words)
+and their shapes through a `Group` (each shape's `Look` as it is and as changed, `Typed::Objects`), and moves them
+by the box round them (`Group::at`). `Tab::after_insert` selects everything a change put down (`Editor::select_new`
+from the object count before), so new text of several lines is held as one.
+
+Gestures (PB-14): `Editor::escape` first lets go of a move, resize or turn (`drag`), a shape (`draw`), a selection
+rectangle (`marquee`), a pen stroke or a word selection being dragged (`text_drag`), changing nothing and keeping the
+tool; only then does Esc do what it did. egui forgets a drag whose widget isn't drawn, so the page a gesture is on (`Editor::gesture_page`) keeps
 its `page_ui` drawn by `Tab`'s page loop while it is out of view, and letting go ends the gesture there. The
 inspector's Text and Comment boxes keep a change when they lose the keyboard (PB-20), as Tab moves on to a button
 and `settled` waits while any widget has the keyboard.

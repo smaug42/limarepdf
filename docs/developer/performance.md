@@ -244,6 +244,29 @@ No line fell back to a similar font. The change runs on the window's thread with
 redraw, as every edit does; at these rates a whole 300-page document would take about two seconds there, which
 is recorded, not a threshold (6.3 has none for edits).
 
+## Several objects at once
+
+Batch 25 (ENH-06) moves, restyles and deletes the objects selected on a page in one parse and one commit
+(`Pdf::set_object_boxes`, `set_path_styles`, `delete_objects`), what goes in before which operator after them found
+once (`Following::all`, also for `edit_texts`), so a page is gone through once however many are selected; the
+window finds the selection's boxes, the rectangle's objects and the selection again after a change in one pass
+each. Measured on 26 October 2026 on the machine above, every object of page 1 changed at once, the median of five
+runs, with a throwaway release-built probe (`target/b25perf/`), and the window's frames, headless, with a temporary
+release-built app test (kept as `target/b25perf/frames_probe.rs.txt`):
+
+| Page | Objects | Read them | Move all | Restyle the shapes | Bold every line | Delete all |
+| --- | --- | --- | --- | --- | --- | --- |
+| `text-300.pdf`, page 1 | 50 lines | 1.4 ms | 3.2 ms | – | 1.8 ms | 1.5 ms |
+| `artwork.pdf` (the outlier) | 27,440 (27,274 shapes) | 270 ms | 1.1 s | 0.75 s | – | 0.80 s |
+
+| Page, all its objects selected with Ctrl+A | A frame | While they are dragged | The frame letting go (the move, its undo step and redraw) |
+| --- | --- | --- | --- |
+| `text-300.pdf`, page 1 (50) | 0.6 ms | 0.6 ms | 6.9 ms |
+| `artwork.pdf` (27,440) | 5.3 ms | 5.6 ms | 1.2 s |
+
+A move of the artwork's objects takes less than half the 2.9 s the page takes to draw, and its frames stay well
+within a 60 Hz frame while they are selected and dragged. Recorded, not thresholds (6.3 has none for edits).
+
 ## Startup and responsiveness
 
 Measured on 26 October 2026 as the release checks' baseline (REL-07), from which their thresholds were set (accepted

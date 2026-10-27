@@ -2596,6 +2596,10 @@ impl App {
                 let t = &mut self.tabs[self.active];
                 t.ed.select_all_words(&t.pdf, t.current);
             }
+            Act::SelectAllObjects => {
+                let t = &mut self.tabs[self.active];
+                t.ed.select_all_objects(&t.pdf, t.current);
+            }
             Act::Bold | Act::Italic => {
                 let t = &mut self.tabs[self.active];
                 if let Some(said) = t.ed.switch_style(&t.pdf, a == Act::Bold) {
@@ -2668,10 +2672,13 @@ impl App {
                 }
             }
             Act::CopyObjectText => {
-                let o = self.tabs[self.active].ed.selected_object();
-                if let Some(text) = o.and_then(|o| o.text.clone()) {
-                    ctx.copy_text(text);
-                    self.status = "Copied the object's text.".into();
+                let lines = self.tabs[self.active].ed.selected_line_text();
+                if !lines.is_empty() {
+                    self.status = match lines.len() {
+                        1 => "Copied the line's text.".into(),
+                        n => format!("Copied the text of {n} lines."),
+                    };
+                    ctx.copy_text(lines.join("\n"));
                 }
             }
             Act::Find => {
@@ -4334,7 +4341,11 @@ impl App {
                 // keyboard takes for its own text.
                 let page_only = matches!(
                     a.act,
-                    Act::Copy | Act::SelectAllText | Act::Bold | Act::Italic
+                    Act::Copy
+                        | Act::SelectAllText
+                        | Act::SelectAllObjects
+                        | Act::Bold
+                        | Act::Italic
                 );
                 let global = k.modifiers.command && !page_only;
                 let in_box = typing && matches!(a.act, Act::Undo | Act::Redo);
@@ -5342,7 +5353,7 @@ impl eframe::App for App {
             // As the floating bar: words, a comment or an object, not pages or nothing.
             let selected = matches!(
                 t.ed.selection,
-                Selection::Words { .. } | Selection::Annot { .. } | Selection::Object { .. }
+                Selection::Words { .. } | Selection::Annot { .. } | Selection::Objects { .. }
             );
             let groups = if self.settings.controls_docked && selected {
                 actions::toolbar_items(&t.ed.selection, &c)
@@ -8192,6 +8203,545 @@ mod tests {
         }
         let (page, _) = node(&tree, "Page 1").expect("the page");
         (page.min, page.width() / 612.0)
+    }
+
+    /// [`window`] with `held` keys (Shift, say) down from this frame on, as egui reads them
+    /// from its own state rather than from each pointer event.
+    fn window_held(
+        app: &mut App,
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+        held: egui::Modifiers,
+    ) -> egui::accesskit::TreeUpdate {
+        let mut all = vec![egui::Event::ModifiersChanged(held)];
+        all.extend(events);
+        window(app, ctx, 1400.0, all)
+    }
+
+    /// A tab whose first page has one object of each kind, in this order (page points, y
+    /// down), all in the test window: a red shape at 300,60 to 380,120; lines "Walrus one",
+    /// "Walrus two" and "Walrus three" on baselines 92, 122 and 152 from x 72; a picture at
+    /// 300,150 to 400,230; a group (a form XObject) at 300,250 to 350,300; and invisible
+    /// (OCR) text, "hidden words", on baseline 330. Its second page has a shape at 100,100
+    /// to 200,150.
+    fn objects_tab(ctx: &egui::Context) -> App {
+        use lopdf::{dictionary, Object, Stream};
+        let mut app = app_with(ctx, 1);
+        let shapes = |p: &mut Pdf| {
+            let page = p.page_ids()[0];
+            let font = p.doc.add_object(dictionary! {
+                "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+                "Encoding" => "WinAnsiEncoding",
+            });
+            let image = dictionary! {
+                "Type" => "XObject", "Subtype" => "Image", "Width" => 1, "Height" => 1,
+                "ColorSpace" => "DeviceRGB", "BitsPerComponent" => 8,
+            };
+            let image = p.doc.add_object(Stream::new(image, vec![0, 128, 0]));
+            let bbox: Vec<Object> = [0, 0, 50, 50].map(Object::from).to_vec();
+            let form = dictionary! { "Type" => "XObject", "Subtype" => "Form", "BBox" => bbox };
+            let form = p
+                .doc
+                .add_object(Stream::new(form, b"0 0 1 rg 0 0 50 50 re f".to_vec()));
+            let content = "q 1 0 0 rg 300 672 80 60 re f Q\n\
+                           BT /F1 18 Tf 72 700 Td (Walrus one) Tj ET\n\
+                           BT /F1 18 Tf 72 670 Td (Walrus two) Tj ET\n\
+                           BT /F1 18 Tf 72 640 Td (Walrus three) Tj ET\n\
+                           q 100 0 0 80 300 562 cm /Im1 Do Q\n\
+                           q 1 0 0 1 300 492 cm /Fm1 Do Q\n\
+                           BT 3 Tr /F1 12 Tf 72 462 Td (hidden words) Tj ET\n";
+            let s = p.doc.add_object(Stream::new(
+                lopdf::Dictionary::new(),
+                content.as_bytes().to_vec(),
+            ));
+            let res = dictionary! {
+                "Font" => dictionary! { "F1" => font },
+                "XObject" => dictionary! { "Im1" => image, "Fm1" => form },
+            };
+            let d = p.doc.get_dictionary_mut(page)?;
+            d.set("Contents", Object::Reference(s));
+            d.set("Resources", res);
+            let st = limarepdf_core::PathStyle {
+                fill: Some([0.0, 0.0, 1.0]),
+                stroke: None,
+                line_width: 1.0,
+            };
+            p.add_shape(
+                1,
+                limarepdf_core::Shape::Rect,
+                [100.0, 100.0, 200.0, 150.0],
+                &st,
+            )
+        };
+        assert!(app.tabs[0].edit(ctx, shapes));
+        let kinds: Vec<_> = (app.tabs[0].pdf.page_objects(0).unwrap().iter())
+            .map(|o| (o.kind, o.hidden))
+            .collect();
+        use limarepdf_core::ObjectKind::*;
+        let text = (Text, false);
+        assert_eq!(
+            kinds,
+            [
+                (Path, false),
+                text,
+                text,
+                text,
+                (Image, false),
+                (Form, false),
+                (Text, true)
+            ]
+        );
+        app
+    }
+
+    /// The objects selected in the tab in front: page and indices, in the order selected.
+    fn held(app: &App) -> Option<(usize, Vec<usize>)> {
+        app.tabs[app.active].ed.selection.object_ids()
+    }
+
+    /// Select objects `ids` of page 1 in the tab in front, once the window has read them.
+    fn select(app: &mut App, ctx: &egui::Context, ids: &[usize]) {
+        settle(app, ctx);
+        app.tabs[app.active]
+            .ed
+            .select_objects(0, ids.iter().copied());
+        assert_eq!(held(app), Some((0, ids.to_vec())));
+    }
+
+    /// Where each object of page `page` is now.
+    fn boxes(app: &App, page: usize) -> Vec<[f32; 4]> {
+        let objs = app.tabs[app.active].pdf.page_objects(page).unwrap();
+        objs.iter().map(|o| o.bbox).collect()
+    }
+
+    /// Click at page point `at` (x, y) on the page in view, Shift held or not.
+    fn click_page(app: &mut App, ctx: &egui::Context, at: (f32, f32), shift: bool) {
+        let (min, k) = page_on_screen(app, ctx);
+        let p = min + egui::vec2(at.0, at.1) * k;
+        let m = match shift {
+            true => egui::Modifiers::SHIFT,
+            false => egui::Modifiers::NONE,
+        };
+        window_held(app, ctx, vec![egui::Event::PointerMoved(p)], m);
+        window_held(app, ctx, vec![press(p, true)], m);
+        window_held(app, ctx, vec![press(p, false)], m);
+        window_held(app, ctx, vec![], egui::Modifiers::NONE);
+        settle(app, ctx);
+    }
+
+    /// Drag from page point `from` to `to` on the page in view, Shift held or not.
+    fn drag_page(
+        app: &mut App,
+        ctx: &egui::Context,
+        from: (f32, f32),
+        to: (f32, f32),
+        shift: bool,
+    ) {
+        let (min, k) = page_on_screen(app, ctx);
+        let at = |(x, y): (f32, f32)| min + egui::vec2(x, y) * k;
+        let (a, b) = (at(from), at(to));
+        let m = match shift {
+            true => egui::Modifiers::SHIFT,
+            false => egui::Modifiers::NONE,
+        };
+        window_held(app, ctx, vec![egui::Event::PointerMoved(a)], m);
+        window_held(app, ctx, vec![press(a, true)], m);
+        for i in 1..=4 {
+            let p = a + (b - a) * (i as f32 / 4.0);
+            window_held(app, ctx, vec![egui::Event::PointerMoved(p)], m);
+        }
+        window_held(app, ctx, vec![press(b, false)], m);
+        window_held(app, ctx, vec![], egui::Modifiers::NONE);
+        settle(app, ctx);
+    }
+
+    /// ENH-06: Shift+click with the arrow adds an object to those selected, or takes it out;
+    /// a plain click selects one alone; Shift+click on nothing changes nothing; an object on
+    /// another page starts afresh there.
+    #[test]
+    fn shift_click_adds_and_takes_out_objects() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = objects_tab(&ctx);
+        app.act(&ctx, Act::Tool(Tool::Select));
+        click_page(&mut app, &ctx, (340.0, 90.0), false);
+        assert_eq!(held(&app), Some((0, vec![0])), "the shape");
+        click_page(&mut app, &ctx, (350.0, 190.0), true);
+        click_page(&mut app, &ctx, (325.0, 275.0), true);
+        assert_eq!(
+            held(&app),
+            Some((0, vec![0, 4, 5])),
+            "shape, picture and group"
+        );
+        assert_eq!(app.tabs[0].ed.heading(), "3 objects");
+        click_page(&mut app, &ctx, (350.0, 190.0), true);
+        assert_eq!(held(&app), Some((0, vec![0, 5])), "the picture taken out");
+        click_page(&mut app, &ctx, (500.0, 40.0), true);
+        assert_eq!(held(&app), Some((0, vec![0, 5])), "Shift+click on nothing");
+        click_page(&mut app, &ctx, (90.0, 117.0), false);
+        assert_eq!(
+            held(&app),
+            Some((0, vec![2])),
+            "a plain click: that line alone"
+        );
+        // Taking the last one out leaves nothing selected.
+        click_page(&mut app, &ctx, (90.0, 117.0), true);
+        assert_eq!(held(&app), None);
+        // Another page's object: it alone, on its page.
+        click_page(&mut app, &ctx, (340.0, 90.0), false);
+        app.tabs[0].go_to(1);
+        settle(&mut app, &ctx);
+        app.tabs[0].ed.toggle_object(1, 0);
+        assert_eq!(held(&app), Some((1, vec![0])));
+    }
+
+    /// ENH-06: a rectangle dragged with the arrow selects what is wholly inside it, not
+    /// what it only touches; with Shift it adds to what is selected; over nothing it clears
+    /// the selection; invisible text joins only while it is shown; Esc lets go of one being
+    /// drawn, changing nothing.
+    #[test]
+    fn a_rectangle_selects_what_is_wholly_inside_it() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = objects_tab(&ctx);
+        app.act(&ctx, Act::Tool(Tool::Select));
+        // Round the first two lines, and through the third (on baseline 152).
+        drag_page(&mut app, &ctx, (60.0, 60.0), (250.0, 140.0), false);
+        assert_eq!(held(&app), Some((0, vec![1, 2])));
+        // With Shift, round the picture: added. Half over the group: not.
+        drag_page(&mut app, &ctx, (290.0, 140.0), (410.0, 240.0), true);
+        drag_page(&mut app, &ctx, (290.0, 240.0), (325.0, 310.0), true);
+        assert_eq!(held(&app), Some((0, vec![1, 2, 4])));
+        // Round the invisible text: nothing there to select, so nothing is.
+        drag_page(&mut app, &ctx, (60.0, 310.0), (250.0, 345.0), false);
+        assert_eq!(held(&app), None);
+        app.tabs[0].ed.show_hidden = true;
+        drag_page(&mut app, &ctx, (60.0, 310.0), (250.0, 345.0), false);
+        assert_eq!(held(&app), Some((0, vec![6])), "shown, it is selected");
+        app.tabs[0].ed.show_hidden = false;
+        settle(&mut app, &ctx);
+        assert_eq!(held(&app), None, "hidden again, it is let go");
+        // Esc while drawing one: nothing selected, nothing being dragged.
+        select(&mut app, &ctx, &[0]);
+        drag_on_page(&mut app, &ctx, (60.0, 60.0), (250.0, 140.0), true);
+        assert_eq!(held(&app), Some((0, vec![0])), "Esc changed the selection");
+        assert!(!app.tabs[0].ed.dragging());
+    }
+
+    /// ENH-06: Ctrl+A with the arrow selects every object on the page, invisible text only
+    /// while it is shown; with the read tool it still selects the page's text.
+    #[test]
+    fn ctrl_a_with_the_arrow_selects_the_page_objects() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = objects_tab(&ctx);
+        app.act(&ctx, Act::Tool(Tool::Select));
+        settle(&mut app, &ctx);
+        let ctrl_a = key_with(Key::A, egui::Modifiers::COMMAND);
+        window(&mut app, &ctx, 1400.0, vec![ctrl_a.clone()]);
+        assert_eq!(held(&app), Some((0, (0..6).collect())));
+        app.tabs[0].ed.show_hidden = true;
+        window(&mut app, &ctx, 1400.0, vec![ctrl_a.clone()]);
+        assert_eq!(held(&app), Some((0, (0..7).collect())));
+        app.act(&ctx, Act::Tool(Tool::Read));
+        window(&mut app, &ctx, 1400.0, vec![ctrl_a]);
+        assert!(app.tabs[0].ed.selection.words().is_some());
+    }
+
+    /// ENH-06: objects selected together move together, each by the same amount, whether
+    /// dragged by any one of them or nudged with the arrow keys, and one Undo puts them all
+    /// back; the others stay where they were.
+    #[test]
+    fn several_objects_move_together_with_one_undo() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = objects_tab(&ctx);
+        app.act(&ctx, Act::Tool(Tool::Select));
+        select(&mut app, &ctx, &[0, 2, 4, 5]);
+        let (before, steps) = (boxes(&app, 0), app.tabs[0].history().1);
+        // Dragged by the picture.
+        drag_page(&mut app, &ctx, (350.0, 190.0), (390.0, 220.0), false);
+        let after = boxes(&app, 0);
+        assert_eq!(app.tabs[0].history().1, steps + 1, "one undo step");
+        for (i, (a, b)) in after.iter().zip(&before).enumerate() {
+            let moved = [0, 2, 4, 5].contains(&i);
+            let (dx, dy) = if moved { (40.0, 30.0) } else { (0.0, 0.0) };
+            let d = [
+                a[0] - b[0] - dx,
+                a[1] - b[1] - dy,
+                a[2] - b[2] - dx,
+                a[3] - b[3] - dy,
+            ];
+            assert!(
+                d.iter().all(|v| v.abs() < 0.6),
+                "object {i}: {b:?} to {a:?}"
+            );
+        }
+        assert_eq!(held(&app), Some((0, vec![0, 2, 4, 5])), "still selected");
+        // Nudged: each a point to the right.
+        let key = key_with(Key::ArrowRight, egui::Modifiers::NONE);
+        window(&mut app, &ctx, 1400.0, vec![key]);
+        settle(&mut app, &ctx);
+        let nudged = boxes(&app, 0);
+        for i in [0, 2, 4, 5] {
+            assert!(
+                (nudged[i][0] - after[i][0] - 1.0).abs() < 0.05,
+                "object {i}"
+            );
+        }
+        assert!((nudged[1][0] - after[1][0]).abs() < 0.05, "line one stayed");
+        // Undo twice: all where they started.
+        app.act(&ctx, Act::Undo);
+        app.act(&ctx, Act::Undo);
+        let back = boxes(&app, 0);
+        for (a, b) in back.iter().zip(&before) {
+            assert!(
+                a.iter().zip(b).all(|(p, q)| (p - q).abs() < 0.05),
+                "{b:?} to {a:?}"
+            );
+        }
+    }
+
+    /// ENH-06: the inspector's X and Y for several objects are those of the box round them
+    /// all, and move them together; there is no width or height for several.
+    #[test]
+    fn several_objects_move_by_their_position_in_the_inspector() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = objects_tab(&ctx);
+        app.act(&ctx, Act::Tool(Tool::Select));
+        app.open_inspector();
+        select(&mut app, &ctx, &[1, 4]);
+        let before = boxes(&app, 0);
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert_eq!(inspector::title(&app.tabs[0]), "2 objects");
+        click_named(&mut app, &ctx, "Position");
+        let tree_open = settled_at(&mut app, &ctx, 1400.0);
+        assert!(node(&tree, "X").is_none() && node(&tree_open, "X").is_some());
+        assert!(node(&tree_open, "Width").is_none(), "a width for several");
+        click_named(&mut app, &ctx, "X");
+        let (ctrl, none) = (egui::Modifiers::COMMAND, egui::Modifiers::NONE);
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::A, ctrl)]);
+        window(
+            &mut app,
+            &ctx,
+            1400.0,
+            vec![egui::Event::Text("100".into())],
+        );
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::Enter, none)]);
+        settle(&mut app, &ctx);
+        // The box round them started at the line's left, 72: both 28 to the right.
+        let after = boxes(&app, 0);
+        for (i, (a, b)) in after.iter().zip(&before).enumerate() {
+            let dx = if [1, 4].contains(&i) { 28.0 } else { 0.0 };
+            assert!((a[0] - b[0] - dx).abs() < 0.6, "object {i}: {b:?} to {a:?}");
+            assert!((a[1] - b[1]).abs() < 0.05, "object {i} moved up or down");
+        }
+    }
+
+    /// ENH-06: Delete deletes every object selected, as one step a notice counts and Undo
+    /// takes back; the others stay.
+    #[test]
+    fn several_objects_delete_with_one_undo() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = objects_tab(&ctx);
+        app.act(&ctx, Act::Tool(Tool::Select));
+        let before = app.tabs[0].pdf.page_objects(0).unwrap();
+        select(&mut app, &ctx, &[1, 3, 4]);
+        let key = key_with(Key::Delete, egui::Modifiers::NONE);
+        window(&mut app, &ctx, 1400.0, vec![key]);
+        settle(&mut app, &ctx);
+        let left: Vec<_> = (app.tabs[0].pdf.page_objects(0).unwrap().into_iter())
+            .map(|o| o.text.unwrap_or_else(|| format!("{:?}", o.kind)))
+            .collect();
+        assert_eq!(left, ["Path", "Walrus two", "Form", "hidden words"]);
+        assert_eq!(toast(&app).as_deref(), Some("Deleted 3 objects"));
+        assert_eq!(held(&app), None);
+        app.act(&ctx, Act::Undo);
+        let back = app.tabs[0].pdf.page_objects(0).unwrap();
+        let text = |v: &[limarepdf_core::PageObject]| -> Vec<_> {
+            v.iter().map(|o| (o.kind, o.text.clone(), o.bbox)).collect()
+        };
+        assert_eq!(text(&back), text(&before));
+    }
+
+    /// ENH-06: Bold on several objects selected changes the lines of text among them (each
+    /// whole, as one undo step) and nothing else; rewritten, the lines go to the end of the
+    /// page's content, and the same objects stay selected, so Delete then takes those.
+    #[test]
+    fn a_change_that_reorders_the_page_keeps_the_same_objects() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = objects_tab(&ctx);
+        app.act(&ctx, Act::Tool(Tool::Select));
+        select(&mut app, &ctx, &[1, 3, 0]);
+        let steps = app.tabs[0].history().1;
+        app.act(&ctx, Act::Bold);
+        settle(&mut app, &ctx);
+        assert_eq!(app.tabs[0].history().1, steps + 1, "one undo step");
+        let objs = app.tabs[0].pdf.page_objects(0).unwrap();
+        let font = |t: &str| {
+            let o = objs.iter().find(|o| o.text.as_deref() == Some(t)).unwrap();
+            o.font_name.clone().unwrap_or_default()
+        };
+        assert!(
+            font("Walrus one").contains("Bold"),
+            "{}",
+            font("Walrus one")
+        );
+        assert!(font("Walrus three").contains("Bold"));
+        assert!(!font("Walrus two").contains("Bold"), "not selected");
+        let (page, ids) = held(&app).expect("still selected");
+        let now: Vec<_> = ids.iter().map(|&i| objs[i].text.clone()).collect();
+        assert_eq!(page, 0);
+        assert_eq!(
+            now,
+            [Some("Walrus one".into()), Some("Walrus three".into()), None]
+        );
+        assert_eq!(objs[ids[2]].kind, limarepdf_core::ObjectKind::Path);
+        assert_ne!(ids, [1, 3, 0], "the lines were rewritten at the end");
+        app.act(&ctx, Act::DeleteSelection);
+        settle(&mut app, &ctx);
+        let left: Vec<_> = (app.tabs[0].pdf.page_objects(0).unwrap().into_iter())
+            .map(|o| o.text.unwrap_or_else(|| format!("{:?}", o.kind)))
+            .collect();
+        assert_eq!(left, ["Walrus two", "Image", "Form", "hidden words"]);
+    }
+
+    /// ENH-06: a change to several objects that one of them can't take changes none of
+    /// them, says so, and leaves them selected.
+    #[test]
+    fn a_change_to_several_refused_changes_nothing() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = objects_tab(&ctx);
+        app.act(&ctx, Act::Tool(Tool::Select));
+        select(&mut app, &ctx, &[0, 4]);
+        let (before, revision) = (boxes(&app, 0), app.tabs[0].history());
+        let tiny = [300.0, 150.0, 300.2, 150.2];
+        let t = &mut app.tabs[0];
+        t.ed.actions.push(EdAction::SetBox(
+            0,
+            vec![(0, [310.0, 60.0, 390.0, 120.0]), (4, tiny)],
+        ));
+        t.apply_actions(&ctx);
+        assert_eq!(app.tabs[0].history(), revision, "changed");
+        assert_eq!(boxes(&app, 0), before);
+        let said = app.tabs[0].error.clone().unwrap_or_default();
+        assert!(
+            said.starts_with("One of the selected objects couldn't be moved, so none of them was"),
+            "{said}"
+        );
+        assert_eq!(held(&app), Some((0, vec![0, 4])));
+    }
+
+    /// ENH-06: new text of several lines is selected as one when it is put down, and moves
+    /// together with the read tool.
+    #[test]
+    fn new_text_of_several_lines_is_selected_as_one() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        app.act(&ctx, Act::Tool(Tool::Text));
+        let ed = &mut app.tabs[0].ed;
+        ed.tsize = 30.0;
+        let mut a = page_text::PageText::new(ed.scope(), 0, (100.0, 200.0), ed.new_look());
+        a.text.sync("Walrus\nseal\nfish", None);
+        ed.adding = Some(a);
+        ed.escape();
+        app.tabs[0].apply_actions(&ctx);
+        settle(&mut app, &ctx);
+        assert_eq!(app.tabs[0].ed.tool, Tool::Read);
+        assert_eq!(held(&app), Some((0, vec![0, 1, 2])));
+        let before = boxes(&app, 0);
+        drag_page(&mut app, &ctx, (110.0, 190.0), (160.0, 240.0), false);
+        let after = boxes(&app, 0);
+        for (a, b) in after.iter().zip(&before) {
+            assert!((a[0] - b[0] - 50.0).abs() < 0.6 && (a[1] - b[1] - 50.0).abs() < 0.6);
+        }
+    }
+
+    /// ENH-06: a drag that starts on a background (an object covering most of the page)
+    /// that isn't selected draws a rectangle instead of moving it; a click still selects
+    /// it, and then it moves.
+    #[test]
+    fn a_background_not_selected_is_not_dragged_away() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let st = limarepdf_core::PathStyle {
+            fill: Some([0.9, 0.9, 0.9]),
+            stroke: None,
+            line_width: 1.0,
+        };
+        let rect = |p: &mut Pdf, b| p.add_shape(0, limarepdf_core::Shape::Rect, b, &st);
+        assert!(app.tabs[0].edit(&ctx, |p| {
+            rect(p, [0.0, 0.0, 612.0, 792.0])?;
+            rect(p, [100.0, 100.0, 150.0, 130.0])
+        }));
+        app.act(&ctx, Act::Tool(Tool::Select));
+        let before = boxes(&app, 0);
+        drag_page(&mut app, &ctx, (80.0, 80.0), (200.0, 200.0), false);
+        assert_eq!(boxes(&app, 0), before, "the background moved");
+        assert_eq!(
+            held(&app),
+            Some((0, vec![1])),
+            "the shape inside was selected"
+        );
+        click_page(&mut app, &ctx, (400.0, 400.0), false);
+        assert_eq!(
+            held(&app),
+            Some((0, vec![0])),
+            "a click selects the background"
+        );
+        drag_page(&mut app, &ctx, (400.0, 400.0), (420.0, 400.0), false);
+        assert!(
+            (boxes(&app, 0)[0][0] - 20.0).abs() < 0.6,
+            "selected, it moves"
+        );
+    }
+
+    /// ENH-06: a right-click on one of the objects selected keeps them all, for the menu
+    /// for them; on another object it selects that one.
+    #[test]
+    fn a_right_click_on_one_of_several_keeps_them() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = objects_tab(&ctx);
+        app.act(&ctx, Act::Tool(Tool::Select));
+        select(&mut app, &ctx, &[0, 4]);
+        let (min, k) = page_on_screen(&mut app, &ctx);
+        let right = |at: (f32, f32)| {
+            let p = min + egui::vec2(at.0, at.1) * k;
+            let button = |pressed| egui::Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Secondary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            vec![egui::Event::PointerMoved(p), button(true), button(false)]
+        };
+        window(&mut app, &ctx, 1400.0, right((350.0, 190.0)));
+        settle(&mut app, &ctx);
+        assert_eq!(held(&app), Some((0, vec![0, 4])));
+        let esc = key_with(Key::Escape, egui::Modifiers::NONE);
+        window(&mut app, &ctx, 1400.0, vec![esc]);
+        settle(&mut app, &ctx);
+        window(&mut app, &ctx, 1400.0, right((325.0, 275.0)));
+        settle(&mut app, &ctx);
+        assert_eq!(held(&app), Some((0, vec![5])));
     }
 
     fn press(p: egui::Pos2, pressed: bool) -> egui::Event {
