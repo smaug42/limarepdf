@@ -2221,7 +2221,8 @@ impl Editor {
         }
     }
 
-    /// Shade the selected words of `page` (`words`) in `accent`.
+    /// Shade the selected words of `page` (`words`) in `accent` as word processors shade a
+    /// selection ([`Self::shaded`]).
     fn paint_words(
         &self,
         painter: &egui::Painter,
@@ -2232,10 +2233,28 @@ impl Editor {
     ) {
         if let Some(range) = self.selection.words_on(page, words.len()) {
             let fill = accent.gamma_multiply(0.45);
-            for w in &words[range] {
-                painter.rect_filled(screen_rect(w.bbox), 1.0, fill);
+            for b in Self::shaded(&words[range]) {
+                painter.rect_filled(screen_rect(b), 1.0, fill);
             }
         }
+    }
+
+    /// The bands that shade `words`: one a line, the spaces between its words too (what a
+    /// mark made from the selection covers, [`Self::selected_lines`]), and the lines of a
+    /// paragraph meeting halfway across the space between them, with no stripe between.
+    fn shaded(words: &[PageWord]) -> Vec<[f32; 4]> {
+        let mut bands = Self::line_boxes(words);
+        for i in 1..bands.len() {
+            let (above, below) = (bands[i - 1], bands[i]);
+            let gap = below[1] - above[3];
+            let height = (above[3] - above[1]).min(below[3] - below[1]);
+            let across = above[0] < below[2] && below[0] < above[2];
+            if across && gap > 0.0 && gap < 0.5 * height {
+                let middle = above[3] + gap / 2.0;
+                (bands[i - 1][3], bands[i][1]) = (middle, middle);
+            }
+        }
+        bands
     }
 
     /// The first and last index of the words on word `i`'s line.
@@ -4672,6 +4691,27 @@ mod tests {
         assert_eq!(Editor::line_of(&words, 3), Some((2, 4)));
         assert_eq!(Editor::line_of(&words, 9), None);
         assert!(Editor::line_boxes(&[]).is_empty());
+    }
+
+    /// Lines of a paragraph are shaded meeting halfway across the space between them; a
+    /// gap between paragraphs, and lines side by side, are left as they are.
+    #[test]
+    fn shaded_lines_of_a_paragraph_meet() {
+        let words = [
+            word(0.0, 0.0, 0),
+            word(0.0, 12.0, 1),
+            word(0.0, 40.0, 2),
+            word(100.0, 0.0, 3),
+        ];
+        assert_eq!(
+            Editor::shaded(&words),
+            [
+                [0.0, 0.0, 20.0, 11.0],
+                [0.0, 11.0, 20.0, 22.0],
+                [0.0, 40.0, 20.0, 50.0],
+                [100.0, 0.0, 120.0, 10.0],
+            ]
+        );
     }
 
     #[test]

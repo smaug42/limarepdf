@@ -13751,6 +13751,49 @@ mod tests {
         assert_eq!(lines[1], fonts_are(&[&[("one two three", bold)]])[0]);
     }
 
+    /// Selected words are shaded one band a line, the spaces between them too, as word
+    /// processors shade a selection, not a box a word.
+    #[test]
+    fn selected_words_are_shaded_one_band_a_line() {
+        let ctx = egui::Context::default();
+        let mut app = words_selected(&ctx, (0, 0), (0, 4));
+        let tree = settle(&mut app, &ctx);
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1400.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let mut f = eframe::Frame::_new_kittest();
+        let mut out = ctx.run_ui(raw, |ui| eframe::App::ui(&mut app, ui, &mut f));
+        out.textures_delta.clear();
+        let fill = (ctx.global_style().visuals.selection.bg_fill).gamma_multiply(0.45);
+        fn walk(s: &egui::Shape, fill: egui::Color32, out: &mut Vec<egui::Rect>) {
+            match s {
+                egui::Shape::Rect(r) if r.fill == fill => out.push(r.rect),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, fill, out)),
+                _ => {}
+            }
+        }
+        let mut bands = Vec::new();
+        for c in &out.shapes {
+            walk(&c.shape, fill, &mut bands);
+        }
+        bands.retain(|r| page.contains_rect(*r));
+        // "one two three" and "four five": each band from its first word to its last.
+        let words = app.tabs[0].pdf.page_words(0).unwrap();
+        let k = page.width() / 612.0;
+        let x = |v: f32| page.min.x + v * k;
+        assert_eq!(bands.len(), 2, "{bands:?}");
+        for (band, (first, last)) in bands.iter().zip([(0, 2), (3, 4)]) {
+            let (left, right) = (x(words[first].bbox[0]), x(words[last].bbox[2]));
+            assert!((band.left() - left).abs() < 1.0, "{band:?} from {left}");
+            assert!((band.right() - right).abs() < 1.0, "{band:?} to {right}");
+        }
+    }
+
     /// The floating toolbar over selected words has Bold and Italic.
     #[test]
     fn the_floating_toolbar_has_bold_and_italic_for_selected_words() {

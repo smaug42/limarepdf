@@ -59,6 +59,8 @@
   again in a similar font. Where that can't be done, the words are written in the similar font as before, and a
   notice says so.
 - Ctrl+B and Ctrl+I also make a line selected with the arrow bold or italic, as the inspector's buttons do.
+- Selected text is shaded as one smooth area, as in a word processor: a band along each line, the spaces between
+  words included, the lines of a paragraph meeting, instead of a box around each word.
 - The user guide's Features page is now a short summary of what LimarePDF can do. The detailed status of each
   feature, with its limits and what doesn't work yet, moved to the developer docs as
   [Features and status](docs/developer/feature-status.md).
