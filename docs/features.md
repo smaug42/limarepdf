@@ -18,7 +18,7 @@ source.
 - **Edit text where it is:** double-click a line to change it, and make words bold, italic, or another font, size
   or colour, or just select them as you read and press Ctrl+B.
 - **Add and arrange content:** add text, pictures and shapes, and move, resize, restyle or delete what is already
-  on the page.
+  on the page, one thing or several at once.
 - **Comment and mark up:** highlights, notes, text boxes, shapes, arrows, freehand drawing and replies.
 - **Organise pages:** drag thumbnails to reorder pages; rotate, insert, delete and extract them; merge files into
   one or split one into several.

@@ -45,7 +45,8 @@ Documents open with the read tool, the text cursor. It does most things:
   Redact and more.
 - **A line of text:** double-click it to edit it where it is. Press Enter, or click elsewhere, to keep the change.
 - **A picture, shape or comment:** click it to select it. The inspector shows its options, and changes apply as you
-  make them. Drag it, or use the arrow keys, to move it.
+  make them. Drag it, or use the arrow keys, to move it. Shift+click more pictures and shapes to select several and
+  move them together.
 - **Pages:** click a thumbnail to select its page (Shift+click for a range, Ctrl+click for one more). The inspector
   then offers rotate, delete, extract and insert. Drag thumbnails to put pages in a new order.
 - **The whole document:** with nothing selected (Esc clears a selection), the inspector shows the document's

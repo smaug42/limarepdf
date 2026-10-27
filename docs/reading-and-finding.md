@@ -125,7 +125,8 @@ More ways to select:
 - Dragging past the top or bottom of the view scrolls it, faster the further out the pointer is, so a selection
   can run across pages.
 - Shift+click extends the selection to where you click, on any page. Ctrl+A selects the whole page in view. Esc,
-  or a click, clears the selection.
+  or a click, clears the selection. With no words selected, Shift+click on a picture or shape adds it to those
+  selected instead ([Select several objects](content-editing.md#select-several-objects)).
 - Double-clicking page text edits its line (see [Editing text and pictures](content-editing.md)). Where there is
   no line to edit, such as recognised (OCR) text, a double-click selects one word and a triple-click a line.
 
