@@ -84,7 +84,7 @@ pub enum Act {
     /// The Fill and sign tool, putting this down next (its button's menu).
     SignWith(SignPick),
     /// The Fill and sign tool, with the Create window open for a new signature or
-    /// initials (its button's menu).
+    /// initials.
     CreateSign(SignRole),
     /// Replace the selected image with one from a file.
     ReplaceImage,
@@ -153,6 +153,10 @@ pub enum Act {
     /// Page colour modes recolour pictures too.
     TogglePicturesToo,
     Palette,
+    /// Move the keyboard to the next region of the window (F6), or the one before
+    /// (Shift+F6): see [`crate::regions`].
+    NextRegion,
+    PrevRegion,
     Tool(Tool),
     RotR,
     RotL,
@@ -270,6 +274,8 @@ impl Act {
             | Act::PageColours(_)
             | Act::TogglePicturesToo
             | Act::Palette
+            | Act::NextRegion
+            | Act::PrevRegion
             | Act::Tool(_)
             | Act::Crop
             | Act::Split
@@ -1206,6 +1212,27 @@ pub static ACTIONS: &[Action] = &[
         sep: true,
         ..BASE
     },
+    Action {
+        act: Act::NextRegion,
+        group: Group::View,
+        label: "Next region",
+        keys: &[k(N, Key::F6)],
+        enabled: always,
+        palette: false,
+        hint: "Move the keyboard to the next part of the window: the top bar, the tabs, the \
+               notices, navigation, the page, the inspector or the status bar.",
+        ..BASE
+    },
+    Action {
+        act: Act::PrevRegion,
+        group: Group::View,
+        label: "Previous region",
+        keys: &[k(Modifiers::SHIFT, Key::F6)],
+        enabled: always,
+        palette: false,
+        hint: "Move the keyboard to the part of the window before.",
+        ..BASE
+    },
     // --------------------------------------------------------------- Tools
     Action {
         act: Act::Tool(Tool::Read),
@@ -1258,6 +1285,22 @@ pub static ACTIONS: &[Action] = &[
         icon: icon::SIGNATURE,
         hint: "Put your signature, initials, the date or a tick on the page: click to put it \
                down, or drag a box to size it. Not a digital signature.",
+        ..BASE
+    },
+    Action {
+        act: Act::CreateSign(SignRole::Signature),
+        group: Group::Tools,
+        label: "Create signature…",
+        hint: "Draw, type or pick a picture of your signature, then put it on the page \
+               with Fill and sign.",
+        ..BASE
+    },
+    Action {
+        act: Act::CreateSign(SignRole::Initials),
+        group: Group::Tools,
+        label: "Create initials…",
+        hint: "Draw, type or pick a picture of your initials, then put them on the page \
+               with Fill and sign.",
         ..BASE
     },
     Action {

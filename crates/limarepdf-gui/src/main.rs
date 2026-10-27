@@ -21,6 +21,7 @@ mod page_text;
 mod panels;
 mod recent;
 mod recovery;
+mod regions;
 mod search;
 mod selection;
 mod settings;

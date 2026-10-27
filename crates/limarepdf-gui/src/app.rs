@@ -3,14 +3,15 @@ use crate::actions::{self, menu_item, tooltip, Act, Action, Ctx, Group, ACTIONS}
 use crate::banners::Kind as BannerKind;
 use crate::dialogs::{self as dlg, Ask, Btn, Choice, Outcome, Shell};
 use crate::digital::{self, IdsWindow, SignOut, SignWindow};
-use crate::editor::{Action as EdAction, Tool};
+use crate::editor::{Action as EdAction, Parked, Tool};
 use crate::icon;
 use crate::incoming::Incoming;
 use crate::inspector::{self, Apply, Section};
 use crate::markup;
 use crate::page_text;
-use crate::panels::Panel;
+use crate::panels::{self, Panel};
 use crate::recent::Recent;
+use crate::regions::{self, Region, Regions};
 use crate::selection::Selection;
 use crate::settings::{Layout, Settings};
 use crate::signatures::{self as sigs, Check, SigState, TrustAsk, TrustedOut, TrustedWindow};
@@ -680,20 +681,6 @@ fn named(label: &str) -> egui::WidgetInfo {
     egui::WidgetInfo::labeled(egui::Role::Button, true, label)
 }
 
-/// Names the resize handle egui gives `panel` (by its id) and leaves unnamed, once egui
-/// has added it this frame, so no stray node is made. egui keeps the handle under the
-/// panel's id with "__resize"; the naming tests fail if that changes. It can't be moved
-/// with the keyboard (egui's limit).
-fn name_resize_handle(ctx: &egui::Context, panel: &str, name: &str) {
-    let id = egui::Id::unique(panel).with("__resize");
-    if ctx.viewport(|v| v.this_pass.widgets.get(id).is_some()) {
-        ctx.accesskit_node_builder(id, |n| {
-            n.set_role(egui::accesskit::Role::Splitter);
-            n.set_label(name);
-        });
-    }
-}
-
 /// How long the undo toast stays, in seconds.
 const TOAST_SECONDS: f64 = 6.0;
 /// How long a toast waits while its tab is behind another, in seconds, and the least it
@@ -750,6 +737,8 @@ pub struct App {
     bar_widths: BarWidths,
     /// The window has been fitted to its monitor, at the first frame the monitor's size was known.
     fitted: bool,
+    /// The window's regions, which F6 moves the keyboard between (ENH-10).
+    regions: Regions,
     /// The control that had the keyboard last frame (see [`page_text::fresh_history`]).
     keyboard: Option<egui::Id>,
     /// At most one for each tab.
@@ -857,6 +846,7 @@ impl App {
             fold: 0,
             bar_widths: BarWidths::default(),
             fitted: false,
+            regions: Regions::default(),
             keyboard: None,
             toasts: Vec::new(),
             recent,
@@ -2533,6 +2523,8 @@ impl App {
                 self.settings.save();
             }
             Act::Palette => self.palette = Some(Palette::default()),
+            Act::NextRegion => self.regions.step = 1,
+            Act::PrevRegion => self.regions.step = -1,
             Act::TrustedCertificates => self.trusted = Some(TrustedWindow::load()),
             _ if !has => {}
             Act::PageLabels => self.reveal_labels(),
@@ -2841,6 +2833,74 @@ impl App {
     }
 
     /// Remember the user's choice of open or closed panels, when it changed.
+    /// Moves the keyboard for this frame's F6 or Shift+F6 (ENH-10), and notes the control
+    /// that has it as the last used in its region. Typing open on the page waits there for
+    /// the keyboard to come back, and a form field's text box, which keeps its value as it
+    /// is left, is noted to go back to ([`Parked`]).
+    fn move_region(&mut self, ctx: &egui::Context) {
+        let focused = ctx.memory(|m| m.focused());
+        self.regions.note(ctx, focused);
+        let step = std::mem::take(&mut self.regions.step);
+        if step == 0 {
+            return;
+        }
+        // Nothing with the keyboard: the keys go to the page.
+        let typing = self.tabs.get(self.active).and_then(|t| t.ed.typing_id());
+        let from = match focused {
+            Some(id) if Some(id) != typing => self.regions.of_control(ctx, id),
+            _ => None,
+        }
+        .unwrap_or(Region::Page);
+        let open = !self.tabs.is_empty();
+        let Some((to, stop)) = self.regions.next(ctx, from, step, open) else {
+            return;
+        };
+        if let Some(t) = self
+            .tabs
+            .get_mut(self.active)
+            .filter(|_| from == Region::Page)
+        {
+            t.ed.parked = match (focused, t.ed.form.typing_in()) {
+                (Some(id), _) if Some(id) == typing => {
+                    // What is selected there, given back with the keyboard.
+                    page_text::held(ctx, id);
+                    Some(Parked::Typing(id))
+                }
+                (_, Some((name, widget))) => Some(Parked::Field(name, widget)),
+                _ => None,
+            };
+        }
+        self.regions.ring = false;
+        match stop {
+            Some(id) => ctx.memory_mut(|m| m.request_focus(id)),
+            None if to == Region::Page => self.keys_to_page(ctx, focused),
+            None => {}
+        }
+    }
+
+    /// The keyboard back to the page (F6): to the typing or form field left there, or, with
+    /// neither, to the page itself, which takes the keys with nothing focused (as after a
+    /// click on it); the page being read is outlined to show it, unless a field's ring does.
+    fn keys_to_page(&mut self, ctx: &egui::Context, focused: Option<egui::Id>) {
+        let Some(t) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        match t.ed.parked.take() {
+            Some(Parked::Typing(id)) => {
+                page_text::give_back(ctx, id);
+                // Its typing undone as before.
+                page_text::hand_back(ctx, id);
+            }
+            Some(Parked::Field(name, widget)) => t.ed.form.focus_field(&name, widget),
+            None => {
+                if let Some(id) = focused {
+                    ctx.memory_mut(|m| m.surrender_focus(id));
+                }
+                self.regions.ring = !t.ed.form.ringed();
+            }
+        }
+    }
+
     fn keep_panels(&mut self) {
         let s = &mut self.settings;
         let now = (self.side.wanted(), self.inspector.wanted());
@@ -4350,7 +4410,11 @@ impl App {
                 let global = k.modifiers.command && !page_only;
                 let in_box = typing && matches!(a.act, Act::Undo | Act::Redo);
                 let closes = picking && a.act == Act::Escape;
-                if (typing && !global) || in_box || closes || !(a.enabled)(&c) {
+                // F6 leaves a text box too (in a form, Tab stays among the fields), but
+                // not an open list or menu, which Esc closes first.
+                let region = matches!(a.act, Act::NextRegion | Act::PrevRegion);
+                let skip = if region { picking } else { typing && !global };
+                if skip || in_box || closes || !(a.enabled)(&c) {
                     continue;
                 }
                 let hit = if a.act == Act::Copy {
@@ -4360,10 +4424,12 @@ impl App {
                     i.consume_shortcut(&k)
                 } else {
                     // The key's own modifiers, not those held at the end of the frame: a
-                    // quick Ctrl+A can arrive with Ctrl already let go.
+                    // quick Ctrl+A can arrive with Ctrl already let go. Shift tells F6's
+                    // two directions apart.
                     i.events.iter().any(|e| {
                         matches!(e, egui::Event::Key { key, pressed: true, modifiers, .. }
-                            if *key == k.logical_key && modifiers.matches_logically(k.modifiers))
+                            if *key == k.logical_key && modifiers.matches_logically(k.modifiers)
+                                && (!region || modifiers.shift == k.modifiers.shift))
                     })
                 };
                 if hit {
@@ -4489,7 +4555,12 @@ fn tab_button(ui: &mut egui::Ui, title: &str, on: bool) -> (bool, bool) {
             ui.spacing_mut().item_spacing.x = 2.0;
             let text = egui::RichText::new(title);
             let text = if on { text.strong() } else { text };
-            let pick = ui.add(egui::Button::new(text).frame(false)).clicked();
+            // A tab, saying whether it is the one shown.
+            let pick = ui.add(egui::Button::new(text).frame(false));
+            pick.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Tab, true, title));
+            ui.ctx()
+                .accesskit_node_builder(pick.id, |n| n.set_selected(on));
+            let pick = pick.clicked();
             let x = egui::Button::new(theme::icon(icon::X).size(12.0))
                 .frame_when_inactive(false)
                 .min_size(egui::vec2(20.0, 20.0));
@@ -4624,7 +4695,7 @@ fn inspector_popout(
     s: &mut Settings,
     t: &mut Tab,
     c: &Ctx,
-) -> (Option<inspector::Apply>, bool) {
+) -> (Option<inspector::Apply>, bool, egui::Rect) {
     let mut apply = None;
     let height = (strip.height() - 16.0).max(120.0);
     let area = egui::Area::new(egui::Id::unique("inspector-popout"))
@@ -4633,6 +4704,7 @@ fn inspector_popout(
         .pivot(egui::Align2::RIGHT_TOP)
         .constrain(true)
         .show(ctx, |ui| {
+            regions::name(ui, Region::Inspector);
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.set_width(INSPECTOR_WIDTH);
                 ui.heading(inspector::title(t));
@@ -4652,7 +4724,7 @@ fn inspector_popout(
     });
     // A menu or colour picker opened from the pop-out is outside it, but part of it.
     let child_open = egui::Popup::is_any_open(ctx);
-    (apply, !(clicked_outside && !child_open))
+    (apply, !(clicked_outside && !child_open), area.response.rect)
 }
 
 /// The widths of the command search's category and shortcut columns: the widest of each
@@ -4814,8 +4886,10 @@ fn empty_state(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
     let size = egui::vec2(440.0, 310.0 + extra).min(room.size() - egui::vec2(32.0, 32.0));
     let card = egui::Rect::from_center_size(room.center(), size.max(egui::vec2(1.0, 1.0)));
     let id = egui::Id::unique("empty-card");
+    // A click anywhere on it opens a file; the keyboard has Open PDF… for that, so the
+    // card is no stop for Tab or F6 of its own.
     let r = ui
-        .interact(card, id, egui::Sense::click())
+        .interact(card, id, egui::Sense::CLICK)
         .on_hover_cursor(egui::CursorIcon::PointingHand);
     let v = ui.visuals();
     let accent = theme::accent(v.dark_mode);
@@ -4974,6 +5048,23 @@ impl eframe::App for App {
         self.side.set_narrow(width < SIDE_NARROW_WIDTH);
         self.inspector.set_narrow(width < NARROW_WIDTH);
 
+        // F6's regions are found again as the window is drawn. A click ends what F6 left
+        // waiting on the page, as does another tab coming to the front or the typing
+        // getting the keyboard back; the ring on the page goes once anything takes it.
+        self.regions.begin();
+        let pressed = ctx.input(|i| i.pointer.any_pressed());
+        let focused = ctx.memory(|m| m.focused());
+        if pressed || focused.is_some() {
+            self.regions.ring = false;
+        }
+        for (i, t) in self.tabs.iter_mut().enumerate() {
+            let back = matches!(t.ed.parked, Some(Parked::Typing(id))
+                if focused == Some(id) || t.ed.typing_id() != Some(id));
+            if pressed || back || i != self.active {
+                t.ed.parked = None;
+            }
+        }
+
         // Before anything sees this frame's keys: a text box that has just got the keyboard
         // starts with nothing to undo.
         self.keyboard = page_text::fresh_history(&ctx, self.keyboard);
@@ -5015,9 +5106,10 @@ impl eframe::App for App {
         // A search was run from the top bar: its results show in the navigation panel.
         let mut searched = false;
 
-        egui::Panel::top("topbar")
+        let top = egui::Panel::top("topbar")
             .frame(theme::bar_frame(ui.style()))
             .show(ui, |ui| {
+                regions::name(ui, Region::TopBar);
                 // Width budget, so the two ends never overlap: on narrower windows the
                 // search field becomes an icon, and then the tools fold one by one into
                 // the Tools menu, in the order of FOLDS; they come back as room returns.
@@ -5127,7 +5219,10 @@ impl eframe::App for App {
                             })
                     };
                     let hidden = c.tool.filter(|t| !inline(*t));
-                    let tools = ACTIONS.iter().filter(|a| a.group == Group::Tools).collect();
+                    let tools = ACTIONS
+                        .iter()
+                        .filter(|a| matches!(a.act, Act::Tool(_)))
+                        .collect();
                     tool_menu(ui, tools, hidden, &is_on, &mut acts);
                     // Plus the spacing before the next item, as the measured controls have.
                     let mut w = widths.borrow_mut();
@@ -5174,6 +5269,7 @@ impl eframe::App for App {
                     .show(ui, left_side, right_side);
                 self.bar_widths = widths.into_inner();
             });
+        self.regions.add(Region::TopBar, top.response.rect);
         acts.append(&mut right_acts);
         if searched {
             self.show_view(Side::Search);
@@ -5183,7 +5279,8 @@ impl eframe::App for App {
         // of it is drawn for the tabs as they were (`has`, `c`).
         let mut close = None;
         if has {
-            egui::Panel::top("tabs").show(ui, |ui| {
+            let tabs = egui::Panel::top("tabs").show(ui, |ui| {
+                regions::name(ui, Region::Tabs);
                 ui.horizontal_wrapped(|ui| {
                     for i in 0..self.tabs.len() {
                         let (pick, x) = tab_button(ui, &self.tabs[i].title(), i == self.active);
@@ -5196,11 +5293,13 @@ impl eframe::App for App {
                     }
                 });
             });
+            self.regions.add(Region::Tabs, tabs.response.rect);
         }
 
         // The status bar: the page and messages at the left; the page layout, Fit width
         // and the zoom at the right.
-        egui::Panel::bottom("status").show(ui, |ui| {
+        let status = egui::Panel::bottom("status").show(ui, |ui| {
+            regions::name(ui, Region::Status);
             let t = self.tabs.get(self.active);
             let busy = self.busy_sign();
             let status = |ui: &mut egui::Ui| {
@@ -5267,6 +5366,7 @@ impl eframe::App for App {
                 .truncate()
                 .show(ui, status, view);
         });
+        self.regions.add(Region::Status, status.response.rect);
 
         // The navigation rail at the left edge: one icon per view. Clicking another view
         // opens it; clicking the open one folds the panel away, and again brings it back.
@@ -5274,10 +5374,11 @@ impl eframe::App for App {
             let t = &self.tabs[self.active];
             let open = self.side.shown();
             let mut pick = None;
-            egui::Panel::left("nav-rail")
+            let rail = egui::Panel::left("nav-rail")
                 .resizable(false)
                 .exact_size(RAIL_WIDTH)
                 .show(ui, |ui| {
+                    regions::name(ui, Region::Navigation);
                     ui.vertical_centered(|ui| {
                         ui.add_space(4.0);
                         for (side, act) in NAV_VIEWS {
@@ -5295,6 +5396,7 @@ impl eframe::App for App {
                         }
                     });
                 });
+            self.regions.add(Region::Navigation, rail.response.rect);
             if let Some(side) = pick {
                 if open && t.side == side {
                     self.side.set_open(false);
@@ -5307,9 +5409,11 @@ impl eframe::App for App {
 
         if has && self.side.shown() {
             let active = self.active;
-            egui::Panel::left("side")
+            panels::edge_keys(ui, "side", true);
+            let side = egui::Panel::left("side")
                 .resizable(true)
                 .default_size(170.0)
+                .min_size(panels::NARROWEST)
                 .show(ui, |ui| {
                     let t = &mut self.tabs[active];
                     let heading = match t.side {
@@ -5319,6 +5423,7 @@ impl eframe::App for App {
                         Side::Comments => "Comments",
                         Side::Signatures => "Digital signatures",
                     };
+                    regions::name_as(ui, egui::accesskit::Role::Navigation, heading);
                     ui.add_space(4.0);
                     ui.label(egui::RichText::new(heading).family(theme::semibold()));
                     ui.separator();
@@ -5334,7 +5439,8 @@ impl eframe::App for App {
                         }
                     });
                 });
-            name_resize_handle(&ctx, "side", "Side panel width");
+            panels::edge_shown(ui, "side", "Side panel width");
+            self.regions.add(Region::Navigation, side.response.rect);
         }
 
         // The inspector: the editor's section for a selected object or words or a tool
@@ -5370,8 +5476,11 @@ impl eframe::App for App {
                 .exact_size(RAIL_WIDTH);
             let full = egui::Panel::right("inspector")
                 .resizable(true)
-                .default_size(INSPECTOR_WIDTH);
-            egui::Panel::show_switched(ui, &mut open, rail, full, |ui, expanded| {
+                .default_size(INSPECTOR_WIDTH)
+                .min_size(panels::NARROWEST);
+            panels::edge_keys(ui, "inspector", false);
+            let shown = egui::Panel::show_switched(ui, &mut open, rail, full, |ui, expanded| {
+                regions::name(ui, Region::Inspector);
                 if !expanded {
                     (toggle, pop) = inspector_strip(ui, &groups, &c, &mut panel_acts);
                     strip = Some(ui.max_rect());
@@ -5410,7 +5519,8 @@ impl eframe::App for App {
                         panel_apply = ui.push_id(scope, |ui| inspector_body(s, t, ui, &c)).inner;
                     });
             });
-            name_resize_handle(&ctx, "inspector", "Inspector width");
+            panels::edge_shown(ui, "inspector", "Inspector width");
+            self.regions.add(Region::Inspector, shown.response.rect);
             if toggle {
                 open = !open;
             }
@@ -5427,9 +5537,10 @@ impl eframe::App for App {
             }
             if let Some(strip) = strip.filter(|_| self.popout) {
                 let t = &mut self.tabs[self.active];
-                let (apply, keep) = inspector_popout(&ctx, strip, &mut self.settings, t, &c);
+                let (apply, keep, at) = inspector_popout(&ctx, strip, &mut self.settings, t, &c);
                 panel_apply = panel_apply.or(apply);
                 self.popout = keep;
+                self.regions.add_over(Region::Inspector, at);
             }
             acts.extend(panel_acts);
         }
@@ -5443,20 +5554,28 @@ impl eframe::App for App {
             .inner_margin(0);
         let author = self.settings.author();
         let (keep, fields) = (&self.settings.keep_tools, self.settings.fields_shown);
-        egui::CentralPanel::default().frame(canvas).show(ui, |ui| {
+        let ring = self.regions.ring;
+        let pages = egui::CentralPanel::default().frame(canvas).show(ui, |ui| {
             if let Some(t) = self.tabs.get_mut(self.active) {
+                regions::name(ui, Region::Page);
                 // App-wide choices, lent to the tab.
                 t.ed.author = author;
                 t.ed.keep.clone_from(keep);
                 t.ed.form.highlight = fields;
+                t.page_ring = ring;
                 t.guarded(|t| t.show_pages(ui, &c));
                 if let Some(why) = &t.broken {
                     broken_state(ui, why, &mut acts);
                 }
             } else {
+                regions::name_as(ui, egui::accesskit::Role::Main, "Start");
                 empty_state(ui, &recent, &mut acts);
             }
         });
+        self.regions.add(Region::Page, pages.response.rect);
+        if let Some(at) = self.tabs.get(self.active).and_then(|t| t.banners_at) {
+            self.regions.add(Region::Notices, at);
+        }
 
         // The Create signature window, whether or not the inspector is showing; a
         // signature made is saved with the others.
@@ -5530,6 +5649,8 @@ impl eframe::App for App {
         self.dialogs(&ctx);
         dlg::name_popups(&ctx);
         self.offer_selection(&ctx);
+        // Last, once every region and control of the frame is drawn.
+        self.move_region(&ctx);
 
         let title = match self.tabs.get(self.active) {
             Some(t) => format!("{} - LimarePDF", t.title()),
@@ -6205,6 +6326,444 @@ mod tests {
             "Page 1",
         ];
         assert_eq!(reached[..bars.len()], bars);
+    }
+
+    /// The name of the control with the keyboard in `tree`; `None` with nothing.
+    fn focused_name(ctx: &egui::Context, tree: &egui::accesskit::TreeUpdate) -> Option<String> {
+        ctx.memory(|m| m.focused())?;
+        let (_, n) = tree.nodes.iter().find(|(id, _)| *id == tree.focus)?;
+        n.label().map(str::to_string)
+    }
+
+    /// Press F6 (Shift+F6 when `back`) in the window `width` points wide; the name of the
+    /// control that then has the keyboard, `None` with nothing.
+    fn f6_at(app: &mut App, ctx: &egui::Context, width: f32, back: bool) -> Option<String> {
+        let shift = if back {
+            egui::Modifiers::SHIFT
+        } else {
+            egui::Modifiers::NONE
+        };
+        window(app, ctx, width, vec![key_with(Key::F6, shift)]);
+        let tree = window(app, ctx, width, vec![]);
+        focused_name(ctx, &tree)
+    }
+
+    fn f6(app: &mut App, ctx: &egui::Context, back: bool) -> Option<String> {
+        f6_at(app, ctx, 1400.0, back)
+    }
+
+    /// ENH-10: F6 goes round the window's regions in the order they are on screen, and
+    /// Shift+F6 back, each time to the control last used there, else the first; the page
+    /// takes the keys with nothing focused, outlined. With nothing focused, the keys are
+    /// the page's, so F6 goes on from there.
+    #[test]
+    fn f6_goes_round_the_regions_of_the_window() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        settled_at(&mut app, &ctx, 1400.0);
+        let round = [
+            Some("Collapse the inspector"),
+            Some("Page layout"),
+            Some("Menu"),
+            Some("Untitled *"),
+            Some("Pages"),
+            None,
+            Some("Collapse the inspector"),
+        ];
+        for want in round {
+            assert_eq!(f6(&mut app, &ctx, false).as_deref(), want);
+        }
+        assert!(
+            !app.tabs[0].page_ring,
+            "outlined with the keyboard elsewhere"
+        );
+        assert_eq!(f6(&mut app, &ctx, true), None);
+        assert!(app.tabs[0].page_ring, "the page isn't outlined");
+        // A click takes the outline away, as anything taking the keyboard does.
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        let p = node(&tree, "Page 1").expect("the page").0.center();
+        window(&mut app, &ctx, 1400.0, click_at(p));
+        settled_at(&mut app, &ctx, 1400.0);
+        assert!(!app.tabs[0].page_ring, "still outlined after a click");
+
+        // Back the other way, to where the keyboard was last in each region.
+        assert_eq!(f6(&mut app, &ctx, true).as_deref(), Some("Pages"));
+        assert_eq!(f6(&mut app, &ctx, true).as_deref(), Some("Untitled *"));
+        assert_eq!(f6(&mut app, &ctx, true).as_deref(), Some("Menu"));
+        let tab = key_with(Key::Tab, egui::Modifiers::NONE);
+        window(&mut app, &ctx, 1400.0, vec![tab]);
+        let tree = window(&mut app, &ctx, 1400.0, vec![]);
+        assert_eq!(focused_name(&ctx, &tree).as_deref(), Some("Open"));
+        assert_eq!(f6(&mut app, &ctx, true).as_deref(), Some("Page layout"));
+        assert_eq!(f6(&mut app, &ctx, false).as_deref(), Some("Open"));
+
+        // A notice is a region of its own, between the tabs and navigation.
+        app.tabs[0].show_banner(crate::banners::changed_on_disk());
+        settled_at(&mut app, &ctx, 1400.0);
+        assert_eq!(f6(&mut app, &ctx, false).as_deref(), Some("Untitled *"));
+        assert_eq!(f6(&mut app, &ctx, false).as_deref(), Some("Reload"));
+        assert_eq!(f6(&mut app, &ctx, false).as_deref(), Some("Pages"));
+    }
+
+    /// ENH-10: in a narrow window the folded panels' strips are regions in their place;
+    /// with no document open, F6 goes between the top bar and the start screen.
+    #[test]
+    fn f6_goes_round_narrow_windows_and_the_start_screen() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        settled_at(&mut app, &ctx, 700.0);
+        assert!(!app.side.shown() && !app.inspector.shown());
+        let round = [
+            Some("Expand the inspector"),
+            Some("Page layout"),
+            Some("Menu"),
+            Some("Untitled *"),
+            Some("Pages"),
+            None,
+        ];
+        for want in round {
+            assert_eq!(f6_at(&mut app, &ctx, 700.0, false).as_deref(), want);
+        }
+
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        settled_at(&mut app, &ctx, 1400.0);
+        assert_eq!(f6(&mut app, &ctx, false).as_deref(), Some("Menu"));
+        assert_eq!(f6(&mut app, &ctx, false).as_deref(), Some("Open PDF…"));
+        assert_eq!(f6(&mut app, &ctx, false).as_deref(), Some("Menu"));
+        assert_eq!(f6(&mut app, &ctx, true).as_deref(), Some("Open PDF…"));
+    }
+
+    /// ENH-10: F6 leaves typing open on the page (new text, a line being edited, a new
+    /// note or text box), and coming back gives it the keyboard again, to go on typing.
+    #[test]
+    fn f6_leaves_typing_open_on_the_page_and_comes_back_to_it() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let none = egui::Modifiers::NONE;
+        let ty = Typist::new(&ctx);
+        for case in ["new text", "line on the page", "new note", "new text box"] {
+            let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+            let note = typing_doc(&mut app, &ctx);
+            start_typing(&mut app, &ty, case, note);
+            ty.text(&mut app, "Seal");
+            let typing = app.tabs[0].ed.typing_id().expect("typing");
+            assert_eq!(ctx.memory(|m| m.focused()), Some(typing), "{case}");
+            let tree = ty.key(&mut app, Key::F6, none);
+            ty.pause(&mut app);
+            let away = focused_name(&ctx, &tree);
+            assert_eq!(away.as_deref(), Some("Collapse the inspector"), "{case}");
+            assert_eq!(app.tabs[0].ed.typing_id(), Some(typing), "{case}: ended");
+            let tree = ty.key(&mut app, Key::F6, egui::Modifiers::SHIFT);
+            assert_eq!(
+                ctx.memory(|m| m.focused()),
+                Some(typing),
+                "{case}: not back"
+            );
+            assert!(!app.tabs[0].page_ring, "{case}: outlined while typing");
+            assert_eq!(focused_text(&tree).as_deref(), Some("Seal"), "{case}");
+            ty.text(&mut app, "s");
+            let tree = ty.pause(&mut app);
+            assert_eq!(focused_text(&tree).as_deref(), Some("Seals"), "{case}");
+            ty.key(&mut app, Key::Escape, none);
+            ty.pause(&mut app);
+            let lines: Vec<String> = app.tabs[0]
+                .pdf
+                .page_objects(0)
+                .unwrap()
+                .into_iter()
+                .filter_map(|o| o.text)
+                .collect();
+            let kept = lines.contains(&"Seals".to_string())
+                || comments(&app).contains(&"Seals".to_string());
+            assert!(kept, "{case}: {lines:?} {:?}", comments(&app));
+        }
+    }
+
+    /// ENH-10: the inspector, reached by F6 and Tab, changes the typing left open on the
+    /// page, as with the mouse: Bold for the words selected there.
+    #[test]
+    fn the_inspector_changes_typing_left_open_by_f6() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let none = egui::Modifiers::NONE;
+        let ty = Typist::new(&ctx);
+        for (case, word) in [("new text", "Seal"), ("line on the page", "Otter")] {
+            let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+            let note = typing_doc(&mut app, &ctx);
+            start_typing(&mut app, &ty, case, note);
+            if case == "new text" {
+                ty.text(&mut app, word);
+                ty.key(&mut app, Key::A, egui::Modifiers::COMMAND);
+            }
+            let mut tree = ty.key(&mut app, Key::F6, none);
+            for _ in 0..20 {
+                if focused_name(&ctx, &tree).as_deref() == Some("Bold") {
+                    break;
+                }
+                tree = ty.key(&mut app, Key::Tab, none);
+            }
+            assert_eq!(focused_name(&ctx, &tree).as_deref(), Some("Bold"), "{case}");
+            ty.key(&mut app, Key::Space, none);
+            ty.pause(&mut app);
+            assert!(app.tabs[0].ed.typing_id().is_some(), "{case}: ended");
+            ty.key(&mut app, Key::Escape, none);
+            ty.pause(&mut app);
+            let fonts = line_fonts(&app.tabs[0].pdf, 0);
+            let bold = fonts
+                .iter()
+                .flatten()
+                .any(|(t, f)| t.trim() == word && f.ends_with("Bold"));
+            assert!(bold, "{case}: {fonts:?}");
+        }
+    }
+
+    /// ENH-10: in a form, Tab moves between the fields and F6 leaves them, keeping what was
+    /// typed; F6 back returns to the field left, to go on typing.
+    #[test]
+    fn f6_leaves_a_form_and_comes_back_to_the_field() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let none = egui::Modifiers::NONE;
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let pdf = form_doc(&[("name", 1), ("city", 1)]);
+        assert!(app.add_tab(&ctx, pdf, None, None, false));
+        let ty = Typist::new(&ctx);
+        ty.click_field(&mut app, "name", 0);
+        ty.text(&mut app, "Ada");
+        ty.key(&mut app, Key::Tab, none);
+        ty.text(&mut app, "Os");
+        let tree = ty.key(&mut app, Key::F6, none);
+        ty.pause(&mut app);
+        let away = focused_name(&ctx, &tree);
+        assert_eq!(away.as_deref(), Some("Collapse the inspector"));
+        assert_eq!(saved_field(&app.tabs[0], "name"), "Ada");
+        assert_eq!(saved_field(&app.tabs[0], "city"), "Os");
+        let tree = ty.key(&mut app, Key::F6, egui::Modifiers::SHIFT);
+        assert_eq!(focused_text(&tree).as_deref(), Some("Os"));
+        ty.text(&mut app, "lo");
+        ty.key(&mut app, Key::Tab, none);
+        ty.pause(&mut app);
+        assert_eq!(saved_field(&app.tabs[0], "city"), "Oslo");
+    }
+
+    /// ENH-10: F6 does nothing while a dialog, the command search or a menu is open: they
+    /// keep the keyboard until closed.
+    #[test]
+    fn f6_waits_for_dialogs_and_menus() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let esc = key_with(Key::Escape, egui::Modifiers::NONE);
+        app.act(&ctx, Act::Palette);
+        settled_at(&mut app, &ctx, 1400.0);
+        assert_eq!(f6(&mut app, &ctx, false).as_deref(), Some("Command"));
+        assert!(app.palette.is_some());
+        window(&mut app, &ctx, 1400.0, vec![esc.clone()]);
+
+        app.dialog = Dialog::Message("Walrus".into(), "The seal ate the fish.".into());
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        let before = focused_name(&ctx, &tree);
+        assert_eq!(f6(&mut app, &ctx, false), before);
+        assert!(matches!(app.dialog, Dialog::Message(..)));
+        app.dialog = Dialog::None;
+        settled_at(&mut app, &ctx, 1400.0);
+
+        click_named(&mut app, &ctx, "Menu");
+        settled_at(&mut app, &ctx, 1400.0);
+        assert!(egui::Popup::is_any_open(&ctx), "the menu didn't open");
+        f6(&mut app, &ctx, false);
+        assert!(egui::Popup::is_any_open(&ctx), "F6 closed the menu");
+    }
+
+    /// ENH-10: each region is named for screen readers, with its role, and the document's
+    /// tab says it is the one shown.
+    #[test]
+    fn regions_are_named_for_screen_readers() {
+        use egui::accesskit::Role;
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        app.tabs[0].show_banner(crate::banners::changed_on_disk());
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        let has = |role: Role, label: &str| {
+            tree.nodes
+                .iter()
+                .any(|(_, n)| n.role() == role && n.label() == Some(label))
+        };
+        for (role, label) in [
+            (Role::Toolbar, "Top bar"),
+            (Role::TabList, "Tabs"),
+            (Role::Region, "Notices"),
+            (Role::Navigation, "Navigation"),
+            (Role::Navigation, "Pages"),
+            (Role::Main, "Document"),
+            (Role::Complementary, "Inspector"),
+            (Role::Status, "Status bar"),
+        ] {
+            assert!(has(role, label), "no {role:?} named {label}");
+        }
+        let (_, tab) = tree
+            .nodes
+            .iter()
+            .find(|(_, n)| n.label() == Some("Untitled *"))
+            .expect("the tab");
+        assert_eq!((tab.role(), tab.is_selected()), (Role::Tab, Some(true)));
+        // The inspector's pop-out over the pages, from its strip in a narrow window.
+        app.popout = true;
+        let tree = settled_at(&mut app, &ctx, 700.0);
+        let inspectors = tree
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.role() == Role::Complementary && n.label() == Some("Inspector"))
+            .count();
+        assert_eq!(inspectors, 2, "the strip and the pop-out");
+    }
+
+    /// ENH-11: the edges of the side panel and the inspector, reached by Tab, move from
+    /// the keyboard: the arrow keys 10 points, 50 with Shift, Home to the narrowest and
+    /// End to half the window, never folding the panel away; the keyboard stays on them.
+    #[test]
+    fn panel_edges_move_from_the_keyboard() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        settled_at(&mut app, &ctx, 1400.0);
+        let (none, shift) = (egui::Modifiers::NONE, egui::Modifiers::SHIFT);
+        // Each panel's width from where its edge is: the side panel's after the rail, the
+        // inspector's from the window's right.
+        for (edge, wider, narrower, width) in [
+            (
+                "Side panel width",
+                Key::ArrowRight,
+                Key::ArrowLeft,
+                (|x: f32| x - RAIL_WIDTH) as fn(f32) -> f32,
+            ),
+            ("Inspector width", Key::ArrowLeft, Key::ArrowRight, |x| {
+                1400.0 - x
+            }),
+        ] {
+            let mut tree = window(&mut app, &ctx, 1400.0, vec![]);
+            for _ in 0..80 {
+                if focused_name(&ctx, &tree).as_deref() == Some(edge) {
+                    break;
+                }
+                window(&mut app, &ctx, 1400.0, vec![key_with(Key::Tab, none)]);
+                tree = window(&mut app, &ctx, 1400.0, vec![]);
+            }
+            assert_eq!(focused_name(&ctx, &tree).as_deref(), Some(edge), "Tab");
+            let start = width(node(&tree, edge).expect("the edge").0.center().x);
+            let mut press = |key: Key, modifiers: egui::Modifiers| {
+                window(&mut app, &ctx, 1400.0, vec![key_with(key, modifiers)]);
+                let tree = window(&mut app, &ctx, 1400.0, vec![]);
+                let (at, focused) = node(&tree, edge).expect("the edge");
+                assert!(focused, "{edge} {key:?}: the keyboard left it");
+                width(at.center().x)
+            };
+            for (key, modifiers, want) in [
+                (wider, none, start + 10.0),
+                (wider, shift, start + 60.0),
+                (narrower, none, start + 50.0),
+            ] {
+                let got = press(key, modifiers);
+                let why = format!("{edge} {key:?}: {got}, not {want}");
+                assert!((got - want).abs() < 0.5, "{why}");
+            }
+            // Half the window; the edge's place is a few points off its panel's border, at
+            // most its grab width.
+            let end = press(Key::End, none);
+            assert!((end - 700.0).abs() <= 8.0, "{edge} End: {end}");
+            // As narrow as the panel goes (the inspector no narrower than its contents),
+            // and no further.
+            let home = press(Key::Home, none);
+            let narrowest = home < start && home >= panels::NARROWEST - 8.0;
+            assert!(narrowest, "{edge} Home: {home}");
+            let below = press(narrower, shift);
+            assert_eq!(below, home, "{edge}: narrower than the narrowest");
+        }
+        let open = app.side.shown() && app.inspector.shown();
+        assert!(open, "a panel folded away");
+    }
+
+    /// ENH-11: the outline that moves new text with the mouse is no stop for the keyboard;
+    /// as in word processors, Esc keeps the text, selected, and the arrow keys move it.
+    #[test]
+    fn new_text_moves_from_the_keyboard_once_kept() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let (min, k) = page_on_screen(&mut app, &ctx);
+        app.act(&ctx, Act::Tool(Tool::Text));
+        let at = min + egui::vec2(100.0, 200.0) * k;
+        window(&mut app, &ctx, 1400.0, click_at(at));
+        settled_at(&mut app, &ctx, 1400.0);
+        let typed = egui::Event::Text("Seal".into());
+        window(&mut app, &ctx, 1400.0, vec![typed]);
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        let (_, grip) = tree
+            .nodes
+            .iter()
+            .find(|(_, n)| n.label() == Some("Move the text"))
+            .expect("the outline");
+        let stop = grip.supports_action(egui::accesskit::Action::Focus);
+        assert!(!stop, "the outline is a stop for Tab");
+        let none = egui::Modifiers::NONE;
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::Escape, none)]);
+        settled_at(&mut app, &ctx, 1400.0);
+        let before = boxes(&app, 0);
+        assert!(held(&app).is_some(), "the new text isn't selected");
+        let right = key_with(Key::ArrowRight, none);
+        window(&mut app, &ctx, 1400.0, vec![right]);
+        settled_at(&mut app, &ctx, 1400.0);
+        let after = boxes(&app, 0);
+        let (b, a) = (before.last().unwrap(), after.last().unwrap());
+        assert!((a[0] - b[0] - 1.0).abs() < 0.01, "{b:?} to {a:?}");
+    }
+
+    /// ENH-12: Create signature and Create initials are in the command search; run from
+    /// there they open the Create window with Fill and sign on. Not among the top bar's
+    /// tools.
+    #[test]
+    fn create_signature_is_in_the_command_search() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let enter = key_with(Key::Enter, egui::Modifiers::NONE);
+        for (query, role) in [
+            ("create signature", limarepdf_core::SignRole::Signature),
+            ("create initials", limarepdf_core::SignRole::Initials),
+        ] {
+            app.act(&ctx, Act::Palette);
+            settled_at(&mut app, &ctx, 1400.0);
+            let typed = egui::Event::Text(query.into());
+            window(&mut app, &ctx, 1400.0, vec![typed]);
+            settled_at(&mut app, &ctx, 1400.0);
+            window(&mut app, &ctx, 1400.0, vec![enter.clone()]);
+            settled_at(&mut app, &ctx, 1400.0);
+            assert!(app.palette.is_none(), "{query}: not run");
+            let ed = &mut app.tabs[0].ed;
+            assert_eq!(ed.tool, Tool::Sign, "{query}");
+            let open = ed.sign.create.take().map(|(c, _)| c.role);
+            assert_eq!(open, Some(role), "{query}: no Create window");
+        }
+        // Fill and sign's pane has a Create signature… of its own.
+        app.act(&ctx, Act::Tool(Tool::Read));
+        click_named(&mut app, &ctx, "Tools");
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        let menu = node(&tree, "Add text").is_some();
+        assert!(menu, "the Tools menu didn't open");
+        assert!(node(&tree, "Create signature…").is_none(), "not a tool");
     }
 
     /// The screen bounds of the node named `name` in `tree`, and whether it has the keyboard.

@@ -131,6 +131,26 @@ impl FormUi {
         self.focus = None;
     }
 
+    /// The field whose text box has the keyboard: its name and widget.
+    pub fn typing_in(&self) -> Option<(String, usize)> {
+        let f = self.focus.as_ref()?;
+        matches!(f.edit, Edit::Text { .. }).then(|| (f.name.clone(), f.widget))
+    }
+
+    /// Whether a field that isn't typed in (a checkbox, a button, a list closed) has the
+    /// keys, shown by a ring around it.
+    pub fn ringed(&self) -> bool {
+        self.focused().is_some() && matches!(self.focus.as_ref().map(|f| &f.edit), Some(Edit::Ring))
+    }
+
+    /// Give the keyboard back to widget `widget` of the field `name`, as Tab gives it.
+    pub fn focus_field(&mut self, name: &str, widget: usize) {
+        let at = self.fields().iter().position(|f| f.name == name);
+        if let Some(fi) = at.filter(|&fi| widget < self.fields()[fi].widgets.len()) {
+            self.focus_on(fi, widget, false);
+        }
+    }
+
     /// Move the keyboard to the next (or previous) field that can be filled in, starting
     /// with the first when none has it.
     pub fn step(&mut self, forward: bool) {

@@ -6,6 +6,7 @@ use crate::inspector::{Forms, Hf, Sec, Wm};
 use crate::markup::Mark;
 use crate::recovery::schedule::Schedule;
 use crate::recovery::TabId;
+use crate::regions::Region;
 use crate::search::{Found, Search, PAUSE};
 use crate::selection::{ObjKind, Selection};
 use crate::settings::Layout;
@@ -345,6 +346,10 @@ pub struct Tab {
     thumb_drag: Option<usize>,
     /// Notices about the document shown above the pages, most important first.
     pub banners: Vec<Banner>,
+    /// Where the notices were drawn last, while there are any: F6 goes to them.
+    pub banners_at: Option<Rect>,
+    /// Outline the page being read: F6 brought the keyboard to the pages (lent by the app).
+    pub page_ring: bool,
     /// The revision the redaction marks were last counted at (into `ed.redact_marks`).
     marks_rev: u64,
     /// The mark count when the redaction banner was dismissed: it stays hidden until
@@ -423,6 +428,8 @@ impl Tab {
         Ok(Self {
             labels,
             banners,
+            banners_at: None,
+            page_ring: false,
             marks_rev: u64::MAX,
             marks_hidden: 0,
             signs_hidden: 0,
@@ -2697,6 +2704,29 @@ impl Tab {
     /// and a close button. A button's command is queued in `requested`.
     fn banners_ui(&mut self, ui: &mut egui::Ui) {
         self.refresh_marks_banner();
+        self.banners_at = None;
+        if self.banners.is_empty() {
+            return;
+        }
+        // One region, for F6 and screen readers.
+        let (role, label) = Region::Notices.named();
+        let notices = egui::UiBuilder::new()
+            .accessibility_role(role)
+            .accessibility_label(label);
+        let shown = ui.scope_builder(notices, |ui| self.banner_rows(ui));
+        self.banners_at = Some(shown.response.rect);
+        if let Some(i) = shown.inner {
+            match self.banners[i].kind {
+                banners::Kind::Redactions => self.marks_hidden = self.ed.redact_marks,
+                banners::Kind::Signing => self.signs_hidden = self.ed.sign_items,
+                _ => {}
+            }
+            self.banners.remove(i);
+        }
+    }
+
+    /// The first two notices, each with its action and Dismiss. Returns the one dismissed.
+    fn banner_rows(&mut self, ui: &mut egui::Ui) -> Option<usize> {
         let mut close = None;
         let dark = ui.visuals().dark_mode;
         for (i, b) in self.banners.iter().take(2).enumerate() {
@@ -2756,14 +2786,7 @@ impl Tab {
                     egui::Sides::new().shrink_left().show(ui, text, buttons);
                 });
         }
-        if let Some(i) = close {
-            match self.banners[i].kind {
-                banners::Kind::Redactions => self.marks_hidden = self.ed.redact_marks,
-                banners::Kind::Signing => self.signs_hidden = self.ed.sign_items,
-                _ => {}
-            }
-            self.banners.remove(i);
-        }
+        close
     }
 
     /// After the document changes, count the redaction marks and the fill-and-sign items
@@ -2936,6 +2959,11 @@ impl Tab {
                 let r = page_rect(i, place);
                 painter.add(theme::page_shadow(dark).as_shape(r, 0));
                 painter.rect_filled(r, 0.0, paper);
+                // F6 brought the keyboard to the pages: it shows on the page being read.
+                if self.page_ring && i == self.current {
+                    let ring = egui::Stroke::new(2.0, ui.visuals().selection.stroke.color);
+                    painter.rect_stroke(r.expand(3.0), 2.0, ring, egui::StrokeKind::Outside);
+                }
                 let (key, key_scale, tiles) = self.page_key(&ctx, i, self.zoom * BASE * ppp);
                 let failed = self.failed.contains_key(&i);
                 match self.pages.get(&i) {

@@ -24,6 +24,20 @@
   lines of text among them) and fill, outline and width (the shapes), blank or mixed where they differ, and
   delete together, each change one undo step. A drag that starts on a background or a scanned page that isn't
   selected draws a rectangle, so it isn't moved by accident.
+- F6 and Shift+F6 move the keyboard between the parts of the window: the top bar, the tabs, the document's
+  notices, navigation, the page, the inspector and the status bar, in the order they are on screen. Each part
+  takes you back to where you last were in it. F6 also leaves a form, where Tab moves between the fields. Typing
+  on the page (new text, a line being edited, a note or text box) stays open while you are elsewhere: the
+  inspector still changes it (Bold, the font, size or colour of what is selected there), and F6 back to the page
+  lets you go on typing. A form field
+  keeps what you typed and is where F6 comes back to. Back on the page with nothing else to go to, an outline round
+  the page you are reading shows that the keys are there. View > Next region and Previous region list them.
+- The side panel and the inspector can be made wider or narrower from the keyboard: Tab to their edge (it shows a
+  line), then Left and Right move it 10 points, 50 with Shift; Home makes the panel as narrow as it goes and End
+  half the window wide. The keyboard never folds a panel away.
+- Create signature… and Create initials… are in the command search (Ctrl+K) and in ☰ > Tools.
+- Screen readers hear the name of each part of the window as the keyboard goes into it (Top bar, Tabs, Notices,
+  Navigation, Document, Inspector, Status bar), and each document tab says whether it is the one shown.
 
 ### Changed
 
@@ -86,6 +100,11 @@
 - A click held down for about a second before letting go didn't count as a click: with the read tool it selected
   a word near a picture instead of the picture. A click is now a click however long it is held, until the
   pointer moves.
+- The edges of the side panel and the inspector were named only "Resize panel" for screen readers, not Side panel
+  width and Inspector width as the guide said; they now are.
+- The outline for moving new text with the mouse was a stop for Tab that did nothing, and the start screen's card
+  an unnamed one. Neither is now: the keyboard moves new text once it is kept (Esc, then the arrow keys), and
+  Open PDF… opens a file.
 
 ## [0.10.0] - 2026-10-26
 

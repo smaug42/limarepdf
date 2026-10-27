@@ -182,6 +182,18 @@ enum Kept {
     Objects(Box<Group>),
 }
 
+/// What had the keyboard on the page when F6 took it to another region of the window
+/// (ENH-10), given it back when F6 comes back to the page.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Parked {
+    /// New text, a line being edited, or a note or text box, still open: its text box.
+    /// A click anywhere ends the wait, and the typing then goes on as after any click.
+    Typing(egui::Id),
+    /// A form field's text box, whose value was kept as it was left: the field's name
+    /// and widget.
+    Field(String, usize),
+}
+
 /// A note or text box being typed: a new one at `rect` (displayed-page points), or the
 /// existing one `id`.
 pub struct Writing {
@@ -1207,6 +1219,8 @@ pub struct Editor {
     pub annot_tool: Tool,
     /// A note or text box being typed.
     pub writing: Option<Writing>,
+    /// What had the keyboard on the page when F6 took it elsewhere, for when it comes back.
+    pub parked: Option<Parked>,
     /// The pass in which a click outside a note closed it: that click puts down nothing
     /// else, whichever page it was on.
     note_closed: Option<u64>,
@@ -1315,6 +1329,7 @@ impl Default for Editor {
             annot_insp: None,
             annot_tool: Tool::Note,
             writing: None,
+            parked: None,
             note_closed: None,
             note_color: [1.0, 0.85, 0.2],
             box_style: TextStyle {
@@ -1507,6 +1522,18 @@ impl Editor {
         let w = self.writing.as_ref()?;
         let kind = if w.note { "note-text" } else { "box-text" };
         Some(self.scope.with((kind, w.page, w.id)))
+    }
+
+    /// The text box of the typing open on the page: new text, a line being edited, or a
+    /// note or text box.
+    pub fn typing_id(&self) -> Option<egui::Id> {
+        if let Some(a) = &self.adding {
+            return Some(a.id());
+        }
+        if let Some(le) = &self.line_edit {
+            return Some(line_edit_id(self.scope, le.page));
+        }
+        self.writing_id()
     }
 
     /// Forget cached object lists (after any change to the document).
@@ -2033,6 +2060,10 @@ impl Editor {
             self.end_line_edit();
             return true;
         }
+        // F6 took the keyboard to another region: the line waits, open, for it to come back.
+        if !edit.has_focus() && self.parked == Some(Parked::Typing(id)) {
+            return edit.hovered();
+        }
         // The inspector's font list, size, colour and buttons change the line being edited,
         // which takes the keyboard back once the change is finished, as new text does.
         let in_inspector = ctx.input(|i| {
@@ -2170,8 +2201,10 @@ impl Editor {
         });
         let esc = esc && (out.lost_focus() || out.has_focus());
         // A note stays open when it loses the keyboard (to Tab, say) until a click outside
-        // it; a text box ends then.
-        if finish || esc || outside || (!w.note && out.lost_focus()) {
+        // it; a text box ends then, unless F6 took the keyboard to another region, which
+        // it waits for.
+        let parked = self.parked == Some(Parked::Typing(out.id));
+        if finish || esc || outside || (!w.note && out.lost_focus() && !parked) {
             if outside {
                 self.note_closed = Some(ui.ctx().cumulative_pass_nr());
             }

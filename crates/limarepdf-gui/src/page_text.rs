@@ -622,9 +622,11 @@ pub fn field(
                 ui.expand_to_include_rect(c);
                 ui.painter().rect_filled(c, 0.0, fill);
             }
-            // The outline around the text moves it; the text itself takes the pointer.
+            // The outline around the text moves it; the text itself takes the pointer. Not a
+            // stop for the keyboard: Esc keeps the text, selected, and the arrow keys move
+            // it, as in word processors.
             let grab = movable.then(|| {
-                let r = ui.interact(grip, id.with("grip"), Sense::drag());
+                let r = ui.interact(grip, id.with("grip"), Sense::DRAG);
                 dialogs::set_name(&r, "Move the text");
                 r
             });

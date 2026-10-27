@@ -38,6 +38,19 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
   760 the navigation panel folds away to its icons. They come back when the window is wide enough again, unless
   you closed them yourself; a panel you open in a narrow window stays open. Whether you closed or opened each
   panel is remembered between runs.
+- **Panel widths:** drag the edge of the navigation panel or the inspector to make it wider or narrower. From the
+  keyboard, Tab to the edge (a line shows along it), then press Left or Right to move it 10 points (50 with
+  Shift), Home to make the panel as narrow as it goes, or End to make it half the window wide.
+
+F6 moves the keyboard to the next part of the window and Shift+F6 to the one before, in the order they are on
+screen: the top bar, the tabs, the document's notices (when there are any), navigation, the page, the inspector
+and the status bar, then round again. Each part takes you back to where you last were in it, or to its first
+button. On the page, the keys go to the document (PageDown, the arrow keys, Delete), and an outline round the
+page you are reading shows it. F6 is also the way out of a form, where Tab moves between the fields: a field keeps
+what you typed, and F6 back to the page returns to it. Text you are typing on the page (new text, a line, a note
+or a text box) stays open while you are elsewhere, so the inspector can still change it, and F6 back to the page
+lets you go on typing; a click anywhere finishes it as usual. F6 waits while a dialog, the command palette, a list
+or a menu is open. On a Mac keyboard you may need to hold fn for F6.
 
 Ctrl+K opens the command palette, which lists every command. Type to filter, use Up and Down to choose, and press
 Enter to run; Esc closes it. It looks like the dialogs, without a title or buttons: a search field, then each
@@ -350,6 +363,8 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Ctrl+F | Search: type, and the matches come once you pause |
 | Enter, Shift+Enter in a search field | Next, previous match (Enter before the pause searches at once) |
 | Ctrl+K | Command palette |
+| F6, Shift+F6 | Move the keyboard to the next, previous part of the window: the top bar, tabs, notices, navigation, the page, the inspector, the status bar |
+| Left, Right on a panel's edge (Shift for 50 points); Home, End | Make the panel narrower or wider by 10 points; as narrow as it goes, half the window wide |
 | Ctrl+= , Ctrl+- | Zoom in, zoom out |
 | Ctrl+0, Ctrl+1 | Fit width on or off, actual size |
 | Ctrl+scroll, pinch | Zoom |
@@ -365,7 +380,7 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Ctrl+B, Ctrl+I | Bold, Italic for the words selected with the read tool, or the lines selected with the arrow; in new text being typed (Add text) or a line being edited on the page, for the words selected there, or with nothing selected, the word at the caret, or what is typed next between words |
 | Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) while typing new text, a line, a note, a text box, a form field or in any box of the inspector | Undo, redo the typing there (and the styles, in new text and lines), not the document |
 | Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |
-| Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the top bar, tabs, bottom bar and panels left to right; inside a dialog, its fields and then its buttons, from the last straight back to the first. Leaving one of the inspector's boxes by Tab keeps what was typed. Space or Enter presses the button. In a form, Tab moves between its fields; Ctrl+K reaches every command |
+| Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the top bar, tabs, bottom bar and panels left to right; inside a dialog, its fields and then its buttons, from the last straight back to the first. Leaving one of the inspector's boxes by Tab keeps what was typed. Space or Enter presses the button. In a form, Tab moves between its fields; F6 reaches the rest of the window, and Ctrl+K every command |
 
 ### Screen readers
 
@@ -374,8 +389,10 @@ views and the dialogs: icons and symbols are named in words (◀ and ▶ in Sear
 Next match), a field is named by the label beside it, and toggles such as Bold and Italic, the picked signature
 and the picked mark say whether they are on. An open list or menu is named after the button that opened it. In a
 list with a button on each row, the button names its row: Restore Report.pdf in Recover unsaved changes, Remove
-Jane Example… in Trusted certificates. The edges of the side panel and the inspector are named Side panel width
-and Inspector width, but can only be dragged with the mouse.
+Jane Example… in Trusted certificates. Each part of the window that F6 goes to is named (Top bar, Tabs, Notices,
+Navigation, Document, Inspector, Status bar), the side panel by the view it shows, and each document's tab says
+whether it is the one shown. The edges of the side panel and the inspector are named Side panel width and
+Inspector width; they move with the arrow keys, and a screen reader can set them too.
 
 The names are checked by the app's tests on Linux. LimarePDF hasn't been tried with a screen reader yet (Orca,
 Narrator or VoiceOver).

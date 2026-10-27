@@ -675,6 +675,38 @@ submenu's name before it in the weak colour ("Theme › Dark"), names the row `a
 readers ("Theme: Dark") and searches the label, submenu and group (`actions::matches`; BUG-34, audit A18). A test
 keeps every palette entry's name its own.
 
+F6 and Shift+F6 (ENH-10, batch 26) are `Act::NextRegion` and `PrevRegion`, the one shortcut `App::shortcuts` runs
+while a text box has the keyboard (and never while a list or menu is open), with Shift told apart exactly, as egui
+otherwise ignores an extra Shift. They only set `Regions::step`; `App::move_region` does the move at the end of
+`App::ui`, once every region and control of the frame is drawn. `crates/limarepdf-gui/src/regions.rs` keeps where
+each region was drawn this frame (`Regions::add` from each panel's response; the notices' scope from
+`Tab::banners_at`; the inspector's pop-out with `add_over`, looked in first), finds a control's region by where its
+middle is (the notices and the inspector looked for before the page, which they lie over), and remembers the
+control last given the keyboard in each. The next region round is the first with a control that can take the
+keyboard this frame (`regions::controls`: enabled, shown, focusable, on a layer not behind a dialog), the last
+used if still there, else the first in Tab's order. The page is the exception while a document is open: there the
+keys go to the document with nothing focused, as everywhere in the app, so moving to it surrenders egui's focus
+and sets `Regions::ring`, lent to `Tab::page_ring`, which outlines the page being read until a press or any
+control takes the keyboard. Leaving the page, `move_region` notes what had it in `Editor::parked`: typing still
+open (`Parked::Typing`, the id from `Editor::typing_id`, its selection noted by `page_text::held`), which
+`line_edit_ui` and `writing_ui` don't end while it waits, and which `App::keys_to_page` gives back with its
+selection and its undo (`give_back`, `hand_back`); or a form field's text box (`Parked::Field`, by name and
+widget), which keeps its value as it loses the keyboard and `FormUi::focus_field` opens again. A press anywhere, the
+typing getting the keyboard back, or another tab in front ends the wait (start of `App::ui`). Each panel is named
+for screen readers with its role by `regions::name`, which finds the panel's own node up `Ui::stack` (egui 0.37
+gives each panel a node, unnamed); the notices are a scope built with their role and name. A document tab is
+`Role::Tab`, its selected state set on its node (egui's `WidgetInfo::selected` gives a toggle instead).
+
+A panel's edge (ENH-11) is egui's resize handle, under the panel's id (`ui.scope_id().with(name)`, where `ui` is the
+one the panel is shown in) with "__resize"; before batch 26 the names were set on `Id::unique(name)`, which isn't
+it, so they never showed. `panels::edge_keys`, before the panel is shown, reads Left, Right, Home and End while the
+edge has the keyboard, keeps the arrows from moving the keyboard on (`set_focus_lock_filter`), and puts the new
+width in as an AccessKit SetValue request on the edge, the way egui 0.37 lets a screen reader resize a panel, so it
+goes through egui's own clamping (the inspector no narrower than its contents); it never asks below
+`panels::NARROWEST`, so the keyboard never folds the inspector to its strip. `panels::edge_shown` names the edge
+and draws the accent line along it while it has the keyboard. The outline that moves new text (`page_text::field`)
+senses drags only, without egui's focusable flag, so it is no stop for Tab; the start screen's card likewise.
+
 The optional timing log (`crates/limarepdf-gui/src/timing.rs`, REL-07) is for measuring the app: with
 `LIMAREPDF_TIMING` naming a file, `main` starts it first thing, and each point calls `timing::mark` (or
 `timing::once`, for an event written only the first time with its detail) with a closure for the detail, so the
