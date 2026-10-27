@@ -769,6 +769,7 @@ mod tests {
         app.active = 0;
         app.tabs[0].path = Some(path.clone());
         app.save_now(&ctx, false);
+        super::super::tests::saves_done(&mut app, &ctx);
         let _ = std::fs::remove_file(&path);
         assert!(!app.tabs[0].dirty);
         tick(&mut app, &ctx, t0 + INTERVAL * 2);

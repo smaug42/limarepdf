@@ -45,7 +45,8 @@ Documents open with the read tool, the text cursor. It does most things:
   Redact and more.
 - **A line of text:** double-click it to edit it where it is. Press Enter, or click elsewhere, to keep the change.
 - **A picture, shape or comment:** click it to select it. The inspector shows its options, and changes apply as you
-  make them. Drag it, or use the arrow keys, to move it.
+  make them. Drag it, or use the arrow keys, to move it. Shift+click more pictures and shapes to select several and
+  move them together.
 - **Pages:** click a thumbnail to select its page (Shift+click for a range, Ctrl+click for one more). The inspector
   then offers rotate, delete, extract and insert. Drag thumbnails to put pages in a new order.
 - **The whole document:** with nothing selected (Esc clears a selection), the inspector shows the document's
@@ -86,7 +87,8 @@ and Help.
 - **Privacy:** LimarePDF never connects to the network. A link to a website asks first, then opens in your
   browser.
 - **An early version:** LimarePDF is being tested, mostly on Linux so far. Before relying on a feature, check
-  [what doesn't work yet](features.md#what-doesnt-work-yet), and keep a copy of important documents.
+  [what doesn't work yet](developer/feature-status.md#what-doesnt-work-yet), and keep a copy of important
+  documents.
 - **Your settings** (theme, recent files, your name for comments, saved signatures, digital IDs) are kept on your
   computer only ([where](troubleshooting.md#where-limarepdf-keeps-things)).
 - **Help:** tooltips explain every button, this guide covers every task, and
@@ -111,9 +113,9 @@ Every command lists its options with `limarepdf-cli <command> --help`; the
 
 ## Where to go next
 
-Check [what works and what doesn't](features.md) next, then go to the task you need in the
+See [everything LimarePDF can do](features.md) next, then go to the task you need in the
 [user guide](README.md#everyday-tasks).
 
 ---
 
-[← Install LimarePDF](install.md) · [User guide](README.md) · [Features and status →](features.md)
+[← Install LimarePDF](install.md) · [User guide](README.md) · [Features →](features.md)

@@ -75,7 +75,7 @@ New and edited text can be in Latin (Vietnamese included), Greek and Cyrillic, a
 single emoji in an installed font that has them. Hebrew, Arabic and scripts whose letters join (Devanagari, Thai
 and others) can't be written yet, in any font. Text boxes, headers, footers, watermarks and fill-and-sign text are
 written in Helvetica, so they take only Latin, Greek and Cyrillic: for Chinese, Japanese, Korean or single emoji,
-use the Add text tool in an installed font that has them. [What doesn't work yet](features.md#what-doesnt-work-yet) has the details.
+use the Add text tool in an installed font that has them. [What doesn't work yet](developer/feature-status.md#what-doesnt-work-yet) has the details.
 
 ### "LimarePDF can't add this emoji yet"
 

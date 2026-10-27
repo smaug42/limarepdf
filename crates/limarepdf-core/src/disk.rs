@@ -7,7 +7,7 @@ use crate::Result;
 use std::fs::{File, Metadata};
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 /// Creates a new, empty file beside `path` for this user only (mode 600 on Unix), under a
 /// fresh name nothing was at, with the rules of [`write_private`](crate::write_private): a
@@ -83,6 +83,10 @@ pub fn same_file(a: &Path, b: &Path) -> bool {
     false
 }
 
+/// How much older than its reading a file's time must be to be trusted: a change made in
+/// the same tick of the file's clock keeps the time, and FAT keeps times to 2 seconds.
+const SETTLED: Duration = Duration::from_secs(2);
+
 /// A file as it was when last read or written: its size, time and (Unix) inode, which tell
 /// quickly that it is unchanged, and the checksum of its bytes, which tells whether a file
 /// whose size or time changed holds anything different.
@@ -94,10 +98,13 @@ pub struct Version {
     #[cfg(unix)]
     node: (u64, u64),
     sum: [u8; 32],
+    /// When it was read: a time not [`SETTLED`] before this could still be the time of a
+    /// change made just after the reading (PB-28), as git's "racy" files.
+    read: SystemTime,
 }
 
 impl Version {
-    fn of(m: &Metadata, bytes: &[u8]) -> Self {
+    fn of(m: &Metadata, bytes: &[u8], read: SystemTime) -> Self {
         #[cfg(unix)]
         use std::os::unix::fs::MetadataExt;
         Self {
@@ -106,9 +113,12 @@ impl Version {
             #[cfg(unix)]
             node: (m.dev(), m.ino()),
             sum: sha256(bytes),
+            read,
         }
     }
 
+    /// Whether `m` shows the file as this version knew it, so it needn't be read. A time
+    /// too close to the reading isn't trusted: the file is read and its checksum compared.
     fn stamp_is(&self, m: &Metadata) -> bool {
         #[cfg(unix)]
         {
@@ -117,7 +127,11 @@ impl Version {
                 return false;
             }
         }
-        self.len == m.len() && self.modified.is_some() && self.modified == m.modified().ok()
+        let settled = self
+            .modified
+            .and_then(|t| t.checked_add(SETTLED))
+            .is_some_and(|t| t <= self.read);
+        settled && self.len == m.len() && self.modified == m.modified().ok()
     }
 
     /// Whether the two hold the same bytes.
@@ -130,10 +144,12 @@ impl Version {
 /// when another file is renamed over it meanwhile.
 pub fn read(path: &Path) -> std::io::Result<(Vec<u8>, Version)> {
     let mut f = File::open(path)?;
+    // Before the time is read, so a change at the moment of reading counts as too recent.
+    let read = SystemTime::now();
     let m = f.metadata()?;
     let mut bytes = Vec::with_capacity(usize::try_from(m.len()).unwrap_or(0));
     f.read_to_end(&mut bytes)?;
-    let v = Version::of(&m, &bytes);
+    let v = Version::of(&m, &bytes, read);
     Ok((bytes, v))
 }
 
@@ -154,7 +170,8 @@ pub enum OnDisk {
 }
 
 /// Compares the file at `path` with `known`. The file is read only when its size, time or
-/// inode differ, to tell a change from a file touched or copied unchanged.
+/// inode differ, or its time was too close to `known`'s reading to be trusted, to tell a
+/// change from a file touched or copied unchanged.
 pub fn compare(path: &Path, known: &Version) -> std::io::Result<OnDisk> {
     match std::fs::metadata(path) {
         Ok(m) if known.stamp_is(&m) => return Ok(OnDisk::Same(known.clone())),
@@ -214,7 +231,7 @@ mod tests {
         std::fs::write(&p, "first").unwrap();
         let (bytes, v) = read(&p).unwrap();
         assert_eq!(bytes, b"first");
-        assert!(matches!(compare(&p, &v).unwrap(), OnDisk::Same(s) if s == v));
+        assert!(matches!(compare(&p, &v).unwrap(), OnDisk::Same(s) if s.same_bytes(&v)));
         // The same bytes written again, as a sync tool or `touch` might: not a change.
         let again = dir.join("again.pdf");
         std::fs::write(&again, "first").unwrap();
@@ -234,6 +251,42 @@ mod tests {
         }
         std::fs::remove_file(&p).unwrap();
         assert!(matches!(compare(&p, &v).unwrap(), OnDisk::Gone));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// PB-28: a change at the same size within one tick of the file's clock, so with the
+    /// same time, is noticed: on Windows, with no inode to tell it, it read as unchanged.
+    /// The time is set here, so the race happens on every platform.
+    #[test]
+    fn a_change_in_the_same_tick_as_the_read_is_noticed() {
+        let dir = test_dir("tick");
+        let p = dir.join("doc.pdf");
+        std::fs::write(&p, "first").unwrap();
+        let (_, v) = read(&p).unwrap();
+        let f = std::fs::OpenOptions::new().write(true).open(&p).unwrap();
+        std::io::Write::write_all(&mut &f, b"fir5t").unwrap();
+        f.set_modified(v.modified.unwrap()).unwrap();
+        drop(f);
+        match compare(&p, &v).unwrap() {
+            OnDisk::Changed(now) => assert!(!now.same_bytes(&v)),
+            o => panic!("{o:?}"),
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A file last changed well before it was read is trusted by its size and time,
+    /// without reading it again.
+    #[test]
+    fn an_older_file_is_known_by_its_size_and_time() {
+        let dir = test_dir("older");
+        let p = dir.join("doc.pdf");
+        std::fs::write(&p, "first").unwrap();
+        let hour_ago = SystemTime::now() - std::time::Duration::from_secs(3600);
+        let f = std::fs::OpenOptions::new().write(true).open(&p).unwrap();
+        f.set_modified(hour_ago).unwrap();
+        drop(f);
+        let (_, v) = read(&p).unwrap();
+        assert!(v.stamp_is(&std::fs::metadata(&p).unwrap()));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

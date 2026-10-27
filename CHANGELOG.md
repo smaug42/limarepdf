@@ -1,5 +1,111 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- An optional timing log, for measuring how quickly LimarePDF responds: start it with the environment variable
+  `LIMAREPDF_TIMING` set to a file, and it writes there when the app starts, takes input, finishes each frame,
+  first shows each page sharp, and starts and ends reading, drawing, searching and saving. Off unless asked for.
+- Search finds a phrase that runs from the bottom of one page to the top of the next, and a word hyphenated at the
+  end of a page, highlighting it on both pages.
+- View > Use the document's page labels: turned off, pages are numbered 1, 2, 3 from the first page in the
+  thumbnails, search results and new bookmarks, instead of by the document's own numbering (such as iii or A-1).
+  The status bar shows both. On unless turned off, and remembered.
+- Style words while you read, as in a word processor: select them with the read tool, across lines and pages
+  too, then press Ctrl+B or Ctrl+I, use Bold and Italic on the floating toolbar or in the right-click menu, or pick
+  a font, size or colour in the inspector, headed Selected text. The words stay selected, and each change is one
+  undo step. Invisible recognised text, text in a block of page content reused as a whole and vertical writing
+  are left as they were, and a notice says so.
+- Select several objects: Shift+click to add one or take it out, with the read tool for pictures and shapes and
+  with the arrow for anything, page text included. With the arrow you can also drag a rectangle round them (what
+  is wholly inside it is selected; Shift adds), or press Ctrl+A for everything on the page. They move together (a
+  drag, the arrow keys, the inspector's X and Y), take the inspector's font, size, colour, Bold and Italic (the
+  lines of text among them) and fill, outline and width (the shapes), blank or mixed where they differ, and
+  delete together, each change one undo step. A drag that starts on a background or a scanned page that isn't
+  selected draws a rectangle, so it isn't moved by accident.
+- F6 and Shift+F6 move the keyboard between the parts of the window: the top bar, the tabs, the document's
+  notices, navigation, the page, the inspector and the status bar, in the order they are on screen. Each part
+  takes you back to where you last were in it. F6 also leaves a form, where Tab moves between the fields. Typing
+  on the page (new text, a line being edited, a note or text box) stays open while you are elsewhere: the
+  inspector still changes it (Bold, the font, size or colour of what is selected there), and F6 back to the page
+  lets you go on typing. A form field
+  keeps what you typed and is where F6 comes back to. Back on the page with nothing else to go to, an outline round
+  the page you are reading shows that the keys are there. View > Next region and Previous region list them.
+- The side panel and the inspector can be made wider or narrower from the keyboard: Tab to their edge (it shows a
+  line), then Left and Right move it 10 points, 50 with Shift; Home makes the panel as narrow as it goes and End
+  half the window wide. The keyboard never folds a panel away.
+- Create signature… and Create initials… are in the command search (Ctrl+K) and in ☰ > Tools.
+- Screen readers hear the name of each part of the window as the keyboard goes into it (Top bar, Tabs, Notices,
+  Navigation, Document, Inspector, Status bar), and each document tab says whether it is the one shown.
+
+### Changed
+
+- Search as you type: the matches come as soon as you pause typing, with no need to press Enter, and the window
+  stays responsive while a long document is searched, the matches coming in page by page. The view goes to the
+  first match on or after the page you are reading. Enter and Shift+Enter go to the next and previous match.
+  Changing the document brings the results up to date, keeping the match you were on. Searching again for
+  something else on the same document is much quicker, as each page is read only once. The Find button in Search
+  results is gone, as typing searches.
+- Search results are easier to read: the matches are listed under a heading for each page, each with whole words
+  around it, cut with "…", and the match in bold; the count reads "1 match", "12 matches" or "No matches".
+- `limarepdf-cli search` prints each match as `page 3: …the words around it…` and the count as "1 match" or
+  "N matches" ("No matches"), and `--boxes` as `page 3 [x0 y0 x1 y1]`.
+- Mark all for redaction marks every match of the search, even while it is still running.
+- Save writes the file in the background, with a busy sign in the status bar, so the window no longer freezes
+  while a large document is saved; you can go on working, and a change made meanwhile leaves the document marked
+  unsaved. Saving again, closing the document or quitting waits for the save to finish. Saving a long document
+  also starts sooner, as LimarePDF no longer reads the whole file again at every check before writing.
+- Changes to long documents are quicker: after each change LimarePDF went through the whole page list once for
+  every page while looking for redaction marks (about 60 ms on 300 pages, more on longer ones); now once.
+- Fonts installed under code names, such as the URW fonts on Linux, are listed in the font list by the typeface
+  they stand in for, their own name after: "Palatino (P052)", "New Century Schoolbook (C059)", "Helvetica
+  (Nimbus Sans)". The list is sorted by those names, and searching finds either. Pointing at one says it is made to
+  that typeface's letter widths but isn't the typeface itself, and that it is embedded in the file.
+- The inspector puts text first: it is headed by what is selected or the tool's options (Text, Image, New
+  rectangle, Comment) instead of "Edit"; for text, a font list across the panel, then Bold, Italic, size and
+  colour in one row. Position and size are in a Position and size section that starts closed and stays open or
+  closed as you left it, for every kind of object. Pointing at the font list shows the names of the selected
+  text's fonts in the PDF.
+- The inspector no longer repeats a line's words in a text box: they are changed on the page, as in a word
+  processor. With the arrow, a double-click or Edit text now edits the line on the page too.
+- Finishing editing a line with the read or Add text tool (Esc, Tab, or clicking into a form field) no longer
+  leaves the line selected, so the inspector goes back to what it showed before.
+- The text colour button is now an A over a bar of the colour, with a ▾, as word processors show it; black text
+  no longer makes it disappear on the dark theme.
+- The Italic button shows a slanted I with serifs, as word processors do, instead of something that read as a
+  slash, and the Bold button's B is now bold.
+- Changing some of the words in a line, by typing or styling, keeps the words left as they were in their own font,
+  even an embedded font LimarePDF can't write new text in. Before, the rest of their part of the line was written
+  again in a similar font. Where that can't be done, the words are written in the similar font as before, and a
+  notice says so.
+- Ctrl+B and Ctrl+I also make a line selected with the arrow bold or italic, as the inspector's buttons do.
+- New text of several lines is selected as one when you finish typing it, so it moves together; before, only its
+  last line was selected.
+- The right-click menu's Copy the object's text is now Copy the selected text lines, and copies several lines in
+  reading order.
+- Selected text is shaded as one smooth area, as in a word processor: a band along each line, the spaces between
+  words included, the lines of a paragraph meeting, instead of a box around each word.
+- The user guide's Features page is now a short summary of what LimarePDF can do. The detailed status of each
+  feature, with its limits and what doesn't work yet, moved to the developer docs as
+  [Features and status](docs/developer/feature-status.md).
+
+### Fixed
+
+- When another app changed an open document within a split second of LimarePDF reading it, at the same size,
+  LimarePDF could miss the change (most likely on Windows), so Save wouldn't ask before replacing it and no notice
+  showed. A file changed so recently is now checked by its contents.
+- A line or shape thinner than half a point, such as a hairline rule, couldn't be moved ("the object would become
+  too small"). It moves now; only resizing something to that size is refused.
+- A click held down for about a second before letting go didn't count as a click: with the read tool it selected
+  a word near a picture instead of the picture. A click is now a click however long it is held, until the
+  pointer moves.
+- The edges of the side panel and the inspector were named only "Resize panel" for screen readers, not Side panel
+  width and Inspector width as the guide said; they now are.
+- The outline for moving new text with the mouse was a stop for Tab that did nothing, and the start screen's card
+  an unnamed one. Neither is now: the keyboard moves new text once it is kept (Esc, then the arrow keys), and
+  Open PDF… opens a file.
+
 ## [0.10.0] - 2026-10-26
 
 ### Fixed
@@ -1215,12 +1321,12 @@ follow links and bookmarks, and select text without changing tools.
   477-page manual. See [Performance](docs/developer/performance.md).
 - Release notes on GitHub end with a link to every change since the previous version.
 - Installers and packages (a macOS app, Linux packages, Homebrew) are planned for once the app is more complete;
-  see [Features and status](docs/features.md#packaging).
+  see [Features and status](docs/developer/feature-status.md#packaging).
 
 ## [0.3.0] - 2026-10-13
 
 MPE is still a test release: most testing has been on Linux. See
-[Features and status](docs/features.md) for what works and its limits.
+[Features and status](docs/developer/feature-status.md) for what works and its limits.
 
 ### Desktop app
 

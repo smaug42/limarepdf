@@ -44,7 +44,8 @@ As in a word processor:
 - Bold over words that are partly bold makes them all bold; over words that are all bold, it takes the bold off.
   Italic works the same way. Words in a family without a bold or italic face stay as they are.
 - Where the selection mixes fonts, sizes or colours, the inspector shows that one blank: the font list with no
-  name, the size box empty, the colour button with the colours side by side. A colour picked then makes the
+  name, the size box empty, the colour button (an **A** over a bar of the text's colour) with the colours side by
+  side in its bar. A colour picked then makes the
   selection all that colour, even the one the picker starts from (the first); the picker also offers the colours
   in the text (**In the text**), to make it all one of them in a click. Opening and closing the picker changes
   nothing. Bold and Italic show on only when all
@@ -52,8 +53,28 @@ As in a word processor:
 - A change in the inspector shows on the line at once, the line stays in editing, and the keyboard comes back to
   it; the change is kept with the typing.
 
-A line selected as a whole (with the arrow, or after editing it) takes the inspector's font, size and colour as a
-whole, with the same blanks for what it mixes.
+Finishing (Esc, Enter, Tab or clicking elsewhere) leaves nothing selected, as in a word processor. A line selected
+as a whole with the arrow takes the inspector's font, size and colour, and Ctrl+B and Ctrl+I, as a whole, with the
+same blanks for what it mixes; to change its words, double-click it or use **Edit text**, and it is edited on the
+page here too. With the arrow, the line stays selected when you finish.
+
+## Style words you select while reading
+
+You don't need to open a line to style its words. Select them with the read tool, as you would to copy them (drag
+over them, across lines and pages if you like), then:
+
+- press Ctrl+B for Bold or Ctrl+I for Italic, or use **B** and ***I*** on the floating toolbar or in the right-click
+  menu;
+- or pick a font, size or colour in the inspector, headed **Selected text**.
+
+The words stay selected, so you can go on changing them. Bold and Italic work over the whole selection as they do in
+a line, and the inspector shows a value blank where the selection mixes it. Each change is one undo step, however
+many lines and pages it covers.
+
+The words around the ones you change are left exactly as they were, in their own font, even one LimarePDF can't
+write new text in. Words whose size or colour is all you change keep their font too; Bold, Italic or another font
+writes them in that font. Invisible recognised (OCR) text, text inside a block of page content reused as a whole,
+and vertical writing keep their look; a short notice says when part of the selection was left that way.
 
 ## Add text
 
@@ -76,6 +97,12 @@ you clicked, and a drag selects text, as with the read tool.
 licence allows embedding them, each name drawn in its own font. Type in its search field to narrow it; Enter picks
 the first. Bold and Italic are off for a family that has no such face.
 
+Some fonts are installed under code names, such as the URW fonts many Linux systems have. The list shows these by
+the typeface they stand in for, with the font's own name after it: "Palatino (P052)", "New Century Schoolbook
+(C059)", "Helvetica (Nimbus Sans)". Searching finds either name. They are made to the same letter widths as those
+typefaces but aren't the typefaces themselves; point at one to see this. Unlike the standard Helvetica, Times and
+Courier at the top of the list, they are embedded in the file, so the text looks the same everywhere.
+
 **Characters:** Latin (Vietnamese included), Greek and Cyrillic characters can be added. Those the standard fonts
 lack are written in their Liberation face, and text in an installed font is written in that font, both embedded in
 the file (cut down to the characters used). Chinese, Japanese and Korean can be typed in an installed font that has
@@ -85,7 +112,7 @@ the chosen font doesn't have, and emoji it draws only in colour, can't be typed 
 says so. When another font could have the character (Chinese or an emoji in Helvetica, say, or a letter an
 installed font lacks), the note names the font in use and asks you to choose an installed font that has it. The
 same goes for editing a line and the inspector's text field (see
-[What doesn't work yet](features.md#what-doesnt-work-yet)).
+[What doesn't work yet](developer/feature-status.md#what-doesnt-work-yet)).
 
 To put the same text on every page, such as page numbers or DRAFT, use
 [headers, footers and watermarks](headers-footers-watermarks.md).
@@ -101,8 +128,9 @@ A photo shows upright, the way it was taken, even when the camera or phone was t
 
 With the read tool:
 
-- **Pictures and shapes:** click one to select it. Drag it to move it, and drag a handle to resize it (Shift keeps
-  the proportions). Arrow keys move it by 1 point, or 10 with Shift. Delete or Backspace deletes it.
+- **Pictures and shapes:** click one to select it, and Shift+click more to [select several](#select-several-objects).
+  Drag it to move it, and drag a handle to resize it (Shift keeps the proportions). Arrow keys move it by 1 point,
+  or 10 with Shift. Delete or Backspace deletes it.
 - **Page text:** double-click the line, then choose **Move or resize text** on its toolbar. The line gets handles:
   drag it or them, or use the arrow keys, until you click away or select something else. Text you have just added
   can be moved straight away in the same way.
@@ -114,10 +142,37 @@ so that clicking a scan doesn't pick it up. A drag that starts anywhere else sti
 included: click to select, drag to move, drag a handle to resize (Shift keeps the proportions), and arrow keys to
 nudge.
 
+## Select several objects
+
+Hold **Shift** and click pictures and shapes to add them to the selection. Shift+click one again to take it out. A
+click without Shift selects that one alone. This works with the read tool, which a document opens with, and with
+the arrow, which selects lines of page text this way too.
+
+With the arrow you can also:
+
+- Drag a rectangle from an empty part of the page: everything wholly inside it is selected, nothing it only
+  touches. Hold Shift to add what it holds to the selection. A drag that starts on a background or a scanned page
+  that isn't selected draws a rectangle too, so it isn't moved by accident.
+- Press **Ctrl+A** to select everything on the page.
+
+Each selected object is outlined, with a dashed box round them all. Drag any one of them, or use the arrow keys, to
+move them together; Delete or Backspace deletes them all. The inspector says how many there are and what they are.
+Its font, size, colour, Bold and Italic change the lines of text among them, each line as a whole, and Fill,
+Outline and width change the shapes; a value they don't share shows blank or mixed. X and Y under **Position** move
+them all. Right-click one of them for Copy the selected text lines (in reading order) and Delete. Each change is
+one undo step.
+
+Several objects are selected on one page at a time. They move, restyle and delete together, but are resized one at
+a time. Comments and markup are selected one at a time, never with page objects.
+
 ## Change size, font and colour in the inspector
 
-The inspector shows the selected object's position and size; for text, the string, font, size and colour; for
-shapes, the fill, outline and width; for pictures, **Replace image…**. Changes there are kept as you make them,
+The inspector is headed by what is selected (Text, Image, Shape). For text it shows the font list, then Bold,
+Italic, size and colour in a row (the words themselves are changed on the page); for shapes, the fill, outline and
+width; for pictures,
+**Replace image…**. Below these, **Position and size** opens to show the object's X, Y, width and height; it
+stays open or closed as you left it. Pointing at the font list shows the names of the fonts the selected text
+uses in the PDF. Changes there are kept as you make them,
 without an Apply button: typed text when you press Enter or leave the box, a number when you stop dragging it or
 leave its box, a colour when its picker closes. Each is one undo step.
 
@@ -128,7 +183,7 @@ text that isn't a size leaves the size as it was.
 ## After you put something down
 
 Add text and Add image put one thing down and then give way to the read tool, with the new item selected so you
-can adjust it. To add several in a row, pin the tool (see [Keep tool active](gui.md#keep-tool-active)). Everything
+can adjust it: new text of several lines is selected as one, so it moves together. To add several in a row, pin the tool (see [Keep tool active](gui.md#keep-tool-active)). Everything
 can be undone with Ctrl+Z, up to 20 steps back ([fewer on very large documents](gui.md#undo)).
 
 ## How it works
@@ -139,8 +194,9 @@ the page itself.
 - **Moving or resizing** places the object anew, leaving its drawing as it is.
 - **A line of text** is one object whatever its styles: a bold word or a superscript in it is a part of the line,
   not an object of its own.
-- **Editing text** keeps each part's own font when it can: a part left as it was is written exactly as it was,
-  and a changed part in a plain standard font keeps it for plain text. Otherwise that part is written again in its
+- **Editing text** keeps each part's own font when it can: a part left as it was is written exactly as it was, so
+  are whole words left as they were beside words you changed, and a changed part in a plain standard font keeps it
+  for plain text. Otherwise that part is written again in its
   size and colour, in the font you chose, else in the installed family its font comes from, else in the nearest of
   Helvetica, Times and Courier, the line staying in place. While you edit a line it is drawn in the fonts it will
   have, and the old line underneath is hidden in the colour around it.
@@ -162,9 +218,12 @@ detail is in [How it is built](developer/architecture.md#content-editing).
 
 - Text objects are lines recovered from the content stream by heuristics, not paragraphs. There is no reflow and no
   multi-line editing. Text boxes are estimated from font metrics, so they can be slightly off for unusual fonts.
-- Text in embedded subset fonts, and in CID (Type 0) fonts, cannot keep its font when edited: it is written in the
-  installed family the font is from when LimarePDF can embed it, else it becomes Helvetica, Times or Courier (or
-  their Liberation face, as new text is), and the inspector says so. Text written anew is limited to Latin, Greek
+- Text in embedded subset fonts, and in CID (Type 0) fonts, cannot keep its font where it is changed: a word you
+  change (or change some of the letters of) is written in the installed family the font is from when LimarePDF
+  can embed it, else in Helvetica, Times or Courier (or their Liberation face, as new text is), and the inspector
+  says so. The words left as they were around it keep their font, except where the page's font shows letters on
+  both sides of a space together, or the line would read differently once parted: then they are written in the
+  similar font too, and a notice says so. Text written anew is limited to Latin, Greek
   and Cyrillic, and Chinese, Japanese and Korean in an installed font that has them: the app doesn't let others
   be typed, and a line that already has them (Chinese in a line that becomes Helvetica, say) can't be written
   anew; the change is refused with a message naming them. Right-to-left and shaped scripts (Hebrew, Arabic,
@@ -181,8 +240,9 @@ detail is in [How it is built](developer/architecture.md#content-editing).
   edited in a box over the line, and invisible text in a plain box.
 - A part of a line written again (changed text in a font LimarePDF can't keep, or another font chosen) loses its
   own character and word spacing and horizontal scaling; parts left as they were keep theirs.
-- Words can be styled only in a line being edited, not by selecting them with the read tool. There is no
-  underline or strike-through for page text.
+- There is no underline or strike-through for page text. Styling words doesn't rewrap: bold or larger words make
+  their line longer and the rest of it moves along, and highlights, links and redaction marks over them stay where
+  they were. The space after a word you make larger can grow with it.
 - Editing text does not change its width: longer text can overlap its neighbours.
 - Where the text after a changed line starts is worked out from the font's character widths. Where a file doesn't
   give them for a font that isn't one of the standard 14, or a CID font's characters can't be told apart, they are

@@ -623,11 +623,11 @@ impl Tab {
     }
 }
 
-/// The panel's heading, drawn by the app beside the button that hides the panel: "Edit"
-/// for the editor's section, else the selected pages or "Document".
+/// The panel's heading, drawn by the app beside the button that hides the panel: what the
+/// editor's section shows ("Text", "New rectangle"), else the selected pages or "Document".
 pub fn title(t: &Tab) -> String {
     if t.ed.owns_panel() {
-        return "Edit".into();
+        return t.ed.heading();
     }
     match t.ed.selection.pages() {
         Some(p) if p.len() == 1 => format!("Page {}", range_text(p)),

@@ -41,10 +41,17 @@ pub enum Act {
     Redo,
     Copy,
     SelectAllText,
+    /// Select every object on the page in front, with the arrow.
+    SelectAllObjects,
     /// Print the selected words, as cropped pages or as plain text.
     PrintSelection,
     /// Save the selected words as a PDF (cropped pages or plain text) or a text file.
     SaveSelection,
+    /// Bold on or off for the selected words, or the lines selected with the arrow, by
+    /// Word's rule: all bold becomes not bold, anything else all bold.
+    Bold,
+    /// Italic on or off, as [`Act::Bold`].
+    Italic,
     /// Mark the selected words, in the colour last chosen for the kind.
     Mark(Mark),
     /// Choose the colour for highlights, or (`line`) for the other marks: an index into
@@ -66,9 +73,9 @@ pub enum Act {
     RemoveHidden,
     /// Set the name written into comments and markup.
     CommentName,
-    /// Delete the selected object, or the selected pages.
+    /// Delete the selected objects, or the selected pages.
     DeleteSelection,
-    /// Copy the text of the selected text object.
+    /// Copy the text of the selected lines of page text, in reading order.
     CopyObjectText,
     /// Put the keyboard in the inspector's text box for the selected text object.
     EditObjectText,
@@ -77,7 +84,7 @@ pub enum Act {
     /// The Fill and sign tool, putting this down next (its button's menu).
     SignWith(SignPick),
     /// The Fill and sign tool, with the Create window open for a new signature or
-    /// initials (its button's menu).
+    /// initials.
     CreateSign(SignRole),
     /// Replace the selected image with one from a file.
     ReplaceImage,
@@ -132,6 +139,8 @@ pub enum Act {
     ToggleHidden,
     /// Tint every form field, and outline the required ones.
     ToggleFields,
+    /// Call pages by the document's page labels, or by their numbers.
+    TogglePageLabels,
     NextField,
     PrevField,
     /// Empty the form field with the keyboard.
@@ -144,6 +153,10 @@ pub enum Act {
     /// Page colour modes recolour pictures too.
     TogglePicturesToo,
     Palette,
+    /// Move the keyboard to the next region of the window (F6), or the one before
+    /// (Shift+F6): see [`crate::regions`].
+    NextRegion,
+    PrevRegion,
     Tool(Tool),
     RotR,
     RotL,
@@ -180,6 +193,8 @@ impl Act {
             | Act::Print
             | Act::PrintSelection
             | Act::SaveSelection
+            | Act::Bold
+            | Act::Italic
             | Act::Undo
             | Act::Redo
             | Act::Mark(_)
@@ -218,6 +233,7 @@ impl Act {
             | Act::Quit
             | Act::Copy
             | Act::SelectAllText
+            | Act::SelectAllObjects
             | Act::MarkColor { .. }
             | Act::CommentName
             | Act::CopyObjectText
@@ -250,6 +266,7 @@ impl Act {
             | Act::ToggleDock
             | Act::ToggleHidden
             | Act::ToggleFields
+            | Act::TogglePageLabels
             | Act::NextField
             | Act::PrevField
             | Act::ClearField
@@ -257,6 +274,8 @@ impl Act {
             | Act::PageColours(_)
             | Act::TogglePicturesToo
             | Act::Palette
+            | Act::NextRegion
+            | Act::PrevRegion
             | Act::Tool(_)
             | Act::Crop
             | Act::Split
@@ -317,17 +336,23 @@ pub struct Ctx {
     pub file: bool,
     /// A background job (OCR, optimising, exporting, printing) is running.
     pub busy: bool,
+    /// The active tab's save is being written.
+    pub saving: bool,
     pub can_undo: bool,
     pub can_redo: bool,
     /// Words are selected with the read tool.
     pub words: bool,
-    /// An object is selected.
+    /// Objects are selected, one or several.
     pub object: bool,
-    /// The selected object can be moved with the current tool: page text only with the
+    /// The selected objects can be moved with the current tool: page text only with the
     /// arrow, or just after it was added.
     pub object_moves: bool,
-    /// What the selected object is.
+    /// What the selected object is, when one is selected.
     pub obj_kind: Option<ObjKind>,
+    /// Some of the selected objects are lines of page text, visible or not.
+    pub obj_text: bool,
+    /// Some of the selected objects are lines of visible page text.
+    pub obj_lines: bool,
     /// Pages are selected in the thumbnails.
     pub pages: bool,
     pub tool: Option<Tool>,
@@ -353,6 +378,8 @@ pub struct Ctx {
     pub pictures_too: bool,
     /// Recovery copies are kept.
     pub recovery: bool,
+    /// See [`Act::TogglePageLabels`].
+    pub page_labels: bool,
     /// An annotation is selected, and whether it may be changed.
     pub annot: bool,
     pub annot_locked: bool,
@@ -395,8 +422,13 @@ fn doc(c: &Ctx) -> bool {
 fn idle(c: &Ctx) -> bool {
     c.doc && !c.busy
 }
+/// The document's file, which waits while it is saved.
 fn file(c: &Ctx) -> bool {
-    c.file && !c.busy
+    c.file && !c.busy && !c.saving
+}
+/// Signing, which replaces the tab with the signed file: not while the tab is saved.
+fn signable(c: &Ctx) -> bool {
+    c.doc && !c.busy && !c.saving
 }
 fn undo(c: &Ctx) -> bool {
     c.can_undo
@@ -422,10 +454,23 @@ fn nudgeable(c: &Ctx) -> bool {
 }
 /// Page text selected with the read tool, which moves only with the arrow.
 fn fixed_text(c: &Ctx) -> bool {
-    text_object(c) && !c.object_moves
+    one_line(c) && !c.object_moves
 }
-fn text_object(c: &Ctx) -> bool {
+/// One line of page text selected.
+fn one_line(c: &Ctx) -> bool {
     c.object && matches!(c.obj_kind, Some(ObjKind::Text | ObjKind::HiddenText))
+}
+/// Lines of page text among the selected objects.
+fn lines_among(c: &Ctx) -> bool {
+    c.object && c.obj_text
+}
+/// Selected words, or lines of visible page text among the selected objects: what Bold and
+/// Italic change.
+fn styleable(c: &Ctx) -> bool {
+    (c.words || (c.object && c.obj_lines)) && !c.busy
+}
+fn arrow_tool(c: &Ctx) -> bool {
+    c.doc && c.tool == Some(Tool::Select)
 }
 fn deletable(c: &Ctx) -> bool {
     c.object || c.pages || (c.annot && !c.annot_locked)
@@ -605,6 +650,36 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::SelectAllObjects,
+        group: Group::Edit,
+        label: "Select all on the page",
+        icon: icon::SELECTION_ALL,
+        keys: &[k(C, Key::A)],
+        enabled: arrow_tool,
+        hint: "Every picture, shape and line of text on the page, to move, restyle or \
+               delete together.",
+        ..BASE
+    },
+    Action {
+        act: Act::Bold,
+        group: Group::Edit,
+        label: "Bold",
+        icon: icon::TEXT_B,
+        keys: &[k(C, Key::B)],
+        enabled: styleable,
+        sep: true,
+        ..BASE
+    },
+    Action {
+        act: Act::Italic,
+        group: Group::Edit,
+        label: "Italic",
+        icon: icon::TEXT_ITALIC,
+        keys: &[k(C, Key::I)],
+        enabled: styleable,
+        ..BASE
+    },
+    Action {
         act: Act::PrintSelection,
         group: Group::Edit,
         label: "Print selected text…",
@@ -688,7 +763,7 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Edit,
         label: "Edit text",
         icon: icon::PENCIL_SIMPLE,
-        enabled: text_object,
+        enabled: one_line,
         sep: true,
         hint: "Change the words of the selected line of page text.",
         ..BASE
@@ -714,9 +789,9 @@ pub static ACTIONS: &[Action] = &[
     Action {
         act: Act::CopyObjectText,
         group: Group::Edit,
-        label: "Copy the object's text",
+        label: "Copy the selected text lines",
         icon: icon::COPY,
-        enabled: text_object,
+        enabled: lines_among,
         ..BASE
     },
     Action {
@@ -990,6 +1065,17 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::TogglePageLabels,
+        group: Group::View,
+        label: "Use the document's page labels",
+        enabled: always,
+        checked: Some(|c| c.page_labels),
+        hint: "Call pages by the numbering the document gives them, such as iii or A-1, \
+               in thumbnails, search results and bookmarks. Off numbers them 1, 2, 3 \
+               from the first page. The status bar shows both.",
+        ..BASE
+    },
+    Action {
         act: Act::ToggleFields,
         group: Group::View,
         label: "Highlight fields",
@@ -1126,6 +1212,27 @@ pub static ACTIONS: &[Action] = &[
         sep: true,
         ..BASE
     },
+    Action {
+        act: Act::NextRegion,
+        group: Group::View,
+        label: "Next region",
+        keys: &[k(N, Key::F6)],
+        enabled: always,
+        palette: false,
+        hint: "Move the keyboard to the next part of the window: the top bar, the tabs, the \
+               notices, navigation, the page, the inspector or the status bar.",
+        ..BASE
+    },
+    Action {
+        act: Act::PrevRegion,
+        group: Group::View,
+        label: "Previous region",
+        keys: &[k(Modifiers::SHIFT, Key::F6)],
+        enabled: always,
+        palette: false,
+        hint: "Move the keyboard to the part of the window before.",
+        ..BASE
+    },
     // --------------------------------------------------------------- Tools
     Action {
         act: Act::Tool(Tool::Read),
@@ -1178,6 +1285,22 @@ pub static ACTIONS: &[Action] = &[
         icon: icon::SIGNATURE,
         hint: "Put your signature, initials, the date or a tick on the page: click to put it \
                down, or drag a box to size it. Not a digital signature.",
+        ..BASE
+    },
+    Action {
+        act: Act::CreateSign(SignRole::Signature),
+        group: Group::Tools,
+        label: "Create signature…",
+        hint: "Draw, type or pick a picture of your signature, then put it on the page \
+               with Fill and sign.",
+        ..BASE
+    },
+    Action {
+        act: Act::CreateSign(SignRole::Initials),
+        group: Group::Tools,
+        label: "Create initials…",
+        hint: "Draw, type or pick a picture of your initials, then put them on the page \
+               with Fill and sign.",
         ..BASE
     },
     Action {
@@ -1446,7 +1569,7 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Document,
         label: "Sign with digital ID…",
         icon: icon::SEAL_CHECK,
-        enabled: doc_idle,
+        enabled: signable,
         sep: true,
         hint: "Sign so that others can check who signed and whether anything changed \
                afterwards. The signed document is saved as a new file.",
@@ -1458,7 +1581,7 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Document,
         label: "Certify…",
         icon: icon::CERTIFICATE,
-        enabled: doc_idle,
+        enabled: signable,
         hint: "Sign as the document's author, choosing what others may change afterwards. \
                Only before anyone has signed it.",
         submenu: "Digital signatures",
@@ -1548,12 +1671,13 @@ pub fn context_items(sel: &Selection) -> &'static [&'static [Act]] {
     match sel {
         Selection::Words { .. } => &[
             &[Act::Copy, Act::SelectAllText],
+            &[Act::Bold, Act::Italic],
             &[Act::Mark(Mark::Highlight)],
             &[Act::MarkRedact],
             &[Act::PrintSelection, Act::SaveSelection],
         ],
         Selection::Annot { .. } => &[&[Act::DeleteSelection]],
-        Selection::Object { .. } => &[
+        Selection::Objects { .. } => &[
             &[
                 Act::EditObjectText,
                 Act::MoveText,
@@ -1636,7 +1760,16 @@ pub fn context_buttons(
             ui.separator();
         }
         for a in group {
-            let b = egui::Button::new(crate::theme::icon(a.icon).size(16.0))
+            let glyph = match a.act {
+                // A bold B and a slanted I with serifs, as the inspector and word
+                // processors show them; the icon is drawn inside some padding.
+                Act::Bold => egui::RichText::new("B")
+                    .family(crate::theme::semibold())
+                    .size(16.0),
+                Act::Italic => crate::theme::icon(a.icon).size(19.0),
+                _ => crate::theme::icon(a.icon).size(16.0),
+            };
+            let b = egui::Button::new(glyph)
                 .frame_when_inactive(false)
                 .min_size(egui::vec2(26.0, 26.0));
             let r = ui.add(b);
@@ -1698,12 +1831,34 @@ mod tests {
         }
     }
 
+    /// Each shortcut does one thing: two commands share one only when no tool has both
+    /// (Ctrl+A selects all text with the read tool, all objects with the arrow).
     #[test]
     fn shortcuts_are_unique() {
+        let tools = [Tool::Read, Tool::Select, Tool::Text, Tool::Rect, Tool::Note];
+        let both = |a: &Action, b: &Action| {
+            tools.iter().any(|&t| {
+                let c = Ctx {
+                    doc: true,
+                    tool: Some(t),
+                    ..Ctx::default()
+                };
+                (a.enabled)(&c) && (b.enabled)(&c)
+            })
+        };
         let all = shortcuts();
         for (i, (a, k)) in all.iter().enumerate() {
             for (b, j) in &all[i + 1..] {
-                assert!(k != j, "{:?} and {:?} share a shortcut", a.act, b.act);
+                let apart = a.act == Act::SelectAllText && b.act == Act::SelectAllObjects;
+                assert!(
+                    k != j || apart,
+                    "{:?} and {:?} share a shortcut",
+                    a.act,
+                    b.act
+                );
+                if k == j {
+                    assert!(!both(a, b), "{:?} and {:?} are on together", a.act, b.act);
+                }
             }
         }
     }
@@ -1718,10 +1873,10 @@ mod tests {
 
     #[test]
     fn context_menus_list_registered_commands() {
-        let object = Selection::Object {
+        let object = Selection::Objects {
             page: 0,
-            id: 0,
-            kind: ObjKind::Path,
+            held: Vec::new(),
+            loose: false,
         };
         let words = Selection::word((0, 0));
         let annot = Selection::Annot {

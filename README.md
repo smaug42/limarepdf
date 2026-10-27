@@ -17,13 +17,14 @@ LimarePDF? Start here:
 
 1. [Install LimarePDF](docs/install.md)
 2. [First steps](docs/first-steps.md)
-3. [Features and status](docs/features.md): what works, and what doesn't yet
+3. [Features](docs/features.md): everything LimarePDF can do
 
 Then go to the [everyday tasks](docs/README.md#everyday-tasks), the [desktop app](docs/gui.md) and
 [command-line](docs/cli.md) references, or [Troubleshooting](docs/troubleshooting.md) when something goes wrong.
 
 **For developers** ([all developer docs](docs/developer/README.md))
 
+- [Features and status](docs/developer/feature-status.md): what works, its limits, and what doesn't yet
 - [How it is built](docs/developer/architecture.md)
 - [Testing and platforms](docs/developer/testing.md)
 - [Performance](docs/developer/performance.md)

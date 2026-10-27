@@ -768,6 +768,247 @@ fn restyle_path() {
     assert!(s.is(100, 130, WHITE));
 }
 
+/// A red square, three lines in one text object ("Far" carrying on from "Two" after a gap
+/// too wide to be one line) and a blue square: objects 0 to 4.
+const SEVERAL: &str = "q 1 0 0 rg 20 20 40 30 re f Q\n\
+                       BT /F1 20 Tf 20 150 Td (One) Tj 0 -30 Td (Two) Tj \
+                       0 0.6 0 rg [-3000 (Far)] TJ ET\n\
+                       q 0 0 1 rg 200 20 50 30 re f Q\n";
+
+/// Whether two documents' first pages have the same objects, in the same places, and
+/// look the same.
+fn same_page(a: &mut Pdf, b: &mut Pdf) -> Result<(), String> {
+    let (oa, ob) = (a.page_objects(0).unwrap(), b.page_objects(0).unwrap());
+    let summary = |o: &[limarepdf_core::PageObject]| -> Vec<_> {
+        o.iter().map(|o| (o.kind, o.text.clone())).collect()
+    };
+    if summary(&oa) != summary(&ob) {
+        return Err(format!("{:?} vs {:?}", summary(&oa), summary(&ob)));
+    }
+    for (x, y) in oa.iter().zip(&ob) {
+        if x.bbox.iter().zip(y.bbox).any(|(p, q)| (p - q).abs() > 0.05) {
+            return Err(format!("{:?} at {:?} vs {:?}", x.text, x.bbox, y.bbox));
+        }
+    }
+    let (sa, sb) = (shot(a), shot(b));
+    let differ = (sa.0.rgba.iter().zip(&sb.0.rgba)).filter(|(p, q)| p.abs_diff(**q) > 8);
+    match differ.count() {
+        0 => Ok(()),
+        n => Err(format!("{n} pixel values differ")),
+    }
+}
+
+#[test]
+fn several_objects_move_at_once_as_one_at_a_time() {
+    let sets: [&[usize]; 6] = [
+        &[0, 4],
+        &[1, 2],
+        &[2, 3],
+        &[1, 3],
+        &[3, 0],
+        &[0, 1, 2, 3, 4],
+    ];
+    let mut wrong = Vec::new();
+    for ids in sets {
+        let (mut together, mut apart) = (make(SEVERAL), make(SEVERAL));
+        let objs = together.page_objects(0).unwrap();
+        assert_eq!(objs.len(), 5, "{objs:?}");
+        // Each by its own amount, so one taking another's would show.
+        let boxes: Vec<(usize, [f32; 4])> = (ids.iter().enumerate())
+            .map(|(k, &id)| {
+                let (dx, dy) = (7.0 * (k + 1) as f32, -4.0 * (k + 1) as f32);
+                let b = objs[id].bbox;
+                (id, [b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy])
+            })
+            .collect();
+        together.set_object_boxes(0, &boxes).unwrap();
+        for &(id, b) in &boxes {
+            apart.set_object_bbox(0, id, b).unwrap();
+        }
+        if let Err(e) = same_page(&mut together, &mut apart) {
+            wrong.push(format!("{ids:?}: {e}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+#[test]
+fn several_objects_delete_at_once_as_one_at_a_time() {
+    let sets: [&[usize]; 5] = [&[0, 4], &[1, 2], &[2, 3], &[3, 1, 0], &[0, 1, 2, 3, 4]];
+    let mut wrong = Vec::new();
+    for ids in sets {
+        let (mut together, mut apart) = (make(SEVERAL), make(SEVERAL));
+        together.delete_objects(0, ids).unwrap();
+        // One at a time from the last, so the ids still to delete stay as they were.
+        let mut down = ids.to_vec();
+        down.sort_unstable_by(|a, b| b.cmp(a));
+        for id in down {
+            apart.delete_object(0, id).unwrap();
+        }
+        if let Err(e) = same_page(&mut together, &mut apart) {
+            wrong.push(format!("{ids:?}: {e}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+#[test]
+fn several_paths_restyle_at_once_as_one_at_a_time() {
+    let green = PathStyle {
+        fill: Some([0.0, 1.0, 0.0]),
+        stroke: Some([0.0, 0.0, 0.0]),
+        line_width: 3.0,
+    };
+    let outline = PathStyle {
+        fill: None,
+        stroke: Some([1.0, 0.0, 1.0]),
+        line_width: 2.0,
+    };
+    let (mut together, mut apart) = (make(SEVERAL), make(SEVERAL));
+    together
+        .set_path_styles(0, &[(4, outline), (0, green)])
+        .unwrap();
+    apart.set_path_style(0, 0, &green).unwrap();
+    apart.set_path_style(0, 4, &outline).unwrap();
+    same_page(&mut together, &mut apart).unwrap();
+    let s = shot(&mut together);
+    assert!(s.is(40, 165, [0, 255, 0]), "{:?}", s.px(40, 165));
+    assert!(s.is(225, 165, WHITE), "{:?}", s.px(225, 165));
+}
+
+#[test]
+fn a_change_to_several_objects_that_fails_changes_nothing() {
+    const STYLE: PathStyle = PathStyle {
+        fill: Some([0.0, 1.0, 0.0]),
+        stroke: None,
+        line_width: 1.0,
+    };
+    type Change = fn(&mut Pdf) -> limarepdf_core::Result<()>;
+    let cases: [(&str, Change); 6] = [
+        ("moved twice", |p| {
+            p.transform_objects(0, &[(0, [1.0, 0.0, 0.0, 1.0, 5.0, 0.0]); 2])
+        }),
+        ("moved, one gone", |p| {
+            p.transform_objects(0, &[(0, [1.0, 0.0, 0.0, 1.0, 5.0, 0.0]), (9, mx_id())])
+        }),
+        ("moved, one made too small", |p| {
+            let b = p.page_objects(0).unwrap()[1].bbox;
+            let flat = [b[0], b[1], b[2], b[1] + 0.1];
+            p.set_object_boxes(0, &[(4, [200.0, 20.0, 250.0, 50.0]), (1, flat)])
+        }),
+        ("deleted twice", |p| p.delete_objects(0, &[2, 2])),
+        ("deleted, one gone", |p| p.delete_objects(0, &[1, 5])),
+        ("restyled, one not a path", |p| {
+            p.set_path_styles(0, &[(0, STYLE), (2, STYLE)])
+        }),
+    ];
+    let mut wrong = Vec::new();
+    for (what, change) in cases {
+        let (mut p, mut was) = (make(SEVERAL), make(SEVERAL));
+        if change(&mut p).is_ok() {
+            wrong.push(format!("{what}: done"));
+        }
+        if let Err(e) = same_page(&mut p, &mut was) {
+            wrong.push(format!("{what}: the page changed: {e}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+fn mx_id() -> [f32; 6] {
+    [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+}
+
+/// ENH-06 on real pages: every object of page 1 moved at once, every shape restyled at
+/// once, and every object deleted at once, each as one rewrite, give the page that doing
+/// them one at a time gives: a page of text and shapes, and a scanned page with invisible
+/// OCR text over its picture. Opt-in: fetch the files first (`sh
+/// tools/fetch-render-samples.sh` in crates/limarepdf-core), then
+/// `cargo test --release -p limarepdf-core --test edit -- --ignored several_objects_on_real`.
+#[test]
+#[ignore = "needs the fetched samples: sh tools/fetch-render-samples.sh"]
+fn several_objects_on_real_pages_change_as_one_at_a_time() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/render");
+    let open = |name: &str| {
+        let bytes = std::fs::read(root.join(name)).expect("the fetched sample");
+        Pdf::from_bytes(&bytes, None).unwrap()
+    };
+    let green = PathStyle {
+        fill: Some([0.0, 0.6, 0.0]),
+        stroke: None,
+        line_width: 1.0,
+    };
+    let mut wrong = Vec::new();
+    for name in ["pdfbox/3579.pdf", "pdfbox/3185.pdf"] {
+        let objs = open(name).page_objects(0).unwrap();
+        let moved = |b: [f32; 4]| [b[0] + 10.0, b[1] + 5.0, b[2] + 10.0, b[3] + 5.0];
+        let boxes: Vec<(usize, [f32; 4])> = objs.iter().map(|o| (o.id, moved(o.bbox))).collect();
+        let (mut together, mut apart) = (open(name), open(name));
+        together.set_object_boxes(0, &boxes).unwrap();
+        for &(id, b) in &boxes {
+            apart.set_object_bbox(0, id, b).unwrap();
+        }
+        let moved = together.page_objects(0).unwrap();
+        let off = (moved.iter().zip(&boxes))
+            .filter(|(o, (_, b))| o.bbox.iter().zip(b).any(|(p, q)| (p - q).abs() > 0.05))
+            .count();
+        if off > 0 {
+            wrong.push(format!("{name}: {off} objects not where they were moved"));
+        }
+        if let Err(e) = same_page(&mut together, &mut apart) {
+            wrong.push(format!("{name}, moved: {e}"));
+        }
+        let paths: Vec<(usize, PathStyle)> = (objs.iter())
+            .filter(|o| o.kind == ObjectKind::Path)
+            .map(|o| (o.id, green))
+            .collect();
+        let (mut together, mut apart) = (open(name), open(name));
+        together.set_path_styles(0, &paths).unwrap();
+        for (id, st) in &paths {
+            apart.set_path_style(0, *id, st).unwrap();
+        }
+        if let Err(e) = same_page(&mut together, &mut apart) {
+            wrong.push(format!("{name}, restyled: {e}"));
+        }
+        let (mut together, mut apart) = (open(name), open(name));
+        let ids: Vec<usize> = objs.iter().map(|o| o.id).collect();
+        together.delete_objects(0, &ids).unwrap();
+        for &id in ids.iter().rev() {
+            apart.delete_object(0, id).unwrap();
+        }
+        let left = together.page_objects(0).unwrap().len();
+        if left > 0 {
+            wrong.push(format!("{name}: {left} left after deleting them all"));
+        }
+        if let Err(e) = same_page(&mut together, &mut apart) {
+            wrong.push(format!("{name}, deleted: {e}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// A hairline thinner than half a point moves, alone or with others, as a move leaves its
+/// size as it is; only making something that small is refused (it was refused moved too).
+#[test]
+fn a_hairline_moves_and_only_shrinking_to_nothing_is_refused() {
+    let mut p = make("0 0 0 rg 20 100 200 0.2 re f\nq 1 0 0 rg 50 50 100 40 re f Q\n");
+    let objs = p.page_objects(0).unwrap();
+    let (line, square) = (objs[0].bbox, objs[1].bbox);
+    assert!(line[3] - line[1] < 0.5, "{line:?}");
+    let moved = |b: [f32; 4]| [b[0] + 10.0, b[1] + 5.0, b[2] + 10.0, b[3] + 5.0];
+    p.set_object_bbox(0, 0, moved(line)).unwrap();
+    p.set_object_boxes(0, &[(0, moved(moved(line))), (1, moved(square))])
+        .unwrap();
+    let now = p.page_objects(0).unwrap();
+    let x = now[0].bbox[0];
+    assert!((x - line[0] - 20.0).abs() < 0.05, "{:?}", now[0].bbox);
+    assert!((now[1].bbox[0] - square[0] - 10.0).abs() < 0.05);
+    // Squashed flat: refused, as before.
+    let b = now[1].bbox;
+    let flat = [b[0], b[1], b[2], b[1] + 0.2];
+    assert!(p.set_object_bbox(0, 1, flat).is_err());
+}
+
 #[test]
 fn insert_shapes_text_and_images() {
     let mut p = make("");

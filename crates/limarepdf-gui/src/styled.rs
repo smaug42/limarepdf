@@ -62,15 +62,22 @@ pub struct Styled {
     spans: Vec<(TextSpan, FontChoice)>,
     /// A style command was used.
     restyled: bool,
+    /// One per character of `text`: where it is in the line as it was read, `None` for
+    /// one typed.
+    origins: Vec<Option<usize>>,
+    /// The line's text as it was read.
+    read: Vec<char>,
 }
 
 impl Styled {
     /// `text` all in `style`: new text, typed in the inspector's choices.
     pub fn plain(text: &str, style: CharStyle) -> Self {
+        let n = text.chars().count();
         Self {
             text: text.to_string(),
-            styles: vec![style; text.chars().count()],
+            styles: vec![style; n],
             base: style,
+            origins: vec![None; n],
             ..Default::default()
         }
     }
@@ -124,6 +131,8 @@ impl Styled {
             })
             .collect();
         Self {
+            read: text.chars().collect(),
+            origins: (0..n).map(Some).collect(),
             text,
             styles,
             next: None,
@@ -184,6 +193,8 @@ impl Styled {
             None => self.typing_style(prefix),
         };
         let added = now.len() - suffix - prefix;
+        self.origins
+            .splice(removed.clone(), std::iter::repeat_n(None, added));
         self.styles
             .splice(removed, std::iter::repeat_n(typed, added));
         if now.is_empty() {
@@ -273,10 +284,15 @@ impl Styled {
     }
 
     fn switch(&mut self, sel: (usize, usize), bold: bool) {
-        let on = move |f: FontChoice| if bold { f.bold } else { f.italic };
-        let all = self.looked_at(sel).iter().all(|s| on(s.font));
+        let all = self.looked_at(sel).iter().all(|s| is_on(s.font, bold));
+        self.turn(sel, bold, !all);
+    }
+
+    /// Bold (or with `bold` false, Italic) turned `on` or off for what a style command
+    /// with `sel` selected changes, each character only when its family has the face.
+    pub fn turn(&mut self, sel: (usize, usize), bold: bool, on: bool) {
         self.restyle(sel, |mut s| {
-            if on(s.font) == all {
+            if is_on(s.font, bold) != on {
                 s.font = page_text::switched(s.font, bold, !bold);
             }
             s
@@ -335,6 +351,7 @@ impl Styled {
             size: s.size,
             color: s.color,
             rise: s.rise,
+            from: None,
         }]
     }
 
@@ -385,11 +402,69 @@ impl Styled {
     /// when those are one font (two subsets of it, say), others when they are the same
     /// font.
     fn same_font(&self, a: &CharStyle, b: &CharStyle) -> bool {
-        match (self.kept(a), self.kept(b)) {
-            (Some(i), Some(j)) => self.spans[i].0.same_font(&self.spans[j].0),
+        self.same_font_as(a, self, b)
+    }
+
+    /// [`Self::same_font`] for `a` here and `b` in `other`, another line.
+    fn same_font_as(&self, a: &CharStyle, other: &Styled, b: &CharStyle) -> bool {
+        match (self.kept(a), other.kept(b)) {
+            (Some(i), Some(j)) => self.spans[i].0.same_font(&other.spans[j].0),
             (None, None) => a.font == b.font,
             _ => false,
         }
+    }
+
+    /// Where each character came from in the line as it was read, for those whose own
+    /// shows can be kept ([`TextPart::from`]): runs of characters still as they were read,
+    /// cut back to whole words (or to the ends of the line's parts), as a word changed in
+    /// part is written again whole. A run's ends part no word as the line was read, nor
+    /// as it is now: letters typed onto a word change it.
+    fn owned(&self) -> Vec<Option<usize>> {
+        let now: Vec<char> = self.text.chars().collect();
+        let n = self.origins.len();
+        let space = |i: usize| now.get(i).is_some_and(|c| c.is_whitespace());
+        let apart = |c: usize| c == 0 || c == n || space(c) || space(c - 1);
+        let mut out = vec![None; n];
+        let mut i = 0;
+        while i < n {
+            let Some(o) = self.origins[i] else {
+                i += 1;
+                continue;
+            };
+            let mut j = i + 1;
+            while j < n && self.origins[j] == Some(o + (j - i)) {
+                j += 1;
+            }
+            let (mut a, mut b) = (o, o + (j - i));
+            if !(self.cuttable(a) && apart(i)) {
+                a += 1;
+                while a < b && !self.cuttable(a) {
+                    a += 1;
+                }
+            }
+            if b > a && !(self.cuttable(b) && apart(j)) {
+                b -= 1;
+                while b > a && !self.cuttable(b) {
+                    b -= 1;
+                }
+            }
+            for k in a..b {
+                out[i + k - o] = Some(k);
+            }
+            i = j;
+        }
+        out
+    }
+
+    /// Whether the line as read may be cut at character `at` without parting a word: at
+    /// its ends, next to a space, or where one of its parts starts or ends.
+    fn cuttable(&self, at: usize) -> bool {
+        let space = |i: usize| self.read.get(i).is_some_and(|c| c.is_whitespace());
+        at == 0
+            || at == self.read.len()
+            || space(at)
+            || at.checked_sub(1).is_some_and(space)
+            || (self.spans.iter()).any(|(s, _)| s.chars.0 == at || s.chars.1 == at)
     }
 
     /// The part whose own font a character in `s` is written in.
@@ -437,29 +512,41 @@ impl Styled {
         out
     }
 
-    /// Characters `range` in parts of one style each.
+    /// Characters `range` in parts of one style each. Characters in their part's own font
+    /// that are still as they were read ([`Self::owned`]) are parts of their own, which
+    /// say where they were.
     fn parts_in(&self, range: std::ops::Range<usize>) -> Vec<TextPart> {
-        let mut out: Vec<TextPart> = Vec::new();
-        let chars = self.text.chars().zip(&self.styles);
-        for (c, s) in chars.skip(range.start).take(range.len()) {
-            let font = match self.kept(s) {
-                Some(i) => PartFont::Span(i),
-                None => PartFont::Choice(s.font),
+        let owned = self.owned();
+        let mut out: Vec<(TextPart, usize)> = Vec::new();
+        let chars = self.text.chars().zip(&self.styles).zip(owned);
+        for ((c, s), at) in chars.skip(range.start).take(range.len()) {
+            let (font, from) = match self.kept(s) {
+                Some(i) => (PartFont::Span(i), at),
+                None => (PartFont::Choice(s.font), None),
             };
+            let style = (font, s.size, s.color, s.rise);
             match out.last_mut() {
-                Some(p) if (p.font, p.size, p.color, p.rise) == (font, s.size, s.color, s.rise) => {
-                    p.text.push(c)
+                Some((p, n))
+                    if (p.font, p.size, p.color, p.rise) == style
+                        && p.from.map(|f| f + *n) == from =>
+                {
+                    p.text.push(c);
+                    *n += 1;
                 }
-                _ => out.push(TextPart {
-                    text: c.to_string(),
-                    font,
-                    size: s.size,
-                    color: s.color,
-                    rise: s.rise,
-                }),
+                _ => out.push((
+                    TextPart {
+                        text: c.to_string(),
+                        font,
+                        size: s.size,
+                        color: s.color,
+                        rise: s.rise,
+                        from,
+                    },
+                    1,
+                )),
             }
         }
-        out
+        out.into_iter().map(|(p, _)| p).collect()
     }
 
     /// Whether this is `other` to the eye: the same text in the same styles.
@@ -472,6 +559,165 @@ impl Styled {
                     && same_color(a.color, b.color)
                     && a.rise == b.rise
             })
+    }
+}
+
+/// Whether font `f` is bold (with `bold` false, italic).
+fn is_on(f: FontChoice, bold: bool) -> bool {
+    if bold {
+        f.bold
+    } else {
+        f.italic
+    }
+}
+
+/// Text that the inspector's style controls change: a line with what is selected in it
+/// ([`InLine`]), or words selected across lines ([`Across`]).
+pub trait Restyle {
+    /// What the inspector shows: each value, or `None` where the text mixes them.
+    fn shown(&self) -> Shown;
+    /// The style of the first character changed.
+    fn first(&self) -> CharStyle;
+    /// The colours of what is changed, each once, in order.
+    fn colors(&self) -> Vec<[f32; 3]>;
+    /// Bold on or off by Word's rule ([`Styled::bold`]).
+    fn bold(&mut self);
+    /// Italic on or off, as [`Self::bold`].
+    fn italic(&mut self);
+    fn set_family(&mut self, family: Family);
+    fn set_size(&mut self, size: f32);
+    fn set_color(&mut self, color: [f32; 3]);
+}
+
+/// A line's text with `sel` selected in it: a style command changes what is selected,
+/// the word at the caret, or what is typed next ([`Styled`]).
+pub struct InLine<'a> {
+    pub text: &'a mut Styled,
+    pub sel: (usize, usize),
+}
+
+impl Restyle for InLine<'_> {
+    fn shown(&self) -> Shown {
+        self.text.shown(self.sel)
+    }
+
+    fn first(&self) -> CharStyle {
+        self.text.first(self.sel)
+    }
+
+    fn colors(&self) -> Vec<[f32; 3]> {
+        self.text.colors(self.sel)
+    }
+
+    fn bold(&mut self) {
+        self.text.bold(self.sel);
+    }
+
+    fn italic(&mut self) {
+        self.text.italic(self.sel);
+    }
+
+    fn set_family(&mut self, family: Family) {
+        self.text.set_family(self.sel, family);
+    }
+
+    fn set_size(&mut self, size: f32) {
+        self.text.set_size(self.sel, size);
+    }
+
+    fn set_color(&mut self, color: [f32; 3]) {
+        self.text.set_color(self.sel, color);
+    }
+}
+
+/// Words selected across lines, as the read tool selects them: each line's text, and the
+/// characters selected in it (from, to; never empty). Style commands treat them as one
+/// selection, as a word processor treats a selection across paragraphs.
+#[derive(Clone, Debug, Default)]
+pub struct Across {
+    pub lines: Vec<(Styled, Vec<(usize, usize)>)>,
+}
+
+impl Across {
+    /// Each selected character's line and style.
+    fn each(&self) -> impl Iterator<Item = (&Styled, &CharStyle)> {
+        (self.lines.iter()).flat_map(|(t, ranges)| {
+            ranges
+                .iter()
+                .flat_map(move |&(a, b)| &t.styles[a..b])
+                .map(move |s| (t, s))
+        })
+    }
+
+    /// Change each selected range of each line with `f`.
+    fn each_range(&mut self, f: impl Fn(&mut Styled, (usize, usize))) {
+        for (t, ranges) in &mut self.lines {
+            for &r in ranges.iter() {
+                f(t, r);
+            }
+        }
+    }
+
+    fn switch(&mut self, bold: bool) {
+        let all = self.each().all(|(_, s)| is_on(s.font, bold));
+        self.each_range(|t, r| t.turn(r, bold, !all));
+    }
+}
+
+impl Restyle for Across {
+    fn shown(&self) -> Shown {
+        let Some((t0, first)) = self.each().next() else {
+            return Shown {
+                font: None,
+                size: None,
+                color: None,
+                bold: false,
+                italic: false,
+            };
+        };
+        let all = |same: &dyn Fn(&Styled, &CharStyle) -> bool| self.each().all(|(t, s)| same(t, s));
+        Shown {
+            font: all(&|t, s| t.same_font_as(s, t0, first)).then_some(first.font),
+            size: all(&|_, s| (s.size - first.size).abs() < 0.01 * first.size.max(0.01))
+                .then_some(first.size),
+            color: all(&|_, s| same_color(s.color, first.color)).then_some(first.color),
+            bold: all(&|_, s| s.font.bold),
+            italic: all(&|_, s| s.font.italic),
+        }
+    }
+
+    fn first(&self) -> CharStyle {
+        self.each().next().map(|(_, s)| *s).unwrap_or_default()
+    }
+
+    fn colors(&self) -> Vec<[f32; 3]> {
+        let mut out: Vec<[f32; 3]> = Vec::new();
+        for (_, s) in self.each() {
+            if !out.iter().any(|c| same_color(*c, s.color)) {
+                out.push(s.color);
+            }
+        }
+        out
+    }
+
+    fn bold(&mut self) {
+        self.switch(true);
+    }
+
+    fn italic(&mut self) {
+        self.switch(false);
+    }
+
+    fn set_family(&mut self, family: Family) {
+        self.each_range(|t, r| t.set_family(r, family));
+    }
+
+    fn set_size(&mut self, size: f32) {
+        self.each_range(|t, r| t.set_size(r, size));
+    }
+
+    fn set_color(&mut self, color: [f32; 3]) {
+        self.each_range(|t, r| t.set_color(r, color));
     }
 }
 
@@ -856,5 +1102,106 @@ mod tests {
         o2.spans[2].font_name = "GHIJKL+Helvetica".into();
         let s2 = Styled::of(&o2, FontChoice::from_name);
         assert!(s2.shown((0, 12)).font.is_some());
+    }
+
+    /// A line `text` as read, in one part in a subset of Helvetica, 12 points.
+    fn read_line(text: &str) -> Styled {
+        let o = PageObject {
+            id: 0,
+            kind: limarepdf_core::ObjectKind::Text,
+            bbox: [0.0; 4],
+            text: Some(text.into()),
+            font_name: Some("ABCDEF+Helvetica".into()),
+            font_size: Some(12.0),
+            fill: None,
+            stroke: None,
+            line_width: None,
+            has_fill: true,
+            has_stroke: false,
+            inline: false,
+            font_reusable: false,
+            hidden: false,
+            baseline: None,
+            dir: None,
+            stops: Vec::new(),
+            upright: true,
+            vertical: false,
+            spans: vec![TextSpan {
+                chars: (0, text.chars().count()),
+                font_name: "ABCDEF+Helvetica".into(),
+                font_size: 12.0,
+                fill: None,
+                font_reusable: false,
+                rise: 0.0,
+            }],
+        };
+        Styled::of(&o, FontChoice::from_name)
+    }
+
+    /// Each part's text and where it says it was in the line as read.
+    fn from(s: &Styled) -> Vec<(String, Option<usize>)> {
+        s.parts().into_iter().map(|p| (p.text, p.from)).collect()
+    }
+
+    /// Words still as they were read say where they were, so their own shows can be kept:
+    /// a restyled word too, while it keeps its font. A word typed into, or typed onto,
+    /// doesn't, and is written again whole.
+    #[test]
+    fn untouched_words_say_where_they_were_read() {
+        let at = |v: &[(&str, Option<usize>)]| -> Vec<(String, Option<usize>)> {
+            v.iter().map(|(t, f)| (t.to_string(), *f)).collect()
+        };
+        let mut s = read_line("one two three");
+        s.set_size((4, 7), 30.0);
+        assert_eq!(
+            from(&s),
+            at(&[("one ", Some(0)), ("two", Some(4)), (" three", Some(7))])
+        );
+        let mut s = read_line("one two three");
+        s.sync("one twXo three", Some(7));
+        let typed_into = at(&[("one ", Some(0)), ("twXo", None), (" three", Some(7))]);
+        assert_eq!(from(&s), typed_into);
+        let mut s = read_line("one two three");
+        s.sync("oneer two three", Some(5));
+        assert_eq!(from(&s), at(&[("oneer", None), (" two three", Some(3))]));
+        // In another font, a word is written anew whatever it was.
+        let mut s = read_line("one two three");
+        s.bold((4, 7));
+        assert_eq!(from(&s)[1], ("two".to_string(), None));
+        // New text was never read.
+        assert_eq!(from(&with_bold("new", 0, 1))[0].1, None);
+    }
+
+    /// Words selected across lines take Bold by Word's rule as one selection, and show
+    /// blank where the lines mix a value.
+    #[test]
+    fn words_across_lines_are_one_selection() {
+        let mut across = Across {
+            lines: vec![
+                (with_bold("aa bb", 3, 5), vec![(3, 5)]),
+                (with_bold("cc", 0, 0), vec![(0, 2)]),
+            ],
+        };
+        // Whether every selected character is bold, or none is.
+        let all = |a: &Across, bold: bool| {
+            let line = |(t, r): &(Styled, Vec<(usize, usize)>)| {
+                let selected = &t.styles()[r[0].0..r[0].1];
+                selected.iter().all(|s| s.font.bold == bold)
+            };
+            a.lines.iter().all(line)
+        };
+        assert!(!across.shown().bold);
+        across.bold();
+        assert!(across.shown().bold, "partly bold becomes all bold");
+        assert!(all(&across, true));
+        across.bold();
+        assert!(all(&across, false));
+        // The first line's unselected "aa " is left as it was.
+        assert!(!across.lines[0].0.styles()[0].font.bold);
+        assert_eq!(across.shown().size, Some(12.0));
+        across.lines[1].0.set_size((0, 2), 20.0);
+        assert_eq!(across.shown().size, None);
+        across.set_size(14.0);
+        assert_eq!(across.shown().size, Some(14.0));
     }
 }

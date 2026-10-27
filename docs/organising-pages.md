@@ -98,8 +98,12 @@ numbered apart from the rest. They don't change what is printed on the pages.
 
 The numbering runs to the next labelled range, and each change applies at once. The section shows the numbering
 the page has now. When a document has labels, the status bar shows the label with the page's place, such as
-"Page i (3 of 477)", and the thumbnails show the labels. Labels stay with their pages when pages are deleted or
-moved.
+"Page i (3 of 477)", and the thumbnails, search results and new bookmarks use the labels. Labels stay with their
+pages when pages are deleted or moved.
+
+To have LimarePDF number every document's pages 1, 2, 3 from the first page instead, turn off ☰ > View > **Use the
+document's page labels**. The labels stay in the document, and the status bar still shows them. The choice is
+remembered between runs.
 
 ## What removed pages leave behind
 

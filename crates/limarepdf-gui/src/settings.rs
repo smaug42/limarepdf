@@ -199,6 +199,9 @@ pub struct Settings {
     pub keep_tools: Vec<Tool>,
     /// Form fields are tinted, and required ones outlined (on unless turned off).
     pub fields_shown: bool,
+    /// Pages are called by the document's page labels, where it has them, rather than by
+    /// their numbers (on unless turned off).
+    pub page_labels: bool,
     /// The window's size in points when it isn't maximized, and whether it was maximized,
     /// when the app last closed.
     pub window: [f32; 2],
@@ -263,6 +266,7 @@ impl Settings {
             controls_docked: false,
             keep_tools: Vec::new(),
             fields_shown: true,
+            page_labels: true,
             window: WINDOW_DEFAULT,
             window_maximized: false,
             file,
@@ -326,6 +330,7 @@ impl Settings {
                     }
                 }
                 "form_fields" => s.fields_shown = value != "plain",
+                "page_names" => s.page_labels = value != "numbers",
                 "window" => {
                     let size = value.split_once('x').and_then(|(w, h)| {
                         window_size([w.trim().parse().ok()?, h.trim().parse().ok()?])
@@ -428,12 +433,17 @@ impl Settings {
         );
         let keep: Vec<&str> = self.keep_tools.iter().map(|t| t.key()).collect();
         text += &format!(
-            "keep_tool_active = {}\nform_fields = {}\n",
+            "keep_tool_active = {}\nform_fields = {}\npage_names = {}\n",
             keep.join(", "),
             if self.fields_shown {
                 "highlighted"
             } else {
                 "plain"
+            },
+            if self.page_labels {
+                "labels"
+            } else {
+                "numbers"
             }
         );
         text += &format!(
@@ -590,6 +600,19 @@ mod tests {
         s.save();
         let s = Settings::from_file(Some(f));
         assert!(!s.navigation_panel && s.inspector_panel && s.controls_docked);
+    }
+
+    /// ENH-36: page labels are used unless turned off, and the choice is kept.
+    #[test]
+    fn page_numbers_or_labels_are_remembered() {
+        let f = file("page names");
+        let mut s = Settings::from_file(Some(f.clone()));
+        assert!(s.page_labels);
+        s.page_labels = false;
+        s.save();
+        assert!(!Settings::from_file(Some(f.clone())).page_labels);
+        std::fs::write(&f, "page_names = walrus\n").unwrap();
+        assert!(Settings::from_file(Some(f)).page_labels);
     }
 
     #[test]

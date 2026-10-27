@@ -1115,7 +1115,6 @@ impl SignPane {
         items: usize,
     ) -> PaneOut {
         let mut out = PaneOut::default();
-        ui.strong("Fill and sign");
         for role in [SignRole::Signature, SignRole::Initials] {
             ui.add_space(4.0);
             ui.horizontal(|ui| {

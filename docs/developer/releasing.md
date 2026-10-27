@@ -6,7 +6,7 @@ How a release is made, for maintainers.
 
 1. On a branch from `main`:
    - set the new version in `Cargo.toml` (`[workspace.package]`), and run a build so `Cargo.lock` follows;
-   - update the status line in `docs/features.md` if it names the version;
+   - update the status line in `docs/developer/feature-status.md` if it names the version;
    - in `CHANGELOG.md`, rename the `## [Unreleased]` section to `## [x.y.z] - date`. Changes are added to
      Unreleased as they are made;
    - check the signature crates listed in [How it is built](architecture.md#signature-crates): if a pinned
@@ -78,7 +78,7 @@ The Linux job also makes `limarepdf_<version>-1_amd64.deb` and `limarepdf-<versi
 eframe or rfd changes (`strings target/release/limarepdf | grep '\.so'` lists them). The rpm's glibc version
 (`libc.so.6(GLIBC_2.39)(64bit)`) is written by hand, since the automatic scan is off; the job fails, naming the
 version to set, when the binaries need a different one (`ubuntu-latest` moving to a newer Ubuntu would do it:
-then update the floor in install.md, the README and features.md too). The deb's comes from `dpkg-shlibdeps`. A quick install test:
+then update the floor in install.md, the README and feature-status.md too). The deb's comes from `dpkg-shlibdeps`. A quick install test:
 `podman run --rm -v $PWD:/p:Z debian:stable bash -c 'apt-get update && apt-get install -y /p/limarepdf_*.deb && limarepdf-cli --version'`
 (and the same with `fedora` and `dnf install -y /p/*.rpm`).
 

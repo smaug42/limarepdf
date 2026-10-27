@@ -3,19 +3,21 @@ use crate::actions::{self, menu_item, tooltip, Act, Action, Ctx, Group, ACTIONS}
 use crate::banners::Kind as BannerKind;
 use crate::dialogs::{self as dlg, Ask, Btn, Choice, Outcome, Shell};
 use crate::digital::{self, IdsWindow, SignOut, SignWindow};
-use crate::editor::{Action as EdAction, Tool};
+use crate::editor::{Action as EdAction, Parked, Tool};
 use crate::icon;
 use crate::incoming::Incoming;
 use crate::inspector::{self, Apply, Section};
 use crate::markup;
 use crate::page_text;
-use crate::panels::Panel;
+use crate::panels::{self, Panel};
 use crate::recent::Recent;
+use crate::regions::{self, Region, Regions};
 use crate::selection::Selection;
 use crate::settings::{Layout, Settings};
 use crate::signatures::{self as sigs, Check, SigState, TrustAsk, TrustedOut, TrustedWindow};
 use crate::tab::{Side, State, Tab};
 use crate::theme;
+use crate::timing;
 use crate::worker::Colours;
 use eframe::egui::{self, AtomExt as _, Key};
 use limarepdf_core::disk::{self, OnDisk};
@@ -30,6 +32,9 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
 mod recover;
+mod save;
+
+use save::{AfterSave, Write};
 
 pub const IMAGE_EXTS: [&str; 5] = ["png", "jpg", "jpeg", "tif", "tiff"];
 
@@ -150,6 +155,8 @@ enum Loaded {
         title: &'static str,
         result: Result<(Pdf, bool, String), String>,
     },
+    /// A save's thread finished writing (ENH-35).
+    Saved(Box<save::Saved>),
 }
 
 /// Summary of an OCR run for the user, and whether any page changed.
@@ -334,6 +341,16 @@ enum Closing {
     },
 }
 
+impl Closing {
+    /// The tab whose save it waits for.
+    fn saved(&self) -> Option<u64> {
+        match self {
+            Closing::Tab { tab, .. } => Some(*tab),
+            Closing::Quit { saving, .. } => *saving,
+        }
+    }
+}
+
 /// The dialogs left: settings live in the inspector.
 enum Dialog {
     None,
@@ -410,6 +427,31 @@ impl Dialog {
             Dialog::ConfirmSaveDisallowed(s) => Some(&s.asked),
             Dialog::ConfirmPrintFields(q) => Some(&q.asked),
             Dialog::ConfirmAppendForms(q) => Some(&q.asked),
+            _ => None,
+        }
+    }
+
+    /// The same, to change.
+    fn asked_mut(&mut self) -> Option<&mut Asked> {
+        match self {
+            Dialog::ConfirmClose(a, _)
+            | Dialog::ConfirmReplace(a, ..)
+            | Dialog::ConfirmFlatten(a)
+            | Dialog::ConfirmFlattenAnnots(a)
+            | Dialog::ConfirmSaveSigned(a, ..)
+            | Dialog::ConfirmSaveRepaired(a)
+            | Dialog::ConfirmApplyRedactions(a, _)
+            | Dialog::ConfirmFinishSigning(a, _)
+            | Dialog::RemoveHidden(a, _)
+            | Dialog::ConfirmSaveMarks(a, ..)
+            | Dialog::Print(a, _)
+            | Dialog::SaveSelection(a, _)
+            | Dialog::ConfirmSignRecovered(a)
+            | Dialog::ConfirmStale(a, _)
+            | Dialog::ConfirmReload(a) => Some(a),
+            Dialog::ConfirmSaveDisallowed(s) => Some(&mut s.asked),
+            Dialog::ConfirmPrintFields(q) => Some(&mut q.asked),
+            Dialog::ConfirmAppendForms(q) => Some(&mut q.asked),
             _ => None,
         }
     }
@@ -639,20 +681,6 @@ fn named(label: &str) -> egui::WidgetInfo {
     egui::WidgetInfo::labeled(egui::Role::Button, true, label)
 }
 
-/// Names the resize handle egui gives `panel` (by its id) and leaves unnamed, once egui
-/// has added it this frame, so no stray node is made. egui keeps the handle under the
-/// panel's id with "__resize"; the naming tests fail if that changes. It can't be moved
-/// with the keyboard (egui's limit).
-fn name_resize_handle(ctx: &egui::Context, panel: &str, name: &str) {
-    let id = egui::Id::unique(panel).with("__resize");
-    if ctx.viewport(|v| v.this_pass.widgets.get(id).is_some()) {
-        ctx.accesskit_node_builder(id, |n| {
-            n.set_role(egui::accesskit::Role::Splitter);
-            n.set_label(name);
-        });
-    }
-}
-
 /// How long the undo toast stays, in seconds.
 const TOAST_SECONDS: f64 = 6.0;
 /// How long a toast waits while its tab is behind another, in seconds, and the least it
@@ -709,6 +737,8 @@ pub struct App {
     bar_widths: BarWidths,
     /// The window has been fitted to its monitor, at the first frame the monitor's size was known.
     fitted: bool,
+    /// The window's regions, which F6 moves the keyboard between (ENH-10).
+    regions: Regions,
     /// The control that had the keyboard last frame (see [`page_text::fresh_history`]).
     keyboard: Option<egui::Id>,
     /// At most one for each tab.
@@ -754,6 +784,14 @@ pub struct App {
     closing: Option<Closing>,
     /// Files the system asks to open, from Finder on macOS (BUG-28).
     incoming: Incoming,
+    /// Saves being written on their threads (ENH-35), and the number of the last one.
+    saves: Vec<save::Running>,
+    saves_made: u64,
+    /// What waits for a save to end.
+    after_saves: Vec<AfterSave>,
+    /// Tests: the next save's thread waits for this before writing.
+    #[cfg(test)]
+    save_gate: Option<Receiver<()>>,
 }
 
 impl App {
@@ -770,6 +808,7 @@ impl App {
         app.incoming = Incoming::system().clone();
         app.incoming.wake(&cc.egui_ctx);
         app.start_recovery(&cc.egui_ctx, files, page);
+        timing::mark("app made", String::new);
         app
     }
 
@@ -807,6 +846,7 @@ impl App {
             fold: 0,
             bar_widths: BarWidths::default(),
             fitted: false,
+            regions: Regions::default(),
             keyboard: None,
             toasts: Vec::new(),
             recent,
@@ -827,6 +867,11 @@ impl App {
             searches: 0,
             closing: None,
             incoming: Incoming::default(),
+            saves: Vec::new(),
+            saves_made: 0,
+            after_saves: Vec::new(),
+            #[cfg(test)]
+            save_gate: None,
         }
     }
 
@@ -939,6 +984,7 @@ impl App {
         let tx = self.tx.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
+            timing::mark("open start", || path.display().to_string());
             type Read = (Pdf, Option<Arc<[u8]>>, disk::Version);
             let open = || -> limarepdf_core::Result<Read> {
                 use anyhow::Context as _;
@@ -953,7 +999,12 @@ impl App {
                     .then(|| Arc::from(bytes));
                 Ok((pdf, signed, version))
             };
-            let msg = match crate::guard(open) {
+            let read = crate::guard(open);
+            timing::mark("open end", || {
+                let how = if read.is_ok() { "read" } else { "failed" };
+                format!("{} {how}", path.display())
+            });
+            let msg = match read {
                 Ok((pdf, signed, version)) => Loaded::Ok {
                     path,
                     pdf,
@@ -1040,6 +1091,7 @@ impl App {
                 // A repaired file counts as changed until the repaired copy is saved.
                 t.dirty = dirty || t.pdf.repaired();
                 t.ed.form.highlight = self.settings.fields_shown;
+                t.use_labels = self.settings.page_labels;
                 t.ed.keep.clone_from(&self.settings.keep_tools);
                 // The document's own viewer preferences, else the app's defaults. A page
                 // asked for on the command line wins over the document's opening page.
@@ -1655,6 +1707,10 @@ impl App {
                 }
                 Loaded::Disk(found) => {
                     for (id, known, now) in found {
+                        // Its own save is replacing the file.
+                        if self.saving(id) {
+                            continue;
+                        }
                         let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
                             continue;
                         };
@@ -1713,6 +1769,10 @@ impl App {
                     let looking = dialogs.find_map(|d| match d {
                         Dialog::Print(_, s) if s.search == dlg::Search::Running(search) => Some(s),
                         _ => None,
+                    });
+                    timing::mark("printers found", || match &found {
+                        Ok(list) => list.len().to_string(),
+                        Err(_) => "failed".into(),
                     });
                     if let Some(s) = looking {
                         s.found(found);
@@ -1782,6 +1842,7 @@ impl App {
                     }
                     self.show(Dialog::Message(title.into(), text));
                 }
+                Loaded::Saved(s) => self.saved(ctx, *s),
             }
         }
         self.next_dialog();
@@ -2146,16 +2207,24 @@ impl App {
 
     /// The file at `path` as it now is, when it is tab `i`'s own file and another app or
     /// tab changed it since the tab last read or saved it, unless the user said to replace
-    /// that version.
-    fn stale(&self, i: usize, path: &Path) -> Option<disk::Version> {
-        let t = self.tabs.get(i)?;
+    /// that version. A file found unchanged becomes the version known, read later: one
+    /// whose time was too close to the reading to trust (PB-28) is then read once, not at
+    /// every check.
+    fn stale(&mut self, i: usize, path: &Path) -> Option<disk::Version> {
+        let t = self.tabs.get_mut(i)?;
         let (own, known) = (t.path.as_deref()?, t.disk.as_ref()?);
         if !disk::same_file(own, path) {
             return None;
         }
-        let Ok(OnDisk::Changed(now)) = disk::compare(path, known) else {
-            return None;
+        let now = match disk::compare(path, known) {
+            Ok(OnDisk::Changed(now)) => now,
+            Ok(OnDisk::Same(now)) => {
+                t.disk = Some(now);
+                return None;
+            }
+            _ => return None,
         };
+        let t = &self.tabs[i];
         let ok = self.replace_ok.as_ref();
         let ok = ok.is_some_and(|(id, v)| *id == t.id && v.same_bytes(&now));
         (!ok).then_some(now)
@@ -2167,10 +2236,10 @@ impl App {
         let Some(t) = self.tabs.get(self.active) else {
             return false;
         };
-        let Some(path) = path.or(t.path.as_deref()) else {
+        let Some(path) = path.map(Path::to_path_buf).or_else(|| t.path.clone()) else {
             return false;
         };
-        let Some(now) = self.stale(self.active, path) else {
+        let Some(now) = self.stale(self.active, &path) else {
             return false;
         };
         let t = &mut self.tabs[self.active];
@@ -2181,86 +2250,30 @@ impl App {
         true
     }
 
-    /// Writes a signed document whose edits were added after what was signed (`bytes`).
-    /// The signatures stay, and the saved file becomes what later saves add to.
+    /// Writes a signed document whose edits were added after what was signed (`bytes`), on
+    /// a thread ([`App::start_save`]). The signatures stay, and the saved file becomes what
+    /// later saves add to.
     fn save_appended(&mut self, ctx: &egui::Context, as_new: bool, bytes: Vec<u8>) {
         let Some(path) = self.save_target(as_new) else {
             return;
         };
-        let tab = &mut self.tabs[self.active];
-        let confirmed = match limarepdf_core::write_file(&path, &bytes) {
-            Ok(()) => true,
-            Err(e) if not_confirmed(&e) => false,
-            Err(e) => {
-                self.dialog = Dialog::Message("Save failed".into(), format!("{e:#}"));
-                return;
-            }
-        };
-        self.status = format!(
-            "Saved {}; the changes were added after what was signed, so the signatures stay",
-            path.display()
-        );
-        self.recent.add(&path);
-        self.replace_ok = None;
-        tab.dirty = !confirmed;
-        tab.scrubbed = false;
-        tab.wrote(path);
-        self.check_signatures(ctx, self.active, Arc::from(bytes), None);
-        self.saved_copy(self.active, confirmed);
-        if !confirmed {
-            self.dialog = Dialog::Message("Saved, not confirmed".into(), NOT_CONFIRMED.into());
-        }
+        self.start_save(ctx, path, Write::Appended(bytes), Some(None));
     }
 
+    /// Writes the whole document, on a thread ([`App::start_save`]).
     fn save_now(&mut self, ctx: &egui::Context, as_new: bool) {
         let Some(path) = self.save_target(as_new) else {
             return;
         };
         let tab = &mut self.tabs[self.active];
         tab.pdf.set_encryption(tab.encryption.clone());
-        let confirmed = match crate::guard(|| tab.pdf.save(&path)) {
-            Ok(()) => true,
-            Err(e) if not_confirmed(&e) => false,
-            Err(e) => {
-                self.dialog = Dialog::Message("Save failed".into(), format!("{e:#}"));
-                return;
-            }
-        };
-        self.status = format!("Saved {}", path.display());
-        self.recent.add(&path);
-        self.replace_ok = None;
-        tab.dirty = !confirmed;
-        tab.scrubbed = false;
-        // The saved file is the repaired copy, with nothing left to repair, and it reads the
-        // same in every app.
-        tab.repaired = false;
-        tab.banners
-            .retain(|b| !matches!(b.kind, BannerKind::Repaired | BannerKind::OtherApps));
-        // The saved copy's signatures are already broken: no need to ask again.
-        tab.signed = false;
-        // The Signatures tab describes the file, so check the saved one (a saved recovered
-        // copy's too, which was never checked).
+        // The Signatures tab describes the file, so the saved one is checked (a saved
+        // recovered copy's too, which was never checked).
         let password = tab.encryption.as_ref().map(|e| e.user_password.clone());
         let recheck =
             tab.sigs.is_some() || (tab.recovered.is_some() && tab.pdf.signature_count() > 0);
-        let saved = recheck.then(|| std::fs::read(&path));
-        tab.wrote(path);
-        match saved {
-            Some(Ok(bytes)) => self.check_signatures(ctx, self.active, Arc::from(bytes), password),
-            Some(Err(e)) => {
-                let t = &mut self.tabs[self.active];
-                if let Some(s) = t.sigs.as_mut() {
-                    s.check =
-                        Check::Failed(format!("LimarePDF can't read the saved file again: {e}"));
-                    t.sig_banner();
-                }
-            }
-            None => {}
-        }
-        self.saved_copy(self.active, confirmed);
-        if !confirmed {
-            self.dialog = Dialog::Message("Saved, not confirmed".into(), NOT_CONFIRMED.into());
-        }
+        let pdf = Box::new(tab.pdf.clone());
+        self.start_save(ctx, path, Write::Whole(pdf), recheck.then_some(password));
     }
 
     /// Run a command (`name` is for messages) so that a panic in it can't close the app with
@@ -2332,6 +2345,19 @@ impl App {
                     self.new_from_images(ctx, &files);
                 }
             }
+            Act::Save | Act::SaveAs if has && self.saving(self.tabs[self.active].id) => {
+                self.save_again(a == Act::SaveAs);
+            }
+            // Reading the file again, or replacing the tab with a signed one, waits for the
+            // tab's save (its commands are off meanwhile; a banner's Reload isn't).
+            Act::Reload | Act::SignDigital | Act::Certify | Act::DigitalPlaced
+                if has && self.saving(self.tabs[self.active].id) =>
+            {
+                self.show(Dialog::Message(
+                    "Still saving".into(),
+                    "This document is still being saved. Try again once it is saved.".into(),
+                ));
+            }
             Act::Save => self.save(ctx, false),
             Act::SaveAs => self.save(ctx, true),
             Act::Reload if has => {
@@ -2351,6 +2377,7 @@ impl App {
                 let selected = t.ed.selection.pages();
                 let file = t.title();
                 let selection = (a == Act::PrintSelection).then_some(dlg::Layout::Original);
+                timing::mark("print dialog", String::new);
                 self.dialog = Dialog::Print(
                     self.asked(),
                     Box::new(dlg::Print {
@@ -2467,14 +2494,7 @@ impl App {
             Act::CloseTab if has => self.close_asking(self.active),
             Act::ToggleRecovery => self.toggle_recovery(),
             Act::ShowRecoveryFile => self.show_leftover(),
-            Act::Quit => {
-                if let Some(q) = self.quit_question() {
-                    self.dialog = q;
-                } else {
-                    self.quit_ok = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-            }
+            Act::Quit => self.quit(ctx),
             Act::About => self.dialog = Dialog::About(about::Page::Main),
             Act::Theme(p) => {
                 ctx.set_theme(p);
@@ -2503,6 +2523,8 @@ impl App {
                 self.settings.save();
             }
             Act::Palette => self.palette = Some(Palette::default()),
+            Act::NextRegion => self.regions.step = 1,
+            Act::PrevRegion => self.regions.step = -1,
             Act::TrustedCertificates => self.trusted = Some(TrustedWindow::load()),
             _ if !has => {}
             Act::PageLabels => self.reveal_labels(),
@@ -2526,6 +2548,14 @@ impl App {
                 s.save();
                 for t in &mut self.tabs {
                     t.ed.form.highlight = s.fields_shown;
+                }
+            }
+            Act::TogglePageLabels => {
+                let s = &mut self.settings;
+                s.page_labels = !s.page_labels;
+                s.save();
+                for t in &mut self.tabs {
+                    t.use_labels = s.page_labels;
                 }
             }
             Act::NextField => self.tabs[self.active].ed.form.step(true),
@@ -2557,6 +2587,17 @@ impl App {
             Act::SelectAllText => {
                 let t = &mut self.tabs[self.active];
                 t.ed.select_all_words(&t.pdf, t.current);
+            }
+            Act::SelectAllObjects => {
+                let t = &mut self.tabs[self.active];
+                t.ed.select_all_objects(&t.pdf, t.current);
+            }
+            Act::Bold | Act::Italic => {
+                let t = &mut self.tabs[self.active];
+                if let Some(said) = t.ed.switch_style(&t.pdf, a == Act::Bold) {
+                    t.info = Some(said);
+                }
+                t.apply_actions(ctx);
             }
             Act::DeleteObject => self.tabs[self.active].ed.delete_selected(),
             Act::DeleteSelection => {
@@ -2623,10 +2664,13 @@ impl App {
                 }
             }
             Act::CopyObjectText => {
-                let o = self.tabs[self.active].ed.selected_object();
-                if let Some(text) = o.and_then(|o| o.text.clone()) {
-                    ctx.copy_text(text);
-                    self.status = "Copied the object's text.".into();
+                let lines = self.tabs[self.active].ed.selected_line_text();
+                if !lines.is_empty() {
+                    self.status = match lines.len() {
+                        1 => "Copied the line's text.".into(),
+                        n => format!("Copied the text of {n} lines."),
+                    };
+                    ctx.copy_text(lines.join("\n"));
                 }
             }
             Act::Find => {
@@ -2729,7 +2773,7 @@ impl App {
             Act::Security => self.reveal(Section::Security),
             Act::EditObjectText => {
                 self.open_inspector();
-                self.tabs[self.active].ed.focus_text_field();
+                self.tabs[self.active].ed.edit_selected_text();
             }
             Act::MoveText => self.tabs[self.active].ed.move_text(),
             Act::SignWith(pick) => {
@@ -2789,6 +2833,74 @@ impl App {
     }
 
     /// Remember the user's choice of open or closed panels, when it changed.
+    /// Moves the keyboard for this frame's F6 or Shift+F6 (ENH-10), and notes the control
+    /// that has it as the last used in its region. Typing open on the page waits there for
+    /// the keyboard to come back, and a form field's text box, which keeps its value as it
+    /// is left, is noted to go back to ([`Parked`]).
+    fn move_region(&mut self, ctx: &egui::Context) {
+        let focused = ctx.memory(|m| m.focused());
+        self.regions.note(ctx, focused);
+        let step = std::mem::take(&mut self.regions.step);
+        if step == 0 {
+            return;
+        }
+        // Nothing with the keyboard: the keys go to the page.
+        let typing = self.tabs.get(self.active).and_then(|t| t.ed.typing_id());
+        let from = match focused {
+            Some(id) if Some(id) != typing => self.regions.of_control(ctx, id),
+            _ => None,
+        }
+        .unwrap_or(Region::Page);
+        let open = !self.tabs.is_empty();
+        let Some((to, stop)) = self.regions.next(ctx, from, step, open) else {
+            return;
+        };
+        if let Some(t) = self
+            .tabs
+            .get_mut(self.active)
+            .filter(|_| from == Region::Page)
+        {
+            t.ed.parked = match (focused, t.ed.form.typing_in()) {
+                (Some(id), _) if Some(id) == typing => {
+                    // What is selected there, given back with the keyboard.
+                    page_text::held(ctx, id);
+                    Some(Parked::Typing(id))
+                }
+                (_, Some((name, widget))) => Some(Parked::Field(name, widget)),
+                _ => None,
+            };
+        }
+        self.regions.ring = false;
+        match stop {
+            Some(id) => ctx.memory_mut(|m| m.request_focus(id)),
+            None if to == Region::Page => self.keys_to_page(ctx, focused),
+            None => {}
+        }
+    }
+
+    /// The keyboard back to the page (F6): to the typing or form field left there, or, with
+    /// neither, to the page itself, which takes the keys with nothing focused (as after a
+    /// click on it); the page being read is outlined to show it, unless a field's ring does.
+    fn keys_to_page(&mut self, ctx: &egui::Context, focused: Option<egui::Id>) {
+        let Some(t) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        match t.ed.parked.take() {
+            Some(Parked::Typing(id)) => {
+                page_text::give_back(ctx, id);
+                // Its typing undone as before.
+                page_text::hand_back(ctx, id);
+            }
+            Some(Parked::Field(name, widget)) => t.ed.form.focus_field(&name, widget),
+            None => {
+                if let Some(id) = focused {
+                    ctx.memory_mut(|m| m.surrender_focus(id));
+                }
+                self.regions.ring = !t.ed.form.ringed();
+            }
+        }
+    }
+
     fn keep_panels(&mut self) {
         let s = &mut self.settings;
         let now = (self.side.wanted(), self.inspector.wanted());
@@ -3296,9 +3408,24 @@ impl App {
         false
     }
 
-    /// Close tab `i`, asking first when it has unsaved work.
+    /// Quit, asking first when there is unsaved work; a save being written ends first.
+    fn quit(&mut self, ctx: &egui::Context) {
+        if !self.saves.is_empty() {
+            self.wait_for_saves(AfterSave::Quit);
+        } else if let Some(q) = self.quit_question() {
+            self.dialog = q;
+        } else {
+            self.quit_ok = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    /// Close tab `i`, asking first when it has unsaved work; once its save ends, when one
+    /// is being written.
     fn close_asking(&mut self, i: usize) {
-        if self.tabs[i].unsaved() {
+        if self.saving(self.tabs[i].id) {
+            self.wait_for_saves(AfterSave::Close(self.tabs[i].id));
+        } else if self.tabs[i].unsaved() {
             self.dialog = Dialog::ConfirmClose(Asked::of(&self.tabs[i]), false);
         } else {
             self.close_tab(i);
@@ -3334,6 +3461,8 @@ impl App {
         let unsaved = |app: &Self, id| app.tabs.iter().any(|t| t.id == id && t.unsaved());
         match self.closing.take() {
             None => {}
+            // Its save is being written: wait for it.
+            Some(c) if c.saved().is_some_and(|tab| self.saving(tab)) => self.closing = Some(c),
             Some(Closing::Tab { tab, front }) => {
                 if unsaved(self, tab) {
                     return;
@@ -3355,6 +3484,11 @@ impl App {
                         self.closing = Some(Closing::Quit { saving: None, rest });
                         return;
                     }
+                }
+                // Another tab's save is still being written.
+                if !self.saves.is_empty() {
+                    self.closing = Some(Closing::Quit { saving: None, rest });
+                    return;
                 }
                 self.quit_ok = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -4056,6 +4190,10 @@ impl App {
         {
             self.close_step(ctx);
         }
+        // What waited for a save goes on, one at a time, as each may ask something.
+        if matches!(self.dialog, Dialog::None) && self.waiting.is_empty() {
+            self.after_save(ctx);
+        }
         self.next_dialog();
     }
 
@@ -4074,6 +4212,10 @@ impl App {
     fn state(&self, ctx: &egui::Context) -> Ctx {
         let mut c = Ctx {
             busy: self.busy || self.sign_window.as_ref().is_some_and(SignWindow::busy),
+            saving: self
+                .tabs
+                .get(self.active)
+                .is_some_and(|t| self.saving(t.id)),
             side: self.side.shown(),
             inspector: self.inspector.shown(),
             docked: self.settings.controls_docked,
@@ -4081,6 +4223,7 @@ impl App {
             page_look: self.settings.page_look,
             pictures_too: self.settings.pictures_too,
             recovery: self.settings.recovery,
+            page_labels: self.settings.page_labels,
             layout: self.settings.layout,
             cover: self.settings.cover,
             highlight: self.settings.highlight,
@@ -4254,11 +4397,24 @@ impl App {
         let mut acts = Vec::new();
         ctx.input_mut(|i| {
             for (a, k) in actions::shortcuts() {
-                let page_only = matches!(a.act, Act::Copy | Act::SelectAllText);
+                // Commands for what is selected on the page, which a text box with the
+                // keyboard takes for its own text.
+                let page_only = matches!(
+                    a.act,
+                    Act::Copy
+                        | Act::SelectAllText
+                        | Act::SelectAllObjects
+                        | Act::Bold
+                        | Act::Italic
+                );
                 let global = k.modifiers.command && !page_only;
                 let in_box = typing && matches!(a.act, Act::Undo | Act::Redo);
                 let closes = picking && a.act == Act::Escape;
-                if (typing && !global) || in_box || closes || !(a.enabled)(&c) {
+                // F6 leaves a text box too (in a form, Tab stays among the fields), but
+                // not an open list or menu, which Esc closes first.
+                let region = matches!(a.act, Act::NextRegion | Act::PrevRegion);
+                let skip = if region { picking } else { typing && !global };
+                if skip || in_box || closes || !(a.enabled)(&c) {
                     continue;
                 }
                 let hit = if a.act == Act::Copy {
@@ -4268,10 +4424,12 @@ impl App {
                     i.consume_shortcut(&k)
                 } else {
                     // The key's own modifiers, not those held at the end of the frame: a
-                    // quick Ctrl+A can arrive with Ctrl already let go.
+                    // quick Ctrl+A can arrive with Ctrl already let go. Shift tells F6's
+                    // two directions apart.
                     i.events.iter().any(|e| {
                         matches!(e, egui::Event::Key { key, pressed: true, modifiers, .. }
-                            if *key == k.logical_key && modifiers.matches_logically(k.modifiers))
+                            if *key == k.logical_key && modifiers.matches_logically(k.modifiers)
+                                && (!region || modifiers.shift == k.modifiers.shift))
                     })
                 };
                 if hit {
@@ -4397,7 +4555,12 @@ fn tab_button(ui: &mut egui::Ui, title: &str, on: bool) -> (bool, bool) {
             ui.spacing_mut().item_spacing.x = 2.0;
             let text = egui::RichText::new(title);
             let text = if on { text.strong() } else { text };
-            let pick = ui.add(egui::Button::new(text).frame(false)).clicked();
+            // A tab, saying whether it is the one shown.
+            let pick = ui.add(egui::Button::new(text).frame(false));
+            pick.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Tab, true, title));
+            ui.ctx()
+                .accesskit_node_builder(pick.id, |n| n.set_selected(on));
+            let pick = pick.clicked();
             let x = egui::Button::new(theme::icon(icon::X).size(12.0))
                 .frame_when_inactive(false)
                 .min_size(egui::vec2(20.0, 20.0));
@@ -4532,7 +4695,7 @@ fn inspector_popout(
     s: &mut Settings,
     t: &mut Tab,
     c: &Ctx,
-) -> (Option<inspector::Apply>, bool) {
+) -> (Option<inspector::Apply>, bool, egui::Rect) {
     let mut apply = None;
     let height = (strip.height() - 16.0).max(120.0);
     let area = egui::Area::new(egui::Id::unique("inspector-popout"))
@@ -4541,6 +4704,7 @@ fn inspector_popout(
         .pivot(egui::Align2::RIGHT_TOP)
         .constrain(true)
         .show(ctx, |ui| {
+            regions::name(ui, Region::Inspector);
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.set_width(INSPECTOR_WIDTH);
                 ui.heading(inspector::title(t));
@@ -4560,7 +4724,7 @@ fn inspector_popout(
     });
     // A menu or colour picker opened from the pop-out is outside it, but part of it.
     let child_open = egui::Popup::is_any_open(ctx);
-    (apply, !(clicked_outside && !child_open))
+    (apply, !(clicked_outside && !child_open), area.response.rect)
 }
 
 /// The widths of the command search's category and shortcut columns: the widest of each
@@ -4722,8 +4886,10 @@ fn empty_state(ui: &mut egui::Ui, recent: &[&PathBuf], acts: &mut Vec<Act>) {
     let size = egui::vec2(440.0, 310.0 + extra).min(room.size() - egui::vec2(32.0, 32.0));
     let card = egui::Rect::from_center_size(room.center(), size.max(egui::vec2(1.0, 1.0)));
     let id = egui::Id::unique("empty-card");
+    // A click anywhere on it opens a file; the keyboard has Open PDF… for that, so the
+    // card is no stop for Tab or F6 of its own.
     let r = ui
-        .interact(card, id, egui::Sense::click())
+        .interact(card, id, egui::Sense::CLICK)
         .on_hover_cursor(egui::CursorIcon::PointingHand);
     let v = ui.visuals();
     let accent = theme::accent(v.dark_mode);
@@ -4818,6 +4984,10 @@ impl eframe::App for App {
         for t in &mut self.tabs {
             t.set_colours(colours);
         }
+        // Words selected with the read tool, ready for the inspector to restyle.
+        if let Some(t) = self.tabs.get_mut(self.active) {
+            t.guarded(|t| t.ed.sync_chosen(&t.pdf));
+        }
 
         // Files dropped onto the window.
         let dropped: Vec<PathBuf> = ctx.input(|i| {
@@ -4839,7 +5009,11 @@ impl eframe::App for App {
 
         // Guard against closing the window with unsaved work.
         let quit = ctx.input(|i| i.viewport().close_requested()) && !self.quit_ok;
-        if let Some(q) = quit.then(|| self.quit_question()).flatten() {
+        if quit && !self.saves.is_empty() {
+            // A save being written ends first; then quitting goes on as usual.
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.wait_for_saves(AfterSave::Quit);
+        } else if let Some(q) = quit.then(|| self.quit_question()).flatten() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             // Asked first: a question open comes back after Cancel.
             let open = std::mem::replace(&mut self.dialog, q);
@@ -4873,6 +5047,23 @@ impl eframe::App for App {
         let width = ctx.content_rect().width();
         self.side.set_narrow(width < SIDE_NARROW_WIDTH);
         self.inspector.set_narrow(width < NARROW_WIDTH);
+
+        // F6's regions are found again as the window is drawn. A click ends what F6 left
+        // waiting on the page, as does another tab coming to the front or the typing
+        // getting the keyboard back; the ring on the page goes once anything takes it.
+        self.regions.begin();
+        let pressed = ctx.input(|i| i.pointer.any_pressed());
+        let focused = ctx.memory(|m| m.focused());
+        if pressed || focused.is_some() {
+            self.regions.ring = false;
+        }
+        for (i, t) in self.tabs.iter_mut().enumerate() {
+            let back = matches!(t.ed.parked, Some(Parked::Typing(id))
+                if focused == Some(id) || t.ed.typing_id() != Some(id));
+            if pressed || back || i != self.active {
+                t.ed.parked = None;
+            }
+        }
 
         // Before anything sees this frame's keys: a text box that has just got the keyboard
         // starts with nothing to undo.
@@ -4915,9 +5106,10 @@ impl eframe::App for App {
         // A search was run from the top bar: its results show in the navigation panel.
         let mut searched = false;
 
-        egui::Panel::top("topbar")
+        let top = egui::Panel::top("topbar")
             .frame(theme::bar_frame(ui.style()))
             .show(ui, |ui| {
+                regions::name(ui, Region::TopBar);
                 // Width budget, so the two ends never overlap: on narrower windows the
                 // search field becomes an icon, and then the tools fold one by one into
                 // the Tools menu, in the order of FOLDS; they come back as room returns.
@@ -5027,7 +5219,10 @@ impl eframe::App for App {
                             })
                     };
                     let hidden = c.tool.filter(|t| !inline(*t));
-                    let tools = ACTIONS.iter().filter(|a| a.group == Group::Tools).collect();
+                    let tools = ACTIONS
+                        .iter()
+                        .filter(|a| matches!(a.act, Act::Tool(_)))
+                        .collect();
                     tool_menu(ui, tools, hidden, &is_on, &mut acts);
                     // Plus the spacing before the next item, as the measured controls have.
                     let mut w = widths.borrow_mut();
@@ -5047,14 +5242,16 @@ impl eframe::App for App {
                             let r = ui.add(
                                 egui::TextEdit::singleline(&mut t.query)
                                     .hint_text("Search")
-                                    .desired_width(180.0),
+                                    .desired_width(180.0)
+                                    .return_key(None),
                             );
                             dlg::set_name(&r, "Search");
                             if std::mem::take(&mut self.focus_search) {
                                 r.request_focus();
                             }
-                            if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                                t.run_search();
+                            // Typing shows the matches in Search results as they come.
+                            let typed = r.changed() && !t.query.trim().is_empty();
+                            if t.search_keys(ui, &r) || typed {
                                 searched = true;
                             }
                         } else {
@@ -5072,6 +5269,7 @@ impl eframe::App for App {
                     .show(ui, left_side, right_side);
                 self.bar_widths = widths.into_inner();
             });
+        self.regions.add(Region::TopBar, top.response.rect);
         acts.append(&mut right_acts);
         if searched {
             self.show_view(Side::Search);
@@ -5081,7 +5279,8 @@ impl eframe::App for App {
         // of it is drawn for the tabs as they were (`has`, `c`).
         let mut close = None;
         if has {
-            egui::Panel::top("tabs").show(ui, |ui| {
+            let tabs = egui::Panel::top("tabs").show(ui, |ui| {
+                regions::name(ui, Region::Tabs);
                 ui.horizontal_wrapped(|ui| {
                     for i in 0..self.tabs.len() {
                         let (pick, x) = tab_button(ui, &self.tabs[i].title(), i == self.active);
@@ -5094,15 +5293,19 @@ impl eframe::App for App {
                     }
                 });
             });
+            self.regions.add(Region::Tabs, tabs.response.rect);
         }
 
         // The status bar: the page and messages at the left; the page layout, Fit width
         // and the zoom at the right.
-        egui::Panel::bottom("status").show(ui, |ui| {
+        let status = egui::Panel::bottom("status").show(ui, |ui| {
+            regions::name(ui, Region::Status);
             let t = self.tabs.get(self.active);
+            let busy = self.busy_sign();
             let status = |ui: &mut egui::Ui| {
                 if let Some(t) = t {
-                    let (n, name) = (t.current + 1, t.page_name(t.current));
+                    // Both, whichever the rest of the window shows.
+                    let (n, name) = (t.current + 1, t.page_label(t.current));
                     ui.label(if name == n.to_string() {
                         format!("Page {n} of {}", t.page_count())
                     } else {
@@ -5112,6 +5315,13 @@ impl eframe::App for App {
                         ui.separator();
                         ui.label("will be encrypted on save");
                     }
+                }
+                // The busy sign while a save is written.
+                if let Some((n, text)) = &busy {
+                    ui.separator();
+                    ui.add(egui::Spinner::new());
+                    ui.label(text);
+                    timing::once("save shown", || n.to_string());
                 }
                 if !self.status.is_empty() {
                     ui.separator();
@@ -5156,6 +5366,7 @@ impl eframe::App for App {
                 .truncate()
                 .show(ui, status, view);
         });
+        self.regions.add(Region::Status, status.response.rect);
 
         // The navigation rail at the left edge: one icon per view. Clicking another view
         // opens it; clicking the open one folds the panel away, and again brings it back.
@@ -5163,10 +5374,11 @@ impl eframe::App for App {
             let t = &self.tabs[self.active];
             let open = self.side.shown();
             let mut pick = None;
-            egui::Panel::left("nav-rail")
+            let rail = egui::Panel::left("nav-rail")
                 .resizable(false)
                 .exact_size(RAIL_WIDTH)
                 .show(ui, |ui| {
+                    regions::name(ui, Region::Navigation);
                     ui.vertical_centered(|ui| {
                         ui.add_space(4.0);
                         for (side, act) in NAV_VIEWS {
@@ -5184,6 +5396,7 @@ impl eframe::App for App {
                         }
                     });
                 });
+            self.regions.add(Region::Navigation, rail.response.rect);
             if let Some(side) = pick {
                 if open && t.side == side {
                     self.side.set_open(false);
@@ -5196,9 +5409,11 @@ impl eframe::App for App {
 
         if has && self.side.shown() {
             let active = self.active;
-            egui::Panel::left("side")
+            panels::edge_keys(ui, "side", true);
+            let side = egui::Panel::left("side")
                 .resizable(true)
                 .default_size(170.0)
+                .min_size(panels::NARROWEST)
                 .show(ui, |ui| {
                     let t = &mut self.tabs[active];
                     let heading = match t.side {
@@ -5208,6 +5423,7 @@ impl eframe::App for App {
                         Side::Comments => "Comments",
                         Side::Signatures => "Digital signatures",
                     };
+                    regions::name_as(ui, egui::accesskit::Role::Navigation, heading);
                     ui.add_space(4.0);
                     ui.label(egui::RichText::new(heading).family(theme::semibold()));
                     ui.separator();
@@ -5217,52 +5433,14 @@ impl eframe::App for App {
                         Side::Comments => t.show_comments(ui),
                         Side::Signatures => t.show_signatures(ui),
                         Side::Search => {
-                            let r = ui.text_edit_singleline(&mut t.query);
-                            dlg::set_name(&r, "Search for");
-                            let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-                            ui.horizontal(|ui| {
-                                if ui.button("Find").clicked() || enter {
-                                    t.run_search();
-                                }
-                                for (glyph, name, step) in
-                                    [("◀", "Previous match", -1), ("▶", "Next match", 1)]
-                                {
-                                    let r = ui.button(glyph);
-                                    dlg::set_name(&r, name);
-                                    if r.on_hover_text(name).clicked() {
-                                        t.step_hit(step);
-                                    }
-                                }
-                            });
-                            ui.label(format!("{} match(es)", t.hits.len()));
-                            if !t.hits.is_empty() {
-                                let a = actions::get(Act::MarkResultsRedact);
-                                let label = "Mark all for redaction";
-                                if theme::glyph_button(ui, a.icon, label)
-                                    .on_hover_text(a.hint)
-                                    .clicked()
-                                {
-                                    acts.push(Act::MarkResultsRedact);
-                                }
-                            }
-                            let mut jump = None;
-                            egui::ScrollArea::vertical().show(ui, |ui| {
-                                for (i, h) in t.hits.iter().enumerate() {
-                                    let text = format!("p{}  {}", h.page + 1, h.snippet);
-                                    if ui.selectable_label(i == t.hit_idx, text).clicked() {
-                                        jump = Some(i);
-                                    }
-                                }
-                            });
-                            if let Some(i) = jump {
-                                t.hit_idx = i;
-                                let p = t.hits[i].page;
-                                t.go_to(p);
+                            if t.show_results(ui) {
+                                acts.push(Act::MarkResultsRedact);
                             }
                         }
                     });
                 });
-            name_resize_handle(&ctx, "side", "Side panel width");
+            panels::edge_shown(ui, "side", "Side panel width");
+            self.regions.add(Region::Navigation, side.response.rect);
         }
 
         // The inspector: the editor's section for a selected object or words or a tool
@@ -5281,7 +5459,7 @@ impl eframe::App for App {
             // As the floating bar: words, a comment or an object, not pages or nothing.
             let selected = matches!(
                 t.ed.selection,
-                Selection::Words { .. } | Selection::Annot { .. } | Selection::Object { .. }
+                Selection::Words { .. } | Selection::Annot { .. } | Selection::Objects { .. }
             );
             let groups = if self.settings.controls_docked && selected {
                 actions::toolbar_items(&t.ed.selection, &c)
@@ -5298,8 +5476,11 @@ impl eframe::App for App {
                 .exact_size(RAIL_WIDTH);
             let full = egui::Panel::right("inspector")
                 .resizable(true)
-                .default_size(INSPECTOR_WIDTH);
-            egui::Panel::show_switched(ui, &mut open, rail, full, |ui, expanded| {
+                .default_size(INSPECTOR_WIDTH)
+                .min_size(panels::NARROWEST);
+            panels::edge_keys(ui, "inspector", false);
+            let shown = egui::Panel::show_switched(ui, &mut open, rail, full, |ui, expanded| {
+                regions::name(ui, Region::Inspector);
                 if !expanded {
                     (toggle, pop) = inspector_strip(ui, &groups, &c, &mut panel_acts);
                     strip = Some(ui.max_rect());
@@ -5338,7 +5519,8 @@ impl eframe::App for App {
                         panel_apply = ui.push_id(scope, |ui| inspector_body(s, t, ui, &c)).inner;
                     });
             });
-            name_resize_handle(&ctx, "inspector", "Inspector width");
+            panels::edge_shown(ui, "inspector", "Inspector width");
+            self.regions.add(Region::Inspector, shown.response.rect);
             if toggle {
                 open = !open;
             }
@@ -5355,9 +5537,10 @@ impl eframe::App for App {
             }
             if let Some(strip) = strip.filter(|_| self.popout) {
                 let t = &mut self.tabs[self.active];
-                let (apply, keep) = inspector_popout(&ctx, strip, &mut self.settings, t, &c);
+                let (apply, keep, at) = inspector_popout(&ctx, strip, &mut self.settings, t, &c);
                 panel_apply = panel_apply.or(apply);
                 self.popout = keep;
+                self.regions.add_over(Region::Inspector, at);
             }
             acts.extend(panel_acts);
         }
@@ -5371,20 +5554,28 @@ impl eframe::App for App {
             .inner_margin(0);
         let author = self.settings.author();
         let (keep, fields) = (&self.settings.keep_tools, self.settings.fields_shown);
-        egui::CentralPanel::default().frame(canvas).show(ui, |ui| {
+        let ring = self.regions.ring;
+        let pages = egui::CentralPanel::default().frame(canvas).show(ui, |ui| {
             if let Some(t) = self.tabs.get_mut(self.active) {
+                regions::name(ui, Region::Page);
                 // App-wide choices, lent to the tab.
                 t.ed.author = author;
                 t.ed.keep.clone_from(keep);
                 t.ed.form.highlight = fields;
+                t.page_ring = ring;
                 t.guarded(|t| t.show_pages(ui, &c));
                 if let Some(why) = &t.broken {
                     broken_state(ui, why, &mut acts);
                 }
             } else {
+                regions::name_as(ui, egui::accesskit::Role::Main, "Start");
                 empty_state(ui, &recent, &mut acts);
             }
         });
+        self.regions.add(Region::Page, pages.response.rect);
+        if let Some(at) = self.tabs.get(self.active).and_then(|t| t.banners_at) {
+            self.regions.add(Region::Notices, at);
+        }
 
         // The Create signature window, whether or not the inspector is showing; a
         // signature made is saved with the others.
@@ -5458,6 +5649,8 @@ impl eframe::App for App {
         self.dialogs(&ctx);
         dlg::name_popups(&ctx);
         self.offer_selection(&ctx);
+        // Last, once every region and control of the frame is drawn.
+        self.move_region(&ctx);
 
         let title = match self.tabs.get(self.active) {
             Some(t) => format!("{} - LimarePDF", t.title()),
@@ -5467,10 +5660,27 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.last_title = title;
         }
+        timing::mark("frame built", || {
+            let (frame, pass) = (ctx.cumulative_frame_nr(), ctx.current_pass_index());
+            format!("{frame} pass {pass}")
+        });
+        timing::flush();
+    }
+
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        if timing::on() {
+            for d in raw.events.iter().filter_map(timing::input) {
+                timing::mark("input", || d);
+            }
+        }
     }
 
     /// A normal exit (not a crash, which never gets here): no recovery copies are left.
     fn on_exit(&mut self) {
+        // Quitting waits for saves, but the system may end the app regardless.
+        self.finish_saves();
+        timing::mark("exit", String::new);
+        timing::flush();
         self.end_recovery();
         // The window's size, for the next start. With the window gone, a failure can only
         // be said where the app was started from.
@@ -5485,6 +5695,15 @@ impl eframe::App for App {
 /// leaves out when the window's position isn't known, as on Wayland.
 fn window_size(i: &egui::InputState) -> egui::Vec2 {
     i.viewport_rect().size()
+}
+
+/// How a save went, for the timing log.
+fn saved(written: &limarepdf_core::Result<()>) -> &'static str {
+    match written {
+        Ok(()) => "saved",
+        Err(e) if not_confirmed(e) => "not confirmed",
+        Err(_) => "failed",
+    }
 }
 
 /// `one` when `n` is 1, else `many` with `{n}` replaced by the number.
@@ -5745,6 +5964,7 @@ mod tests {
         }));
         app.tabs[0].query = "Walrus".into();
         app.tabs[0].run_search();
+        searched(&mut app, &ctx);
         assert!(!app.tabs[0].hits.is_empty());
         let mut bad = Vec::new();
         clear_names(&mut app, &ctx, "Read", &mut bad);
@@ -6106,6 +6326,444 @@ mod tests {
             "Page 1",
         ];
         assert_eq!(reached[..bars.len()], bars);
+    }
+
+    /// The name of the control with the keyboard in `tree`; `None` with nothing.
+    fn focused_name(ctx: &egui::Context, tree: &egui::accesskit::TreeUpdate) -> Option<String> {
+        ctx.memory(|m| m.focused())?;
+        let (_, n) = tree.nodes.iter().find(|(id, _)| *id == tree.focus)?;
+        n.label().map(str::to_string)
+    }
+
+    /// Press F6 (Shift+F6 when `back`) in the window `width` points wide; the name of the
+    /// control that then has the keyboard, `None` with nothing.
+    fn f6_at(app: &mut App, ctx: &egui::Context, width: f32, back: bool) -> Option<String> {
+        let shift = if back {
+            egui::Modifiers::SHIFT
+        } else {
+            egui::Modifiers::NONE
+        };
+        window(app, ctx, width, vec![key_with(Key::F6, shift)]);
+        let tree = window(app, ctx, width, vec![]);
+        focused_name(ctx, &tree)
+    }
+
+    fn f6(app: &mut App, ctx: &egui::Context, back: bool) -> Option<String> {
+        f6_at(app, ctx, 1400.0, back)
+    }
+
+    /// ENH-10: F6 goes round the window's regions in the order they are on screen, and
+    /// Shift+F6 back, each time to the control last used there, else the first; the page
+    /// takes the keys with nothing focused, outlined. With nothing focused, the keys are
+    /// the page's, so F6 goes on from there.
+    #[test]
+    fn f6_goes_round_the_regions_of_the_window() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        settled_at(&mut app, &ctx, 1400.0);
+        let round = [
+            Some("Collapse the inspector"),
+            Some("Page layout"),
+            Some("Menu"),
+            Some("Untitled *"),
+            Some("Pages"),
+            None,
+            Some("Collapse the inspector"),
+        ];
+        for want in round {
+            assert_eq!(f6(&mut app, &ctx, false).as_deref(), want);
+        }
+        assert!(
+            !app.tabs[0].page_ring,
+            "outlined with the keyboard elsewhere"
+        );
+        assert_eq!(f6(&mut app, &ctx, true), None);
+        assert!(app.tabs[0].page_ring, "the page isn't outlined");
+        // A click takes the outline away, as anything taking the keyboard does.
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        let p = node(&tree, "Page 1").expect("the page").0.center();
+        window(&mut app, &ctx, 1400.0, click_at(p));
+        settled_at(&mut app, &ctx, 1400.0);
+        assert!(!app.tabs[0].page_ring, "still outlined after a click");
+
+        // Back the other way, to where the keyboard was last in each region.
+        assert_eq!(f6(&mut app, &ctx, true).as_deref(), Some("Pages"));
+        assert_eq!(f6(&mut app, &ctx, true).as_deref(), Some("Untitled *"));
+        assert_eq!(f6(&mut app, &ctx, true).as_deref(), Some("Menu"));
+        let tab = key_with(Key::Tab, egui::Modifiers::NONE);
+        window(&mut app, &ctx, 1400.0, vec![tab]);
+        let tree = window(&mut app, &ctx, 1400.0, vec![]);
+        assert_eq!(focused_name(&ctx, &tree).as_deref(), Some("Open"));
+        assert_eq!(f6(&mut app, &ctx, true).as_deref(), Some("Page layout"));
+        assert_eq!(f6(&mut app, &ctx, false).as_deref(), Some("Open"));
+
+        // A notice is a region of its own, between the tabs and navigation.
+        app.tabs[0].show_banner(crate::banners::changed_on_disk());
+        settled_at(&mut app, &ctx, 1400.0);
+        assert_eq!(f6(&mut app, &ctx, false).as_deref(), Some("Untitled *"));
+        assert_eq!(f6(&mut app, &ctx, false).as_deref(), Some("Reload"));
+        assert_eq!(f6(&mut app, &ctx, false).as_deref(), Some("Pages"));
+    }
+
+    /// ENH-10: in a narrow window the folded panels' strips are regions in their place;
+    /// with no document open, F6 goes between the top bar and the start screen.
+    #[test]
+    fn f6_goes_round_narrow_windows_and_the_start_screen() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        settled_at(&mut app, &ctx, 700.0);
+        assert!(!app.side.shown() && !app.inspector.shown());
+        let round = [
+            Some("Expand the inspector"),
+            Some("Page layout"),
+            Some("Menu"),
+            Some("Untitled *"),
+            Some("Pages"),
+            None,
+        ];
+        for want in round {
+            assert_eq!(f6_at(&mut app, &ctx, 700.0, false).as_deref(), want);
+        }
+
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        settled_at(&mut app, &ctx, 1400.0);
+        assert_eq!(f6(&mut app, &ctx, false).as_deref(), Some("Menu"));
+        assert_eq!(f6(&mut app, &ctx, false).as_deref(), Some("Open PDF…"));
+        assert_eq!(f6(&mut app, &ctx, false).as_deref(), Some("Menu"));
+        assert_eq!(f6(&mut app, &ctx, true).as_deref(), Some("Open PDF…"));
+    }
+
+    /// ENH-10: F6 leaves typing open on the page (new text, a line being edited, a new
+    /// note or text box), and coming back gives it the keyboard again, to go on typing.
+    #[test]
+    fn f6_leaves_typing_open_on_the_page_and_comes_back_to_it() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let none = egui::Modifiers::NONE;
+        let ty = Typist::new(&ctx);
+        for case in ["new text", "line on the page", "new note", "new text box"] {
+            let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+            let note = typing_doc(&mut app, &ctx);
+            start_typing(&mut app, &ty, case, note);
+            ty.text(&mut app, "Seal");
+            let typing = app.tabs[0].ed.typing_id().expect("typing");
+            assert_eq!(ctx.memory(|m| m.focused()), Some(typing), "{case}");
+            let tree = ty.key(&mut app, Key::F6, none);
+            ty.pause(&mut app);
+            let away = focused_name(&ctx, &tree);
+            assert_eq!(away.as_deref(), Some("Collapse the inspector"), "{case}");
+            assert_eq!(app.tabs[0].ed.typing_id(), Some(typing), "{case}: ended");
+            let tree = ty.key(&mut app, Key::F6, egui::Modifiers::SHIFT);
+            assert_eq!(
+                ctx.memory(|m| m.focused()),
+                Some(typing),
+                "{case}: not back"
+            );
+            assert!(!app.tabs[0].page_ring, "{case}: outlined while typing");
+            assert_eq!(focused_text(&tree).as_deref(), Some("Seal"), "{case}");
+            ty.text(&mut app, "s");
+            let tree = ty.pause(&mut app);
+            assert_eq!(focused_text(&tree).as_deref(), Some("Seals"), "{case}");
+            ty.key(&mut app, Key::Escape, none);
+            ty.pause(&mut app);
+            let lines: Vec<String> = app.tabs[0]
+                .pdf
+                .page_objects(0)
+                .unwrap()
+                .into_iter()
+                .filter_map(|o| o.text)
+                .collect();
+            let kept = lines.contains(&"Seals".to_string())
+                || comments(&app).contains(&"Seals".to_string());
+            assert!(kept, "{case}: {lines:?} {:?}", comments(&app));
+        }
+    }
+
+    /// ENH-10: the inspector, reached by F6 and Tab, changes the typing left open on the
+    /// page, as with the mouse: Bold for the words selected there.
+    #[test]
+    fn the_inspector_changes_typing_left_open_by_f6() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let none = egui::Modifiers::NONE;
+        let ty = Typist::new(&ctx);
+        for (case, word) in [("new text", "Seal"), ("line on the page", "Otter")] {
+            let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+            let note = typing_doc(&mut app, &ctx);
+            start_typing(&mut app, &ty, case, note);
+            if case == "new text" {
+                ty.text(&mut app, word);
+                ty.key(&mut app, Key::A, egui::Modifiers::COMMAND);
+            }
+            let mut tree = ty.key(&mut app, Key::F6, none);
+            for _ in 0..20 {
+                if focused_name(&ctx, &tree).as_deref() == Some("Bold") {
+                    break;
+                }
+                tree = ty.key(&mut app, Key::Tab, none);
+            }
+            assert_eq!(focused_name(&ctx, &tree).as_deref(), Some("Bold"), "{case}");
+            ty.key(&mut app, Key::Space, none);
+            ty.pause(&mut app);
+            assert!(app.tabs[0].ed.typing_id().is_some(), "{case}: ended");
+            ty.key(&mut app, Key::Escape, none);
+            ty.pause(&mut app);
+            let fonts = line_fonts(&app.tabs[0].pdf, 0);
+            let bold = fonts
+                .iter()
+                .flatten()
+                .any(|(t, f)| t.trim() == word && f.ends_with("Bold"));
+            assert!(bold, "{case}: {fonts:?}");
+        }
+    }
+
+    /// ENH-10: in a form, Tab moves between the fields and F6 leaves them, keeping what was
+    /// typed; F6 back returns to the field left, to go on typing.
+    #[test]
+    fn f6_leaves_a_form_and_comes_back_to_the_field() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let none = egui::Modifiers::NONE;
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let pdf = form_doc(&[("name", 1), ("city", 1)]);
+        assert!(app.add_tab(&ctx, pdf, None, None, false));
+        let ty = Typist::new(&ctx);
+        ty.click_field(&mut app, "name", 0);
+        ty.text(&mut app, "Ada");
+        ty.key(&mut app, Key::Tab, none);
+        ty.text(&mut app, "Os");
+        let tree = ty.key(&mut app, Key::F6, none);
+        ty.pause(&mut app);
+        let away = focused_name(&ctx, &tree);
+        assert_eq!(away.as_deref(), Some("Collapse the inspector"));
+        assert_eq!(saved_field(&app.tabs[0], "name"), "Ada");
+        assert_eq!(saved_field(&app.tabs[0], "city"), "Os");
+        let tree = ty.key(&mut app, Key::F6, egui::Modifiers::SHIFT);
+        assert_eq!(focused_text(&tree).as_deref(), Some("Os"));
+        ty.text(&mut app, "lo");
+        ty.key(&mut app, Key::Tab, none);
+        ty.pause(&mut app);
+        assert_eq!(saved_field(&app.tabs[0], "city"), "Oslo");
+    }
+
+    /// ENH-10: F6 does nothing while a dialog, the command search or a menu is open: they
+    /// keep the keyboard until closed.
+    #[test]
+    fn f6_waits_for_dialogs_and_menus() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let esc = key_with(Key::Escape, egui::Modifiers::NONE);
+        app.act(&ctx, Act::Palette);
+        settled_at(&mut app, &ctx, 1400.0);
+        assert_eq!(f6(&mut app, &ctx, false).as_deref(), Some("Command"));
+        assert!(app.palette.is_some());
+        window(&mut app, &ctx, 1400.0, vec![esc.clone()]);
+
+        app.dialog = Dialog::Message("Walrus".into(), "The seal ate the fish.".into());
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        let before = focused_name(&ctx, &tree);
+        assert_eq!(f6(&mut app, &ctx, false), before);
+        assert!(matches!(app.dialog, Dialog::Message(..)));
+        app.dialog = Dialog::None;
+        settled_at(&mut app, &ctx, 1400.0);
+
+        click_named(&mut app, &ctx, "Menu");
+        settled_at(&mut app, &ctx, 1400.0);
+        assert!(egui::Popup::is_any_open(&ctx), "the menu didn't open");
+        f6(&mut app, &ctx, false);
+        assert!(egui::Popup::is_any_open(&ctx), "F6 closed the menu");
+    }
+
+    /// ENH-10: each region is named for screen readers, with its role, and the document's
+    /// tab says it is the one shown.
+    #[test]
+    fn regions_are_named_for_screen_readers() {
+        use egui::accesskit::Role;
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        app.tabs[0].show_banner(crate::banners::changed_on_disk());
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        let has = |role: Role, label: &str| {
+            tree.nodes
+                .iter()
+                .any(|(_, n)| n.role() == role && n.label() == Some(label))
+        };
+        for (role, label) in [
+            (Role::Toolbar, "Top bar"),
+            (Role::TabList, "Tabs"),
+            (Role::Region, "Notices"),
+            (Role::Navigation, "Navigation"),
+            (Role::Navigation, "Pages"),
+            (Role::Main, "Document"),
+            (Role::Complementary, "Inspector"),
+            (Role::Status, "Status bar"),
+        ] {
+            assert!(has(role, label), "no {role:?} named {label}");
+        }
+        let (_, tab) = tree
+            .nodes
+            .iter()
+            .find(|(_, n)| n.label() == Some("Untitled *"))
+            .expect("the tab");
+        assert_eq!((tab.role(), tab.is_selected()), (Role::Tab, Some(true)));
+        // The inspector's pop-out over the pages, from its strip in a narrow window.
+        app.popout = true;
+        let tree = settled_at(&mut app, &ctx, 700.0);
+        let inspectors = tree
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.role() == Role::Complementary && n.label() == Some("Inspector"))
+            .count();
+        assert_eq!(inspectors, 2, "the strip and the pop-out");
+    }
+
+    /// ENH-11: the edges of the side panel and the inspector, reached by Tab, move from
+    /// the keyboard: the arrow keys 10 points, 50 with Shift, Home to the narrowest and
+    /// End to half the window, never folding the panel away; the keyboard stays on them.
+    #[test]
+    fn panel_edges_move_from_the_keyboard() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        settled_at(&mut app, &ctx, 1400.0);
+        let (none, shift) = (egui::Modifiers::NONE, egui::Modifiers::SHIFT);
+        // Each panel's width from where its edge is: the side panel's after the rail, the
+        // inspector's from the window's right.
+        for (edge, wider, narrower, width) in [
+            (
+                "Side panel width",
+                Key::ArrowRight,
+                Key::ArrowLeft,
+                (|x: f32| x - RAIL_WIDTH) as fn(f32) -> f32,
+            ),
+            ("Inspector width", Key::ArrowLeft, Key::ArrowRight, |x| {
+                1400.0 - x
+            }),
+        ] {
+            let mut tree = window(&mut app, &ctx, 1400.0, vec![]);
+            for _ in 0..80 {
+                if focused_name(&ctx, &tree).as_deref() == Some(edge) {
+                    break;
+                }
+                window(&mut app, &ctx, 1400.0, vec![key_with(Key::Tab, none)]);
+                tree = window(&mut app, &ctx, 1400.0, vec![]);
+            }
+            assert_eq!(focused_name(&ctx, &tree).as_deref(), Some(edge), "Tab");
+            let start = width(node(&tree, edge).expect("the edge").0.center().x);
+            let mut press = |key: Key, modifiers: egui::Modifiers| {
+                window(&mut app, &ctx, 1400.0, vec![key_with(key, modifiers)]);
+                let tree = window(&mut app, &ctx, 1400.0, vec![]);
+                let (at, focused) = node(&tree, edge).expect("the edge");
+                assert!(focused, "{edge} {key:?}: the keyboard left it");
+                width(at.center().x)
+            };
+            for (key, modifiers, want) in [
+                (wider, none, start + 10.0),
+                (wider, shift, start + 60.0),
+                (narrower, none, start + 50.0),
+            ] {
+                let got = press(key, modifiers);
+                let why = format!("{edge} {key:?}: {got}, not {want}");
+                assert!((got - want).abs() < 0.5, "{why}");
+            }
+            // Half the window; the edge's place is a few points off its panel's border, at
+            // most its grab width.
+            let end = press(Key::End, none);
+            assert!((end - 700.0).abs() <= 8.0, "{edge} End: {end}");
+            // As narrow as the panel goes (the inspector no narrower than its contents),
+            // and no further.
+            let home = press(Key::Home, none);
+            let narrowest = home < start && home >= panels::NARROWEST - 8.0;
+            assert!(narrowest, "{edge} Home: {home}");
+            let below = press(narrower, shift);
+            assert_eq!(below, home, "{edge}: narrower than the narrowest");
+        }
+        let open = app.side.shown() && app.inspector.shown();
+        assert!(open, "a panel folded away");
+    }
+
+    /// ENH-11: the outline that moves new text with the mouse is no stop for the keyboard;
+    /// as in word processors, Esc keeps the text, selected, and the arrow keys move it.
+    #[test]
+    fn new_text_moves_from_the_keyboard_once_kept() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let (min, k) = page_on_screen(&mut app, &ctx);
+        app.act(&ctx, Act::Tool(Tool::Text));
+        let at = min + egui::vec2(100.0, 200.0) * k;
+        window(&mut app, &ctx, 1400.0, click_at(at));
+        settled_at(&mut app, &ctx, 1400.0);
+        let typed = egui::Event::Text("Seal".into());
+        window(&mut app, &ctx, 1400.0, vec![typed]);
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        let (_, grip) = tree
+            .nodes
+            .iter()
+            .find(|(_, n)| n.label() == Some("Move the text"))
+            .expect("the outline");
+        let stop = grip.supports_action(egui::accesskit::Action::Focus);
+        assert!(!stop, "the outline is a stop for Tab");
+        let none = egui::Modifiers::NONE;
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::Escape, none)]);
+        settled_at(&mut app, &ctx, 1400.0);
+        let before = boxes(&app, 0);
+        assert!(held(&app).is_some(), "the new text isn't selected");
+        let right = key_with(Key::ArrowRight, none);
+        window(&mut app, &ctx, 1400.0, vec![right]);
+        settled_at(&mut app, &ctx, 1400.0);
+        let after = boxes(&app, 0);
+        let (b, a) = (before.last().unwrap(), after.last().unwrap());
+        assert!((a[0] - b[0] - 1.0).abs() < 0.01, "{b:?} to {a:?}");
+    }
+
+    /// ENH-12: Create signature and Create initials are in the command search; run from
+    /// there they open the Create window with Fill and sign on. Not among the top bar's
+    /// tools.
+    #[test]
+    fn create_signature_is_in_the_command_search() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let enter = key_with(Key::Enter, egui::Modifiers::NONE);
+        for (query, role) in [
+            ("create signature", limarepdf_core::SignRole::Signature),
+            ("create initials", limarepdf_core::SignRole::Initials),
+        ] {
+            app.act(&ctx, Act::Palette);
+            settled_at(&mut app, &ctx, 1400.0);
+            let typed = egui::Event::Text(query.into());
+            window(&mut app, &ctx, 1400.0, vec![typed]);
+            settled_at(&mut app, &ctx, 1400.0);
+            window(&mut app, &ctx, 1400.0, vec![enter.clone()]);
+            settled_at(&mut app, &ctx, 1400.0);
+            assert!(app.palette.is_none(), "{query}: not run");
+            let ed = &mut app.tabs[0].ed;
+            assert_eq!(ed.tool, Tool::Sign, "{query}");
+            let open = ed.sign.create.take().map(|(c, _)| c.role);
+            assert_eq!(open, Some(role), "{query}: no Create window");
+        }
+        // Fill and sign's pane has a Create signature… of its own.
+        app.act(&ctx, Act::Tool(Tool::Read));
+        click_named(&mut app, &ctx, "Tools");
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        let menu = node(&tree, "Add text").is_some();
+        assert!(menu, "the Tools menu didn't open");
+        assert!(node(&tree, "Create signature…").is_none(), "not a tool");
     }
 
     /// The screen bounds of the node named `name` in `tree`, and whether it has the keyboard.
@@ -6875,6 +7533,7 @@ mod tests {
             size,
             color,
             rise: 0.0,
+            from: None,
         };
         let parts = [
             part("Walrus ", sans, 40.0, [0.0; 3]),
@@ -7000,10 +7659,11 @@ mod tests {
         assert_eq!(parts_of_line(&app).0, "Walrus ate fish");
     }
 
-    /// Ctrl+Z and Ctrl+Y in the inspector's text box take back and redo its typing, not
-    /// the document.
+    /// With the arrow, Edit text and a double-click edit the selected line on the page, as
+    /// the read tool does: the inspector has no text box of its own. Ctrl+Z and Ctrl+Y
+    /// there take back and redo its typing, not the document; Esc keeps the line selected.
     #[test]
-    fn the_inspector_text_box_undoes_its_own_typing() {
+    fn edit_text_with_the_arrow_edits_the_line_on_the_page() {
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
         theme::install(&ctx);
@@ -7026,15 +7686,28 @@ mod tests {
             repeat: false,
             modifiers,
         };
+        let name = "Editing text: Walrus ate fish";
         let typed = |tree: &egui::accesskit::TreeUpdate| {
-            let n = tree.nodes.iter().find(|(_, n)| n.label() == Some("Text"));
+            let n = tree.nodes.iter().find(|(_, n)| n.label() == Some(name));
             n.and_then(|(_, n)| n.value())
                 .unwrap_or_default()
                 .to_string()
         };
+        let text_box = |tree: &egui::accesskit::TreeUpdate| {
+            tree.nodes
+                .iter()
+                .any(|(_, n)| n.label() == Some("Text") && n.value().is_some())
+        };
+        let mut tree = frame(&mut app, vec![]);
         for _ in 0..4 {
-            frame(&mut app, vec![]);
+            tree = frame(&mut app, vec![]);
         }
+        assert_eq!(
+            node(&tree, name).map(|(_, f)| f),
+            Some(true),
+            "not on the page"
+        );
+        assert!(!text_box(&tree), "the inspector has a text box");
         let (ctrl, none) = (egui::Modifiers::COMMAND, egui::Modifiers::NONE);
         let steps = [
             (
@@ -7052,6 +7725,71 @@ mod tests {
             assert_eq!(typed(&tree), format!("Walrus ate {end}"));
             // The line is still in the document, as it was.
             assert_eq!(parts_of_line(&app).0, "Walrus ate fish");
+        }
+        // Esc keeps it; with the arrow, the line stays selected.
+        frame(&mut app, vec![key(Key::Escape, none)]);
+        for _ in 0..3 {
+            tree = frame(&mut app, vec![]);
+        }
+        assert!(node(&tree, name).is_none(), "still editing");
+        assert_eq!(app.tabs[0].ed.sel(), Some((0, line)));
+        assert_eq!(parts_of_line(&app).0, "Walrus ate fish too");
+        // A double-click on it edits it on the page again.
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        let p = page.min + egui::vec2(150.0, 190.0) * (page.width() / 612.0);
+        frame(&mut app, vec![egui::Event::PointerMoved(p)]);
+        for _ in 0..2 {
+            frame(&mut app, vec![press(p, true)]);
+            frame(&mut app, vec![press(p, false)]);
+        }
+        for _ in 0..3 {
+            tree = frame(&mut app, vec![]);
+        }
+        let name = "Editing text: Walrus ate fish too";
+        assert_eq!(
+            node(&tree, name).map(|(_, f)| f),
+            Some(true),
+            "not on the page"
+        );
+        assert!(!text_box(&tree), "the inspector has a text box");
+    }
+
+    /// With the read tool, finishing a line edited on the page (Esc, Tab, the keyboard going
+    /// elsewhere) leaves nothing selected: the inspector goes back to the document, as a word
+    /// processor leaves no selection behind.
+    #[test]
+    fn a_line_edited_with_the_read_tool_is_not_left_selected() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with_parts(&ctx);
+        app.act(&ctx, Act::Tool(Tool::Read));
+        let time = std::cell::Cell::new(10.0);
+        let frame = |app: &mut App, events| timed_frame(app, &ctx, &time, events);
+        let none = egui::Modifiers::NONE;
+        let mut tree = frame(&mut app, vec![]);
+        for _ in 0..4 {
+            tree = frame(&mut app, vec![]);
+        }
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        let p = page.min + egui::vec2(150.0, 190.0) * (page.width() / 612.0);
+        let name = "Editing text: Walrus ate fish";
+        for finish in [Key::Escape, Key::Tab] {
+            frame(&mut app, vec![egui::Event::PointerMoved(p)]);
+            for _ in 0..2 {
+                frame(&mut app, vec![press(p, true)]);
+                frame(&mut app, vec![press(p, false)]);
+            }
+            for _ in 0..3 {
+                tree = frame(&mut app, vec![]);
+            }
+            assert_eq!(node(&tree, name).map(|(_, f)| f), Some(true), "not editing");
+            frame(&mut app, vec![key_with(finish, none)]);
+            for _ in 0..3 {
+                frame(&mut app, vec![]);
+            }
+            assert_eq!(app.tabs[0].ed.sel(), None, "{finish:?} left it selected");
+            assert_eq!(inspector::title(&app.tabs[0]), "Document", "{finish:?}");
         }
     }
 
@@ -7143,6 +7881,7 @@ mod tests {
                 size: 30.0,
                 color: [0.0; 3],
                 rise: 0.0,
+                from: None,
             };
             assert!(app.tabs[0].edit(&ctx, |p| p.add_text_parts(0, (230.0, 480.0), &[part])));
             assert!(app.tabs[0].edit(&ctx, |p| p.rotate_pages(&[0], turn)));
@@ -7215,6 +7954,7 @@ mod tests {
             size: 30.0,
             color,
             rise: 0.0,
+            from: None,
         };
         let parts = [
             part("Walrus ", color),
@@ -7427,6 +8167,143 @@ mod tests {
             panic!("not one colour: {colours:?}");
         };
         assert!(grey.iter().all(|v| (v - 0.5).abs() < 0.01), "{grey:?}");
+    }
+
+    /// ENH-07 (V03): a selected line's inspector is headed Text and puts its look first, the
+    /// font list across the panel, with no text box (the words are edited on the page, as in
+    /// a word processor); its position and size wait in a section
+    /// that starts closed, stays as it was left from one selection to the next, and still
+    /// moves the line.
+    #[test]
+    fn the_text_inspector_puts_typography_first() {
+        use egui::accesskit::TreeUpdate;
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_in_colours(&ctx, [0.0; 3], [0.0; 3]);
+        let select_line = |app: &mut App| {
+            app.act(&ctx, Act::Tool(Tool::Select));
+            let t = &mut app.tabs[0];
+            let objs = t.ed.objects(&t.pdf, 0).to_vec();
+            let line = objs
+                .iter()
+                .position(|o| o.text.is_some())
+                .expect("the line");
+            t.ed.select_object(0, line);
+            app.open_inspector();
+            line
+        };
+        let line = select_line(&mut app);
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert_eq!(inspector::title(&app.tabs[0]), "Text");
+        let shown =
+            |tree: &TreeUpdate, text: &str| tree.nodes.iter().any(|(_, n)| n.value() == Some(text));
+        assert!(!shown(&tree, "Edit"), "the heading is still Edit");
+        let geometry = ["X", "Y", "Width", "Height"];
+        for name in geometry {
+            assert!(node(&tree, name).is_none(), "{name} is shown");
+        }
+        // No text box: the words are edited on the page. The font list is as wide as the
+        // section below it.
+        let text_box = tree
+            .nodes
+            .iter()
+            .any(|(_, n)| n.label() == Some("Text") && n.value().is_some());
+        assert!(!text_box, "the inspector has a text box");
+        let (section, _) = node(&tree, "Position and size").expect("the section");
+        let (font, _) = node(&tree, "Font").expect("the font list");
+        assert!(
+            font.width() >= section.width() - 1.0,
+            "{font:?} beside {section:?}"
+        );
+        // Tab goes through the look, then position and size, then Delete.
+        let reached = tab_walk(&mut app, &ctx, 1400.0, 60);
+        let order = [
+            "Font",
+            "Bold",
+            "Italic",
+            "Font size",
+            "Font sizes",
+            "Text colour",
+            "Position and size",
+            "Delete",
+        ];
+        let at = reached.iter().position(|n| n == "Font").expect("no Font");
+        assert_eq!(reached[at..at + order.len()], order, "{reached:?}");
+
+        // Opened, it has the fields, and X moves the line.
+        click_named(&mut app, &ctx, "Position and size");
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        for name in geometry {
+            assert!(node(&tree, name).is_some(), "{name} isn't shown");
+        }
+        let set_x = |app: &mut App, value: &str| {
+            click_named(app, &ctx, "X");
+            let (ctrl, none) = (egui::Modifiers::COMMAND, egui::Modifiers::NONE);
+            window(app, &ctx, 1400.0, vec![key_with(Key::A, ctrl)]);
+            window(app, &ctx, 1400.0, vec![egui::Event::Text(value.into())]);
+            window(app, &ctx, 1400.0, vec![key_with(Key::Enter, none)]);
+            settle(app, &ctx);
+            let t = &mut app.tabs[0];
+            t.ed.objects(&t.pdf, 0)[line].bbox[0]
+        };
+        let x = set_x(&mut app, "150");
+        assert!((x - 150.0).abs() < 0.5, "the line is at {x}");
+        // Long numbers fit: the panel doesn't grow, and each field is inside it.
+        set_x(&mut app, "12345.678");
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        let (opened, _) = node(&tree, "Font").expect("the font list");
+        assert_eq!(
+            opened.x_range(),
+            font.x_range(),
+            "the panel's width changed"
+        );
+        for name in geometry {
+            let (r, _) = node(&tree, name).expect("the field");
+            assert!(r.right() <= font.right(), "{name} at {r:?} beyond {font:?}");
+        }
+
+        // Another tool and back: still open, as it was left.
+        app.act(&ctx, Act::Tool(Tool::Rect));
+        settle(&mut app, &ctx);
+        assert_eq!(inspector::title(&app.tabs[0]), "New rectangle");
+        select_line(&mut app);
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert!(node(&tree, "X").is_some(), "the section closed again");
+    }
+
+    /// ENH-07: the inspector's heading names what it shows, for each tool and kind of
+    /// object, never a bare Edit.
+    #[test]
+    fn the_inspector_is_headed_by_what_it_shows() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut app = app_in_colours(&ctx, [0.0; 3], [0.0; 3]);
+        for (tool, heading) in [
+            (Tool::Text, "New text"),
+            (Tool::TextBox, "New text box"),
+            (Tool::Rect, "New rectangle"),
+            (Tool::Ellipse, "New ellipse"),
+            (Tool::Line, "New line"),
+            (Tool::Image, "Insert image"),
+            (Tool::Pen, "Pen"),
+            (Tool::Note, "New note"),
+            (Tool::Redact, "Mark for redaction"),
+        ] {
+            // Set directly: the Image tool's command asks for a file.
+            app.tabs[0].ed.set_tool(tool);
+            assert_eq!(inspector::title(&app.tabs[0]), heading, "{tool:?}");
+        }
+        app.tabs[0].ed.set_tool(Tool::Select);
+        assert_eq!(inspector::title(&app.tabs[0]), "Document");
+        let t = &mut app.tabs[0];
+        let objs = t.ed.objects(&t.pdf, 0).to_vec();
+        let line = objs
+            .iter()
+            .position(|o| o.text.is_some())
+            .expect("the line");
+        t.ed.select_object(0, line);
+        assert_eq!(inspector::title(&app.tabs[0]), "Text");
     }
 
     /// A26: with characters selected in a line edited on the page, the first colour picked
@@ -7885,6 +8762,670 @@ mod tests {
         }
         let (page, _) = node(&tree, "Page 1").expect("the page");
         (page.min, page.width() / 612.0)
+    }
+
+    /// [`window`] with `held` keys (Shift, say) down from this frame on, as egui reads them
+    /// from its own state rather than from each pointer event.
+    fn window_held(
+        app: &mut App,
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+        held: egui::Modifiers,
+    ) -> egui::accesskit::TreeUpdate {
+        let mut all = vec![egui::Event::ModifiersChanged(held)];
+        all.extend(events);
+        window(app, ctx, 1400.0, all)
+    }
+
+    /// A tab whose first page has one object of each kind, in this order (page points, y
+    /// down), all in the test window: a red shape at 300,60 to 380,120; lines "Walrus one",
+    /// "Walrus two" and "Walrus three" on baselines 92, 122 and 152 from x 72; a picture at
+    /// 300,150 to 400,230; a group (a form XObject) at 300,250 to 350,300; and invisible
+    /// (OCR) text, "hidden words", on baseline 330. Its second page has a shape at 100,100
+    /// to 200,150.
+    fn objects_tab(ctx: &egui::Context) -> App {
+        use lopdf::{dictionary, Object, Stream};
+        let mut app = app_with(ctx, 1);
+        let shapes = |p: &mut Pdf| {
+            let page = p.page_ids()[0];
+            let font = p.doc.add_object(dictionary! {
+                "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+                "Encoding" => "WinAnsiEncoding",
+            });
+            let image = dictionary! {
+                "Type" => "XObject", "Subtype" => "Image", "Width" => 1, "Height" => 1,
+                "ColorSpace" => "DeviceRGB", "BitsPerComponent" => 8,
+            };
+            let image = p.doc.add_object(Stream::new(image, vec![0, 128, 0]));
+            let bbox: Vec<Object> = [0, 0, 50, 50].map(Object::from).to_vec();
+            let form = dictionary! { "Type" => "XObject", "Subtype" => "Form", "BBox" => bbox };
+            let form = p
+                .doc
+                .add_object(Stream::new(form, b"0 0 1 rg 0 0 50 50 re f".to_vec()));
+            let content = "q 1 0 0 rg 300 672 80 60 re f Q\n\
+                           BT /F1 18 Tf 72 700 Td (Walrus one) Tj ET\n\
+                           BT /F1 18 Tf 72 670 Td (Walrus two) Tj ET\n\
+                           BT /F1 18 Tf 72 640 Td (Walrus three) Tj ET\n\
+                           q 100 0 0 80 300 562 cm /Im1 Do Q\n\
+                           q 1 0 0 1 300 492 cm /Fm1 Do Q\n\
+                           BT 3 Tr /F1 12 Tf 72 462 Td (hidden words) Tj ET\n";
+            let s = p.doc.add_object(Stream::new(
+                lopdf::Dictionary::new(),
+                content.as_bytes().to_vec(),
+            ));
+            let res = dictionary! {
+                "Font" => dictionary! { "F1" => font },
+                "XObject" => dictionary! { "Im1" => image, "Fm1" => form },
+            };
+            let d = p.doc.get_dictionary_mut(page)?;
+            d.set("Contents", Object::Reference(s));
+            d.set("Resources", res);
+            let st = limarepdf_core::PathStyle {
+                fill: Some([0.0, 0.0, 1.0]),
+                stroke: None,
+                line_width: 1.0,
+            };
+            p.add_shape(
+                1,
+                limarepdf_core::Shape::Rect,
+                [100.0, 100.0, 200.0, 150.0],
+                &st,
+            )
+        };
+        assert!(app.tabs[0].edit(ctx, shapes));
+        let kinds: Vec<_> = (app.tabs[0].pdf.page_objects(0).unwrap().iter())
+            .map(|o| (o.kind, o.hidden))
+            .collect();
+        use limarepdf_core::ObjectKind::*;
+        let text = (Text, false);
+        assert_eq!(
+            kinds,
+            [
+                (Path, false),
+                text,
+                text,
+                text,
+                (Image, false),
+                (Form, false),
+                (Text, true)
+            ]
+        );
+        app
+    }
+
+    /// The objects selected in the tab in front: page and indices, in the order selected.
+    fn held(app: &App) -> Option<(usize, Vec<usize>)> {
+        app.tabs[app.active].ed.selection.object_ids()
+    }
+
+    /// Select objects `ids` of page 1 in the tab in front, once the window has read them.
+    fn select(app: &mut App, ctx: &egui::Context, ids: &[usize]) {
+        settle(app, ctx);
+        app.tabs[app.active]
+            .ed
+            .select_objects(0, ids.iter().copied());
+        assert_eq!(held(app), Some((0, ids.to_vec())));
+    }
+
+    /// Where each object of page `page` is now.
+    fn boxes(app: &App, page: usize) -> Vec<[f32; 4]> {
+        let objs = app.tabs[app.active].pdf.page_objects(page).unwrap();
+        objs.iter().map(|o| o.bbox).collect()
+    }
+
+    /// Click at page point `at` (x, y) on the page in view, Shift held or not.
+    fn click_page(app: &mut App, ctx: &egui::Context, at: (f32, f32), shift: bool) {
+        click_held(app, ctx, at, shift, 0);
+    }
+
+    /// [`click_page`], the button held a second without moving: longer than egui takes a
+    /// press for a click, so it is a drag that goes nowhere.
+    fn slow_click_page(app: &mut App, ctx: &egui::Context, at: (f32, f32), shift: bool) {
+        click_held(app, ctx, at, shift, 60);
+    }
+
+    /// Click at page point `at`, the button held down for `frames` frames of 1/60 s.
+    fn click_held(app: &mut App, ctx: &egui::Context, at: (f32, f32), shift: bool, frames: usize) {
+        let (min, k) = page_on_screen(app, ctx);
+        let p = min + egui::vec2(at.0, at.1) * k;
+        let m = match shift {
+            true => egui::Modifiers::SHIFT,
+            false => egui::Modifiers::NONE,
+        };
+        window_held(app, ctx, vec![egui::Event::PointerMoved(p)], m);
+        window_held(app, ctx, vec![press(p, true)], m);
+        for _ in 0..frames {
+            window_held(app, ctx, vec![], m);
+        }
+        window_held(app, ctx, vec![press(p, false)], m);
+        window_held(app, ctx, vec![], egui::Modifiers::NONE);
+        settle(app, ctx);
+    }
+
+    /// Drag from page point `from` to `to` on the page in view, Shift held or not.
+    fn drag_page(
+        app: &mut App,
+        ctx: &egui::Context,
+        from: (f32, f32),
+        to: (f32, f32),
+        shift: bool,
+    ) {
+        let (min, k) = page_on_screen(app, ctx);
+        let at = |(x, y): (f32, f32)| min + egui::vec2(x, y) * k;
+        let (a, b) = (at(from), at(to));
+        let m = match shift {
+            true => egui::Modifiers::SHIFT,
+            false => egui::Modifiers::NONE,
+        };
+        window_held(app, ctx, vec![egui::Event::PointerMoved(a)], m);
+        window_held(app, ctx, vec![press(a, true)], m);
+        for i in 1..=4 {
+            let p = a + (b - a) * (i as f32 / 4.0);
+            window_held(app, ctx, vec![egui::Event::PointerMoved(p)], m);
+        }
+        window_held(app, ctx, vec![press(b, false)], m);
+        window_held(app, ctx, vec![], egui::Modifiers::NONE);
+        settle(app, ctx);
+    }
+
+    /// ENH-06: Shift+click with the arrow adds an object to those selected, or takes it out;
+    /// a plain click selects one alone; Shift+click on nothing changes nothing; an object on
+    /// another page starts afresh there.
+    #[test]
+    fn shift_click_adds_and_takes_out_objects() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = objects_tab(&ctx);
+        app.act(&ctx, Act::Tool(Tool::Select));
+        click_page(&mut app, &ctx, (340.0, 90.0), false);
+        assert_eq!(held(&app), Some((0, vec![0])), "the shape");
+        click_page(&mut app, &ctx, (350.0, 190.0), true);
+        click_page(&mut app, &ctx, (325.0, 275.0), true);
+        assert_eq!(
+            held(&app),
+            Some((0, vec![0, 4, 5])),
+            "shape, picture and group"
+        );
+        assert_eq!(app.tabs[0].ed.heading(), "3 objects");
+        click_page(&mut app, &ctx, (350.0, 190.0), true);
+        assert_eq!(held(&app), Some((0, vec![0, 5])), "the picture taken out");
+        click_page(&mut app, &ctx, (500.0, 40.0), true);
+        assert_eq!(held(&app), Some((0, vec![0, 5])), "Shift+click on nothing");
+        click_page(&mut app, &ctx, (90.0, 117.0), false);
+        assert_eq!(
+            held(&app),
+            Some((0, vec![2])),
+            "a plain click: that line alone"
+        );
+        // Taking the last one out leaves nothing selected.
+        click_page(&mut app, &ctx, (90.0, 117.0), true);
+        assert_eq!(held(&app), None);
+        // Another page's object: it alone, on its page.
+        click_page(&mut app, &ctx, (340.0, 90.0), false);
+        app.tabs[0].go_to(1);
+        settle(&mut app, &ctx);
+        app.tabs[0].ed.toggle_object(1, 0);
+        assert_eq!(held(&app), Some((1, vec![0])));
+    }
+
+    /// ENH-06: a rectangle dragged with the arrow selects what is wholly inside it, not
+    /// what it only touches; with Shift it adds to what is selected; over nothing it clears
+    /// the selection; invisible text joins only while it is shown; Esc lets go of one being
+    /// drawn, changing nothing.
+    #[test]
+    fn a_rectangle_selects_what_is_wholly_inside_it() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = objects_tab(&ctx);
+        app.act(&ctx, Act::Tool(Tool::Select));
+        // Round the first two lines, and through the third (on baseline 152).
+        drag_page(&mut app, &ctx, (60.0, 60.0), (250.0, 140.0), false);
+        assert_eq!(held(&app), Some((0, vec![1, 2])));
+        // With Shift, round the picture: added. Half over the group: not.
+        drag_page(&mut app, &ctx, (290.0, 140.0), (410.0, 240.0), true);
+        drag_page(&mut app, &ctx, (290.0, 240.0), (325.0, 310.0), true);
+        assert_eq!(held(&app), Some((0, vec![1, 2, 4])));
+        // Round the invisible text: nothing there to select, so nothing is.
+        drag_page(&mut app, &ctx, (60.0, 310.0), (250.0, 345.0), false);
+        assert_eq!(held(&app), None);
+        app.tabs[0].ed.show_hidden = true;
+        drag_page(&mut app, &ctx, (60.0, 310.0), (250.0, 345.0), false);
+        assert_eq!(held(&app), Some((0, vec![6])), "shown, it is selected");
+        app.tabs[0].ed.show_hidden = false;
+        settle(&mut app, &ctx);
+        assert_eq!(held(&app), None, "hidden again, it is let go");
+        // Esc while drawing one: nothing selected, nothing being dragged.
+        select(&mut app, &ctx, &[0]);
+        drag_on_page(&mut app, &ctx, (60.0, 60.0), (250.0, 140.0), true);
+        assert_eq!(held(&app), Some((0, vec![0])), "Esc changed the selection");
+        assert!(!app.tabs[0].ed.dragging());
+    }
+
+    /// ENH-06: Ctrl+A with the arrow selects every object on the page, invisible text only
+    /// while it is shown; with the read tool it still selects the page's text.
+    #[test]
+    fn ctrl_a_with_the_arrow_selects_the_page_objects() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = objects_tab(&ctx);
+        app.act(&ctx, Act::Tool(Tool::Select));
+        settle(&mut app, &ctx);
+        let ctrl_a = key_with(Key::A, egui::Modifiers::COMMAND);
+        window(&mut app, &ctx, 1400.0, vec![ctrl_a.clone()]);
+        assert_eq!(held(&app), Some((0, (0..6).collect())));
+        app.tabs[0].ed.show_hidden = true;
+        window(&mut app, &ctx, 1400.0, vec![ctrl_a.clone()]);
+        assert_eq!(held(&app), Some((0, (0..7).collect())));
+        app.act(&ctx, Act::Tool(Tool::Read));
+        window(&mut app, &ctx, 1400.0, vec![ctrl_a]);
+        assert!(app.tabs[0].ed.selection.words().is_some());
+    }
+
+    /// ENH-06: objects selected together move together, each by the same amount, whether
+    /// dragged by any one of them or nudged with the arrow keys, and one Undo puts them all
+    /// back; the others stay where they were.
+    #[test]
+    fn several_objects_move_together_with_one_undo() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = objects_tab(&ctx);
+        app.act(&ctx, Act::Tool(Tool::Select));
+        select(&mut app, &ctx, &[0, 2, 4, 5]);
+        let (before, steps) = (boxes(&app, 0), app.tabs[0].history().1);
+        // Dragged by the picture.
+        drag_page(&mut app, &ctx, (350.0, 190.0), (390.0, 220.0), false);
+        let after = boxes(&app, 0);
+        assert_eq!(app.tabs[0].history().1, steps + 1, "one undo step");
+        for (i, (a, b)) in after.iter().zip(&before).enumerate() {
+            let moved = [0, 2, 4, 5].contains(&i);
+            let (dx, dy) = if moved { (40.0, 30.0) } else { (0.0, 0.0) };
+            let d = [
+                a[0] - b[0] - dx,
+                a[1] - b[1] - dy,
+                a[2] - b[2] - dx,
+                a[3] - b[3] - dy,
+            ];
+            assert!(
+                d.iter().all(|v| v.abs() < 0.6),
+                "object {i}: {b:?} to {a:?}"
+            );
+        }
+        assert_eq!(held(&app), Some((0, vec![0, 2, 4, 5])), "still selected");
+        // Nudged: each a point to the right.
+        let key = key_with(Key::ArrowRight, egui::Modifiers::NONE);
+        window(&mut app, &ctx, 1400.0, vec![key]);
+        settle(&mut app, &ctx);
+        let nudged = boxes(&app, 0);
+        for i in [0, 2, 4, 5] {
+            assert!(
+                (nudged[i][0] - after[i][0] - 1.0).abs() < 0.05,
+                "object {i}"
+            );
+        }
+        assert!((nudged[1][0] - after[1][0]).abs() < 0.05, "line one stayed");
+        // Undo twice: all where they started.
+        app.act(&ctx, Act::Undo);
+        app.act(&ctx, Act::Undo);
+        let back = boxes(&app, 0);
+        for (a, b) in back.iter().zip(&before) {
+            assert!(
+                a.iter().zip(b).all(|(p, q)| (p - q).abs() < 0.05),
+                "{b:?} to {a:?}"
+            );
+        }
+    }
+
+    /// ENH-06: the inspector's X and Y for several objects are those of the box round them
+    /// all, and move them together; there is no width or height for several.
+    #[test]
+    fn several_objects_move_by_their_position_in_the_inspector() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = objects_tab(&ctx);
+        app.act(&ctx, Act::Tool(Tool::Select));
+        app.open_inspector();
+        select(&mut app, &ctx, &[1, 4]);
+        let before = boxes(&app, 0);
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert_eq!(inspector::title(&app.tabs[0]), "2 objects");
+        click_named(&mut app, &ctx, "Position");
+        let tree_open = settled_at(&mut app, &ctx, 1400.0);
+        assert!(node(&tree, "X").is_none() && node(&tree_open, "X").is_some());
+        assert!(node(&tree_open, "Width").is_none(), "a width for several");
+        click_named(&mut app, &ctx, "X");
+        let (ctrl, none) = (egui::Modifiers::COMMAND, egui::Modifiers::NONE);
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::A, ctrl)]);
+        window(
+            &mut app,
+            &ctx,
+            1400.0,
+            vec![egui::Event::Text("100".into())],
+        );
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::Enter, none)]);
+        settle(&mut app, &ctx);
+        // The box round them started at the line's left, 72: both 28 to the right.
+        let after = boxes(&app, 0);
+        for (i, (a, b)) in after.iter().zip(&before).enumerate() {
+            let dx = if [1, 4].contains(&i) { 28.0 } else { 0.0 };
+            assert!((a[0] - b[0] - dx).abs() < 0.6, "object {i}: {b:?} to {a:?}");
+            assert!((a[1] - b[1]).abs() < 0.05, "object {i} moved up or down");
+        }
+    }
+
+    /// ENH-06: Delete deletes every object selected, as one step a notice counts and Undo
+    /// takes back; the others stay.
+    #[test]
+    fn several_objects_delete_with_one_undo() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = objects_tab(&ctx);
+        app.act(&ctx, Act::Tool(Tool::Select));
+        let before = app.tabs[0].pdf.page_objects(0).unwrap();
+        select(&mut app, &ctx, &[1, 3, 4]);
+        let key = key_with(Key::Delete, egui::Modifiers::NONE);
+        window(&mut app, &ctx, 1400.0, vec![key]);
+        settle(&mut app, &ctx);
+        let left: Vec<_> = (app.tabs[0].pdf.page_objects(0).unwrap().into_iter())
+            .map(|o| o.text.unwrap_or_else(|| format!("{:?}", o.kind)))
+            .collect();
+        assert_eq!(left, ["Path", "Walrus two", "Form", "hidden words"]);
+        assert_eq!(toast(&app).as_deref(), Some("Deleted 3 objects"));
+        assert_eq!(held(&app), None);
+        app.act(&ctx, Act::Undo);
+        let back = app.tabs[0].pdf.page_objects(0).unwrap();
+        let text = |v: &[limarepdf_core::PageObject]| -> Vec<_> {
+            v.iter().map(|o| (o.kind, o.text.clone(), o.bbox)).collect()
+        };
+        assert_eq!(text(&back), text(&before));
+    }
+
+    /// ENH-06: Bold on several objects selected changes the lines of text among them (each
+    /// whole, as one undo step) and nothing else; rewritten, the lines go to the end of the
+    /// page's content, and the same objects stay selected, so Delete then takes those.
+    #[test]
+    fn a_change_that_reorders_the_page_keeps_the_same_objects() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = objects_tab(&ctx);
+        app.act(&ctx, Act::Tool(Tool::Select));
+        select(&mut app, &ctx, &[1, 3, 0]);
+        let steps = app.tabs[0].history().1;
+        app.act(&ctx, Act::Bold);
+        settle(&mut app, &ctx);
+        assert_eq!(app.tabs[0].history().1, steps + 1, "one undo step");
+        let objs = app.tabs[0].pdf.page_objects(0).unwrap();
+        let font = |t: &str| {
+            let o = objs.iter().find(|o| o.text.as_deref() == Some(t)).unwrap();
+            o.font_name.clone().unwrap_or_default()
+        };
+        assert!(
+            font("Walrus one").contains("Bold"),
+            "{}",
+            font("Walrus one")
+        );
+        assert!(font("Walrus three").contains("Bold"));
+        assert!(!font("Walrus two").contains("Bold"), "not selected");
+        let (page, ids) = held(&app).expect("still selected");
+        let now: Vec<_> = ids.iter().map(|&i| objs[i].text.clone()).collect();
+        assert_eq!(page, 0);
+        assert_eq!(
+            now,
+            [Some("Walrus one".into()), Some("Walrus three".into()), None]
+        );
+        assert_eq!(objs[ids[2]].kind, limarepdf_core::ObjectKind::Path);
+        assert_ne!(ids, [1, 3, 0], "the lines were rewritten at the end");
+        app.act(&ctx, Act::DeleteSelection);
+        settle(&mut app, &ctx);
+        let left: Vec<_> = (app.tabs[0].pdf.page_objects(0).unwrap().into_iter())
+            .map(|o| o.text.unwrap_or_else(|| format!("{:?}", o.kind)))
+            .collect();
+        assert_eq!(left, ["Walrus two", "Image", "Form", "hidden words"]);
+    }
+
+    /// ENH-06: a change to several objects that one of them can't take changes none of
+    /// them, says so, and leaves them selected.
+    #[test]
+    fn a_change_to_several_refused_changes_nothing() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = objects_tab(&ctx);
+        app.act(&ctx, Act::Tool(Tool::Select));
+        select(&mut app, &ctx, &[0, 4]);
+        let (before, revision) = (boxes(&app, 0), app.tabs[0].history());
+        let tiny = [300.0, 150.0, 300.2, 150.2];
+        let t = &mut app.tabs[0];
+        t.ed.actions.push(EdAction::SetBox(
+            0,
+            vec![(0, [310.0, 60.0, 390.0, 120.0]), (4, tiny)],
+        ));
+        t.apply_actions(&ctx);
+        assert_eq!(app.tabs[0].history(), revision, "changed");
+        assert_eq!(boxes(&app, 0), before);
+        let said = app.tabs[0].error.clone().unwrap_or_default();
+        assert!(
+            said.starts_with("One of the selected objects couldn't be moved, so none of them was"),
+            "{said}"
+        );
+        assert_eq!(held(&app), Some((0, vec![0, 4])));
+    }
+
+    /// ENH-06: new text of several lines is selected as one when it is put down, and moves
+    /// together with the read tool.
+    #[test]
+    fn new_text_of_several_lines_is_selected_as_one() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        app.act(&ctx, Act::Tool(Tool::Text));
+        let ed = &mut app.tabs[0].ed;
+        ed.tsize = 30.0;
+        let mut a = page_text::PageText::new(ed.scope(), 0, (100.0, 200.0), ed.new_look());
+        a.text.sync("Walrus\nseal\nfish", None);
+        ed.adding = Some(a);
+        ed.escape();
+        app.tabs[0].apply_actions(&ctx);
+        settle(&mut app, &ctx);
+        assert_eq!(app.tabs[0].ed.tool, Tool::Read);
+        assert_eq!(held(&app), Some((0, vec![0, 1, 2])));
+        let before = boxes(&app, 0);
+        drag_page(&mut app, &ctx, (110.0, 190.0), (160.0, 240.0), false);
+        let after = boxes(&app, 0);
+        for (a, b) in after.iter().zip(&before) {
+            assert!((a[0] - b[0] - 50.0).abs() < 0.6 && (a[1] - b[1] - 50.0).abs() < 0.6);
+        }
+    }
+
+    /// ENH-06: a drag that starts on a background (an object covering most of the page)
+    /// that isn't selected draws a rectangle instead of moving it; a click still selects
+    /// it, and then it moves.
+    #[test]
+    fn a_background_not_selected_is_not_dragged_away() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let st = limarepdf_core::PathStyle {
+            fill: Some([0.9, 0.9, 0.9]),
+            stroke: None,
+            line_width: 1.0,
+        };
+        let rect = |p: &mut Pdf, b| p.add_shape(0, limarepdf_core::Shape::Rect, b, &st);
+        assert!(app.tabs[0].edit(&ctx, |p| {
+            rect(p, [0.0, 0.0, 612.0, 792.0])?;
+            rect(p, [100.0, 100.0, 150.0, 130.0])
+        }));
+        app.act(&ctx, Act::Tool(Tool::Select));
+        let before = boxes(&app, 0);
+        drag_page(&mut app, &ctx, (80.0, 80.0), (200.0, 200.0), false);
+        assert_eq!(boxes(&app, 0), before, "the background moved");
+        assert_eq!(
+            held(&app),
+            Some((0, vec![1])),
+            "the shape inside was selected"
+        );
+        click_page(&mut app, &ctx, (400.0, 400.0), false);
+        assert_eq!(
+            held(&app),
+            Some((0, vec![0])),
+            "a click selects the background"
+        );
+        drag_page(&mut app, &ctx, (400.0, 400.0), (420.0, 400.0), false);
+        assert!(
+            (boxes(&app, 0)[0][0] - 20.0).abs() < 0.6,
+            "selected, it moves"
+        );
+    }
+
+    /// ENH-06: a right-click on one of the objects selected keeps them all, for the menu
+    /// for them; on another object it selects that one.
+    #[test]
+    fn a_right_click_on_one_of_several_keeps_them() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = objects_tab(&ctx);
+        app.act(&ctx, Act::Tool(Tool::Select));
+        select(&mut app, &ctx, &[0, 4]);
+        let (min, k) = page_on_screen(&mut app, &ctx);
+        let right = |at: (f32, f32)| {
+            let p = min + egui::vec2(at.0, at.1) * k;
+            let button = |pressed| egui::Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Secondary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            vec![egui::Event::PointerMoved(p), button(true), button(false)]
+        };
+        window(&mut app, &ctx, 1400.0, right((350.0, 190.0)));
+        settle(&mut app, &ctx);
+        assert_eq!(held(&app), Some((0, vec![0, 4])));
+        let esc = key_with(Key::Escape, egui::Modifiers::NONE);
+        window(&mut app, &ctx, 1400.0, vec![esc]);
+        settle(&mut app, &ctx);
+        window(&mut app, &ctx, 1400.0, right((325.0, 275.0)));
+        settle(&mut app, &ctx);
+        assert_eq!(held(&app), Some((0, vec![5])));
+    }
+
+    /// ENH-06: the read tool, the one a document opens with, selects several pictures and
+    /// shapes as the arrow does: Shift+click adds one or takes it out, and Shift+click away
+    /// from them changes nothing. The ones selected move together and a right-click on one
+    /// keeps them. With words selected, Shift+click still extends the words.
+    #[test]
+    fn the_read_tool_selects_several_pictures_and_shapes() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = objects_tab(&ctx);
+        assert_eq!(app.tabs[0].ed.tool, Tool::Read);
+        click_page(&mut app, &ctx, (340.0, 90.0), false);
+        assert_eq!(held(&app), Some((0, vec![0])), "the shape");
+        click_page(&mut app, &ctx, (350.0, 190.0), true);
+        assert_eq!(held(&app), Some((0, vec![0, 4])), "the picture added");
+        assert_eq!(app.tabs[0].ed.heading(), "2 objects");
+        click_page(&mut app, &ctx, (500.0, 40.0), true);
+        assert_eq!(held(&app), Some((0, vec![0, 4])), "Shift+click on nothing");
+        click_page(&mut app, &ctx, (100.0, 87.0), true);
+        assert_eq!(held(&app), Some((0, vec![0, 4])), "Shift+click on text");
+        // Dragged by the shape, both move.
+        let before = boxes(&app, 0);
+        drag_page(&mut app, &ctx, (340.0, 90.0), (360.0, 100.0), false);
+        let after = boxes(&app, 0);
+        for i in [0, 4] {
+            let d = (after[i][0] - before[i][0], after[i][1] - before[i][1]);
+            assert!(
+                (d.0 - 20.0).abs() < 0.6 && (d.1 - 10.0).abs() < 0.6,
+                "object {i} moved by {d:?}"
+            );
+        }
+        assert_eq!(held(&app), Some((0, vec![0, 4])), "still selected");
+        // A right-click on one of them keeps them, for the menu for them.
+        let (min, k) = page_on_screen(&mut app, &ctx);
+        let p = min + egui::vec2(370.0, 200.0) * k;
+        let button = |pressed| egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let right = vec![egui::Event::PointerMoved(p), button(true), button(false)];
+        window(&mut app, &ctx, 1400.0, right);
+        settle(&mut app, &ctx);
+        assert_eq!(held(&app), Some((0, vec![0, 4])), "after a right-click");
+        let esc = key_with(Key::Escape, egui::Modifiers::NONE);
+        window(&mut app, &ctx, 1400.0, vec![esc]);
+        settle(&mut app, &ctx);
+        assert_eq!(held(&app), Some((0, vec![0, 4])), "after Esc");
+        // Away from the right-click, which a click there would make a double-click.
+        click_page(&mut app, &ctx, (400.0, 225.0), true);
+        assert_eq!(held(&app), Some((0, vec![0])), "the picture taken out");
+        // With words selected, Shift+click on a picture extends them, as before.
+        drag_page(&mut app, &ctx, (75.0, 87.0), (120.0, 87.0), false);
+        assert!(app.tabs[0].ed.selection.words().is_some(), "words selected");
+        click_page(&mut app, &ctx, (340.0, 180.0), true);
+        assert!(app.tabs[0].ed.selection.words().is_some(), "words extended");
+        assert_eq!(held(&app), None);
+    }
+
+    /// ENH-06: a click held down longer than egui takes for a click is still one, with the
+    /// read tool and with the arrow: Shift adds the object under it or takes it out, and
+    /// without Shift it selects it alone, a background included, or clears the selection on
+    /// nothing.
+    #[test]
+    fn a_slow_click_is_still_a_click() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = objects_tab(&ctx);
+        slow_click_page(&mut app, &ctx, (340.0, 90.0), false);
+        assert_eq!(held(&app), Some((0, vec![0])), "read tool: the shape");
+        slow_click_page(&mut app, &ctx, (350.0, 190.0), true);
+        assert_eq!(
+            held(&app),
+            Some((0, vec![0, 4])),
+            "read tool: the picture added"
+        );
+        slow_click_page(&mut app, &ctx, (350.0, 190.0), true);
+        assert_eq!(
+            held(&app),
+            Some((0, vec![0])),
+            "read tool: the picture taken out"
+        );
+        app.act(&ctx, Act::Tool(Tool::Select));
+        click_page(&mut app, &ctx, (340.0, 90.0), false);
+        slow_click_page(&mut app, &ctx, (350.0, 190.0), true);
+        assert_eq!(held(&app), Some((0, vec![0, 4])), "the picture added");
+        slow_click_page(&mut app, &ctx, (500.0, 40.0), true);
+        assert_eq!(held(&app), Some((0, vec![0, 4])), "Shift on nothing");
+        slow_click_page(&mut app, &ctx, (350.0, 190.0), true);
+        assert_eq!(held(&app), Some((0, vec![0])), "the picture taken out");
+        slow_click_page(&mut app, &ctx, (325.0, 275.0), false);
+        assert_eq!(held(&app), Some((0, vec![5])), "the group alone");
+        slow_click_page(&mut app, &ctx, (500.0, 40.0), false);
+        assert_eq!(held(&app), None, "on nothing");
+        // A background, covering the page, which a drag doesn't take.
+        let st = limarepdf_core::PathStyle {
+            fill: Some([0.9, 0.9, 0.9]),
+            stroke: None,
+            line_width: 1.0,
+        };
+        let page = [0.0, 0.0, 612.0, 792.0];
+        let rect = |p: &mut Pdf| p.add_shape(0, limarepdf_core::Shape::Rect, page, &st);
+        assert!(app.tabs[0].edit(&ctx, rect));
+        settle(&mut app, &ctx);
+        let n = boxes(&app, 0).len();
+        slow_click_page(&mut app, &ctx, (500.0, 400.0), false);
+        assert_eq!(held(&app), Some((0, vec![n - 1])), "the background");
     }
 
     fn press(p: egui::Pos2, pressed: bool) -> egui::Event {
@@ -9371,6 +10912,7 @@ mod tests {
             std::env::temp_dir().join(format!("limarepdf-app-{}-typed.pdf", std::process::id()));
         app.tabs[0].path = Some(path.clone());
         app.act(&ctx, Act::Save);
+        saves_done(&mut app, &ctx);
         let back = Pdf::from_bytes(&std::fs::read(&path).unwrap(), None).unwrap();
         let _ = std::fs::remove_file(&path);
         let texts: Vec<String> = back.annotations().into_iter().map(|a| a.contents).collect();
@@ -9501,6 +11043,7 @@ mod tests {
             std::env::temp_dir().join(format!("limarepdf-app-{}-props.pdf", std::process::id()));
         app.tabs[0].path = Some(path.clone());
         app.act(&ctx, Act::Save);
+        saves_done(&mut app, &ctx);
         let back = Pdf::from_bytes(&std::fs::read(&path).unwrap(), None).unwrap();
         let _ = std::fs::remove_file(&path);
         assert_eq!(back.info().title.as_deref(), Some("Walrus notes!?"));
@@ -10640,6 +12183,84 @@ mod tests {
         dir
     }
 
+    /// The timing log (REL-07) by the whole route: a file opened and a key pressed with
+    /// `LIMAREPDF_TIMING` set are logged from the read to the first page drawn, and from the
+    /// key to the frame built after it. Run in a copy of the tests, as the log is the
+    /// process's.
+    #[test]
+    fn the_timing_log_follows_a_file_from_its_read_to_its_page_drawn() {
+        let dir = test_dir("timing");
+        let log = dir.join("timing.tsv");
+        pages_file(&dir.join("doc.pdf"), 300.0, 2, None);
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "app::tests::timed_with_the_log_on"])
+            .args(["--ignored", "--test-threads=1", "--nocapture"])
+            .env(timing::VAR, &log)
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&out.stdout).to_string()
+            + &String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success() && said.contains("1 passed"), "{said}");
+        let text = std::fs::read_to_string(&log).unwrap();
+        let lines: Vec<Vec<&str>> = text.lines().map(|l| l.split('\t').collect()).collect();
+        let at = |event: &str, detail: &str| {
+            let found = lines
+                .iter()
+                .position(|l| l[2] == event && l[3].starts_with(detail));
+            found.unwrap_or_else(|| panic!("no {event} {detail} in\n{text}"))
+        };
+        assert_eq!(at("start", ""), 0);
+        assert!(at("open start", "") < at("open end", ""));
+        assert!(at("open end", "") < at("render start", "page 1"));
+        assert!(at("render end", "page 1") < at("page drawn", "tab 1 page 1 at"));
+        let key = at("input", "key Escape down");
+        assert!(lines[key..].iter().any(|l| l[2] == "frame built"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The part of [`the_timing_log_follows_a_file_from_its_read_to_its_page_drawn`] run with
+    /// the log on; without it it does nothing.
+    #[test]
+    #[ignore = "run by the_timing_log_follows_a_file_from_its_read_to_its_page_drawn"]
+    fn timed_with_the_log_on() {
+        let Some(log) = std::env::var_os(timing::VAR) else {
+            return;
+        };
+        timing::start();
+        assert!(timing::on());
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let doc = Path::new(&log).with_file_name("doc.pdf");
+        open_and_wait(&mut app, &ctx, &doc, 1);
+        // A frame as eframe runs it: the input through the hook, then the window.
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let mut raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 800.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            eframe::App::raw_input_hook(app, &ctx, &mut raw);
+            let mut f = eframe::Frame::_new_kittest();
+            let mut out = ctx.run_ui(raw, |ui| eframe::App::ui(app, ui, &mut f));
+            out.textures_delta.clear();
+        };
+        let drawn = || std::fs::read_to_string(&log).is_ok_and(|t| t.contains("\tpage drawn\t"));
+        for _ in 0..500 {
+            frame(&mut app, vec![]);
+            if drawn() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(drawn(), "the first page was never drawn");
+        frame(&mut app, vec![key_with(Key::Escape, Default::default())]);
+    }
+
     /// Runs the ignored test `test` in a copy of the tests with the stand-ins in `dir` first
     /// on its PATH, so no job reaches a real printer and the rest of the tests keep their
     /// PATH.
@@ -10982,6 +12603,7 @@ mod tests {
             app.tabs[i].path = Some(path.clone());
             app.act(&ctx, Act::Save);
         }
+        saves_done(&mut app, &ctx);
         let back = paths.map(|p| {
             let pdf = Pdf::open(&p, None).unwrap();
             let _ = std::fs::remove_file(&p);
@@ -11480,10 +13102,12 @@ mod tests {
         app.active = 0;
         fill(&mut app, &ctx, "Name", "First tab saved");
         app.act(&ctx, Act::Save);
+        saves_done(&mut app, &ctx);
         assert_eq!(field_in(&path, "Name"), "First tab saved");
         app.active = app.tabs.len() - 1;
         fill(&mut app, &ctx, "Notes", "Second tab saved");
         app.act(&ctx, Act::Save);
+        saves_done(&mut app, &ctx);
         assert_eq!(field_in(&path, "Name"), "First tab saved");
         assert_eq!(app.tabs.len(), 1, "a second tab of the file");
         assert_eq!(app.tabs[app.active].id, first);
@@ -11505,6 +13129,7 @@ mod tests {
         form_file(&path, "Other app");
         fill(&mut app, &ctx, "Notes", "Ours");
         app.act(&ctx, Act::Save);
+        saves_done(&mut app, &ctx);
         assert_eq!(field_in(&path, "Name"), "Other app", "replaced");
         assert!(app.tabs[0].dirty, "the change counts as saved");
         assert_eq!(saved_field(&app.tabs[0], "Notes"), "Ours", "lost");
@@ -11521,6 +13146,324 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         panic!("nothing came");
+    }
+
+    /// Takes in the results of the saves being written (ENH-35), once they are all written,
+    /// and runs the dialogs once: what waited for them (closing, quitting) goes on there.
+    pub(super) fn saves_done(app: &mut App, ctx: &egui::Context) {
+        wait_for(app, ctx, |a| a.saves.is_empty());
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| app.dialogs(ui.ctx()));
+        out.textures_delta.clear();
+    }
+
+    // ------------------------------------------------ batch 22: search as you type
+
+    /// A tab whose pages hold `lines`, one line of text a page (none for "").
+    fn text_tab(app: &mut App, ctx: &egui::Context, lines: &[&str]) {
+        let mut pdf = Pdf::new();
+        for (i, line) in lines.iter().enumerate() {
+            pdf.insert_blank(i, 612.0, 792.0).unwrap();
+            if !line.is_empty() {
+                let font = FontChoice::default();
+                pdf.add_text(i, (72.0, 100.0), line, font, 20.0, [0.0; 3])
+                    .unwrap();
+            }
+        }
+        assert!(app.add_tab(ctx, pdf, None, None, false));
+    }
+
+    /// Draw frames with `frame` until the active tab's search has all its matches.
+    fn searched_with(app: &mut App, mut frame: impl FnMut(&mut App)) {
+        for _ in 0..500 {
+            frame(app);
+            let t = &app.tabs[app.active];
+            if t.search.complete(&t.query) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the search didn't finish");
+    }
+
+    fn searched(app: &mut App, ctx: &egui::Context) {
+        searched_with(app, |a| {
+            window(a, ctx, 1400.0, vec![]);
+        });
+    }
+
+    /// The window's search results: each page heading's and each row's name, in order.
+    fn result_rows(tree: &egui::accesskit::TreeUpdate) -> Vec<String> {
+        use egui::accesskit::Role;
+        let mut rows: Vec<(f64, String)> = tree
+            .nodes
+            .iter()
+            .filter_map(|(_, n)| {
+                // A label's text is its value.
+                let name = match n.role() {
+                    // Not the status bar's "Page 1 of 3".
+                    Role::Label => n
+                        .value()
+                        .filter(|v| v.starts_with("Page ") && !v.contains(" of "))?,
+                    Role::Button => n
+                        .label()
+                        .filter(|l| l.starts_with("Page ") && l.contains(": "))?,
+                    _ => return None,
+                };
+                Some((n.bounds().map_or(0.0, |b| b.y0), name.to_string()))
+            })
+            .collect();
+        rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+        rows.into_iter().map(|r| r.1).collect()
+    }
+
+    /// ENH-02: typing in the search field shows Search results at once, but searches only
+    /// once the typing pauses; then the matches come, read by page (ENH-03).
+    #[test]
+    fn search_waits_for_a_pause_in_the_typing() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        ctx.enable_accesskit();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        text_tab(&mut app, &ctx, &["Walrus here", "", "the walrus again"]);
+        let ty = Typist::new(&ctx);
+        ty.pause(&mut app);
+        app.act(&ctx, Act::Find);
+        ty.frame(&mut app, vec![]);
+        ty.frame(&mut app, vec![egui::Event::Text("walrus".into())]);
+        let t = &app.tabs[0];
+        assert_eq!(t.query, "walrus");
+        assert!(app.side.shown() && t.side == Side::Search);
+        assert!(t.search.asked.is_none() && t.hits.is_empty());
+        // A tenth of a second later, still nothing.
+        ty.frame(&mut app, vec![]);
+        ty.frame(&mut app, vec![]);
+        assert!(app.tabs[0].search.asked.is_none());
+        searched_with(&mut app, |a| {
+            ty.frame(a, vec![]);
+        });
+        let pages: Vec<usize> = app.tabs[0].hits.iter().map(|h| h.page).collect();
+        assert_eq!(pages, [0, 2]);
+        let tree = ty.pause(&mut app);
+        assert!(shows(&tree, "2 matches"));
+        assert_eq!(
+            result_rows(&tree),
+            [
+                "Page 1",
+                "Page 1: Walrus here",
+                "Page 3",
+                "Page 3: the walrus again"
+            ]
+        );
+    }
+
+    /// ENH-02 (the user's choice): typing goes to the first match at or after the page being
+    /// read, not to the document's first.
+    #[test]
+    fn typing_goes_to_the_first_match_from_the_page_being_read() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        ctx.enable_accesskit();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        text_tab(&mut app, &ctx, &["walrus", "", "", "walrus", ""]);
+        let ty = Typist::new(&ctx);
+        ty.pause(&mut app);
+        app.tabs[0].go_to(2);
+        ty.pause(&mut app);
+        assert_eq!(app.tabs[0].current, 2);
+        app.act(&ctx, Act::Find);
+        ty.frame(&mut app, vec![]);
+        ty.frame(&mut app, vec![egui::Event::Text("walrus".into())]);
+        searched_with(&mut app, |a| {
+            ty.frame(a, vec![]);
+        });
+        ty.pause(&mut app);
+        let t = &app.tabs[0];
+        assert_eq!((t.hit_idx, t.hits[t.hit_idx].page), (1, 3));
+        assert_eq!(t.current, 3);
+    }
+
+    /// ENH-02: Enter searches at once when the typing hasn't been searched yet, then goes to
+    /// the next match, Shift+Enter to the one before, round the ends; the field keeps the
+    /// keyboard. ◀ and ▶ step too.
+    #[test]
+    fn enter_and_the_arrows_step_through_the_matches() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        ctx.enable_accesskit();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        text_tab(&mut app, &ctx, &["walrus", "walrus", "walrus"]);
+        let ty = Typist::new(&ctx);
+        ty.pause(&mut app);
+        app.act(&ctx, Act::Find);
+        ty.frame(&mut app, vec![]);
+        ty.frame(&mut app, vec![egui::Event::Text("walrus".into())]);
+        let none = egui::Modifiers::NONE;
+        ty.frame(&mut app, vec![key_with(Key::Enter, none)]);
+        assert!(
+            app.tabs[0].search.asked.is_some(),
+            "Enter didn't search at once"
+        );
+        searched_with(&mut app, |a| {
+            ty.frame(a, vec![]);
+        });
+        assert_eq!(app.tabs[0].hit_idx, 0);
+        let mut steps = Vec::new();
+        for shift in [false, false, false, true] {
+            let m = if shift { egui::Modifiers::SHIFT } else { none };
+            ty.key(&mut app, Key::Enter, m);
+            steps.push(app.tabs[0].hit_idx);
+        }
+        assert_eq!(steps, [1, 2, 0, 2]);
+        let tree = ty.pause(&mut app);
+        ty.click(&mut app, middle(&tree, "Previous match"));
+        assert_eq!(app.tabs[0].hit_idx, 1);
+        let tree = ty.pause(&mut app);
+        ty.click(&mut app, middle(&tree, "Next match"));
+        assert_eq!(app.tabs[0].hit_idx, 2);
+        // A row clicked is the current match.
+        let tree = ty.pause(&mut app);
+        ty.click(&mut app, middle(&tree, "Page 1: walrus"));
+        assert_eq!(app.tabs[0].hit_idx, 0);
+    }
+
+    /// ENH-02: the matches shown are always the query's: changing the query takes the old
+    /// ones away at once, and emptying the field leaves none, with no search.
+    #[test]
+    fn matches_of_an_older_query_are_never_shown() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        ctx.enable_accesskit();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        text_tab(&mut app, &ctx, &["walrus", "walrus"]);
+        let ty = Typist::new(&ctx);
+        ty.pause(&mut app);
+        app.act(&ctx, Act::Find);
+        ty.frame(&mut app, vec![]);
+        ty.frame(&mut app, vec![egui::Event::Text("walrus".into())]);
+        searched_with(&mut app, |a| {
+            ty.frame(a, vec![]);
+        });
+        assert_eq!(app.tabs[0].hits.len(), 2);
+        let tree = ty.frame(&mut app, vec![egui::Event::Text("x".into())]);
+        assert!(app.tabs[0].hits.is_empty());
+        assert!(result_rows(&tree).is_empty());
+        searched_with(&mut app, |a| {
+            ty.frame(a, vec![]);
+        });
+        let tree = ty.pause(&mut app);
+        assert!(app.tabs[0].hits.is_empty() && shows(&tree, "No matches"));
+        app.tabs[0].query.clear();
+        ty.frame(&mut app, vec![]);
+        let t = &app.tabs[0];
+        assert!(t.hits.is_empty() && t.search.asked.is_none() && t.search.typed.is_none());
+    }
+
+    /// ENH-02: an edit searches again at once, the old matches gone meanwhile, and the
+    /// current match stays the one it was.
+    #[test]
+    fn an_edit_searches_again_and_keeps_the_current_match() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        ctx.enable_accesskit();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        text_tab(&mut app, &ctx, &["walrus", "", "walrus"]);
+        let t = &mut app.tabs[0];
+        t.query = "walrus".into();
+        t.run_search();
+        searched(&mut app, &ctx);
+        app.tabs[0].choose_hit(1);
+        let t = &mut app.tabs[0];
+        let font = FontChoice::default();
+        let add = |p: &mut Pdf| p.add_text(1, (72.0, 100.0), "walrus", font, 20.0, [0.0; 3]);
+        assert!(t.edit(&ctx, add));
+        assert!(t.hits.is_empty());
+        searched(&mut app, &ctx);
+        let t = &app.tabs[0];
+        let pages: Vec<usize> = t.hits.iter().map(|h| h.page).collect();
+        assert_eq!(pages, [0, 1, 2]);
+        assert_eq!(t.hits[t.hit_idx].page, 2);
+    }
+
+    /// Mark all for redaction marks every match, also while the search is still running.
+    #[test]
+    fn mark_all_for_redaction_marks_every_match_even_before_the_search_ends() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        text_tab(&mut app, &ctx, &["walrus", "", "walrus", "walrus"]);
+        let t = &mut app.tabs[0];
+        t.query = "walrus".into();
+        t.run_search();
+        t.mark_results_for_redaction(&ctx, "Tester");
+        let pages: Vec<usize> = t.pdf.redaction_marks().iter().map(|m| m.0).collect();
+        assert_eq!(pages, [0, 2, 3]);
+    }
+
+    /// ENH-36: View > Use the document's page labels chooses what pages are called in search
+    /// results, the thumbnails and a new bookmark; the status bar shows both either way.
+    #[test]
+    fn pages_are_called_by_their_labels_or_their_numbers() {
+        use limarepdf_core::{LabelRange, LabelStyle};
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        ctx.enable_accesskit();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        text_tab(&mut app, &ctx, &["walrus", "", "walrus"]);
+        let roman = LabelRange {
+            page: 0,
+            style: Some(LabelStyle::LowerRoman),
+            prefix: String::new(),
+            first: 1,
+        };
+        assert!(app.tabs[0].edit(&ctx, |p| p.set_label_ranges(&[roman])));
+        app.tabs[0].go_to(2);
+        settle(&mut app, &ctx);
+        let t = &mut app.tabs[0];
+        t.query = "walrus".into();
+        t.run_search();
+        searched(&mut app, &ctx);
+        let mut seen = Vec::new();
+        for labels in [true, false, true] {
+            if app.settings.page_labels != labels {
+                app.act(&ctx, Act::TogglePageLabels);
+            }
+            assert_eq!(app.tabs[0].use_labels, labels);
+            app.act(&ctx, Act::SearchView);
+            let tree = settle(&mut app, &ctx);
+            let rows = result_rows(&tree);
+            let status = shows(&tree, "Page iii (3 of 3)");
+            app.act(&ctx, Act::PagesView);
+            let tree = settle(&mut app, &ctx);
+            // The page shown is "Page 3" either way; its thumbnail is called as chosen.
+            let named = |name: &str| {
+                tree.nodes
+                    .iter()
+                    .filter(|(_, n)| n.label() == Some(name))
+                    .count()
+            };
+            seen.push((rows, status, [named("Page iii"), named("Page 3")]));
+        }
+        let rows = |third: &str| {
+            vec![
+                format!("Page {}", if third == "iii" { "i" } else { "1" }),
+                format!("Page {}: walrus", if third == "iii" { "i" } else { "1" }),
+                format!("Page {third}"),
+                format!("Page {third}: walrus"),
+            ]
+        };
+        assert_eq!(seen[0], (rows("iii"), true, [1, 1]));
+        assert_eq!(seen[1], (rows("3"), true, [0, 2]));
+        assert_eq!(seen[2], seen[0]);
+        // A new bookmark is called the same way.
+        app.act(&ctx, Act::TogglePageLabels);
+        app.act(&ctx, Act::Bookmarks);
+        click_named(&mut app, &ctx, "Add bookmark");
+        let titles: Vec<String> = app.tabs[0]
+            .pdf
+            .outline()
+            .into_iter()
+            .map(|i| i.title)
+            .collect();
+        assert_eq!(titles, ["Page 3"]);
     }
 
     /// One file opened by several paths at once, while the first is still being read, and
@@ -11581,6 +13524,7 @@ mod tests {
         std::fs::rename(dir.join("copy"), &path).unwrap();
         fill(&mut app, &ctx, "Notes", "Ours");
         app.act(&ctx, Act::Save);
+        saves_done(&mut app, &ctx);
         assert!(matches!(app.dialog, Dialog::None), "the same bytes");
         assert_eq!(field_in(&path, "Notes"), "Ours");
 
@@ -11588,6 +13532,7 @@ mod tests {
         let theirs = std::fs::read(&path).unwrap();
         fill(&mut app, &ctx, "Notes", "Ours again");
         app.act(&ctx, Act::Save);
+        assert!(app.saves.is_empty(), "it saved without asking");
         assert!(matches!(app.dialog, Dialog::ConfirmStale(..)));
         let banner = |app: &App| {
             let b = app.tabs[0].banners.iter();
@@ -11602,12 +13547,14 @@ mod tests {
 
         app.act(&ctx, Act::Save);
         click(&mut app, &ctx, "Replace");
+        saves_done(&mut app, &ctx);
         assert_eq!(field_in(&path, "Name"), "AlphaUnique");
         assert_eq!(field_in(&path, "Notes"), "Ours again");
         assert!(!app.tabs[0].dirty);
         assert_eq!(banner(&app), 0);
         fill(&mut app, &ctx, "Notes", "Third");
         app.act(&ctx, Act::Save);
+        saves_done(&mut app, &ctx);
         assert!(matches!(app.dialog, Dialog::None), "its own save");
         assert_eq!(field_in(&path, "Notes"), "Third");
 
@@ -11615,6 +13562,7 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         fill(&mut app, &ctx, "Notes", "Fourth");
         app.act(&ctx, Act::Save);
+        saves_done(&mut app, &ctx);
         assert!(matches!(app.dialog, Dialog::None));
         assert_eq!(field_in(&path, "Notes"), "Fourth");
         std::fs::remove_dir_all(&dir).unwrap();
@@ -11679,6 +13627,7 @@ mod tests {
         // Its Save replaces the file without asking: it is what was read.
         fill(&mut app, &ctx, "Notes", "After reload");
         app.act(&ctx, Act::Save);
+        saves_done(&mut app, &ctx);
         assert!(matches!(app.dialog, Dialog::None));
         assert_eq!(field_in(&path, "Notes"), "After reload");
 
@@ -12217,6 +14166,7 @@ mod tests {
         // Save, about a tab behind the one in front.
         app.close_asking(2);
         click(&mut app, &ctx, "Save");
+        saves_done(&mut app, &ctx);
         assert_eq!(pages_in(&c), 2, "not saved");
         assert_eq!(ids(&app), [front, new], "the saved tab wasn't closed");
         assert_eq!(app.tabs[app.active].id, front, "the tab in front changed");
@@ -12228,6 +14178,7 @@ mod tests {
         SAVE_AS.with(|s| s.set(Some(dir.join("new"))));
         app.close_asking(1);
         click(&mut app, &ctx, "Save as…");
+        saves_done(&mut app, &ctx);
         assert_eq!(pages_in(&dir.join("new.pdf")), 2, "not saved as a file");
         assert_eq!(ids(&app), [front]);
         assert!(app.tabs[0].dirty && !a.exists(), "the tab left changed");
@@ -12246,6 +14197,7 @@ mod tests {
         let failing = unsaved_tab(&mut app, &ctx, Some(dir.join("gone").join("a.pdf")));
         app.close_asking(0);
         click(&mut app, &ctx, "Save");
+        saves_done(&mut app, &ctx);
         assert!(matches!(&app.dialog, Dialog::Message(t, _) if t == "Save failed"));
         click(&mut app, &ctx, "OK");
         assert!(
@@ -12313,6 +14265,7 @@ mod tests {
         click(&mut app, &ctx, "Review…");
         assert_eq!(asked(&app), Some(1));
         click(&mut app, &ctx, "Save");
+        saves_done(&mut app, &ctx);
         assert_eq!(pages_in(&files[0]), 2, "not saved");
         assert_eq!(asked(&app), Some(2), "didn't go on to the next");
         click(&mut app, &ctx, "Cancel");
@@ -12329,6 +14282,7 @@ mod tests {
         assert_eq!(asked(&app), Some(3));
         assert!(!app.quit_ok, "quit with a document not yet asked about");
         click(&mut app, &ctx, "Save");
+        saves_done(&mut app, &ctx);
         assert_eq!(pages_in(&files[2]), 2);
         assert!(app.quit_ok, "didn't quit");
         assert!(!files[1].exists(), "the discarded document was saved");
@@ -12356,7 +14310,9 @@ mod tests {
         close_window(&mut app, &ctx);
         click(&mut app, &ctx, "Review…");
         click(&mut app, &ctx, "Save");
+        saves_done(&mut app, &ctx);
         click(&mut app, &ctx, "Save");
+        saves_done(&mut app, &ctx);
         assert!(matches!(&app.dialog, Dialog::Message(t, _) if t == "Save failed"));
         click(&mut app, &ctx, "OK");
         assert!(!app.quit_ok, "quit with a document that failed to save");
@@ -12397,6 +14353,7 @@ mod tests {
             "the save's question is gone"
         );
         click(&mut app, &ctx, "Replace original");
+        saves_done(&mut app, &ctx);
         assert_eq!(pages_in(&path), 2);
         assert_eq!(ids(&app), [front], "the saved tab wasn't closed");
         // Quitting from the middle of a save: Review asks about each document once.
@@ -12414,6 +14371,218 @@ mod tests {
         }
         assert_eq!(asked, [front, other]);
         assert!(app.quit_ok);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// ENH-35: the file is written on a thread of its own, the next save's held back by
+    /// the test until it says go. The window meanwhile keeps drawing frames, with the busy
+    /// sign, and the tab is unsaved until the write is done; then it says Saved, as before.
+    #[test]
+    fn saving_writes_on_its_own_thread_while_the_window_keeps_drawing() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("save-thread");
+        let path = dir.join("a.pdf");
+        unsaved_tab(&mut app, &ctx, Some(path.clone()));
+        let (go, gate) = channel();
+        app.save_gate = Some(gate);
+        app.act(&ctx, Act::Save);
+        let tree = settle(&mut app, &ctx);
+        assert!(shows(&tree, "Saving a.pdf…"), "no busy sign");
+        assert!(!path.exists(), "written before the window drew");
+        assert!(app.tabs[0].dirty, "saved before it was written");
+        go.send(()).unwrap();
+        saves_done(&mut app, &ctx);
+        let tree = settle(&mut app, &ctx);
+        assert!(!shows(&tree, "Saving a.pdf…"), "the busy sign stayed");
+        assert_eq!(app.status, format!("Saved {}", path.display()));
+        assert_eq!(pages_in(&path), 2);
+        assert!(!app.tabs[0].dirty);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// ENH-35: the document can be changed while it is written. The file gets it as it was
+    /// when saved, and the tab, changed since, stays unsaved. A question asked about the
+    /// tab meanwhile still acts on it once the save is done.
+    #[test]
+    fn a_document_changed_while_it_is_saved_stays_unsaved() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("save-changed");
+        let path = dir.join("form.pdf");
+        form_file(&path, "AlphaUnique");
+        open_and_wait(&mut app, &ctx, &path, 1);
+        fill(&mut app, &ctx, "Notes", "Saved");
+        let (go, gate) = channel();
+        app.save_gate = Some(gate);
+        app.act(&ctx, Act::Save);
+        fill(&mut app, &ctx, "Notes", "After");
+        app.act(&ctx, Act::FlattenForm);
+        assert!(matches!(app.dialog, Dialog::ConfirmFlatten(_)));
+        go.send(()).unwrap();
+        saves_done(&mut app, &ctx);
+        assert_eq!(field_in(&path, "Notes"), "Saved");
+        assert!(
+            app.tabs[0].dirty,
+            "a change made during the save counts as saved"
+        );
+        assert_eq!(saved_field(&app.tabs[0], "Notes"), "After");
+        click(&mut app, &ctx, "Flatten form");
+        assert!(
+            matches!(app.dialog, Dialog::None),
+            "the question no longer applied"
+        );
+        assert!(app.tabs[0].pdf.form_fields().is_empty(), "not flattened");
+        // Saved again, with nothing changed during the save, it is saved.
+        app.act(&ctx, Act::Save);
+        saves_done(&mut app, &ctx);
+        assert!(!app.tabs[0].dirty);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// ENH-35: Save chosen again while the tab's save is written saves again once it ends,
+    /// with what changed meanwhile; Reload and signing wait, saying so.
+    #[test]
+    fn saving_again_reloading_and_signing_wait_for_the_save() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("save-again");
+        let path = dir.join("a.pdf");
+        unsaved_tab(&mut app, &ctx, Some(path.clone()));
+        let (go, gate) = channel();
+        app.save_gate = Some(gate);
+        app.act(&ctx, Act::Save);
+        let c = app.state(&ctx);
+        for a in [Act::Reload, Act::SignDigital, Act::Certify] {
+            assert!(!(actions::get(a).enabled)(&c), "{a:?} on while saving");
+        }
+        app.act(&ctx, Act::Reload);
+        assert_eq!(message(&app).0, "Still saving");
+        app.dialog = Dialog::None;
+        assert!(app.tabs[0].edit(&ctx, |p| p.insert_blank(2, 300.0, 500.0)));
+        app.act(&ctx, Act::Save);
+        assert_eq!(app.saves.len(), 1, "two saves of a tab at once");
+        go.send(()).unwrap();
+        wait_for(&mut app, &ctx, |a| a.saves.is_empty());
+        assert_eq!(pages_in(&path), 2);
+        assert!(app.tabs[0].dirty);
+        // The second save starts once the first has ended.
+        saves_done(&mut app, &ctx);
+        assert!(app.after_saves.is_empty());
+        saves_done(&mut app, &ctx);
+        assert_eq!(pages_in(&path), 3);
+        assert!(!app.tabs[0].dirty);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// ENH-35: closing the tab, quitting and closing the window wait for a save being
+    /// written, then go on as usual (here with nothing left unsaved, without asking). At
+    /// exit, a save still being written is finished first.
+    #[test]
+    fn closing_and_quitting_wait_for_a_save() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let dir = test_dir("save-close");
+        let path = dir.join("a.pdf");
+        let start = |path: &Path| {
+            let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+            unsaved_tab(&mut app, &ctx, Some(path.to_path_buf()));
+            let (go, gate) = channel();
+            app.save_gate = Some(gate);
+            app.act(&ctx, Act::Save);
+            (app, go)
+        };
+        let (mut app, go) = start(&path);
+        app.close_asking(0);
+        assert_eq!(app.tabs.len(), 1, "closed before it was saved");
+        assert!(
+            matches!(app.dialog, Dialog::None),
+            "asked about a tab being saved"
+        );
+        go.send(()).unwrap();
+        saves_done(&mut app, &ctx);
+        assert!(app.tabs.is_empty(), "not closed once saved");
+        assert_eq!(pages_in(&path), 2);
+
+        for close in [false, true] {
+            let (mut app, go) = start(&path);
+            if close {
+                close_window(&mut app, &ctx);
+            } else {
+                app.act(&ctx, Act::Quit);
+            }
+            assert!(
+                !app.quit_ok && matches!(app.dialog, Dialog::None),
+                "{close}"
+            );
+            go.send(()).unwrap();
+            saves_done(&mut app, &ctx);
+            assert!(app.quit_ok, "didn't quit once saved ({close})");
+        }
+
+        std::fs::remove_file(&path).unwrap();
+        let (mut app, go) = start(&path);
+        let later = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            go.send(()).unwrap();
+        });
+        eframe::App::on_exit(&mut app);
+        assert_eq!(pages_in(&path), 2, "the exit didn't wait for the save");
+        later.join().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// ENH-35: a check of the files, done when the window comes back to the front, that
+    /// ends while a tab's own save replaces its file doesn't say another app changed it.
+    #[test]
+    fn a_file_check_during_its_save_is_left_out() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("save-check");
+        let path = dir.join("form.pdf");
+        form_file(&path, "AlphaUnique");
+        open_and_wait(&mut app, &ctx, &path, 1);
+        fill(&mut app, &ctx, "Notes", "Ours");
+        let (go, gate) = channel();
+        app.save_gate = Some(gate);
+        app.act(&ctx, Act::Save);
+        let known = app.tabs[0].disk.clone().unwrap();
+        form_file(&dir.join("other.pdf"), "Other");
+        let other = disk::version(&dir.join("other.pdf")).unwrap();
+        let found = vec![(app.tabs[0].id, known, OnDisk::Changed(other))];
+        app.tx.send(Loaded::Disk(found)).unwrap();
+        app.poll_loads(&ctx);
+        let mut b = app.tabs[0].banners.iter();
+        assert!(
+            !b.any(|b| b.kind == BannerKind::ChangedOnDisk),
+            "said changed"
+        );
+        go.send(()).unwrap();
+        saves_done(&mut app, &ctx);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A file whose time changed, or is too close to its reading to trust (PB-28), is read
+    /// in full at each check; found unchanged, it becomes the version known, so that Save
+    /// doesn't read the whole file again at every check before writing (ENH-35's
+    /// measurement).
+    #[test]
+    fn a_file_found_unchanged_becomes_the_version_known() {
+        let ctx = egui::Context::default();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let dir = test_dir("save-known");
+        let path = dir.join("form.pdf");
+        form_file(&path, "AlphaUnique");
+        open_and_wait(&mut app, &ctx, &path, 1);
+        let before = app.tabs[0].disk.clone();
+        // Touched, as a sync tool might: the same bytes with a new time.
+        let f = std::fs::File::options().write(true).open(&path).unwrap();
+        f.set_modified(std::time::SystemTime::now()).unwrap();
+        drop(f);
+        assert!(app.stale(0, &path).is_none());
+        assert_ne!(app.tabs[0].disk, before, "the file read again isn't known");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -12558,5 +14727,356 @@ mod tests {
         );
         assert!(app.tabs[0].state() == state);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // ------------------------------------------- batch 24: formatting selected words
+
+    /// The font of the lines here: a subset of Helvetica Oblique, which new text can't be
+    /// written in, so text written again comes out in another font.
+    const SUBSET: &str = "ABCDEF+Helvetica-Oblique";
+
+    /// A tab whose lines, all 20 points in [`SUBSET`], are on page 1 "one two three" and
+    /// "four five six" ("five" red), and on page 2 "seven eight nine" and the invisible
+    /// (recognised) "hidden words".
+    fn subset_tab(app: &mut App, ctx: &egui::Context) {
+        use lopdf::{dictionary, Dictionary, Object, Stream};
+        let mut pdf = Pdf::new();
+        let contents = [
+            "BT /F3 20 Tf 72 700 Td (one two three) Tj ET\n\
+             BT /F3 20 Tf 72 650 Td (four ) Tj 1 0 0 rg (five) Tj 0 0 0 rg ( six) Tj ET",
+            "BT /F3 20 Tf 72 700 Td (seven eight nine) Tj ET\n\
+             BT 3 Tr /F3 20 Tf 72 600 Td (hidden words) Tj ET",
+        ];
+        for (i, c) in contents.iter().enumerate() {
+            pdf.insert_blank(i, 612.0, 792.0).unwrap();
+            let font = pdf.doc.add_object(dictionary! {
+                "Type" => "Font", "Subtype" => "Type1", "BaseFont" => SUBSET,
+                "Encoding" => "WinAnsiEncoding",
+            });
+            let s = (pdf.doc).add_object(Stream::new(Dictionary::new(), c.as_bytes().to_vec()));
+            let page = pdf.page_ids()[i];
+            let d = pdf.doc.get_dictionary_mut(page).unwrap();
+            d.set("Contents", Object::Reference(s));
+            let fonts = dictionary! { "F3" => font };
+            d.set("Resources", dictionary! { "Font" => fonts });
+        }
+        assert!(app.add_tab(ctx, pdf, None, None, false));
+    }
+
+    /// Page `page`'s lines in `pdf`, by their text: each part's text and font, parts next
+    /// to each other in one font (in two font objects, or two colours) together.
+    fn line_fonts(pdf: &Pdf, page: usize) -> Vec<Vec<(String, String)>> {
+        let mut lines: Vec<Vec<(String, String)>> = (pdf.page_objects(page).unwrap())
+            .into_iter()
+            .filter_map(|o| {
+                let text: Vec<char> = o.text?.chars().collect();
+                let mut parts: Vec<(String, String)> = Vec::new();
+                for s in &o.spans {
+                    let words: String = text[s.chars.0..s.chars.1].iter().collect();
+                    match parts.last_mut() {
+                        Some((t, f)) if *f == s.font_name => t.push_str(&words),
+                        _ => parts.push((words, s.font_name.clone())),
+                    }
+                }
+                Some(parts)
+            })
+            .collect();
+        lines.sort();
+        lines
+    }
+
+    /// The text of the toast for the tab in front, if one shows.
+    fn toast(app: &App) -> Option<String> {
+        let front = app.tabs.get(app.active).map(|t| t.id);
+        let t = app.toasts.iter().find(|t| Some(t.tab) == front)?;
+        Some(t.text.clone())
+    }
+
+    /// Lines of parts, each part's text and font, as [`line_fonts`] gives them.
+    fn fonts_are(lines: &[&[(&str, &str)]]) -> Vec<Vec<(String, String)>> {
+        let line = |parts: &&[(&str, &str)]| {
+            (parts.iter())
+                .map(|(t, f)| (t.to_string(), f.to_string()))
+                .collect()
+        };
+        lines.iter().map(line).collect()
+    }
+
+    /// A window with the subset tab and the words from `anchor` to `end` selected with the
+    /// read tool.
+    fn words_selected(
+        ctx: &egui::Context,
+        anchor: crate::selection::WordAt,
+        end: crate::selection::WordAt,
+    ) -> App {
+        ctx.enable_accesskit();
+        theme::install(ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        subset_tab(&mut app, ctx);
+        settle(&mut app, ctx);
+        app.tabs[0].ed.selection = Selection::Words { anchor, end };
+        settle(&mut app, ctx);
+        app
+    }
+
+    /// D1's 1.0 baseline (ENH-05): words selected with the read tool across lines and pages,
+    /// then Ctrl+B. Those words are bold and still selected; the words around them keep
+    /// their own font, the subset, as do the other lines; the same after saving and
+    /// reopening; one Undo takes it all back.
+    #[test]
+    fn ctrl_b_makes_words_selected_across_lines_and_pages_bold() {
+        let ctx = egui::Context::default();
+        let mut app = words_selected(&ctx, (0, 2), (1, 1));
+        let (undo, before) = (app.tabs[0].history().1, line_fonts(&app.tabs[0].pdf, 0));
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::B, CTRL)]);
+        settle(&mut app, &ctx);
+        let bold = "Helvetica-BoldOblique";
+        let page_1 = fonts_are(&[
+            &[("four five six", bold)],
+            &[("one two ", SUBSET), ("three", bold)],
+        ]);
+        let page_2 = fonts_are(&[
+            &[("hidden words", SUBSET)],
+            &[("seven eight", bold), (" nine", SUBSET)],
+        ]);
+        let t = &app.tabs[0];
+        assert_eq!(line_fonts(&t.pdf, 0), page_1);
+        assert_eq!(line_fonts(&t.pdf, 1), page_2);
+        let selected = Selection::Words {
+            anchor: (0, 2),
+            end: (1, 1),
+        };
+        assert_eq!(t.ed.selection, selected, "not kept");
+        assert_eq!(toast(&app), None);
+        let t = &app.tabs[0];
+        let saved = saved_pdf(t);
+        assert_eq!(line_fonts(&saved, 0), page_1);
+        assert_eq!(line_fonts(&saved, 1), page_2);
+        assert_eq!(t.history().1, undo + 1, "not one step");
+        app.act(&ctx, Act::Undo);
+        assert_eq!(line_fonts(&app.tabs[0].pdf, 0), before);
+        assert_eq!(app.tabs[0].history().1, undo);
+    }
+
+    /// Bold and Italic follow Word's rule across the whole selection: some of it bold
+    /// makes all of it bold; all of it bold takes the bold off. Italic over words all in
+    /// an oblique font takes the slant off.
+    #[test]
+    fn bold_and_italic_follow_words_rule_across_lines() {
+        let ctx = egui::Context::default();
+        let mut app = words_selected(&ctx, (0, 2), (0, 2));
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::B, CTRL)]);
+        settle(&mut app, &ctx);
+        // "two three four": "three" bold already, so all of it bold.
+        app.tabs[0].ed.selection = Selection::Words {
+            anchor: (0, 1),
+            end: (0, 3),
+        };
+        settle(&mut app, &ctx);
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::B, CTRL)]);
+        settle(&mut app, &ctx);
+        let bold = "Helvetica-BoldOblique";
+        let lines = line_fonts(&app.tabs[0].pdf, 0);
+        let want = fonts_are(&[
+            &[("four", bold), (" five six", SUBSET)],
+            &[("one ", SUBSET), ("two three", bold)],
+        ]);
+        assert_eq!(lines, want);
+        // All of it bold: the bold comes off.
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::B, CTRL)]);
+        settle(&mut app, &ctx);
+        let lines = line_fonts(&app.tabs[0].pdf, 0);
+        let fonts: Vec<&str> = (lines.iter().flatten())
+            .filter(|(t, _)| ["two three", "four"].contains(&t.as_str()))
+            .map(|(_, f)| f.as_str())
+            .collect();
+        let oblique = "Helvetica-Oblique";
+        assert_eq!(fonts, [oblique, oblique], "{lines:?}");
+        // Italic over oblique words: upright.
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::I, CTRL)]);
+        settle(&mut app, &ctx);
+        let lines = line_fonts(&app.tabs[0].pdf, 0);
+        assert!(
+            (lines.iter().flatten()).any(|(t, f)| t == "two three" && f == "Helvetica"),
+            "{lines:?}"
+        );
+    }
+
+    /// The inspector shows the selected words' look, headed "Selected text", blank where
+    /// they mix it; a colour picked makes them all that colour, keeping their font, as one
+    /// undo step, and they stay selected.
+    #[test]
+    fn the_inspector_restyles_selected_words_and_a_pick_unifies_their_colour() {
+        let ctx = egui::Context::default();
+        let mut app = words_selected(&ctx, (0, 3), (0, 5));
+        app.open_inspector();
+        settle(&mut app, &ctx);
+        assert_eq!(inspector::title(&app.tabs[0]), "Selected text");
+        let undo = app.tabs[0].history().1;
+        let mut frame = |app: &mut App, events| window(app, &ctx, 1400.0, events);
+        click_named(&mut app, &ctx, "Text colour (mixed)");
+        settle(&mut app, &ctx);
+        click_in_colour_area(&mut app, &ctx, &mut frame, egui::vec2(0.0, 0.0));
+        click_named(&mut app, &ctx, "Text colour");
+        settle(&mut app, &ctx);
+        let t = &app.tabs[0];
+        let line = (t.pdf.page_objects(0).unwrap().into_iter())
+            .find(|o| o.text.as_deref() == Some("four five six"))
+            .expect("the line");
+        let looks: Vec<(&str, Option<[f32; 3]>)> = (line.spans.iter())
+            .map(|s| (s.font_name.as_str(), s.fill))
+            .collect();
+        let black = |&(f, c): &(&str, Option<[f32; 3]>)| f == SUBSET && c == Some([0.0; 3]);
+        assert!(looks.iter().all(black), "{looks:?}");
+        assert_eq!(t.history().1, undo + 1, "not one step");
+        assert!(t.ed.selection.words().is_some(), "not kept");
+        assert_eq!(inspector::title(t), "Selected text");
+    }
+
+    /// Words that can't be restyled are left as they were and said: invisible recognised
+    /// text beside visible words, and a selection of only invisible text, which changes
+    /// nothing.
+    #[test]
+    fn invisible_words_in_the_selection_are_left_as_they_were_and_said() {
+        let ctx = egui::Context::default();
+        let mut app = words_selected(&ctx, (1, 2), (1, 4));
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::B, CTRL)]);
+        settle(&mut app, &ctx);
+        let page_2 = fonts_are(&[
+            &[("hidden words", SUBSET)],
+            &[("seven eight ", SUBSET), ("nine", "Helvetica-BoldOblique")],
+        ]);
+        assert_eq!(line_fonts(&app.tabs[0].pdf, 1), page_2);
+        let said = "Not changed: 1 line of invisible recognised text";
+        assert_eq!(toast(&app).as_deref(), Some(said));
+        // Only invisible words: nothing changes, and that is said.
+        app.toasts.clear();
+        app.tabs[0].ed.selection = Selection::Words {
+            anchor: (1, 3),
+            end: (1, 4),
+        };
+        settle(&mut app, &ctx);
+        let history = app.tabs[0].history();
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::B, CTRL)]);
+        settle(&mut app, &ctx);
+        assert_eq!(app.tabs[0].history(), history);
+        assert_eq!(toast(&app).as_deref(), Some(said));
+        assert_ne!(inspector::title(&app.tabs[0]), "Selected text");
+    }
+
+    /// Ctrl+B and Ctrl+I also change a line selected whole with the arrow, as its
+    /// inspector's buttons do.
+    #[test]
+    fn ctrl_b_makes_a_line_selected_with_the_arrow_bold() {
+        let ctx = egui::Context::default();
+        let mut app = words_selected(&ctx, (0, 0), (0, 0));
+        let t = &mut app.tabs[0];
+        t.ed.set_tool(Tool::Select);
+        let id = (t.pdf.page_objects(0).unwrap().into_iter())
+            .find(|o| o.text.as_deref() == Some("one two three"))
+            .expect("the line")
+            .id;
+        t.ed.select_object(0, id);
+        settle(&mut app, &ctx);
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::B, CTRL)]);
+        settle(&mut app, &ctx);
+        let lines = line_fonts(&app.tabs[0].pdf, 0);
+        let bold = "Helvetica-BoldOblique";
+        assert_eq!(lines[1], fonts_are(&[&[("one two three", bold)]])[0]);
+    }
+
+    /// Selected words are shaded one band a line, the spaces between them too, as word
+    /// processors shade a selection, not a box a word.
+    #[test]
+    fn selected_words_are_shaded_one_band_a_line() {
+        let ctx = egui::Context::default();
+        let mut app = words_selected(&ctx, (0, 0), (0, 4));
+        let tree = settle(&mut app, &ctx);
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1400.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let mut f = eframe::Frame::_new_kittest();
+        let mut out = ctx.run_ui(raw, |ui| eframe::App::ui(&mut app, ui, &mut f));
+        out.textures_delta.clear();
+        let fill = (ctx.global_style().visuals.selection.bg_fill).gamma_multiply(0.45);
+        fn walk(s: &egui::Shape, fill: egui::Color32, out: &mut Vec<egui::Rect>) {
+            match s {
+                egui::Shape::Rect(r) if r.fill == fill => out.push(r.rect),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, fill, out)),
+                _ => {}
+            }
+        }
+        let mut bands = Vec::new();
+        for c in &out.shapes {
+            walk(&c.shape, fill, &mut bands);
+        }
+        bands.retain(|r| page.contains_rect(*r));
+        // "one two three" and "four five": each band from its first word to its last.
+        let words = app.tabs[0].pdf.page_words(0).unwrap();
+        let k = page.width() / 612.0;
+        let x = |v: f32| page.min.x + v * k;
+        assert_eq!(bands.len(), 2, "{bands:?}");
+        for (band, (first, last)) in bands.iter().zip([(0, 2), (3, 4)]) {
+            let (left, right) = (x(words[first].bbox[0]), x(words[last].bbox[2]));
+            assert!((band.left() - left).abs() < 1.0, "{band:?} from {left}");
+            assert!((band.right() - right).abs() < 1.0, "{band:?} to {right}");
+        }
+    }
+
+    /// The floating toolbar over selected words has Bold and Italic.
+    #[test]
+    fn the_floating_toolbar_has_bold_and_italic_for_selected_words() {
+        let ctx = egui::Context::default();
+        let mut app = words_selected(&ctx, (0, 0), (0, 1));
+        let tree = settle(&mut app, &ctx);
+        assert!(node(&tree, "Italic").is_some());
+        click_named(&mut app, &ctx, "Bold");
+        settle(&mut app, &ctx);
+        let lines = line_fonts(&app.tabs[0].pdf, 0);
+        let bold = "Helvetica-BoldOblique";
+        let want = fonts_are(&[&[("one two", bold), (" three", SUBSET)]]);
+        assert_eq!(lines[1], want[0]);
+    }
+
+    /// The line editor keeps the words left as they were in their own font too: Ctrl+B on a
+    /// word double-clicked makes that word bold, the rest of the line staying in the subset.
+    #[test]
+    fn the_line_editor_keeps_untouched_words_in_their_own_font() {
+        let ctx = egui::Context::default();
+        let mut app = words_selected(&ctx, (0, 0), (0, 0));
+        app.tabs[0].ed.selection = Selection::None;
+        let time = std::cell::Cell::new(10.0);
+        let mut tree = timed_frame(&mut app, &ctx, &time, vec![]);
+        for _ in 0..25 {
+            tree = timed_frame(&mut app, &ctx, &time, vec![]);
+        }
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        let k = page.width() / 612.0;
+        // "two", from about 111 to 142 points across, its baseline 92 down.
+        let p = page.min + egui::vec2(125.0, 86.0) * k;
+        timed_frame(&mut app, &ctx, &time, vec![egui::Event::PointerMoved(p)]);
+        for _ in 0..2 {
+            timed_frame(&mut app, &ctx, &time, vec![press(p, true)]);
+            timed_frame(&mut app, &ctx, &time, vec![press(p, false)]);
+        }
+        for _ in 0..3 {
+            timed_frame(&mut app, &ctx, &time, vec![]);
+        }
+        timed_frame(&mut app, &ctx, &time, vec![key_with(Key::B, CTRL)]);
+        let esc = key_with(Key::Escape, egui::Modifiers::NONE);
+        timed_frame(&mut app, &ctx, &time, vec![esc]);
+        for _ in 0..2 {
+            timed_frame(&mut app, &ctx, &time, vec![]);
+        }
+        let lines = line_fonts(&app.tabs[0].pdf, 0);
+        let bold = "Helvetica-BoldOblique";
+        let want = fonts_are(&[&[("one ", SUBSET), ("two", bold), (" three", SUBSET)]]);
+        assert_eq!(lines[1], want[0]);
+        assert_eq!(toast(&app), None);
     }
 }

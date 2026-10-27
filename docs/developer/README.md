@@ -3,6 +3,8 @@
 How LimarePDF is built, tested, measured and released, for people working on it. How to use LimarePDF is in the
 user docs, one folder up ([the list](../../README.md#documentation)).
 
+- [Features and status](feature-status.md): every feature's status in detail, its limits, what doesn't work yet
+  and what is planned.
 - [How it is built](architecture.md): the crates and the libraries used, and how each part works, with the code
   it is in.
 - [Testing and platforms](testing.md): the platforms, the automated tests, how each feature was checked, and the

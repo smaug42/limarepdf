@@ -1,7 +1,8 @@
 //! The inspector's font list (the Unicode text design, section 7): Helvetica, Times and
 //! Courier, then the installed families LimarePDF can embed, each name drawn in its own
 //! font, with a search field; and the Bold and Italic buttons, which a family lacking that
-//! face leaves off.
+//! face leaves off. A font installed under a code name is listed by the typeface it stands
+//! in for, its own name after (ENH-04): "Palatino (P052)".
 //!
 //! The installed fonts are read once, on another thread, when the app starts ([`warm`]);
 //! until then the list holds the three standard fonts.
@@ -24,8 +25,9 @@ pub fn warm(ctx: &egui::Context) {
 /// A family in the list: its name, and an installed one's faces.
 type Offer = (Family, String, Option<Arc<Typeface>>);
 
-/// The families the list offers, standard ones first, with `search` in their names (any
-/// case), and whether the installed ones are still being read.
+/// The families the list offers, standard ones first, with `search` in their names as the
+/// list shows them (any case; the familiar name or a code name), and whether the installed
+/// ones are still being read.
 fn offered(search: &str) -> (Vec<Offer>, bool) {
     let search = search.trim().to_lowercase();
     let fits = |name: &str| name.to_lowercase().contains(&search);
@@ -45,11 +47,30 @@ fn offered(search: &str) -> (Vec<Offer>, bool) {
         out.extend(
             limarepdf_core::typefaces()
                 .into_iter()
-                .filter(|(_, t)| fits(&t.name))
-                .map(|(n, t)| (Family::Installed(n), t.name.clone(), Some(t))),
+                .filter_map(|(n, t)| {
+                    let label = t.label();
+                    fits(&label).then_some((Family::Installed(n), label, Some(t)))
+                }),
         );
     }
     (out, !ready)
+}
+
+/// What the pointer on a family in the list, or on the list for text in it, says of it:
+/// a standard font's look varies by app; a font with a code name is a stand-in, embedded.
+fn about(family: Family) -> Option<String> {
+    match family {
+        Family::Installed(n) => {
+            let t = limarepdf_core::typeface(n)?;
+            let familiar = t.familiar()?;
+            Some(format!(
+                "{}: made to match {familiar}'s letter widths, not {familiar} itself. \
+                 It is embedded in the PDF, so the text looks the same everywhere.",
+                t.name
+            ))
+        }
+        _ => Some("A standard PDF font: other apps may show it in their own version.".into()),
+    }
 }
 
 /// `f` set in `family`, in the style nearest its own that the family has.
@@ -60,47 +81,63 @@ pub fn choose(f: &mut FontChoice, family: Family) {
     }
 }
 
-/// The font list and the Bold and Italic buttons, for the font `f`; with `blank`, the
-/// list shows no name, as for text in several families. Returns whether a family was
-/// picked in the list, even `f`'s own.
-pub fn ui(ui: &mut egui::Ui, f: &mut FontChoice, blank: bool) -> bool {
+/// The font list for the font `f`, across the space there is; with `blank`, it shows no
+/// name, as for text in several families. The pointer on it says what the family is
+/// ([`about`]) and, for text already in the PDF, the PDF's names for its fonts (`in_pdf`).
+/// Returns whether a family was picked in the list, even `f`'s own.
+pub fn ui(ui: &mut egui::Ui, f: &mut FontChoice, blank: bool, in_pdf: &[String]) -> bool {
     let id = ui.scope_id().with("fam");
     let search_id = id.with("search");
-    let name = if blank {
-        String::new()
+    let (name, mut hover) = if blank {
+        (String::new(), Vec::new())
     } else {
-        f.family_name()
+        (f.family_name(), about(f.family).into_iter().collect())
     };
+    if !in_pdf.is_empty() {
+        hover.push(format!("In the PDF: {}", in_pdf.join(", ")));
+    }
     let r = egui::ComboBox::from_id_salt(id)
         .selected_text(name)
+        .width(ui.available_width())
         .height(320.0)
         .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
         .show_ui(ui, |ui| list(ui, search_id, f, blank));
     dialogs::set_name(&r.response, "Font");
+    if !hover.is_empty() {
+        r.response.on_hover_text(hover.join("\n"));
+    }
     if r.inner.is_none() {
         // Closed: the next opening starts with an empty search.
         ui.data_mut(|d| d.remove::<String>(search_id));
     }
-    let picked = r.inner.unwrap_or(false);
+    r.inner.unwrap_or(false)
+}
+
+/// The Bold and Italic buttons for the font `f`, off for a face its family lacks: a heavy
+/// B and a slanted I with serifs.
+pub fn styles(ui: &mut egui::Ui, f: &mut FontChoice) {
     let t = f.typeface();
     let has = |bold: bool, italic: bool| t.as_ref().is_none_or(|t| t.has(bold, italic));
-    ui.horizontal(|ui| {
-        let mut bold = f.bold;
-        let b = egui::Button::selectable(bold, egui::RichText::new("B").strong());
-        let r = ui.add_enabled(has(!f.bold, f.italic), b);
-        if r.clicked() {
-            bold = !bold;
-        }
-        dialogs::set_name(&r, "Bold");
-        let i = egui::Button::selectable(f.italic, egui::RichText::new("I").italics());
-        let r = ui.add_enabled(has(bold, !f.italic), i);
-        if r.clicked() {
-            f.italic = !f.italic;
-        }
-        dialogs::set_name(&r, "Italic");
-        f.bold = bold;
-    });
-    picked
+    let mut bold = f.bold;
+    let size = ui.style().text_styles[&egui::TextStyle::Button].size;
+    let b = egui::RichText::new("B").family(crate::theme::semibold());
+    let b = egui::Button::selectable(bold, b);
+    let r = ui.add_enabled(has(!f.bold, f.italic), b);
+    if r.clicked() {
+        bold = !bold;
+    }
+    dialogs::set_name(&r, "Bold");
+    // A slanted I with serifs, as word processors show it: the interface font's I,
+    // slanted, reads as a slash. The icon is drawn inside some padding, so a little larger
+    // to stand as tall as the B.
+    let i = crate::theme::icon(crate::icon::TEXT_ITALIC).size(size + 3.0);
+    let i = egui::Button::selectable(f.italic, i);
+    let r = ui.add_enabled(has(bold, !f.italic), i);
+    if r.clicked() {
+        f.italic = !f.italic;
+    }
+    dialogs::set_name(&r, "Italic");
+    f.bold = bold;
 }
 
 /// The open list: the search field, then the families that fit it, `f`'s marked unless
@@ -167,7 +204,10 @@ fn list(ui: &mut egui::Ui, search_id: egui::Id, f: &mut FontChoice, blank: bool)
                     None => name.clone().into(),
                 };
                 let selected = !blank && f.family == *family;
-                let r = ui.add(egui::Button::selectable(selected, label));
+                let mut r = ui.add(egui::Button::selectable(selected, label));
+                if let Some(about) = about(*family) {
+                    r = r.on_hover_text(about);
+                }
                 if selected && fresh {
                     r.scroll_to_me(Some(egui::Align::Center));
                 }
@@ -222,6 +262,44 @@ mod tests {
         assert!(!times.iter().any(|(f, _, _)| *f == Family::Helvetica));
         let (none, _) = offered("no font is called this");
         assert!(none.is_empty());
+    }
+
+    /// Italic shows a slanted capital I with serifs, as word processors do (the interface
+    /// font's I slanted read as a slash); Bold a B in the semibold face (egui's strong text
+    /// was only brighter). Screen readers still say Italic and Bold.
+    #[test]
+    fn italic_shows_a_slanted_i_with_serifs() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        crate::theme::install(&ctx);
+        let mut f = FontChoice::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.horizontal(|ui| styles(ui, &mut f));
+        });
+        out.textures_delta.clear();
+        let painted: Vec<(String, egui::FontFamily)> = out
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => {
+                    let family = t.galley.job.sections.first()?.format.font_id.family.clone();
+                    Some((t.galley.text().to_string(), family))
+                }
+                _ => None,
+            })
+            .collect();
+        let italic = (crate::icon::TEXT_ITALIC.to_string(), crate::theme::icons());
+        assert!(painted.contains(&italic), "{painted:?}");
+        // egui's strong text is only brighter: the B is in the semibold face.
+        let bold = ("B".to_string(), crate::theme::semibold());
+        assert!(painted.contains(&bold), "{painted:?}");
+        let tree = out.platform_output.accesskit_update.expect("the buttons");
+        for name in ["Bold", "Italic"] {
+            assert!(
+                tree.nodes.iter().any(|(_, n)| n.label() == Some(name)),
+                "{name}"
+            );
+        }
     }
 
     #[test]

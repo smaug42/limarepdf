@@ -8,6 +8,10 @@ The PDF words this guide uses, in plain terms.
 shape, drawing or stamp. Other apps can show, move or remove annotations. Flattening one makes it part of the page.
 See [Comments and markup](comments-and-markup.md).
 
+**Arrow.** The tool for selecting, moving and resizing anything on the page, lines of page text and full-page
+scans included, one or several at a time; in ☰ > Tools > Select, move and resize objects. See [Editing text and
+pictures](content-editing.md#select-several-objects).
+
 **Bates number.** A number stamped on every page of a set of documents, such as `ABC000123`, so that each page can
 be referred to exactly. Common in legal work.
 
@@ -74,7 +78,8 @@ the pages.
 without stopping them from opening it. Also called an owner password.
 
 **Read tool.** The tool every document opens with (the text cursor): it selects text, follows links, fills in
-forms, and selects and moves what is on the page.
+forms, and selects and moves pictures, shapes and comments on the page (Shift+click for several pictures and
+shapes).
 
 **Recovery copy.** A private copy LimarePDF keeps of a document with unsaved changes, so it can offer the document
 back if the app stops unexpectedly. It never changes your own file.

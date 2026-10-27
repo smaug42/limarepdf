@@ -181,7 +181,10 @@ OCR speed is in [Scans and OCR](../scanning-and-ocr.md#accuracy-and-speed).
   at its next [band](../rendering.md#large-drawings) instead of running to the end.
 - Edits re-save the document without compressing it, and undo keeps plain snapshots (a whole copy of the document
   per step, up to 1 GB per document, see [above](#memory-in-the-desktop-app)).
-- OCR, optimising, exporting images and printing run in the background.
+- OCR, optimising, exporting images, printing, search and saving run in the background (search since batch 22: a
+  thread per tab, [below](#search); saving since batch 37, ENH-35: a thread per save, which writes a copy of the
+  document, [measured below](#startup-and-responsiveness)). A save's questions and checks still come first on the
+  window's thread.
 - A [recovery copy](../gui.md#recovery-copies) is made at most once a minute per changed document. The window only
   copies the document in memory; a background thread turns that into a file and writes it. On the 200-page scan the
   copy in memory took 16 to 57 ms and making the file about 20 ms (138 MB, before writing it to disk); on the 1,000
@@ -189,3 +192,221 @@ OCR speed is in [Scans and OCR](../scanning-and-ocr.md#accuracy-and-speed).
   does, which takes longest on files with many objects: on a 13,000-object file 57 ms instead of 10 ms without it
   (measured 2026-10-19). While a copy is written, the app holds up to about two more copies of the document's size
   in memory.
+
+## Search
+
+Batch 22 (ENH-02) moved the app's search to a thread of its own, made each page's text read once for its matches,
+their snippets and their highlights together, and kept that text for the next queries (`TextIndex`). Measured on
+26 October 2026 on the machine above with the fourth audit's search component benchmark, like for like: its probe
+(`performance-probe.rs`) and its fixtures (12, 60, 120 and 300 pages of 38 short lines, "report" on each line; their
+checksums in `target/searchbench/`), the `ci-test` profile, two Rayon threads, the median of three runs. "Before"
+is HEAD at 1726ccc, "after" this change.
+
+| Pages (matches) | Before: the app's search, on the window's thread (`search`, then each page with matches read again for its boxes) | After: the first query, on the search thread (pages read once, boxes included) | After: the next query, the text already read | All page sizes, before / after |
+| --- | --- | --- | --- | --- |
+| 12 (468) | 20.1 ms (6.8 + 13.3) | 5.0 ms | 0.19 ms | 0.07 / 0.01 ms |
+| 60 (2,340) | 74.1 ms (24.5 + 49.6) | 23.3 ms | 0.86 ms | 1.5 / 0.06 ms |
+| 120 (4,680) | 153.6 ms (52.3 + 101.3) | 46.4 ms | 1.7 ms | 6.0 / 0.12 ms |
+| 300 (11,700) | 516 ms (172 + 344) | 121 ms | 4.0 ms | 58 / 0.37 ms |
+
+What they show:
+
+- The app's search did the work twice; it now reads each page once, and the window doesn't wait for it at all.
+  The probe's own `search` call alone went from 172 to 126 ms on 300 pages (page IDs collected once, not twice a
+  page); its second step, which reads each page again for its boxes through `find_text_matches`, is unchanged, but
+  the app no longer takes it.
+- Once read, the text answers another query in milliseconds: 4 ms for 11,700 matches on 300 pages, so typing more
+  of a word searches almost at once.
+- Collecting every page's size walked the page tree once a page (58 ms on 300 pages, growing with the square of the
+  page count); `Pdf::page_sizes` walks it once (0.37 ms).
+- The kept text took 22 MB for the 300 pages (73 KB a page of 38 lines: each character's folded and original form,
+  its place, and each piece's character positions). All tabs together are capped at 256 MB, about 3,500 such pages:
+  past that, the tab searched longest ago is let go first, then the pages already searched of a document bigger
+  than that alone, read again when next searched.
+- Handing the document to the search thread is a copy in memory, made once per change while a query is in the
+  field: 0.3 ms for text-300.pdf, 1.8 ms for the 17 MB scan-20.pdf and 1.0 ms for the corpus's largest file (5 MB,
+  107 pages), about 0.1 ms a megabyte (each the best of five).
+
+## Styling selected words
+
+Batch 24 (ENH-05) writes every changed line of a page in one parse and one commit (`Pdf::edit_texts`), each line
+with the selected word written anew and the words around it cut out of its own shows, and every cut line read back
+before the commit. Measured on 26 October 2026 on the machine above with a throwaway release-built probe
+(`target/b24perf/`) on REL-07's `text-300.pdf`: the second word of every line made bold, as the read tool's
+selection writes it, the median of five runs.
+
+| Selection | Lines | `edit_texts` | The pages' words and objects read again after (the app's next frame) |
+| --- | --- | --- | --- |
+| One page | 49 | 4.0 ms | 3.3 ms |
+| 20 pages | 980 | 80 ms | 69 ms |
+
+No line fell back to a similar font. The change runs on the window's thread with the undo step and the pages'
+redraw, as every edit does; at these rates a whole 300-page document would take about two seconds there, which
+is recorded, not a threshold (6.3 has none for edits).
+
+## Several objects at once
+
+Batch 25 (ENH-06) moves, restyles and deletes the objects selected on a page in one parse and one commit
+(`Pdf::set_object_boxes`, `set_path_styles`, `delete_objects`), what goes in before which operator after them found
+once (`Following::all`, also for `edit_texts`), so a page is gone through once however many are selected; the
+window finds the selection's boxes, the rectangle's objects and the selection again after a change in one pass
+each. Measured on 26 October 2026 on the machine above, every object of page 1 changed at once, the median of five
+runs, with a throwaway release-built probe (`target/b25perf/`), and the window's frames, headless, with a temporary
+release-built app test (kept as `target/b25perf/frames_probe.rs.txt`):
+
+| Page | Objects | Read them | Move all | Restyle the shapes | Bold every line | Delete all |
+| --- | --- | --- | --- | --- | --- | --- |
+| `text-300.pdf`, page 1 | 50 lines | 1.4 ms | 3.2 ms | – | 1.8 ms | 1.5 ms |
+| `artwork.pdf` (the outlier) | 27,440 (27,274 shapes) | 270 ms | 1.1 s | 0.75 s | – | 0.80 s |
+
+| Page, all its objects selected with Ctrl+A | A frame | While they are dragged | The frame letting go (the move, its undo step and redraw) |
+| --- | --- | --- | --- |
+| `text-300.pdf`, page 1 (50) | 0.6 ms | 0.6 ms | 6.9 ms |
+| `artwork.pdf` (27,440) | 5.3 ms | 5.6 ms | 1.2 s |
+
+A move of the artwork's objects takes less than half the 2.9 s the page takes to draw, and its frames stay well
+within a 60 Hz frame while they are selected and dragged. Recorded, not thresholds (6.3 has none for edits).
+
+## Startup and responsiveness
+
+Measured on 26 October 2026 as the release checks' baseline (REL-07), from which their thresholds were set (accepted
+the same day, for this machine and setup only; search's total wait after batch 22: ≤ 450 ms worst, and its
+processing ≤ 300 ms, both met below):
+the release build of `add-enhancements-02` at edaf365 with the change that adds the [timing log](architecture.md),
+on the machine above (Intel Core i5-9600K, 6 cores, 15 GB of memory, NVMe SSD with btrfs, Linux
+7.3). The app ran on an Xvfb display (1600 × 1000, 24-bit, no window manager), where Mesa draws in software, as
+Xvfb has no GPU: the results describe the app with software drawing, not what a GPU and a real screen add or save.
+The window was 1200 × 850 at scale 1 (a new settings folder's size), light theme, recovery copies off, each run
+with new settings and recovery folders. The usual desktop session ran alongside (an editor, a browser): load
+average 0.9 to 3.1, 2.4 to 7.7 GB of memory available. How it was measured is in
+[Testing](testing.md#automated-tests).
+
+Times are from the start (the launch, a key sent) to two ends: **built**, when the app's log says it finished the
+frame showing the result (before that frame is painted and shown, which the app can't see), and **shown**, the
+first screen capture showing it (captures of a small area every 5 ms: 5.0 ms apart at the median and 7.4 ms at
+worst, each costing 0.2 ms, 1.4 ms at worst; a result is shown at most one interval, about 5 ms, before the
+capture that saw it). Each figure is **median / worst**: 10 warm runs after one discarded, 5 cold ones (each after
+the page cache was dropped), 200 keys for typing. No percentiles are given below 20 samples.
+
+The documents, made up or public, the same byte for byte each time they are made:
+
+| File | What it is |
+| --- | --- |
+| letter.pdf | a one-page letter, Helvetica |
+| form.pdf | one page, 12 text fields without appearances |
+| text-120.pdf | 120 pages of 48 lines of words each |
+| text-300.pdf | the same, 300 pages |
+| scan-20.pdf | 20 Letter pages of 300 dpi grey JPEG, 17 MB |
+| artwork.pdf | pdf.js bug1791583, one page of 27,000 paths (the outlier) |
+
+```
+afccbe7c8377de8e8f3ce432a3fdde2608baa9d3abba2298558bfd4e006ae287  letter.pdf
+d2549e55e613e52055dee31e682f07c2b455bbfdedeb293d04b95874f4307142  form.pdf
+b6ddc85569e3e0ed17e78c9d4b83e1a6af70a9794ea1e2706437f7fc55bc1b1c  text-120.pdf
+6ed2bc00ebc292460f2c869277f67a4b8b028168d8aad2041a60d406d4b3f20d  text-300.pdf
+7084d39460e6073042bb6f2aaf911f883946d176c8fd5612cabbaf2367b2ae7e  scan-20.pdf
+40538a43f8eb3843a8667d9e01d2f31973749f490231b742805d567395a0b8fc  artwork.pdf
+```
+
+### Opening a file from the command line
+
+The first useful page: the app started with the file, until page 1 is drawn at the size it shows at.
+
+| File | Built | Shown |
+| --- | --- | --- |
+| letter.pdf, warm | 335 / 373 ms | – |
+| letter.pdf, warm, with screen captures | 305 / 356 ms | 325 / 375 ms |
+| letter.pdf, cold | 862 / 898 ms | 885 / 920 ms |
+| form.pdf, warm | 314 / 380 ms | – |
+| text-120.pdf, warm | 368 / 507 ms | – |
+| text-300.pdf, warm | 523 / 568 ms | – |
+| scan-20.pdf, warm | 447 / 495 ms | – |
+| artwork.pdf, warm | 2,904 / 3,048 ms | – |
+
+- Most of the time to a small file's page is before the first frame: making the window, starting the renderer
+  and `App::new` take about 260 ms warm and 820 ms cold (the process reaches `main` in 5 ms warm, 15 ms cold);
+  the letter's page follows about 30 ms after the first frame.
+- From built to shown took 20 / 22 ms warm and 22 / 24 ms cold: the software paint and the display.
+- Taking captures every 5 ms changed nothing measurable (the warm runs with captures were no slower).
+- Page 1 takes longer on longer documents although only page 1 is drawn: from the file read to page 1's drawing,
+  about 90 ms on 120 pages and 220 ms on 300. The renderer reads the whole file again for itself (`worker.rs`,
+  `render::load`); that this is the cost was not checked.
+- Memory once the page was shown: 237 MB for the letter (230 MB cold), 257 MB for 300 pages, 346 MB for the scan,
+  651 MB for the artwork.
+
+### Typing
+
+Each key sent alone, 60 to 120 ms after the last one's frame, 200 a script.
+
+| Where | Built | Shown | Over 50 ms shown | Over 100 ms shown |
+| --- | --- | --- | --- | --- |
+| A form field (form.pdf) | 1.1 / 4.4 ms | 26.4 / 45.9 ms (200 keys) | 0 | 0 |
+| Add text, a new box (letter.pdf) | 2.4 / 23.1 ms | 25.4 / 45.8 ms (58 keys) | 0 | 0 |
+| Editing a line (letter.pdf) | 2.4 / 23.0 ms | 26.8 / 52.1 ms (98 keys) | 1 | 0 |
+
+"Shown" covers only the keys whose characters landed in the captured area: past it, the box and the line ran on
+to the page's edge. In the worst built times (23 ms), the key reached the app's frame 23 ms after it was sent and
+the frame then took about a millisecond; why it waited was not looked into.
+
+### Working while something runs
+
+| What | Measured |
+| --- | --- |
+| Typing in the search box while artwork.pdf's page is drawn (1.34 s a drawing; 18 keys in 3 runs) | built 0.7 / 1.0 ms |
+| Search on text-120.pdf (1,487 matches): Enter to the results' frame | 168 / 205 ms, of which searching 163 / 200 ms |
+| Search on text-300.pdf (3,552 matches) | 513 / 521 ms, of which searching 506 / 515 ms |
+| Ctrl+P to the Print dialog's frame, the printer search (a stand-in `lpstat` taking 4 s a call, called twice) running on | 2.9 / 3.8 ms; printers listed after 8.0 s |
+| Ctrl+S on letter.pdf with an Add text box open: to the next frame | 27 / 41 ms (writing 4 / 12 ms) |
+| The same on text-300.pdf | 218 / 236 ms (before the write 116 / 132 ms, writing 35 / 47 ms) |
+
+Before Save writes, it keeps the open box's typing and makes its checks; which of them takes the 116 ms on 300
+pages (5 ms on the letter) wasn't measured in the baseline. Save holds the window for its whole time: no frame, and
+so no busy sign, until it finishes (ENH-35). Search held it too, until batch 22 (below).
+
+Save on a thread of its own (batch 37, ENH-35, measured the same day the same way, the release build of this
+change; 10 runs each, built times). Split with temporary points in the timing log, the 116 ms before the write
+were: keeping the box's typing 7 ms (the edit itself), checking the file hadn't changed elsewhere 8 to 9 ms (the
+file read once in full, as its time was within 2 s of when it was read: the reference copy is made just before
+the app opens it; [PB-28](architecture.md)), and counting the document's redaction marks 63 ms. That count, and the
+same one after every change, went through the whole page list once for every page (the annotation listing looked
+each page up by its number); it now goes through it once. Before this change, once a file had been saved (its time then always within 2 s of
+the reading after the write) or was opened just after a change, every save read it in full twice before writing
+and once after, as a file found unchanged never became the version known; it now does, and the version after
+writing is read on the save's thread.
+
+| Ctrl+S with an Add text box open | To the busy sign's frame | To the saved frame | Writing (on its thread) |
+| --- | --- | --- | --- |
+| letter.pdf | 4.3 / 35.5 ms | 37.6 / 71.0 ms | 9.2 / 12.3 ms |
+| text-300.pdf | 34.1 / 50.7 ms | 84.9 / 108.3 ms | 48.0 / 52.2 ms |
+
+The busy sign showed in all 20 runs (the frame after Ctrl+S's). On the window's thread a save now holds it for
+keeping the typing, its checks and the copy of the document (0.6 ms on text-300.pdf); the write and reading the
+file back take place on the save's thread. A 300-page signed document (text-300.pdf signed with a test ID) asks
+first, as typed text is a change its signature doesn't allow: Ctrl+S to the question, adding the changes after
+what was signed included, took about 42 ms (one run, built). Typing while a save is written wasn't measured: on
+these documents the write takes about 50 ms.
+
+Search as you type (batch 22, measured the same day the same way, the release build of this change; the driver's
+`typed` mode: each run empties the field with Ctrl+A and Backspace and types "glacier", 50 ms between keys; 10 runs
+after the first search, which is reported apart as it reads every page; built times from the timing log). "Pause"
+is the last key to the search starting, "processing" the search starting to the frame showing the first match,
+"complete" to the frame with every match, "total" the last key to the first match's frame.
+
+| Document | First search after opening: processing, complete, total | Later searches: pause, processing, total (median / worst) |
+| --- | --- | --- |
+| text-120.pdf (1,487 matches) | 47, 74, 250 ms | 212 / 222, 41 / 60, 256 / 272 ms |
+| text-300.pdf (3,552 matches) | 37, 146, 246 ms | 210 / 223, 36 / 40, 248 / 253 ms |
+
+The window keeps drawing while a search runs: during the first search on 300 pages (145 ms from start to end) it
+built 5 frames, never more than 40 ms apart, where the search before held it for 506 ms with none. The later
+searches find the text already read, so their matches come in one group, and "complete" is "processing". Most of
+"processing" is the frame itself (the highlights and the results drawn), not the search, which takes 2 to 4 ms
+then ([above](#search)). Keys typed while a search runs weren't timed on their own here.
+
+### Memory over repeated use
+
+text-300.pdf opened (the first time from the command line, then from the start screen's recent list), ten pages
+down, a search for a word with 3,650 matches, the tab closed; the app's resident memory after each of 10 cycles:
+313, 322, 327, 319, 324, 327, 325, 319, 328 and 334 MB. A line fitted to it rises 1.3 MB a cycle, within a 21 MB
+spread: too few cycles to tell a slow leak from the allocator keeping memory; whether the closed documents' own memory is all given back was not checked, as no heap
+profiler is installed here.

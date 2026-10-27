@@ -124,6 +124,38 @@ the render corpus (1,089 files) unreadable characters in
 extracted text fell from 225,473 to 191,418 (files with any from 123 to 106), 29 files' text changed, each checked
 against `pdftotext`, and none got worse.
 
+Search (`text.rs`, batch 22) reads a page once into a `PageText`: its words in reading order (`ordered_words`,
+through `Pdf::search_parts`, by page object so the page tree is walked once a search, not twice a page) with a
+space between them, each character folded (lowercase) and original, its text line and place there, the lines
+that join (for `joints`' hyphen and soft-hyphen skips) and each line's pieces, so a match's snippet and boxes come
+from the same reading as the match. `find_on` matches a page's text with the start of the next page's appended
+after a line break (as many characters as the query, three times over, for the skips), so a phrase or a
+hyphenated word across a page break is found on the page it starts on, with boxes on both pages; its `spill` (the
+next page's characters it took) is where the next page's matching starts, and `TextIndex::find` looks a page again
+from there when its own first match began inside them, so a match is never found twice and the result is what one
+reading of the whole text would give, a group of pages at a time or all at once. `TextIndex` keeps the pages read,
+by page object: `update` forgets the pages an edit changed, or all of them when the pages themselves changed.
+`Pdf::search` (the CLI) and `find_text_matches` (one page alone, no next page) use the same code. Snippets are cut
+at word boundaries (`tail`, `head`; `Snippet::around` cuts shorter for the app's rows), and `match_count` says the
+count in words for the app and the CLI.
+
+In the app, `search.rs` runs a tab's searches on a thread of its own, started with its first search and ended
+with the tab. `Tab::poll_search`, each frame, notices the query changing (`note_query`: a query begun from empty
+starts from the page being read), clears the old matches at once, and starts the search once the typing has paused
+for `PAUSE` (200 ms); Enter starts it at once (`Tab::search_keys`, the field's own Enter turned off with
+`return_key(None)`) and otherwise steps. Each search gets a number: the thread stops the one running, between pages,
+once a newer number is stored, takes only the newest of the jobs waiting (keeping the document a passed-over job
+brought, `merge`), and sends its matches a group of 16 pages at a time with the number; `Search::take` drops
+anything for another number, so an older query's matches are never shown. An edit (`soft_refresh`, `refresh`)
+calls `Tab::search_changed`: the matches go, the pages it changed are noted (`Search::text_changed`), and the next
+frame searches again, the document cloned for the thread only then and only with a query in the field, the current
+match kept by its page and place there (`ToHit::Keep`). The results view (`Tab::show_results`) checks the query
+again after its own field, before drawing, so a query typed in that frame shows no old rows; its rows are of fixed
+height (a page heading, a two-line match) and only those in view are drawn. Mark all for redaction uses the
+matches when the search for the query and the document as they are is complete (`Search::complete`), and otherwise
+runs `Pdf::search` itself first. The threads' indexes count against one budget (`fit_within`, 256 MB), letting go of
+the tab searched longest ago, then the pages already searched of the tab searching.
+
 Text LimarePDF writes (new and edited text, headers, footers, watermarks, stamps, text boxes, form values, the
 signature look, selected text as a plain page) goes through a pen (`embed::Pen`, from `Pdf::pen`): the standard
 font, WinAnsi-encoded through `fonts::winansi_byte`, while the text fits it, else the embedded font below.
@@ -142,7 +174,23 @@ alignment that put them on it (`parts_of_a_line_share_its_baseline`). Both edit 
 style per character: it keeps the styles through egui's plain-string `TextEdit` by comparing each frame's text
 with the last, applies Word's rules for style commands, gives the inspector its values (`None` where the
 selection mixes them), and hands core the line as `TextPart`s; `styled::History` is the undo inside the line,
-which takes Ctrl+Z and Ctrl+Y before the `TextEdit` does. Every other text box uses egui's own undo. While any
+which takes Ctrl+Z and Ctrl+Y before the `TextEdit` does. `Styled` keeps where each character was in the line as
+read (`origins`, `None` once typed); `Styled::owned` keeps those of runs still as read, cut back to whole words
+as read and as typed (letters typed onto a word change it), and `parts_in` gives them `TextPart::from`, so
+untouched words keep their shows. Words selected with the read tool are restyled through `chosen::Chosen`, made
+by `Editor::sync_chosen` at the start of each frame when the selection changes: each `PageWord` says its text
+line (`object`, `None` inside a form XObject) and characters, so each line touched gets a `Styled` and its
+selected ranges (words with only spaces between them one range), collected in a `styled::Across`, which the
+inspector's `styles_ui` changes through the `styled::Restyle` trait as it changes one line (`InLine`): Bold and
+Italic by Word's rule over the whole selection, blanks where any line mixes a value. Invisible lines, words in
+form XObjects and vertical writing are counted (`chosen::Left`) and said. Changes go in as `Typed::Words` (one
+`Action::Restyle`, every page's `edit_texts` in one undo step); `Editor::reselect` selects the same words again
+after the edit's `invalidate`, only if they still read the same. Ctrl+B and Ctrl+I are commands
+(`Editor::switch_style`, also for a line selected with the arrow) and page-only keys, left to a text box with
+the keyboard. Selected words are painted as word processors shade a selection (`Editor::shaded`): a band a
+reading row (`line_boxes`, what `selected_lines` gives the marks and redaction boxes made from a selection), a
+paragraph's rows meeting halfway across the space between them (painting only), in the theme's selection
+background at 45% (PB-31: perhaps too dark). Every other text box uses egui's own undo. While any
 text box has the keyboard, `App::shortcuts` leaves the undo keys to it, so the document's Undo never runs from
 inside a box. Each tab's text boxes take their ids from `Editor::scope` (the tab's id) and what they edit, and
 the inspector is drawn inside that id, so no two documents share a box's state. `page_text::fresh_history`, run
@@ -160,9 +208,39 @@ underneath is
 covered in the colour the page worker (`worker.rs`, `Worker::sample`) finds around it, from a drawing of that
 part of the page in the current page colours.
 
-Gestures (PB-14): `Editor::escape` first lets go of a move, resize or turn (`drag`), a shape (`draw`), a pen stroke
-or a word selection being dragged (`text_drag`), changing nothing and keeping the tool; only then does Esc do what
-it did. egui forgets a drag whose widget isn't drawn, so the page a gesture is on (`Editor::gesture_page`) keeps
+Selected objects (ENH-06, batch 25; design `limarepdf-multiselect-design.md`) are one `Selection::Objects`: a page
+and one or more `selection::Selected` (the object's index in `Pdf::page_objects`, its kind, box and a line's text),
+in the order selected, with `loose` (page text among them moves with the read tool: text just added, Move or resize
+text). `Selection::object` gives the object only when one is held, so everything built for one (handles, line
+editing, Replace image, the one-object inspector) is unchanged. An index is only good until the page changes: a
+deleted object drops out of the list and a rewritten line goes to its end. So after every change the objects are
+found again (`Selection::refind`, run by `Editor::objects` whenever it reads a page's objects anew): at its index
+when the object there fits (kind, text, a box meeting the one held, `Selected::fits`), else the fitting one
+overlapping it most, else it is let go, never swapped for another. A change says first where each will be or what
+it will read (`Selection::expect`: `Tab`'s `SetBox` gives the boxes, `EditText` the typed text, keeping its own
+fallback for a line read back differently). With the arrow (`page_ui`'s `start_arrange`), Shift+click toggles one
+(`Editor::toggle_object`), a press on nothing, on a background not held (`Editor::background`, the read tool's 80 %
+rule) or with Shift away from the held objects starts a `Marquee`, selecting what is wholly inside it
+(`inside_rect`, invisible text only while shown) on release (`marquee_done`; Shift adds), and a press on a held
+object moves them all (`start_move`: `Drag::group`, the box round them all as `orig` and `cur`; `held_boxes` draws
+them moved). The read tool's Shift+click toggles a picture or shape too, unless words are selected, which it
+extends. With both tools a drag begins (`page_ui`'s `begins`) only once the pointer is further from the press than
+egui's click distance: egui takes a press held still for 0.8 s for a drag, so it waits in `Editor::still`, and let
+go before it moves it is a click (`still_click`). Ctrl+A is `Act::SelectAllObjects` (the arrow's), sharing the
+key with the read tool's `SelectAllText` by being enabled for another tool, and a page-only key left to a text box. Several held get no handles: each is
+outlined and a dashed box drawn round them all. Core changes several objects of a page in one rewrite
+(`Pdf::set_object_boxes`, `transform_objects`, `delete_objects`, `set_path_styles`, the one-object functions calls
+of them), the ids as the page is before the call, refusing all if any is refused; `pick_all` maps each operator to
+its object, and `Following::all` finds once what goes in before which operator after them (also for
+`edit_texts`), so a page of 27,000 objects is gone through once. The inspector for several (`Editor::group_ui`)
+restyles their lines through a `Chosen` made from them (`chosen::Of::Lines`, each line whole, as batch 24's words)
+and their shapes through a `Group` (each shape's `Look` as it is and as changed, `Typed::Objects`), and moves them
+by the box round them (`Group::at`). `Tab::after_insert` selects everything a change put down (`Editor::select_new`
+from the object count before), so new text of several lines is held as one.
+
+Gestures (PB-14): `Editor::escape` first lets go of a move, resize or turn (`drag`), a shape (`draw`), a selection
+rectangle (`marquee`), a pen stroke or a word selection being dragged (`text_drag`), changing nothing and keeping the
+tool; only then does Esc do what it did. egui forgets a drag whose widget isn't drawn, so the page a gesture is on (`Editor::gesture_page`) keeps
 its `page_ui` drawn by `Tab`'s page loop while it is out of view, and letting go ends the gesture there. The
 inspector's Text and Comment boxes keep a change when they lose the keyboard (PB-20), as Tab moves on to a button
 and `settled` waits while any widget has the keyboard.
@@ -255,10 +333,28 @@ its number, stays valid; `FontChoice` stays `Copy`. `embed::Face::of` reads an i
 the first time and keeps it, and the same embedding applies: always embedded (no WinAnsi path), static CFF fonts
 as CIDFontType0 with `/FontFile3 /OpenType`, variable fonts set at their weight by `subsetter`'s `variable-fonts`
 feature (TrueType out, CFF2 included). `FontChoice::of_font` finds the family a PDF font is from by its
-PostScript name, for edited lines; the standard fonts' own names never match an installed font. In the app,
-`font_list.rs` is the inspector's searchable list (names drawn in their own fonts through `typing_fonts::preview`,
-files over 4 MB left in the interface font), and `typing_fonts.rs` draws typed text from the family's file with
-egui's variation coordinates (`typing_fonts::coords`).
+PostScript name, for edited lines; the standard fonts' own names never match an installed font. A family's
+`name` is the font's own; `Typeface::label` is what lists and messages show, the familiar typeface first for a
+font with a code name (`FAMILIAR`: the URW base-35 fonts and their gsfonts names, "Palatino (P052)"), and the list
+is sorted by it (`by_label`); `FontChoice::family_name` gives the label. In the app, `font_list.rs` is the
+inspector's searchable list (names drawn in their own fonts through `typing_fonts::preview`, files over 4 MB left
+in the interface font; a search matches the label, which holds both names; `about` is a family's tooltip), drawn
+across the panel, with Bold and Italic apart (`font_list::styles`) so the caller puts them in one row with size and
+colour; and `typing_fonts.rs` draws typed text from the family's file with egui's variation coordinates
+(`typing_fonts::coords`). The list's tooltip names the PDF fonts of the selected characters
+(`editor::pdf_fonts`).
+
+The inspector's heading is `inspector::title`: for the editor's section, `Editor::heading` (a selected comment,
+else the tool's options, else the selected object; the object's own heading is drawn again in the panel only below a
+tool's options). An object's X, Y, width and height are in a `CollapsingHeader` with a fixed id
+(`position-and-size`), so it starts closed and keeps its state from one object to the next; one field a row, as
+the section's indent leaves no room for two in the default width (two widened the panel). A line of page text has no
+text box in the inspector: its words are typed only on the page (`line_edit_ui`), which the arrow opens too (a
+double-click; Edit text through `Editor::edit_selected_text`, the caret at the end). `Editor::end_line_edit` finishes
+it (Esc, `escape`, the keyboard going elsewhere): it keeps the typing and, unless the tool is the arrow or the line
+was made movable (`loose`), clears the line's selection when it is still that line, so the panel goes back to what
+it showed before. Text colour buttons are `text_color_button`, painted as an A over a bar of the colour (the
+colours side by side when mixed), the bar outlined in the text colour so black shows on the dark theme.
 
 Redaction (`crates/limarepdf-core/src/redact.rs`) has its own pass over the page content rather than editing the
 parser's objects: it rewrites each text-showing operator character by character, keeping the rest in place with
@@ -409,8 +505,13 @@ canonicalised; on Unix also the same device and inode, so a hard link counts; th
 flight; a result checks again, for a tab that got the file meanwhile. Each tab keeps `Tab::disk`, the
 `disk::Version` of its file as last read (`disk::read`, the bytes and their metadata through one handle) or
 written (`Tab::wrote`): size, modified time, the Unix inode (saving renames a new file over the old one, so it has
-a new inode) and the SHA-256 of the bytes. `disk::compare` reads the file only when size, time or inode differ, and
-then calls it changed only when the bytes differ, so a touched or synced copy isn't a change. `App::save` checks
+a new inode), the SHA-256 of the bytes and when it was read. `disk::compare` reads the file only when size, time or
+inode differ, or when the file's time is less than 2 seconds older than the reading (git's "racy" rule, PB-28: a
+change in the same tick of the file's clock keeps the time, and Windows has no inode to tell it; FAT keeps times to
+2 seconds), and then calls it changed only when the bytes differ, so a touched or synced copy isn't a change. A
+file so read and found unchanged is stored with its new version, by `App::check_disk`'s result and by the save's
+own check (`App::stale`, since batch 37: before, a file saved once was read in full at every check of every later
+save), so it is read once more after a save or a fresh write, not every time. `App::save` checks
 before its other questions, and `App::save_target` again just before writing (Save, a signed document's appended
 save, Save as onto the tab's own file by any path); a changed file asks `Dialog::ConfirmStale` (Save as… or Replace;
 Replace stores that version in `App::replace_ok`, so the save then goes ahead unless the file changes again), and
@@ -481,6 +582,36 @@ the app quits, so stopping part way keeps every document open. Answering a quit 
 questions and a tab's closing in progress, since quitting asks about every unsaved document anyway. Tests never
 open the save chooser: `App::save_as` takes the tests' `SAVE_AS` instead.
 
+Saving writes on a thread of its own (ENH-35, batch 37; `app/save.rs`). The window's thread does what comes
+before the write as it always did: keeping the typing, the questions (`App::save`, `save_unmarked`, `save_signed`,
+with `append_edits` for a signed document), and `App::save_target`'s checks. Then `save_now` hands
+`App::start_save` a copy of the document with its password set (`save::Write::Whole`), or `save_appended` the
+bytes with the edits added (`Write::Appended`); the thread writes them (`Pdf::save` prunes, compresses and
+encrypts the copy, so the tab's own document is no longer compressed by a save), reads the file back
+(`disk::read`, the bytes for the signature check and the version for `Tab::wrote`), and sends `Loaded::Saved`.
+`App::saves` holds each save being written (`save::Running`: its tab, number, the tab's `State` when handed over,
+the password to check the saved signatures with), shown by the status bar's busy sign (`App::busy_sign`).
+`App::saved` applies the result as the old synchronous save did, with the same messages through `App::show` (a
+dialog may be open by then): Save failed, Saved, not confirmed, the status. The tab counts as saved only when its
+`State` is the one handed over and the write was confirmed; changed meanwhile (any edit, Undo, a password) it stays
+`dirty`, keeps `scrubbed` and keeps its recovery copy (`saved_copy` not confirmed). The tab's `State` changes with
+the result (`dirty`, `path`), so a question asked about the tab while it saved, whose `Asked` held the state before,
+is moved on to the state after (`Dialog::asked_mut`), and its answer still acts. While a tab's save is written:
+Save or Save as again is remembered (`save_again`, Save as winning) and run once it ends (`save::AfterSave::Save`,
+the tab brought to the front for its questions; dropped if the save failed, which says so); `close_asking` waits
+(`AfterSave::Close`, which then asks as usual); `App::quit` and the window's close request wait for every save
+(`AfterSave::Quit`, the close cancelled); `close_step` keeps its `Closing` while the save it waits for is written,
+and doesn't quit while any other is; `App::after_save` runs the first one ready at the end of `App::dialogs`, with
+no dialog open or waiting. Reload, Sign with digital ID and Certify are off (`Ctx::saving`) and refused in `act`
+with a message (a banner's Reload, placing a signature box); `Loaded::Disk` results for a tab being saved are left
+out, as its own save is replacing the file. `on_exit` joins the save threads (`finish_saves`), so a system
+shutting the app down doesn't cut a write short. Tests hold the next save's write until they say go
+(`App::save_gate`) and wait for it with `saves_done`.
+
+Listing annotations (`Pdf::annotations`, and `every_annotation` for the redaction marks counted after every change
+and before every save) passes each page's id to `annotations_in`; looked up by number (`page_id_at`, which builds
+the page list) it went through the page tree once a page, 63 ms on 300 pages (batch 37).
+
 Crash recovery copies are kept by `crates/limarepdf-gui/src/recovery.rs`, in a private
 per-user state folder with one subfolder per running app, which holds a locked `lock` file while the app runs. A tab's
 copy is a PDF and a description naming it (length, SHA-256, title, original path), published in an order that leaves
@@ -544,6 +675,62 @@ submenu's name before it in the weak colour ("Theme › Dark"), names the row `a
 readers ("Theme: Dark") and searches the label, submenu and group (`actions::matches`; BUG-34, audit A18). A test
 keeps every palette entry's name its own.
 
+F6 and Shift+F6 (ENH-10, batch 26) are `Act::NextRegion` and `PrevRegion`, the one shortcut `App::shortcuts` runs
+while a text box has the keyboard (and never while a list or menu is open), with Shift told apart exactly, as egui
+otherwise ignores an extra Shift. They only set `Regions::step`; `App::move_region` does the move at the end of
+`App::ui`, once every region and control of the frame is drawn. `crates/limarepdf-gui/src/regions.rs` keeps where
+each region was drawn this frame (`Regions::add` from each panel's response; the notices' scope from
+`Tab::banners_at`; the inspector's pop-out with `add_over`, looked in first), finds a control's region by where its
+middle is (the notices and the inspector looked for before the page, which they lie over), and remembers the
+control last given the keyboard in each. The next region round is the first with a control that can take the
+keyboard this frame (`regions::controls`: enabled, shown, focusable, on a layer not behind a dialog), the last
+used if still there, else the first in Tab's order. The page is the exception while a document is open: there the
+keys go to the document with nothing focused, as everywhere in the app, so moving to it surrenders egui's focus
+and sets `Regions::ring`, lent to `Tab::page_ring`, which outlines the page being read until a press or any
+control takes the keyboard. Leaving the page, `move_region` notes what had it in `Editor::parked`: typing still
+open (`Parked::Typing`, the id from `Editor::typing_id`, its selection noted by `page_text::held`), which
+`line_edit_ui` and `writing_ui` don't end while it waits, and which `App::keys_to_page` gives back with its
+selection and its undo (`give_back`, `hand_back`); or a form field's text box (`Parked::Field`, by name and
+widget), which keeps its value as it loses the keyboard and `FormUi::focus_field` opens again. A press anywhere, the
+typing getting the keyboard back, or another tab in front ends the wait (start of `App::ui`). Each panel is named
+for screen readers with its role by `regions::name`, which finds the panel's own node up `Ui::stack` (egui 0.37
+gives each panel a node, unnamed); the notices are a scope built with their role and name. A document tab is
+`Role::Tab`, its selected state set on its node (egui's `WidgetInfo::selected` gives a toggle instead).
+
+A panel's edge (ENH-11) is egui's resize handle, under the panel's id (`ui.scope_id().with(name)`, where `ui` is the
+one the panel is shown in) with "__resize"; before batch 26 the names were set on `Id::unique(name)`, which isn't
+it, so they never showed. `panels::edge_keys`, before the panel is shown, reads Left, Right, Home and End while the
+edge has the keyboard, keeps the arrows from moving the keyboard on (`set_focus_lock_filter`), and puts the new
+width in as an AccessKit SetValue request on the edge, the way egui 0.37 lets a screen reader resize a panel, so it
+goes through egui's own clamping (the inspector no narrower than its contents); it never asks below
+`panels::NARROWEST`, so the keyboard never folds the inspector to its strip. `panels::edge_shown` names the edge
+and draws the accent line along it while it has the keyboard. The outline that moves new text (`page_text::field`)
+senses drags only, without egui's focusable flag, so it is no stop for Tab; the start screen's card likewise.
+
+The optional timing log (`crates/limarepdf-gui/src/timing.rs`, REL-07) is for measuring the app: with
+`LIMAREPDF_TIMING` naming a file, `main` starts it first thing, and each point calls `timing::mark` (or
+`timing::once`, for an event written only the first time with its detail) with a closure for the detail, so the
+log off costs one `OnceLock` check and no formatting. It is one process-wide log behind a mutex, so the render
+workers write to it without being handed anything. The points: `start` (in `main`), `app made` (end of `App::new`),
+`input` (each key, text, click, wheel and clipboard event, in `App::raw_input_hook`, at the start of the frame that
+takes it; pointer moves are left out, and what is typed is never written, as it may be a password: text by its
+length, a key by its name only when it types nothing: Enter, Esc, Tab, Backspace, Delete, Insert and the
+movement keys), `frame built` (end of `App::ui`, with egui's frame number and pass, the log
+then flushed), `page drawn` (`Tab::show_pages`, the first time a page is painted from a drawing at the scale it
+wants rather than a stand-in at another), `render start` and `end` (the worker, per page and tile), `open start`
+and `end` (the read thread), `search start`, `search first hit` and `search end` (`Tab::start_search` and
+`take_search`, the query by its length, the matches by their count) and `search index` (the search thread, the
+text kept in bytes), `save start`
+and `end` (the save's thread, since batch 37) and `save shown` (the status bar drawing a save's busy sign, once per
+save, by its number), `print dialog` (Print's `act`), `printers found` (`poll_loads`) and `exit`
+(`on_exit`). A frame is built before egui
+paints it and the window presents it, which the app can't see: the gap is measured from outside by screenshot
+polling ([Performance](performance.md#startup-and-responsiveness)). Lines are tab-separated: epoch and log-relative
+microseconds, event, detail. A file that can't be created, or a write that fails, is said once on stderr and the
+log stops; the app is never affected otherwise. Tested by `timing`'s own tests and
+`the_timing_log_follows_a_file_from_its_read_to_its_page_drawn`, which runs the log in a child test binary as it
+is the process's.
+
 ## Content editing
 
 How editing works in the page content (moved from [Editing text and pictures](../content-editing.md), which describes it in
@@ -577,7 +764,20 @@ form XObject, and per inline image.
   part keeps the font of the span it names when its text is that span's, unchanged (its shows are copied as they
   were, with their character spacing, word spacing and scaling, and a gap read as a space put back as the same
   move), or when the font can be reused and the text is ASCII (`PageObject::keeps_font`); otherwise it is written
-  as above, the parts in one font sharing one font object. A line in one style whose words alone change, in a
+  as above, the parts in one font sharing one font object. A part that is some of its span's own characters,
+  unchanged (`TextPart::from`, where they start in the line as read), and starts and ends at a space or an end
+  of its span (`cuttable`), keeps them as they were: `shows_cut` cuts the span's shows between character codes,
+  read with the page's `FontCtx` exactly as the parser reads them (a code's decoded characters, a spacing number
+  under -150 read as a space, the gap after a show), each spacing number going with the character before it (at
+  a show's start, the one after). It gives up (`None`) on a cut through a code (a ligature, or a ToUnicode entry
+  of several characters), through a string `codes_known` and `drawn_alike` don't vouch for, or when the
+  characters don't add up to the piece's; the part is then written as above and the line reported. A space made
+  by a move that would start a cut part goes at the end of the part before instead (`then_move`): at a show's
+  start it reads as no space. `Pdf::edit_texts` makes several lines of a page in one parse and one commit (the
+  shows of every line taken out, each line's `Following` in the page's order, the lines on top in the order
+  given), the parts of all its lines sharing the fonts they add (`written_lines`); `edit_text` is it for one
+  line. Before committing, each line written with cut shows is read back as the page will be (`misread`, by its
+  operators' place): one that reads as other words is written again without cutting, and reported. A line in one style whose words alone change, in a
   font that can be reused, is still changed in place. While a line is edited on the page, the app makes the same test as it goes
   (`TextEdit::keeps_font`) and draws the line in the font it will have: the line's own font installed on the
   computer, or else the Liberation face of its kind, when the font is kept; the installed family's font, or the

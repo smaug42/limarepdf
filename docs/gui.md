@@ -25,7 +25,8 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
   (the document's outline) and Comments. Clicking a view opens it; clicking the open one folds the panel away, and
   clicking it again brings it back. Documents open on Pages, unless the file asks to open on its bookmarks. The
   same panel lists the document's digital signatures, from ☰ > Document > Digital signatures > Signatures in this
-  document. See [Bookmarks](reading-and-finding.md#bookmarks), [Search](reading-and-finding.md#find-words),
+  document. Pages are called by the document's page labels where it has them, unless ☰ > View > Use the
+  document's page labels is off. See [Bookmarks](reading-and-finding.md#bookmarks), [Search](reading-and-finding.md#find-words),
   [Comments](comments-and-markup.md#see-every-comment-and-reply) and [Digital signatures](signatures.md).
 - **Middle:** the pages, scrolling continuously. By default they fit the width between the side panels; zooming
   turns that off. Continuous, facing or single pages: see [Page layout](reading-and-finding.md#page-layout).
@@ -37,6 +38,19 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
   760 the navigation panel folds away to its icons. They come back when the window is wide enough again, unless
   you closed them yourself; a panel you open in a narrow window stays open. Whether you closed or opened each
   panel is remembered between runs.
+- **Panel widths:** drag the edge of the navigation panel or the inspector to make it wider or narrower. From the
+  keyboard, Tab to the edge (a line shows along it), then press Left or Right to move it 10 points (50 with
+  Shift), Home to make the panel as narrow as it goes, or End to make it half the window wide.
+
+F6 moves the keyboard to the next part of the window and Shift+F6 to the one before, in the order they are on
+screen: the top bar, the tabs, the document's notices (when there are any), navigation, the page, the inspector
+and the status bar, then round again. Each part takes you back to where you last were in it, or to its first
+button. On the page, the keys go to the document (PageDown, the arrow keys, Delete), and an outline round the
+page you are reading shows it. F6 is also the way out of a form, where Tab moves between the fields: a field keeps
+what you typed, and F6 back to the page returns to it. Text you are typing on the page (new text, a line, a note
+or a text box) stays open while you are elsewhere, so the inspector can still change it, and F6 back to the page
+lets you go on typing; a click anywhere finishes it as usual. F6 waits while a dialog, the command palette, a list
+or a menu is open. On a Mac keyboard you may need to hold fn for F6.
 
 Ctrl+K opens the command palette, which lists every command. Type to filter, use Up and Down to choose, and press
 Enter to run; Esc closes it. It looks like the dialogs, without a title or buttons: a search field, then each
@@ -46,12 +60,13 @@ own, such as "Theme › Dark" and "Page colours › Dark", and typing the submen
 ## The tools
 
 Documents open with the read tool, Read and select text (the text cursor). It selects text, follows links, fills in
-forms, edits a line of text when you double-click it, and selects pictures, shapes and comments to move them. The
+forms, edits a line of text when you double-click it, and selects pictures, shapes and comments to move them
+(Shift+click for several pictures and shapes). The
 other tools:
 
 | Tool | What it does | See |
 | --- | --- | --- |
-| Select, move and resize objects (the arrow, in ☰ > Tools) | Selects any object, page text and full-page pictures included | [Editing](content-editing.md#move-resize-or-delete) |
+| Select, move and resize objects (the arrow, in ☰ > Tools) | Selects any object, page text and full-page pictures included; several with Shift+click, a rectangle or Ctrl+A | [Editing](content-editing.md#move-resize-or-delete), [several](content-editing.md#select-several-objects) |
 | Add text | Click and type new text | [Add text](content-editing.md#add-text) |
 | Add image | Choose a picture, then drag a box | [Add a picture](content-editing.md#add-a-picture) |
 | Redact | Drag a box to mark an area for redaction | [Redaction](redaction.md) |
@@ -118,6 +133,11 @@ Close this tab; other tabs carry on.
 
 Save (Ctrl+S) writes the document over its file; Save As (Ctrl+Shift+S) writes a new file and leaves the original
 as it was. Your file is only changed when you save.
+
+The file is written in the background: while it is, the status bar shows **Saving** with the file's name, and you
+can go on reading and editing. A change made meanwhile isn't in the saved file, so the document stays marked
+unsaved. Saving it again, closing it or quitting waits for the save to finish, and Reload and signing it are
+available again once it has.
 
 A file is open in one tab at a time: opening it again, by any path or link to it, brings its tab to the front.
 Before saving over the file, LimarePDF checks it still holds what LimarePDF last read or saved there. If another
@@ -287,8 +307,9 @@ What you select decides what the inspector, the right-click menu and the floatin
 | --- | --- |
 | Nothing | The document: properties, opening view, password security, the form (when there is one), crop, watermark, headers/footers/Bates, OCR, optimise scanned pages, export pages as images, split into files, and buttons for export text, print and append PDFs |
 | Pages (click thumbnails; Shift for a range, Ctrl for one more) | Rotate, delete, extract to a new tab, insert images or a blank page after them, page labels from the first selected page, and the crop, watermark, headers/footers, OCR and optimise tools with the pages filled in ([Organising pages](organising-pages.md)) |
-| An object, a comment, or a tool that adds content | That object's or tool's options. For a line of text being edited, or new text being typed, the font, Bold, Italic, size and colour of the words selected in it, blank where they mix values ([Style words in a line](content-editing.md#style-words-in-a-line)) |
-| Words | Nothing of their own: the inspector stays on the document or pages. Copy, highlight, redact, print and save the selection from the floating toolbar (or the docked buttons) and the right-click menu |
+| An object, a comment, or a tool that adds content | That object's or tool's options, headed by what it is (Text, Image, Text box, New rectangle). For a line of text being edited, or new text being typed, the font, Bold, Italic, size and colour of the words selected in it, blank where they mix values ([Style words in a line](content-editing.md#style-words-in-a-line)). An object's position and size are in its **Position and size** section, which stays open or closed as you left it |
+| Several objects | Headed by how many (3 objects), with a line saying what they are: the look of the lines of text among them and of the shapes, blank or mixed where they differ, their position (X and Y) and Delete ([Select several objects](content-editing.md#select-several-objects)) |
+| Words | Their look, headed **Selected text**: the font, Bold, Italic, size and colour, blank where they mix values ([Style words you select while reading](content-editing.md#style-words-you-select-while-reading)); invisible recognised text alone has none, and the inspector stays on the document or pages. Copy, Bold, Italic, highlight, redact, print and save the selection from the floating toolbar (or the docked buttons) and the right-click menu |
 
 The inspector holds controls, with at most a short line about state (such as how many areas are marked); how to
 use a tool is in its tooltip in the top bar and the menus, and in this guide. Menu commands for document and page
@@ -339,21 +360,27 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Ctrl+W | Close the tab |
 | Ctrl+P | Print |
 | Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) | Undo, redo |
-| Ctrl+F | Search |
+| Ctrl+F | Search: type, and the matches come once you pause |
+| Enter, Shift+Enter in a search field | Next, previous match (Enter before the pause searches at once) |
 | Ctrl+K | Command palette |
+| F6, Shift+F6 | Move the keyboard to the next, previous part of the window: the top bar, tabs, notices, navigation, the page, the inspector, the status bar |
+| Left, Right on a panel's edge (Shift for 50 points); Home, End | Make the panel narrower or wider by 10 points; as narrow as it goes, half the window wide |
 | Ctrl+= , Ctrl+- | Zoom in, zoom out |
 | Ctrl+0, Ctrl+1 | Fit width on or off, actual size |
 | Ctrl+scroll, pinch | Zoom |
 | PageUp, PageDown, Home, End | Previous, next, first, last page |
-| Delete, Backspace | Delete the selected object, comment or mark, or the selected pages |
+| Delete, Backspace | Delete the selected objects, comment or mark, or the selected pages |
 | Ctrl+Shift+H | Highlight the selected text |
-| Arrow keys (Shift for 10 points) | Move the selected object |
+| Arrow keys (Shift for 10 points) | Move the selected objects |
 | Ctrl+A, Ctrl+C | Select all text on the page, copy it (read tool) |
-| Esc | Cancel: close an open list, menu or colour picker (only that), cancel a move, resize, shape, pen stroke or word selection being dragged (only that), finish (and keep) new text, a line, a note, a text box or a form field being typed, clear the selection, or leave a tool for the read tool |
-| Ctrl+B, Ctrl+I | Bold, Italic for the words selected in new text being typed (Add text) or a line being edited on the page; with nothing selected, the word at the caret, or what is typed next between words |
+| Ctrl+A (arrow) | Select every object on the page |
+| Shift+click (read tool: pictures and shapes; arrow: any object) | Add an object to the selection or take it out |
+| Shift+drag (arrow) | Add what a rectangle holds to the selection |
+| Esc | Cancel: close an open list, menu or colour picker (only that), cancel a move, resize, shape, pen stroke, selection rectangle or word selection being dragged (only that), finish (and keep) new text, a line, a note, a text box or a form field being typed, clear the selection, or leave a tool for the read tool |
+| Ctrl+B, Ctrl+I | Bold, Italic for the words selected with the read tool, or the lines selected with the arrow; in new text being typed (Add text) or a line being edited on the page, for the words selected there, or with nothing selected, the word at the caret, or what is typed next between words |
 | Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) while typing new text, a line, a note, a text box, a form field or in any box of the inspector | Undo, redo the typing there (and the styles, in new text and lines), not the document |
 | Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |
-| Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the top bar, tabs, bottom bar and panels left to right; inside a dialog, its fields and then its buttons, from the last straight back to the first. Leaving one of the inspector's boxes by Tab keeps what was typed. Space or Enter presses the button. In a form, Tab moves between its fields; Ctrl+K reaches every command |
+| Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the top bar, tabs, bottom bar and panels left to right; inside a dialog, its fields and then its buttons, from the last straight back to the first. Leaving one of the inspector's boxes by Tab keeps what was typed. Space or Enter presses the button. In a form, Tab moves between its fields; F6 reaches the rest of the window, and Ctrl+K every command |
 
 ### Screen readers
 
@@ -362,8 +389,10 @@ views and the dialogs: icons and symbols are named in words (◀ and ▶ in Sear
 Next match), a field is named by the label beside it, and toggles such as Bold and Italic, the picked signature
 and the picked mark say whether they are on. An open list or menu is named after the button that opened it. In a
 list with a button on each row, the button names its row: Restore Report.pdf in Recover unsaved changes, Remove
-Jane Example… in Trusted certificates. The edges of the side panel and the inspector are named Side panel width
-and Inspector width, but can only be dragged with the mouse.
+Jane Example… in Trusted certificates. Each part of the window that F6 goes to is named (Top bar, Tabs, Notices,
+Navigation, Document, Inspector, Status bar), the side panel by the view it shows, and each document's tab says
+whether it is the one shown. The edges of the side panel and the inspector are named Side panel width and
+Inspector width; they move with the arrow keys, and a screen reader can set them too.
 
 The names are checked by the app's tests on Linux. LimarePDF hasn't been tried with a screen reader yet (Orca,
 Narrator or VoiceOver).

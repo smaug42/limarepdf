@@ -324,12 +324,23 @@ impl Pdf {
     }
 
     pub(crate) fn parse_page(&self, page_index: usize) -> Result<Parsed> {
-        let page = self.page_id_at(page_index)?;
+        self.parse_page_of(self.page_id_at(page_index)?)
+    }
+
+    /// [`Pdf::parse_page`] for the page with object `page`.
+    fn parse_page_of(&self, page: ObjectId) -> Result<Parsed> {
         let data = self
             .doc
             .get_page_content_with_limit(page, crate::MAX_CONTENT)?;
         let res = self.inherited(page, b"Resources");
         self.parse_content(&data, res.as_ref(), mx::ID, 0)
+    }
+
+    /// Content `data` read as the page with object `page` would read it: with its
+    /// resources as they are now.
+    pub(crate) fn parse_as_page(&self, page: ObjectId, data: &[u8]) -> Result<Parsed> {
+        let res = self.inherited(page, b"Resources");
+        self.parse_content(data, res.as_ref(), mx::ID, 0)
     }
 
     /// Parse a content stream drawn with `resources`, starting from the transform `ctm`.
@@ -838,68 +849,6 @@ impl Pdf {
         Ok(matches.into_iter().flatten().collect())
     }
 
-    /// Where `query` occurs on a page (0-based): one entry per match, with a box for each
-    /// line it is on, in displayed-page points (y down), like [`PageObject::bbox`]. Case
-    /// is ignored, and any run of whitespace, a line break included, matches one space,
-    /// so a phrase broken across lines is found, as is a word hyphenated at a line end.
-    /// Visible and invisible (OCR) text both count: the same text [`Pdf::search`] reads.
-    pub fn find_text_matches(&self, page_index: usize, query: &str) -> Result<Vec<Vec<[f32; 4]>>> {
-        use crate::text::{find_all, fold, fold_query, joints};
-        let q = fold_query(query);
-        if q.is_empty() {
-            return Ok(Vec::new());
-        }
-        let page = self.page_id_at(page_index)?;
-        let parsed = self.parse_page(page_index)?;
-        let (vd, _, _) = self.vis_down(page);
-        let to_vis = mx::inv(vd).ok_or_else(|| anyhow!("degenerate page transform"))?;
-        let lines: Vec<&TextData> = parsed.text_lines().collect();
-
-        // The page's words in reading order in one string, one space between words, as
-        // [`Pdf::search`] reads them, with the text line and character each one came from
-        // (none for the spaces).
-        let mut text: Vec<char> = Vec::new();
-        let mut from: Vec<Option<(usize, usize)>> = Vec::new();
-        let mut breaks = Vec::new();
-        let words = ordered_words(&lines, to_vis);
-        for (i, (w, li, start)) in words.iter().enumerate() {
-            if i > 0 {
-                if words[i - 1].0.line != w.line {
-                    breaks.push(text.len());
-                }
-                text.push(' ');
-                from.push(None);
-            }
-            for (k, c) in w.text.chars().enumerate() {
-                text.push(fold(c));
-                from.push(Some((*li, start + k)));
-            }
-        }
-        let skip = joints(&text, &breaks);
-
-        let mut out = Vec::new();
-        for (s, e) in find_all(&text, &skip, &q) {
-            // The characters of the match on each text line it touches; a run on one line
-            // includes the spaces between its words.
-            let mut parts: Vec<(usize, usize, usize)> = Vec::new();
-            for &(li, ci) in from[s..e].iter().flatten() {
-                match parts.last_mut() {
-                    Some(p) if p.0 == li && ci >= p.2 => p.2 = ci + 1,
-                    _ => parts.push((li, ci, ci + 1)),
-                }
-            }
-            let boxes: Vec<[f32; 4]> = parts
-                .iter()
-                .flat_map(|&(li, a, b)| span_boxes(&lines[li].pieces, a, b))
-                .map(|bb| mx::transform_rect(to_vis, bb))
-                .collect();
-            if !boxes.is_empty() {
-                out.push(boxes);
-            }
-        }
-        Ok(out)
-    }
-
     /// Whether a page (0-based) shows any text, visible or not, including text inside
     /// form XObjects. False when the page cannot be read.
     pub fn page_has_text(&self, page_index: usize) -> bool {
@@ -936,19 +885,47 @@ impl Pdf {
     /// The words of a page (0-based), visible and invisible (OCR), in reading order worked
     /// out from their positions (see [`crate::reading`]), not the order the page draws
     /// them in. `line` numbers the visual lines. Boxes are in displayed-page points (y
-    /// down).
+    /// down). Each says which text line of [`Pdf::page_objects`] it is in, and where.
     pub fn page_words(&self, page_index: usize) -> Result<Vec<PageWord>> {
         let page = self.page_id_at(page_index)?;
-        let parsed = self.parse_page(page_index)?;
+        let parsed = self.parse_page_of(page)?;
         let (vd, _, _) = self.vis_down(page);
         let to_vis = mx::inv(vd).ok_or_else(|| anyhow!("degenerate page transform"))?;
         let lines: Vec<&TextData> = parsed.text_lines().collect();
+        // The page's own text lines come first, in object order; the lines inside forms
+        // come after them and are no object of their own.
+        let ids: Vec<usize> = (parsed.objs.iter().enumerate())
+            .filter(|(_, o)| o.text.is_some())
+            .map(|(id, _)| id)
+            .collect();
         Ok(ordered_words(&lines, to_vis)
             .into_iter()
-            .map(|(w, _, _)| w)
+            .map(|(mut w, li, _)| {
+                w.object = ids.get(li).copied();
+                w
+            })
             .collect())
     }
+
+    /// What search reads of the page with object `page`: its words in reading order, each
+    /// with its text line and first character there (see [`ordered_words`]), each text
+    /// line's pieces, and the matrix from page user space to displayed-page points.
+    pub(crate) fn search_parts(&self, page: ObjectId) -> Result<SearchParts> {
+        let parsed = self.parse_page_of(page)?;
+        let (vd, _, _) = self.vis_down(page);
+        let to_vis = mx::inv(vd).ok_or_else(|| anyhow!("degenerate page transform"))?;
+        let lines: Vec<&TextData> = parsed.text_lines().collect();
+        let words = ordered_words(&lines, to_vis);
+        Ok((
+            words,
+            lines.iter().map(|l| l.pieces.clone()).collect(),
+            to_vis,
+        ))
+    }
 }
+
+/// See [`Pdf::search_parts`].
+pub(crate) type SearchParts = (Vec<(PageWord, usize, usize)>, Vec<Vec<Piece>>, M);
 
 /// The words of a page's text lines in reading order (see [`Pdf::page_words`]), each with
 /// the index of the text line it came from and its first character there.
@@ -975,6 +952,8 @@ fn ordered_words(lines: &[&TextData], to_vis: M) -> Vec<(PageWord, usize, usize)
                 text: chars[start..i].iter().collect(),
                 bbox: mx::transform_rect(to_vis, bb),
                 line: li,
+                object: None,
+                chars: (start, i),
             };
             out.push(Some((word, li, start)));
         }
@@ -991,12 +970,17 @@ fn ordered_words(lines: &[&TextData], to_vis: M) -> Vec<(PageWord, usize, usize)
 }
 
 /// A word on a page: its text, its box in displayed-page points (y down), and the index
-/// of the text line it belongs to.
+/// of the visual line it belongs to.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PageWord {
     pub text: String,
     pub bbox: [f32; 4],
     pub line: usize,
+    /// The page object (a text line, [`Pdf::page_objects`]) the word is in; `None` for
+    /// text inside a form XObject, which is part of no text line of its own.
+    pub object: Option<usize>,
+    /// Its characters in that line's text, from and to.
+    pub chars: (usize, usize),
 }
 
 /// Text of a run of words, as for copying: spaces within a line, a line break between

@@ -24,8 +24,9 @@ turns the tool on with it; the button itself turns the tool on with the item pic
 
 ## Make your signature
 
-**Create signature…**, in the button's Signature menu or the Fill and sign pane (or **New…** beside Signatures in
-the pane), opens a window with three ways to make one:
+**Create signature…**, in the button's Signature menu, the Fill and sign pane (or **New…** beside Signatures in
+the pane), ☰ > Tools or the command palette (Ctrl+K), opens a window with three ways to make one (Create
+initials… likewise):
 
 - **Draw:** sign on the white pad with the mouse, touchpad or a pen; Clear starts again. The strokes are smoothed
   into curves and stay sharp at any zoom. In a narrow or short window the pad is smaller, at the same shape; what
