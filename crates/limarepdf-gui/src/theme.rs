@@ -36,38 +36,44 @@ struct Palette {
     edge: Color32,
     text: Color32,
     text_strong: Color32,
+    /// Secondary text: group names, labels beside values, the status bar.
+    muted: Color32,
     shadow: Color32,
 }
 
+// The approved workspace's colours (build plan 2.2): a restrained teal on light neutral
+// surfaces, and their dark counterparts.
 const LIGHT: Palette = Palette {
-    accent: Color32::from_rgb(37, 99, 235),
-    accent_bg: Color32::from_rgb(219, 231, 253),
-    panel: Color32::from_rgb(250, 250, 251),
+    accent: Color32::from_rgb(23, 106, 103),
+    accent_bg: Color32::from_rgb(223, 240, 236),
+    panel: Color32::from_rgb(248, 250, 251),
     surface: Color32::from_rgb(255, 255, 255),
-    canvas: Color32::from_rgb(232, 233, 236),
-    widget: Color32::from_rgb(241, 242, 244),
-    widget_hover: Color32::from_rgb(230, 232, 236),
-    widget_active: Color32::from_rgb(218, 221, 227),
-    border: Color32::from_rgb(222, 224, 228),
-    edge: Color32::from_rgb(206, 209, 216),
-    text: Color32::from_rgb(55, 58, 64),
-    text_strong: Color32::from_rgb(20, 22, 26),
+    canvas: Color32::from_rgb(233, 238, 241),
+    widget: Color32::from_rgb(237, 241, 243),
+    widget_hover: Color32::from_rgb(223, 240, 236),
+    widget_active: Color32::from_rgb(204, 228, 222),
+    border: Color32::from_rgb(215, 224, 229),
+    edge: Color32::from_rgb(196, 207, 214),
+    text: Color32::from_rgb(32, 46, 56),
+    text_strong: Color32::from_rgb(16, 26, 33),
+    muted: Color32::from_rgb(91, 108, 121),
     shadow: Color32::from_black_alpha(28),
 };
 
 const DARK: Palette = Palette {
-    accent: Color32::from_rgb(96, 152, 250),
-    accent_bg: Color32::from_rgb(33, 52, 92),
-    panel: Color32::from_rgb(32, 33, 36),
-    surface: Color32::from_rgb(40, 41, 45),
-    canvas: Color32::from_rgb(22, 23, 25),
-    widget: Color32::from_rgb(46, 48, 52),
-    widget_hover: Color32::from_rgb(58, 60, 65),
-    widget_active: Color32::from_rgb(70, 72, 78),
-    border: Color32::from_rgb(56, 58, 63),
-    edge: Color32::from_rgb(74, 77, 85),
-    text: Color32::from_rgb(208, 210, 214),
-    text_strong: Color32::from_rgb(240, 241, 243),
+    accent: Color32::from_rgb(122, 202, 192),
+    accent_bg: Color32::from_rgb(35, 72, 64),
+    panel: Color32::from_rgb(28, 36, 43),
+    surface: Color32::from_rgb(36, 47, 55),
+    canvas: Color32::from_rgb(20, 28, 34),
+    widget: Color32::from_rgb(44, 57, 66),
+    widget_hover: Color32::from_rgb(35, 72, 64),
+    widget_active: Color32::from_rgb(45, 90, 80),
+    border: Color32::from_rgb(64, 80, 90),
+    edge: Color32::from_rgb(84, 101, 112),
+    text: Color32::from_rgb(237, 242, 245),
+    text_strong: Color32::from_rgb(250, 252, 253),
+    muted: Color32::from_rgb(180, 193, 202),
     shadow: Color32::from_black_alpha(110),
 };
 
@@ -171,8 +177,8 @@ fn style(dark: bool) -> Style {
     let text = |size| FontId::new(size, FontFamily::Proportional);
     s.text_styles = [
         (TextStyle::Small, text(11.0)),
-        (TextStyle::Body, text(13.5)),
-        (TextStyle::Button, text(13.5)),
+        (TextStyle::Body, text(14.0)),
+        (TextStyle::Button, text(14.0)),
         (TextStyle::Heading, FontId::new(16.0, semibold())),
         (TextStyle::Monospace, FontId::monospace(12.5)),
     ]
@@ -213,6 +219,7 @@ fn style(dark: bool) -> Style {
     v.selection.stroke = Stroke::new(1.0, p.accent);
     v.text_cursor.stroke = Stroke::new(2.0, p.accent);
     v.hyperlink_color = p.accent;
+    v.weak_text_color = Some(p.muted);
 
     v.panel_fill = p.panel;
     v.window_fill = p.surface;
@@ -283,6 +290,36 @@ pub fn accent(dark: bool) -> Color32 {
     palette(dark).accent
 }
 
+/// The accent's faint background: what is chosen or pressed, and hovered buttons.
+pub fn accent_bg(dark: bool) -> Color32 {
+    palette(dark).accent_bg
+}
+
+/// Secondary text: group names, labels beside their values, the status bar.
+pub fn muted(dark: bool) -> Color32 {
+    palette(dark).muted
+}
+
+/// Thin dividers between the window's parts and its groups of commands.
+pub fn border(dark: bool) -> Color32 {
+    palette(dark).border
+}
+
+/// The command band, document tabs and inspector: white in the light theme.
+pub fn surface(dark: bool) -> Color32 {
+    palette(dark).surface
+}
+
+/// The shading over selected words on the page, which stays light in either theme: the
+/// workspace's selected-text colour, the words showing through.
+pub fn text_shading(dark: bool) -> Color32 {
+    if dark {
+        Color32::from_rgba_unmultiplied(181, 214, 223, 150)
+    } else {
+        Color32::from_rgba_unmultiplied(170, 208, 222, 140)
+    }
+}
+
 /// How good or bad a status is, for its colour: digital signature results and their
 /// banner.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -340,7 +377,34 @@ pub fn page_shadow(dark: bool) -> Shadow {
     }
 }
 
-/// Frame for the bars at the top and bottom of the window.
+/// Frame for the status bar at the bottom of the window.
 pub fn bar_frame(style: &Style) -> egui::Frame {
-    egui::Frame::side_top_panel(style).inner_margin(Margin::symmetric(8, 4))
+    egui::Frame::side_top_panel(style).inner_margin(Margin::symmetric(12, 3))
+}
+
+/// Frame for the top row: LimarePDF's mark and the document commands.
+pub fn top_frame(style: &Style) -> egui::Frame {
+    egui::Frame::side_top_panel(style).inner_margin(Margin {
+        left: 16,
+        right: 16,
+        top: 12,
+        bottom: 6,
+    })
+}
+
+/// Frame for the row of document tabs, which stand on its lower edge.
+pub fn tabs_frame(style: &Style) -> egui::Frame {
+    egui::Frame::side_top_panel(style).inner_margin(Margin {
+        left: 16,
+        right: 16,
+        top: 2,
+        bottom: 0,
+    })
+}
+
+/// Frame for the commands: the band's names and its groups, on the surface colour.
+pub fn commands_frame(style: &Style) -> egui::Frame {
+    egui::Frame::side_top_panel(style)
+        .fill(palette(style.visuals.dark_mode).surface)
+        .inner_margin(0)
 }

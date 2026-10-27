@@ -202,6 +202,9 @@ pub struct Settings {
     /// Pages are called by the document's page labels, where it has them, rather than by
     /// their numbers (on unless turned off).
     pub page_labels: bool,
+    /// Features planned but not built show, greyed, where they will be (ENH-41; on unless
+    /// turned off).
+    pub show_planned: bool,
     /// The window's size in points when it isn't maximized, and whether it was maximized,
     /// when the app last closed.
     pub window: [f32; 2],
@@ -267,6 +270,7 @@ impl Settings {
             keep_tools: Vec::new(),
             fields_shown: true,
             page_labels: true,
+            show_planned: true,
             window: WINDOW_DEFAULT,
             window_maximized: false,
             file,
@@ -331,6 +335,7 @@ impl Settings {
                 }
                 "form_fields" => s.fields_shown = value != "plain",
                 "page_names" => s.page_labels = value != "numbers",
+                "planned_features" => s.show_planned = value != "hidden",
                 "window" => {
                     let size = value.split_once('x').and_then(|(w, h)| {
                         window_size([w.trim().parse().ok()?, h.trim().parse().ok()?])
@@ -446,6 +451,8 @@ impl Settings {
                 "numbers"
             }
         );
+        let planned = if self.show_planned { "shown" } else { "hidden" };
+        text += &format!("planned_features = {planned}\n");
         text += &format!(
             "window = {} x {}\nwindow_maximized = {}\n",
             self.window[0], self.window[1], self.window_maximized
@@ -613,6 +620,19 @@ mod tests {
         assert!(!Settings::from_file(Some(f.clone())).page_labels);
         std::fs::write(&f, "page_names = walrus\n").unwrap();
         assert!(Settings::from_file(Some(f)).page_labels);
+    }
+
+    /// ENH-41: planned features show unless turned off, and the choice is kept.
+    #[test]
+    fn planned_features_shown_or_hidden_are_remembered() {
+        let f = file("planned");
+        let mut s = Settings::from_file(Some(f.clone()));
+        assert!(s.show_planned);
+        s.show_planned = false;
+        s.save();
+        assert!(!Settings::from_file(Some(f.clone())).show_planned);
+        std::fs::write(&f, "planned_features = walrus\n").unwrap();
+        assert!(Settings::from_file(Some(f)).show_planned);
     }
 
     #[test]

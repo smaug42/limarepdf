@@ -39,7 +39,11 @@ pub enum Act {
     Quit,
     Undo,
     Redo,
+    /// Copy: what is selected in the text being typed, else the selected words, else the
+    /// selected lines of page text.
     Copy,
+    /// Paste into the text being typed on the page, at its caret.
+    Paste,
     SelectAllText,
     /// Select every object on the page in front, with the arrow.
     SelectAllObjects,
@@ -102,6 +106,7 @@ pub enum Act {
     PrevPage,
     FirstPage,
     LastPage,
+    /// The page layout; Facing pages again, when on, goes back to continuous pages.
     Layout(Layout),
     /// In the facing layout, show the first page alone, or pair it with the second.
     ToggleCover,
@@ -141,6 +146,8 @@ pub enum Act {
     ToggleFields,
     /// Call pages by the document's page labels, or by their numbers.
     TogglePageLabels,
+    /// Show the features planned but not built where they will be, greyed (ENH-41).
+    TogglePlanned,
     NextField,
     PrevField,
     /// Empty the form field with the keyboard.
@@ -232,6 +239,7 @@ impl Act {
             | Act::ShowRecoveryFile
             | Act::Quit
             | Act::Copy
+            | Act::Paste
             | Act::SelectAllText
             | Act::SelectAllObjects
             | Act::MarkColor { .. }
@@ -267,6 +275,7 @@ impl Act {
             | Act::ToggleHidden
             | Act::ToggleFields
             | Act::TogglePageLabels
+            | Act::TogglePlanned
             | Act::NextField
             | Act::PrevField
             | Act::ClearField
@@ -380,6 +389,11 @@ pub struct Ctx {
     pub recovery: bool,
     /// See [`Act::TogglePageLabels`].
     pub page_labels: bool,
+    /// See [`Act::TogglePlanned`].
+    pub planned: bool,
+    /// Text is being typed on the page: new text, a line of page text, a note or a text
+    /// box, open whether or not it has the keyboard just now.
+    pub typing: bool,
     /// An annotation is selected, and whether it may be changed.
     pub annot: bool,
     pub annot_locked: bool,
@@ -436,11 +450,15 @@ fn undo(c: &Ctx) -> bool {
 fn redo(c: &Ctx) -> bool {
     c.can_redo
 }
-fn words(c: &Ctx) -> bool {
-    c.words
-}
 fn words_idle(c: &Ctx) -> bool {
     c.words && !c.busy
+}
+/// Something to copy: the text being typed (what is selected in it), words or lines.
+fn copyable(c: &Ctx) -> bool {
+    c.typing || c.words || lines_among(c)
+}
+fn typing(c: &Ctx) -> bool {
+    c.typing
 }
 fn doc_idle(c: &Ctx) -> bool {
     c.doc && !c.busy
@@ -636,8 +654,19 @@ pub static ACTIONS: &[Action] = &[
         label: "Copy text",
         icon: icon::COPY,
         keys: &[k(C, Key::C)],
-        enabled: words,
+        enabled: copyable,
         sep: true,
+        hint: "Copy what is selected in the text being typed, else the selected words or \
+               lines of text.",
+        ..BASE
+    },
+    Action {
+        act: Act::Paste,
+        group: Group::Edit,
+        label: "Paste",
+        icon: icon::CLIPBOARD_TEXT,
+        enabled: typing,
+        hint: "Paste into the text being typed, at its caret (Ctrl+V there does the same).",
         ..BASE
     },
     Action {
@@ -763,9 +792,10 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Edit,
         label: "Edit text",
         icon: icon::PENCIL_SIMPLE,
-        enabled: one_line,
+        enabled: doc_idle,
         sep: true,
-        hint: "Change the words of the selected line of page text.",
+        hint: "Change the words of the selected line of page text. With none selected, click \
+               a line to change it, or somewhere empty to add text.",
         ..BASE
     },
     Action {
@@ -1073,6 +1103,16 @@ pub static ACTIONS: &[Action] = &[
         hint: "Call pages by the numbering the document gives them, such as iii or A-1, \
                in thumbnails, search results and bookmarks. Off numbers them 1, 2, 3 \
                from the first page. The status bar shows both.",
+        ..BASE
+    },
+    Action {
+        act: Act::TogglePlanned,
+        group: Group::View,
+        label: "Show planned features",
+        icon: icon::EYE,
+        enabled: always,
+        checked: Some(|c| c.planned),
+        hint: "Show features not built yet, greyed, where they will be.",
         ..BASE
     },
     Action {

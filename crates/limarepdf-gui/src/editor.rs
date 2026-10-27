@@ -637,6 +637,7 @@ fn parse_size(s: &str, range: &std::ops::RangeInclusive<f32>) -> Option<f32> {
 /// number leaves the size as it was.
 fn size_ui(ui: &mut egui::Ui, size: &mut f32, range: std::ops::RangeInclusive<f32>) -> bool {
     let chosen = size_box(ui, Some(*size), range);
+    ui.label("pt");
     if let Some(v) = chosen {
         *size = v;
     }
@@ -660,7 +661,7 @@ fn size_box(
         .add(
             egui::TextEdit::singleline(&mut text)
                 .id(id)
-                .desired_width(52.0),
+                .desired_width(44.0),
         )
         .on_hover_text("Font size");
     r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "Font size"));
@@ -694,7 +695,6 @@ fn size_box(
         .0
         .on_hover_text("Font sizes")
         .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Font sizes"));
-    ui.label("pt");
     chosen
 }
 
@@ -925,6 +925,19 @@ fn settled(ctx: &egui::Context) -> bool {
         && !ctx.egui_wants_keyboard_input()
 }
 
+/// Whether the pointer was pressed or let go this frame in the inspector (`insp`) or in the
+/// band's groups that change the text being typed (`band`): a click there leaves the
+/// typing open, to take the keyboard back once the change is made.
+fn keeping(ctx: &egui::Context, insp: Option<Rect>, band: &[Rect]) -> bool {
+    ctx.input(|i| {
+        let clicked = i.pointer.any_pressed() || i.pointer.any_released();
+        let at = i.pointer.press_origin().or(i.pointer.latest_pos());
+        let inside =
+            |p: Pos2| insp.is_some_and(|r| r.contains(p)) || band.iter().any(|r| r.contains(p));
+        clicked && at.is_some_and(inside)
+    })
+}
+
 /// The text box of the line being edited on `page`, in the tab's `scope`
 /// ([`Editor::scope`]).
 fn line_edit_id(scope: egui::Id, page: usize) -> egui::Id {
@@ -975,15 +988,16 @@ fn text_change(text: &Styled, o: &PageObject) -> TextEdit {
     TextEdit::in_parts(parts)
 }
 
-/// The font list across the panel, then Bold, Italic, size (within `sizes`) and colour in a
-/// row, for what a style command changes in `text`: each shows blank where that mixes
-/// values. `in_pdf` names the PDF fonts of text already in the PDF. Returns whether one was
-/// used.
+/// Home's Font group (ENH-38) for what a style command changes in `text`: the font list
+/// and size (within `sizes`) in a row, then Bold, Italic, `planned` (the planned styles)
+/// and the colour; each shows blank where that mixes values. `in_pdf` names the PDF fonts
+/// of text already in the PDF. Returns whether one was used.
 fn styles_ui(
     ui: &mut egui::Ui,
     text: &mut dyn Restyle,
     sizes: std::ops::RangeInclusive<f32>,
     in_pdf: &[String],
+    planned: &dyn Fn(&mut egui::Ui),
 ) -> bool {
     let shown = text.shown();
     let first = text.first();
@@ -994,19 +1008,26 @@ fn styles_ui(
     };
     let mut font = was;
     let mut used = false;
-    let picked = crate::font_list::ui(ui, &mut font, shown.font.is_none(), in_pdf);
-    // Wrapped where the panel is too narrow for the row.
-    ui.horizontal_wrapped(|ui| {
-        crate::font_list::styles(ui, &mut font);
-        let size = size_row(ui, |ui| size_box(ui, shown.size, sizes));
-        if let Some(size) = size {
-            text.set_size(size);
-            used = true;
-        }
-        if let Some(c) = text_color_button(ui, &text.colors()) {
-            text.set_color(c);
-            used = true;
-        }
+    let mut picked = false;
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+        ui.horizontal(|ui| {
+            picked = font_field(ui, |ui| {
+                crate::font_list::ui(ui, &mut font, shown.font.is_none(), in_pdf)
+            });
+            if let Some(size) = size_box(ui, shown.size, sizes) {
+                text.set_size(size);
+                used = true;
+            }
+        });
+        ui.horizontal(|ui| {
+            crate::font_list::styles(ui, &mut font);
+            planned(ui);
+            if let Some(c) = text_color_button(ui, &text.colors()) {
+                text.set_color(c);
+                used = true;
+            }
+        });
     });
     if picked {
         // Each character takes the family's face nearest its own.
@@ -1027,10 +1048,39 @@ fn styles_ui(
     used
 }
 
-/// The size box ([`size_box`], "12 pt"), kept together when the row wraps.
-fn size_row<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    ui.add_space(4.0);
-    ui.horizontal(add).inner
+/// The font list, as wide as the Font group's first row leaves room for.
+fn font_field(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> bool) -> bool {
+    let size = egui::vec2(136.0, ui.spacing().interact_size.y);
+    ui.allocate_ui(size, add).inner
+}
+
+/// The inspector's facts about something: a label at the left, muted, its value at the
+/// right, a row each.
+pub fn facts(ui: &mut egui::Ui, id: &str, rows: &[(&str, String)]) {
+    let muted = theme::muted(ui.visuals().dark_mode);
+    egui::Grid::new(id)
+        .num_columns(2)
+        .spacing(egui::vec2(12.0, 8.0))
+        .show(ui, |ui| {
+            for (label, value) in rows {
+                ui.label(egui::RichText::new(*label).size(12.0).color(muted));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(value).size(12.0));
+                });
+                ui.end_row();
+            }
+        });
+}
+
+/// What the inspector says of the look of `text`: its font and size, "Mixed" where they
+/// differ.
+fn look_facts(text: &dyn Restyle) -> [(&'static str, String); 2] {
+    let shown = text.shown();
+    let font = shown.font.map_or("Mixed".into(), |f| f.family_name());
+    let size = shown
+        .size
+        .map_or("Mixed".into(), |s| format!("{} pt", size_text(s)));
+    [("Font", font), ("Size", size)]
 }
 
 /// The PDF's names for the fonts of the characters of line `o` a style command with `sel`
@@ -1180,6 +1230,11 @@ pub struct Editor {
     text_refused: page_text::Refused,
     /// Where the inspector was drawn last: a click there doesn't end a line being edited.
     insp_rect: Rect,
+    /// Where the band's groups that change the text being typed (its look, Copy and Paste)
+    /// were drawn this frame: a click there doesn't end the typing ([`band::show`]).
+    ///
+    /// [`band::show`]: crate::band::show
+    pub keep_typing: Vec<Rect>,
     pub tfont: FontChoice,
     pub tsize: f32,
     pub tcolor: [f32; 3],
@@ -1304,6 +1359,7 @@ impl Default for Editor {
             adding: None,
             text_refused: page_text::Refused::default(),
             insp_rect: Rect::NOTHING,
+            keep_typing: Vec::new(),
             tfont: FontChoice::default(),
             tsize: 14.0,
             tcolor: [0.0; 3],
@@ -1534,6 +1590,20 @@ impl Editor {
             return Some(line_edit_id(self.scope, le.page));
         }
         self.writing_id()
+    }
+
+    /// The text being typed takes the keyboard back once the pointer is let go: Copy or
+    /// Paste in the band, clicked while typing.
+    pub fn refocus_typing(&mut self) {
+        if let Some(a) = self.adding.as_mut() {
+            a.refocus = true;
+        }
+        if let Some(le) = self.line_edit.as_mut() {
+            le.refocus = true;
+        }
+        if let Some(w) = self.writing.as_mut() {
+            w.refocus = true;
+        }
     }
 
     /// Forget cached object lists (after any change to the document).
@@ -2064,13 +2134,10 @@ impl Editor {
         if !edit.has_focus() && self.parked == Some(Parked::Typing(id)) {
             return edit.hovered();
         }
-        // The inspector's font list, size, colour and buttons change the line being edited,
-        // which takes the keyboard back once the change is finished, as new text does.
-        let in_inspector = ctx.input(|i| {
-            let clicked = i.pointer.any_pressed() || i.pointer.any_released();
-            let at = i.pointer.press_origin().or(i.pointer.latest_pos());
-            clicked && at.is_some_and(|p| self.insp_rect.contains(p))
-        });
+        // The band's font list, size, colour and buttons (and the inspector's) change the
+        // line being edited, which takes the keyboard back once the change is finished, as
+        // new text does.
+        let in_inspector = keeping(&ctx, Some(self.insp_rect), &self.keep_typing);
         let picking = egui::Popup::is_any_open(&ctx);
         if !edit.has_focus() && (le.refocus || in_inspector || picking) {
             // Not in the click's own frames: a list it opens shows from the next one.
@@ -2204,7 +2271,12 @@ impl Editor {
         // it; a text box ends then, unless F6 took the keyboard to another region, which
         // it waits for.
         let parked = self.parked == Some(Parked::Typing(out.id));
-        if finish || esc || outside || (!w.note && out.lost_focus() && !parked) {
+        // Copy and Paste in the band leave it open, and it takes the keyboard back.
+        if !w.note && keeping(ui.ctx(), None, &self.keep_typing) {
+            w.refocus = true;
+        }
+        let kept = parked || w.refocus;
+        if finish || esc || outside || (!w.note && out.lost_focus() && !kept) {
             if outside {
                 self.note_closed = Some(ui.ctx().cumulative_pass_nr());
             }
@@ -2522,18 +2594,17 @@ impl Editor {
         }
     }
 
-    /// Shade the selected words of `page` (`words`) in `accent` as word processors shade a
-    /// selection ([`Self::shaded`]).
+    /// Shade the selected words of `page` (`words`) in `fill` ([`theme::text_shading`]) as
+    /// word processors shade a selection ([`Self::shaded`]).
     fn paint_words(
         &self,
         painter: &egui::Painter,
         page: usize,
         words: &[PageWord],
         screen_rect: impl Fn([f32; 4]) -> Rect,
-        accent: Color32,
+        fill: Color32,
     ) {
         if let Some(range) = self.selection.words_on(page, words.len()) {
-            let fill = accent.gamma_multiply(0.45);
             for b in Self::shaded(&words[range]) {
                 painter.rect_filled(screen_rect(b), 1.0, fill);
             }
@@ -2890,6 +2961,7 @@ impl Editor {
         self.objects(pdf, page);
         let painter = ui.painter().clone();
         let accent = ui.visuals().selection.bg_fill;
+        let shading = theme::text_shading(ui.visuals().dark_mode);
         let accent_strong = ui.visuals().selection.stroke.color;
         let hover_pt = resp.hover_pos().map(to_pt);
         let tol = 3.0 / k;
@@ -3281,7 +3353,7 @@ impl Editor {
                         resp = resp.on_hover_text_at_pointer(tip);
                     }
                 }
-                self.paint_words(&painter, page, &words, screen_rect, accent);
+                self.paint_words(&painter, page, &words, screen_rect, shading);
             }
             Tool::Text => {
                 ui.ctx().set_cursor_icon(CursorIcon::Text);
@@ -3293,7 +3365,7 @@ impl Editor {
                     self.start_word_drag(page, p, &words);
                 }
                 self.follow_word_drag(ui, pdf, page, r, k, &resp, &words);
-                self.paint_words(&painter, page, &words, screen_rect, accent);
+                self.paint_words(&painter, page, &words, screen_rect, shading);
                 if let Some(p) = click_pt(&resp).filter(|_| resp.clicked()) {
                     self.selection.clear_words();
                     if self.adding.as_ref().is_some_and(PageText::has_text) {
@@ -4111,6 +4183,13 @@ impl Editor {
         self.drag.is_some() || self.draw.is_some() || self.marquee.is_some() || self.text_drag
     }
 
+    /// One line of page text is selected, for Edit text to edit on the page.
+    pub fn one_line_selected(&self) -> bool {
+        self.sel()
+            .and_then(|(page, id)| self.objs.get(&page)?.get(id))
+            .is_some_and(|o| o.kind == ObjectKind::Text)
+    }
+
     /// Edit the selected line of page text on the page, the caret at its end (Edit text).
     pub fn edit_selected_text(&mut self) {
         let Some((page, id)) = self.sel() else {
@@ -4310,12 +4389,10 @@ impl Editor {
             .filter_map(|&id| Some((id, objs.get(id)?.bbox)))
             .collect();
         let settled = settled(ui.ctx());
-        if let Some(c) = self.chosen.as_mut().filter(|c| c.restylable()) {
+        // Their text's look is changed in the band's Font group.
+        if let Some(c) = self.chosen.as_ref().filter(|c| c.restylable()) {
             ui.add_space(4.0);
-            styles_ui(ui, &mut c.text, 1.0..=400.0, &c.in_pdf);
-            if settled {
-                self.keep(Typed::Words);
-            }
+            facts(ui, "lines-look", &look_facts(&c.text));
         }
         if let Some(g) = self.group.as_mut().filter(|g| !g.shapes.is_empty()) {
             ui.add_space(4.0);
@@ -4473,17 +4550,113 @@ impl Editor {
         }
     }
 
-    /// The look of the words selected with the read tool, across lines and pages: the font
-    /// list, Bold, Italic, size and colour, each blank where the words mix it. Each
-    /// finished change is kept at once as one undo step, and the words stay selected.
+    /// The look of the words selected with the read tool, across lines and pages, which
+    /// the band's Font group changes ([`Self::font_band`]).
     fn words_ui(&mut self, ui: &mut egui::Ui) {
-        let Some(c) = self.chosen.as_mut() else {
+        let Some(c) = self.chosen.as_ref() else {
             return;
         };
         ui.add_space(4.0);
-        styles_ui(ui, &mut c.text, 1.0..=400.0, &c.in_pdf);
-        if settled(ui.ctx()) {
+        let [font, size] = look_facts(&c.text);
+        let editing = ("Editing", "Selected words".into());
+        facts(ui, "words-look", &[editing, font, size]);
+    }
+
+    /// Home's Font group (ENH-38): the font list, size, Bold, Italic, `planned` (the planned
+    /// styles) and the colour, for the text they change: the new text being typed (what
+    /// is selected in it) or, before it, the next new text's look; the words selected with
+    /// the read tool; the line of page text selected or being edited (what is selected in
+    /// it); the lines among several objects. With none of them, the next new text's look,
+    /// greyed. Changes apply as they are made, each finished one an undo step
+    /// ([`Self::settle_look`]); the typing stays open and takes the keyboard back.
+    pub fn font_band(&mut self, ui: &mut egui::Ui, planned: &dyn Fn(&mut egui::Ui)) {
+        if self.tool == Tool::Text {
+            let Some(a) = self.adding.as_mut() else {
+                self.next_text_look(ui, planned);
+                return;
+            };
+            let end = a.text.text().chars().count();
+            let sel = page_text::held(ui.ctx(), a.id()).unwrap_or((end, end));
+            let mut text = InLine {
+                text: &mut a.text,
+                sel,
+            };
+            if styles_ui(ui, &mut text, 4.0..=200.0, &[], planned) {
+                a.refocus = true;
+            }
+            return;
+        }
+        if self.chosen_now().is_some_and(Chosen::restylable) {
+            if let Some(c) = self.chosen.as_mut() {
+                styles_ui(ui, &mut c.text, 1.0..=400.0, &c.in_pdf, planned);
+                return;
+            }
+        }
+        self.sync_insp();
+        let line = self.insp.as_ref().and_then(|insp| {
+            let (page, id) = insp.key;
+            let o = self.objs.get(&page)?.get(id)?;
+            (o.kind == ObjectKind::Text && !o.hidden && self.selection.object().is_some())
+                .then(|| o.clone())
+        });
+        if let (Some(obj), Some(insp)) = (line, self.insp.as_mut()) {
+            // What is selected in the line being edited on the page, else all of it.
+            let sel = match self.line_edit.as_ref() {
+                Some(le) => {
+                    page_text::held(ui.ctx(), line_edit_id(self.scope, le.page)).unwrap_or((0, 0))
+                }
+                None => (0, insp.text.text().chars().count()),
+            };
+            let in_pdf = pdf_fonts(&obj, sel);
+            let mut text = InLine {
+                text: &mut insp.text,
+                sel,
+            };
+            styles_ui(ui, &mut text, 1.0..=400.0, &in_pdf, planned);
+            return;
+        }
+        ui.add_enabled_ui(false, |ui| self.next_text_look(ui, planned));
+    }
+
+    /// The look of the next new text, in the band's Font group.
+    fn next_text_look(&mut self, ui: &mut egui::Ui, planned: &dyn Fn(&mut egui::Ui)) {
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+            ui.horizontal(|ui| {
+                font_field(ui, |ui| {
+                    crate::font_list::ui(ui, &mut self.tfont, false, &[])
+                });
+                if let Some(size) = size_box(ui, Some(self.tsize), 4.0..=200.0) {
+                    self.tsize = size;
+                }
+            });
+            ui.horizontal(|ui| {
+                crate::font_list::styles(ui, &mut self.tfont);
+                planned(ui);
+                if let Some(c) = text_color_button(ui, &[self.tcolor]) {
+                    self.tcolor = c;
+                }
+            });
+        });
+    }
+
+    /// Keeps the changes the band's Font group made, once they are finished (the pointer
+    /// let go, no list open), each an undo step: the selected words' or lines', or the
+    /// selected line's when it isn't being edited (one being edited keeps them with its
+    /// typing). Each frame, whether or not the inspector is shown.
+    pub fn settle_look(&mut self, ctx: &egui::Context) {
+        let settled = settled(ctx);
+        let object = self.line_edit.is_none() && self.selection.object().is_some();
+        if let Some(insp) = self.insp.as_mut().filter(|_| object) {
+            // The line being edited on the page watches its own changes.
+            let now = ctx.input(|i| i.time);
+            insp.history.observe(&insp.text, None, now, settled);
+        }
+        if settled {
             self.keep(Typed::Words);
+            if object {
+                self.commit_insp();
+            }
         }
     }
 
@@ -4824,32 +4997,27 @@ impl Editor {
         // A tool's options and the selected object's properties are headed by the panel's
         // heading (`Editor::heading`); the object's again below a tool's options.
         match self.tool {
+            // The look of the text being typed, or of the next, is changed in the band's
+            // Font group ([`Self::font_band`]).
             Tool::Text => {
-                match self.adding.as_mut() {
-                    // Changes apply to what is selected in the text being typed, as in the
-                    // line editor, which then takes the keyboard back.
+                let rows = match self.adding.as_mut() {
                     Some(a) => {
                         let end = a.text.text().chars().count();
                         let sel = page_text::held(ui.ctx(), a.id()).unwrap_or((end, end));
-                        let mut text = InLine {
+                        let text = InLine {
                             text: &mut a.text,
                             sel,
                         };
-                        if styles_ui(ui, &mut text, 4.0..=200.0, &[]) {
-                            a.refocus = true;
-                        }
+                        let [font, size] = look_facts(&text);
+                        [("Editing", "New text".to_string()), font, size]
                     }
-                    None => {
-                        crate::font_list::ui(ui, &mut self.tfont, false, &[]);
-                        ui.horizontal_wrapped(|ui| {
-                            crate::font_list::styles(ui, &mut self.tfont);
-                            size_row(ui, |ui| size_ui(ui, &mut self.tsize, 4.0..=200.0));
-                            if let Some(c) = text_color_button(ui, &[self.tcolor]) {
-                                self.tcolor = c;
-                            }
-                        });
-                    }
-                }
+                    None => [
+                        ("Editing", "Next new text".into()),
+                        ("Font", self.tfont.family_name()),
+                        ("Size", format!("{} pt", size_text(self.tsize))),
+                    ],
+                };
+                facts(ui, "new-text-look", &rows);
                 ui.separator();
             }
             Tool::Image => {
@@ -5009,7 +5177,8 @@ impl Editor {
             ObjectKind::Text => {
                 ui.add_space(4.0);
                 // The words are typed on the page (a double-click, or Edit text), as in a
-                // word processor: the panel holds only their look.
+                // word processor, and their look changed in the band's Font group: the
+                // panel says what they are.
                 if obj.hidden {
                     ui.weak("Used by search and copy.");
                 } else {
@@ -5019,24 +5188,31 @@ impl Editor {
                             .unwrap_or((0, 0)),
                         None => (0, insp.text.text().chars().count()),
                     };
-                    let in_pdf = pdf_fonts(&obj, sel);
-                    let mut text = InLine {
+                    let text = InLine {
                         text: &mut insp.text,
                         sel,
                     };
-                    styles_ui(ui, &mut text, 1.0..=400.0, &in_pdf);
-                }
-                if self.line_edit.is_none() {
-                    // The line being edited on the page watches its own changes.
-                    let now = ui.input(|i| i.time);
-                    let settled = settled(ui.ctx());
-                    insp.history.observe(&insp.text, None, now, settled);
-                }
-                // A line in an installed family is written in that family.
-                let own = insp.orig.styles().first().map(|s| s.font);
-                if !obj.font_reusable && !obj.hidden && own.is_none_or(|f| f.is_standard()) {
-                    ui.weak("Non-standard font: edits use the nearest standard one.")
-                        .on_hover_text(obj.font_name.as_deref().unwrap_or("?"));
+                    let [font, size] = look_facts(&text);
+                    // A line in an installed family is written in that family.
+                    let own = insp.orig.styles().first().map(|s| s.font);
+                    let source = if obj.font_reusable {
+                        "Preserved"
+                    } else if own.is_some_and(|f| !f.is_standard()) {
+                        "Installed family"
+                    } else {
+                        "Nearest standard"
+                    };
+                    let rows = [
+                        ("Editing", "One line".to_string()),
+                        font,
+                        size,
+                        ("Source font", source.into()),
+                    ];
+                    facts(ui, "line-look", &rows);
+                    if source == "Nearest standard" {
+                        ui.weak("Non-standard font: edits use the nearest standard one.")
+                            .on_hover_text(obj.font_name.as_deref().unwrap_or("?"));
+                    }
                 }
             }
             ObjectKind::Path => {
@@ -5640,18 +5816,31 @@ mod tests {
 
     /// The editor's inspector drawn once settled, as its widgets.
     fn inspector_tree(ed: &mut Editor) -> egui::accesskit::TreeUpdate {
+        drawn_tree(ed, |ed, ui| ed.inspector(ui))
+    }
+
+    /// The band's Font group for `ed`'s selection, drawn alone.
+    fn band_tree(ed: &mut Editor) -> egui::accesskit::TreeUpdate {
+        drawn_tree(ed, |ed, ui| ed.font_band(ui, &|_| {}))
+    }
+
+    /// What `draw` draws of `ed`, alone in a window, settled.
+    fn drawn_tree(
+        ed: &mut Editor,
+        draw: impl Fn(&mut Editor, &mut egui::Ui),
+    ) -> egui::accesskit::TreeUpdate {
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
         theme::install(&ctx);
         let mut tree = None;
         for _ in 0..3 {
             let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-                egui::CentralPanel::default().show(ui, |ui| ed.inspector(ui));
+                egui::CentralPanel::default().show(ui, |ui| draw(ed, ui));
             });
             out.textures_delta.clear();
             tree = out.platform_output.accesskit_update;
         }
-        tree.expect("the inspector's widgets")
+        tree.expect("the widgets")
     }
 
     /// ENH-06: several objects selected show, in the inspector, how many and what they are,
@@ -5712,8 +5901,12 @@ mod tests {
             "",
             "blank: 1 pt and 3 pt"
         );
-        let size = named("Font size").expect("the lines' size");
-        assert_eq!(size.value().unwrap_or_default(), "", "blank: 12 and 20");
+        // Their text's size is mixed, and blank in Home's Font group.
+        assert!(said("Mixed"), "12 and 20");
+        let band = band_tree(&mut ed);
+        let size = (band.nodes.iter()).find(|(_, n)| n.label() == Some("Font size"));
+        let size = size.and_then(|(_, n)| n.value()).expect("the lines' size");
+        assert_eq!(size, "", "blank: 12 and 20");
 
         // Every shape's width at once: one change, each keeping its own fill.
         ed.group.as_mut().unwrap().set(|l| l.width = 2.0);

@@ -4,6 +4,7 @@
 mod about;
 mod actions;
 mod app;
+mod band;
 mod banners;
 mod chosen;
 mod dialogs;

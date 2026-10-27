@@ -120,8 +120,14 @@ pub fn styles(ui: &mut egui::Ui, f: &mut FontChoice) {
     let has = |bold: bool, italic: bool| t.as_ref().is_none_or(|t| t.has(bold, italic));
     let mut bold = f.bold;
     let size = ui.style().text_styles[&egui::TextStyle::Button].size;
+    // Outlined squares, as word processors' are.
+    let square = |b: egui::Button<'static>, on: bool| {
+        b.selected(on)
+            .frame_when_inactive(true)
+            .min_size(egui::vec2(30.0, 28.0))
+    };
     let b = egui::RichText::new("B").family(crate::theme::semibold());
-    let b = egui::Button::selectable(bold, b);
+    let b = square(egui::Button::new(b), bold);
     let r = ui.add_enabled(has(!f.bold, f.italic), b);
     if r.clicked() {
         bold = !bold;
@@ -131,7 +137,7 @@ pub fn styles(ui: &mut egui::Ui, f: &mut FontChoice) {
     // slanted, reads as a slash. The icon is drawn inside some padding, so a little larger
     // to stand as tall as the B.
     let i = crate::theme::icon(crate::icon::TEXT_ITALIC).size(size + 3.0);
-    let i = egui::Button::selectable(f.italic, i);
+    let i = square(egui::Button::new(i), f.italic);
     let r = ui.add_enabled(has(bold, !f.italic), i);
     if r.clicked() {
         f.italic = !f.italic;
