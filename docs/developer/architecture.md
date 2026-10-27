@@ -187,7 +187,10 @@ form XObjects and vertical writing are counted (`chosen::Left`) and said. Change
 `Action::Restyle`, every page's `edit_texts` in one undo step); `Editor::reselect` selects the same words again
 after the edit's `invalidate`, only if they still read the same. Ctrl+B and Ctrl+I are commands
 (`Editor::switch_style`, also for a line selected with the arrow) and page-only keys, left to a text box with
-the keyboard. Every other text box uses egui's own undo. While any
+the keyboard. Selected words are painted as word processors shade a selection (`Editor::shaded`): a band a
+reading row (`line_boxes`, what `selected_lines` gives the marks and redaction boxes made from a selection), a
+paragraph's rows meeting halfway across the space between them (painting only), in the theme's selection
+background at 45% (PB-31: perhaps too dark). Every other text box uses egui's own undo. While any
 text box has the keyboard, `App::shortcuts` leaves the undo keys to it, so the document's Undo never runs from
 inside a box. Each tab's text boxes take their ids from `Editor::scope` (the tab's id) and what they edit, and
 the inspector is drawn inside that id, so no two documents share a box's state. `page_text::fresh_history`, run
