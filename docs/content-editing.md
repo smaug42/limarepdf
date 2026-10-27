@@ -44,7 +44,8 @@ As in a word processor:
 - Bold over words that are partly bold makes them all bold; over words that are all bold, it takes the bold off.
   Italic works the same way. Words in a family without a bold or italic face stay as they are.
 - Where the selection mixes fonts, sizes or colours, the inspector shows that one blank: the font list with no
-  name, the size box empty, the colour button with the colours side by side. A colour picked then makes the
+  name, the size box empty, the colour button (an **A** over a bar of the text's colour) with the colours side by
+  side in its bar. A colour picked then makes the
   selection all that colour, even the one the picker starts from (the first); the picker also offers the colours
   in the text (**In the text**), to make it all one of them in a click. Opening and closing the picker changes
   nothing. Bold and Italic show on only when all
@@ -52,8 +53,10 @@ As in a word processor:
 - A change in the inspector shows on the line at once, the line stays in editing, and the keyboard comes back to
   it; the change is kept with the typing.
 
-A line selected as a whole (with the arrow, or after editing it) takes the inspector's font, size and colour as a
-whole, with the same blanks for what it mixes.
+Finishing (Esc, Enter, Tab or clicking elsewhere) leaves nothing selected, as in a word processor. A line selected
+as a whole with the arrow takes the inspector's font, size and colour as a whole, with the same blanks for what it
+mixes; to change its words, double-click it or use **Edit text**, and it is edited on the page here too. With the
+arrow, the line stays selected when you finish.
 
 ## Add text
 
@@ -122,8 +125,9 @@ nudge.
 
 ## Change size, font and colour in the inspector
 
-The inspector is headed by what is selected (Text, Image, Shape). For text it shows the words first, then the font
-list, then Bold, Italic, size and colour in a row; for shapes, the fill, outline and width; for pictures,
+The inspector is headed by what is selected (Text, Image, Shape). For text it shows the font list, then Bold,
+Italic, size and colour in a row (the words themselves are changed on the page); for shapes, the fill, outline and
+width; for pictures,
 **Replace image…**. Below these, **Position and size** opens to show the object's X, Y, width and height; it
 stays open or closed as you left it. Pointing at the font list shows the names of the fonts the selected text
 uses in the PDF. Changes there are kept as you make them,

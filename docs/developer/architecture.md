@@ -302,7 +302,13 @@ The inspector's heading is `inspector::title`: for the editor's section, `Editor
 else the tool's options, else the selected object; the object's own heading is drawn again in the panel only below a
 tool's options). An object's X, Y, width and height are in a `CollapsingHeader` with a fixed id
 (`position-and-size`), so it starts closed and keeps its state from one object to the next; one field a row, as
-the section's indent leaves no room for two in the default width (two widened the panel).
+the section's indent leaves no room for two in the default width (two widened the panel). A line of page text has no
+text box in the inspector: its words are typed only on the page (`line_edit_ui`), which the arrow opens too (a
+double-click; Edit text through `Editor::edit_selected_text`, the caret at the end). `Editor::end_line_edit` finishes
+it (Esc, `escape`, the keyboard going elsewhere): it keeps the typing and, unless the tool is the arrow or the line
+was made movable (`loose`), clears the line's selection when it is still that line, so the panel goes back to what
+it showed before. Text colour buttons are `text_color_button`, painted as an A over a bar of the colour (the
+colours side by side when mixed), the bar outlined in the text colour so black shows on the dark theme.
 
 Redaction (`crates/limarepdf-core/src/redact.rs`) has its own pass over the page content rather than editing the
 parser's objects: it rewrites each text-showing operator character by character, keeping the rest in place with

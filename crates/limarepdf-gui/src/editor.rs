@@ -568,19 +568,23 @@ fn from_linear(c: [f32; 3]) -> [f32; 3] {
     c.map(|v| egui::ecolor::gamma_from_linear(v).clamp(0.0, 1.0))
 }
 
-/// The colour button for text in `colors` (each once, the first the picker starts from):
-/// with more than one, it shows them side by side and says the colour is mixed, and its
-/// picker offers each to make it all that colour. Returns the colour picked: anything
-/// done in the picker is a pick, even of the colour it started from, so picking the
-/// first colour of mixed text makes it all that colour; opening and closing it is not.
+/// The colour button for text in `colors` (each once, the first the picker starts from),
+/// drawn as word processors draw it: a letter A over a bar of the colour, outlined so black
+/// shows on the dark theme, and a ▾ for the picker. With more than one colour, the bar
+/// shows them side by side and the button says the colour is mixed, and its picker offers
+/// each to make it all that colour. Returns the colour picked: anything done in the picker
+/// is a pick, even of the colour it started from, so picking the first colour of mixed text
+/// makes it all that colour; opening and closing it is not.
 fn text_color_button(ui: &mut egui::Ui, colors: &[[f32; 3]]) -> Option<[f32; 3]> {
     use egui::widgets::color_picker::{color_picker_hsva_2d, Alpha};
     let was = colors.first().copied().unwrap_or([0.0; 3]);
     let mixed = colors.len() > 1;
     let popup = ui.auto_id_with("text-colour");
     let open = egui::Popup::is_id_open(ui.ctx(), popup);
-    let (rect, r) = ui.allocate_exact_size(ui.spacing().interact_size, Sense::click());
+    let size = egui::vec2(36.0, ui.spacing().interact_size.y.max(22.0));
+    let (rect, r) = ui.allocate_exact_size(size, Sense::click());
     r.widget_info(|| egui::WidgetInfo::new(egui::Role::ColorWell));
+    let r = r.on_hover_text("Text colour");
     dialogs::set_name(
         &r,
         if mixed {
@@ -596,18 +600,39 @@ fn text_color_button(ui: &mut egui::Ui, colors: &[[f32; 3]]) -> Option<[f32; 3]>
             ui.style().interact(&r)
         };
         let rect = rect.expand(look.expansion);
-        // Each colour side by side, inside the button's border.
-        let inner = rect.shrink(1.0);
-        let w = inner.width() / colors.len().max(1) as f32;
+        let painter = ui.painter();
+        painter.rect(
+            rect,
+            look.corner_radius,
+            look.weak_bg_fill,
+            look.bg_stroke,
+            StrokeKind::Inside,
+        );
+        let ink = look.text_color();
+        // The A and its bar on the left, the ▾ on the right.
+        let left = Rect::from_min_max(rect.min, Pos2::new(rect.max.x - 11.0, rect.max.y));
+        let bar = Rect::from_center_size(
+            Pos2::new(left.center().x, rect.max.y - 5.0),
+            egui::vec2(14.0, 3.0),
+        );
+        let font = egui::FontId::proportional((bar.top() - rect.top() - 2.0).min(13.0));
+        let a = Pos2::new(left.center().x, bar.top() - 1.0);
+        painter.text(a, egui::Align2::CENTER_BOTTOM, "A", font, ink);
+        let w = bar.width() / colors.len().max(1) as f32;
         for (i, &c) in colors.iter().enumerate() {
-            let x = inner.min.x + w * i as f32;
-            let band = Rect::from_min_max(Pos2::new(x, inner.min.y), Pos2::new(x + w, inner.max.y));
-            ui.painter().rect_filled(band, 0.0, rgb32(c));
+            let x = bar.min.x + w * i as f32;
+            let band = Rect::from_min_max(Pos2::new(x, bar.min.y), Pos2::new(x + w, bar.max.y));
+            painter.rect_filled(band, 0.0, rgb32(c));
         }
-        let corners = look.corner_radius.at_most(2);
-        let border = (1.0, look.bg_fill);
-        ui.painter()
-            .rect_stroke(rect, corners, border, StrokeKind::Inside);
+        let outline = Stroke::new(1.0, ink.gamma_multiply(0.6));
+        painter.rect_stroke(bar.expand(1.0), 1.0, outline, StrokeKind::Inside);
+        let tip = Pos2::new(rect.max.x - 7.0, rect.center().y + 2.0);
+        let caret = vec![
+            tip + egui::vec2(-3.0, -3.5),
+            tip + egui::vec2(3.0, -3.5),
+            tip,
+        ];
+        painter.add(egui::Shape::convex_polygon(caret, ink, Stroke::NONE));
     }
     // The colours there were when the picker opened, offered while it stays open.
     let offered = popup.with("offered");
@@ -708,11 +733,6 @@ fn settled(ctx: &egui::Context) -> bool {
 /// ([`Editor::scope`]).
 fn line_edit_id(scope: egui::Id, page: usize) -> egui::Id {
     scope.with(("line-edit", page))
-}
-
-/// The inspector's text box for text object `id` on `page`, in the tab's `scope`.
-fn text_object_id(scope: egui::Id, page: usize, id: usize) -> egui::Id {
-    scope.with(("text-object", page, id))
 }
 
 /// A line of page text being edited in place: its page and object index. The text being
@@ -955,9 +975,7 @@ pub struct Editor {
     draw: Option<Draw>,
     /// New text being typed on the page (Add text).
     pub adding: Option<PageText>,
-    /// Put the keyboard in the inspector's text box for the selected text object.
-    focus_text: bool,
-    /// The note about a character that box refused.
+    /// The note about a character a box in the inspector refused.
     text_refused: page_text::Refused,
     /// Where the inspector was drawn last: a click there doesn't end a line being edited.
     insp_rect: Rect,
@@ -1076,7 +1094,6 @@ impl Default for Editor {
             drag: None,
             draw: None,
             adding: None,
-            focus_text: false,
             text_refused: page_text::Refused::default(),
             insp_rect: Rect::NOTHING,
             tfont: FontChoice::default(),
@@ -1516,6 +1533,21 @@ impl Editor {
         self.keep(Typed::Object);
     }
 
+    /// Stop editing the line on the page, keeping what was typed. With the arrow, or once
+    /// made movable (Move or resize text), the line stays selected; with another tool it
+    /// isn't left selected, as a word processor leaves no selection behind, so the inspector
+    /// goes back to what it showed before.
+    fn end_line_edit(&mut self) {
+        let Some(le) = self.line_edit.take() else {
+            return;
+        };
+        self.commit_insp();
+        let line = Some((le.page, le.id));
+        if self.tool != Tool::Select && self.loose != line && self.sel() == line {
+            self.selection.clear_object();
+        }
+    }
+
     /// Edit a line of page text on the page, with `pick` selected.
     fn start_line_edit(&mut self, page: usize, id: usize, pick: Pick) {
         self.select_object(page, id);
@@ -1782,8 +1814,7 @@ impl Editor {
         let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
         if esc && (edit.lost_focus() || edit.has_focus()) {
             // Esc keeps what was typed, as a click away does; Ctrl+Z takes it back.
-            self.line_edit = None;
-            self.commit_insp();
+            self.end_line_edit();
             return true;
         }
         // The inspector's font list, size, colour and buttons change the line being edited,
@@ -1807,8 +1838,7 @@ impl Editor {
         // Scrolled out of view, or the keyboard went elsewhere: keep what was typed. A click
         // that ended it still selects what it was on.
         if !edit.has_focus() || !ui.clip_rect().intersects(area) {
-            self.line_edit = None;
-            self.commit_insp();
+            self.end_line_edit();
             return false;
         }
         edit.hovered()
@@ -2703,10 +2733,16 @@ impl Editor {
                 if resp.double_clicked() && self.selection.annot().is_some() {
                     self.write_selected();
                 } else if resp.double_clicked() {
-                    if let Some(o) = self.selected_object() {
-                        if o.kind == ObjectKind::Text {
-                            self.focus_text = true;
-                        }
+                    // On page text: edit its line there, the word selected, as the read tool
+                    // does.
+                    let text = self
+                        .selected_object()
+                        .is_some_and(|o| o.kind == ObjectKind::Text);
+                    let at = resp.interact_pointer_pos().map(to_pt);
+                    if let (true, Some((on, i)), Some(p)) = (text, self.sel(), at) {
+                        let words = self.words(pdf, on).to_vec();
+                        let pick = self.word_pick(on, i, p, &words);
+                        self.start_line_edit(on, i, pick);
                     }
                 }
             }
@@ -3528,9 +3564,18 @@ impl Editor {
         self.drag.is_some() || self.draw.is_some() || self.text_drag
     }
 
-    /// Put the keyboard in the inspector's text box for the selected text object.
-    pub fn focus_text_field(&mut self) {
-        self.focus_text = true;
+    /// Edit the selected line of page text on the page, the caret at its end (Edit text).
+    pub fn edit_selected_text(&mut self) {
+        let Some((page, id)) = self.sel() else {
+            return;
+        };
+        let Some(o) = self.objs.get(&page).and_then(|v| v.get(id)) else {
+            return;
+        };
+        if o.kind == ObjectKind::Text {
+            let end = o.text.as_deref().unwrap_or("").chars().count();
+            self.start_line_edit(page, id, Pick::Chars(end, end));
+        }
     }
 
     /// Whether an object is selected, which can be deleted.
@@ -3604,9 +3649,9 @@ impl Editor {
             self.finish_writing();
             return;
         }
-        if self.line_edit.take().is_some() {
+        if self.line_edit.is_some() {
             // What was typed is kept, as Esc in the editor does.
-            self.commit_insp();
+            self.end_line_edit();
             return;
         }
         if self.selection.annot().is_some() {
@@ -4043,7 +4088,9 @@ impl Editor {
                         ui.horizontal_wrapped(|ui| {
                             crate::font_list::styles(ui, &mut self.tfont);
                             size_row(ui, |ui| size_ui(ui, &mut self.tsize, 4.0..=200.0));
-                            color_button(ui, &mut self.tcolor, "Text colour");
+                            if let Some(c) = text_color_button(ui, &[self.tcolor]) {
+                                self.tcolor = c;
+                            }
                         });
                     }
                 }
@@ -4196,41 +4243,10 @@ impl Editor {
         match obj.kind {
             ObjectKind::Text => {
                 ui.add_space(4.0);
-                // While the line is edited on the page, the text is typed there.
-                if self.line_edit.is_none() {
-                    let id = text_object_id(self.scope, page, id);
-                    // What can't be written isn't typed, as on the page.
-                    if ui.ctx().memory(|m| m.has_focus(id)) {
-                        let sel = selection(ui.ctx(), id).unwrap_or((0, 0));
-                        let font = insp.text.typing_font(sel);
-                        let t = page_text::take_typing(ui, true, false, font);
-                        let (history, text) = (&mut insp.history, &mut insp.text);
-                        page_text::undo_redo(ui.ctx(), id, &t, history, text);
-                        if let Some(c) = t.refused {
-                            self.text_refused.mark(ui.ctx(), page_text::note(font, &c));
-                        }
-                    }
-                    let mut typed = insp.text.text().to_string();
-                    let out = egui::TextEdit::singleline(&mut typed)
-                        .id(id)
-                        .desired_width(f32::INFINITY)
-                        .show(ui);
-                    let sel = out
-                        .cursor_range
-                        .map(|c| (c.secondary.index.0, c.primary.index.0));
-                    insp.text.sync(&typed, sel.map(|s| s.1));
-                    let r = &out.response.response;
-                    r.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::Role::TextInput, true, "Text")
-                    });
-                    self.text_refused.show(ui.ctx(), &out, id);
-                    if self.focus_text {
-                        r.request_focus();
-                        self.focus_text = false;
-                    }
-                }
+                // The words are typed on the page (a double-click, or Edit text), as in a
+                // word processor: the panel holds only their look.
                 if obj.hidden {
-                    ui.weak("Used by search and copy. Clear it to remove the line.");
+                    ui.weak("Used by search and copy.");
                 } else {
                     // What is selected in the line being edited on the page, else all of it.
                     let sel = match self.line_edit.as_ref() {
@@ -4243,11 +4259,9 @@ impl Editor {
                 }
                 if self.line_edit.is_none() {
                     // The line being edited on the page watches its own changes.
-                    let id = text_object_id(self.scope, page, id);
-                    let sel = selection(ui.ctx(), id);
                     let now = ui.input(|i| i.time);
                     let settled = settled(ui.ctx());
-                    insp.history.observe(&insp.text, sel, now, settled);
+                    insp.history.observe(&insp.text, None, now, settled);
                 }
                 // A line in an installed family is written in that family.
                 let own = insp.orig.styles().first().map(|s| s.font);
@@ -4348,7 +4362,9 @@ fn text_style_ui(ui: &mut egui::Ui, s: &mut TextStyle) {
     ui.horizontal(|ui| {
         ui.label("Text");
         size_ui(ui, &mut s.size, 4.0..=200.0);
-        color_button(ui, &mut s.color, "Text colour");
+        if let Some(c) = text_color_button(ui, &[s.color]) {
+            s.color = c;
+        }
     });
     ui.horizontal(|ui| {
         let mut on = s.fill.is_some();
@@ -4810,7 +4826,12 @@ mod tests {
             ed.actions.as_slice(),
             [Action::EditText(0, 2, te, true)] if te.text == "Seal"
         ));
-        // The line stays selected; Esc again clears it.
+        // With the read tool, the line isn't left selected.
+        assert_eq!(ed.sel(), None);
+        // With the arrow it stays selected; Esc again clears it.
+        ed.set_tool(Tool::Select);
+        ed.start_line_edit(0, 2, Pick::Chars(0, 6));
+        ed.escape();
         assert_eq!(ed.sel(), Some((0, 2)));
         ed.escape();
         assert_eq!(ed.sel(), None);
@@ -4902,6 +4923,75 @@ mod tests {
         );
         ed.objs.get_mut(&0).unwrap()[2].upright = false;
         assert_eq!(ed.cover_wanted(), None);
+    }
+
+    /// The text colour button reads as one, as in word processors: a letter A over a bar of
+    /// the text's colour, the colours side by side where the text mixes them, in both
+    /// themes (a black swatch alone was lost on the dark theme).
+    #[test]
+    fn the_text_colour_button_is_a_letter_over_its_colour() {
+        let red = [1.0, 0.0, 0.0];
+        for theme in [egui::Theme::Light, egui::Theme::Dark] {
+            for colors in [vec![[0.0; 3]], vec![[0.0; 3], red]] {
+                let ctx = egui::Context::default();
+                crate::theme::install(&ctx);
+                ctx.set_theme(theme);
+                let mut button = Rect::NOTHING;
+                let mut panel = Color32::TRANSPARENT;
+                let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    panel = ui.visuals().panel_fill;
+                    button = ui.scope(|ui| text_color_button(ui, &colors)).response.rect;
+                });
+                out.textures_delta.clear();
+                // How far apart two colours are in lightness, 0 to 1.
+                let light = |c: Color32| (c.r() as f32 + c.g() as f32 + c.b() as f32) / 765.0;
+                let stands_out = |c: Color32| (light(c) - light(panel)).abs() > 0.3;
+                let inside = |r: Rect| button.expand(1.0).contains_rect(r);
+                let letter = out.shapes.iter().find_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.text() == "A" => Some(t),
+                    _ => None,
+                });
+                let letter = letter.unwrap_or_else(|| panic!("{theme:?}: no A"));
+                assert!(inside(letter.visual_bounding_rect()), "{theme:?}");
+                let ink = letter.fallback_color;
+                assert!(stands_out(ink), "{theme:?}: the A {ink:?} on {panel:?}");
+                // A bar of each colour under the A, side by side.
+                let bars: Vec<Rect> = colors
+                    .iter()
+                    .map(|&c| {
+                        let bar = out.shapes.iter().find_map(|s| match &s.shape {
+                            egui::Shape::Rect(r) if r.fill == rgb32(c) && inside(r.rect) => {
+                                Some(r.rect)
+                            }
+                            _ => None,
+                        });
+                        bar.unwrap_or_else(|| panic!("{theme:?}: no bar of {c:?}"))
+                    })
+                    .collect();
+                for bar in &bars {
+                    assert!(
+                        bar.height() <= 5.0,
+                        "{theme:?}: a swatch, not a bar: {bar:?}"
+                    );
+                    assert!(bar.top() >= letter.visual_bounding_rect().center().y);
+                }
+                if let [a, b] = bars[..] {
+                    assert!(a.right() <= b.left() + 0.5, "not side by side: {a:?} {b:?}");
+                }
+                // Outlined, so a black bar shows on the dark theme.
+                let all = bars.iter().fold(Rect::NOTHING, |u, b| u.union(*b));
+                let outlined = out.shapes.iter().any(|s| match &s.shape {
+                    egui::Shape::Rect(r) => {
+                        r.rect.expand(0.5).contains_rect(all)
+                            && r.rect.height() < all.height() + 4.0
+                            && r.stroke.width > 0.0
+                            && stands_out(r.stroke.color)
+                    }
+                    _ => false,
+                });
+                assert!(outlined, "{theme:?}: the bar has no outline");
+            }
+        }
     }
 
     /// ENH-04: the font list names the PDF's fonts of the characters a style change would

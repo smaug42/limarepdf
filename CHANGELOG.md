@@ -37,10 +37,16 @@
   (Nimbus Sans)". The list is sorted by those names, and searching finds either. Pointing at one says it is made to
   that typeface's letter widths but isn't the typeface itself, and that it is embedded in the file.
 - The inspector puts text first: it is headed by what is selected or the tool's options (Text, Image, New
-  rectangle, Comment) instead of "Edit"; for text, the words come first, then a font list across the panel, then
-  Bold, Italic, size and colour in one row. Position and size are in a Position and size section that starts
-  closed and stays open or closed as you left it, for every kind of object. Pointing at the font list shows the
-  names of the selected text's fonts in the PDF.
+  rectangle, Comment) instead of "Edit"; for text, a font list across the panel, then Bold, Italic, size and
+  colour in one row. Position and size are in a Position and size section that starts closed and stays open or
+  closed as you left it, for every kind of object. Pointing at the font list shows the names of the selected
+  text's fonts in the PDF.
+- The inspector no longer repeats a line's words in a text box: they are changed on the page, as in a word
+  processor. With the arrow, a double-click or Edit text now edits the line on the page too.
+- Finishing editing a line with the read or Add text tool (Esc, Tab, or clicking into a form field) no longer
+  leaves the line selected, so the inspector goes back to what it showed before.
+- The text colour button is now an A over a bar of the colour, with a ▾, as word processors show it; black text
+  no longer makes it disappear on the dark theme.
 - The user guide's Features page is now a short summary of what LimarePDF can do. The detailed status of each
   feature, with its limits and what doesn't work yet, moved to the developer docs as
   [Features and status](docs/developer/feature-status.md).

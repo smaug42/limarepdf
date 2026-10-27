@@ -2767,7 +2767,7 @@ impl App {
             Act::Security => self.reveal(Section::Security),
             Act::EditObjectText => {
                 self.open_inspector();
-                self.tabs[self.active].ed.focus_text_field();
+                self.tabs[self.active].ed.edit_selected_text();
             }
             Act::MoveText => self.tabs[self.active].ed.move_text(),
             Act::SignWith(pick) => {
@@ -7072,10 +7072,11 @@ mod tests {
         assert_eq!(parts_of_line(&app).0, "Walrus ate fish");
     }
 
-    /// Ctrl+Z and Ctrl+Y in the inspector's text box take back and redo its typing, not
-    /// the document.
+    /// With the arrow, Edit text and a double-click edit the selected line on the page, as
+    /// the read tool does: the inspector has no text box of its own. Ctrl+Z and Ctrl+Y
+    /// there take back and redo its typing, not the document; Esc keeps the line selected.
     #[test]
-    fn the_inspector_text_box_undoes_its_own_typing() {
+    fn edit_text_with_the_arrow_edits_the_line_on_the_page() {
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
         theme::install(&ctx);
@@ -7098,15 +7099,28 @@ mod tests {
             repeat: false,
             modifiers,
         };
+        let name = "Editing text: Walrus ate fish";
         let typed = |tree: &egui::accesskit::TreeUpdate| {
-            let n = tree.nodes.iter().find(|(_, n)| n.label() == Some("Text"));
+            let n = tree.nodes.iter().find(|(_, n)| n.label() == Some(name));
             n.and_then(|(_, n)| n.value())
                 .unwrap_or_default()
                 .to_string()
         };
+        let text_box = |tree: &egui::accesskit::TreeUpdate| {
+            tree.nodes
+                .iter()
+                .any(|(_, n)| n.label() == Some("Text") && n.value().is_some())
+        };
+        let mut tree = frame(&mut app, vec![]);
         for _ in 0..4 {
-            frame(&mut app, vec![]);
+            tree = frame(&mut app, vec![]);
         }
+        assert_eq!(
+            node(&tree, name).map(|(_, f)| f),
+            Some(true),
+            "not on the page"
+        );
+        assert!(!text_box(&tree), "the inspector has a text box");
         let (ctrl, none) = (egui::Modifiers::COMMAND, egui::Modifiers::NONE);
         let steps = [
             (
@@ -7124,6 +7138,71 @@ mod tests {
             assert_eq!(typed(&tree), format!("Walrus ate {end}"));
             // The line is still in the document, as it was.
             assert_eq!(parts_of_line(&app).0, "Walrus ate fish");
+        }
+        // Esc keeps it; with the arrow, the line stays selected.
+        frame(&mut app, vec![key(Key::Escape, none)]);
+        for _ in 0..3 {
+            tree = frame(&mut app, vec![]);
+        }
+        assert!(node(&tree, name).is_none(), "still editing");
+        assert_eq!(app.tabs[0].ed.sel(), Some((0, line)));
+        assert_eq!(parts_of_line(&app).0, "Walrus ate fish too");
+        // A double-click on it edits it on the page again.
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        let p = page.min + egui::vec2(150.0, 190.0) * (page.width() / 612.0);
+        frame(&mut app, vec![egui::Event::PointerMoved(p)]);
+        for _ in 0..2 {
+            frame(&mut app, vec![press(p, true)]);
+            frame(&mut app, vec![press(p, false)]);
+        }
+        for _ in 0..3 {
+            tree = frame(&mut app, vec![]);
+        }
+        let name = "Editing text: Walrus ate fish too";
+        assert_eq!(
+            node(&tree, name).map(|(_, f)| f),
+            Some(true),
+            "not on the page"
+        );
+        assert!(!text_box(&tree), "the inspector has a text box");
+    }
+
+    /// With the read tool, finishing a line edited on the page (Esc, Tab, the keyboard going
+    /// elsewhere) leaves nothing selected: the inspector goes back to the document, as a word
+    /// processor leaves no selection behind.
+    #[test]
+    fn a_line_edited_with_the_read_tool_is_not_left_selected() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with_parts(&ctx);
+        app.act(&ctx, Act::Tool(Tool::Read));
+        let time = std::cell::Cell::new(10.0);
+        let frame = |app: &mut App, events| timed_frame(app, &ctx, &time, events);
+        let none = egui::Modifiers::NONE;
+        let mut tree = frame(&mut app, vec![]);
+        for _ in 0..4 {
+            tree = frame(&mut app, vec![]);
+        }
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        let p = page.min + egui::vec2(150.0, 190.0) * (page.width() / 612.0);
+        let name = "Editing text: Walrus ate fish";
+        for finish in [Key::Escape, Key::Tab] {
+            frame(&mut app, vec![egui::Event::PointerMoved(p)]);
+            for _ in 0..2 {
+                frame(&mut app, vec![press(p, true)]);
+                frame(&mut app, vec![press(p, false)]);
+            }
+            for _ in 0..3 {
+                tree = frame(&mut app, vec![]);
+            }
+            assert_eq!(node(&tree, name).map(|(_, f)| f), Some(true), "not editing");
+            frame(&mut app, vec![key_with(finish, none)]);
+            for _ in 0..3 {
+                frame(&mut app, vec![]);
+            }
+            assert_eq!(app.tabs[0].ed.sel(), None, "{finish:?} left it selected");
+            assert_eq!(inspector::title(&app.tabs[0]), "Document", "{finish:?}");
         }
     }
 
@@ -7501,8 +7580,9 @@ mod tests {
         assert!(grey.iter().all(|v| (v - 0.5).abs() < 0.01), "{grey:?}");
     }
 
-    /// ENH-07 (V03): a selected line's inspector is headed Text and puts the words and their
-    /// look first, the font list across the panel; its position and size wait in a section
+    /// ENH-07 (V03): a selected line's inspector is headed Text and puts its look first, the
+    /// font list across the panel, with no text box (the words are edited on the page, as in
+    /// a word processor); its position and size wait in a section
     /// that starts closed, stays as it was left from one selection to the next, and still
     /// moves the line.
     #[test]
@@ -7534,17 +7614,22 @@ mod tests {
         for name in geometry {
             assert!(node(&tree, name).is_none(), "{name} is shown");
         }
-        // The font list is as wide as the text box.
-        let (text, _) = node(&tree, "Text").expect("the text box");
+        // No text box: the words are edited on the page. The font list is as wide as the
+        // section below it.
+        let text_box = tree
+            .nodes
+            .iter()
+            .any(|(_, n)| n.label() == Some("Text") && n.value().is_some());
+        assert!(!text_box, "the inspector has a text box");
+        let (section, _) = node(&tree, "Position and size").expect("the section");
         let (font, _) = node(&tree, "Font").expect("the font list");
         assert!(
-            font.width() >= text.width() - 1.0,
-            "{font:?} beside {text:?}"
+            font.width() >= section.width() - 1.0,
+            "{font:?} beside {section:?}"
         );
-        // Tab goes through the words, their look, then position and size, then Delete.
+        // Tab goes through the look, then position and size, then Delete.
         let reached = tab_walk(&mut app, &ctx, 1400.0, 60);
         let order = [
-            "Text",
             "Font",
             "Bold",
             "Italic",
@@ -7554,7 +7639,7 @@ mod tests {
             "Position and size",
             "Delete",
         ];
-        let at = reached.iter().position(|n| n == "Font").expect("no Font") - 1;
+        let at = reached.iter().position(|n| n == "Font").expect("no Font");
         assert_eq!(reached[at..at + order.len()], order, "{reached:?}");
 
         // Opened, it has the fields, and X moves the line.
