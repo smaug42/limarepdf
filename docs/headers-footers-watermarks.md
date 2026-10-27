@@ -10,8 +10,8 @@ later.
 
 ## Add page numbers, headers and footers
 
-1. Select the pages to number (or none, for every page), and open **Headers, footers, Bates** in the inspector (or
-   choose ☰ > Document > Headers, footers, Bates…).
+1. Select the pages to number (or none, for every page), and choose **Insert > Header and footer** (or ☰ >
+   Document > Headers, footers, Bates…). **Headers, footers, Bates** opens in the inspector.
 2. Type in the header and footer boxes: each has a left, a centre and a right part. The footer's centre starts as
    `Page {page} of {pages}`, which gives "Page 3 of 12".
 3. Check the pages: they show the headers and footers as you type.
@@ -44,8 +44,8 @@ Put `{bates}` where the number goes; without it, the number goes at the bottom r
 
 ## Add a watermark
 
-1. Select the pages (or none, for every page), and open **Watermark** in the inspector (or choose ☰ > Document >
-   Watermark…).
+1. Select the pages (or none, for every page), and choose **Insert > Watermark** (or ☰ > Document > Watermark…).
+   **Watermark** opens in the inspector.
 2. Choose **Text** and type it (it starts as DRAFT), or **Picture** and choose a PNG, JPEG or TIFF file with
    **Choose…**.
 3. Set its **Size** (for text, the letters' size; for a picture, how much of the page it may fill), **Opacity**,
@@ -87,7 +87,7 @@ even when it is set to go behind it. Once added, the pages show it as written.
 A stamp is a word in a coloured frame, such as APPROVED or DRAFT, or a picture such as a company seal, put on one
 page as an annotation.
 
-1. Pick the stamp tool in the Comment button's menu in the top bar ("Add a stamp" in the command palette).
+1. Pick **Review > Stamp** ("Add a stamp" in the command palette).
 2. In the inspector, pick a stamp.
 3. Click on the page to put it down at its own size, centred on the click, or drag a box to size it (it keeps its
    shape inside the box).

@@ -6,7 +6,7 @@ Print a document, save its pages as pictures, or save its text.
 
 ## Printing
 
-1. Press Ctrl+P, or the Print button at the top right.
+1. Press Ctrl+P, or **Print** at the right of the commands row (or ☰ > Print…).
 2. Choose the printer, the pages (**All pages**, or **Page range**, which starts as the selected pages when there
    are any), the copies, and **Print on** one side or both sides (flipped on the long or the short edge).
 3. Press **Print**.
@@ -51,8 +51,8 @@ On the command line: `limarepdf-cli printers` and `limarepdf-cli print`.
 
 ## Pages as images
 
-1. Clear any selection (Esc), and open **Export pages as images** in the inspector (or choose it in the top bar's
-   Export menu).
+1. Choose ☰ > **Export pages as images…**, which opens **Export pages as images** in the inspector. (With nothing
+   selected, it is there in the inspector too.)
 2. Choose the pages, **PNG** or **JPEG** (and the JPEG quality), and the resolution.
 3. Press **Choose folder…** and pick where the files go.
 
@@ -72,7 +72,7 @@ those fields.
 
 ## Text
 
-Export text, in the top bar's Export menu (or the inspector with nothing selected), writes every page's text to a
+☰ > **Export text…** (or the inspector with nothing selected) writes every page's text to a
 `.txt` file, with pages separated by form feeds, as pdftotext does. On the command line, `limarepdf-cli text`
 prints it. How the text is read, and its limits: [How text is read](reading-and-finding.md#how-text-is-read).
 

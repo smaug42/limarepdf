@@ -12,14 +12,16 @@ themselves, so they can be checked first, by you or by someone else in another a
 ## Redact a document
 
 1. Mark what to remove, in any of these ways:
-   - **Areas:** click **Redact** in the top bar (or choose ☰ > Tools > Mark areas for redaction), then drag a box
+   - **Areas:** click **Protect > Mark redaction** (or choose ☰ > Tools > Mark areas for redaction), then drag a box
      over anything: text, pictures, drawings.
-   - **Text:** select it with the read tool, then right-click > Mark for redaction (or ☰ > Edit > Mark for
-     redaction).
-   - **Every match of a search:** search (Ctrl+F), then press **Mark all for redaction** in Search results (or
-     choose ☰ > Edit > Mark all search results for redaction).
+   - **Text:** select it with the read tool, then choose **Protect > Mark redaction ▾ > Mark for redaction** or
+     right-click > Mark for redaction (or ☰ > Edit > Mark for redaction).
+   - **Every match of a search:** search (Ctrl+F, or **Edit > Find**), then press **Mark all for redaction** in
+     Search results (or choose **Protect > Mark redaction ▾ > Mark all search results for redaction**, or ☰ > Edit >
+     Mark all search results for redaction).
 2. Check the marks. They are listed in the Comments view as "Redaction mark".
-3. Choose **Apply redactions…** in the notice above the pages (or ☰ > Document > Apply redactions…), and confirm.
+3. Choose **Apply redactions…** in the notice above the pages, or **Protect > Apply redactions…** (or ☰ > Document >
+   Apply redactions…), and confirm.
 4. Read the report, then save. Save As (Ctrl+Shift+S) keeps the original as it was.
 
 After marking one area, the Redact tool gives way to the read tool; pin it to mark several areas in a row (see
@@ -94,9 +96,10 @@ changes the areas you give it.
 
 A file can carry information that isn't on any page, such as its author's name or the program that made it.
 
-1. Choose ☰ > Document > **Remove hidden information…**. It lists what the document carries besides its pages,
-   with how many of each, in two groups: what is removed by default (ticked), and what is kept by default (often
-   wanted, so not ticked). Kinds the document has none of are greyed out and unticked.
+1. Choose **Protect > Remove hidden data** (or ☰ > Document > Remove hidden information…). It lists what the
+   document carries besides its pages, with how many of each, in two groups: what is removed by default (ticked),
+   and what is kept by default (often wanted, so not ticked). Kinds the document has none of are greyed out and
+   unticked.
 2. Tick what to remove, and press **Remove**. A summary follows.
 3. Save.
 

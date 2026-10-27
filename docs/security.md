@@ -6,8 +6,8 @@ Protect a document with a password, open a protected one, or take the protection
 
 ## Protect a document
 
-1. Clear any selection (Esc), and open **Password security** in the inspector (or choose ☰ > Document > Password
-   security…).
+1. Choose **Protect > Passwords** (or ☰ > Document > Password security…). **Password security** opens in the
+   inspector.
 2. Tick **Protect with passwords when saving**.
 3. Type an **Open** password, which is needed to open the document, a **Permissions** password, which is needed to
    change what others may do with it, or both.

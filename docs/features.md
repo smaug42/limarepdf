@@ -12,6 +12,9 @@ source.
 
 ## What you can do
 
+- **Feel at home:** the commands are labelled and grouped as in a word processor (Edit, Insert, Review, Pages,
+  Forms and sign, Protect, View), in your desktop's accent colour, and fold into one row of icons when you want
+  more room for the page.
 - **Read comfortably:** open documents in tabs, scroll and zoom smoothly, follow bookmarks and links, and switch
   pages to dark, sepia or high-contrast colours for easier reading.
 - **Find anything:** search a whole document as you type, with every match highlighted on the page.

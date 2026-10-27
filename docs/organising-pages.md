@@ -9,8 +9,8 @@ split one into several files. Every change here is one step to undo with Ctrl+Z.
 
 Click a page's thumbnail in the Pages view on the left to select it. Shift+click selects a range, and Ctrl+click
 adds or removes one page. The inspector on the right then shows what you can do with the selected pages; so does
-right-clicking a thumbnail. ☰ > Pages has the same commands, which work on the page you are on when no pages are
-selected.
+right-clicking a thumbnail. **Pages** in the command band and ☰ > Pages have the same commands, which work on the
+page you are on when no pages are selected.
 
 ## Reorder pages
 
@@ -19,23 +19,23 @@ all the selected pages.
 
 ## Rotate, delete and extract pages
 
-Select the pages, then in the inspector:
+Select the pages, then use **Pages** in the band (the inspector has the same buttons):
 
-- **Rotate clockwise** or **Rotate counter-clockwise** turns them a quarter turn.
-- **Delete pages** removes them (so does the Delete key). A notice with an Undo button follows.
-- **Extract pages to a new tab** opens a copy of them as a new document, to save on its own. The original keeps
-  them.
+- **Pages > Rotate** turns them a quarter turn clockwise, and **Pages > Rotate ▾ > Rotate counter-clockwise** the
+  other way.
+- **Pages > Delete** removes them (so does the Delete key). A notice with an Undo button follows.
+- **Pages > Extract** opens a copy of them as a new document, to save on its own. The original keeps them.
 
 ## Add pages, and merge documents
 
 - **A blank page:** select the page to insert after, open **Insert blank page** in the inspector, pick Letter, A4
-  or Legal (or type a width and height in points), and press **Insert after page N**. ☰ > Pages > Insert blank page
-  inserts one the size of the page you are on.
-- **Pictures:** **Insert images…** adds PNG, JPEG or TIFF pictures after the selected pages, one page each (see
-  [Scans and OCR](scanning-and-ocr.md#importing-images)).
-- **Other PDFs:** **Append PDFs…** (☰ > Pages, or the button at the bottom of the inspector when nothing is
-  selected) adds the pages of the PDFs you choose at the end of the document. To merge documents, open the first
-  one and append the others; drag thumbnails afterwards to put the pages elsewhere.
+  or Legal (or type a width and height in points), and press **Insert after page N**. **Pages > Insert pages >
+  Insert blank page** (or ☰ > Pages > Insert blank page) inserts one the size of the page you are on.
+- **Pictures:** **Insert images…** (in **Pages > Insert pages**) adds PNG, JPEG or TIFF pictures after the selected
+  pages, one page each (see [Scans and OCR](scanning-and-ocr.md#importing-images)).
+- **Other PDFs:** **Append PDFs…** (in **Pages > Insert pages**, ☰ > Pages, or the button at the bottom of the
+  inspector when nothing is selected) adds the pages of the PDFs you choose at the end of the document. To merge
+  documents, open the first one and append the others; drag thumbnails afterwards to put the pages elsewhere.
 
 The files are added in the order chosen, in one step that Ctrl+Z takes back. A password-protected file asks for its
 password: **Add pages** adds its pages, **Skip this file** leaves it out and adds the others, and **Cancel** adds
@@ -51,8 +51,7 @@ gets no [recovery copies](gui.md#recovery-copies).
 
 ## Split into files
 
-1. Clear any selection (Esc), then open **Split into files** in the inspector (or choose ☰ > Pages > Split into
-   files…).
+1. Choose **Pages > Split** (or ☰ > Pages > Split into files…). **Split into files** opens in the inspector.
 2. Choose **Pages per file** and how many, or **At bookmarks, levels** and how many levels of bookmarks to split at
    (1 is the top level only).
 3. Press **Choose folder…** and pick where the files go.
@@ -67,16 +66,16 @@ anything: **Replace** replaces them, **Cancel** writes no files at all.
 
 ## Remove blank pages
 
-☰ > Pages > Remove blank pages (or the command palette) deletes every page that is one even colour, give or take
-scanner specks, faint show-through or a lone page number, and lists the pages it removed. Undo brings them back. A
-document whose pages are all blank is left alone.
+**Pages > Delete ▾ > Remove blank pages** (or ☰ > Pages > Remove blank pages, or the command palette) deletes every
+page that is one even colour, give or take scanner specks, faint show-through or a lone page number, and lists the
+pages it removed. Undo brings them back. A document whose pages are all blank is left alone.
 
 ## Crop pages
 
 Crop trims margins from the pages as they are shown.
 
-1. Select the pages to crop (or none, for every page), and open **Crop** in the inspector (or choose ☰ > Pages >
-   Crop pages…). The pages are shown whole, with the part outside each page's crop box dimmed.
+1. Select the pages to crop (or none, for every page), and choose **Pages > Crop** (or ☰ > Pages > Crop pages…).
+   **Crop** opens in the inspector. The pages are shown whole, with the part outside each page's crop box dimmed.
 2. Drag the crop box's edges or corners on the page, or type the margins. Each drag or number crops all the pages
    in the Pages box at once, and dragging back out undoes a crop.
 3. Close the section, or press Esc, to see the pages cropped.
@@ -92,8 +91,8 @@ Cropping hides content; it doesn't delete it. To remove what is outside the crop
 Page labels are the page numbers viewers show, such as i, ii, 1, 2 or A-1, for a document whose front pages are
 numbered apart from the rest. They don't change what is printed on the pages.
 
-1. Select the first page to number, and open **Page labels** in the inspector (or go to the page and choose ☰ >
-   Pages > Page labels…).
+1. Select the first page to number, or go to it, and choose **Pages > Page labels** (or ☰ > Pages > Page
+   labels…). **Page labels** opens in the inspector.
 2. Pick a style, an optional prefix, and the number to start at.
 
 The numbering runs to the next labelled range, and each change applies at once. The section shows the numbering
@@ -101,9 +100,9 @@ the page has now. When a document has labels, the status bar shows the label wit
 "Page i (3 of 477)", and the thumbnails, search results and new bookmarks use the labels. Labels stay with their
 pages when pages are deleted or moved.
 
-To have LimarePDF number every document's pages 1, 2, 3 from the first page instead, turn off ☰ > View > **Use the
-document's page labels**. The labels stay in the document, and the status bar still shows them. The choice is
-remembered between runs.
+To have LimarePDF number every document's pages 1, 2, 3 from the first page instead, turn off View > Show > **Use
+the document's page labels** (also in ☰ > View). The labels stay in the document, and the status bar still shows
+them. The choice is remembered between runs.
 
 ## What removed pages leave behind
 

@@ -9,8 +9,8 @@ shape, drawing or stamp. Other apps can show, move or remove annotations. Flatte
 See [Comments and markup](comments-and-markup.md).
 
 **Arrow.** The tool for selecting, moving and resizing anything on the page, lines of page text and full-page
-scans included, one or several at a time; in ☰ > Tools > Select, move and resize objects. See [Editing text and
-pictures](content-editing.md#select-several-objects).
+scans included, one or several at a time; in Edit > Select (or ☰ > Tools > Select, move and resize objects). See
+[Editing text and pictures](content-editing.md#select-several-objects).
 
 **Bates number.** A number stamped on every page of a set of documents, such as `ABC000123`, so that each page can
 be referred to exactly. Common in legal work.
@@ -27,7 +27,15 @@ authority trusts every certificate it issued.
 **Certify.** To sign a document as its author, saying which changes others may still make (such as filling in the
 form). A document can be certified only before anyone else signs it.
 
+**Command band.** The names Edit, Insert, Review, Pages, Forms and sign, Protect and View under the document tabs,
+and below them the buttons of the name chosen, in groups. This guide writes a button as name > button, such as
+Pages > Split. See [The command band](gui.md#the-command-band).
+
 **Command palette.** The list of every command, opened with Ctrl+K: type to find one, Enter to run it.
+
+**Compact commands.** The command band on one row of icons, which name themselves on hover. The small arrow at the
+right of the commands row, or View > Show > Compact commands, turns it on and off; windows under 600 points high
+show the commands compact by themselves.
 
 **Crop.** Trimming the margins of a page as it is shown. The content outside is hidden, not deleted.
 
@@ -61,6 +69,9 @@ reader. What was drawn is ordinary page content, which content editing can still
 attached files, hidden layers, thumbnails and the like. Removing hidden information takes it out before you share
 the document. See [Redaction](redaction.md#removing-hidden-information).
 
+**Icon strip.** The icons at the window's left edge: Pages, Search results, Bookmarks, Comments and Digital
+signatures. Each opens that view in the side panel beside it; clicking the view shown again folds the panel away.
+
 **Inspector.** The panel on the right of the window, which shows the options for what is selected, or for the
 whole document when nothing is.
 
@@ -76,6 +87,9 @@ the pages.
 
 **Permissions password.** A password that limits what others may do with a document (print, copy, change it)
 without stopping them from opening it. Also called an owner password.
+
+**Planned.** The mark on a greyed button for a feature not built yet, shown where it will be. It does nothing.
+Turning off Show planned features, in the status bar or View > Show, hides these buttons.
 
 **Read tool.** The tool every document opens with (the text cursor): it selects text, follows links, fills in
 forms, and selects and moves pictures, shapes and comments on the page (Shift+click for several pictures and

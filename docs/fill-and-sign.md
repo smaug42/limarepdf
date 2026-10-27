@@ -10,7 +10,7 @@ anyone can copy it. For a signature that does, see [Digital signatures](signatur
 
 ## Sign a document
 
-1. Click **Fill and sign** in the top bar (its icon is a signature).
+1. Click **Forms and sign > Fill and sign** (its icon is a signature).
 2. Click on the page where your signature goes, or drag a box to size it. The first time, the Create signature
    window opens first: draw, type or choose a picture of your signature, then press **Use signature**.
 3. Add the date, your initials or a tick the same way: pick it in the Fill and sign pane on the right, then click
@@ -18,15 +18,15 @@ anyone can copy it. For a signature that does, see [Digital signatures](signatur
 4. Move or resize anything that isn't quite right: click it with the read tool and drag it or its handles.
 5. Press **Finish signing…** in the notice above the pages, then save.
 
-The small arrow beside the Fill and sign button opens a menu of everything it can put down: Signature and
-Initials, each listing the saved ones and Create…, then Date, Your name, Text, Tick, Cross and Dot. Picking one
-turns the tool on with it; the button itself turns the tool on with the item picked last.
+**Fill and sign ▾**, the small arrow beside the Fill and sign button, opens a menu of everything it can put down:
+Signature and Initials, each listing the saved ones and Create…, then Date, Your name, Text, Tick, Cross and Dot.
+Picking one turns the tool on with it; the button itself turns the tool on with the item picked last.
 
 ## Make your signature
 
-**Create signature…**, in the button's Signature menu, the Fill and sign pane (or **New…** beside Signatures in
-the pane), ☰ > Tools or the command palette (Ctrl+K), opens a window with three ways to make one (Create
-initials… likewise):
+**Create signature…**, in **Forms and sign > Fill and sign ▾ > Signature**, the Fill and sign pane (or **New…**
+beside Signatures in the pane), ☰ > Tools or the command palette (Ctrl+K), opens a window with three ways to make
+one (Create initials… likewise):
 
 - **Draw:** sign on the white pad with the mouse, touchpad or a pen; Clear starts again. The strokes are smoothed
   into curves and stay sharp at any zoom. In a narrow or short window the pad is smaller, at the same shape; what

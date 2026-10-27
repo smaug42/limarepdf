@@ -14,30 +14,47 @@
   The status bar shows both. On unless turned off, and remembered.
 - Style words while you read, as in a word processor: select them with the read tool, across lines and pages
   too, then press Ctrl+B or Ctrl+I, use Bold and Italic on the floating toolbar or in the right-click menu, or pick
-  a font, size or colour in the inspector, headed Selected text. The words stay selected, and each change is one
-  undo step. Invisible recognised text, text in a block of page content reused as a whole and vertical writing
+  a font, size or colour in Edit > Font. The words stay selected, and each change is one undo step. Invisible recognised text, text in a block of page content reused as a whole and vertical writing
   are left as they were, and a notice says so.
 - Select several objects: Shift+click to add one or take it out, with the read tool for pictures and shapes and
   with the arrow for anything, page text included. With the arrow you can also drag a rectangle round them (what
   is wholly inside it is selected; Shift adds), or press Ctrl+A for everything on the page. They move together (a
-  drag, the arrow keys, the inspector's X and Y), take the inspector's font, size, colour, Bold and Italic (the
-  lines of text among them) and fill, outline and width (the shapes), blank or mixed where they differ, and
+  drag, the arrow keys, the inspector's X and Y), take Edit > Font's font, size, colour, Bold and Italic (the
+  lines of text among them) and the inspector's fill, outline and width (the shapes), blank or mixed where they differ, and
   delete together, each change one undo step. A drag that starts on a background or a scanned page that isn't
   selected draws a rectangle, so it isn't moved by accident.
-- F6 and Shift+F6 move the keyboard between the parts of the window: the top bar, the tabs, the document's
+- F6 and Shift+F6 move the keyboard between the parts of the window: the tabs, the commands, the document's
   notices, navigation, the page, the inspector and the status bar, in the order they are on screen. Each part
   takes you back to where you last were in it. F6 also leaves a form, where Tab moves between the fields. Typing
-  on the page (new text, a line being edited, a note or text box) stays open while you are elsewhere: the
-  inspector still changes it (Bold, the font, size or colour of what is selected there), and F6 back to the page
+  on the page (new text, a line being edited, a note or text box) stays open while you are elsewhere: Edit > Font
+  still changes it (Bold, the font, size or colour of what is selected there), and F6 back to the page
   lets you go on typing. A form field
   keeps what you typed and is where F6 comes back to. Back on the page with nothing else to go to, an outline round
   the page you are reading shows that the keys are there. View > Next region and Previous region list them.
 - The side panel and the inspector can be made wider or narrower from the keyboard: Tab to their edge (it shows a
   line), then Left and Right move it 10 points, 50 with Shift; Home makes the panel as narrow as it goes and End
   half the window wide. The keyboard never folds a panel away.
-- Create signature… and Create initials… are in the command search (Ctrl+K) and in ☰ > Tools.
-- Screen readers hear the name of each part of the window as the keyboard goes into it (Top bar, Tabs, Notices,
-  Navigation, Document, Inspector, Status bar), and each document tab says whether it is the one shown.
+- Create signature… and Create initials… are in the command search (Ctrl+K), ☰ > Tools and Forms and sign >
+  Fill and sign ▾.
+- Screen readers hear the name of each part of the window as the keyboard goes into it (Tabs, the commands, such
+  as Edit commands, Notices, Navigation, Document, Inspector, Status bar), and each document tab says whether it is
+  the one shown.
+- A familiar workspace, with labelled commands grouped as in a word processor. Under the document tabs, one row
+  holds the File menu (☰), Open, Save, Undo and Redo as icons, then the names Edit, Insert, Review, Pages, Forms
+  and sign, Protect and View, and Print at the right. Under it, the chosen name's buttons, in groups, with ▾ menus
+  for related commands; every command has a place there, in the File menu, a right-click menu or a key. Edit's
+  Font group sets the font, size, Bold, Italic and colour of the text selected or being typed, leaving the typing
+  open; Edit > Paste and Copy act on the text being typed; Edit > Edit text edits the selected line, or with none
+  chooses the text tool. Narrow windows fold groups into a button with the group's name.
+- Planned features show greyed, marked Planned, where they will be (Replace, Paragraph, Underline, Link, Organise
+  and others); they do nothing. Show planned features, in the status bar and View > Show, hides them; the choice is
+  remembered.
+- Compact commands: a small arrow at the right of the commands (or View > Show > Compact commands) puts them on one
+  row of icons, named on hover; windows under 600 points high do so by themselves. Remembered.
+- The accent colour follows the desktop's accent colour on Linux desktops that share it (GNOME 47 and KDE Plasma 6
+  on), on macOS and on Windows, made readable if needed; View > Accent colour chooses Desktop or LimarePDF's own.
+- The icon strip at the window's left edge includes Digital signatures, beside Pages, Search results, Bookmarks
+  and Comments.
 
 ### Changed
 
@@ -62,11 +79,12 @@
   they stand in for, their own name after: "Palatino (P052)", "New Century Schoolbook (C059)", "Helvetica
   (Nimbus Sans)". The list is sorted by those names, and searching finds either. Pointing at one says it is made to
   that typeface's letter widths but isn't the typeface itself, and that it is embedded in the file.
-- The inspector puts text first: it is headed by what is selected or the tool's options (Text, Image, New
-  rectangle, Comment) instead of "Edit"; for text, a font list across the panel, then Bold, Italic, size and
-  colour in one row. Position and size are in a Position and size section that starts closed and stays open or
-  closed as you left it, for every kind of object. Pointing at the font list shows the names of the selected
-  text's fonts in the PDF.
+- The inspector is headed by what is selected or the tool's options (Text, Image, New rectangle, Comment) instead
+  of "Edit". For text it shows how it is edited (One line, Selected words, New text), its font and size (Mixed where
+  they differ) and, for a line, whether its own font is kept (Source font); the font, size, Bold, Italic and colour
+  are set in Edit > Font in the command band. Position and size are in a Position and size section that starts
+  closed and stays open or closed as you left it, for every kind of object. Pointing at the font list shows the
+  names of the selected text's fonts in the PDF.
 - The inspector no longer repeats a line's words in a text box: they are changed on the page, as in a word
   processor. With the arrow, a double-click or Edit text now edits the line on the page too.
 - Finishing editing a line with the read or Add text tool (Esc, Tab, or clicking into a form field) no longer
@@ -79,13 +97,22 @@
   even an embedded font LimarePDF can't write new text in. Before, the rest of their part of the line was written
   again in a similar font. Where that can't be done, the words are written in the similar font as before, and a
   notice says so.
-- Ctrl+B and Ctrl+I also make a line selected with the arrow bold or italic, as the inspector's buttons do.
+- Ctrl+B and Ctrl+I also make a line selected with the arrow bold or italic, as Edit > Font's buttons do.
 - New text of several lines is selected as one when you finish typing it, so it moves together; before, only its
   last line was selected.
 - The right-click menu's Copy the object's text is now Copy the selected text lines, and copies several lines in
   reading order.
 - Selected text is shaded as one smooth area, as in a word processor: a band along each line, the spaces between
-  words included, the lines of a paragraph meeting, instead of a box around each word.
+  words included, the lines of a paragraph meeting, instead of a box around each word, in a lighter colour.
+- The window is laid out anew: the top bar of icons, its Tools and Comment menus and its search field are
+  replaced by the commands under the document tabs (see Added). The ☰ menu, now the File menu, has File's
+  commands at its top and then a submenu for each other kind. Find (Ctrl+F) opens Search results with the cursor
+  in its search box. The status bar's page layout and zoom buttons are now one zoom menu ("Fit width · 96%"), and
+  the status bar shows what is selected or the tool in use. A tab shows Unsaved beside the name instead of a *.
+  The colours are a teal on light, quiet surfaces, with a dark counterpart; the side panel's heading names the view
+  and, for pages, how many.
+- Facing pages, clicked again when on, goes back to continuous pages. Ctrl+C with lines of text selected with the
+  arrow copies their text.
 - The user guide's Features page is now a short summary of what LimarePDF can do. The detailed status of each
   feature, with its limits and what doesn't work yet, moved to the developer docs as
   [Features and status](docs/developer/feature-status.md).

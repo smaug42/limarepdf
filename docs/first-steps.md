@@ -20,19 +20,22 @@ From a terminal, `limarepdf report.pdf --page 3` opens a document at page 3.
 
 ## Find your way around
 
-![The LimarePDF window with a report open, numbered: 1 the top bar, 2 the page thumbnails at the left, 3 the pages in the middle, 4 the inspector at the right, 5 the bottom bar](images/window-tour.png)
+![The LimarePDF window with a report open, numbered: 1 the commands under the document's tab, 2 the page thumbnails at the left, 3 the pages in the middle, 4 the inspector at the right, 5 the bottom bar](images/window-tour.png)
 
-1. **The top bar** has, from the left: the menu ☰, which holds every command; Open, Save and Export; Undo and
-   Redo; the tools (Read and select text, Add text, Add image, Redact, Fill and sign, and Comment for notes, shapes
-   and drawings); and at the right, Search and Print. Hover over a button to see what it does. A tool's tooltip
-   also says how to use it.
-2. **The left side** shows the page thumbnails, and has icons for Search results, Bookmarks and Comments. Click an
-   icon to open that view; click it again to fold the panel away.
+1. **The commands**, under the document's tab. At the left, the File menu ☰, which holds every command, then
+   Open, Save, Undo and Redo; at the right, Print. In between are the names **Edit**, **Insert**, **Review**,
+   **Pages**, **Forms and sign**, **Protect** and **View**: click one to show its buttons below. Edit has copying,
+   the font and finding text; Insert adds text, pictures, headers and watermarks; Review has comments and markup;
+   Pages rotates, removes, adds and splits pages; Forms and sign fills forms and signs; Protect redacts and sets
+   passwords; View has zoom, page layout and how the app looks. Hover over a button to see what it does. Greyed
+   buttons marked **Planned** show features still to come.
+2. **The left side** shows the page thumbnails, and a strip of icons for Pages, Search results, Bookmarks, Comments
+   and Digital signatures. Click an icon to open that view; click it again to fold the panel away.
 3. **The middle** shows the pages. Scroll with the mouse wheel or touchpad. Ctrl+scroll, Ctrl+= and Ctrl+- zoom,
    and Ctrl+0 fits the pages to the window's width again.
 4. **The right side** is the inspector, which shows the options for whatever you have selected.
-5. **The bottom bar** shows the page you are on and messages, and at the right the page layout (one column, two
-   pages side by side, or one page at a time), Fit width and the zoom.
+5. **The bottom bar** shows what is selected and messages, and at the right the page you are on and the zoom,
+   which opens a menu of zoom and page layout (one column, two pages side by side, or one page at a time).
 
 Notices above the pages tell you about the document when it opens: that it is a form, a scan without text,
 digitally signed, damaged and repaired, and so on. Each has a button for what to do about it, and × to dismiss it.
@@ -56,20 +59,21 @@ Documents open with the read tool, the text cursor. It does most things:
 
 Right-click anything for a short menu of what you can do with it.
 
-The other tools put something new on the page: pick one in the top bar, then click or drag on the page. After
+The other tools put something new on the page: pick one in the commands (Insert > Text or Image, Review > Note,
+Text box or Draw, Protect > Mark redaction, Forms and sign > Fill and sign), then click or drag on the page. After
 putting one thing down, a tool goes back to the read tool (the pin in its options keeps it on). Esc always
 returns to the read tool.
 
 ## Find any command
 
 Press **Ctrl+K** to open the command palette. Type a few letters of what you want, such as "rotate", "watermark" or
-"split", and press Enter. The ☰ menu also has every command, grouped into File, Edit, View, Tools, Pages, Document
+"split", and press Enter. The ☰ menu also has every command: File's own, then Edit, View, Tools, Pages, Document
 and Help.
 
 ## Undo, save and keep your work safe
 
 - **Undo** with Ctrl+Z, up to 20 steps back, and **redo** with Ctrl+Y.
-- A **\*** after a tab's name means the document has unsaved changes. **Save** with Ctrl+S. **Save As**
+- **Unsaved** beside a tab's name means the document has unsaved changes. **Save** with Ctrl+S. **Save As**
   (Ctrl+Shift+S) writes a new file and leaves the original as it was, which is the safe choice for documents that
   matter.
 - Your file is only changed when you save. Closing a document or quitting with unsaved changes asks whether to

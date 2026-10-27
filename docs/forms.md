@@ -9,6 +9,7 @@ When a document has a form, a notice above the pages says so, and its fields are
 1. Click a field with the read tool (the text cursor). With another tool on, hold Ctrl (⌘ on a Mac) and click.
 2. Type, tick or choose.
 3. Press Tab for the next field, or Shift+Tab for the one before. Fields go top to bottom, page by page.
+   **Forms and sign > Fill fields** also goes to the next field.
 4. Save with Ctrl+S, or use Save As (Ctrl+Shift+S) to keep the empty form as it was.
 
 Each kind of field:
@@ -28,13 +29,14 @@ Each value you change is one undo step. Hovering over a field shows its descript
 ## Highlighted fields
 
 Fields are highlighted from the start: a light tint on every field, stronger under the pointer, and a red outline
-on required ones. ☰ > View > Highlight fields, or the switch on the form's notice, turns this off or on again for
-every document, and the choice is remembered between runs.
+on required ones. **Forms and sign > Fill fields ▾ > Highlight fields** (or ☰ > View > Highlight fields), or the
+switch on the form's notice, turns this off or on again for every document, and the choice is remembered between
+runs.
 
 ## The Form section
 
 With nothing selected, the inspector's **Form** section shows the field you are in: its name, its description and
-whether it is required. It also has:
+whether it is required. It also has these, which are in **Forms and sign > Fill fields ▾** too:
 
 - **Clear field**, which empties the field you are in.
 - **Highlight fields**, the same switch as above.

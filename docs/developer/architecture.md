@@ -668,12 +668,63 @@ field or a dragged box); the app then gathers what to sign: a document opened wi
 (`SigState`) and signs those plus its edits, any other document is written out in full first. The signed file
 replaces the tab and is checked like any opened file.
 
-In the desktop app, every command is defined once in `crates/limarepdf-gui/src/actions.rs`; the menu, the top bar, the
-command palette, the right-click menus, the floating toolbar and the keyboard shortcuts are all built from that list.
+In the desktop app, every command is defined once in `crates/limarepdf-gui/src/actions.rs`; the File menu, the commands
+row, the command band, the command palette, the right-click menus, the floating toolbar and the keyboard shortcuts
+are all built from that list.
 The menus show an entry's short `label` inside its `submenu`; the palette, which has no submenus, shows the
 submenu's name before it in the weak colour ("Theme › Dark"), names the row `actions::spoken_title` for screen
 readers ("Theme: Dark") and searches the label, submenu and group (`actions::matches`; BUG-34, audit A18). A test
 keeps every palette entry's name its own.
+
+The workspace (batch 39, ENH-38 and ENH-41; build plan 2.2's approved mockup, adjusted by the user's checks) is
+drawn by `App::ui` as panels from the top: the tabs (`tab_button`, the line under them broken under the tab shown),
+then the commands panel: one row of the document's commands (`quick`, icons named in words; the File menu,
+`App::menu`, lists File's commands then one submenu per `Group`, so every command is in it, with `band::FILE_PLANNED`
+greyed in place), the band's names (`band::names`) and, at the right in reading order (`dialogs::reading_order`, its
+width from the last frame in `App::commands_right`), Print and `band::compact_toggle`; under it `band::show`.
+`crates/limarepdf-gui/src/band.rs` holds the seven bands as static tables of groups of `Item`s: `Button` (a
+registered `Act` with the band's own short label and icon, and a `menu` of related `Act`s behind a caret; no `act`
+makes a button that only opens its menu), `Font`, `Sign` and `Marks` (drawn by the editor, `signing::menu_ui` and
+`markup::menu`) and `Planned` (a label, icon, the build plan's item and what it will do). A button's enabled state,
+tooltip and shortcut come from the registry; it shows pressed while its command is on or a tool in its menu is in
+use, not for a menu's ticked choices. Planned items are disabled buttons named "… — Planned" (no Tab stop, never
+dispatched), hidden with `Settings::show_planned` (`Act::TogglePlanned`). Each group's width, open or folded, is kept
+in egui's memory from the last frame; `band::fold_level` folds them in `band::fold_order` (groups of planned
+features alone first, left out rather than folded; then from the right) with a 12-point margin before one comes back,
+a folded group being a menu button with its name holding its controls. `Parts::compact` (`Settings::compact_commands`,
+`Act::ToggleCompact`, or a window under `SHORT_HEIGHT`) draws icons alone and the Font group on one row (`controls`
+gives the row's height). Tests: `band`'s own (every button a registered command; every command placed in a band, the
+File menu, a right-click menu or a key; planned items named for plan items; folding), and the app's band tests.
+
+Edit's Font group is `Editor::font_band`, which moved the text look controls out of the inspector: the same
+`styles_ui` acts on new text being typed (`PageText`, with `page_text::held`'s selection, `refocus` after a change),
+before it the next new text's look (`tfont`, `tsize`, `tcolor`; greyed with nothing to style), the read tool's words
+or several arrow-selected lines (`Chosen`) and one selected or edited line (`Insp`, `line_edit`). The band is drawn
+before the page, as the inspector is, so a press there reaches the line editor first: `band::show` returns the
+places of the groups that change typing (Font, and Clipboard for Copy and Paste), lent to `Editor::keep_typing`, and
+`keeping` treats a press or release there as in the inspector: the line being edited, or a text box being written,
+stays open and takes the keyboard back once settled. `Editor::settle_look`, run each frame from `App::ui` whether or
+not the inspector is shown, observes the selected line's history and keeps finished changes (`Typed::Words`,
+`commit_insp`) as undo steps. The inspector now shows facts for text (`facts`, `look_facts`). Copy and Paste in the
+band (`Act::Copy`, `Act::Paste`) for typing set `App::clip` and `Editor::refocus_typing`; `App::clipboard`, at the
+start of each frame, sends egui's `ViewportCommand::RequestCopy` or `RequestPaste` once that box has the keyboard
+again, so the platform's copy or paste lands in it (dropped if the typing ends first).
+
+The accent (`crates/limarepdf-gui/src/accent.rs`) is read from the desktop: on Linux the XDG desktop portal's
+`org.freedesktop.appearance` `accent-color` (`ReadOne`, red, green and blue from 0 to 1, out of range meaning none)
+through zbus's blocking API with a 2-second method timeout, on a thread (`App::read_accent`; `App::new` waits for it
+300 ms so the first frame has it, else it comes in as the window is drawn); on macOS `NSColor.controlAccentColor` in
+sRGB; on Windows the DWM `AccentColor` value (ABGR) from the current user's registry. It is read at start, when
+the window gets the focus back and when View > Accent colour changes (`Settings::accent`). `theme::set_accent`
+keeps it in a process-wide `RwLock` and installs both themes' styles again; `Palette::with_accent` puts it in for the
+teal, darkened (light theme, against white) or lightened (dark theme, against its surface) in 8% steps until its
+contrast is at least 4.5:1, its faint and pressed backgrounds mixed with the surface, and `text_shading` a light tint
+of it. Without one, the approved mockup's teal palette stays.
+
+The side panel's views are the icon strip at the window's left edge (`SIDE_VIEWS`, each button's selected state a
+toggle for screen readers), the panel's heading a plain label (`side_name`); Find (`Act::Find`) shows Search
+results and sets `Tab::focus_query`, which `Tab::show_results` gives the keyboard. The status bar says what is
+selected or the tool in use (`Editor::heading` while the editor owns the panel), and its zoom is `zoom_menu`.
 
 F6 and Shift+F6 (ENH-10, batch 26) are `Act::NextRegion` and `PrevRegion`, the one shortcut `App::shortcuts` runs
 while a text box has the keyboard (and never while a list or menu is open), with Shift told apart exactly, as egui
