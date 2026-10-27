@@ -201,17 +201,17 @@ impl Face {
                 (false, true) => "italic",
                 (false, false) => "regular",
             };
-            anyhow!("{} has no {style} face", t.name)
+            anyhow!("{} has no {style} face", t.label())
         })?;
         let key = (file.path.clone(), file.index, file.ps.clone());
         let mut read = INSTALLED.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((_, face)) = read.iter().find(|(k, _)| *k == key) {
             return Ok(face);
         }
-        let cant = |e: &dyn std::fmt::Display| anyhow!("can't read the font {}: {e}", t.name);
+        let cant = |e: &dyn std::fmt::Display| anyhow!("can't read the font {}: {e}", t.label());
         let size = std::fs::metadata(&file.path).map_err(|e| cant(&e))?.len();
         if size > MAX_INSTALLED {
-            bail!("the font {} is too large to embed", t.name);
+            bail!("the font {} is too large to embed", t.label());
         }
         let data: &'static [u8] = std::fs::read(&file.path).map_err(|e| cant(&e))?.leak();
         let face = Face::read(data, file.index, file.coords.clone(), Some(&file.ps))
@@ -449,7 +449,7 @@ pub fn refusal(f: FontChoice, missing: &str) -> String {
     let sequence = missing.graphemes(true).any(emoji_sequence);
     match f.typeface() {
         Some(t) if !sequence && missing.chars().any(installed_could_write) => {
-            format!("{} has no \"{missing}\"; choose another font", t.name)
+            format!("{} has no \"{missing}\"; choose another font", t.label())
         }
         _ => cant_write(missing),
     }

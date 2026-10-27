@@ -76,6 +76,12 @@ you clicked, and a drag selects text, as with the read tool.
 licence allows embedding them, each name drawn in its own font. Type in its search field to narrow it; Enter picks
 the first. Bold and Italic are off for a family that has no such face.
 
+Some fonts are installed under code names, such as the URW fonts many Linux systems have. The list shows these by
+the typeface they stand in for, with the font's own name after it: "Palatino (P052)", "New Century Schoolbook
+(C059)", "Helvetica (Nimbus Sans)". Searching finds either name. They are made to the same letter widths as those
+typefaces but aren't the typefaces themselves; point at one to see this. Unlike the standard Helvetica, Times and
+Courier at the top of the list, they are embedded in the file, so the text looks the same everywhere.
+
 **Characters:** Latin (Vietnamese included), Greek and Cyrillic characters can be added. Those the standard fonts
 lack are written in their Liberation face, and text in an installed font is written in that font, both embedded in
 the file (cut down to the characters used). Chinese, Japanese and Korean can be typed in an installed font that has
@@ -116,8 +122,11 @@ nudge.
 
 ## Change size, font and colour in the inspector
 
-The inspector shows the selected object's position and size; for text, the string, font, size and colour; for
-shapes, the fill, outline and width; for pictures, **Replace image…**. Changes there are kept as you make them,
+The inspector is headed by what is selected (Text, Image, Shape). For text it shows the words first, then the font
+list, then Bold, Italic, size and colour in a row; for shapes, the fill, outline and width; for pictures,
+**Replace image…**. Below these, **Position and size** opens to show the object's X, Y, width and height; it
+stays open or closed as you left it. Pointing at the font list shows the names of the fonts the selected text
+uses in the PDF. Changes there are kept as you make them,
 without an Apply button: typed text when you press Enter or leave the box, a number when you stop dragging it or
 leave its box, a colour when its picker closes. Each is one undo step.
 

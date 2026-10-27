@@ -494,11 +494,13 @@ fn size_box(
     let mut text = typed
         .clone()
         .unwrap_or_else(|| size.map(size_text).unwrap_or_default());
-    let r = ui.add(
-        egui::TextEdit::singleline(&mut text)
-            .id(id)
-            .desired_width(52.0),
-    );
+    let r = ui
+        .add(
+            egui::TextEdit::singleline(&mut text)
+                .id(id)
+                .desired_width(52.0),
+        )
+        .on_hover_text("Font size");
     r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "Font size"));
     let edited = typed.is_some() || r.changed();
     let mut chosen = None;
@@ -757,14 +759,16 @@ fn text_change(text: &Styled, o: &PageObject) -> TextEdit {
     TextEdit::in_parts(parts)
 }
 
-/// The font list, Bold, Italic, size (within `sizes`) and colour for what a style command
-/// with `sel` selected changes in `text`: each shows blank where that mixes values.
+/// The font list across the panel, then Bold, Italic, size (within `sizes`) and colour in a
+/// row, for what a style command with `sel` selected changes in `text`: each shows blank
+/// where that mixes values. `in_pdf` names the PDF fonts of text already in the PDF.
 /// Returns whether one was used.
 fn styles_ui(
     ui: &mut egui::Ui,
     text: &mut Styled,
     sel: (usize, usize),
     sizes: std::ops::RangeInclusive<f32>,
+    in_pdf: &[String],
 ) -> bool {
     let shown = text.shown(sel);
     let first = text.first(sel);
@@ -775,7 +779,21 @@ fn styles_ui(
     };
     let mut font = was;
     let mut used = false;
-    if crate::font_list::ui(ui, &mut font, shown.font.is_none()) {
+    let picked = crate::font_list::ui(ui, &mut font, shown.font.is_none(), in_pdf);
+    // Wrapped where the panel is too narrow for the row.
+    ui.horizontal_wrapped(|ui| {
+        crate::font_list::styles(ui, &mut font);
+        let size = size_row(ui, |ui| size_box(ui, shown.size, sizes));
+        if let Some(size) = size {
+            text.set_size(sel, size);
+            used = true;
+        }
+        if let Some(c) = text_color_button(ui, &text.colors(sel)) {
+            text.set_color(sel, c);
+            used = true;
+        }
+    });
+    if picked {
         // Each character takes the family's face nearest its own.
         if shown.font.is_none() || font.family != was.family {
             text.set_family(sel, font.family);
@@ -791,18 +809,36 @@ fn styles_ui(
             used = true;
         }
     }
-    ui.horizontal(|ui| {
-        ui.label("Size");
-        if let Some(size) = size_box(ui, shown.size, sizes) {
-            text.set_size(sel, size);
-            used = true;
-        }
-        if let Some(c) = text_color_button(ui, &text.colors(sel)) {
-            text.set_color(sel, c);
-            used = true;
-        }
-    });
     used
+}
+
+/// The size box ([`size_box`], "12 pt"), kept together when the row wraps.
+fn size_row<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.add_space(4.0);
+    ui.horizontal(add).inner
+}
+
+/// The PDF's names for the fonts of the characters of line `o` a style command with `sel`
+/// selected changes: those selected, or at a caret the one before it (the first at the
+/// start), each once.
+fn pdf_fonts(o: &PageObject, sel: (usize, usize)) -> Vec<String> {
+    let (from, to) = (sel.0.min(sel.1), sel.0.max(sel.1));
+    let (from, to) = if from == to {
+        (from.saturating_sub(1), from.max(1))
+    } else {
+        (from, to)
+    };
+    let mut out: Vec<String> = Vec::new();
+    for s in o
+        .spans
+        .iter()
+        .filter(|s| s.chars.0 < to && s.chars.1 > from)
+    {
+        if !out.contains(&s.font_name) {
+            out.push(s.font_name.clone());
+        }
+    }
+    out
 }
 
 /// The font `part` of line `o`, as `text` has it, is written in, as core decides it: its
@@ -3398,6 +3434,56 @@ impl Editor {
             || self.selection.annot().is_some()
     }
 
+    /// The inspector's heading for the editor's section, as it shows them: the selected
+    /// comment, else the tool's options, else the selected object ("Comment", "New
+    /// rectangle", "Text").
+    pub fn heading(&self) -> String {
+        if self.selection.annot().is_some() {
+            return match self.selected_annot() {
+                Some(a) if a.reply_to.is_some() => "Reply".into(),
+                Some(a) => a.label(),
+                None => "Comment".into(),
+            };
+        }
+        self.tool_heading()
+            .or_else(|| self.object_heading())
+            .unwrap_or("Selection")
+            .into()
+    }
+
+    /// The heading of a tool's options in the inspector.
+    fn tool_heading(&self) -> Option<&'static str> {
+        Some(match self.tool {
+            Tool::Text => "New text",
+            Tool::Image => "Insert image",
+            Tool::Rect => "New rectangle",
+            Tool::Ellipse => "New ellipse",
+            Tool::Line => "New line",
+            Tool::Pen => "Pen",
+            Tool::Note => "New note",
+            Tool::Stamp => "New stamp",
+            Tool::Sign => "Fill and sign",
+            Tool::DigitalSign if self.digital_certify => "Certify with a digital ID",
+            Tool::DigitalSign => "Sign with a digital ID",
+            Tool::Redact => "Mark for redaction",
+            Tool::TextBox => "New text box",
+            Tool::Select | Tool::Read => return None,
+        })
+    }
+
+    /// The heading of the selected object's properties in the inspector.
+    fn object_heading(&self) -> Option<&'static str> {
+        let (page, id) = self.sel()?;
+        let o = self.objs.get(&page)?.get(id)?;
+        Some(match o.kind {
+            ObjectKind::Text if o.hidden => "Recognised text (invisible)",
+            ObjectKind::Text => "Text",
+            ObjectKind::Image => "Image",
+            ObjectKind::Form => "Group",
+            ObjectKind::Path => "Shape",
+        })
+    }
+
     /// The page and box (page points) of the selected object or words, for placing the
     /// floating toolbar. For words, the part on the page where the selection's moving end
     /// is. A drawing's box includes its rotate handle, so the toolbar doesn't cover it.
@@ -3592,10 +3678,6 @@ impl Editor {
 
     // ------------------------------------------------------------ inspector
 
-    fn font_ui(ui: &mut egui::Ui, f: &mut FontChoice) {
-        crate::font_list::ui(ui, f, false);
-    }
-
     /// Keep the working copy on the selected object. When another object (or none) is
     /// selected, the last one's changes are kept first, as clicking away keeps them.
     fn sync_insp(&mut self) {
@@ -3634,11 +3716,7 @@ impl Editor {
         let Some((_, e)) = self.annot_insp.as_mut() else {
             return;
         };
-        ui.strong(if a.reply_to.is_some() {
-            "Reply".into()
-        } else {
-            a.label()
-        });
+        // What it is heads the panel (`Editor::heading`).
         let mut about = vec![format!("Page {}", a.page + 1)];
         about.extend(
             [&a.author, &a.modified]
@@ -3796,7 +3874,6 @@ impl Editor {
                 .strong()
                 .color(Color32::from_rgb(r, g, b))
         };
-        ui.strong("New stamp");
         for k in StampKind::ALL {
             let pick = StampPick::Text(k);
             let text = look(&k.label().to_uppercase(), k.color());
@@ -3947,24 +4024,25 @@ impl Editor {
             );
         }
         self.keep_ui(ui);
+        // A tool's options and the selected object's properties are headed by the panel's
+        // heading (`Editor::heading`); the object's again below a tool's options.
         match self.tool {
             Tool::Text => {
-                ui.strong("New text");
                 match self.adding.as_mut() {
                     // Changes apply to what is selected in the text being typed, as in the
                     // line editor, which then takes the keyboard back.
                     Some(a) => {
                         let end = a.text.text().chars().count();
                         let sel = page_text::held(ui.ctx(), a.id()).unwrap_or((end, end));
-                        if styles_ui(ui, &mut a.text, sel, 4.0..=200.0) {
+                        if styles_ui(ui, &mut a.text, sel, 4.0..=200.0, &[]) {
                             a.refocus = true;
                         }
                     }
                     None => {
-                        Self::font_ui(ui, &mut self.tfont);
-                        ui.horizontal(|ui| {
-                            ui.label("Size");
-                            size_ui(ui, &mut self.tsize, 4.0..=200.0);
+                        crate::font_list::ui(ui, &mut self.tfont, false, &[]);
+                        ui.horizontal_wrapped(|ui| {
+                            crate::font_list::styles(ui, &mut self.tfont);
+                            size_row(ui, |ui| size_ui(ui, &mut self.tsize, 4.0..=200.0));
                             color_button(ui, &mut self.tcolor, "Text colour");
                         });
                     }
@@ -3972,18 +4050,12 @@ impl Editor {
                 ui.separator();
             }
             Tool::Image => {
-                ui.strong("Insert image");
                 if self.pending_image.is_none() {
                     ui.label("No image chosen.");
                 }
                 ui.separator();
             }
             Tool::Rect | Tool::Ellipse | Tool::Line => {
-                ui.strong(match self.tool {
-                    Tool::Rect => "New rectangle",
-                    Tool::Ellipse => "New ellipse",
-                    _ => "New line",
-                });
                 if self.tool != Tool::Line {
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut self.fill_on, "Fill");
@@ -4019,7 +4091,6 @@ impl Editor {
                 ui.separator();
             }
             Tool::Pen => {
-                ui.strong("Pen");
                 ui.horizontal(|ui| {
                     color_button(ui, &mut self.pen_color, "Pen colour");
                     let r = ui.add(
@@ -4033,7 +4104,6 @@ impl Editor {
                 return;
             }
             Tool::Note => {
-                ui.strong("New note");
                 let was = self.note_color;
                 ui.horizontal(|ui| {
                     ui.label("Colour");
@@ -4062,11 +4132,6 @@ impl Editor {
                 return;
             }
             Tool::DigitalSign => {
-                ui.strong(if self.digital_certify {
-                    "Certify with a digital ID"
-                } else {
-                    "Sign with a digital ID"
-                });
                 ui.label("Click an empty signature field, or drag a box.");
                 if !self.digital_fields.is_empty() {
                     ui.add_space(6.0);
@@ -4090,7 +4155,6 @@ impl Editor {
                 return;
             }
             Tool::Redact => {
-                ui.strong("Mark for redaction");
                 ui.label("Nothing is removed until the marks are applied.");
                 ui.add_space(6.0);
                 let n = self.redact_marks;
@@ -4108,7 +4172,6 @@ impl Editor {
                 return;
             }
             Tool::TextBox => {
-                ui.strong("New text box");
                 text_style_ui(ui, &mut self.box_style);
                 return;
             }
@@ -4116,6 +4179,8 @@ impl Editor {
             Tool::Select | Tool::Read => {}
         }
 
+        // Below a tool's options, the object's own heading.
+        let heading = self.tool_heading().and_then(|_| self.object_heading());
         let Some(insp) = self.insp.as_mut() else {
             return;
         };
@@ -4123,47 +4188,8 @@ impl Editor {
         let Some(obj) = self.objs.get(&page).and_then(|v| v.get(id)).cloned() else {
             return;
         };
-        ui.strong(match obj.kind {
-            ObjectKind::Text if obj.hidden => "Recognised text (invisible)",
-            ObjectKind::Text => "Text",
-            ObjectKind::Image => "Image",
-            ObjectKind::Form => "Group",
-            ObjectKind::Path => "Shape",
-        });
-
-        // Geometry
-        let mut geom_done = false;
-        let (mut x, mut y, mut w, mut h) = (
-            insp.geom[0],
-            insp.geom[1],
-            insp.geom[2] - insp.geom[0],
-            insp.geom[3] - insp.geom[1],
-        );
-        egui::Grid::new("geom").num_columns(4).show(ui, |ui| {
-            for (label, v, lo) in [("X", &mut x, -5000.0), ("Y", &mut y, -5000.0)] {
-                ui.label(label);
-                let r = ui.add(egui::DragValue::new(v).range(lo..=20000.0).speed(0.5));
-                dialogs::set_name(&r, label);
-                geom_done |= r.drag_stopped() || r.lost_focus();
-            }
-            ui.end_row();
-            for (label, name, v) in [("W", "Width", &mut w), ("H", "Height", &mut h)] {
-                ui.label(label);
-                let r = ui.add(egui::DragValue::new(v).range(1.0..=20000.0).speed(0.5));
-                dialogs::set_name(&r, name);
-                geom_done |= r.drag_stopped() || r.lost_focus();
-            }
-            ui.end_row();
-        });
-        insp.geom = [x, y, x + w, y + h];
-        if geom_done
-            && insp
-                .geom
-                .iter()
-                .zip(&obj.bbox)
-                .any(|(a, b)| (a - b).abs() > 0.05)
-        {
-            self.actions.push(Action::SetBox(page, id, insp.geom));
+        if let Some(heading) = heading {
+            ui.strong(heading);
         }
 
         // Changes are kept as they are made: each finished one is a step to undo.
@@ -4212,7 +4238,8 @@ impl Editor {
                             .unwrap_or((0, 0)),
                         None => (0, insp.text.text().chars().count()),
                     };
-                    styles_ui(ui, &mut insp.text, sel, 1.0..=400.0);
+                    let in_pdf = pdf_fonts(&obj, sel);
+                    styles_ui(ui, &mut insp.text, sel, 1.0..=400.0, &in_pdf);
                 }
                 if self.line_edit.is_none() {
                     // The line being edited on the page watches its own changes.
@@ -4259,6 +4286,50 @@ impl Editor {
             }
             ObjectKind::Form => {}
         }
+
+        // Position and size, in a section that starts closed and stays as it was left from
+        // one object to the next; a field a row, as the section's indent leaves no room for
+        // two.
+        ui.add_space(4.0);
+        let (mut x, mut y, mut w, mut h) = (
+            insp.geom[0],
+            insp.geom[1],
+            insp.geom[2] - insp.geom[0],
+            insp.geom[3] - insp.geom[1],
+        );
+        let geom_done = egui::CollapsingHeader::new("Position and size")
+            .id_salt("position-and-size")
+            .show(ui, |ui| {
+                let mut done = false;
+                egui::Grid::new("geom").num_columns(2).show(ui, |ui| {
+                    for (label, v, lo) in [
+                        ("X", &mut x, -5000.0),
+                        ("Y", &mut y, -5000.0),
+                        ("Width", &mut w, 1.0),
+                        ("Height", &mut h, 1.0),
+                    ] {
+                        ui.label(label);
+                        let r = ui.add(egui::DragValue::new(v).range(lo..=20000.0).speed(0.5));
+                        dialogs::set_name(&r, label);
+                        done |= r.drag_stopped() || r.lost_focus();
+                        ui.end_row();
+                    }
+                });
+                done
+            })
+            .body_returned
+            .unwrap_or(false);
+        insp.geom = [x, y, x + w, y + h];
+        if geom_done
+            && insp
+                .geom
+                .iter()
+                .zip(&obj.bbox)
+                .any(|(a, b)| (a - b).abs() > 0.05)
+        {
+            self.actions.push(Action::SetBox(page, id, insp.geom));
+        }
+
         ui.add_space(6.0);
         if theme::glyph_button(ui, icon::TRASH, "Delete").clicked() {
             // What was changed goes with it.
@@ -4831,6 +4902,42 @@ mod tests {
         );
         ed.objs.get_mut(&0).unwrap()[2].upright = false;
         assert_eq!(ed.cover_wanted(), None);
+    }
+
+    /// ENH-04: the font list names the PDF's fonts of the characters a style change would
+    /// change: those selected, or the one before a caret.
+    #[test]
+    fn the_font_list_names_the_pdf_fonts_of_the_selected_characters() {
+        use limarepdf_core::TextSpan;
+        let (_, ed) = page_with_objects();
+        let mut o = ed.objs[&0][2].clone();
+        let first = o.spans[0].clone();
+        o.spans = vec![
+            TextSpan {
+                chars: (0, 7),
+                font_name: "ABCDEF+C059-Roman".into(),
+                ..first.clone()
+            },
+            TextSpan {
+                chars: (7, 10),
+                font_name: "Helvetica".into(),
+                ..first.clone()
+            },
+            TextSpan {
+                chars: (10, 15),
+                font_name: "ABCDEF+C059-Roman".into(),
+                ..first
+            },
+        ];
+        let c059 = "ABCDEF+C059-Roman";
+        let both = [c059, "Helvetica"];
+        assert_eq!(pdf_fonts(&o, (0, 15)), both);
+        assert_eq!(pdf_fonts(&o, (8, 2)), both, "selected backwards");
+        assert_eq!(pdf_fonts(&o, (7, 10)), ["Helvetica"]);
+        // At a caret, the character before it; at the start, the first.
+        assert_eq!(pdf_fonts(&o, (7, 7)), [c059]);
+        assert_eq!(pdf_fonts(&o, (8, 8)), ["Helvetica"]);
+        assert_eq!(pdf_fonts(&o, (0, 0)), [c059]);
     }
 
     #[test]

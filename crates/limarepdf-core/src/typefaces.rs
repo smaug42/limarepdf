@@ -23,7 +23,8 @@ use std::sync::{Arc, Once, RwLock};
 /// A family of installed fonts LimarePDF can embed.
 #[derive(Debug)]
 pub struct Typeface {
-    /// Its name, as font lists show it: "Source Serif 4".
+    /// Its own name, as the font gives it: "Source Serif 4", "C059". Font lists show its
+    /// [`Typeface::label`].
     pub name: String,
     /// Regular, bold, italic and bold italic, at `bold + 2 * italic`, where the family has
     /// them.
@@ -45,7 +46,65 @@ pub struct FaceFile {
     pub ps: String,
 }
 
+/// The typefaces fonts installed under code names stand in for, by the fonts' own names: the
+/// URW base-35 fonts Linux installs for Ghostscript, and their older (gsfonts) names. They
+/// are metric-compatible equivalents, not the typefaces themselves, so their own name is
+/// shown beside the familiar one.
+const FAMILIAR: [(&str, &str); 17] = [
+    ("C059", "New Century Schoolbook"),
+    ("P052", "Palatino"),
+    ("Z003", "Zapf Chancery"),
+    ("URW Bookman", "Bookman"),
+    ("URW Gothic", "Avant Garde Gothic"),
+    ("Nimbus Sans", "Helvetica"),
+    ("Nimbus Sans Narrow", "Helvetica Narrow"),
+    ("Nimbus Roman", "Times"),
+    ("Nimbus Mono PS", "Courier"),
+    ("Century Schoolbook L", "New Century Schoolbook"),
+    ("URW Palladio L", "Palatino"),
+    ("URW Chancery L", "Zapf Chancery"),
+    ("URW Bookman L", "Bookman"),
+    ("URW Gothic L", "Avant Garde Gothic"),
+    ("Nimbus Sans L", "Helvetica"),
+    ("Nimbus Roman No9 L", "Times"),
+    ("Nimbus Mono L", "Courier"),
+];
+
+/// The typeface a font named `name` with a code name stands in for.
+fn familiar(name: &str) -> Option<&'static str> {
+    FAMILIAR
+        .iter()
+        .find(|(own, _)| *own == name)
+        .map(|(_, familiar)| *familiar)
+}
+
+/// A family's name as font lists show it: the familiar typeface first for a font with a
+/// code name, its own after ("New Century Schoolbook (C059)"); else its own.
+fn label(name: &str) -> String {
+    match familiar(name) {
+        Some(familiar) => format!("{familiar} ({name})"),
+        None => name.to_string(),
+    }
+}
+
+/// Sorts families as font lists show them: by label, any case.
+fn by_label<T>(list: &mut [T], typeface: impl Fn(&T) -> &Typeface) {
+    list.sort_by_cached_key(|t| typeface(t).label().to_lowercase());
+}
+
 impl Typeface {
+    /// Its name as font lists show it: "Source Serif 4", "New Century Schoolbook (C059)".
+    /// A search matches either name in it.
+    pub fn label(&self) -> String {
+        label(&self.name)
+    }
+
+    /// The typeface it stands in for, for a font with a code name: "New Century
+    /// Schoolbook" for C059.
+    pub fn familiar(&self) -> Option<&'static str> {
+        familiar(&self.name)
+    }
+
     /// Whether the family has the face; a bold or italic it lacks can't be chosen.
     pub fn has(&self, bold: bool, italic: bool) -> bool {
         self.face(bold, italic).is_some()
@@ -76,7 +135,7 @@ static LIST: RwLock<Vec<Arc<Typeface>>> = RwLock::new(Vec::new());
 /// Whether the installed fonts have been read into [`LIST`].
 static SYSTEM: Once = Once::new();
 
-/// The installed families LimarePDF can embed, by name, each with its number for
+/// The installed families LimarePDF can embed, by label, each with its number for
 /// [`Family::Installed`]. The first call reads every installed font, which takes a moment;
 /// see [`typefaces_ready`].
 pub fn typefaces() -> Vec<(u16, Arc<Typeface>)> {
@@ -89,7 +148,7 @@ pub fn typefaces() -> Vec<(u16, Arc<Typeface>)> {
         .enumerate()
         .map(|(i, t)| (i as u16, Arc::clone(t)))
         .collect();
-    out.sort_by_cached_key(|(_, t)| t.name.to_lowercase());
+    by_label(&mut out, |(_, t)| t);
     out
 }
 
@@ -185,14 +244,15 @@ impl FontChoice {
         !matches!(self.family, Family::Installed(_))
     }
 
-    /// The family's name, as the font list shows it: "Helvetica", "Source Serif 4".
+    /// The family's name, as the font list shows it: "Helvetica", "Source Serif 4",
+    /// "Palatino (P052)".
     pub fn family_name(self) -> String {
         match self.family {
             Family::Helvetica => "Helvetica".into(),
             Family::Times => "Times".into(),
             Family::Courier => "Courier".into(),
             Family::Installed(n) => {
-                typeface(n).map_or_else(|| "Unknown font".into(), |t| t.name.clone())
+                typeface(n).map_or_else(|| "Unknown font".into(), |t| t.label())
             }
         }
     }
@@ -328,7 +388,7 @@ fn scan(db: &Database) -> Vec<Typeface> {
             })
         })
         .collect();
-    out.sort_by_cached_key(|t| t.name.to_lowercase());
+    by_label(&mut out, |t| t);
     out
 }
 
@@ -546,6 +606,44 @@ mod tests {
             [(*b"wght", 700.0)]
         );
         assert_eq!(caveat.nearest(true, true), (true, false));
+    }
+
+    #[test]
+    fn code_named_fonts_show_their_familiar_family_first() {
+        let family = |name: &str| Typeface {
+            name: name.into(),
+            faces: Default::default(),
+            standard: Family::Times,
+        };
+        assert_eq!(family("C059").label(), "New Century Schoolbook (C059)");
+        assert_eq!(family("Nimbus Mono PS").label(), "Courier (Nimbus Mono PS)");
+        assert_eq!(
+            family("URW Palladio L").label(),
+            "Palatino (URW Palladio L)"
+        );
+        assert_eq!(family("Source Serif 4").label(), "Source Serif 4");
+        assert_eq!(family("Z003").familiar(), Some("Zapf Chancery"));
+        assert_eq!(family("Source Serif 4").familiar(), None);
+        // Not a code name: only whole names are matched.
+        assert_eq!(family("C0590").label(), "C0590");
+
+        // Listed by the familiar name; the own name stays the font's.
+        let mut list: Vec<Typeface> = ["Z003", "Cantarell", "P052", "URW Gothic", "Nimbus Sans"]
+            .map(family)
+            .into();
+        by_label(&mut list, |t| t);
+        let labels: Vec<String> = list.iter().map(Typeface::label).collect();
+        assert_eq!(
+            labels,
+            [
+                "Avant Garde Gothic (URW Gothic)",
+                "Cantarell",
+                "Helvetica (Nimbus Sans)",
+                "Palatino (P052)",
+                "Zapf Chancery (Z003)",
+            ]
+        );
+        assert_eq!(list[3].name, "P052");
     }
 
     #[test]

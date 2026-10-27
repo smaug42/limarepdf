@@ -287,10 +287,22 @@ its number, stays valid; `FontChoice` stays `Copy`. `embed::Face::of` reads an i
 the first time and keeps it, and the same embedding applies: always embedded (no WinAnsi path), static CFF fonts
 as CIDFontType0 with `/FontFile3 /OpenType`, variable fonts set at their weight by `subsetter`'s `variable-fonts`
 feature (TrueType out, CFF2 included). `FontChoice::of_font` finds the family a PDF font is from by its
-PostScript name, for edited lines; the standard fonts' own names never match an installed font. In the app,
-`font_list.rs` is the inspector's searchable list (names drawn in their own fonts through `typing_fonts::preview`,
-files over 4 MB left in the interface font), and `typing_fonts.rs` draws typed text from the family's file with
-egui's variation coordinates (`typing_fonts::coords`).
+PostScript name, for edited lines; the standard fonts' own names never match an installed font. A family's
+`name` is the font's own; `Typeface::label` is what lists and messages show, the familiar typeface first for a
+font with a code name (`FAMILIAR`: the URW base-35 fonts and their gsfonts names, "Palatino (P052)"), and the list
+is sorted by it (`by_label`); `FontChoice::family_name` gives the label. In the app, `font_list.rs` is the
+inspector's searchable list (names drawn in their own fonts through `typing_fonts::preview`, files over 4 MB left
+in the interface font; a search matches the label, which holds both names; `about` is a family's tooltip), drawn
+across the panel, with Bold and Italic apart (`font_list::styles`) so the caller puts them in one row with size and
+colour; and `typing_fonts.rs` draws typed text from the family's file with egui's variation coordinates
+(`typing_fonts::coords`). The list's tooltip names the PDF fonts of the selected characters
+(`editor::pdf_fonts`).
+
+The inspector's heading is `inspector::title`: for the editor's section, `Editor::heading` (a selected comment,
+else the tool's options, else the selected object; the object's own heading is drawn again in the panel only below a
+tool's options). An object's X, Y, width and height are in a `CollapsingHeader` with a fixed id
+(`position-and-size`), so it starts closed and keeps its state from one object to the next; one field a row, as
+the section's indent leaves no room for two in the default width (two widened the panel).
 
 Redaction (`crates/limarepdf-core/src/redact.rs`) has its own pass over the page content rather than editing the
 parser's objects: it rewrites each text-showing operator character by character, keeping the rest in place with

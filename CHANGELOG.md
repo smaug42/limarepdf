@@ -32,6 +32,15 @@
   also starts sooner, as LimarePDF no longer reads the whole file again at every check before writing.
 - Changes to long documents are quicker: after each change LimarePDF went through the whole page list once for
   every page while looking for redaction marks (about 60 ms on 300 pages, more on longer ones); now once.
+- Fonts installed under code names, such as the URW fonts on Linux, are listed in the font list by the typeface
+  they stand in for, their own name after: "Palatino (P052)", "New Century Schoolbook (C059)", "Helvetica
+  (Nimbus Sans)". The list is sorted by those names, and searching finds either. Pointing at one says it is made to
+  that typeface's letter widths but isn't the typeface itself, and that it is embedded in the file.
+- The inspector puts text first: it is headed by what is selected or the tool's options (Text, Image, New
+  rectangle, Comment) instead of "Edit"; for text, the words come first, then a font list across the panel, then
+  Bold, Italic, size and colour in one row. Position and size are in a Position and size section that starts
+  closed and stays open or closed as you left it, for every kind of object. Pointing at the font list shows the
+  names of the selected text's fonts in the PDF.
 - The user guide's Features page is now a short summary of what LimarePDF can do. The detailed status of each
   feature, with its limits and what doesn't work yet, moved to the developer docs as
   [Features and status](docs/developer/feature-status.md).

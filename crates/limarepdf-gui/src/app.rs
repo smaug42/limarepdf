@@ -7501,6 +7501,137 @@ mod tests {
         assert!(grey.iter().all(|v| (v - 0.5).abs() < 0.01), "{grey:?}");
     }
 
+    /// ENH-07 (V03): a selected line's inspector is headed Text and puts the words and their
+    /// look first, the font list across the panel; its position and size wait in a section
+    /// that starts closed, stays as it was left from one selection to the next, and still
+    /// moves the line.
+    #[test]
+    fn the_text_inspector_puts_typography_first() {
+        use egui::accesskit::TreeUpdate;
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_in_colours(&ctx, [0.0; 3], [0.0; 3]);
+        let select_line = |app: &mut App| {
+            app.act(&ctx, Act::Tool(Tool::Select));
+            let t = &mut app.tabs[0];
+            let objs = t.ed.objects(&t.pdf, 0).to_vec();
+            let line = objs
+                .iter()
+                .position(|o| o.text.is_some())
+                .expect("the line");
+            t.ed.select_object(0, line);
+            app.open_inspector();
+            line
+        };
+        let line = select_line(&mut app);
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert_eq!(inspector::title(&app.tabs[0]), "Text");
+        let shown =
+            |tree: &TreeUpdate, text: &str| tree.nodes.iter().any(|(_, n)| n.value() == Some(text));
+        assert!(!shown(&tree, "Edit"), "the heading is still Edit");
+        let geometry = ["X", "Y", "Width", "Height"];
+        for name in geometry {
+            assert!(node(&tree, name).is_none(), "{name} is shown");
+        }
+        // The font list is as wide as the text box.
+        let (text, _) = node(&tree, "Text").expect("the text box");
+        let (font, _) = node(&tree, "Font").expect("the font list");
+        assert!(
+            font.width() >= text.width() - 1.0,
+            "{font:?} beside {text:?}"
+        );
+        // Tab goes through the words, their look, then position and size, then Delete.
+        let reached = tab_walk(&mut app, &ctx, 1400.0, 60);
+        let order = [
+            "Text",
+            "Font",
+            "Bold",
+            "Italic",
+            "Font size",
+            "Font sizes",
+            "Text colour",
+            "Position and size",
+            "Delete",
+        ];
+        let at = reached.iter().position(|n| n == "Font").expect("no Font") - 1;
+        assert_eq!(reached[at..at + order.len()], order, "{reached:?}");
+
+        // Opened, it has the fields, and X moves the line.
+        click_named(&mut app, &ctx, "Position and size");
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        for name in geometry {
+            assert!(node(&tree, name).is_some(), "{name} isn't shown");
+        }
+        let set_x = |app: &mut App, value: &str| {
+            click_named(app, &ctx, "X");
+            let (ctrl, none) = (egui::Modifiers::COMMAND, egui::Modifiers::NONE);
+            window(app, &ctx, 1400.0, vec![key_with(Key::A, ctrl)]);
+            window(app, &ctx, 1400.0, vec![egui::Event::Text(value.into())]);
+            window(app, &ctx, 1400.0, vec![key_with(Key::Enter, none)]);
+            settle(app, &ctx);
+            let t = &mut app.tabs[0];
+            t.ed.objects(&t.pdf, 0)[line].bbox[0]
+        };
+        let x = set_x(&mut app, "150");
+        assert!((x - 150.0).abs() < 0.5, "the line is at {x}");
+        // Long numbers fit: the panel doesn't grow, and each field is inside it.
+        set_x(&mut app, "12345.678");
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        let (opened, _) = node(&tree, "Font").expect("the font list");
+        assert_eq!(
+            opened.x_range(),
+            font.x_range(),
+            "the panel's width changed"
+        );
+        for name in geometry {
+            let (r, _) = node(&tree, name).expect("the field");
+            assert!(r.right() <= font.right(), "{name} at {r:?} beyond {font:?}");
+        }
+
+        // Another tool and back: still open, as it was left.
+        app.act(&ctx, Act::Tool(Tool::Rect));
+        settle(&mut app, &ctx);
+        assert_eq!(inspector::title(&app.tabs[0]), "New rectangle");
+        select_line(&mut app);
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert!(node(&tree, "X").is_some(), "the section closed again");
+    }
+
+    /// ENH-07: the inspector's heading names what it shows, for each tool and kind of
+    /// object, never a bare Edit.
+    #[test]
+    fn the_inspector_is_headed_by_what_it_shows() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut app = app_in_colours(&ctx, [0.0; 3], [0.0; 3]);
+        for (tool, heading) in [
+            (Tool::Text, "New text"),
+            (Tool::TextBox, "New text box"),
+            (Tool::Rect, "New rectangle"),
+            (Tool::Ellipse, "New ellipse"),
+            (Tool::Line, "New line"),
+            (Tool::Image, "Insert image"),
+            (Tool::Pen, "Pen"),
+            (Tool::Note, "New note"),
+            (Tool::Redact, "Mark for redaction"),
+        ] {
+            // Set directly: the Image tool's command asks for a file.
+            app.tabs[0].ed.set_tool(tool);
+            assert_eq!(inspector::title(&app.tabs[0]), heading, "{tool:?}");
+        }
+        app.tabs[0].ed.set_tool(Tool::Select);
+        assert_eq!(inspector::title(&app.tabs[0]), "Document");
+        let t = &mut app.tabs[0];
+        let objs = t.ed.objects(&t.pdf, 0).to_vec();
+        let line = objs
+            .iter()
+            .position(|o| o.text.is_some())
+            .expect("the line");
+        t.ed.select_object(0, line);
+        assert_eq!(inspector::title(&app.tabs[0]), "Text");
+    }
+
     /// A26: with characters selected in a line edited on the page, the first colour picked
     /// makes those characters that colour and leaves the rest as it was.
     #[test]
