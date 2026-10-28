@@ -941,11 +941,11 @@ fn keeping(ctx: &egui::Context, insp: Option<Rect>, band: &[Rect]) -> bool {
     })
 }
 
-/// Where the inspector is, from where and in which pass it was drawn last
-/// ([`Editor::inspector`]): there if drawn this frame or the last (the pop-out is drawn
-/// after the pages), else nowhere, so a click where a hidden one was ends typing as any
-/// click away does.
-fn inspector_at(ctx: &egui::Context, (rect, pass): (Rect, u64)) -> Rect {
+/// Where the inspector or the floating bar is, from where and in which pass it was drawn
+/// last ([`Editor::inspector`]): there if drawn this frame or the last (the pop-out and the
+/// bar are drawn after the pages), else nowhere, so a click where a hidden one was ends
+/// typing as any click away does.
+fn drawn_at(ctx: &egui::Context, (rect, pass): (Rect, u64)) -> Rect {
     if ctx.cumulative_pass_nr() <= pass + 1 {
         rect
     } else {
@@ -971,6 +971,8 @@ struct LineEdit {
     /// Takes the keyboard back once a change in the inspector is finished.
     refocus: bool,
     refused: page_text::Refused,
+    /// Where it was drawn last on the screen, as typed: the floating bar keeps clear of it.
+    area: Rect,
 }
 
 /// What a line editor selects when it opens.
@@ -1237,8 +1239,11 @@ pub struct Editor {
     /// The note about a character a box in the inspector refused.
     text_refused: page_text::Refused,
     /// Where the inspector was drawn last, and in which pass: a click there doesn't end a
-    /// line being edited ([`inspector_at`]).
+    /// line being edited ([`drawn_at`]).
     insp_rect: (Rect, u64),
+    /// Where the floating bar was drawn last, and in which pass: a click there doesn't end
+    /// a line being edited either.
+    pub bar_rect: (Rect, u64),
     /// Where the band's groups that change the text being typed (its look, Copy and Paste)
     /// were drawn this frame: a click there doesn't end the typing ([`band::show`]).
     ///
@@ -1370,6 +1375,7 @@ impl Default for Editor {
             adding: None,
             text_refused: page_text::Refused::default(),
             insp_rect: (Rect::NOTHING, 0),
+            bar_rect: (Rect::NOTHING, 0),
             keep_typing: Vec::new(),
             tfont: FontChoice::default(),
             tsize: 14.0,
@@ -1905,6 +1911,7 @@ impl Editor {
             fresh: true,
             refocus: false,
             refused: page_text::Refused::default(),
+            area: Rect::NOTHING,
         });
     }
 
@@ -2127,6 +2134,7 @@ impl Editor {
         let now = ctx.input(|i| i.time);
         insp.history.observe(&insp.text, sel, now, settled(&ctx));
         let edit = &out.response.response;
+        le.area = area.union(edit.rect);
         let name = format!("Editing text: {}", o.text.as_deref().unwrap_or(""));
         dialogs::set_name(edit, &name);
         le.refused.show(&ctx, &out, id);
@@ -2166,13 +2174,14 @@ impl Editor {
         if !edit.has_focus() && self.parked == Some(Parked::Typing(id)) {
             return edit.hovered();
         }
-        // The band's font list, size, colour and buttons (and the inspector's) change the
-        // line being edited, which takes the keyboard back once the change is finished, as
-        // new text does.
+        // The band's font list, size, colour and buttons (and the inspector's and the
+        // floating bar's) change the line being edited, which takes the keyboard back once
+        // the change is finished, as new text does.
+        let bar = drawn_at(&ctx, self.bar_rect);
         let in_inspector = keeping(
             &ctx,
-            Some(inspector_at(&ctx, self.insp_rect)),
-            &self.keep_typing,
+            Some(drawn_at(&ctx, self.insp_rect)),
+            &[&self.keep_typing[..], &[bar]].concat(),
         );
         let picking = egui::Popup::is_any_open(&ctx);
         if !edit.has_focus() && (le.refocus || in_inspector || picking) {
@@ -2305,7 +2314,7 @@ impl Editor {
         // Copy and Paste in the band leave it open, and it takes the keyboard back; so does a
         // change in the inspector to a note, or to a text box already on the page, which the
         // inspector shows (ENH-13).
-        let insp = (w.note || w.id.is_some()).then(|| inspector_at(ui.ctx(), self.insp_rect));
+        let insp = (w.note || w.id.is_some()).then(|| drawn_at(ui.ctx(), self.insp_rect));
         if keeping(ui.ctx(), insp, &self.keep_typing) {
             w.refocus = true;
         }
@@ -4202,6 +4211,26 @@ impl Editor {
         Some((page, bbox))
     }
 
+    /// A line of page text is being edited on the page.
+    pub fn editing_line(&self) -> bool {
+        self.line_edit.is_some()
+    }
+
+    /// Where the line being edited on `page` was drawn last on the screen, as typed.
+    pub fn line_area(&self, page: usize) -> Option<Rect> {
+        let le = self.line_edit.as_ref().filter(|le| le.page == page)?;
+        le.area.is_positive().then_some(le.area)
+    }
+
+    /// The boxes (page points) of the text on `page`, as far as it has been read: its lines
+    /// and its words. The floating bar keeps clear of them.
+    pub fn text_boxes(&self, page: usize) -> Vec<[f32; 4]> {
+        let objs = self.objs.get(&page).into_iter().flatten();
+        let lines = objs.filter(|o| o.kind == ObjectKind::Text).map(|o| o.bbox);
+        let words = self.words.get(&page).into_iter().flatten().map(|w| w.bbox);
+        lines.chain(words).collect()
+    }
+
     /// Whether words are being selected by dragging. The drag ends when the button is
     /// released, even if the page it started on has scrolled out of view.
     pub fn selecting_words(&mut self, ctx: &egui::Context) -> bool {
@@ -4550,8 +4579,15 @@ impl Editor {
 
     /// Bold (with `bold` false, Italic) on or off by Word's rule, as one undo step: for the
     /// words selected with the read tool, or the lines of page text selected with the arrow.
+    /// In the line being edited on the page, for what is selected there, or the word at the
+    /// caret, as Ctrl+B there does: the line stays open and takes the keyboard back.
     /// Returns what to say when none of the selected words or lines can change.
-    pub fn switch_style(&mut self, pdf: &limarepdf_core::Pdf, bold: bool) -> Option<String> {
+    pub fn switch_style(
+        &mut self,
+        ctx: &egui::Context,
+        pdf: &limarepdf_core::Pdf,
+        bold: bool,
+    ) -> Option<String> {
         if self.chosen_of().is_some() {
             self.sync_chosen(pdf);
             let c = self.chosen.as_mut()?;
@@ -4572,6 +4608,16 @@ impl Editor {
         }
         self.sync_insp();
         let insp = self.insp.as_mut()?;
+        let scope = self.scope;
+        if let Some(le) = (self.line_edit.as_mut()).filter(|le| (le.page, le.id) == (page, id)) {
+            let sel = page_text::held(ctx, line_edit_id(scope, page)).unwrap_or((0, 0));
+            match bold {
+                true => insp.text.bold(sel),
+                false => insp.text.italic(sel),
+            }
+            le.refocus = true;
+            return None;
+        }
         let all = (0, insp.text.text().chars().count());
         match bold {
             true => insp.text.bold(all),
@@ -6054,7 +6100,7 @@ mod tests {
         ed.chosen = None;
         ed.sync_chosen(&pdf);
         assert_eq!(
-            ed.switch_style(&pdf, true),
+            ed.switch_style(&egui::Context::default(), &pdf, true),
             None,
             "the visible lines can change"
         );

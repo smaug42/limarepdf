@@ -403,6 +403,8 @@ pub struct Ctx {
     /// Text is being typed on the page: new text, a line of page text, a note or a text
     /// box, open whether or not it has the keyboard just now.
     pub typing: bool,
+    /// A line of page text is being edited on the page.
+    pub line_edit: bool,
     /// An annotation is selected, and whether it may be changed.
     pub annot: bool,
     pub annot_locked: bool,
@@ -1814,9 +1816,16 @@ pub fn tooltip(ctx: &egui::Context, a: &Action) -> String {
 }
 
 /// The floating toolbar's buttons: the right-click menu's commands that are
-/// available now and have an icon, in groups.
+/// available now and have an icon, in groups. While a line is edited on the page, Bold,
+/// Italic and Copy for what is selected in it, as the keys do there (ENH-20).
 pub fn toolbar_items(sel: &Selection, c: &Ctx) -> Vec<Vec<&'static Action>> {
-    context_items(sel)
+    const LINE_EDIT: &[&[Act]] = &[&[Act::Bold, Act::Italic], &[Act::Copy]];
+    let items = if c.line_edit {
+        LINE_EDIT
+    } else {
+        context_items(sel)
+    };
+    items
         .iter()
         .map(|g| {
             let usable = |a: &&Action| (a.enabled)(c) && !a.icon.is_empty();
