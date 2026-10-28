@@ -11356,12 +11356,27 @@ mod tests {
         }
     }
 
+    /// The systems whose way of writing keys the tooltips are checked in: Linux and
+    /// Windows write "Ctrl+B", macOS "⌘B" (the macOS builds failed when tests looked for
+    /// "Ctrl+" alone).
+    const KEY_STYLES: [egui::os::OperatingSystem; 2] = [
+        egui::os::OperatingSystem::Nix,
+        egui::os::OperatingSystem::Mac,
+    ];
+
     /// Ctrl+B or Ctrl+I that can't apply, the family having no such face, says so at the
     /// caret instead of doing nothing; the greyed B and I say so on hover, after their names
-    /// and keys.
+    /// and keys, as the system writes them.
     #[test]
     fn bold_a_family_lacks_says_so() {
+        for os in KEY_STYLES {
+            bold_a_family_lacks_says_so_on(os);
+        }
+    }
+
+    fn bold_a_family_lacks_says_so_on(os: egui::os::OperatingSystem) {
         let ctx = egui::Context::default();
+        ctx.set_os(os);
         ctx.enable_accesskit();
         theme::install(&ctx);
         let serif = crate::font_list::test_family("Source Serif 4");
@@ -11382,14 +11397,17 @@ mod tests {
         let tree = ty.key(&mut app, Key::I, CTRL);
         assert!(noted(&tree, "Source Serif 4 has no italic."), "Ctrl+I");
         ty.pause(&mut app);
-        for (name, face) in [("Bold", "bold"), ("Italic", "italic")] {
+        for (act, name, face) in [
+            (Act::Bold, "Bold", "bold"),
+            (Act::Italic, "Italic", "italic"),
+        ] {
             let tree = ty.pause(&mut app);
             let p = middle(&tree, name);
             ty.frame(&mut app, vec![egui::Event::PointerMoved(p)]);
             let tree = ty.pause(&mut app);
-            let key = if name == "Bold" { "B" } else { "I" };
-            let tip = format!("{name} (Ctrl+{key})\nSource Serif 4 has no {face}.");
-            assert!(noted(&tree, &tip), "{name} on hover");
+            let key = ctx.format_shortcut(&actions::get(act).keys[0]);
+            let tip = format!("{name} ({key})\nSource Serif 4 has no {face}.");
+            assert!(noted(&tree, &tip), "{name} on hover, {os:?}");
         }
         assert!(
             app.tabs[0].ed.adding.is_some(),
@@ -11463,10 +11481,17 @@ mod tests {
     }
 
     /// Greyed commands in the commands row and the band say why on hover, after their
-    /// names and keys.
+    /// names and keys, as the system writes them.
     #[test]
     fn greyed_buttons_say_why_on_hover() {
+        for os in KEY_STYLES {
+            greyed_buttons_say_why_on_hover_on(os);
+        }
+    }
+
+    fn greyed_buttons_say_why_on_hover_on(os: egui::os::OperatingSystem) {
         let ctx = egui::Context::default();
+        ctx.set_os(os);
         ctx.enable_accesskit();
         theme::install(&ctx);
         let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
@@ -11478,16 +11503,18 @@ mod tests {
                 .any(|(_, n)| n.value().is_some_and(|v| v.contains(s)))
         };
         let greyed = [
-            ("Undo", "Nothing to undo."),
-            ("Cut", "Select some text first."),
+            (Act::Undo, "Undo", "Nothing to undo."),
+            (Act::Cut, "Cut", "Select some text first."),
         ];
-        for (name, why) in greyed {
+        for (act, name, why) in greyed {
             let tree = ty.pause(&mut app);
             let (r, _) = node(&tree, name).expect(name);
             ty.frame(&mut app, vec![egui::Event::PointerMoved(r.center())]);
             let tree = ty.pause(&mut app);
-            assert!(says(&tree, &format!("{name} (Ctrl+")), "{name}'s tooltip");
-            assert!(says(&tree, why), "{name}: no reason");
+            let key = ctx.format_shortcut(&actions::get(act).keys[0]);
+            let tip = format!("{name} ({key})");
+            assert!(says(&tree, &tip), "{name}'s tooltip, {os:?}");
+            assert!(says(&tree, why), "{name}: no reason, {os:?}");
         }
     }
 
