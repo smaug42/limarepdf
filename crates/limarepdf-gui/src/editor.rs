@@ -1132,6 +1132,41 @@ fn part_font<'a>(o: &'a PageObject, text: &Styled, part: &TextPart) -> Wanted<'a
     }
 }
 
+/// Where the font line `o` is written in comes from, as `text` has it now: the PDF's own
+/// kept ("Preserved"), else what replaces it, the installed family it is from or the
+/// nearest standard font; "Partly preserved" when only some parts keep it. Parts in a
+/// font chosen in the band are written in that font, so they count only when nothing else
+/// is left. And whether the nearest standard font replaces it anywhere.
+fn source_font(o: &PageObject, text: &Styled) -> (&'static str, bool) {
+    let mut found: Vec<&str> = Vec::new();
+    for part in text.parts() {
+        let source = match part_font(o, text, &part) {
+            _ if !matches!(part.font, PartFont::Span(_)) => continue,
+            Wanted::Kept(_) => "Preserved",
+            Wanted::Standard(f) if !f.is_standard() => "Installed family",
+            Wanted::Standard(_) => "Nearest standard",
+        };
+        if !found.contains(&source) {
+            found.push(source);
+        }
+    }
+    let source = match found[..] {
+        [] => "Font chosen",
+        [one] => one,
+        _ if found.contains(&"Preserved") => "Partly preserved",
+        _ => "Mixed",
+    };
+    (source, found.contains(&"Nearest standard"))
+}
+
+/// A PDF font's name without a subset's tag: "ABCDEF+Calibri" is Calibri.
+fn untagged(name: &str) -> &str {
+    match name.split_once('+') {
+        Some((tag, rest)) if tag.len() == 6 && tag.bytes().all(|b| b.is_ascii_uppercase()) => rest,
+        _ => name,
+    }
+}
+
 /// The font a line set in the PDF font `name` is shown as in the inspector, and written in
 /// when it can't keep its own: the installed family it is from ([`FontChoice::of_font`]),
 /// once the installed fonts have been read (at start, on another thread), else the nearest
@@ -2099,11 +2134,30 @@ impl Editor {
             self.line_edit = None;
             return false;
         };
+        let to_screen = |x: f32, y: f32| Pos2::new(r.min.x + x * k, r.min.y + y * k);
+        let on_screen =
+            |b: [f32; 4]| Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3]));
+        // The other lines of the page shown, which typing may run into.
+        let others: Vec<Rect> = (self.objs.get(&page).into_iter().flatten().enumerate())
+            .filter(|(i, l)| *i != key.1 && l.kind == ObjectKind::Text && !l.hidden)
+            .map(|(_, l)| on_screen(l.bbox))
+            .collect();
+        let line = on_screen(o.bbox);
+        // Past the page's edge, or typed on past the line's end into another line: the part
+        // beyond its end, across the middle of its height, meets another line's box.
+        let warn = |text: Rect| {
+            page_text::past_edge(r, text).or_else(|| {
+                let (mid, half) = (line.center().y, line.height() * 0.25);
+                let x = (line.max.x + k).max(text.min.x)..=text.max.x;
+                let beyond = Rect::from_x_y_ranges(x, mid - half..=mid + half);
+                let over = beyond.is_positive() && others.iter().any(|l| l.intersects(beyond));
+                over.then_some("Over other text")
+            })
+        };
         let (Some(le), Some(insp)) = (self.line_edit.as_mut(), self.insp.as_mut()) else {
             return false;
         };
         let ctx = ui.ctx().clone();
-        let to_screen = |x: f32, y: f32| Pos2::new(r.min.x + x * k, r.min.y + y * k);
         let id = line_edit_id(self.scope, page);
         let drawn = drawn_in_place(&o);
         if ctx.memory(|m| m.has_focus(id)) && !le.typed.is_empty() {
@@ -2125,12 +2179,7 @@ impl Editor {
             };
             let t = page_text::take_typing(ui, true, !o.hidden, font);
             page_text::undo_redo(&ctx, id, &t, &mut insp.history, &mut insp.text);
-            if t.bold {
-                insp.text.bold(sel);
-            }
-            if t.italic {
-                insp.text.italic(sel);
-            }
+            page_text::switch_styles(&ctx, &t, &mut insp.text, sel, font, &mut le.refused);
             if let Some(c) = t.refused {
                 le.refused.mark(&ctx, page_text::note(font, &c));
             }
@@ -2151,6 +2200,7 @@ impl Editor {
                 runs: &runs,
                 mode,
                 accent: ui.visuals().selection.stroke.color,
+                warn: &warn,
             };
             let (x, y) = o.baseline.unwrap_or((b[0], b[3]));
             let c = cover_box(&o);
@@ -2321,6 +2371,11 @@ impl Editor {
         let Some(w) = self.writing.as_mut().filter(|w| w.page == page) else {
             return false;
         };
+        // A new text box shows the Text box tool's size, which it is kept with, as the
+        // inspector changes it.
+        if w.id.is_none() && !w.note {
+            w.size = self.box_style.size;
+        }
         let to_screen = |x: f32, y: f32| Pos2::new(r.min.x + x * k, r.min.y + y * k);
         let b = shown_box(w.note, w.rect, k);
         let area = Rect::from_min_max(to_screen(b[0], b[1]), to_screen(b[2], b[3]));
@@ -2409,9 +2464,10 @@ impl Editor {
         // it waits for.
         let parked = self.parked == Some(Parked::Typing(out.id));
         // Copy and Paste in the band leave it open, and it takes the keyboard back; so does a
-        // change in the inspector to a note, or to a text box already on the page, which the
-        // inspector shows (ENH-13).
-        let insp = (w.note || w.id.is_some()).then(|| drawn_at(ui.ctx(), self.insp_rect));
+        // change in the inspector, which shows the note or text box (ENH-13), or the Text
+        // box tool's look for a new one, as word processors keep a box open while its pane
+        // is used.
+        let insp = Some(drawn_at(ui.ctx(), self.insp_rect));
         if keeping(ui.ctx(), insp, &self.keep_typing) {
             w.refocus = true;
         }
@@ -5563,23 +5619,21 @@ impl Editor {
                         sel,
                     };
                     let [font, size] = look_facts(&text);
-                    // A line in an installed family is written in that family.
-                    let own = insp.orig.styles().first().map(|s| s.font);
-                    let source = if obj.font_reusable {
-                        "Preserved"
-                    } else if own.is_some_and(|f| !f.is_standard()) {
-                        "Installed family"
-                    } else {
-                        "Nearest standard"
-                    };
+                    let (source, standard) = source_font(&obj, &insp.text);
+                    // The selection's fonts as the PDF names them, without a subset's tag.
+                    let names = pdf_fonts(&obj, sel);
+                    let named: Vec<&str> = names.iter().map(|n| untagged(n)).collect();
                     let rows = [
                         ("Editing", "One line".to_string()),
                         font,
                         size,
+                        ("PDF font", named.join(", ")),
                         ("Source font", source.into()),
                     ];
                     facts(ui, "line-look", &rows);
-                    if source == "Nearest standard" {
+                    // A standard font standing in for one that is neither standard nor
+                    // installed.
+                    if standard && !obj.font_reusable {
                         note(ui, "Non-standard font: edits use the nearest standard one.")
                             .on_hover_text(obj.font_name.as_deref().unwrap_or("?"));
                     }

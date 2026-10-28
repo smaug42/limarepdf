@@ -27,7 +27,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 mod previews;
+mod proofs;
 use previews::{CropDrag, Picture};
+use proofs::Proofs;
 
 const GAP: f32 = 16.0;
 /// Room left beside a fitted page, beyond the gaps, so it never meets the scroll bar.
@@ -301,6 +303,9 @@ pub struct Tab {
     crop_drag: Option<CropDrag>,
     /// The picture the watermark preview shows.
     wm_picture: Option<Picture>,
+    /// The pages drawn with the watermark or headers and footers being set put on, once
+    /// their settings settle (ENH-23).
+    proofs: Proofs,
     /// The line of page text whose words the last edit changed, the revision and undo depth
     /// just after it, and when (`egui` time). Changing its words again before anything else
     /// changes, within [`MERGE_PAUSE`], joins that undo step.
@@ -479,6 +484,7 @@ impl Tab {
             crop_view: None,
             crop_drag: None,
             wm_picture: None,
+            proofs: Proofs::default(),
             last_line: None,
             side: Side::Pages,
             query: String::new(),
@@ -539,9 +545,10 @@ impl Tab {
             .unwrap_or_else(|| "Untitled".into())
     }
 
+    /// The name, marked when there is work to save: typing counts from the first key.
     pub fn title(&self) -> String {
         let name = self.name();
-        if self.dirty {
+        if self.unsaved() {
             format!("{name} *")
         } else {
             name
@@ -3183,6 +3190,7 @@ impl Tab {
         // Thumbnail rectangles, for finding where a drag drops.
         let mut rects: Vec<Rect> = Vec::with_capacity(self.sizes.len());
         let (mut dropped, mut target) = (false, None);
+        let proof = self.proof_shown(&ctx);
         egui::ScrollArea::vertical()
             .id_salt(("thumbs", self.id))
             .auto_shrink([false, false])
@@ -3260,6 +3268,10 @@ impl Tab {
                                 self.worker.request(key, THUMB_W * ppp / w.max(1.0));
                             }
                         }
+                    }
+                    // A stamp being set, drawn on the pages it is for.
+                    if proof {
+                        self.proof_thumb(ui.painter(), i, img);
                     }
                     ui.painter().text(
                         Pos2::new(rect.center().x, rect.max.y - 11.0),

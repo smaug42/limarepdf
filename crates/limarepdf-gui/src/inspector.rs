@@ -657,6 +657,9 @@ impl Tab {
 /// editor's section shows ("Selected text", "New rectangle"), else the task open, the
 /// selected pages or "Document".
 pub fn title(t: &Tab) -> String {
+    if t.ed.form.focused_field().is_some() {
+        return "Form field".into();
+    }
     if t.ed.owns_panel() {
         return t.ed.heading();
     }
@@ -1494,11 +1497,17 @@ fn stamp_change(ui: &Ui, kind: Stamp, p: Press, behind: bool) -> Option<Apply> {
             update: false,
         });
     }
-    let busy = ui.input(|i| i.pointer.any_down())
-        || ui.ctx().egui_wants_keyboard_input()
-        || egui::Popup::is_any_open(ui.ctx());
-    let settled = p.left || !busy;
+    let settled = p.left || !changing(ui.ctx());
     (behind && settled).then_some(Apply::Stamp { kind, update: true })
+}
+
+/// Whether a setting may still be changing: something is dragged (the pointer is held),
+/// typed (a text field has the keyboard) or picked (a picker is open). A stamp's settings
+/// settle once nothing is.
+pub fn changing(ctx: &egui::Context) -> bool {
+    ctx.input(|i| i.pointer.any_down())
+        || ctx.egui_wants_keyboard_input()
+        || egui::Popup::is_any_open(ctx)
 }
 
 fn watermark_ui(ui: &mut Ui, scope: egui::Id, s: &mut Wm, linked: bool) -> Press {

@@ -152,6 +152,7 @@ impl Styled {
     }
 
     /// Each character's style.
+    #[cfg(test)]
     pub fn styles(&self) -> &[CharStyle] {
         &self.styles
     }
@@ -295,6 +296,16 @@ impl Styled {
     fn switch(&mut self, sel: (usize, usize), bold: bool) {
         let all = self.looked_at(sel).iter().all(|s| is_on(s.font, bold));
         self.turn(sel, bold, !all);
+    }
+
+    /// Whether Bold (or with `bold` false, Italic) for `sel` changes anything: some
+    /// character it would switch has a family with that face.
+    pub fn switches(&self, sel: (usize, usize), bold: bool) -> bool {
+        let looked = self.looked_at(sel);
+        let on = !looked.iter().all(|s| is_on(s.font, bold));
+        looked.iter().any(|s| {
+            is_on(s.font, bold) != on && page_text::switched(s.font, bold, !bold) != s.font
+        })
     }
 
     /// Bold (or with `bold` false, Italic) turned `on` or off for what a style command

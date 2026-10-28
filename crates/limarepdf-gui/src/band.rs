@@ -888,6 +888,8 @@ fn items(ui: &mut egui::Ui, g: &Group, parts: &mut Parts, acts: &mut Vec<Act>) {
 fn is_on(act: Act, c: &Ctx) -> bool {
     match act {
         Act::Tool(t) => c.tool == Some(t) && t != Tool::Read,
+        // Edit text is the Text tool, with nothing selected.
+        Act::EditObjectText => c.tool == Some(Tool::Text),
         _ => actions::get(act).checked.is_some_and(|on| on(c)),
     }
 }
@@ -916,8 +918,10 @@ fn button(ui: &mut egui::Ui, b: &Button, c: &Ctx, acts: &mut Vec<Act>, compact: 
                 }
             });
             r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, b.label));
-            if compact {
-                r.on_hover_text(b.label);
+            let r = if compact { r.on_hover_text(b.label) } else { r };
+            if let Some(&first) = b.menu.first() {
+                let why = actions::why_not(c, actions::get(first));
+                r.on_disabled_hover_text(format!("{}\n{why}", b.label));
             }
         });
         return;
@@ -933,7 +937,11 @@ fn button(ui: &mut egui::Ui, b: &Button, c: &Ctx, acts: &mut Vec<Act>, compact: 
     let r = ui.add_enabled(enabled, button);
     r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, b.label));
     let tip = actions::tooltip(ui.ctx(), a);
-    if r.on_hover_text(&tip).on_disabled_hover_text(&tip).clicked() {
+    let greyed = actions::greyed_tip(ui.ctx(), a, c);
+    if r.on_hover_text(&tip)
+        .on_disabled_hover_text(&greyed)
+        .clicked()
+    {
         acts.push(act);
     }
     if !b.menu.is_empty() {

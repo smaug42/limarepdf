@@ -6,11 +6,14 @@
 
 use crate::dialogs;
 use crate::styled::{CharStyle, History, Styled};
+use crate::theme;
 use crate::typing_fonts::{self, Wanted};
 use eframe::egui::epaint::text::{ByteIndex, VariationCoords};
 use eframe::egui::{self, Color32, Galley, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use limarepdf_core::page_colours::PageColours;
-use limarepdf_core::{emoji_sequence, installed_could_write, writable, FontChoice, TextPart};
+use limarepdf_core::{
+    emoji_sequence, installed_could_write, unwritten_script, writable, FontChoice, TextPart,
+};
 use std::sync::Arc;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -30,6 +33,11 @@ pub const REFUSED: &str =
 /// ([`limarepdf_core::emoji_sequence`]).
 pub const SEQUENCE: &str = "LimarePDF can't add this emoji yet: flags, skin tones, keycaps and \
                             joined emoji aren't supported";
+/// Shown at the caret when a character of a script written right to left, or one whose
+/// letters join or change shape, is typed or pasted.
+pub const SCRIPT: &str = "LimarePDF can't add this script yet: right-to-left writing, and \
+                          scripts whose letters join, such as Arabic, Hebrew and Hindi, aren't \
+                          supported";
 /// How long that note shows, in seconds.
 const NOTE_SECS: f64 = 3.0;
 /// The name screen readers give the editor.
@@ -127,9 +135,11 @@ fn keep_typable(s: &str, single: bool, font: FontChoice) -> (String, Option<Stri
 /// The note at the caret of a text editor for `refused`, a character (grapheme cluster)
 /// refused in `font`: the font is named when an installed font that has it could write it
 /// (Chinese in Helvetica, or what an installed family lacks), as choosing another font may
-/// help.
+/// help; a script no font is written in yet ([`SCRIPT`]) has a note of its own.
 pub fn note(font: FontChoice, refused: &str) -> String {
-    if emoji_sequence(refused) || !refused.chars().all(installed_could_write) {
+    if !emoji_sequence(refused) && refused.chars().any(unwritten_script) {
+        SCRIPT.to_string()
+    } else if emoji_sequence(refused) || !refused.chars().all(installed_could_write) {
         fixed_note(refused).to_string()
     } else if font.is_standard() {
         format!(
@@ -167,6 +177,31 @@ pub fn switched(mut f: FontChoice, bold: bool, italic: bool) -> FontChoice {
         }
     }
     f
+}
+
+/// Bold or Italic switched for `sel` in `text`, as Ctrl+B or Ctrl+I asked (`t`); when the
+/// family (`font`, the typing's) has no such face, nothing changes, and `refused` says so
+/// at the caret.
+pub fn switch_styles(
+    ctx: &egui::Context,
+    t: &Taken,
+    text: &mut Styled,
+    sel: (usize, usize),
+    font: FontChoice,
+    refused: &mut Refused,
+) {
+    for (asked, bold, face) in [(t.bold, true, "bold"), (t.italic, false, "italic")] {
+        if !asked {
+            continue;
+        }
+        if !text.switches(sel, bold) {
+            refused.mark(ctx, format!("{} has no {face}.", font.family_name()));
+        } else if bold {
+            text.bold(sel);
+        } else {
+            text.italic(sel);
+        }
+    }
 }
 
 /// What this frame's typing asked of an editor, taken before the editor saw it.
@@ -456,6 +491,9 @@ pub struct Style<'a> {
     pub mode: PageColours,
     /// The outline's colour.
     pub accent: Color32,
+    /// Why the text, as it is laid out (on screen, without the room for the caret), runs
+    /// over: past the page's edge or over other text. `None` when it fits.
+    pub warn: &'a dyn Fn(Rect) -> Option<&'static str>,
 }
 
 /// One frame of an on-page editor.
@@ -604,6 +642,12 @@ fn job(f: &mut egui::epaint::FontsView, text: &str, runs: &[Run]) -> (egui::text
     (job, rows.first().map_or(0.0, |r| r.1))
 }
 
+/// Text laid out at `text` on screen runs past the edge of the page drawn at `page`: a
+/// point's leeway for rounding.
+pub fn past_edge(page: Rect, text: Rect) -> Option<&'static str> {
+    (!page.expand(1.0).contains_rect(text)).then_some("Past the page edge")
+}
+
 /// Draw `text` for typing (the editor `id`) with its first baseline's left end at
 /// `origin` on screen: one line, or several 1.2 times the size apart. `cover`, a
 /// rectangle on screen and its colour, is painted under it first: the line being edited,
@@ -634,6 +678,8 @@ pub fn field(
     // Room for the caret after the last letter, and a little width when empty.
     let size = Vec2::new(size.x.max(px * 0.5) + px * 0.25, size.y.max(line));
     let inner = Rect::from_min_size(origin - Vec2::new(0.0, ascent), size);
+    // What the text runs over, where it is laid out.
+    let warning = (style.warn)(Rect::from_min_size(inner.min, galley.size()));
     let outline = inner.expand(3.0);
     let grip = outline.expand(3.0);
     let top_left = cover.map_or(grip.min, |(c, _)| grip.min.min(c.min));
@@ -661,12 +707,29 @@ pub fn field(
                 dialogs::set_name(&r, "Move the text");
                 r
             });
-            ui.painter().rect_stroke(
-                outline,
-                2.0,
-                Stroke::new(1.0, style.accent),
-                StrokeKind::Inside,
-            );
+            // Two lines (ENH-22): the accent, or the caution colour when the text runs over,
+            // and inside it one that stands out against it, so the outline shows on paper
+            // of either colour.
+            let edge = match warning {
+                Some(_) => theme::tone(ui.visuals().dark_mode, theme::Tone::Caution),
+                None => None,
+            }
+            .unwrap_or(style.accent);
+            let halo = Stroke::new(1.0, theme::halo(edge));
+            let painter = ui.painter();
+            painter.rect_stroke(outline, 2.0, Stroke::new(1.0, edge), StrokeKind::Inside);
+            painter.rect_stroke(outline.shrink(1.0), 1.0, halo, StrokeKind::Inside);
+            // What it runs over, on a tag just below the outline's right end.
+            if let Some(why) = warning {
+                let text = egui::RichText::new(why).size(11.0).color(theme::halo(edge));
+                let g = painter.layout_no_wrap(why.into(), egui::FontId::proportional(11.0), edge);
+                let size = g.size() + Vec2::new(8.0, 4.0);
+                let at = Pos2::new(outline.max.x - size.x, outline.max.y + 2.0);
+                let tag = Rect::from_min_size(at, size);
+                ui.expand_to_include_rect(tag);
+                ui.painter().rect_filled(tag, 3.0, edge);
+                ui.put(tag, egui::Label::new(text).selectable(false));
+            }
             let mut layouter =
                 |_: &egui::Ui, text: &dyn egui::TextBuffer, _: f32| laid(text.as_str()).0;
             let te = if multiline {
@@ -758,12 +821,7 @@ impl PageText {
             let font = self.text.typing_font(sel);
             let t = take_typing(ui, false, true, font);
             undo_redo(&ctx, id, &t, &mut self.history, &mut self.text);
-            if t.bold {
-                self.text.bold(sel);
-            }
-            if t.italic {
-                self.text.italic(sel);
-            }
+            switch_styles(&ctx, &t, &mut self.text, sel, font, &mut self.refused);
             if let Some(c) = t.refused {
                 self.refused.mark(&ctx, note(font, &c));
             }
@@ -778,6 +836,7 @@ impl PageText {
             runs: &runs,
             mode,
             accent,
+            warn: &|text| past_edge(r, text),
         };
         let origin = Pos2::new(r.min.x + self.at.0 * k, r.min.y + self.at.1 * k);
         let mut typed = text.text().to_string();
@@ -863,6 +922,79 @@ impl PageText {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ENH-22: the outline of text being typed is two lines, the accent and inside it one
+    /// that contrasts with it, so it shows on paper of the accent's colour too. Text that
+    /// runs over (as its editor's check says) has the outline in the caution colour and a
+    /// tag saying so.
+    #[test]
+    fn the_outline_shows_on_any_paper_and_says_when_text_runs_over() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        // Drawn at once, not faded in.
+        ctx.all_styles_mut(|s| s.animation_time = 0.0);
+        let accent = Color32::from_rgb(13, 148, 136);
+        let caution = theme::tone(false, theme::Tone::Caution).unwrap();
+        let drawn = |warn: Option<&'static str>| {
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 400.0))),
+                ..Default::default()
+            };
+            let frame = || {
+                let mut out = ctx.run_ui(raw.clone(), |ui| {
+                    let runs = |t: &str| {
+                        vec![Run {
+                            chars: t.chars().count(),
+                            font: egui::FontId::proportional(12.0),
+                            coords: VariationCoords::default(),
+                            color: Color32::BLACK,
+                            rise: 0.0,
+                        }]
+                    };
+                    let style = Style {
+                        runs: &runs,
+                        mode: PageColours::Normal,
+                        accent,
+                        warn: &|_| warn,
+                    };
+                    let (mut text, id) = ("Walrus".to_string(), ui.scope_id().with("typing"));
+                    let at = Pos2::new(100.0, 100.0);
+                    field(ui.ctx(), id, &mut text, at, &style, false, None, false);
+                });
+                out.textures_delta.clear();
+                out
+            };
+            // An area is drawn from its second frame.
+            frame();
+            let out = frame();
+            let strokes: Vec<(Rect, Color32)> = (out.shapes.iter())
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Rect(r) if r.stroke.width > 0.0 => Some((r.rect, r.stroke.color)),
+                    _ => None,
+                })
+                .collect();
+            let tree = out.platform_output.accesskit_update.expect("the tree");
+            let says = (tree.nodes.iter()).any(|(_, n)| n.value() == Some("Past the page edge"));
+            (strokes, says)
+        };
+        let (strokes, says) = drawn(None);
+        let outer = strokes.iter().find(|s| s.1 == accent).expect("the accent");
+        let halo = theme::halo(accent);
+        assert!([Color32::WHITE, Color32::BLACK].contains(&halo));
+        let inner = strokes
+            .iter()
+            .find(|s| s.1 == halo)
+            .expect("the inner line");
+        assert!(
+            outer.0.contains_rect(inner.0) && outer.0 != inner.0,
+            "{strokes:?}"
+        );
+        assert!(!says, "a tag for text that fits");
+        let (strokes, says) = drawn(Some("Past the page edge"));
+        assert!(strokes.iter().any(|s| s.1 == caution), "{strokes:?}");
+        assert!(!strokes.iter().any(|s| s.1 == accent), "{strokes:?}");
+        assert!(says, "no tag");
+    }
 
     /// A line in parts is drawn as it will be written: its parts on one baseline whatever
     /// their sizes, raised ones above it, and each line's baseline [`line_gap`] below the
@@ -982,9 +1114,12 @@ mod tests {
             note(sans, "😀"),
             "Helvetica can't write this character; choose an installed font that has it"
         );
-        for c in ["ש", "क", "\u{7}"] {
-            assert_eq!(note(sans, c), REFUSED, "{c:?}");
+        // Right-to-left and shaped scripts have a note of their own: the general one says
+        // what works in a standard font, and Chinese and emoji work in installed ones.
+        for c in ["ש", "مرحبا", "क", "ไทย"] {
+            assert_eq!(note(sans, c), SCRIPT, "{c:?}");
         }
+        assert_eq!(note(sans, "\u{7}"), REFUSED);
         for s in ["👍🏽", "🇬🇧", "👨\u{200D}👩"] {
             assert_eq!(note(sans, s), SEQUENCE, "{s:?}");
         }

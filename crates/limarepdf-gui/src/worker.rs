@@ -304,6 +304,25 @@ impl Worker {
         }
     }
 
+    /// A worker for the document `make` writes, made on a thread of its own so the window
+    /// doesn't wait for it: it comes on the receiver, or why it couldn't be made. With the
+    /// receiver dropped, it is dropped too and stops.
+    pub fn spawn_from(
+        ctx: eframe::egui::Context,
+        colours: Colours,
+        make: impl FnOnce() -> limarepdf_core::Result<Vec<u8>> + Send + 'static,
+    ) -> Receiver<Result<Worker, String>> {
+        let (tx, rx) = channel();
+        std::thread::spawn(move || {
+            // A panic is an error like any other: nothing was made.
+            let made = crate::guard(make).map(|bytes| Worker::spawn(ctx.clone(), bytes, colours));
+            if tx.send(made.map_err(|e| format!("{e:#}"))).is_ok() {
+                ctx.request_repaint();
+            }
+        });
+        rx
+    }
+
     /// Find the colour around part of a page (see [`Sample`]); the answer comes on
     /// `samples`. Only the latest question is kept.
     pub fn sample(&mut self, ask: Sample) {

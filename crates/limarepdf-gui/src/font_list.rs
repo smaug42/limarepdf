@@ -7,6 +7,7 @@
 //! The installed fonts are read once, on another thread, when the app starts ([`warm`]);
 //! until then the list holds the three standard fonts.
 
+use crate::actions::{self, Act, Ctx};
 use crate::{dialogs, typing_fonts};
 use eframe::egui::{self, PopupCloseBehavior};
 use limarepdf_core::{Family, FontChoice, Typeface};
@@ -126,9 +127,26 @@ pub fn styles(ui: &mut egui::Ui, f: &mut FontChoice) {
             .frame_when_inactive(true)
             .min_size(egui::vec2(26.0, 26.0))
     };
+    // Named with their keys on hover; greyed, why: nothing to style (the whole group is
+    // greyed), or the family has no such face.
+    let (ctx, enabled) = (ui.ctx().clone(), ui.is_enabled());
+    let open = Ctx {
+        doc: true,
+        ..Ctx::default()
+    };
+    let tip = |act: Act, face: &str| {
+        let tip = actions::tooltip(&ctx, actions::get(act));
+        let why = match enabled {
+            true => format!("{} has no {face}.", f.family_name()),
+            false => actions::why_not(&open, actions::get(act)).into(),
+        };
+        (tip.clone(), format!("{tip}\n{why}"))
+    };
     let b = egui::RichText::new("B").family(crate::theme::semibold());
     let b = square(egui::Button::new(b), bold);
+    let (hover, greyed) = tip(Act::Bold, "bold");
     let r = ui.add_enabled(has(!f.bold, f.italic), b);
+    let r = r.on_hover_text(hover).on_disabled_hover_text(greyed);
     if r.clicked() {
         bold = !bold;
     }
@@ -138,7 +156,9 @@ pub fn styles(ui: &mut egui::Ui, f: &mut FontChoice) {
     // to stand as tall as the B.
     let i = crate::theme::icon(crate::icon::TEXT_ITALIC).size(size + 3.0);
     let i = square(egui::Button::new(i), f.italic);
+    let (hover, greyed) = tip(Act::Italic, "italic");
     let r = ui.add_enabled(has(bold, !f.italic), i);
+    let r = r.on_hover_text(hover).on_disabled_hover_text(greyed);
     if r.clicked() {
         f.italic = !f.italic;
     }

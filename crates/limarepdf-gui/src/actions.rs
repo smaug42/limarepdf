@@ -1892,6 +1892,80 @@ pub fn context_menu(ui: &mut egui::Ui, sel: &Selection, c: &Ctx, acts: &mut Vec<
     }
 }
 
+/// What a greyed command says when nothing else explains it.
+const NOT_NOW: &str = "Not available just now.";
+
+/// Why command `a` can't be used in `c`, for its greyed button or menu item: the first of
+/// the things it may wait for, in the order people meet them, that would let it be used.
+pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
+    if !c.doc {
+        return "Open a document first.";
+    }
+    // What a command may wait for, given, and what it says then.
+    type Fix = (fn(&mut Ctx), &'static str);
+    let fixes: [Fix; 16] = [
+        (
+            |d| d.busy = false,
+            "Waits until the task under way finishes.",
+        ),
+        (|d| d.saving = false, "Waits until the document is saved."),
+        (|d| d.file = true, "Save the document as a file first."),
+        (|d| d.can_undo = true, "Nothing to undo."),
+        (|d| d.can_redo = true, "Nothing to redo."),
+        (|d| d.words = true, "Select some text first."),
+        (
+            |d| d.typing = true,
+            "Click in text being typed, or where new text goes, first.",
+        ),
+        (
+            |d| {
+                (d.object, d.obj_kind) = (true, Some(ObjKind::Text));
+                (d.obj_text, d.obj_lines, d.obj_only_text) = (true, true, true);
+            },
+            "Select a line of text first.",
+        ),
+        (
+            |d| (d.object, d.obj_kind) = (true, Some(ObjKind::Image)),
+            "Select a picture first.",
+        ),
+        (|d| d.object = true, "Select something on the page first."),
+        (
+            |d| (d.object_moves, d.annot_moves) = (true, true),
+            "Select something the tool in use can move first.",
+        ),
+        (|d| d.form = true, "This document has no form fields."),
+        (|d| d.field = true, "Click in a form field first."),
+        (
+            |d| d.tool = Some(Tool::Select),
+            "Choose the Select tool first.",
+        ),
+        (|d| d.tool = Some(Tool::Read), "Choose the Read tool first."),
+        (|d| d.layout = Layout::Facing, "Shown only in facing pages."),
+    ];
+    let helps = |fix: fn(&mut Ctx)| {
+        let mut d = *c;
+        fix(&mut d);
+        (a.enabled)(&d)
+    };
+    if let Some((_, why)) = fixes.iter().find(|(fix, _)| helps(*fix)) {
+        return why;
+    }
+    // It waits for several: the one that, with those before it, lets it be used.
+    let mut d = *c;
+    for (fix, why) in fixes {
+        fix(&mut d);
+        if (a.enabled)(&d) {
+            return why;
+        }
+    }
+    NOT_NOW
+}
+
+/// Tooltip for a greyed command: its [`tooltip`], then why it can't be used in `c`.
+pub fn greyed_tip(ctx: &egui::Context, a: &Action, c: &Ctx) -> String {
+    format!("{}\n{}", tooltip(ctx, a), why_not(c, a))
+}
+
 /// Tooltip for a command: its label and first shortcut, then its hint on a line of its own.
 pub fn tooltip(ctx: &egui::Context, a: &Action) -> String {
     let name = match a.keys.first() {
@@ -1974,12 +2048,17 @@ pub fn context_buttons(
 /// A click queues the command in `acts`.
 pub fn menu_item(ui: &mut egui::Ui, a: &Action, c: &Ctx, acts: &mut Vec<Act>) {
     let enabled = (a.enabled)(c);
-    let r = match a.checked {
-        Some(on) => {
+    let r = match (a.checked, a.act) {
+        (Some(on), _) => {
             let mut v = on(c);
             ui.add_enabled(enabled, egui::Checkbox::new(&mut v, a.label))
         }
-        None => {
+        // A tool: one of a set, the one in use ticked.
+        (None, Act::Tool(t)) => {
+            let on = c.tool == Some(t);
+            ui.add_enabled(enabled, egui::RadioButton::new(on, a.label))
+        }
+        (None, _) => {
             let key = a.keys.first().map(|k| ui.ctx().format_shortcut(k));
             let b = egui::Button::new(a.label).shortcut_text(key.unwrap_or_default());
             ui.add_enabled(enabled, b)
@@ -1990,6 +2069,7 @@ pub fn menu_item(ui: &mut egui::Ui, a: &Action, c: &Ctx, acts: &mut Vec<Act>) {
     } else {
         r.on_hover_text(a.hint)
     };
+    let r = r.on_disabled_hover_text(why_not(c, a));
     if r.clicked() {
         acts.push(a.act);
         if a.checked.is_none() {
@@ -2001,6 +2081,78 @@ pub fn menu_item(ui: &mut egui::Ui, a: &Action, c: &Ctx, acts: &mut Vec<Act>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A greyed command says why on hover: the first thing it waits for, in the order
+    /// people meet them, and never only that it can't be used (for the usual states: no
+    /// document; one open with each tool and nothing selected; words, a line or a picture
+    /// selected; busy; saved).
+    #[test]
+    fn greyed_commands_say_why() {
+        let open = Ctx {
+            doc: true,
+            tool: Some(Tool::Read),
+            ..Ctx::default()
+        };
+        let why = |a: Act, c: &Ctx| {
+            assert!(!(get(a).enabled)(c), "{a:?} can be used");
+            why_not(c, get(a))
+        };
+        assert_eq!(why(Act::Bold, &Ctx::default()), "Open a document first.");
+        assert_eq!(why(Act::Bold, &open), "Select some text first.");
+        assert_eq!(why(Act::Undo, &open), "Nothing to undo.");
+        assert_eq!(why(Act::Redo, &open), "Nothing to redo.");
+        assert_eq!(why(Act::Copy, &open), "Select some text first.");
+        let paste = why(Act::Paste, &open);
+        assert_eq!(
+            paste,
+            "Click in text being typed, or where new text goes, first."
+        );
+        let busy = Ctx {
+            words: true,
+            busy: true,
+            ..open
+        };
+        assert_eq!(
+            why(Act::Bold, &busy),
+            "Waits until the task under way finishes."
+        );
+        let line = Ctx {
+            object: true,
+            obj_kind: Some(ObjKind::Text),
+            obj_text: true,
+            obj_lines: true,
+            obj_only_text: true,
+            ..open
+        };
+        assert_eq!(why(Act::ReplaceImage, &line), "Select a picture first.");
+        // Every greyed command in those states has a reason of its own.
+        let tools = [Tool::Read, Tool::Select, Tool::Text, Tool::Rect, Tool::Note];
+        let mut states: Vec<Ctx> = tools
+            .iter()
+            .map(|&t| Ctx {
+                tool: Some(t),
+                ..open
+            })
+            .collect();
+        states.extend([Ctx::default(), busy, line]);
+        states.push(Ctx {
+            words: true,
+            ..open
+        });
+        states.push(Ctx {
+            obj_kind: Some(ObjKind::Image),
+            obj_text: false,
+            obj_lines: false,
+            obj_only_text: false,
+            ..line
+        });
+        for c in &states {
+            for a in ACTIONS.iter().filter(|a| !(a.enabled)(c)) {
+                let why = why_not(c, a);
+                assert!(!why.is_empty() && why != NOT_NOW, "{:?}: {why:?}", a.act);
+            }
+        }
+    }
 
     #[test]
     fn every_act_is_listed_once() {
