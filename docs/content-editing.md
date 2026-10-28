@@ -17,19 +17,23 @@ with Ctrl; on a Mac, use ⌘ (Command) instead.
 
 While you type:
 
-- The line is drawn as it will be written, with a thin outline around it and the old line hidden underneath in the
-  colour around it. A line with words in other fonts, sizes or colours (a bold word, a superscript) is edited
-  whole, each word in its own style. Each keeps its own font when LimarePDF can keep it; otherwise it is written
-  in the installed font it came from (when LimarePDF can embed it), or in the Helvetica, Times or Courier that
-  replaces it, which switches as you type a character its font can't take.
+- The line is drawn as it will be written, with an outline around it (the accent colour with a white or black line
+  inside, so it shows on any page) and the old line hidden underneath in the colour around it. The status bar says
+  **Editing one line**: what you type changes this line only. A line with words in other fonts, sizes or colours
+  (a bold word, a superscript) is edited whole, each word in its own style. Each keeps its own font when LimarePDF
+  can keep it; otherwise it is written in the installed font it came from (when LimarePDF can embed it), or in the
+  Helvetica, Times or Courier that replaces it, which switches as you type a character its font can't take.
+- When what you type runs past the edge of the page, or on past the line's end into the text beside it, the
+  outline turns the caution colour and a tag under it says **Past the page edge** or **Over other text**. It is
+  only a warning: what you type is kept as it is.
 - What you type takes the style of the character before it (at the start of the line, the one after it).
 - Ctrl+Z and Ctrl+Y, or Undo and Redo in the commands row, undo and redo typing and style changes in the line, in
   order. Once the change is kept, Undo takes the whole edit back. Typing into the same line again within a few
   seconds, with nothing else changed in between, joins the same undo step.
 - **Edit > Font** in the band shows the font, size and colour of what is selected, or of the character before the
-  caret. The inspector shows the font and size too, and the line's **Source font** (see
-  [Change size, font and colour](#change-size-font-and-colour)). Esc in the size box (or another box there) drops
-  what you typed in it and goes back to the line.
+  caret. The inspector shows the font and size too, the font the PDF names (**PDF font**) and whether it is kept
+  (**Source font**, see [Change size, font and colour](#change-size-font-and-colour)). Esc in the size box (or
+  another box there) drops what you typed in it and goes back to the line.
 - The floating toolbar has **B**, ***I*** and Copy for what is selected in the line. It sits above, below or
   beside the line, clear of other text where there is room, never over the line; clicking it leaves the line open.
 - Going to another tab and back leaves the line open, ready to go on typing.
@@ -51,7 +55,8 @@ As in a word processor:
 - With nothing selected, the caret inside a word changes that word. Between words, or at either end of a word,
   the change applies to what you type next there.
 - Bold over words that are partly bold makes them all bold; over words that are all bold, it takes the bold off.
-  Italic works the same way. Words in a family without a bold or italic face stay as they are.
+  Italic works the same way. Words in a family without a bold or italic face stay as they are: **B** or ***I***
+  is greyed, and says why when you point at it, and Ctrl+B or Ctrl+I says so at the caret.
 - Where the selection mixes fonts, sizes or colours, **Edit > Font** shows that one blank: the font list with no
   name, the size box empty, the colour button (an **A** over a bar of the text's colour) with the colours side by
   side in its bar. A colour picked then makes the
@@ -93,7 +98,7 @@ Words you select with the read tool can be changed as in a word processor, witho
 - **Type** to replace them. Their line opens for editing with what you typed in their place, and you go on typing
   there; press Enter, Esc or Tab, or click elsewhere, to keep it. **Ctrl+V** pastes over them the same way. Over
   words on more than one line nothing is typed, and a note says "Type over words within one line. Paragraph editing
-  is planned."
+  is planned." With no words selected and nothing being typed, Ctrl+V says where to click to paste.
 - **Delete** or **Backspace** removes them, across lines and pages, in one step that Undo takes back. As in Word,
   a space beside them goes too when two would be left together, or one at the start or end of a line. A line left
   empty is gone; the lines around it stay where they are, as lines aren't joined together.
@@ -114,8 +119,9 @@ copies it.
 2. Click where the text starts, and type. The line sits on the point you clicked; Enter starts a new line.
 3. Press Esc, click elsewhere on the page, or choose another tool, to finish.
 
-The text appears as you type, in the font, size and colour it will have, with a thin outline around it. Every line
-is added as one undo step, and nothing typed adds nothing. Each line becomes its own line of page text, so
+The text appears as you type, in the font, size and colour it will have, with an outline around it that turns the
+caution colour, tagged **Past the page edge**, if the text runs off the page. Every line is added as one undo
+step, and nothing typed adds nothing. Each line becomes its own line of page text, so
 afterwards it moves and is edited line by line.
 
 While you type, Ctrl+B, Ctrl+I and **Edit > Font** style what is selected, or what you type next, as when
@@ -143,9 +149,10 @@ the file (cut down to the characters used). Chinese, Japanese and Korean can be 
 them, and so can single emoji (Symbola and DejaVu Sans have many). Others (Hebrew, Arabic, Devanagari, Thai and so
 on, and emoji made of several characters: flags, skin tones, keycaps, joined emoji such as families), characters
 the chosen font doesn't have, and emoji it draws only in colour, can't be typed or pasted, and a note at the caret
-says so. When another font could have the character (Chinese or an emoji in Helvetica, say, or a letter an
-installed font lacks), the note names the font in use and asks you to choose an installed font that has it. The
-same goes for editing a line and the inspector's text field (see
+says so: for a script written right to left or with joined letters, that LimarePDF can't add that script yet.
+When another font could have the character (Chinese or an emoji in Helvetica, say, or a letter an installed font
+lacks), the note names the font in use and asks you to choose an installed font that has it. The same goes for
+editing a line and the inspector's text field (see
 [What doesn't work yet](developer/feature-status.md#what-doesnt-work-yet)).
 
 To put the same text on every page, such as page numbers or DRAFT, use
@@ -205,10 +212,21 @@ For text, **Edit > Font** in the band has the font list, then size, Bold, Italic
 are changed on the page). Pointing at the font list shows the names of the fonts the selected text uses in the PDF.
 
 The inspector is headed by what is selected (Selected text, Image, Shape). For text it shows what is being edited
-(One line, Selected words or New text), its font and size (Mixed where they differ) and, for a line, its **Source
-font**: Preserved when the line keeps its own font, Installed family when changes are written in the installed
-family its font comes from, Nearest standard when they are written in the nearest of Helvetica, Times and Courier
-(see [How it works](#how-it-works)). For shapes it shows the fill, outline and width; for pictures,
+(One line, Selected words or New text), its font and size (Mixed where they differ) and, for a line being edited,
+two more rows. **PDF font** names the fonts of what is selected in the line (or of all of it) as the PDF does,
+without the six-letter tag a font cut down to the characters used has. **Source font** says how what you typed
+will be written, and changes as you type:
+
+- **Preserved**: in the line's own font.
+- **Installed family**: in the installed family its font comes from.
+- **Nearest standard**: in the nearest of Helvetica, Times and Courier; when the line's own font can't be kept, a
+  note under it says "Non-standard font: edits use the nearest standard one."
+- **Partly preserved**: some of the line in its own font, the rest not (the words you changed in a font LimarePDF
+  can't keep, say).
+- **Mixed**: some of it in an installed family, the rest in a standard font.
+- **Font chosen**: all of it in a font you picked in **Edit > Font**.
+
+(See [How it works](#how-it-works).) For shapes it shows the fill, outline and width; for pictures,
 **Replace image…**. Below these, **Position and size** opens to show the object's X, Y, width and height; it
 stays open or closed as you left it. For selected text, **Future text tools**, marked Planned, comes last: open it
 to see what is planned (paragraphs that reflow, underline and strike-through). Changes in the band and the
@@ -285,7 +303,10 @@ detail is in [How it is built](developer/architecture.md#content-editing).
 - There is no underline or strike-through for page text. Styling words doesn't rewrap: bold or larger words make
   their line longer and the rest of it moves along, and highlights, links and redaction marks over them stay where
   they were. The space after a word you make larger can grow with it.
-- Editing text does not change its width: longer text can overlap its neighbours.
+- Editing text does not change its width: longer text can overlap its neighbours. The outline warns of it (**Over
+  other text**) only for text beside the line's end, on its right; new text is checked against the page's edge
+  only. The warning's tag sits under the outline's right end, and can be hidden by the floating toolbar when the
+  toolbar sits below the line.
 - Where the text after a changed line starts is worked out from the font's character widths. Where a file doesn't
   give them for a font that isn't one of the standard 14, or a CID font's characters can't be told apart, they are
   estimated, so that text can move a little. In vertical writing the text after a changed line still moves with

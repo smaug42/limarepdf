@@ -72,10 +72,15 @@ without one but have a permissions password, which limits printing, copying or c
 ### "LimarePDF can't add this character yet"
 
 New and edited text can be in Latin (Vietnamese included), Greek and Cyrillic, and Chinese, Japanese, Korean and
-single emoji in an installed font that has them. Hebrew, Arabic and scripts whose letters join (Devanagari, Thai
-and others) can't be written yet, in any font. Text boxes, headers, footers, watermarks and fill-and-sign text are
+single emoji in an installed font that has them. Text boxes, headers, footers, watermarks and fill-and-sign text are
 written in Helvetica, so they take only Latin, Greek and Cyrillic: for Chinese, Japanese, Korean or single emoji,
 use the Add text tool in an installed font that has them. [What doesn't work yet](developer/feature-status.md#what-doesnt-work-yet) has the details.
+
+### "LimarePDF can't add this script yet"
+
+Hebrew, Arabic and other scripts written right to left, and scripts whose letters join or change shape
+(Devanagari, as Hindi is written, Thai and others), can't be written yet, in any font: they would come out in the
+wrong order or unjoined.
 
 ### "LimarePDF can't add this emoji yet"
 
@@ -116,7 +121,8 @@ in LimarePDF never show `?`: what Helvetica can't write isn't typed.
 ### An edited line looks different
 
 When LimarePDF can't keep a line's own font (common for fonts embedded in the file), it writes the line in the
-installed font it came from, or in Helvetica, Times or Courier. The inspector says so, under **Source font**. See
+installed font it came from, or in Helvetica, Times or Courier. While you edit it, the inspector says so, under
+**Source font**, with the PDF's own font name under **PDF font**. See
 [Editing text and pictures](content-editing.md#limits).
 
 ### Undo doesn't go back far enough

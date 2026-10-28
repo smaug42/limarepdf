@@ -11,8 +11,8 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
 ## The window
 
 - **Tabs**, at the top: one per document, with a × inside it to close it. **Unsaved** beside the name means
-  unsaved changes. Text you are typing on a page (new text, a line, a note or text box) stays open while you look
-  at another tab; back on its tab, you go on typing where you were.
+  unsaved changes, from the first key you type. Text you are typing on a page (new text, a line, a note or text
+  box) stays open while you look at another tab; back on its tab, you go on typing where you were.
 - **The commands row**, under the tabs: at the left the File menu (☰), Open and Save, then Undo and Redo, as icons
   named by their tooltips; then the names of the command band, **Edit**, **Insert**, **Review**, **Pages**,
   **Forms and sign**, **Protect** and **View**; at the right **Print**, and a small arrow that makes the commands
@@ -21,7 +21,8 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
   Help, so every command is in it.
 - **The command band**, under the names: the buttons of the name you chose, in groups (see
   [The command band](#the-command-band)).
-- **Bottom:** what is selected or the tool in use, and messages, at the left; at the right the page you are on,
+- **Bottom:** what is selected or the tool in use (**Editing one line** while you edit a line on the page), and
+  messages, at the left; at the right the page you are on,
   **Show planned features**, and the zoom, such as "Fit width · 96%", which opens a menu of zoom and page layout
   (see [Reading and finding](reading-and-finding.md#move-around-the-pages)).
 - **Left:** a strip of icons for the side panel's views: Pages (the thumbnails), Search results, Bookmarks (the
@@ -73,7 +74,9 @@ own, such as "Theme › Dark" and "Page colours › Dark", and typing the submen
 
 Click a name in the commands row to show its buttons. Edit is shown when LimarePDF starts. A small ▾ beside a
 button opens related commands; a button with ▾ in it opens a menu. A tool's button stays pressed while the tool is
-on. Every button names itself on hover, with its shortcut.
+on (Edit text while the Text tool is), and in the menus the tool in use is marked. Every button names itself on
+hover, with its shortcut. A greyed button or menu item says why it can't be used just now, such as "Nothing to
+undo.", "Select some text first." or "Click in a form field first."
 
 | Name | Groups and buttons |
 | --- | --- |
@@ -145,7 +148,8 @@ Files that no longer exist are left out. The list holds 10 files and is kept on 
 `~/.config/limarepdf/recent.txt` on Linux, `~/Library/Application Support/limarepdf/recent.txt` on macOS, and
 `%APPDATA%\limarepdf\recent.txt` on Windows.
 
-Each document gets a tab. The tab shows its name, with **Unsaved** beside it while it has unsaved changes.
+Each document gets a tab. The tab shows its name, with **Unsaved** beside it while it has unsaved changes,
+including text being typed, from the first key; the window's title is marked the same way.
 
 Closing a document or quitting asks first when there are unsaved changes, including text still being typed: a
 comment or text box on the page, a form field, the selected comment's changes in the inspector, or a reply not yet
@@ -351,7 +355,8 @@ click a section's name to open or fold it.
 | --- | --- |
 | Nothing | Headed **Document**. Facts: Pages; Paper (Letter, Legal, Tabloid, Executive, A3, A4, A5 or B5, either way round; the size in points for others; Mixed when the pages differ); Security (None, Open password or Permissions password, as the document will be saved; Removed on save for a protected document you opened, until you set a password again); Form fields, how many, for a form; Signatures, how many, for a document with signature fields. Folded: [Properties](#document-properties), [Opening view](#opening-view) and, for a form, [Form](forms.md#the-form-section) |
 | Pages (click thumbnails; Shift for a range, Ctrl for one more) | Headed **Selected page** or **Selected pages**, with which ones, such as "Pages 1–2, 5 of 9". Facts: Paper, and Orientation (Portrait, Landscape, Square or Mixed, as the pages are shown, after rotating). Buttons: rotate either way, delete, extract to a new tab, and insert images after them. Folded: **Insert blank page**, and **Page properties**, which holds **Crop** and **Page labels** ([Organising pages](organising-pages.md)) |
-| An object, a comment, or a tool that adds content | That object's or tool's options, headed by what it is (Selected text, Image, Text box, New rectangle). For a line of text, selected or being edited, or new text being typed: how it is edited (One line, New text), its font and size (Mixed where they differ) and, for a line, whether its own font is kept when it is edited (Source font); their look is changed in Edit > Font in the command band ([Style words in a line](content-editing.md#style-words-in-a-line)). An object's position and size are in its **Position and size** section, which stays open or closed as you left it |
+| An object, a comment, or a tool that adds content | That object's or tool's options, headed by what it is (Selected text, Image, Text box, New rectangle). For a line of text, selected or being edited, or new text being typed: how it is edited (One line, New text), its font and size (Mixed where they differ) and, for a line, its font as the PDF names it (PDF font) and how what you type will be written (Source font: Preserved, Installed family, Nearest standard, Partly preserved, Mixed or Font chosen; see [Change size, font and colour](content-editing.md#change-size-font-and-colour)); their look is changed in Edit > Font in the command band ([Style words in a line](content-editing.md#style-words-in-a-line)). An object's position and size are in its **Position and size** section, which stays open or closed as you left it |
+| A form field you are typing in | Headed **Form field**. Words selected on the page before are let go, so Edit > Font and Ctrl+B don't change them meanwhile |
 | Several objects | Headed by how many (3 objects), with a line saying what they are: the font and size of the lines of text among them (changed in Edit > Font), the look of the shapes, blank or mixed where they differ, their position (X and Y) and Delete ([Select several objects](content-editing.md#select-several-objects)) |
 | Words | Headed **Selected text**: Editing (Selected words), their font and size, Mixed where they differ; their look is changed in Edit > Font ([Style words you select while reading](content-editing.md#style-words-you-select-while-reading)). Invisible recognised text alone has none, and the inspector stays on the document or pages. Copy, Bold, Italic, highlight, redact, print and save the selection from the floating toolbar (or the docked buttons) and the right-click menu |
 

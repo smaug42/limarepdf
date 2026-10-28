@@ -38,9 +38,9 @@ rectangles, ellipses and lines) and **Stamp** (also in ☰ > Tools > Commenting)
 2. Type straight onto the page. Enter starts a new line.
 3. Click outside the box, or press Esc or Ctrl+Enter, to finish.
 
-Before you start, the inspector sets the note's colour, or the text box's text size and colour, its background
-(none at first) and its border. When you finish, the read tool comes back with the new note or text box selected,
-so you can move it straight away.
+Before you start, or while you type, the inspector sets the note's colour, or the text box's text size and colour,
+its background (none at first) and its border. When you finish, the read tool comes back with the new note or text
+box selected, so you can move it straight away.
 
 More about notes and text boxes:
 
@@ -48,7 +48,9 @@ More about notes and text boxes:
   once it is kept, Ctrl+Z takes the whole note or text box back. Finishing by choosing another tool keeps that
   tool.
 - While you type a note, the colour in the inspector changes the note's colour: clicks in the inspector and its
-  colour picker leave the note open, and Esc, or a click that closes the picker, closes only the picker. The same
+  colour picker leave the note open, and Esc, or a click that closes the picker, closes only the picker. While you
+  type a new text box, the inspector changes its text size and colour, background and border the same way, the box
+  showing the size you pick, and the keyboard comes back to it. The same
   goes for a note or text box already on the page that you double-click to type in: the inspector changes it
   while it stays open, and the keyboard comes back to it. Its text is typed on the page only, so the inspector's
   own Comment or Text box is hidden meanwhile; the inspector's Delete removes it, with what you typed. Only a click

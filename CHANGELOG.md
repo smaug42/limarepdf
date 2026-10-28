@@ -23,6 +23,15 @@
 - Edit text with words selected edits their line with those words selected, ready to type over them (over more
   than one line, the line where the selection ends). It is in the words' right-click menu and floating toolbar
   too.
+- Greyed buttons and menu items say why on hover, after their names: "Nothing to undo.", "Select some text
+  first.", "Click in a form field first.", "Open a document first." and so on. Bold and Italic in Edit > Font name
+  themselves with their shortcuts; greyed, they say the family in use has no bold or italic face, or why there is
+  nothing to style.
+- While a line is edited on the page, the status bar says "Editing one line", and the inspector shows the line's
+  font as the PDF names it (**PDF font**, without a subset's tag) above its **Source font**.
+- Text typed on the page that runs past the page's edge has its outline in the caution colour, with a tag under it
+  saying "Past the page edge". In a line being edited, typing on past its end into the text beside it says "Over
+  other text" the same way.
 
 ### Changed
 
@@ -53,6 +62,31 @@
 - The right-click menu of a selected picture or shape has only what applies to it (Replace image…, Delete the
   object). A line of page text's has Edit text, Move or resize text and Copy the selected text lines, then Cut and
   Delete the object.
+- A tab says **Unsaved**, and the window's title is marked, from the first key typed on a page, in a form field or
+  in the inspector. Before, they waited until the typing was kept.
+- A new text box stays open while you change its look in the inspector (text size and colour, background,
+  border), showing the size you pick, with the keyboard back in it, as a note already did. Before, a click in the
+  inspector finished it.
+- The inspector's **Source font** for a line being edited follows the typing: Preserved, Installed family or
+  Nearest standard when all of its changed parts are written one way, Partly preserved when some keep their font
+  and some don't, Mixed for other mixes, Font chosen when another font was picked for all of it. Before, it said
+  what the line's first font would do, whatever was typed.
+- The outline round text typed on the page is drawn in two lines, the accent colour with a white or black line
+  inside it (whichever shows more against the accent), so it shows on a page of any colour, the accent's own too.
+- Ctrl+B or Ctrl+I in text being typed, in a family with no bold or italic face, says so at the caret
+  ("… has no bold."). Before, nothing happened.
+- Typing or pasting Hebrew, Arabic, Hindi, Thai or another script written right to left or with joined letters
+  says "LimarePDF can't add this script yet", naming why. Before, the note said only Latin, Greek and Cyrillic
+  characters work, though Chinese, Japanese and Korean do in an installed font.
+- Ctrl+V with nothing being typed and no words selected says where to click to paste. Before, nothing happened.
+- In the menus, the tools (☰ > Tools, Edit > Select) mark the one in use, and Edit text in the band shows pressed
+  while the Text tool is on.
+- A click into a form field heads the inspector **Form field**, and lets go of words selected before, so Edit >
+  Font and Ctrl+B act on the field's text alone.
+- While the Watermark or Headers, footers, Bates tool is open, the pages and their thumbnails show the pages as
+  adding it would make them, once a setting stops changing: a watermark set behind the content shows behind it,
+  where before it was drawn over the content. While a setting is changing (a slider dragged, text typed, a colour
+  picked), it is drawn over the pages, as before, until the drawing for the new settings comes.
 
 ### Fixed
 

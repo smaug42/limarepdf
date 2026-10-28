@@ -241,6 +241,41 @@ crosses one; `Tab::reveal` (from `Editor::words_end`) then scrolls the least tha
 the view kept from the last frame's scroll area (`Tab::last_view`). The read tool's double-click and triple-click
 off a line's box select nothing (`Editor::word_on_line`: within the hit tolerance of the nearest word's line).
 
+The typing says what it does (batch 40's third stage). `page_text::field` draws the outline in two lines (ENH-22):
+the edge in the accent, or `theme::Tone::Caution` when a warning applies, and a 1-point line inside it
+(`outline.shrink(1.0)`) in `theme::halo` of the edge, white or black, whichever contrasts more, so it shows on
+paper of any colour, the accent's own too. `page_text::Style::warn` checks the text's laid-out rect each frame:
+new text (`PageText::ui`) with `page_text::past_edge` (the page's rect, a point's leeway); a line being edited
+(`line_edit_ui`'s `warn`) with that, then the part typed past the line's end (from `line.max.x` plus a point,
+the middle half of the line's height) against the page's other visible lines (`others`). A warning puts a tag
+under the outline's right end, a `Label` so screen readers have it. A line being edited has the inspector rows
+"PDF font" (`editor::pdf_fonts` of the selection, a subset's six-letter tag cut by `editor::untagged`) and "Source
+font" (`editor::source_font`: `part_font` for each part still in a font of the line's own, a part given a chosen
+font skipped, named Preserved, Installed family or Nearest standard; several, Partly preserved when one is
+Preserved, else Mixed; none, Font chosen), with its second value, a standard font standing in, giving the
+Non-standard note when the line's font isn't reusable. The status bar says "Editing one line" while
+`Editor::editing_line`. `Tab::title` (the window's title) and `tab_button` take `Tab::unsaved` (`dirty`,
+`Editor::pending` or typing in forms), so typing marks the tab from the first key. `writing_ui` keeps any box
+being written open on a press in the inspector (`insp` is always `drawn_at` the inspector's place), and a new text
+box (no annotation id, not a note) takes its size from the Text box tool's `box_style` each frame, so it shows
+what it will be added with.
+
+Greyed commands say why (`actions::why_not`). A command's `enabled` is a function of `actions::Ctx`, so `why_not`
+gives a copy of the context each thing a command may wait for, in the order people meet them (a `Fix` each: busy,
+saving, a file, undo, redo, words, typing, a line, a picture, an object, a movable one, a form, a field, the Select
+tool, the Read tool, facing pages), and returns the reason of the first that alone enables the command, else of
+the one that does with all those before it, else `NOT_NOW` ("Not available just now."); without a document, "Open
+a document first." `actions::greyed_tip` (the tooltip, then the reason) is the disabled hover text of the band's
+buttons, its menu buttons (their first item's reason), the commands row and `menu_item`. `font_list::styles` names
+B and I with their keys, and greyed says the family has no such face while the group is enabled, else the group's
+reason. Ctrl+B and Ctrl+I in new text and in a line go through `page_text::switch_styles`: `Styled::switches` says
+whether the switch would change anything, and if not `Refused` marks "<family> has no bold." at the caret.
+`page_text::note` gives `SCRIPT` for a character core's `unwritten_script` (right to left, or shaped) marks,
+outside an emoji sequence. `App::type_over` with a paste and no box to type in sets `Tab::info`, saying where to
+click. Tool commands in menus are `egui::RadioButton`s (`menu_item`), so the tool in use is marked; `band::is_on`
+presses Edit text while the Text tool is on; `inspector::title` is "Form field" while a field has the keyboard
+(`form.focused_field()`), and the app clears the selected words then, after `settle_look`.
+
 Selected objects (ENH-06, batch 25; design `limarepdf-multiselect-design.md`) are one `Selection::Objects`: a page
 and one or more `selection::Selected` (the object's index in `Pdf::page_objects`, its kind, box and a line's text),
 in the order selected, with `loose` (page text among them moves with the read tool: text just added, Move or resize
@@ -301,6 +336,22 @@ added, so it costs nothing while that step is kept. `held` counts every copy onc
 links kept in steps, the form's link). When the latest step and a link's copy no step holds are over the budget on
 their own, those links end (`Tab::keep_to_budget`, run after every push and after `put_stamp`) and `Tab::info`
 says so (BUG-36).
+
+While the Watermark or Headers, footers, Bates tool is open and its stamp isn't added yet, the pages show it
+(`tab/previews.rs`, `tab/proofs.rs`; ENH-23, the user's Q2 of batch 40). `Tab::stamping` says which stamps go on
+which pages this pass. While a setting is changing (`inspector::changing`: the pointer held, a text field with
+the keyboard, a pop-up open), the stamp is drawn over the pages, laid out by core's own functions
+(`Watermark::text_start`, `picture_size`, `HeaderFooter::lines`) in Liberation Sans. Once they settle,
+`Tab::sync_proofs` (once a frame, before the pages are drawn) clones the document on the window's thread and
+`Worker::spawn_from` puts the stamps on the copy off it (`stamp_onto`, the code adding uses), then starts a page
+worker of its own on the copy's snapshot. Its drawings of the pages and tiles in view and of the stamped pages'
+thumbnails (`Proof`, keyed as the tab's own) replace the tab's own in `draw_previews` (`proof_page`) and
+`show_thumbs` (`proof_thumb`, while `proof_shown`). A proof is for one `Ask` (the revision, the page colours and
+the stamps with their pages): one for anything else is dropped, never shown, and a copy finished for settings
+passed through is let go; a copy that can't be made (a picture file gone) leaves the drawn previews, logged as
+"stamp preview failed", and adding the stamp says what is wrong. The document, its undo, its revision and whether
+it has unsaved changes never change. Not done: the clone on the window's thread (once per settled change);
+drawing the pages beside those in view ahead; proof drawings are logged as "render" with the tab's own.
 
 Toasts (`App::toasts`, at most one per tab) belong to a tab by its id. One for an undoable change (`Tab::notice`)
 records the tab's `Tab::history` (revision, undo and redo depths) and goes once that moves or typing starts, so its
@@ -921,7 +972,8 @@ takes it; pointer moves are left out, and what is typed is never written, as it 
 length, a key by its name only when it types nothing: Enter, Esc, Tab, Backspace, Delete, Insert and the
 movement keys), `frame built` (end of `App::ui`, with egui's frame number and pass, the log
 then flushed), `page drawn` (`Tab::show_pages`, the first time a page is painted from a drawing at the scale it
-wants rather than a stand-in at another), `render start` and `end` (the worker, per page and tile), `open start`
+wants rather than a stand-in at another), `render start` and `end` (the worker, per page and tile; a stamp
+preview's worker too, ENH-23), `stamp preview failed` (its copy couldn't be made, with why), `open start`
 and `end` (the read thread), `search start`, `search first hit` and `search end` (`Tab::start_search` and
 `take_search`, the query by its length, the matches by their count) and `search index` (the search thread, the
 text kept in bytes), `save start`
