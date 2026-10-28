@@ -16518,11 +16518,15 @@ mod tests {
 
     /// `n` lines of 12-point text 15 points apart from `top` down, starting `x` points across
     /// and `wide` (about 450 points long) or short (about 70); line `odd` says "otter" where
-    /// the others say "walrus".
+    /// the others say "walrus", or, short, "seal", so that no other line is longer.
     fn paragraph(x: f32, top: f32, n: usize, odd: usize, wide: bool) -> Vec<(String, egui::Pos2)> {
         (0..n)
             .map(|i| {
-                let who = if i == odd { "otter" } else { "walrus" };
+                let who = match (i == odd, wide) {
+                    (true, _) => "otter",
+                    (false, true) => "walrus",
+                    (false, false) => "seal",
+                };
                 let text = if wide {
                     format!("The {who} ate fish by the sea and the seal ate fish by the shore {i}")
                 } else {
@@ -16600,10 +16604,11 @@ mod tests {
         (tree, k)
     }
 
-    /// ENH-20: the floating bar of a line being edited keeps clear of it: above, below or
-    /// beside it where that covers no other text, else at the edge of the view, never over
-    /// the line (and its caret) or the lines either side of it; at the page's top, bottom
-    /// and edges, at three zooms and in a narrow window.
+    /// ENH-20: the floating bar of a line being edited keeps clear of it, next to it: above,
+    /// below or beside it where that covers no other text, else just above or below it,
+    /// over as little text as can be (the user's finding: by a heading with text all round
+    /// it, it went to the top of the view); never over the line (and its caret); at the
+    /// page's top, bottom and edges, at three zooms and in a narrow window.
     #[test]
     fn the_floating_bar_keeps_clear_of_the_line_being_edited() {
         let ctx = egui::Context::default();
@@ -16614,14 +16619,29 @@ mod tests {
             "paragraph at half size",
             "paragraph at twice the size",
             "narrow window",
+            "heading among columns",
             "top of the page",
             "bottom of the page",
             "left edge",
             "right edge",
         ];
+        // A heading in the middle of three columns, a line across the page just above it
+        // and two lines of its column below it.
+        let mut columns = vec![(
+            "For questions about the walrus and the seal see the shore".to_string(),
+            egui::pos2(72.0, 285.0),
+        )];
+        for (x, y, who) in [(72.0, 300.0, "walrus"), (250.0, 300.0, "otter")] {
+            columns.push((format!("The {who} ate"), egui::pos2(x, y)));
+        }
+        for (x, y) in [(330.0, 300.0), (250.0, 315.0), (250.0, 330.0)] {
+            columns.push(("The walrus ate".to_string(), egui::pos2(x, y)));
+        }
         for case in cases {
-            // The page's height and lines: a paragraph across it, or short lines at an edge.
+            // The page's height and lines: a paragraph across it, short lines at an edge, or
+            // the columns.
             let (h, lines) = match case {
+                "heading among columns" => (792.0, columns.clone()),
                 "top of the page" => (792.0, paragraph(72.0, 14.0, 3, 0, true)),
                 "bottom of the page" => (120.0, paragraph(72.0, 75.0, 3, 2, true)),
                 "left edge" => (792.0, paragraph(3.0, 300.0, 3, 1, false)),
@@ -16640,7 +16660,7 @@ mod tests {
             // The paragraph's middle in view, or the page from its top.
             let top = match case {
                 "paragraph" | "paragraph at twice the size" => 250.0,
-                "left edge" | "right edge" => 250.0,
+                "left edge" | "right edge" | "heading among columns" => 250.0,
                 _ => 0.0,
             };
             // Narrow, the panels fold away over some frames.
@@ -16670,10 +16690,19 @@ mod tests {
             let (editor, _) = node(&tree, &name).expect("the line editor");
             let line = screen(objs[i].bbox).union(editor);
             assert!(!bar.intersects(line), "{case}: over the line, {bar:?}");
-            for j in [i.wrapping_sub(1), i + 1] {
-                if let Some(o) = objs.get(j) {
+            // Next to it: the bar's frame round its buttons and the line's outline add some
+            // points to the gap.
+            let apart = (bar.min.y - line.max.y)
+                .max(line.min.y - bar.max.y)
+                .max(bar.min.x - line.max.x)
+                .max(line.min.x - bar.max.x);
+            assert!(apart < 24.0, "{case}: {apart} from the line, {bar:?}");
+            // With room by the line, over no other line.
+            let room = ["bottom of the page", "left edge", "right edge"];
+            if room.contains(&case) {
+                for (j, o) in objs.iter().enumerate().filter(|(j, _)| *j != i) {
                     let r = screen(o.bbox);
-                    assert!(!bar.intersects(r), "{case}: over a line beside, {bar:?}");
+                    assert!(!bar.intersects(r), "{case}: over line {j}, {bar:?}");
                 }
             }
             let shown = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 1000.0));

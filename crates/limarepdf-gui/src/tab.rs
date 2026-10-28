@@ -3364,10 +3364,12 @@ const BAR_GAP: f32 = 8.0;
 /// Where the floating bar of `size` goes (its top left corner) for the selection at `sel`
 /// in the view `view`, `text` being where the page's text is, all on the screen (ENH-20):
 /// above the selection, below it, then beside it (right, then left), the first of them
-/// inside the view that covers no text; else docked at the view's top edge, or at its
-/// bottom edge when the top one would cover more of the selection. So it covers neither
-/// the selection (a line being edited, with its caret) nor the lines either side of it
-/// while there is room, and never the selection where the view has room for both.
+/// inside the view that covers no text. Where all of them would cover some, just above
+/// or below it, whichever covers less, as a word processor's bar sits by the selection
+/// (the user, 2026-10-28: not off at the view's edge); at the view's top or bottom edge
+/// only when neither is in view, there whichever covers less of the selection. So it
+/// never covers the selection (a line being edited, with its caret) where the view has
+/// room for both, nor other text where there is room nearby.
 fn bar_place(sel: Rect, size: Vec2, view: Rect, text: &[Rect]) -> Pos2 {
     let g = BAR_GAP;
     // Centred on the selection, inside the view.
@@ -3383,27 +3385,40 @@ fn bar_place(sel: Rect, size: Vec2, view: Rect, text: &[Rect]) -> Pos2 {
         Pos2::new(sel.right() + g, y),
         Pos2::new(sel.left() - g - size.x, y),
     ];
+    let fits = |p: Pos2| view.contains_rect(Rect::from_min_size(p, size));
     let clear = |p: Pos2| {
         let r = Rect::from_min_size(p, size);
-        view.contains_rect(r) && !r.intersects(sel) && !text.iter().any(|t| t.intersects(r))
+        fits(p) && !r.intersects(sel) && !text.iter().any(|t| t.intersects(r))
     };
     if let Some(p) = near.into_iter().find(|&p| clear(p)) {
         return p;
     }
-    let covered = |p: Pos2| {
-        let over = Rect::from_min_size(p, size).intersect(sel);
-        if over.is_positive() {
-            over.area()
-        } else {
-            0.0
+    let bar = |p: Pos2| Rect::from_min_size(p, size);
+    let [above, below, ..] = near;
+    let text_under = |p: Pos2| text.iter().map(|t| overlap(bar(p), *t)).sum::<f32>();
+    match (fits(above), fits(below)) {
+        (true, true) if text_under(below) < text_under(above) => below,
+        (true, _) => above,
+        (false, true) => below,
+        (false, false) => {
+            let top = Pos2::new(x, view.top() + g);
+            let bottom = Pos2::new(x, view.bottom() - g - size.y);
+            if overlap(bar(top), sel) <= overlap(bar(bottom), sel) {
+                top
+            } else {
+                bottom
+            }
         }
-    };
-    let top = Pos2::new(x, view.top() + g);
-    let bottom = Pos2::new(x, view.bottom() - g - size.y);
-    if covered(top) <= covered(bottom) {
-        top
+    }
+}
+
+/// The area two rectangles share.
+fn overlap(a: Rect, b: Rect) -> f32 {
+    let over = a.intersect(b);
+    if over.is_positive() {
+        over.area()
     } else {
-        bottom
+        0.0
     }
 }
 
@@ -4128,9 +4143,10 @@ mod tests {
     }
 
     /// ENH-20: the floating bar goes above the selection, below it, then beside it, where
-    /// that covers no text and is in view; else at the view's top edge, or its bottom one
-    /// when the top one would cover the selection; never over the selection while there is
-    /// room.
+    /// that covers no text and is in view; else just above or below it, whichever covers
+    /// less text (the user's finding: it went to the view's top edge by a heading with
+    /// text all round it); at the view's edge only when neither is in view; never over the
+    /// selection while there is room.
     #[test]
     fn the_floating_bar_is_placed_clear_of_the_text() {
         let view = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
@@ -4177,18 +4193,37 @@ mod tests {
         assert_eq!(bar.max.x, sel.min.x - BAR_GAP);
         assert!(clear(bar, &text));
 
-        // In a paragraph across the view: at the view's top edge.
+        // A heading with a line above it, lines below it and columns either side: just
+        // above it, over the one line there rather than the lines below.
+        let sel = line(300.0, 500.0, 300.0);
+        let below = [322.0, 340.0, 358.0].map(|y| line(300.0, 480.0, y));
+        let sides = [line(100.0, 290.0, 300.0), sel, line(510.0, 700.0, 300.0)];
+        let text = [&[line(100.0, 700.0, 270.0)][..], &below, &sides].concat();
+        let bar = place(sel, &text, view);
+        assert_eq!(bar.max.y, sel.min.y - BAR_GAP);
+
+        // Two lines above it and one below: just below it.
+        let above = [line(100.0, 700.0, 270.0), line(100.0, 700.0, 285.0)];
+        let text = [&above[..], &[line(300.0, 480.0, 330.0)], &sides].concat();
+        let bar = place(sel, &text, view);
+        assert_eq!(bar.min.y, sel.max.y + BAR_GAP);
+
+        // In a paragraph across the view: just above it.
         let text = para(20.0, 780.0, 260.0);
         let sel = text[4];
         let bar = place(sel, &text, view);
-        assert_eq!(bar.min.y, view.min.y + BAR_GAP);
-        assert!(clear(bar, &text));
+        assert_eq!(bar.max.y, sel.min.y - BAR_GAP);
 
-        // Its first line at the view's top: at the bottom edge.
+        // Its first line at the view's top: just below it.
         let text = para(20.0, 780.0, 10.0);
         let sel = text[0];
         let bar = place(sel, &text, view);
-        assert_eq!(bar.max.y, view.max.y - BAR_GAP);
+        assert_eq!(bar.min.y, sel.max.y + BAR_GAP);
+
+        // Neither above, below nor beside it in view: at the view's top edge.
+        let sel = Rect::from_min_max(Pos2::new(20.0, 30.0), Pos2::new(780.0, 570.0));
+        let bar = Rect::from_min_size(bar_place(sel, size, view, &[sel]), size);
+        assert_eq!(bar.min.y, view.min.y + BAR_GAP);
 
         // The bar inside a view narrower than the page.
         let narrow = Rect::from_min_size(Pos2::new(100.0, 0.0), Vec2::new(300.0, 600.0));
