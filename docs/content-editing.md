@@ -174,13 +174,15 @@ a time. Comments and markup are selected one at a time, never with page objects.
 For text, **Edit > Font** in the band has the font list, then size, Bold, Italic and colour (the words themselves
 are changed on the page). Pointing at the font list shows the names of the fonts the selected text uses in the PDF.
 
-The inspector is headed by what is selected (Text, Image, Shape). For text it shows what is being edited (One
-line, Selected words or New text), its font and size (Mixed where they differ) and, for a line, its **Source
+The inspector is headed by what is selected (Selected text, Image, Shape). For text it shows what is being edited
+(One line, Selected words or New text), its font and size (Mixed where they differ) and, for a line, its **Source
 font**: Preserved when the line keeps its own font, Installed family when changes are written in the installed
 family its font comes from, Nearest standard when they are written in the nearest of Helvetica, Times and Courier
 (see [How it works](#how-it-works)). For shapes it shows the fill, outline and width; for pictures,
 **Replace image…**. Below these, **Position and size** opens to show the object's X, Y, width and height; it
-stays open or closed as you left it. Changes in the band and the inspector are kept as you make them,
+stays open or closed as you left it. For selected text, **Future text tools**, marked Planned, comes last: open it
+to see what is planned (paragraphs that reflow, underline and strike-through). Changes in the band and the
+inspector are kept as you make them,
 without an Apply button: typed text when you press Enter or leave the box, a number when you stop dragging it or
 leave its box, a colour when its picker closes. Each is one undo step.
 

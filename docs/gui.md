@@ -31,10 +31,11 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
   [Comments](comments-and-markup.md#see-every-comment-and-reply) and [Digital signatures](signatures.md).
 - **Middle:** the pages, scrolling continuously. By default they fit the width between the side panels; zooming
   turns that off. Continuous, facing or single pages: see [Page layout](reading-and-finding.md#page-layout).
-- **Right:** the inspector, which shows options for what is selected (see
-  [The inspector](#selecting-and-the-inspector)). The » at its top collapses it to a strip; the « at the top of the
-  strip expands it again, and the strip's options button shows the inspector's contents in a pop-out over the pages
-  (a click elsewhere or Esc closes it; what you changed in it stays). View > Properties does the same.
+- **Right:** the inspector, which shows what is selected and its options, the document when nothing is, or a tool
+  you opened, such as Watermark (see [The inspector](#selecting-and-the-inspector)). The » at its top collapses it
+  to a strip; the « at the top of the strip expands it again, and the strip's options button shows the inspector's
+  contents in a pop-out over the pages (a click elsewhere or Esc closes it; what you changed in it stays). View >
+  Properties does the same.
 - **Narrow windows:** below about 960 points wide the inspector collapses to its strip by itself, and below about
   760 the side panel folds away, leaving its icons. They come back when the window is wide enough again, unless
   you closed them yourself; a panel you open in a narrow window stays open. Whether you closed or opened each
@@ -45,7 +46,10 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
   [The command band](#the-command-band)).
 - **Panel widths:** drag the edge of the side panel or the inspector to make it wider or narrower. From the
   keyboard, Tab to the edge (a line shows along it), then press Left or Right to move it 10 points (50 with
-  Shift), Home to make the panel as narrow as it goes, or End to make it half the window wide.
+  Shift), Home to make the panel as narrow as it goes, or End to make it half the window wide. Each of the side
+  panel's views keeps its own width: Pages starts narrow, and Search results, Bookmarks, Comments and Digital
+  signatures start wider, so their lines are easy to read. The widths you set last until LimarePDF closes; they
+  aren't remembered between runs.
 
 F6 moves the keyboard to the next part of the window and Shift+F6 to the one before, in the order they are on
 screen: the tabs, the commands, the document's notices (when there are any), navigation, the page, the inspector
@@ -81,8 +85,9 @@ on. Every button names itself on hover, with its shortcut.
 **Planned features.** Buttons marked **Planned**, greyed, are features not built yet, shown where they will be:
 Underline, Replace, Paragraph and Align in Edit; Link and Blank document in Insert; Spelling and Export comments in
 Review; Organise in Pages; Create fields in Forms and sign; Your AI in View; Print preview and Reduce file size in
-the File menu. They do nothing, and Tab passes them by. Turn off **Show planned features** in the status bar (or
-View > Show) to hide them; the choice is remembered.
+the File menu. They do nothing, and Tab passes them by. In the inspector, selected text ends with **Future text
+tools**, marked Planned: open it to see which text tools are coming. Turn off **Show planned features** in the
+status bar (or View > Show) to hide them all; the choice is remembered.
 
 **Compact commands.** The small arrow at the right of the commands row (or View > Show > Compact commands) puts the
 band on one row of icons, which name themselves on hover; the arrow again brings their names back. The choice is
@@ -219,8 +224,8 @@ A command that changes or uses the document (rotating or deleting a page, removi
 exporting, signing, Undo itself) keeps what you are typing first, as clicking away would: a step of its own, which
 Undo takes back, before the command's step. So Undo clicked in the commands row while you type takes back what you
 typed. Text that can't be kept (a form value LimarePDF can't write) stays as typed, with the reason shown, and the
-command doesn't run. Commands that only show something (zoom, moving between pages, opening a section of the
-inspector) leave your typing as it is.
+command doesn't run. Commands that only show something (zoom, moving between pages, opening a tool or a section
+of the inspector) leave your typing as it is.
 
 ## Dialogs
 
@@ -334,17 +339,22 @@ What you select decides what the inspector, the right-click menu and the floatin
 
 ![A text box selected on the page, with its handles and the floating toolbar, and its options in the inspector at the right: text size and colour, background, border, opacity, its text, Delete and a reply box](images/inspector.png)
 
+The inspector is headed by what it shows. Under the heading come a few facts, then buttons, then folded sections:
+click a section's name to open or fold it.
+
 | Selected | Inspector |
 | --- | --- |
-| Nothing | The document: properties, opening view, password security, the form (when there is one), crop, watermark, headers/footers/Bates, OCR, optimise scanned pages, export pages as images, split into files, and buttons for export text, print and append PDFs |
-| Pages (click thumbnails; Shift for a range, Ctrl for one more) | Rotate, delete, extract to a new tab, insert images or a blank page after them, page labels from the first selected page, and the crop, watermark, headers/footers, OCR and optimise tools with the pages filled in ([Organising pages](organising-pages.md)) |
-| An object, a comment, or a tool that adds content | That object's or tool's options, headed by what it is (Text, Image, Text box, New rectangle). For a line of text, selected or being edited, or new text being typed: how it is edited (One line, New text), its font and size (Mixed where they differ) and, for a line, whether its own font is kept when it is edited (Source font); their look is changed in Edit > Font in the command band ([Style words in a line](content-editing.md#style-words-in-a-line)). An object's position and size are in its **Position and size** section, which stays open or closed as you left it |
+| Nothing | Headed **Document**. Facts: Pages; Paper (Letter, Legal, Tabloid, Executive, A3, A4, A5 or B5, either way round; the size in points for others; Mixed when the pages differ); Security (None, Open password or Permissions password, as the document will be saved; Removed on save for a protected document you opened, until you set a password again); Form fields, how many, for a form; Signatures, how many, for a document with signature fields. Folded: [Properties](#document-properties), [Opening view](#opening-view) and, for a form, [Form](forms.md#the-form-section) |
+| Pages (click thumbnails; Shift for a range, Ctrl for one more) | Headed **Selected page** or **Selected pages**, with which ones, such as "Pages 1–2, 5 of 9". Facts: Paper, and Orientation (Portrait, Landscape, Square or Mixed, as the pages are shown, after rotating). Buttons: rotate either way, delete, extract to a new tab, and insert images after them. Folded: **Insert blank page**, and **Page properties**, which holds **Crop** and **Page labels** ([Organising pages](organising-pages.md)) |
+| An object, a comment, or a tool that adds content | That object's or tool's options, headed by what it is (Selected text, Image, Text box, New rectangle). For a line of text, selected or being edited, or new text being typed: how it is edited (One line, New text), its font and size (Mixed where they differ) and, for a line, whether its own font is kept when it is edited (Source font); their look is changed in Edit > Font in the command band ([Style words in a line](content-editing.md#style-words-in-a-line)). An object's position and size are in its **Position and size** section, which stays open or closed as you left it |
 | Several objects | Headed by how many (3 objects), with a line saying what they are: the font and size of the lines of text among them (changed in Edit > Font), the look of the shapes, blank or mixed where they differ, their position (X and Y) and Delete ([Select several objects](content-editing.md#select-several-objects)) |
 | Words | Headed **Selected text**: Editing (Selected words), their font and size, Mixed where they differ; their look is changed in Edit > Font ([Style words you select while reading](content-editing.md#style-words-you-select-while-reading)). Invisible recognised text alone has none, and the inspector stays on the document or pages. Copy, Bold, Italic, highlight, redact, print and save the selection from the floating toolbar (or the docked buttons) and the right-click menu |
 
+Selected text, a line or words, ends with **Future text tools**, marked Planned: open it to read which text tools
+are coming. It is hidden while Show planned features is off.
+
 The inspector holds controls, with at most a short line about state (such as how many areas are marked); how to
-use a tool is in its button's tooltip and the menus, and in this guide. Commands for document and page settings
-(such as Pages > Crop or Insert > Watermark) open the matching section of the inspector.
+use a tool is in its button's tooltip and the menus, and in this guide.
 
 The page and document settings apply as you set them, with no Apply button, each change one undo step: typed
 text when you press Enter or leave the field, a choice at once, a number when you stop dragging it or leave its
@@ -359,6 +369,35 @@ floating toolbar back. View > Properties ▾ > Selection controls on the right d
 runs; resizing the window doesn't change it.
 
 Delete removes the selected object, comment or mark, or the selected pages.
+
+### Tools in the inspector
+
+These commands open their tool in the inspector, on its own and headed by its name. They are also in the ☰ menu
+and the command palette (Ctrl+K).
+
+| Command | Tool |
+| --- | --- |
+| Insert > Header and footer | Headers, footers, Bates ([Headers and footers](headers-footers-watermarks.md#add-page-numbers-headers-and-footers)) |
+| Insert > Watermark | Watermark ([Add a watermark](headers-footers-watermarks.md#add-a-watermark)) |
+| Pages > Split | Split into files ([Split into files](organising-pages.md#split-into-files)) |
+| Pages > Crop | Crop ([Crop pages](organising-pages.md#crop-pages)) |
+| Pages > Page labels | Page labels ([Number pages your own way](organising-pages.md#number-pages-your-own-way)) |
+| Pages > Recognise text | Recognise text (OCR) ([Scans and OCR](scanning-and-ocr.md#recognising-text-ocr)) |
+| Pages > Optimise | Optimise scanned pages ([Scans and OCR](scanning-and-ocr.md#optimising-scanned-pages)) |
+| Protect > Passwords | Password security ([Password protection](security.md)) |
+| ☰ > Export pages as images… | Export pages as images ([Pages as images](export-and-printing.md#pages-as-images)) |
+
+- **Close a tool** with the × at the top of the inspector, beside »; the inspector goes back to what is selected, or
+  the document. Opening or closing a tool changes nothing in the document. Esc also closes Crop.
+- **One at a time:** choosing another tool's command puts that tool in its place.
+- **Pages:** a tool stays open while you select pages, and a Pages box in it follows the selection (all pages
+  when none are selected). Selecting words, an object or a comment, or choosing a tool that adds content (such as
+  Insert > Text), closes it.
+- **Keyboard:** with a tool open, F6 to the inspector reaches its × first, and Enter closes the tool.
+- **Narrow windows:** the pop-out shows the tool the same way, with its ×.
+
+☰ > Document > Properties… isn't a tool: it lets go of the selection and opens the
+[Properties](#document-properties) section of the document's inspector.
 
 ### Pages boxes
 
@@ -424,7 +463,9 @@ Jane Example… in Trusted certificates. Each part of the window that F6 goes to
 name shown, such as Edit commands, Notices, Navigation, Document, Inspector, Status bar), the side panel by the
 view it shows, and each document's tab says whether it is the one shown and whether it is unsaved. The command
 band's names are tabs that say which is shown, the side panel's icons say which view is shown, a planned feature's
-name ends in "Planned", and icon-only buttons are named in words. The edges of the side panel and the inspector are named Side panel width and
+name ends in "Planned", and icon-only buttons are named in words, such as Close Watermark for a tool's ×. The
+inspector's Future text tools is named "Future text tools — Planned"; unlike the planned buttons, Tab stops on it,
+as it opens to show its note. The edges of the side panel and the inspector are named Side panel width and
 Inspector width; they move with the arrow keys, and a screen reader can set them too.
 
 The names are checked by the app's tests on Linux. LimarePDF hasn't been tried with a screen reader yet (Orca,

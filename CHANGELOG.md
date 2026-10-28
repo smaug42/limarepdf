@@ -47,14 +47,19 @@
   open; Edit > Paste and Copy act on the text being typed; Edit > Edit text edits the selected line, or with none
   chooses the text tool. Narrow windows fold groups into a button with the group's name.
 - Planned features show greyed, marked Planned, where they will be (Replace, Paragraph, Underline, Link, Organise
-  and others); they do nothing. Show planned features, in the status bar and View > Show, hides them; the choice is
-  remembered.
+  and others); they do nothing. The inspector for selected text ends with Future text tools, marked Planned, which
+  opens to say what is planned for text. Show planned features, in the status bar and View > Show, hides them; the
+  choice is remembered.
 - Compact commands: a small arrow at the right of the commands (or View > Show > Compact commands) puts them on one
   row of icons, named on hover; windows under 600 points high do so by themselves. Remembered.
 - The accent colour follows the desktop's accent colour on Linux desktops that share it (GNOME 47 and KDE Plasma 6
   on), on macOS and on Windows, made readable if needed; View > Accent colour chooses Desktop or LimarePDF's own.
 - The icon strip at the window's left edge includes Digital signatures, beside Pages, Search results, Bookmarks
   and Comments.
+- The inspector says what you are looking at. With nothing selected it is headed Document and lists its pages, their
+  paper size (Letter, A4 and the other common sizes, or Mixed), its security, and how many form fields and
+  signatures it has when it has them. With pages selected it is headed Selected page or Selected pages, says which
+  ones ("Pages 1–2, 5 of 9"), and gives their paper size and orientation as shown.
 
 ### Changed
 
@@ -79,12 +84,12 @@
   they stand in for, their own name after: "Palatino (P052)", "New Century Schoolbook (C059)", "Helvetica
   (Nimbus Sans)". The list is sorted by those names, and searching finds either. Pointing at one says it is made to
   that typeface's letter widths but isn't the typeface itself, and that it is embedded in the file.
-- The inspector is headed by what is selected or the tool's options (Text, Image, New rectangle, Comment) instead
-  of "Edit". For text it shows how it is edited (One line, Selected words, New text), its font and size (Mixed where
-  they differ) and, for a line, whether its own font is kept (Source font); the font, size, Bold, Italic and colour
-  are set in Edit > Font in the command band. Position and size are in a Position and size section that starts
-  closed and stays open or closed as you left it, for every kind of object. Pointing at the font list shows the
-  names of the selected text's fonts in the PDF.
+- The inspector is headed by what is selected or the tool's options (Selected text, Image, New rectangle, Comment)
+  instead of "Edit". For text it shows how it is edited (One line, Selected words, New text), its font and size
+  (Mixed where they differ) and, for a line, whether its own font is kept (Source font); the font, size, Bold,
+  Italic and colour are set in Edit > Font in the command band. Position and size are in a Position and size
+  section that starts closed and stays open or closed as you left it, for every kind of object. Pointing at the
+  font list shows the names of the selected text's fonts in the PDF.
 - The inspector no longer repeats a line's words in a text box: they are changed on the page, as in a word
   processor. With the arrow, a double-click or Edit text now edits the line on the page too.
 - Finishing editing a line with the read or Add text tool (Esc, Tab, or clicking into a form field) no longer
@@ -113,6 +118,23 @@
   and, for pages, how many.
 - Facing pages, clicked again when on, goes back to continuous pages. Ctrl+C with lines of text selected with the
   arrow copies their text.
+- Tools open one at a time in the inspector, from their commands: Insert > Header and footer and Watermark; Pages >
+  Split, Crop, Page labels, Recognise text and Optimise; Protect > Passwords; ☰ > Export pages as images… (each
+  also in the ☰ menu and Ctrl+K). The tool shows on its own, headed by its name, with a × beside the collapse button that
+  closes it and goes back to what is selected, or the document; opening or closing one changes nothing in the
+  document. It stays open while you select pages, its Pages box following them, and gives way to selected words,
+  an object or comment, or a tool that adds content. From the keyboard, F6 to the inspector reaches the × first and
+  Enter closes the tool. Esc still closes Crop.
+- With nothing selected, the inspector no longer lists every tool, nor Export text…, Print… and Append PDFs…, which
+  are in the commands row, the bands, the ☰ menu and Ctrl+K: it shows the document, with its properties, opening
+  view and form folded. Selected pages show their buttons, then Insert blank page and Page properties (Crop and Page
+  labels) folded.
+- Export pages as images exports the selected pages when there are any, as the other tools do; it used to let go
+  of them and start at all pages.
+- The inspector's folded sections sit under thin lines, and its short notes are smaller and grey, as in the
+  approved workspace.
+- Each of the side panel's views keeps its own width while LimarePDF runs. Search results, Bookmarks, Comments and
+  Digital signatures start wider than Pages, so their lines no longer wrap a word or two at a time.
 - The user guide's Features page is now a short summary of what LimarePDF can do. The detailed status of each
   feature, with its limits and what doesn't work yet, moved to the developer docs as
   [Features and status](docs/developer/feature-status.md).
@@ -132,6 +154,10 @@
 - The outline for moving new text with the mouse was a stop for Tab that did nothing, and the start screen's card
   an unnamed one. Neither is now: the keyboard moves new text once it is kept (Esc, then the arrow keys), and
   Open PDF… opens a file.
+- Choosing a tool's command, such as Insert > Watermark, while a comment was selected left the comment's options
+  in the inspector, so the tool didn't show. The comment is now let go.
+- The side panel narrowed itself to fit a short line, such as "This document has no comments or markup."; it now
+  keeps its width.
 
 ## [0.10.0] - 2026-10-26
 

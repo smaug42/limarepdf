@@ -597,8 +597,10 @@ const SPLIT_JOB: &str = "Split into files";
 /// workspace: 205 points).
 const INSPECTOR_WIDTH: f32 = 205.0;
 const RAIL_WIDTH: f32 = 36.0;
-/// Width of the side panel, as the workspace has it.
+/// Width of the side panel showing the pages, as the workspace has it.
 const SIDE_WIDTH: f32 = 132.0;
+/// Width of the side panel showing search results, bookmarks, comments or signatures.
+const SIDE_TEXT_WIDTH: f32 = 220.0;
 /// Below this window width the inspector collapses to its strip by itself.
 const NARROW_WIDTH: f32 = 960.0;
 /// Below this window width the side panel folds away by itself (View > Pages panel brings
@@ -2808,10 +2810,6 @@ impl App {
         }
     }
 
-    /// Open section `s` of the inspector and scroll to it. The panel must show the page
-    /// or document sections, so an object or word selection is dropped and a tool that
-    /// adds content gives way to the arrow; document-only sections also drop a page
-    /// selection.
     /// Open the inspector's page labels for the selected pages, or the current page.
     fn reveal_labels(&mut self) {
         self.reveal(Section::Labels);
@@ -2959,18 +2957,26 @@ impl App {
         }
     }
 
+    /// Open section `s` of the inspector and scroll to it: a tool alone, as the task chosen
+    /// (PF-40). The panel must show the page or document sections, so an object, comment or
+    /// word selection is dropped and a tool that adds content gives way to the read tool;
+    /// the document's properties also drop a page selection.
     fn reveal(&mut self, s: Section) {
         self.open_inspector();
-        let ed = &mut self.tabs[self.active].ed;
+        let t = &mut self.tabs[self.active];
+        let ed = &mut t.ed;
         ed.selection.clear_object();
         ed.selection.clear_words();
+        if ed.selection.annot().is_some() {
+            ed.selection = Selection::None;
+        }
         if ed.owns_panel() {
             ed.set_tool(Tool::Read);
         }
-        if s.document_only() {
+        if !s.is_task() {
             ed.selection = Selection::None;
         }
-        self.tabs[self.active].forms.reveal = Some(s);
+        t.forms.choose(s);
     }
 
     /// Offers the page text selected in the tab in front for X11 and Wayland's PRIMARY
@@ -4590,6 +4596,67 @@ fn inspector_heading(title: &str) -> egui::RichText {
         .family(theme::medium())
 }
 
+/// The inspector's heading row, in the panel (`collapse`) or its pop-out: what it shows, then
+/// a button that closes the task open (PF-40) and, in the panel, the one that collapses it,
+/// in reading order for Tab. Closing from the keyboard leaves the keyboard in the inspector:
+/// on the collapse button, or the strip's button that opens the pop-out. Returns whether
+/// the collapse button was clicked.
+fn inspector_head(ui: &mut egui::Ui, t: &mut Tab, collapse: bool) -> bool {
+    let title = inspector::title(t);
+    let task = t.forms.task;
+    let mut collapsed = false;
+    // The buttons' width when last drawn, for `dialogs::reading_order`; with another number
+    // of them, more than they will take, so that the panel is never widened by them showing
+    // past their place, and keeps that width.
+    let measured = ui.scope_id().with("inspector-head-buttons");
+    let buttons = usize::from(task.is_some()) + usize::from(collapse);
+    let last = ui
+        .data(|d| d.get_temp::<(usize, f32)>(measured))
+        .filter(|(n, _)| *n == buttons)
+        .map_or(buttons as f32 * 48.0, |(_, width)| width);
+    // A tool's long name ("Headers, footers, Bates") goes on two lines, whole, as the
+    // menu and the command search have it.
+    egui::Sides::new().shrink_left().wrap().show(
+        ui,
+        |ui| ui.label(inspector_heading(&title)),
+        |ui| {
+            let width = dlg::reading_order(ui, Some(last), |ui| {
+                let mut keys_back = false;
+                if let Some(task) = task {
+                    let name = format!("Close {}", task.title());
+                    let b = egui::Button::new(theme::icon(icon::X)).frame_when_inactive(false);
+                    let r = ui.add(b);
+                    r.widget_info(|| named(&name));
+                    if r.on_hover_text("Close").clicked() {
+                        t.forms.task = None;
+                        keys_back = !ui.input(|i| i.pointer.any_click());
+                    }
+                }
+                if collapse {
+                    let hide = egui::Button::new(theme::icon(icon::CARET_DOUBLE_RIGHT))
+                        .frame_when_inactive(false);
+                    // Ids of its own, the same with or without the close button before it,
+                    // for the keyboard to go to as that goes.
+                    let own = egui::UiBuilder::new().scope_id(egui::Id::unique(COLLAPSE));
+                    let r = ui.scope_builder(own, |ui| ui.add(hide)).inner;
+                    r.widget_info(|| named("Collapse the inspector"));
+                    if keys_back {
+                        r.request_focus();
+                    }
+                    collapsed = r.on_hover_text("Collapse the inspector").clicked();
+                } else if keys_back {
+                    let opener = egui::Id::unique(POPOUT_OPENER);
+                    if let Some(id) = ui.data(|d| d.get_temp::<egui::Id>(opener)) {
+                        ui.memory_mut(|m| m.request_focus(id));
+                    }
+                }
+            });
+            ui.data_mut(|d| d.insert_temp(measured, (buttons, width)));
+        },
+    );
+    collapsed
+}
+
 /// The side panel's views, top to bottom on the strip at the window's left edge: each with
 /// the command that shows it, for its icon, and its name.
 const SIDE_VIEWS: [(Side, Act, &str); 5] = [
@@ -4599,6 +4666,19 @@ const SIDE_VIEWS: [(Side, Act, &str); 5] = [
     (Side::Comments, Act::Comments, "Comments"),
     (Side::Signatures, Act::Signatures, "Digital signatures"),
 ];
+
+/// The side panel showing view `side`: its id, so that each view keeps the width it is
+/// given, and the width it starts at: the pages' as the workspace has it, the views of text
+/// wider, so that their lines don't wrap a word or two at a time (ENH-38).
+fn side_panel(side: Side) -> (&'static str, f32) {
+    match side {
+        Side::Pages => ("side", SIDE_WIDTH),
+        Side::Search => ("side-search", SIDE_TEXT_WIDTH),
+        Side::Bookmarks => ("side-bookmarks", SIDE_TEXT_WIDTH),
+        Side::Comments => ("side-comments", SIDE_TEXT_WIDTH),
+        Side::Signatures => ("side-signatures", SIDE_TEXT_WIDTH),
+    }
+}
 
 /// What the side panel calls its view `side`.
 fn side_name(side: Side) -> &'static str {
@@ -4695,11 +4775,14 @@ fn inspector_body(
     c: &Ctx,
 ) -> Option<inspector::Apply> {
     let mut apply = None;
+    // Sections' contents a little in from their headers, as the workspace has them.
+    ui.spacing_mut().indent = 10.0;
     t.guarded(|t| {
         if !t.ed.owns_panel() {
             apply = inspector::show(ui, t, c);
             return;
         }
+        t.ed.planned = c.planned;
         // Stamp choices and the author's name are app-wide: lent to the tab's inspector
         // and saved when it changes them.
         let author = s.author();
@@ -4750,6 +4833,8 @@ fn inspector_body(
 
 /// Where the inspector strip keeps the id of its button that opens the pop-out.
 const POPOUT_OPENER: &str = "inspector-popout-opener";
+/// The ids of the button that collapses the inspector.
+const COLLAPSE: &str = "inspector-collapse";
 
 /// The inspector's contents in a pop-out over the pages, left of its strip (`strip`),
 /// for windows too narrow for the panel. Changes made in it stay when it closes. Returns
@@ -4774,7 +4859,7 @@ fn inspector_popout(
             regions::name(ui, Region::Inspector);
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.set_width(INSPECTOR_WIDTH);
-                ui.label(inspector_heading(&inspector::title(t)));
+                inspector_head(ui, t, false);
                 ui.add_space(4.0);
                 let scope = t.ed.scope();
                 egui::ScrollArea::vertical()
@@ -5431,15 +5516,19 @@ impl eframe::App for App {
         // The side panel, beside the strip: pages first.
         if has && self.side.shown() {
             let active = self.active;
-            panels::edge_keys(ui, "side", true);
-            let side = egui::Panel::left("side")
+            let (panel, width) = side_panel(self.tabs[active].side);
+            panels::edge_keys(ui, panel, true);
+            let side = egui::Panel::left(panel)
                 .resizable(true)
-                .default_size(SIDE_WIDTH)
+                .default_size(width)
                 .min_size(panels::NARROWEST)
                 .show(ui, |ui| {
                     let t = &mut self.tabs[active];
                     let heading = side_name(t.side);
                     regions::name_as(ui, egui::accesskit::Role::Navigation, heading);
+                    // As wide as it was made, whatever the view holds: egui narrows a panel
+                    // to its contents, such as one short line wrapped.
+                    ui.set_min_width(ui.available_width());
                     ui.add_space(4.0);
                     let label = match t.side {
                         Side::Pages => format!("{heading} · {}", t.page_count()),
@@ -5460,7 +5549,7 @@ impl eframe::App for App {
                         }
                     });
                 });
-            panels::edge_shown(ui, "side", "Side panel width");
+            panels::edge_shown(ui, panel, "Side panel width");
             self.regions.add(Region::Navigation, side.response.rect);
         }
 
@@ -5477,6 +5566,11 @@ impl eframe::App for App {
                 self.popout = false;
             }
             let t = &mut self.tabs[self.active];
+            // A selection or tool the editor's section shows takes the panel from the task
+            // open (PF-40), shown or not, as choosing them would.
+            if t.ed.owns_panel() {
+                t.forms.task = None;
+            }
             // As the floating bar: words, a comment or an object, not pages or nothing.
             let selected = matches!(
                 t.ed.selection,
@@ -5509,20 +5603,7 @@ impl eframe::App for App {
                 }
                 // The heading stays put above the scrolling content, with the
                 // button that hides the panel at its right.
-                let title = inspector::title(t);
-                egui::Sides::new().shrink_left().truncate().show(
-                    ui,
-                    |ui| ui.label(inspector_heading(&title)),
-                    |ui| {
-                        let hide = egui::Button::new(theme::icon(icon::CARET_DOUBLE_RIGHT))
-                            .frame_when_inactive(false);
-                        let r = ui.add(hide);
-                        r.widget_info(|| named("Collapse the inspector"));
-                        if r.on_hover_text("Collapse the inspector").clicked() {
-                            toggle = true;
-                        }
-                    },
-                );
+                toggle = inspector_head(ui, t, true);
                 if !groups.is_empty() {
                     ui.horizontal_wrapped(|ui| {
                         actions::context_buttons(ui, &groups, &c, &mut panel_acts);
@@ -8464,7 +8545,8 @@ mod tests {
         assert!(grey.iter().all(|v| (v - 0.5).abs() < 0.01), "{grey:?}");
     }
 
-    /// ENH-07 (V03): a selected line's inspector is headed Text and puts its look first, the
+    /// ENH-07 (V03): a selected line's inspector is headed Selected text (batch 39: as the
+    /// workspace has it, and as selected words are) and puts its look first, the
     /// font list across the panel, with no text box (the words are edited on the page, as in
     /// a word processor); its position and size wait in a section
     /// that starts closed, stays as it was left from one selection to the next, and still
@@ -8490,7 +8572,7 @@ mod tests {
         };
         let line = select_line(&mut app);
         let tree = settled_at(&mut app, &ctx, 1400.0);
-        assert_eq!(inspector::title(&app.tabs[0]), "Text");
+        assert_eq!(inspector::title(&app.tabs[0]), "Selected text");
         let shown =
             |tree: &TreeUpdate, text: &str| tree.nodes.iter().any(|(_, n)| n.value() == Some(text));
         assert!(!shown(&tree, "Edit"), "the heading is still Edit");
@@ -8604,7 +8686,441 @@ mod tests {
             .position(|o| o.text.is_some())
             .expect("the line");
         t.ed.select_object(0, line);
-        assert_eq!(inspector::title(&app.tabs[0]), "Text");
+        assert_eq!(inspector::title(&app.tabs[0]), "Selected text");
+    }
+
+    /// What the inspector says: the names and texts of everything in it (in the region called
+    /// Inspector holding the most: the panel, or the pop-out beside its strip).
+    fn inspector_says(tree: &egui::accesskit::TreeUpdate) -> Vec<String> {
+        use egui::accesskit::{Node, NodeId, Role};
+        use std::collections::HashMap;
+        let nodes: HashMap<NodeId, &Node> = tree.nodes.iter().map(|(id, n)| (*id, n)).collect();
+        let inside = |root: NodeId| {
+            let (mut out, mut next) = (Vec::new(), vec![root]);
+            while let Some(id) = next.pop() {
+                if let Some(n) = nodes.get(&id) {
+                    out.push(*n);
+                    next.extend(n.children().iter().copied());
+                }
+            }
+            out
+        };
+        let region = tree
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.role() == Role::Complementary && n.label() == Some("Inspector"))
+            .map(|(id, _)| inside(*id))
+            .max_by_key(Vec::len)
+            .expect("the inspector");
+        (region.into_iter())
+            .flat_map(|n| [n.label(), n.value()])
+            .flatten()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Batch 39: the inspector keeps its width from frame to frame, with nothing selected, a
+    /// tool open (its heading row with two buttons) and pages selected: its heading row is
+    /// never wider than the panel it is measured in, which would widen it every frame. The
+    /// document's sections start it at the workspace's width.
+    #[test]
+    fn the_inspector_keeps_its_width() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let edge = |app: &mut App| {
+            let tree = window(app, &ctx, 1400.0, vec![]);
+            let (at, _) = node(&tree, "Inspector width").expect("the edge");
+            at.center().x
+        };
+        let start = edge(&mut app);
+        let width = 1400.0 - start;
+        assert!((width - INSPECTOR_WIDTH).abs() <= 8.0, "{width} wide");
+        for (what, act) in [
+            ("nothing selected", None),
+            ("a tool open", Some(Act::Watermark)),
+        ] {
+            if let Some(act) = act {
+                app.act(&ctx, act);
+            }
+            // Once its controls have widened it as far as they need.
+            settled_at(&mut app, &ctx, 1400.0);
+            let at = edge(&mut app);
+            for _ in 0..8 {
+                assert_eq!(edge(&mut app), at, "{what}: the inspector widened");
+            }
+        }
+        app.tabs[0].ed.selection = Selection::pages_from([0].into());
+        settled_at(&mut app, &ctx, 1400.0);
+        let at = edge(&mut app);
+        for _ in 0..8 {
+            assert_eq!(edge(&mut app), at, "pages selected: the inspector widened");
+        }
+    }
+
+    /// PF-40 (batch 39): with nothing selected the inspector shows the document: a few facts
+    /// about it, and its properties and opening view folded; no longer every tool, nor the
+    /// commands the band and the File menu have.
+    #[test]
+    fn nothing_selected_shows_the_document_not_every_tool() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let says = inspector_says(&settled_at(&mut app, &ctx, 1400.0));
+        assert_eq!(inspector::title(&app.tabs[0]), "Document");
+        for fact in [
+            "Pages",
+            "2",
+            "Paper",
+            "Letter",
+            "Security",
+            "None",
+            "Properties",
+            "Opening view",
+        ] {
+            assert!(says.iter().any(|s| s == fact), "no {fact}: {says:?}");
+        }
+        for gone in [
+            "Crop",
+            "Watermark",
+            "Headers, footers, Bates",
+            "Recognise text (OCR)",
+            "Optimise scanned pages",
+            "Export pages as images",
+            "Split into files",
+            "Password security",
+            "Export text…",
+            "Print…",
+            "Append PDFs…",
+        ] {
+            assert!(!says.iter().any(|s| s == gone), "{gone} is shown: {says:?}");
+        }
+    }
+
+    /// Batch 39: the document's Security fact says what it is now and what saving does: a
+    /// protected file opened has its protection removed on saving (as its notice says) until
+    /// a password is set again.
+    #[test]
+    fn the_security_fact_says_what_saving_does() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let path = std::env::temp_dir().join(format!(
+            "limarepdf-app-{}-security-fact.pdf",
+            std::process::id()
+        ));
+        pages_file(&path, 612.0, 1, Some("walrus"));
+        let bytes = std::fs::read(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let pdf = Pdf::from_bytes(&bytes, Some("walrus")).unwrap();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        assert!(app.add_tab(&ctx, pdf, None, None, false));
+        let says = inspector_says(&settled_at(&mut app, &ctx, 1400.0));
+        let removed = says.iter().any(|s| s == "Removed on save");
+        assert!(removed, "{says:?}");
+        app.tabs[0].set_encryption(Some(Encryption {
+            user_password: "walrus".into(),
+            owner_password: "walrus-owner".into(),
+            cipher: Cipher::Aes128,
+            restrictions: Restrictions::default(),
+        }));
+        let says = inspector_says(&settled_at(&mut app, &ctx, 1400.0));
+        let open = says.iter().any(|s| s == "Open password");
+        assert!(open, "{says:?}");
+    }
+
+    /// PF-40: each tool opens alone in the inspector from its command, headed by its name,
+    /// with a button that closes it, back to the document (or, for page labels, the page
+    /// they were opened for). Neither changes the document.
+    #[test]
+    fn each_tool_opens_alone_and_closes_back() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        settled_at(&mut app, &ctx, 1400.0);
+        let revision = app.tabs[0].revision;
+        for (act, name) in [
+            (Act::Watermark, "Watermark"),
+            (Act::HeaderFooter, "Headers, footers, Bates"),
+            (Act::Crop, "Crop"),
+            (Act::Ocr, "Recognise text (OCR)"),
+            (Act::Scans, "Optimise scanned pages"),
+            (Act::ExportImages, "Export pages as images"),
+            (Act::Split, "Split into files"),
+            (Act::Security, "Password security"),
+            (Act::PageLabels, "Page labels"),
+        ] {
+            app.act(&ctx, act);
+            let tree = settled_at(&mut app, &ctx, 1400.0);
+            assert_eq!(inspector::title(&app.tabs[0]), name);
+            let says = inspector_says(&tree);
+            let alone = !says
+                .iter()
+                .any(|s| s == "Opening view" || s == "Page properties");
+            assert!(alone, "{name}: shown with the document or pages: {says:?}");
+            let close = format!("Close {name}");
+            click_named(&mut app, &ctx, &close);
+            let tree = settled_at(&mut app, &ctx, 1400.0);
+            let back = match act {
+                Act::PageLabels => "Selected page",
+                _ => "Document",
+            };
+            assert_eq!(inspector::title(&app.tabs[0]), back, "{name}");
+            let kept = node(&tree, &close).is_some();
+            assert!(!kept, "{name} still has its close button");
+            let changed = app.tabs[0].revision != revision;
+            assert!(!changed, "{name} changed the document");
+            app.tabs[0].ed.selection = Selection::None;
+        }
+    }
+
+    /// PF-40: the document's properties, chosen with a tool open, take its place: the
+    /// document shows, its Properties open.
+    #[test]
+    fn properties_take_the_place_of_a_tool() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        app.act(&ctx, Act::Watermark);
+        settle(&mut app, &ctx);
+        app.act(&ctx, Act::Props);
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert_eq!(inspector::title(&app.tabs[0]), "Document");
+        assert!(node(&tree, "Title").is_some(), "Properties isn't open");
+    }
+
+    /// PF-40: a tool open follows the pages selected, its pages filled in from them, and gives
+    /// way to words selected; with those let go, the document shows, not the tool again.
+    #[test]
+    fn a_tool_follows_the_selected_pages_and_gives_way_to_words() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_in_colours(&ctx, [0.0; 3], [0.0; 3]);
+        app.act(&ctx, Act::Watermark);
+        settle(&mut app, &ctx);
+        app.tabs[0].ed.selection = Selection::pages_from([1].into());
+        settle(&mut app, &ctx);
+        assert_eq!(inspector::title(&app.tabs[0]), "Watermark");
+        assert_eq!(app.tabs[0].forms.wm.range, "2");
+        app.tabs[0].ed.selection = Selection::Words {
+            anchor: (0, 0),
+            end: (0, 1),
+        };
+        settle(&mut app, &ctx);
+        assert_eq!(inspector::title(&app.tabs[0]), "Selected text");
+        app.tabs[0].ed.selection = Selection::None;
+        settle(&mut app, &ctx);
+        assert_eq!(inspector::title(&app.tabs[0]), "Document");
+    }
+
+    /// Batch 39: selected pages show what they are: their numbers, paper and orientation (as
+    /// shown, after rotation), "Mixed" where they differ; their buttons; and page properties
+    /// folded, holding Crop and Page labels.
+    #[test]
+    fn selected_pages_show_their_paper_and_orientation() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let mut pdf = Pdf::new();
+        pdf.insert_blank(0, 612.0, 792.0).unwrap();
+        pdf.insert_blank(1, 612.0, 792.0).unwrap();
+        pdf.insert_blank(2, 595.0, 842.0).unwrap();
+        pdf.rotate_pages(&[1], 90).unwrap();
+        assert!(app.add_tab(&ctx, pdf, None, None, false));
+        let (one, more) = ("Selected page", "Selected pages");
+        for (pages, heading, facts) in [
+            (vec![0], one, ["Page 1 of 3", "Letter", "Portrait"]),
+            (vec![1], one, ["Page 2 of 3", "Letter", "Landscape"]),
+            (vec![0, 1], more, ["Pages 1–2 of 3", "Letter", "Mixed"]),
+            (vec![0, 2], more, ["Pages 1, 3 of 3", "Mixed", "Portrait"]),
+        ] {
+            app.tabs[0].ed.selection = Selection::pages_from(pages.iter().copied().collect());
+            let tree = settled_at(&mut app, &ctx, 1400.0);
+            assert_eq!(inspector::title(&app.tabs[0]), heading, "{pages:?}");
+            let says = inspector_says(&tree);
+            for fact in facts {
+                let shown = says.iter().any(|s| s == fact);
+                assert!(shown, "{pages:?}: no {fact}: {says:?}");
+            }
+        }
+        let says = inspector_says(&settled_at(&mut app, &ctx, 1400.0));
+        for shown in [
+            "Paper",
+            "Orientation",
+            "Rotate clockwise",
+            "Rotate counter-clockwise",
+            "Delete pages",
+            "Insert blank page",
+            "Page properties",
+        ] {
+            assert!(says.iter().any(|s| s == shown), "no {shown}: {says:?}");
+        }
+        for folded in ["Crop", "Page labels", "Watermark"] {
+            let shown = says.iter().any(|s| s == folded);
+            assert!(!shown, "{folded} is shown: {says:?}");
+        }
+        click_named(&mut app, &ctx, "Page properties");
+        let says = inspector_says(&settled_at(&mut app, &ctx, 1400.0));
+        for inside in ["Crop", "Page labels"] {
+            assert!(says.iter().any(|s| s == inside), "no {inside}: {says:?}");
+        }
+    }
+
+    /// Batch 39 (the mockup): a selected line is headed Selected text, as selected words are,
+    /// with the planned text tools folded at the end, marked Planned, saying what is planned;
+    /// hidden with the planned features.
+    #[test]
+    fn selected_text_shows_the_planned_text_tools() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_in_colours(&ctx, [0.0; 3], [0.0; 3]);
+        let planned = "Future text tools — Planned";
+        app.act(&ctx, Act::Tool(Tool::Select));
+        let t = &mut app.tabs[0];
+        let objs = t.ed.objects(&t.pdf, 0).to_vec();
+        let line = objs
+            .iter()
+            .position(|o| o.text.is_some())
+            .expect("the line");
+        t.ed.select_object(0, line);
+        app.open_inspector();
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert_eq!(inspector::title(&app.tabs[0]), "Selected text");
+        assert!(node(&tree, planned).is_some(), "no planned text tools");
+        click_named(&mut app, &ctx, planned);
+        let note = "Paragraph reflow, underline and strike-through are planned. Your existing \
+                    text tools keep working.";
+        let says = inspector_says(&settled_at(&mut app, &ctx, 1400.0));
+        assert!(says.iter().any(|s| s == note), "no note: {says:?}");
+        // Words selected with the read tool.
+        app.act(&ctx, Act::Tool(Tool::Read));
+        app.tabs[0].ed.selection = Selection::Words {
+            anchor: (0, 0),
+            end: (0, 1),
+        };
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert_eq!(inspector::title(&app.tabs[0]), "Selected text");
+        assert!(node(&tree, planned).is_some(), "none for words");
+        // Hidden with the planned features.
+        app.settings.show_planned = false;
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        let shown = node(&tree, planned).is_some();
+        assert!(!shown, "shown with planned features hidden");
+    }
+
+    /// PF-40: the inspector's pop-out, for a narrow window, shows a tool as the panel does,
+    /// with its button that closes it, back to the document.
+    #[test]
+    fn the_pop_out_shows_a_tool_with_its_close_button() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        app.act(&ctx, Act::Watermark);
+        // Folded to its strip, the tool in the pop-out.
+        app.inspector.set_open(false);
+        app.popout = true;
+        let tree = settled_at(&mut app, &ctx, 900.0);
+        assert!(!app.inspector.shown());
+        let says = inspector_says(&tree);
+        let headed = says.iter().any(|s| s == "Watermark");
+        assert!(headed, "no heading: {says:?}");
+        let p = middle(&tree, "Close Watermark");
+        window(&mut app, &ctx, 900.0, vec![egui::Event::PointerMoved(p)]);
+        window(&mut app, &ctx, 900.0, vec![press(p, true)]);
+        window(&mut app, &ctx, 900.0, vec![press(p, false)]);
+        let tree = settled_at(&mut app, &ctx, 900.0);
+        assert!(app.popout, "the pop-out closed");
+        assert_eq!(inspector::title(&app.tabs[0]), "Document");
+        assert!(node(&tree, "Close Watermark").is_none());
+    }
+
+    /// PF-40: a tool's close button is reached from the keyboard, F6 to the inspector putting
+    /// it first, and Enter closes the tool, the keyboard staying in the inspector.
+    #[test]
+    fn a_tool_closes_from_the_keyboard() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        app.act(&ctx, Act::Watermark);
+        settled_at(&mut app, &ctx, 1400.0);
+        let mut reached = Vec::new();
+        for _ in 0..10 {
+            let name = f6(&mut app, &ctx, false);
+            reached.push(name.clone());
+            if name.as_deref() == Some("Close Watermark") {
+                break;
+            }
+        }
+        let at = reached.last().cloned().flatten();
+        assert_eq!(at.as_deref(), Some("Close Watermark"), "{reached:?}");
+        let enter = key_with(Key::Enter, egui::Modifiers::NONE);
+        window(&mut app, &ctx, 1400.0, vec![enter]);
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert_eq!(inspector::title(&app.tabs[0]), "Document");
+        let focused = focused_name(&ctx, &tree);
+        assert_eq!(focused.as_deref(), Some("Collapse the inspector"));
+    }
+
+    /// ENH-38 (batch 39): each of the side panel's views keeps its own width: the pages as
+    /// narrow as the workspace has them, the views of text wider, and a view widened stays
+    /// so when another is shown and it comes back.
+    #[test]
+    fn each_side_view_keeps_its_own_width() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let edge = |app: &mut App| {
+            let tree = settled_at(app, &ctx, 1400.0);
+            let (at, _) = node(&tree, "Side panel width").expect("the edge");
+            at.center()
+        };
+        let width = |at: egui::Pos2| at.x - RAIL_WIDTH;
+        app.show_view(Side::Pages);
+        let pages = width(edge(&mut app));
+        assert!((pages - SIDE_WIDTH).abs() <= 8.0, "pages: {pages}");
+        let texts = [
+            Side::Search,
+            Side::Bookmarks,
+            Side::Comments,
+            Side::Signatures,
+        ];
+        for side in texts {
+            app.show_view(side);
+            let w = width(edge(&mut app));
+            assert!(w >= 200.0, "{side:?}: {w}");
+        }
+        // Comments widened by its edge: kept, and the pages' width not changed.
+        app.show_view(Side::Comments);
+        let from = edge(&mut app);
+        let to = from + egui::vec2(60.0, 0.0);
+        let over = egui::Event::PointerMoved(from);
+        window(&mut app, &ctx, 1400.0, vec![over]);
+        window(&mut app, &ctx, 1400.0, vec![press(from, true)]);
+        for i in 1..=4 {
+            let at = from + (to - from) * (i as f32 / 4.0);
+            window(&mut app, &ctx, 1400.0, vec![egui::Event::PointerMoved(at)]);
+        }
+        window(&mut app, &ctx, 1400.0, vec![press(to, false)]);
+        let widened = width(edge(&mut app));
+        let wanted = width(from) + 60.0;
+        assert!((widened - wanted).abs() <= 2.0, "{widened}, not {wanted}");
+        app.show_view(Side::Pages);
+        let now = width(edge(&mut app));
+        assert!((now - pages).abs() <= 0.5, "pages: {now}, not {pages}");
+        app.show_view(Side::Comments);
+        let back = width(edge(&mut app));
+        let kept = (back - widened).abs() <= 0.5;
+        assert!(kept, "comments: {back}, not {widened}");
     }
 
     /// A26: with characters selected in a line edited on the page, the first colour picked

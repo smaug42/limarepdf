@@ -8,9 +8,9 @@ split one into several files. Every change here is one step to undo with Ctrl+Z.
 ## Select pages
 
 Click a page's thumbnail in the Pages view on the left to select it. Shift+click selects a range, and Ctrl+click
-adds or removes one page. The inspector on the right then shows what you can do with the selected pages; so does
-right-clicking a thumbnail. **Pages** in the command band and ☰ > Pages have the same commands, which work on the
-page you are on when no pages are selected.
+adds or removes one page. The inspector on the right then says which pages they are, their paper size and which
+way round they are, and shows what you can do with them; so does right-clicking a thumbnail. **Pages** in the
+command band and ☰ > Pages have the same commands, which work on the page you are on when no pages are selected.
 
 ## Reorder pages
 
@@ -33,9 +33,9 @@ Select the pages, then use **Pages** in the band (the inspector has the same but
   Insert blank page** (or ☰ > Pages > Insert blank page) inserts one the size of the page you are on.
 - **Pictures:** **Insert images…** (in **Pages > Insert pages**) adds PNG, JPEG or TIFF pictures after the selected
   pages, one page each (see [Scans and OCR](scanning-and-ocr.md#importing-images)).
-- **Other PDFs:** **Append PDFs…** (in **Pages > Insert pages**, ☰ > Pages, or the button at the bottom of the
-  inspector when nothing is selected) adds the pages of the PDFs you choose at the end of the document. To merge
-  documents, open the first one and append the others; drag thumbnails afterwards to put the pages elsewhere.
+- **Other PDFs:** **Append PDFs…** (in **Pages > Insert pages**, or ☰ > Pages) adds the pages of the PDFs you
+  choose at the end of the document. To merge documents, open the first one and append the others; drag
+  thumbnails afterwards to put the pages elsewhere.
 
 The files are added in the order chosen, in one step that Ctrl+Z takes back. A password-protected file asks for its
 password: **Add pages** adds its pages, **Skip this file** leaves it out and adds the others, and **Cancel** adds
@@ -55,6 +55,7 @@ gets no [recovery copies](gui.md#recovery-copies).
 2. Choose **Pages per file** and how many, or **At bookmarks, levels** and how many levels of bookmarks to split at
    (1 is the top level only).
 3. Press **Choose folder…** and pick where the files go.
+4. Close the tool with the × at the top of the inspector.
 
 Files are numbered after the document, such as `book-001.pdf`; split at bookmarks, they are named after their
 bookmark too, such as `book-002 Introduction.pdf`, and the pages before the first bookmark get a file of their
@@ -78,10 +79,13 @@ Crop trims margins from the pages as they are shown.
    **Crop** opens in the inspector. The pages are shown whole, with the part outside each page's crop box dimmed.
 2. Drag the crop box's edges or corners on the page, or type the margins. Each drag or number crops all the pages
    in the Pages box at once, and dragging back out undoes a crop.
-3. Close the section, or press Esc, to see the pages cropped.
+3. Close Crop with the × at the top of the inspector, or press Esc, to see the pages cropped.
 
-While the section is open, clicks on the pages only move the crop box. The margin fields start with the first
-page's crop, measured from the full page. **Remove crop** shows the whole page again.
+With pages selected, Crop is also in the inspector under **Page properties**: open it there, and fold it again (or
+press Esc) to see the pages cropped.
+
+While Crop is open, clicks on the pages only move the crop box. The margin fields start with the first page's
+crop, measured from the full page. **Remove crop** shows the whole page again.
 
 Cropping hides content; it doesn't delete it. To remove what is outside the crop box for good, use
 [Remove hidden information](redaction.md#removing-hidden-information).
@@ -92,10 +96,12 @@ Page labels are the page numbers viewers show, such as i, ii, 1, 2 or A-1, for a
 numbered apart from the rest. They don't change what is printed on the pages.
 
 1. Select the first page to number, or go to it, and choose **Pages > Page labels** (or ☰ > Pages > Page
-   labels…). **Page labels** opens in the inspector.
+   labels…). **Page labels** opens in the inspector. (With pages selected, it is also under **Page properties**
+   there.)
 2. Pick a style, an optional prefix, and the number to start at.
+3. Close the tool with the × at the top of the inspector.
 
-The numbering runs to the next labelled range, and each change applies at once. The section shows the numbering
+The numbering runs to the next labelled range, and each change applies at once. Page labels shows the numbering
 the page has now. When a document has labels, the status bar shows the label with the page's place, such as
 "Page i (3 of 477)", and the thumbnails, search results and new bookmarks use the labels. Labels stay with their
 pages when pages are deleted or moved.

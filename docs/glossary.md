@@ -73,7 +73,7 @@ the document. See [Redaction](redaction.md#removing-hidden-information).
 signatures. Each opens that view in the side panel beside it; clicking the view shown again folds the panel away.
 
 **Inspector.** The panel on the right of the window, which shows the options for what is selected, or for the
-whole document when nothing is.
+whole document when nothing is. Tools such as Watermark and Crop open in it on their own, with a × to close them.
 
 **Metadata.** Information about the document stored in it, such as its title, author and the program that made it.
 
@@ -89,7 +89,8 @@ the pages.
 without stopping them from opening it. Also called an owner password.
 
 **Planned.** The mark on a greyed button for a feature not built yet, shown where it will be. It does nothing.
-Turning off Show planned features, in the status bar or View > Show, hides these buttons.
+In the inspector, Future text tools carries the mark too. Turning off Show planned features, in the status bar or
+View > Show, hides them.
 
 **Read tool.** The tool every document opens with (the text cursor): it selects text, follows links, fills in
 forms, and selects and moves pictures, shapes and comments on the page (Shift+click for several pictures and

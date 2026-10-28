@@ -16,6 +16,7 @@ later.
    `Page {page} of {pages}`, which gives "Page 3 of 12".
 3. Check the pages: they show the headers and footers as you type.
 4. Press **Add to pages**.
+5. Close the tool with the × at the top of the inspector when you are done.
 
 These words in curly brackets are filled in on each page:
 
@@ -52,22 +53,25 @@ Put `{bates}` where the number goes; without it, the number goes at the bottom r
    **Rotation** and, for text, **Colour**.
 4. Choose **Above the content** or **Behind the content**.
 5. Check the pages, then press **Add to pages**.
+6. Close the tool with the × at the top of the inspector when you are done.
 
-The watermark is centred on each page.
+The watermark is centred on each page. While the tool is open you can still select pages: its Pages box follows
+them.
 
 ## Change it after adding
 
-While the Watermark or Headers, footers, Bates section is open, the pages in its Pages box show what it describes as
-you set it, drawn over them. Nothing is added to the document until you press Add to pages.
+While the Watermark or Headers, footers, Bates tool is open, the pages in its Pages box show what it describes as
+you set it, drawn over them. Nothing is added to the document until you press Add to pages, and closing the tool
+before then adds nothing.
 
-After that, the section says "Changes update the watermark just added" (or the headers and footers): each change
+After that, the tool says "Changes update the watermark just added" (or the headers and footers): each change
 updates what you added instead of adding a second copy, one undo step each (a colour when its picker closes). Undo
-steps back through the changes, and the section's settings follow. **Add another** keeps it and adds a new one.
+steps back through the changes, and the tool's settings follow. **Add another** keeps it and adds a new one.
 To do this, LimarePDF keeps a copy of the document as it was before you added it, counted in the [undo
-limit](gui.md#undo). On a document so large that the limit has no room for that copy, a message says the section
-can't change what was added any more; what was added stays on the pages as last changed.
+limit](gui.md#undo). On a document so large that the limit has no room for that copy, a message says it can't be
+changed from its tool any more; what was added stays on the pages as last changed.
 
-Any other change to the document ends this: the section shows Add to pages again, and the pages show the settings
+Any other change to the document ends this: the tool shows Add to pages again, and the pages show the settings
 again once you change one. From then on, what was added is part of the pages: no command removes it from all its
 pages. Undo takes it back until you close the document, also after saving, and on each page its text and pictures
 can be edited or deleted like any other page content (see [Move, resize or
@@ -79,8 +83,8 @@ Header, footer, Bates and watermark text is written in Helvetica, and characters
 Vietnamese, Greek, Cyrillic and so on) in its Liberation Sans face, embedded in the file. Other scripts (Chinese,
 Hebrew, Arabic and so on) and emoji can't be typed or pasted: a note at the caret says so.
 
-While a section is open, the pages show its text in Liberation Sans, which has Helvetica's widths, over the content
-even when it is set to go behind it. Once added, the pages show it as written.
+While one of these tools is open, the pages show its text in Liberation Sans, which has Helvetica's widths, over the
+content even when it is set to go behind it. Once added, the pages show it as written.
 
 ## Stamps
 

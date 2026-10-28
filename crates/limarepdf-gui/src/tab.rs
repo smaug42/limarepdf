@@ -1499,7 +1499,7 @@ impl Tab {
             Stamp::HeaderFooter => "The headers and footers just added",
         };
         self.info = Some(format!(
-            "{what} can't be changed from its section any more: this document is too \
+            "{what} can't be changed from its tool any more: this document is too \
              large to keep the copy that needs. What was added stays on the pages"
         ));
     }

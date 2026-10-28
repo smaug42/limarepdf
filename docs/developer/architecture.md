@@ -346,7 +346,9 @@ colour; and `typing_fonts.rs` draws typed text from the family's file with egui'
 
 The inspector's heading is `inspector::title`: for the editor's section, `Editor::heading` (a selected comment,
 else the tool's options, else the selected object; the object's own heading is drawn again in the panel only below a
-tool's options). An object's X, Y, width and height are in a `CollapsingHeader` with a fixed id
+tool's options; `Editor::object_heading` calls a line of page text "Selected text", as selected words are, since
+batch 39); else the task open (`Section::title`), else "Selected page", "Selected pages" or "Document" (see the
+workspace's inspector below). An object's X, Y, width and height are in a `CollapsingHeader` with a fixed id
 (`position-and-size`), so it starts closed and keeps its state from one object to the next; one field a row, as
 the section's indent leaves no room for two in the default width (two widened the panel). A line of page text has no
 text box in the inspector: its words are typed only on the page (`line_edit_ui`), which the arrow opens too (a
@@ -705,9 +707,9 @@ places of the groups that change typing (Font, and Clipboard for Copy and Paste)
 `keeping` treats a press or release there as in the inspector: the line being edited, or a text box being written,
 stays open and takes the keyboard back once settled. `Editor::settle_look`, run each frame from `App::ui` whether or
 not the inspector is shown, observes the selected line's history and keeps finished changes (`Typed::Words`,
-`commit_insp`) as undo steps. The inspector now shows facts for text (`facts`, `look_facts`). Copy and Paste in the
-band (`Act::Copy`, `Act::Paste`) for typing set `App::clip` and `Editor::refocus_typing`; `App::clipboard`, at the
-start of each frame, sends egui's `ViewportCommand::RequestCopy` or `RequestPaste` once that box has the keyboard
+`commit_insp`) as undo steps. The inspector now shows facts for text (`inspector::facts`, `look_facts`). Copy and
+Paste in the band (`Act::Copy`, `Act::Paste`) for typing set `App::clip` and `Editor::refocus_typing`;
+`App::clipboard`, at the start of each frame, sends egui's `ViewportCommand::RequestCopy` or `RequestPaste` once that box has the keyboard
 again, so the platform's copy or paste lands in it (dropped if the typing ends first).
 
 The accent (`crates/limarepdf-gui/src/accent.rs`) is read from the desktop: on Linux the XDG desktop portal's
@@ -723,8 +725,53 @@ of it. Without one, the approved mockup's teal palette stays.
 
 The side panel's views are the icon strip at the window's left edge (`SIDE_VIEWS`, each button's selected state a
 toggle for screen readers), the panel's heading a plain label (`side_name`); Find (`Act::Find`) shows Search
-results and sets `Tab::focus_query`, which `Tab::show_results` gives the keyboard. The status bar says what is
-selected or the tool in use (`Editor::heading` while the editor owns the panel), and its zoom is `zoom_menu`.
+results and sets `Tab::focus_query`, which `Tab::show_results` gives the keyboard. `side_panel(Side)` gives each
+view a panel id of its own, so egui keeps each view's width apart for the session (not saved between runs, like the
+inspector's), and its starting width: `SIDE_WIDTH` (132 points, the workspace's) for Pages, `SIDE_TEXT_WIDTH` (220)
+for Search results, Bookmarks, Comments and Digital signatures, whose lines wrapped a word or two at a time at 132.
+`panels::edge_keys` and `edge_shown` take that id. The panel sets its minimum width to its available width, since
+egui narrows a panel to its contents, such as one short line wrapped ("This document has no comments or markup.").
+The status bar says what is selected or the tool in use (`Editor::heading` while the editor owns the panel), and its
+zoom is `zoom_menu`.
+
+The inspector (batch 39's second stage: PF-40, with ENH-38 and ENH-41) shows the editor's section for a selection
+or a tool that adds content (`Editor::owns_panel`), else `inspector::show`, which draws the task open alone, else
+the selected pages, else the document. A task is a `Section` for which `Section::is_task` holds (all but
+`Properties`, a section of the document's inspector), headed by `Section::title`, and kept in `Forms::task` until
+closed. `Forms::choose` makes a task the one open, in place of another, or closes it for Properties, and sets
+`reveal`; `show` does the same with a section revealed, and a `Forms::close` naming the task closes it (Esc on Crop, `Act::Escape` while
+`Tab::crop_view`, or `Tab::set_crop_view` when typing on the page can't be kept). Each section's controls are one
+function, `tool_ui`, used for the task alone and inside the selected pages' Page properties, where Crop and Page
+labels are each a section of their own (a second `Sections`, whose open list joins the outer one, so the pages show
+the crop box while either Crop is open); `split_ui` is Split's. The facts are `document_facts` (pages; paper;
+security from `Tab::encryption`, the protection saving will write, or "Removed on save" for a protected file
+opened (lopdf's `was_encrypted`) until a password is set again, as its notice says; form fields when there are any; signatures from
+`Tab::sigs`' `Check` for a file with signature fields) and `page_facts` (paper, and `orientation`: Portrait,
+Landscape, Square or Mixed), from `Tab::sizes`, the pages as shown, after rotation. `paper_of` names their paper
+with `paper` (Letter, Legal, Tabloid, Executive, A3, A4, A5 and B5, either way round, within 2 points; else "W × H
+pt"), "Mixed" when they differ, and `pages_of` writes the selection as people do ("Pages 1–2, 5 of 9"). The look is
+four functions the editor's section uses too: `facts` (moved from `editor.rs`: muted 12-point labels at the left,
+values at the right), `note` (a 12-point muted line, in place of `ui.weak`), `section` (a thin separator, then a
+`CollapsingHeader`) and `section_name` (its 12-point name); the heading stays 15-point medium (`inspector_heading`),
+and `inspector_body` sets the indent to 10 points.
+
+`App::reveal` opens the inspector, lets go of an object, word or comment selection (a comment's section otherwise
+kept the panel from the tool), gives a content-adding tool way to the read tool, drops a page selection only for
+Properties, then calls `Forms::choose`; a tool kept with a page selection fills its Pages box from it
+(`sync_forms`), Export pages as images included. Each frame, before the panel is drawn, a selection or tool that
+`Editor::owns_panel` closes the task, shown or not, so it doesn't come back when that is let go. `inspector_head`
+draws the heading row for the panel (`collapse`) and the pop-out with `egui::Sides`: the title (wrapped onto a
+second line when long, whole, as the menu names the tool), then, in
+`dialogs::reading_order` so that Tab goes in the order shown, the close button (`icon::X`, named "Close" and the
+task's title) and, in the panel, the collapse button. The buttons' width is kept from the last frame with how many
+there were; when that changes it starts at 48 points a button, more than they take, so they never show past their
+place and widen the panel, which egui would then keep (`the_inspector_keeps_its_width`). The collapse button has a
+scope id of its own (`COLLAPSE`), the same with or without the close button before it, so a close from the keyboard
+(no pointer click that frame) can give it the keyboard; in the pop-out the keyboard goes to the strip's button that
+opens it (`POPOUT_OPENER`). `inspector_body` lends `Editor::planned` from Show planned features:
+`Editor::planned_text_tools` draws Future text tools at the end of selected words' and a visible text line's
+inspector, a `section` whose name is a `LayoutJob` with the 11-point Planned tag, named "Future text tools —
+Planned" for screen readers (a Tab stop, unlike the planned buttons, as it opens to show its note).
 
 F6 and Shift+F6 (ENH-10, batch 26) are `Act::NextRegion` and `PrevRegion`, the one shortcut `App::shortcuts` runs
 while a text box has the keyboard (and never while a list or menu is open), with Shift told apart exactly, as egui

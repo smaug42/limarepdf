@@ -51,9 +51,13 @@ Documents open with the read tool, the text cursor. It does most things:
   make them. Drag it, or use the arrow keys, to move it. Shift+click more pictures and shapes to select several and
   move them together.
 - **Pages:** click a thumbnail to select its page (Shift+click for a range, Ctrl+click for one more). The inspector
-  then offers rotate, delete, extract and insert. Drag thumbnails to put pages in a new order.
-- **The whole document:** with nothing selected (Esc clears a selection), the inspector shows the document's
-  settings: properties, password security, watermark, headers and footers, text recognition and more.
+  then shows their paper size and offers rotate, delete, extract and insert. Drag thumbnails to put pages in a new
+  order.
+- **The whole document:** with nothing selected (Esc clears a selection), the inspector shows the document: how
+  many pages it has, their paper size and its security, then its properties and opening view.
+
+Tools such as **Insert > Watermark**, **Pages > Crop** and **Protect > Passwords** open in the inspector on their
+own. The × at the top of the inspector closes the tool.
 
 ![A text box selected on the page, with its handles and a small toolbar, and its options in the inspector at the right: text size and colour, background, border, opacity, its text, Delete and a reply box](images/inspector.png)
 

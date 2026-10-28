@@ -128,7 +128,7 @@ Undo keeps up to 20 steps, and at most 1 GB per document, so very large document
 ### Saving removed the document's password
 
 A protected document is saved without its password unless you set it again: a notice says so when it opens. Set
-it with **Protect > Passwords** (Password security in the inspector) before saving.
+it with **Protect > Passwords**, which opens Password security in the inspector, before saving.
 
 ### "The file was saved, but your system couldn't confirm it is safely on disk"
 

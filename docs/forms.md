@@ -35,8 +35,9 @@ runs.
 
 ## The Form section
 
-With nothing selected, the inspector's **Form** section shows the field you are in: its name, its description and
-whether it is required. It also has these, which are in **Forms and sign > Fill fields ▾** too:
+With nothing selected, the inspector says how many form fields the document has, and its folded **Form** section
+shows the field you are in: its name, its description and whether it is required. It also has these, which are in
+**Forms and sign > Fill fields ▾** too:
 
 - **Clear field**, which empties the field you are in.
 - **Highlight fields**, the same switch as above.

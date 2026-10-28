@@ -15,7 +15,7 @@ the pictures in LimarePDF.
    **Optimise**, to make the file smaller and straighten tilted pages.
 4. Choose **Pages > Recognise text**, which opens **Recognise text (OCR)** in the inspector, and press
    **Recognise**. The pages look the same, but their text can now be searched, selected and copied.
-5. Save.
+5. Close the tool with the × at the top of the inspector, and save.
 
 A PDF that is already a scan works the same way: start at step 3. When a document's pages are scans without text,
 a notice above the pages says so, with a **Recognise text** button.
@@ -50,8 +50,8 @@ Works on pages that are one image covering the page.
   largest, and not straightened if any of them has text over it. The report lists the other pages as optimised with
   the first.
 
-Where: **Pages > Optimise**, which opens the inspector's Optimise scanned pages section, for the selected pages or
-all. It runs in the background and can be undone. On the command line: `limarepdf-cli optimize-scans`.
+Where: **Pages > Optimise**, which opens the Optimise scanned pages tool in the inspector, for the selected pages
+or all. It runs in the background and can be undone. On the command line: `limarepdf-cli optimize-scans`.
 
 ## Recognising text (OCR)
 
@@ -65,8 +65,8 @@ looks the same.
 - **Text layer:** Helvetica with WinAnsi characters; other characters become `?`.
 - **Not handled:** text in pictures, handwriting, vertical text.
 
-Where: **Pages > Recognise text**, which opens the inspector's Recognise text (OCR) section, for the selected pages
-or all. It runs in the background and can be undone. On the command line: `limarepdf-cli ocr`.
+Where: **Pages > Recognise text**, which opens the Recognise text (OCR) tool in the inspector, for the selected
+pages or all. It runs in the background and can be undone. On the command line: `limarepdf-cli ocr`.
 
 ### Seeing and correcting recognised text
 
@@ -95,7 +95,7 @@ parallel.
 
 Importing, optimising and OCR have automated tests, and were tried by hand on made-up scans (CMYK JPEG and 300 dpi
 TIFF among them) and one real scan. The black-and-white or greyscale choice hasn't been tried on real scanner
-output yet, and the app's inspector sections for these weren't clicked through. The full record is in
+output yet, and the app's inspector tools for these weren't clicked through. The full record is in
 [Testing](developer/testing.md#scanning-and-ocr).
 
 ## Licence of the OCR model

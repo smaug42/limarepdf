@@ -5,6 +5,7 @@ use crate::chosen::{Chosen, Left, Of};
 use crate::dialogs;
 use crate::fields::FormUi;
 use crate::icon;
+use crate::inspector::{facts, note, section, section_name};
 use crate::page_text::{self, selection, PageText};
 use crate::selection::{ObjKind, Selected, Selection, WordAt};
 use crate::signing::{SignKit, SignPane, SignPick};
@@ -1065,24 +1066,6 @@ fn font_field(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> bool) -> boo
     ui.allocate_ui(size, add).inner
 }
 
-/// The inspector's facts about something: a label at the left, muted, its value at the
-/// right, a row each.
-pub fn facts(ui: &mut egui::Ui, id: &str, rows: &[(&str, String)]) {
-    let muted = theme::muted(ui.visuals().dark_mode);
-    egui::Grid::new(id)
-        .num_columns(2)
-        .spacing(egui::vec2(12.0, 8.0))
-        .show(ui, |ui| {
-            for (label, value) in rows {
-                ui.label(egui::RichText::new(*label).size(12.0).color(muted));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new(value).size(12.0));
-                });
-                ui.end_row();
-            }
-        });
-}
-
 /// What the inspector says of the look of `text`: its font and size, "Mixed" where they
 /// differ.
 fn look_facts(text: &dyn Restyle) -> [(&'static str, String); 2] {
@@ -1295,6 +1278,8 @@ pub struct Editor {
     pub box_style: TextStyle,
     /// The name new annotations are signed with (from the settings).
     pub author: String,
+    /// The features planned but not built are shown (from the settings; ENH-41).
+    pub planned: bool,
     /// How many areas are marked for redaction (counted by the tab).
     pub redact_marks: usize,
     /// The Redact tool's Apply button was pressed; the tab runs the command.
@@ -1404,6 +1389,7 @@ impl Default for Editor {
                 ..TextStyle::default()
             },
             author: String::new(),
+            planned: false,
             redact_marks: 0,
             apply_redactions: false,
             zoom: 1.0,
@@ -4091,7 +4077,7 @@ impl Editor {
 
     /// The inspector's heading for the editor's section, as it shows them: the selected
     /// comment or words, else the tool's options, else the selected object or objects
-    /// ("Comment", "Selected text", "New rectangle", "Text", "3 objects").
+    /// ("Comment", "Selected text", "New rectangle", "Image", "3 objects").
     pub fn heading(&self) -> String {
         if self.selection.annot().is_some() {
             return match self.selected_annot() {
@@ -4138,7 +4124,8 @@ impl Editor {
         let o = self.objs.get(&page)?.get(id)?;
         Some(match o.kind {
             ObjectKind::Text if o.hidden => "Recognised text (invisible)",
-            ObjectKind::Text => "Text",
+            // As the workspace has it, and as for selected words.
+            ObjectKind::Text => "Selected text",
             ObjectKind::Image => "Image",
             ObjectKind::Form => "Group",
             ObjectKind::Path => "Shape",
@@ -4420,7 +4407,7 @@ impl Editor {
             return;
         };
         let [mut x, mut y] = g.at;
-        let done = egui::CollapsingHeader::new("Position")
+        let done = section(ui, section_name("Position"))
             .id_salt("position-and-size")
             .show(ui, |ui| {
                 let mut done = false;
@@ -4571,6 +4558,34 @@ impl Editor {
         let [font, size] = look_facts(&c.text);
         let editing = ("Editing", "Selected words".into());
         facts(ui, "words-look", &[editing, font, size]);
+        self.planned_text_tools(ui);
+    }
+
+    /// The text tools planned (ENH-41), folded at the end of selected text's inspector as the
+    /// workspace has them: marked Planned, saying what is planned. Not with the planned
+    /// features hidden.
+    fn planned_text_tools(&self, ui: &mut egui::Ui) {
+        if !self.planned {
+            return;
+        }
+        let text = |size, color| egui::TextFormat::simple(egui::FontId::proportional(size), color);
+        let ink = ui.visuals().text_color();
+        let muted = theme::muted(ui.visuals().dark_mode);
+        let mut name = egui::text::LayoutJob::default();
+        name.append("Future text tools", 0.0, text(12.0, ink));
+        name.append("Planned", 6.0, text(11.0, muted));
+        let r = section(ui, name)
+            .id_salt("future-text-tools")
+            .show(ui, |ui| {
+                note(
+                    ui,
+                    "Paragraph reflow, underline and strike-through are planned. Your \
+                     existing text tools keep working.",
+                );
+            });
+        let said = "Future text tools — Planned";
+        r.header_response
+            .widget_info(|| egui::WidgetInfo::labeled(egui::Role::DisclosureTriangle, true, said));
     }
 
     /// Edit's Font group (ENH-38): the font list, size, Bold, Italic, `planned` (the planned
@@ -4710,9 +4725,9 @@ impl Editor {
                 .filter(|s| !s.is_empty())
                 .cloned(),
         );
-        ui.weak(about.join(" · "));
+        note(ui, about.join(" · "));
         if a.locked() {
-            ui.weak("Locked: can't be changed or deleted.");
+            note(ui, "Locked: can't be changed or deleted.");
         }
         ui.separator();
         let mut done = false;
@@ -4819,11 +4834,14 @@ impl Editor {
                 .map(|s| limarepdf_core::display_line(s, 80))
                 .filter(|s| !s.is_empty())
                 .collect();
-            ui.weak(if who.is_empty() {
-                "Reply".to_string()
-            } else {
-                who.join(" · ")
-            });
+            note(
+                ui,
+                if who.is_empty() {
+                    "Reply".to_string()
+                } else {
+                    who.join(" · ")
+                },
+            );
             ui.label(limarepdf_core::display_text(&r.contents, 2000));
             ui.add_space(4.0);
         }
@@ -5197,7 +5215,7 @@ impl Editor {
                 // word processor, and their look changed in the band's Font group: the
                 // panel says what they are.
                 if obj.hidden {
-                    ui.weak("Used by search and copy.");
+                    note(ui, "Used by search and copy.");
                 } else {
                     // What is selected in the line being edited on the page, else all of it.
                     let sel = match self.line_edit.as_ref() {
@@ -5227,7 +5245,7 @@ impl Editor {
                     ];
                     facts(ui, "line-look", &rows);
                     if source == "Nearest standard" {
-                        ui.weak("Non-standard font: edits use the nearest standard one.")
+                        note(ui, "Non-standard font: edits use the nearest standard one.")
                             .on_hover_text(obj.font_name.as_deref().unwrap_or("?"));
                     }
                 }
@@ -5253,7 +5271,7 @@ impl Editor {
             ObjectKind::Image => {
                 ui.add_space(4.0);
                 if obj.inline {
-                    ui.weak("Inline image: can't be replaced.");
+                    note(ui, "Inline image: can't be replaced.");
                 } else if theme::glyph_button(ui, icon::IMAGE, "Replace image…").clicked() {
                     if let Some(bytes) = pick_image() {
                         self.actions.push(Action::ReplaceImage(page, id, bytes));
@@ -5273,7 +5291,7 @@ impl Editor {
             insp.geom[2] - insp.geom[0],
             insp.geom[3] - insp.geom[1],
         );
-        let geom_done = egui::CollapsingHeader::new("Position and size")
+        let geom_done = section(ui, section_name("Position and size"))
             .id_salt("position-and-size")
             .show(ui, |ui| {
                 let mut done = false;
@@ -5316,6 +5334,9 @@ impl Editor {
             // A line being edited on the page shows the change as it is made, and keeps
             // it with the typing when the editing finishes.
             self.commit_insp();
+        }
+        if obj.kind == ObjectKind::Text && !obj.hidden {
+            self.planned_text_tools(ui);
         }
     }
 }
