@@ -690,7 +690,9 @@ makes a button that only opens its menu), `Font`, `Sign` and `Marks` (drawn by t
 `markup::menu`) and `Planned` (a label, icon, the build plan's item and what it will do). A button's enabled state,
 tooltip and shortcut come from the registry; it shows pressed while its command is on or a tool in its menu is in
 use, not for a menu's ticked choices. Planned items are disabled buttons named "… — Planned" (no Tab stop, never
-dispatched), hidden with `Settings::show_planned` (`Act::TogglePlanned`). Each group's width, open or folded, is kept
+dispatched), hidden with `Settings::show_planned` (`Act::TogglePlanned`). `planned_button` draws one with
+`Button::atom_ui`: its tag (thin spaces either side) carries an atom id (`tag_id`), whose laid-out rect
+`outline_tag` outlines with a dashed line, as the mockup's chip; in Compact commands there is no tag. Each group's width, open or folded, is kept
 in egui's memory from the last frame; `band::fold_level` folds them in `band::fold_order` (groups of planned
 features alone first, left out rather than folded; then from the right) with a 12-point margin before one comes back,
 a folded group being a menu button with its name holding its controls. `Parts::compact` (`Settings::compact_commands`,
@@ -726,9 +728,15 @@ of it. Without one, the approved mockup's teal palette stays.
 The side panel's views are the icon strip at the window's left edge (`SIDE_VIEWS`, each button's selected state a
 toggle for screen readers), the panel's heading a plain label (`side_name`); Find (`Act::Find`) shows Search
 results and sets `Tab::focus_query`, which `Tab::show_results` gives the keyboard. `side_panel(Side)` gives each
-view a panel id of its own, so egui keeps each view's width apart for the session (not saved between runs, like the
-inspector's), and its starting width: `SIDE_WIDTH` (132 points, the workspace's) for Pages, `SIDE_TEXT_WIDTH` (220)
-for Search results, Bookmarks, Comments and Digital signatures, whose lines wrapped a word or two at a time at 132.
+view a panel id of its own, so egui keeps each view's width apart, and its starting width: `SIDE_WIDTH` (132
+points, the workspace's) for Pages, `SIDE_TEXT_WIDTH` (220) for Search results, Bookmarks, Comments and Digital
+signatures, whose lines wrapped a word or two at a time at 132. A width the user gives a panel is remembered
+between runs (ENH-08, batch 39's third stage): `Settings::panel_widths`, by panel id ("inspector", "side",
+"side-comments" and so on; `panel_width = <id> <points>` lines, kept from `panels::NARROWEST` to half the widest
+window), is each panel's `default_size`, which egui uses until it has a width of its own. `App::keep_width`
+watches each panel's edge with `panels::edge_held` (dragged, or with the keyboard on it) and, the frame it is let
+go, keeps the panel's width (`Settings::keep_width`, saved when it changed); a panel widened by what it holds
+(Watermark's controls) keeps the width given, and the inspector's strip, dragged closed, keeps nothing.
 `panels::edge_keys` and `edge_shown` take that id. The panel sets its minimum width to its available width, since
 egui narrows a panel to its contents, such as one short line wrapped ("This document has no comments or markup.").
 The status bar says what is selected or the tool in use (`Editor::heading` while the editor owns the panel), and its
@@ -753,7 +761,13 @@ pt"), "Mixed" when they differ, and `pages_of` writes the selection as people do
 four functions the editor's section uses too: `facts` (moved from `editor.rs`: muted 12-point labels at the left,
 values at the right), `note` (a 12-point muted line, in place of `ui.weak`), `section` (a thin separator, then a
 `CollapsingHeader`) and `section_name` (its 12-point name); the heading stays 15-point medium (`inspector_heading`),
-and `inspector_body` sets the indent to 10 points.
+and `inspector_body` sets the indent to 10 points. `facts` rows are at least 17 points high (egui's grid would make
+them the interact height, 24), 8 apart, as the mockup's. The panel is `theme::inspector_frame`: the band's surface
+colour (white, or the dark theme's surface), 14 points either side, 10 above (its strip keeps egui's 8 × 2);
+`theme::inspector_style`, set in `inspector_body` (the panel and the pop-out), fills text boxes with the number
+boxes' colour, as the surface's own would hide them. `act_button`'s label is its button's shrinking atom
+(`atom_shrink`) and wraps (egui would otherwise take the icon, the first text atom, as the one to shrink), so a long
+name such as "Extract pages to a new tab" never widens the panel, which would change the pages' zoom.
 
 `App::reveal` opens the inspector, lets go of an object, word or comment selection (a comment's section otherwise
 kept the panel from the tool), gives a content-adding tool way to the read tool, drops a page selection only for

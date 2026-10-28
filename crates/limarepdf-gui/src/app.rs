@@ -670,6 +670,8 @@ pub struct App {
     inspector: Panel,
     /// The collapsed inspector's contents are shown in a pop-out over the pages.
     popout: bool,
+    /// The panels whose edge the user is moving: their width is kept once let go.
+    resizing: Vec<&'static str>,
     /// The band's name chosen: its commands show under the names (ENH-38).
     band: Band,
     /// Copy or Paste clicked in the band for the text being typed (its box's id), waiting
@@ -798,6 +800,7 @@ impl App {
             palette: None,
             inspector: Panel::new(settings.inspector_panel),
             popout: false,
+            resizing: Vec::new(),
             band: Band::default(),
             clip: None,
             status_width: None,
@@ -2879,7 +2882,6 @@ impl App {
         self.keep_panels();
     }
 
-    /// Remember the user's choice of open or closed panels, when it changed.
     /// Moves the keyboard for this frame's F6 or Shift+F6 (ENH-10), and notes the control
     /// that has it as the last used in its region. Typing open on the page waits there for
     /// the keyboard to come back, and a form field's text box, which keeps its value as it
@@ -2948,12 +2950,26 @@ impl App {
         }
     }
 
+    /// Remember the user's choice of open or closed panels, when it changed.
     fn keep_panels(&mut self) {
         let s = &mut self.settings;
         let now = (self.side.wanted(), self.inspector.wanted());
         if (s.navigation_panel, s.inspector_panel) != now {
             (s.navigation_panel, s.inspector_panel) = now;
             s.save();
+        }
+    }
+
+    /// Remember the width of the panel `panel`, `width` points wide this frame, once the
+    /// user has let go of its edge (`held`: being moved this frame; see
+    /// [`panels::edge_held`]). A panel widened by what it holds keeps the width given.
+    fn keep_width(&mut self, panel: &'static str, width: f32, held: bool) {
+        let was = self.resizing.contains(&panel);
+        if held && !was {
+            self.resizing.push(panel);
+        } else if !held && was {
+            self.resizing.retain(|p| *p != panel);
+            self.settings.keep_width(panel, width);
         }
     }
 
@@ -4777,6 +4793,7 @@ fn inspector_body(
     let mut apply = None;
     // Sections' contents a little in from their headers, as the workspace has them.
     ui.spacing_mut().indent = 10.0;
+    theme::inspector_style(ui.style_mut());
     t.guarded(|t| {
         if !t.ed.owns_panel() {
             apply = inspector::show(ui, t, c);
@@ -5517,6 +5534,8 @@ impl eframe::App for App {
         if has && self.side.shown() {
             let active = self.active;
             let (panel, width) = side_panel(self.tabs[active].side);
+            let given = self.settings.panel_widths.get(panel).copied();
+            let width = given.unwrap_or(width);
             panels::edge_keys(ui, panel, true);
             let side = egui::Panel::left(panel)
                 .resizable(true)
@@ -5550,6 +5569,8 @@ impl eframe::App for App {
                     });
                 });
             panels::edge_shown(ui, panel, "Side panel width");
+            let held = panels::edge_held(ui, panel);
+            self.keep_width(panel, side.response.rect.width(), held);
             self.regions.add(Region::Navigation, side.response.rect);
         }
 
@@ -5586,12 +5607,15 @@ impl eframe::App for App {
             let mut strip = None;
             let mut panel_acts = Vec::new();
             let s = &mut self.settings;
+            let width = s.panel_widths.get("inspector").copied();
             let rail = egui::Panel::right("inspector-rail")
+                .frame(theme::inspector_frame(ui.style(), true))
                 .resizable(false)
                 .exact_size(RAIL_WIDTH);
             let full = egui::Panel::right("inspector")
+                .frame(theme::inspector_frame(ui.style(), false))
                 .resizable(true)
-                .default_size(INSPECTOR_WIDTH)
+                .default_size(width.unwrap_or(INSPECTOR_WIDTH))
                 .min_size(panels::NARROWEST);
             panels::edge_keys(ui, "inspector", false);
             let shown = egui::Panel::show_switched(ui, &mut open, rail, full, |ui, expanded| {
@@ -5623,6 +5647,12 @@ impl eframe::App for App {
             });
             panels::edge_shown(ui, "inspector", "Inspector width");
             self.regions.add(Region::Inspector, shown.response.rect);
+            // The width given the panel, not its strip's (dragged closed, say).
+            let held = panels::edge_held(ui, "inspector");
+            match strip {
+                None => self.keep_width("inspector", shown.response.rect.width(), held),
+                Some(_) => self.resizing.retain(|p| *p != "inspector"),
+            }
             if toggle {
                 open = !open;
             }
@@ -8737,10 +8767,15 @@ mod tests {
         let start = edge(&mut app);
         let width = 1400.0 - start;
         assert!((width - INSPECTOR_WIDTH).abs() <= 8.0, "{width} wide");
-        for (what, act) in [
-            ("nothing selected", None),
-            ("a tool open", Some(Act::Watermark)),
+        let mut document = None;
+        for (what, pages, act) in [
+            ("nothing selected", false, None),
+            ("pages selected", true, None),
+            ("a tool open", false, Some(Act::Watermark)),
         ] {
+            if pages {
+                app.tabs[0].ed.selection = Selection::pages_from([0].into());
+            }
             if let Some(act) = act {
                 app.act(&ctx, act);
             }
@@ -8750,12 +8785,12 @@ mod tests {
             for _ in 0..8 {
                 assert_eq!(edge(&mut app), at, "{what}: the inspector widened");
             }
-        }
-        app.tabs[0].ed.selection = Selection::pages_from([0].into());
-        settled_at(&mut app, &ctx, 1400.0);
-        let at = edge(&mut app);
-        for _ in 0..8 {
-            assert_eq!(edge(&mut app), at, "pages selected: the inspector widened");
+            // Selected pages' long button names wrap rather than widen it, so the pages
+            // beside it keep their zoom.
+            let document = *document.get_or_insert(at);
+            if pages {
+                assert_eq!(at, document, "pages selected: wider than the document's");
+            }
         }
     }
 
@@ -9121,6 +9156,67 @@ mod tests {
         let back = width(edge(&mut app));
         let kept = (back - widened).abs() <= 0.5;
         assert!(kept, "comments: {back}, not {widened}");
+    }
+
+    /// ENH-08 (batch 39): the inspector and each side view start at the widths given them in
+    /// an earlier run; a panel widened by what it holds doesn't change that, and a width
+    /// given now by dragging an edge is remembered once it is let go.
+    #[test]
+    fn panel_widths_are_remembered_between_runs() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut settings = Settings::from_file(None);
+        settings.panel_widths.insert("side-comments".into(), 260.0);
+        let mut app = App::with(settings, Recent::from_file(None));
+        let mut pdf = Pdf::new();
+        pdf.insert_blank(0, 612.0, 792.0).unwrap();
+        assert!(app.add_tab(&ctx, pdf, None, None, false));
+        let edge = |app: &mut App, name: &str| {
+            let tree = settled_at(app, &ctx, 1400.0);
+            let (at, _) = node(&tree, name).expect("the edge");
+            at.center()
+        };
+        app.show_view(Side::Comments);
+        let comments = edge(&mut app, "Side panel width").x - RAIL_WIDTH;
+        assert!((comments - 260.0).abs() <= 8.0, "comments: {comments}");
+        // Watermark's controls widen the inspector: not a width the user gave it.
+        app.act(&ctx, Act::Watermark);
+        let from = edge(&mut app, "Inspector width");
+        assert!(1400.0 - from.x > INSPECTOR_WIDTH + 8.0, "not widened");
+        assert_eq!(app.settings.panel_widths.get("inspector"), None);
+        // Dragged 40 points wider, then let go: from the panel's side of its edge, as the
+        // pages' scroll area takes a drag on the other side (PB-33).
+        let from = from + egui::vec2(3.0, 0.0);
+        let to = from - egui::vec2(40.0, 0.0);
+        let over = egui::Event::PointerMoved(from);
+        window(&mut app, &ctx, 1400.0, vec![over]);
+        window(&mut app, &ctx, 1400.0, vec![press(from, true)]);
+        for i in 1..=4 {
+            let at = from + (to - from) * (i as f32 / 4.0);
+            window(&mut app, &ctx, 1400.0, vec![egui::Event::PointerMoved(at)]);
+        }
+        let held = app.settings.panel_widths.get("inspector").copied();
+        assert_eq!(held, None, "kept while the edge is held");
+        window(&mut app, &ctx, 1400.0, vec![press(to, false)]);
+        let given = 1400.0 - edge(&mut app, "Inspector width").x;
+        let kept = app.settings.panel_widths.get("inspector").copied();
+        let near = kept.is_some_and(|w| (w - given).abs() <= 8.0);
+        assert!(near, "kept {kept:?} for {given}");
+        // The next run starts there.
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut settings = Settings::from_file(None);
+        settings.panel_widths = app.settings.panel_widths.clone();
+        let mut next = App::with(settings, Recent::from_file(None));
+        let mut pdf = Pdf::new();
+        pdf.insert_blank(0, 612.0, 792.0).unwrap();
+        assert!(next.add_tab(&ctx, pdf, None, None, false));
+        let tree = settled_at(&mut next, &ctx, 1400.0);
+        let (at, _) = node(&tree, "Inspector width").expect("the edge");
+        let width = 1400.0 - at.center().x;
+        assert!((width - given).abs() <= 1.0, "{width}, not {given}");
     }
 
     /// A26: with characters selected in a line edited on the page, the first colour picked

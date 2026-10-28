@@ -132,9 +132,13 @@
 - Export pages as images exports the selected pages when there are any, as the other tools do; it used to let go
   of them and start at all pages.
 - The inspector's folded sections sit under thin lines, and its short notes are smaller and grey, as in the
-  approved workspace.
-- Each of the side panel's views keeps its own width while LimarePDF runs. Search results, Bookmarks, Comments and
-  Digital signatures start wider than Pages, so their lines no longer wrap a word or two at a time.
+  approved workspace. It sits on the same white as the command band (dark grey in the dark theme), with more room
+  round its contents and its facts closer together; its text boxes are shaded so they stand out on it. Selecting
+  pages no longer widens it, which made the pages beside it change their zoom: its buttons' long names wrap.
+- Planned features' "Planned" tag is outlined with a dashed line, so it reads as a label, not part of the name.
+- Each of the side panel's views keeps its own width, and the widths you give them and the inspector are
+  remembered for next time. Search results, Bookmarks, Comments and Digital signatures start wider than Pages, so
+  their lines no longer wrap a word or two at a time.
 - The user guide's Features page is now a short summary of what LimarePDF can do. The detailed status of each
   feature, with its limits and what doesn't work yet, moved to the developer docs as
   [Features and status](docs/developer/feature-status.md).

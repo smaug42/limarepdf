@@ -48,8 +48,9 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
   keyboard, Tab to the edge (a line shows along it), then press Left or Right to move it 10 points (50 with
   Shift), Home to make the panel as narrow as it goes, or End to make it half the window wide. Each of the side
   panel's views keeps its own width: Pages starts narrow, and Search results, Bookmarks, Comments and Digital
-  signatures start wider, so their lines are easy to read. The widths you set last until LimarePDF closes; they
-  aren't remembered between runs.
+  signatures start wider, so their lines are easy to read. The widths you set are remembered for next time; a
+  panel widened to fit what it shows (some of the inspector's tools need more room) starts at your width again
+  next time.
 
 F6 moves the keyboard to the next part of the window and Shift+F6 to the one before, in the order they are on
 screen: the tabs, the commands, the document's notices (when there are any), navigation, the page, the inspector

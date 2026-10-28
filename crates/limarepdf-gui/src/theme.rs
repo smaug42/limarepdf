@@ -474,6 +474,30 @@ pub fn commands_frame(style: &Style) -> egui::Frame {
         .inner_margin(0)
 }
 
+/// The look inside the inspector and its pop-out, on the surface colour: text boxes filled as
+/// its number boxes and lists are, where the surface's own colour would hide them.
+pub fn inspector_style(s: &mut Style) {
+    s.visuals.text_edit_bg_color = Some(palette(s.visuals.dark_mode).widget);
+}
+
+/// Frame for the inspector, as the workspace has it: on the surface colour, apart from the
+/// side panel's, with room round its contents. `strip`: collapsed to its strip, as narrow
+/// as egui's panels have it.
+pub fn inspector_frame(style: &Style, strip: bool) -> egui::Frame {
+    let room = match strip {
+        true => egui::Margin::symmetric(8, 2),
+        false => egui::Margin {
+            left: 14,
+            right: 14,
+            top: 10,
+            bottom: 8,
+        },
+    };
+    egui::Frame::side_top_panel(style)
+        .fill(palette(style.visuals.dark_mode).surface)
+        .inner_margin(room)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

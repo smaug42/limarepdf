@@ -976,11 +976,12 @@ fn orientation(size: (f32, f32)) -> &'static str {
 }
 
 /// The inspector's facts about something: a label at the left, muted, its value at the
-/// right, a row each, in 12 points.
+/// right, a row each, in 12 points, as close together as the workspace has them.
 pub fn facts(ui: &mut Ui, id: &str, rows: &[(&str, String)]) {
     let muted = theme::muted(ui.visuals().dark_mode);
     egui::Grid::new(id)
         .num_columns(2)
+        .min_row_height(17.0)
         .spacing(egui::vec2(12.0, 8.0))
         .show(ui, |ui| {
             for (label, value) in rows {
@@ -1086,11 +1087,15 @@ impl Sections {
 }
 
 /// A full-width button for a registry command: icon and label, disabled when the
-/// command is not available. Screen readers say the label alone.
+/// command is not available. Screen readers say the label alone. A long label wraps
+/// rather than widening the panel (and the pages beside it with it).
 fn act_button(ui: &mut Ui, act: Act, c: &Ctx) -> bool {
     let a = actions::get(act);
     let glyph = theme::icon(if a.icon.is_empty() { " " } else { a.icon }).size(16.0);
-    let b = egui::Button::new((glyph, a.label))
+    // The label wraps, not the icon, which egui would take as the text to wrap.
+    let label = egui::AtomExt::atom_shrink(a.label, true);
+    let b = egui::Button::new((glyph, label))
+        .wrap()
         .min_size(egui::vec2(ui.available_width(), 26.0))
         .frame_when_inactive(false);
     let r = ui.add_enabled((a.enabled)(c), b);

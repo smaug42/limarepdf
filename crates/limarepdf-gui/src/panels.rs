@@ -85,6 +85,13 @@ pub fn edge_keys(ui: &egui::Ui, panel: &str, left: bool) {
     }
 }
 
+/// Whether the user is moving the edge of the panel `panel` shown in `ui`: dragging it, or
+/// with the keyboard on it.
+pub fn edge_held(ui: &egui::Ui, panel: &str) -> bool {
+    let id = edge_id(ui, panel);
+    ui.ctx().is_being_dragged(id) || ui.ctx().memory(|m| m.has_focus(id))
+}
+
 /// After the panel `panel` is shown in `ui`: names its edge `name` for screen readers, and
 /// draws a line along it in the accent colour while it has the keyboard. egui names it no
 /// more than "Resize panel". Only once egui has added it this frame, so no stray node is

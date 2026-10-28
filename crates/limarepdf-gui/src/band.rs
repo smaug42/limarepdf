@@ -959,41 +959,70 @@ fn caret(ui: &mut egui::Ui, name: &str, menu: impl FnOnce(&mut egui::Ui)) {
 /// A planned feature's button: greyed, marked Planned, never run, and no Tab stop.
 fn planned(ui: &mut egui::Ui, p: &Planned, compact: bool) {
     let glyph = theme::icon(p.icon).size(16.0);
-    let tag = planned_tag(ui);
     let button = match compact {
         true => egui::Button::new(glyph).min_size(egui::vec2(BUTTON, BUTTON)),
-        false => egui::Button::new((glyph, p.label, tag)).min_size(egui::vec2(0.0, BUTTON)),
+        false => {
+            egui::Button::new((glyph, p.label, planned_tag(ui))).min_size(egui::vec2(0.0, BUTTON))
+        }
     }
     .frame_when_inactive(false);
-    let r = ui.add_enabled(false, button);
-    let name = p.name();
-    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, false, &name));
-    r.on_disabled_hover_text(format!("{} Planned.", p.what));
+    planned_button(ui, button, p);
 }
 
 /// A planned text style's button in the Font group: its letter underlined, greyed and
 /// marked Planned (`compact`: the letter alone, named on hover).
 fn planned_style(ui: &mut egui::Ui, p: &Planned, letter: &str, compact: bool) {
     let text = RichText::new(letter).size(15.0).underline();
-    let tag = planned_tag(ui);
     let button = match compact {
         true => egui::Button::new(text),
-        false => egui::Button::new((text, tag)),
+        false => egui::Button::new((text, planned_tag(ui))),
     }
     .min_size(egui::vec2(26.0, 26.0));
-    let r = ui.add_enabled(false, button);
-    let name = p.name();
-    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, false, &name));
-    r.on_disabled_hover_text(format!("{} Planned.", p.what));
+    planned_button(ui, button, p);
 }
 
-/// The small "Planned" tag inside a planned feature's button.
+/// Shows the button of planned feature `p`: greyed, named for screen readers, its Planned
+/// tag outlined.
+fn planned_button(ui: &mut egui::Ui, button: egui::Button, p: &Planned) {
+    let r = ui.add_enabled_ui(false, |ui| button.atom_ui(ui)).inner;
+    outline_tag(ui, &r);
+    let name = p.name();
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, false, &name));
+    r.response
+        .on_disabled_hover_text(format!("{} Planned.", p.what));
+}
+
+/// The atom id of a planned feature's tag, to find where it was drawn.
+fn tag_id() -> egui::IdSalt {
+    egui::IdSalt::new("planned-tag")
+}
+
+/// The small "Planned" tag inside a planned feature's button, a thin space either side
+/// inside its outline.
 fn planned_tag(ui: &egui::Ui) -> egui::Atom<'static> {
     let dark = ui.visuals().dark_mode;
-    let text = RichText::new("Planned")
+    let text = RichText::new("\u{2009}Planned\u{2009}")
         .size(11.0)
         .color(theme::muted(dark));
-    egui::Atom::from(text)
+    egui::AtomExt::atom_id(text, tag_id())
+}
+
+/// A dashed outline round the Planned tag of the button `r`, as the workspace marks planned
+/// features; none when it has no tag (compact).
+fn outline_tag(ui: &egui::Ui, r: &egui::WidgetAtomResponse) {
+    let Some(tag) = r.rect(tag_id()) else {
+        return;
+    };
+    let line = egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color);
+    let corners = [
+        tag.left_top(),
+        tag.right_top(),
+        tag.right_bottom(),
+        tag.left_bottom(),
+        tag.left_top(),
+    ];
+    ui.painter()
+        .extend(egui::Shape::dashed_line(&corners, line, 2.0, 2.0));
 }
 
 /// A planned feature in a menu: greyed, with "Planned" after it.
@@ -1102,6 +1131,54 @@ mod tests {
         labels.sort_unstable();
         labels.dedup();
         assert_eq!(labels.len(), all.len());
+    }
+
+    /// D6 (build plan 6.4, ENH-37): the band and menu openings each common action takes
+    /// from the normal workspace, Edit's band showing: none in Edit's band, one to choose
+    /// another band, one more in a button's menu; at most two. (Print, Open, Save, Undo and
+    /// Redo are on the commands row, no opening; `every_control_has_a_name_at_every_width`
+    /// finds them there at every width. The Comments view is also the strip's.)
+    #[test]
+    fn common_actions_are_two_openings_away_at_most() {
+        let openings = |act: Act| -> Option<usize> {
+            let mut fewest = None::<usize>;
+            for band in Band::ALL {
+                let choose = usize::from(band != Band::Edit);
+                for i in band.groups().iter().flat_map(|g| g.items) {
+                    let n = match i {
+                        Item::Button(b) if b.act == Some(act) => choose,
+                        Item::Button(b) if b.menu.contains(&act) => choose + 1,
+                        Item::Sign if act == Act::Tool(Tool::Sign) => choose,
+                        _ => continue,
+                    };
+                    fewest = Some(fewest.map_or(n, |f| f.min(n)));
+                }
+            }
+            fewest
+        };
+        for (act, want) in [
+            (Act::EditObjectText, 0),
+            (Act::Tool(Tool::Text), 1),
+            (Act::Tool(Tool::Image), 1),
+            (Act::Tool(Tool::Note), 1),
+            (Act::Comments, 1),
+            (Act::RotR, 1),
+            (Act::RotL, 2),
+            (Act::Extract, 1),
+            (Act::Delete, 1),
+            (Act::InsertImages, 2),
+            (Act::Tool(Tool::Sign), 1),
+            (Act::SignDigital, 2),
+            (Act::Find, 0),
+        ] {
+            assert_eq!(openings(act), Some(want), "{act:?}");
+        }
+        // The font, size, Bold, Italic and colour: Edit's Font group, showing.
+        let font = EDIT
+            .iter()
+            .flat_map(|g| g.items)
+            .any(|i| matches!(i, Item::Font));
+        assert!(font, "no Font group in Edit");
     }
 
     /// The everyday commands are a band's button away (build plan 2.2: at most two
