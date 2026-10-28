@@ -308,11 +308,16 @@ pub fn hand_back(ctx: &egui::Context, id: egui::Id) {
 }
 
 /// Start the typing history of a text box that has just got the keyboard afresh, unless
-/// it was handed back ([`hand_back`]); `before` had the keyboard last frame. Returns what
-/// has it now. What was typed in a box before was kept in the document when the box was
-/// left, where Undo takes it back, so Ctrl+Z in a box never brings back text typed in
-/// another document, field or comment, or text the document has since undone.
-pub fn fresh_history(ctx: &egui::Context, before: Option<egui::Id>) -> Option<egui::Id> {
+/// it was handed back ([`hand_back`]) or `kept` says it comes back to it with nothing kept
+/// in the document since it was left (ENH-32); `before` had the keyboard last frame.
+/// Returns what has it now. What was typed in a box before was kept in the document when
+/// the box was left, where Undo takes it back, so Ctrl+Z in a box never brings back text
+/// typed in another document, field or comment, or text the document has since undone.
+pub fn fresh_history(
+    ctx: &egui::Context,
+    before: Option<egui::Id>,
+    kept: impl Fn(egui::Id) -> bool,
+) -> Option<egui::Id> {
     let now = ctx.memory(|m| m.focused());
     let note = egui::Id::unique(HANDED_BACK);
     let handed = ctx.data_mut(|d| {
@@ -320,13 +325,30 @@ pub fn fresh_history(ctx: &egui::Context, before: Option<egui::Id>) -> Option<eg
         d.remove::<egui::Id>(note);
         id
     });
-    if let Some(id) = now.filter(|&id| now != before && handed != Some(id)) {
+    if let Some(id) = now.filter(|&id| now != before && handed != Some(id) && !kept(id)) {
         if let Some(mut st) = egui::TextEdit::load_state(ctx, id) {
             st.clear_undoer();
             st.store(ctx, id);
         }
     }
     now
+}
+
+/// Whether Ctrl+Z and Ctrl+Y would take back or redo something in the text box `id`, which
+/// keeps egui's own history (a form field, a note, the inspector's boxes): the band's Undo
+/// and Redo act on its typing as the keys do. `None` when `id` isn't a text box.
+pub fn box_history(ctx: &egui::Context, id: egui::Id) -> Option<(bool, bool)> {
+    let undoer = egui::TextEdit::load_state(ctx, id)?.undoer();
+    // A state no box is in: undoing from it gives the latest step kept, unchanged.
+    let none = (egui::text::CCursorRange::default(), "\u{FFFF}".to_string());
+    let Some(last) = undoer.clone().undo(&none).cloned() else {
+        return Some((false, false));
+    };
+    // Changed since that step, or with a step before it.
+    let changed = undoer.is_in_flux();
+    let undo = changed || undoer.has_undo(&last);
+    let redo = !changed && undoer.clone().redo(&last).is_some();
+    Some((undo, redo))
 }
 
 /// The note at the caret about a refused character, for a few seconds after: since when,
@@ -690,6 +712,16 @@ impl PageText {
         self.scope.with(("page-text", self.page))
     }
 
+    /// Whether it is being moved by its outline.
+    pub fn moving(&self) -> bool {
+        self.moving.is_some()
+    }
+
+    /// The typing's own history, which Ctrl+Z and Ctrl+Y take back and forward.
+    pub fn history(&self) -> &History {
+        &self.history
+    }
+
     /// Whether there is anything to add.
     pub fn has_text(&self) -> bool {
         !self.text.text().trim().is_empty()
@@ -757,6 +789,24 @@ impl PageText {
         let edit = &f.out.response.response;
         dialogs::set_name(edit, NAME);
         let mut on_grip = false;
+        let (esc, tab) = ui.input(|i| {
+            (
+                i.key_pressed(egui::Key::Escape),
+                i.key_pressed(egui::Key::Tab),
+            )
+        });
+        // Esc while it is moved by its outline cancels the move, as Esc cancels a drag under
+        // way (egui stops it): it goes back where it was, and takes the keyboard back once
+        // let go.
+        if let Some(start) = self.moving.filter(|_| esc) {
+            self.moving = None;
+            self.at = start;
+            self.refocus = true;
+            return Shown {
+                over: true,
+                done: false,
+            };
+        }
         if let Some(grab) = &f.grip {
             // Moved by how far the pointer is from where it was pressed.
             if grab.drag_started() {
@@ -791,12 +841,6 @@ impl PageText {
                 };
             }
         }
-        let (esc, tab) = ui.input(|i| {
-            (
-                i.key_pressed(egui::Key::Escape),
-                i.key_pressed(egui::Key::Tab),
-            )
-        });
         let done = (esc && (edit.lost_focus() || edit.has_focus()))
             || (tab && edit.lost_focus())
             || !ui.clip_rect().intersects(f.outline);

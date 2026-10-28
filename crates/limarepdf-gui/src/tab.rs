@@ -1525,8 +1525,11 @@ impl Tab {
             return;
         }
         if let Some(step) = self.undo.pop() {
+            let (sel, was) = (self.ed.selection.clone(), self.ed.selected_text());
             if let Some(back) = self.restore(ctx, step) {
                 self.redo.push(back);
+                // Words selected stay selected when they still read the same.
+                self.ed.reselect(&self.pdf, sel, was);
             }
         }
     }
@@ -1539,8 +1542,10 @@ impl Tab {
             return;
         }
         if let Some(step) = self.redo.pop() {
+            let (sel, was) = (self.ed.selection.clone(), self.ed.selected_text());
             if let Some(back) = self.restore(ctx, step) {
                 self.undo.push(back);
+                self.ed.reselect(&self.pdf, sel, was);
             }
         }
     }

@@ -677,6 +677,19 @@ pub struct App {
     /// Copy or Paste clicked in the band for the text being typed (its box's id), waiting
     /// for that box to have the keyboard back.
     clip: Option<(Clip, egui::Id)>,
+    /// The Undo and Redo buttons, as last drawn: a click on them leaves the keyboard in
+    /// the text box that has it.
+    undo_buttons: Vec<egui::Rect>,
+    /// This frame's click is on Undo or Redo while a text box has the keyboard.
+    undo_held: bool,
+    /// Undo or Redo clicked while a text box had the keyboard, sent to it as its key on the
+    /// next frame.
+    undo_in_box: Option<Act>,
+    /// This frame's Esc left a box of the band or the inspector, with typing open on the
+    /// page: it goes back to the typing, which stays open.
+    esc_to_typing: bool,
+    /// The text box the keyboard last left: its id, and its tab's id and revision then.
+    left_box: Option<(egui::Id, u64, u64)>,
     /// The width of the status bar's controls at its right, as last drawn.
     status_width: Option<f32>,
     /// The width of Print and the compact commands button, at the commands' right, as last
@@ -803,6 +816,11 @@ impl App {
             resizing: Vec::new(),
             band: Band::default(),
             clip: None,
+            undo_buttons: Vec::new(),
+            undo_held: false,
+            undo_in_box: None,
+            esc_to_typing: false,
+            left_box: None,
             status_width: None,
             commands_right: None,
             accent_read: None,
@@ -2280,6 +2298,13 @@ impl App {
     }
 
     fn act(&mut self, ctx: &egui::Context, a: Act) {
+        // Undo or Redo clicked while a text box has the keyboard: its typing, not the
+        // document, as with the keys.
+        if matches!(a, Act::Undo | Act::Redo) && self.undo_held {
+            self.undo_in_box = Some(a);
+            ctx.request_repaint();
+            return;
+        }
         let has = !self.tabs.is_empty();
         // What is being typed goes into the document before a command uses it, or the
         // command doesn't run (BUG-01). A question the command asks is then about the
@@ -4306,6 +4331,15 @@ impl App {
         };
         if let Some(t) = self.tabs.get(self.active) {
             t.fill_ctx(&mut c);
+            // In a text box with the keyboard, Undo and Redo are its typing's, as the keys.
+            let focused = ctx.memory(|m| m.focused());
+            if let Some(id) = focused.filter(|_| ctx.text_edit_focused()) {
+                let history = t.ed.typing_history(id);
+                if let Some((undo, redo)) = history.or_else(|| page_text::box_history(ctx, id)) {
+                    c.can_undo = undo;
+                    c.can_redo = redo;
+                }
+            }
         }
         c
     }
@@ -4478,11 +4512,15 @@ impl App {
         let c = self.state(ctx);
         // Undo and Redo in a text box take back and redo the typing there, and nothing
         // else, even with nothing left to undo there (form fields, comments and the
-        // inspector's boxes too); Undo takes back the whole edit once it is kept.
+        // inspector's boxes too); Undo takes back the whole edit once it is kept. With a
+        // button holding the keyboard, they are the document's.
         let typing = ctx.egui_wants_keyboard_input();
+        let in_text = ctx.text_edit_focused();
         // Esc with a list, menu or colour picker open only closes it (a note being typed
-        // stays open while its colour is picked).
+        // stays open while its colour is picked); Esc leaving a box for typing on the page
+        // only goes back to it.
         let picking = egui::Popup::is_any_open(ctx);
+        let back = self.esc_to_typing;
         let mut acts = Vec::new();
         ctx.input_mut(|i| {
             for (a, k) in actions::shortcuts() {
@@ -4497,8 +4535,8 @@ impl App {
                         | Act::Italic
                 );
                 let global = k.modifiers.command && !page_only;
-                let in_box = typing && matches!(a.act, Act::Undo | Act::Redo);
-                let closes = picking && a.act == Act::Escape;
+                let in_box = in_text && matches!(a.act, Act::Undo | Act::Redo);
+                let closes = (picking || back) && a.act == Act::Escape;
                 // F6 leaves a text box too (in a form, Tab stays among the fields), but
                 // not an open list or menu, which Esc closes first.
                 let region = matches!(a.act, Act::NextRegion | Act::PrevRegion);
@@ -5242,9 +5280,63 @@ impl eframe::App for App {
             }
         }
 
+        // Undo and Redo in the commands act on the typing in the text box with the keyboard,
+        // as Ctrl+Z and Ctrl+Y do there: a click on them leaves the keyboard in it, and the
+        // key goes to it on the next frame, before anything else sees that frame's input.
+        self.undo_held = ctx.text_edit_focused()
+            && ctx.input(|i| {
+                let at = i.pointer.press_origin().or(i.pointer.latest_pos());
+                (i.pointer.any_pressed() || i.pointer.any_released())
+                    && at.is_some_and(|p| self.undo_buttons.iter().any(|r| r.contains(p)))
+            });
+        let surrender = if self.undo_held {
+            egui::SurrenderFocusOn::Never
+        } else {
+            egui::SurrenderFocusOn::Clicks
+        };
+        ctx.options_mut(|o| o.input_options.surrender_focus_on = surrender);
+        if let Some(a) = self.undo_in_box.take().filter(|_| ctx.text_edit_focused()) {
+            let modifiers = match a {
+                Act::Redo => egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                _ => egui::Modifiers::COMMAND,
+            };
+            ctx.input_mut(|i| {
+                i.events.push(egui::Event::Key {
+                    key: Key::Z,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                });
+            });
+        }
+
         // Before anything sees this frame's keys: a text box that has just got the keyboard
         // starts with nothing to undo.
-        self.keyboard = page_text::fresh_history(&ctx, self.keyboard);
+        let before = self.keyboard;
+        // A box the keyboard comes back to, with nothing kept in the document since it left
+        // (the tab's revision), keeps its typing's history (ENH-32). A new note or text box
+        // has its page's box: one typed and let go never lends its history to the next.
+        let doc = self.tabs.get(self.active).map(|t| (t.id, t.revision));
+        let now = ctx.memory(|m| m.focused());
+        if let (Some(id), Some((tab, revision))) = (before.filter(|_| now != before), doc) {
+            self.left_box = Some((id, tab, revision));
+        }
+        let left = self.left_box;
+        let new_box = |id| self.tabs.get(self.active).is_some_and(|t| t.ed.new_box(id));
+        let kept = |id| doc.is_some_and(|(t, r)| left == Some((id, t, r))) && !new_box(id);
+        self.keyboard = page_text::fresh_history(&ctx, before, kept);
+        // Esc in a box of the band or the inspector (the font size, say), with typing open
+        // on the page, drops what was typed in the box and goes back to the typing, as in a
+        // word processor, rather than ending it.
+        let typing = self.tabs.get(self.active).and_then(|t| t.ed.typing_id());
+        let in_box = before
+            .is_some_and(|id| Some(id) != typing && egui::TextEdit::load_state(&ctx, id).is_some());
+        let esc = ctx.input(|i| i.key_pressed(Key::Escape));
+        self.esc_to_typing = esc && in_box && typing.is_some();
+        if self.esc_to_typing {
+            self.tabs[self.active].ed.refocus_typing();
+        }
         self.shortcuts(&ctx);
         self.clipboard(&ctx);
 
@@ -5257,7 +5349,7 @@ impl eframe::App for App {
         let recent: Vec<&PathBuf> = recent_files.iter().collect();
 
         // A document command's button in the commands' row: its icon and label, or its icon
-        // alone, named; its label, shortcut and hint as the tooltip.
+        // alone, named; its label, shortcut and hint as the tooltip. Returns where it is.
         let quick =
             |ui: &mut egui::Ui, act: Act, glyph: &str, label: Option<&str>, acts: &mut Vec<Act>| {
                 let a = actions::get(act);
@@ -5273,12 +5365,14 @@ impl eframe::App for App {
                 let name = a.label.trim_end_matches('…');
                 r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, name));
                 let tip = tooltip(ui.ctx(), a);
+                let at = r.rect;
                 if r.on_hover_text(tip.as_str())
                     .on_disabled_hover_text(tip)
                     .clicked()
                 {
                     acts.push(act);
                 }
+                at
             };
         // The saved signatures for Fill and sign's menu.
         let sign_menu = self
@@ -5345,6 +5439,7 @@ impl eframe::App for App {
         let active = self.active;
         let chosen = &mut self.band;
         let right_last = &mut self.commands_right;
+        let undo_buttons = &mut self.undo_buttons;
         let mut tab = self.tabs.get_mut(active);
         let commands = egui::Panel::top("commands")
             .frame(theme::commands_frame(ui.style()))
@@ -5375,8 +5470,10 @@ impl eframe::App for App {
                         quick(ui, Act::Open, icon::FOLDER_OPEN, None, &mut acts);
                         quick(ui, Act::Save, icon::FLOPPY_DISK, None, &mut acts);
                         divider(ui);
-                        quick(ui, Act::Undo, icon::ARROW_U_UP_LEFT, None, &mut acts);
-                        quick(ui, Act::Redo, icon::ARROW_U_UP_RIGHT, None, &mut acts);
+                        *undo_buttons = vec![
+                            quick(ui, Act::Undo, icon::ARROW_U_UP_LEFT, None, &mut acts),
+                            quick(ui, Act::Redo, icon::ARROW_U_UP_RIGHT, None, &mut acts),
+                        ];
                         divider(ui);
                         // The names, leaving room for the controls at the right as they
                         // were last drawn; then those, in reading order.
@@ -6849,6 +6946,46 @@ mod tests {
         assert!((a[0] - b[0] - 1.0).abs() < 0.01, "{b:?} to {a:?}");
     }
 
+    /// Esc while new text is being moved by its outline cancels the move, as Esc cancels a
+    /// drag under way: the text goes back where it was, still being typed.
+    #[test]
+    fn esc_while_moving_new_text_puts_it_back() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let (min, k) = page_on_screen(&mut app, &ctx);
+        app.act(&ctx, Act::Tool(Tool::Text));
+        let at = min + egui::vec2(100.0, 200.0) * k;
+        window(&mut app, &ctx, 1400.0, click_at(at));
+        settled_at(&mut app, &ctx, 1400.0);
+        let typed = egui::Event::Text("Seal".into());
+        window(&mut app, &ctx, 1400.0, vec![typed]);
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        let place = |app: &App| app.tabs[0].ed.adding.as_ref().map(|a| a.at);
+        let start = place(&app).expect("the new text");
+        // On the band around the outline, 3 to 6 points out from the text, at its left.
+        let (text, _) = node(&tree, page_text::NAME).expect("the new text");
+        let p = egui::pos2(text.min.x - 4.5, text.center().y);
+        window(
+            &mut app,
+            &ctx,
+            1400.0,
+            vec![egui::Event::PointerMoved(p), press(p, true)],
+        );
+        for i in 1..=4 {
+            let to = p + egui::vec2(10.0, 8.0) * i as f32;
+            window(&mut app, &ctx, 1400.0, vec![egui::Event::PointerMoved(to)]);
+        }
+        assert_ne!(place(&app), Some(start), "not moved");
+        let esc = key_with(Key::Escape, egui::Modifiers::NONE);
+        window(&mut app, &ctx, 1400.0, vec![esc]);
+        let to = p + egui::vec2(40.0, 32.0);
+        window(&mut app, &ctx, 1400.0, vec![press(to, false)]);
+        settled_at(&mut app, &ctx, 1400.0);
+        assert_eq!(place(&app), Some(start), "not put back, or not still typed");
+    }
+
     /// ENH-12: Create signature and Create initials are in the command search; run from
     /// there they open the Create window with Fill and sign on. Not among the top bar's
     /// tools.
@@ -7527,6 +7664,77 @@ mod tests {
         let ed = &app.tabs[0].ed;
         assert!(ed.adding.is_none(), "new text started on page text");
         assert!(ed.typing_on_page(), "the line isn't being edited");
+        // The band, the inspector and the status bar are about the line, not the next new
+        // text the tool would add.
+        for _ in 0..3 {
+            tree = window(&mut app, &ctx, 1400.0, vec![]);
+        }
+        assert_eq!(app.tabs[0].ed.heading(), "Selected text");
+        let size = tree
+            .nodes
+            .iter()
+            .find(|(_, n)| n.label() == Some("Font size"));
+        assert_eq!(size.and_then(|(_, n)| n.value()), Some("40"));
+        let says = inspector_says(&tree);
+        assert!(says.iter().any(|s| s == "One line"), "{says:?}");
+        assert!(!says.iter().any(|s| s == "Next new text"), "{says:?}");
+    }
+
+    /// With the inspector collapsed, a click where it was ends a line being edited, as any
+    /// click away does: only a click in the inspector shown leaves it open.
+    #[test]
+    fn a_click_where_the_inspector_was_ends_a_line_edit() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        assert!(app.tabs[0].edit(&ctx, |p| {
+            p.add_text(
+                0,
+                (100.0, 200.0),
+                "Walrus",
+                FontChoice::default(),
+                40.0,
+                [0.0; 3],
+            )
+        }));
+        // A double-click on it with the read tool.
+        let ty = Typist::new(&ctx);
+        let (min, k) = ty.page(&mut app);
+        let p = min + egui::vec2(160.0, 190.0) * k;
+        ty.frame(&mut app, vec![egui::Event::PointerMoved(p), press(p, true)]);
+        ty.frame(&mut app, vec![press(p, false)]);
+        ty.frame(&mut app, vec![press(p, true)]);
+        ty.frame(&mut app, vec![press(p, false)]);
+        let tree = ty.pause(&mut app);
+        assert!(
+            app.tabs[0].ed.typing_on_page(),
+            "the line isn't being edited"
+        );
+        // Below the inspector's facts, clear of them.
+        let (_, fact) = (tree.nodes.iter())
+            .find(|(_, n)| n.value() == Some("One line"))
+            .expect("the inspector's facts");
+        let b = fact.bounds().expect("where they are");
+        let was = egui::pos2(b.x0 as f32 + 4.0, b.y1 as f32 + 200.0);
+        // The page made smaller, the click is off it, on the grey around it.
+        app.act(&ctx, Act::ToggleInspector);
+        for _ in 0..3 {
+            app.act(&ctx, Act::ZoomOut);
+        }
+        let tree = ty.pause(&mut app);
+        assert!(
+            app.tabs[0].ed.typing_on_page(),
+            "collapsing it ended the line"
+        );
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        assert!(!page.contains(was), "on the page");
+        ty.click(&mut app, was);
+        ty.pause(&mut app);
+        assert!(
+            !app.tabs[0].ed.typing_on_page(),
+            "the line is still being edited"
+        );
     }
 
     /// A line of page text is edited where it is, drawn as it will be written, over the
@@ -9257,6 +9465,39 @@ mod tests {
         app.act(&ctx, Act::Undo);
         let mixed = [(7, Some(black)), (10, Some(red)), (15, Some(black))];
         assert_eq!(line_colours(&app), mixed);
+    }
+
+    /// Esc in the band's size box, with a size typed there, drops what was typed and hands
+    /// the keyboard back to the line being edited, as Esc in a word processor's size box
+    /// goes back to the text: the line stays open, its sizes as they were.
+    #[test]
+    fn esc_in_the_size_box_goes_back_to_the_line() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_in_colours(&ctx, [0.0; 3], [1.0, 0.0, 0.0]);
+        let time = std::cell::Cell::new(10.0);
+        let mut frame = |app: &mut App, events| timed_frame(app, &ctx, &time, events);
+        let tree = edit_ate_fish(&mut app, &mut frame);
+        click_with(&mut app, &mut frame, &tree, "Font size");
+        frame(&mut app, vec![key_with(Key::A, CTRL)]);
+        frame(&mut app, vec![egui::Event::Text("60".into())]);
+        frame(&mut app, vec![key_with(Key::Escape, egui::Modifiers::NONE)]);
+        let mut tree = frame(&mut app, vec![]);
+        for _ in 0..4 {
+            tree = frame(&mut app, vec![]);
+        }
+        let name = "Editing text: Walrus ate fish";
+        assert_eq!(
+            node(&tree, name).map(|(_, f)| f),
+            Some(true),
+            "not back in the line"
+        );
+        // Kept as it is, the line has its sizes as before.
+        app.tabs[0].keep_typing(&ctx);
+        let (text, spans) = parts_of_line(&app);
+        assert_eq!(text, "Walrus ate fish");
+        assert!(spans.iter().all(|s| s.3 == 30.0), "{spans:?}");
     }
 
     /// The inspector's controls change what is selected in a line edited on the page,
@@ -12658,6 +12899,121 @@ mod tests {
         assert_eq!(comments(&app), ["Walrus typed", "Seal"]);
     }
 
+    /// A note open on the page for typing stays open while its inspector changes it: the
+    /// opacity applies at once, the keyboard comes back to the note, and the inspector has
+    /// no comment box of its own for it meanwhile, so one comment has one editor (ENH-13;
+    /// the user, batch 40's Q1).
+    #[test]
+    fn an_open_note_stays_open_while_its_inspector_changes_it() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let note = typing_doc(&mut app, &ctx);
+        let ty = Typist::new(&ctx);
+        let t = &mut app.tabs[0];
+        t.ed.annots(&t.pdf, 0);
+        t.ed.selection = Selection::Annot { page: 0, id: note };
+        t.ed.write_selected();
+        ty.pause(&mut app);
+        ty.key(&mut app, Key::End, egui::Modifiers::NONE);
+        ty.text(&mut app, " ate fish");
+        let typed = |app: &App| app.tabs[0].ed.writing.as_ref().map(|w| w.text.clone());
+        let tree = ty.pause(&mut app);
+        let says = inspector_says(&tree);
+        assert!(says.iter().any(|s| s == "Opacity"), "{says:?}");
+        assert!(
+            !says.iter().any(|s| s == "Comment"),
+            "a second editor: {says:?}"
+        );
+        // The slider's middle, pressed and let go as people do, a frame apart.
+        let p = middle(&tree, "Opacity");
+        ty.frame(&mut app, vec![egui::Event::PointerMoved(p), press(p, true)]);
+        ty.frame(&mut app, vec![press(p, false)]);
+        ty.pause(&mut app);
+        assert_eq!(
+            typed(&app).as_deref(),
+            Some("Walrus ate fish"),
+            "the note closed"
+        );
+        let opacity = |app: &App| app.tabs[0].pdf.annotations()[0].opacity;
+        assert!(opacity(&app) < 0.9, "the opacity wasn't applied");
+        let focused = ctx.memory(|m| m.focused());
+        assert_eq!(focused, app.tabs[0].ed.writing_id(), "the keyboard");
+        ty.text(&mut app, "!");
+        ty.key(&mut app, Key::Escape, egui::Modifiers::NONE);
+        ty.pause(&mut app);
+        assert_eq!(comments(&app), ["Walrus ate fish!"]);
+        assert!(opacity(&app) < 0.9);
+    }
+
+    /// A box's typing history survives clicking away and back while nothing is kept in the
+    /// document meanwhile: typing undone in a field, clicked away from and back into, is
+    /// redone by Ctrl+Shift+Z. With a change to the document in between, the history is
+    /// gone, so nothing the document has since can be overwritten from it (ENH-32,
+    /// BUG-03/04's guard).
+    #[test]
+    fn a_box_keeps_its_typing_history_when_clicked_away_and_back() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let ty = Typist::new(&ctx);
+        for changed in [false, true] {
+            let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+            let pdf = form_doc(&[("Name", 1)]);
+            assert!(app.add_tab(&ctx, pdf, None, None, false));
+            let (min, k) = ty.page(&mut app);
+            ty.click_field(&mut app, "Name", 0);
+            ty.text(&mut app, "Ann");
+            ty.pause(&mut app);
+            let tree = ty.key(&mut app, Key::Z, CTRL);
+            assert_eq!(focused_text(&tree).as_deref(), Some(""), "{changed}");
+            // Away, on the page: nothing to keep.
+            ty.click(&mut app, min + egui::vec2(300.0, 600.0) * k);
+            assert_eq!(saved_field(&app.tabs[0], "Name"), "", "{changed}");
+            if changed {
+                let font = FontChoice::default();
+                let add = |p: &mut Pdf| p.add_text(0, (100.0, 700.0), "Seal", font, 12.0, [0.0; 3]);
+                assert!(app.tabs[0].edit(&ctx, add));
+            }
+            ty.click_field(&mut app, "Name", 0);
+            let tree = ty.key(&mut app, Key::Z, CTRL_SHIFT);
+            let want = if changed { "" } else { "Ann" };
+            assert_eq!(
+                focused_text(&tree).as_deref(),
+                Some(want),
+                "changed: {changed}"
+            );
+        }
+    }
+
+    /// A new note typed in, emptied and let go adds nothing; the next new note on the page,
+    /// with the same box, starts with nothing to undo: Ctrl+Z there never brings back what
+    /// was typed in the first (ENH-32's guard).
+    #[test]
+    fn a_new_note_never_takes_the_last_ones_typing_history() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let ty = Typist::new(&ctx);
+        let (min, k) = ty.page(&mut app);
+        app.act(&ctx, Act::Tool(Tool::Note));
+        ty.click(&mut app, min + egui::vec2(100.0, 100.0) * k);
+        ty.text(&mut app, "Walrus");
+        ty.pause(&mut app);
+        for _ in 0.."Walrus".len() {
+            ty.key(&mut app, Key::Backspace, egui::Modifiers::NONE);
+        }
+        ty.pause(&mut app);
+        // Away, on the page: nothing to keep. Then a new note elsewhere on it.
+        ty.click(&mut app, min + egui::vec2(300.0, 300.0) * k);
+        assert!(comments(&app).is_empty());
+        ty.click(&mut app, min + egui::vec2(100.0, 400.0) * k);
+        let tree = ty.key(&mut app, Key::Z, CTRL);
+        assert_eq!(focused_text(&tree).as_deref(), Some(""));
+    }
+
     /// Undo keys in a form field act on its typing only: with Name kept and Notes being
     /// typed, they take back and redo Notes' typing, never Name, and with nothing left to
     /// undo there they do nothing. Out of the fields, Undo and Redo are the document's
@@ -12805,6 +13161,7 @@ mod tests {
             "new note",
             "new text box",
             "new text",
+            "line on the page",
             "comment in the inspector",
             "document title",
             "watermark text",
@@ -12828,6 +13185,69 @@ mod tests {
                 let tree = ty.key(&mut app, key, modifiers);
                 let now = focused_text(&tree);
                 assert_eq!(now.as_ref(), Some(want), "{case}: {key:?} {modifiers:?}");
+                assert!(app.tabs[0].state() == state, "{case}: the document changed");
+            }
+            ty.key(&mut app, Key::Escape, egui::Modifiers::NONE);
+            ty.pause(&mut app);
+            assert!(app.tabs[0].state() == state, "{case}: something was kept");
+        }
+    }
+
+    /// Undo and Redo in the commands, clicked in each kind of text box, do what Ctrl+Z and
+    /// Ctrl+Y do there: take back and redo the box's own typing, the keyboard staying in
+    /// it, greyed when there is nothing there to take back or redo though the document has
+    /// history, and the document never touched (ENH-39; the user, batch 40's Q4).
+    #[test]
+    fn the_undo_buttons_act_on_the_typing_in_every_text_box() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let note = typing_doc(&mut app, &ctx);
+        assert!(app.tabs[0].can_undo(), "the document has nothing to undo");
+        let ty = Typist::new(&ctx);
+        let on = |tree: &egui::accesskit::TreeUpdate, name: &str| {
+            let button = |n: &egui::accesskit::Node| {
+                n.label() == Some(name) && n.role() == egui::accesskit::Role::Button
+            };
+            let (_, n) = tree.nodes.iter().find(|(_, n)| button(n)).expect(name);
+            !n.is_disabled()
+        };
+        let cases = [
+            "form field",
+            "new note",
+            "new text box",
+            "new text",
+            "line on the page",
+            "comment in the inspector",
+            "document title",
+            "watermark text",
+        ];
+        for case in cases {
+            start_typing(&mut app, &ty, case, note);
+            let tree = ty.key(&mut app, Key::End, egui::Modifiers::NONE);
+            let start = focused_text(&tree).unwrap_or_else(|| panic!("{case}: no keyboard"));
+            let state = app.tabs[0].state();
+            ty.text(&mut app, "typed");
+            let typed = format!("{start}typed");
+            let tree = ty.pause(&mut app);
+            assert_eq!(
+                (on(&tree, "Undo"), on(&tree, "Redo")),
+                (true, false),
+                "{case}"
+            );
+            let steps = [
+                ("Undo", &start, (false, true)),
+                ("Redo", &typed, (true, false)),
+                ("Undo", &start, (false, true)),
+            ];
+            for (button, want, buttons) in steps {
+                let tree = ty.pause(&mut app);
+                ty.click(&mut app, middle(&tree, button));
+                let tree = ty.pause(&mut app);
+                assert_eq!(focused_text(&tree).as_ref(), Some(want), "{case}: {button}");
+                let now = (on(&tree, "Undo"), on(&tree, "Redo"));
+                assert_eq!(now, buttons, "{case}: after {button}");
                 assert!(app.tabs[0].state() == state, "{case}: the document changed");
             }
             ty.key(&mut app, Key::Escape, egui::Modifiers::NONE);
@@ -12980,8 +13400,10 @@ mod tests {
         assert!(lines(&app, 0).contains("Seal"), "the text was lost");
     }
 
-    /// Undo clicked on the toolbar while a new note is typed takes the note back, not the
-    /// change before it, and Redo brings the note back (BUG-01, seen in batch 1).
+    /// Undo clicked in the commands while a new note is typed takes back its typing, as
+    /// Ctrl+Z does there, not the change before it (BUG-01, seen in batch 1); the note stays
+    /// open, and Redo brings the typing back. Once the note is kept, Undo takes it back
+    /// whole, and Redo brings it back (ENH-39; the user, batch 40's Q4).
     #[test]
     fn undo_on_the_toolbar_takes_back_a_note_being_typed() {
         let ctx = egui::Context::default();
@@ -12993,19 +13415,33 @@ mod tests {
         app.act(&ctx, Act::Tool(Tool::Note));
         ty.click(&mut app, min + egui::vec2(100.0, 100.0) * k);
         ty.text(&mut app, "Walrus");
+        let typed = |app: &App| app.tabs[0].ed.writing.as_ref().map(|w| w.text.clone());
         let tree = ty.pause(&mut app);
         ty.click(&mut app, middle(&tree, "Undo"));
+        ty.pause(&mut app);
         let t = &app.tabs[0];
         assert_eq!(
             t.page_count(),
             2,
             "Undo took back the change before the note"
         );
-        assert!(comments(&app).is_empty() && t.ed.writing.is_none());
+        assert!(comments(&app).is_empty());
+        assert_eq!(typed(&app).as_deref(), Some(""), "the note's typing");
         let tree = ty.pause(&mut app);
         ty.click(&mut app, middle(&tree, "Redo"));
+        ty.pause(&mut app);
+        assert_eq!(typed(&app).as_deref(), Some("Walrus"));
+        // Kept, it is one change to take back.
+        ty.key(&mut app, Key::Escape, egui::Modifiers::NONE);
+        let tree = ty.pause(&mut app);
         assert_eq!(comments(&app), ["Walrus"]);
+        ty.click(&mut app, middle(&tree, "Undo"));
+        let tree = ty.pause(&mut app);
+        assert!(comments(&app).is_empty() && app.tabs[0].ed.writing.is_none());
         assert_eq!(app.tabs[0].page_count(), 2);
+        ty.click(&mut app, middle(&tree, "Redo"));
+        ty.pause(&mut app);
+        assert_eq!(comments(&app), ["Walrus"]);
     }
 
     /// Remove blank pages run while text is being added: the text goes into the document
@@ -15773,9 +16209,16 @@ mod tests {
         assert_eq!(line_fonts(&saved, 0), page_1);
         assert_eq!(line_fonts(&saved, 1), page_2);
         assert_eq!(t.history().1, undo + 1, "not one step");
+        // Undo and Redo leave the same words selected, as a word processor does.
         app.act(&ctx, Act::Undo);
         assert_eq!(line_fonts(&app.tabs[0].pdf, 0), before);
         assert_eq!(app.tabs[0].history().1, undo);
+        settle(&mut app, &ctx);
+        assert_eq!(app.tabs[0].ed.selection, selected, "not kept by Undo");
+        app.act(&ctx, Act::Redo);
+        assert_eq!(line_fonts(&app.tabs[0].pdf, 0), page_1);
+        settle(&mut app, &ctx);
+        assert_eq!(app.tabs[0].ed.selection, selected, "not kept by Redo");
     }
 
     /// Bold and Italic follow Word's rule across the whole selection: some of it bold

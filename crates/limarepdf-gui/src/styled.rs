@@ -792,6 +792,16 @@ impl History {
         }
     }
 
+    /// Whether there is a step to take back.
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    /// Whether there is a step taken back to redo.
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
     /// Take `text` back a step: returns the selection it had then, or `None` with nothing
     /// to undo.
     pub fn undo(&mut self, text: &mut Styled) -> Option<(usize, usize)> {

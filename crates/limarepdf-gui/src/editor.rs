@@ -668,7 +668,9 @@ fn size_box(
     r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "Font size"));
     let edited = typed.is_some() || r.changed();
     let mut chosen = None;
-    if r.lost_focus() && edited {
+    // Esc drops what was typed.
+    let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
+    if r.lost_focus() && edited && !esc {
         chosen = parse_size(&text, &range).filter(|v| Some(*v) != size);
     }
     // While typing, the box keeps what is typed; otherwise it shows the size.
@@ -937,6 +939,18 @@ fn keeping(ctx: &egui::Context, insp: Option<Rect>, band: &[Rect]) -> bool {
             |p: Pos2| insp.is_some_and(|r| r.contains(p)) || band.iter().any(|r| r.contains(p));
         clicked && at.is_some_and(inside)
     })
+}
+
+/// Where the inspector is, from where and in which pass it was drawn last
+/// ([`Editor::inspector`]): there if drawn this frame or the last (the pop-out is drawn
+/// after the pages), else nowhere, so a click where a hidden one was ends typing as any
+/// click away does.
+fn inspector_at(ctx: &egui::Context, (rect, pass): (Rect, u64)) -> Rect {
+    if ctx.cumulative_pass_nr() <= pass + 1 {
+        rect
+    } else {
+        Rect::NOTHING
+    }
 }
 
 /// The text box of the line being edited on `page`, in the tab's `scope`
@@ -1222,8 +1236,9 @@ pub struct Editor {
     pub adding: Option<PageText>,
     /// The note about a character a box in the inspector refused.
     text_refused: page_text::Refused,
-    /// Where the inspector was drawn last: a click there doesn't end a line being edited.
-    insp_rect: Rect,
+    /// Where the inspector was drawn last, and in which pass: a click there doesn't end a
+    /// line being edited ([`inspector_at`]).
+    insp_rect: (Rect, u64),
     /// Where the band's groups that change the text being typed (its look, Copy and Paste)
     /// were drawn this frame: a click there doesn't end the typing ([`band::show`]).
     ///
@@ -1354,7 +1369,7 @@ impl Default for Editor {
             still: None,
             adding: None,
             text_refused: page_text::Refused::default(),
-            insp_rect: Rect::NOTHING,
+            insp_rect: (Rect::NOTHING, 0),
             keep_typing: Vec::new(),
             tfont: FontChoice::default(),
             tsize: 14.0,
@@ -1587,6 +1602,26 @@ impl Editor {
             return Some(line_edit_id(self.scope, le.page));
         }
         self.writing_id()
+    }
+
+    /// Whether `id` is the box of a new note or text box being typed, which every new one
+    /// on its page shares.
+    pub fn new_box(&self, id: egui::Id) -> bool {
+        self.writing.as_ref().is_some_and(|w| w.id.is_none()) && self.writing_id() == Some(id)
+    }
+
+    /// What Ctrl+Z and Ctrl+Y can take back and redo in the typing on the page whose box
+    /// `id` has the keyboard: new text or a line being edited, which keep their own
+    /// history. `None` for any other box.
+    pub fn typing_history(&self, id: egui::Id) -> Option<(bool, bool)> {
+        let history = match (&self.adding, &self.line_edit) {
+            (Some(a), _) if a.id() == id => a.history(),
+            (_, Some(le)) if line_edit_id(self.scope, le.page) == id => {
+                &self.insp.as_ref()?.history
+            }
+            _ => return None,
+        };
+        Some((history.can_undo(), history.can_redo()))
     }
 
     /// The text being typed takes the keyboard back once the pointer is let go: Copy or
@@ -2134,7 +2169,11 @@ impl Editor {
         // The band's font list, size, colour and buttons (and the inspector's) change the
         // line being edited, which takes the keyboard back once the change is finished, as
         // new text does.
-        let in_inspector = keeping(&ctx, Some(self.insp_rect), &self.keep_typing);
+        let in_inspector = keeping(
+            &ctx,
+            Some(inspector_at(&ctx, self.insp_rect)),
+            &self.keep_typing,
+        );
         let picking = egui::Popup::is_any_open(&ctx);
         if !edit.has_focus() && (le.refocus || in_inspector || picking) {
             // Not in the click's own frames: a list it opens shows from the next one.
@@ -2205,24 +2244,19 @@ impl Editor {
                         })
                         .inner
                 });
-            // An existing note's inspector has a comment box of its own, so a click there
-            // closes the note as before. Panels are drawn on the background layer, which
-            // egui doesn't list among the layers under the pointer.
-            if w.id.is_some() {
-                let outside = inner.response.clicked_elsewhere();
-                (inner.inner, outside, false)
-            } else {
-                let click = ui.input(|i| i.pointer.any_click().then(|| i.pointer.interact_pos()));
-                let on_page = click.flatten().is_some_and(|pos| {
-                    let layer = ui.ctx().layer_id_at(pos);
-                    !inner.response.rect.contains(pos)
-                        && ui.clip_rect().contains(pos)
-                        && layer.is_none_or(|l| l == ui.layer_id())
-                });
-                let open = egui::Popup::is_any_open(ui.ctx());
-                let picking = std::mem::replace(&mut w.picking, open);
-                (inner.inner, on_page && !picking, on_page && picking)
-            }
+            // Only a click on the page closes it: one in the inspector changes it, its text
+            // typed here alone (ENH-13). Panels are drawn on the background layer, which egui
+            // doesn't list among the layers under the pointer.
+            let click = ui.input(|i| i.pointer.any_click().then(|| i.pointer.interact_pos()));
+            let on_page = click.flatten().is_some_and(|pos| {
+                let layer = ui.ctx().layer_id_at(pos);
+                !inner.response.rect.contains(pos)
+                    && ui.clip_rect().contains(pos)
+                    && layer.is_none_or(|l| l == ui.layer_id())
+            });
+            let open = egui::Popup::is_any_open(ui.ctx());
+            let picking = std::mem::replace(&mut w.picking, open);
+            (inner.inner, on_page && !picking, on_page && picking)
         } else {
             // Set in Helvetica, or its embedded face: what neither has isn't typed, as on
             // the page. A note's comment is a text string, which takes any character.
@@ -2268,8 +2302,11 @@ impl Editor {
         // it; a text box ends then, unless F6 took the keyboard to another region, which
         // it waits for.
         let parked = self.parked == Some(Parked::Typing(out.id));
-        // Copy and Paste in the band leave it open, and it takes the keyboard back.
-        if !w.note && keeping(ui.ctx(), None, &self.keep_typing) {
+        // Copy and Paste in the band leave it open, and it takes the keyboard back; so does a
+        // change in the inspector to a note, or to a text box already on the page, which the
+        // inspector shows (ENH-13).
+        let insp = (w.note || w.id.is_some()).then(|| inspector_at(ui.ctx(), self.insp_rect));
+        if keeping(ui.ctx(), insp, &self.keep_typing) {
             w.refocus = true;
         }
         let kept = parked || w.refocus;
@@ -4098,9 +4135,16 @@ impl Editor {
         }
     }
 
+    /// Whether the Text tool is adding text: not while it edits a line of the page, which
+    /// the band and the inspector show as the other tools do.
+    fn adding_text(&self) -> bool {
+        self.tool == Tool::Text && self.line_edit.is_none()
+    }
+
     /// The heading of a tool's options in the inspector.
     fn tool_heading(&self) -> Option<&'static str> {
         Some(match self.tool {
+            Tool::Text if !self.adding_text() => return None,
             Tool::Text => "New text",
             Tool::Image => "Insert image",
             Tool::Rect => "New rectangle",
@@ -4262,6 +4306,10 @@ impl Editor {
             if std::mem::take(&mut self.text_drag) {
                 self.selection.clear_words();
             }
+            return;
+        }
+        // New text moved by its outline puts the move back itself ([`PageText::ui`]).
+        if self.adding.as_ref().is_some_and(PageText::moving) {
             return;
         }
         if self.adding.is_some() {
@@ -4597,7 +4645,7 @@ impl Editor {
     /// ([`Self::settle_look`]); the typing stays open and takes the keyboard back. `compact`:
     /// on one row.
     pub fn font_band(&mut self, ui: &mut egui::Ui, planned: &dyn Fn(&mut egui::Ui), compact: bool) {
-        if self.tool == Tool::Text {
+        if self.adding_text() {
             let Some(a) = self.adding.as_mut() else {
                 self.next_text_look(ui, planned, compact);
                 return;
@@ -4790,33 +4838,49 @@ impl Editor {
                     e.opacity = pct / 100.0;
                 }
             });
-            let label = if e.text.is_some() { "Text" } else { "Comment" };
-            ui.label(label);
-            // A text box's text is set in Helvetica, or its embedded face: what neither has
-            // isn't typed, as on the page. A comment is a text string, which takes any.
-            let id = self.scope.with(("annot-text", a.id));
-            if e.text.is_some() && ui.ctx().memory(|m| m.has_focus(id)) {
-                let helvetica = FontChoice::default();
-                if let Some(c) = page_text::leave_out_untypable(ui, false, helvetica) {
-                    let note = page_text::fixed_note(&c).to_string();
-                    self.text_refused.mark(ui.ctx(), note);
+            // Open on the page, its text is typed there: one editor for it (ENH-13).
+            let typed_on_page = self.writing.as_ref().is_some_and(|w| w.id == Some(a.id));
+            let mut left = false;
+            if !typed_on_page {
+                let label = if e.text.is_some() { "Text" } else { "Comment" };
+                ui.label(label);
+                // A text box's text is set in Helvetica, or its embedded face: what neither
+                // has isn't typed, as on the page. A comment is a text string, which takes
+                // any.
+                let id = self.scope.with(("annot-text", a.id));
+                if e.text.is_some() && ui.ctx().memory(|m| m.has_focus(id)) {
+                    let helvetica = FontChoice::default();
+                    if let Some(c) = page_text::leave_out_untypable(ui, false, helvetica) {
+                        let note = page_text::fixed_note(&c).to_string();
+                        self.text_refused.mark(ui.ctx(), note);
+                    }
                 }
+                let out = egui::TextEdit::multiline(&mut e.contents)
+                    .id(id)
+                    .desired_rows(4)
+                    .desired_width(f32::INFINITY)
+                    .show(ui);
+                self.text_refused.show(ui.ctx(), &out, id);
+                dialogs::set_name(&out.response.response, label);
+                // Changes are kept as they are made, each finished one a step to undo; the
+                // comment when it is left, by Tab too, which puts the keyboard on the next
+                // control (PB-20).
+                left = out.response.response.lost_focus();
             }
-            let out = egui::TextEdit::multiline(&mut e.contents)
-                .id(id)
-                .desired_rows(4)
-                .desired_width(f32::INFINITY)
-                .show(ui);
-            self.text_refused.show(ui.ctx(), &out, id);
-            dialogs::set_name(&out.response.response, label);
-            // Changes are kept as they are made, each finished one a step to undo; the
-            // comment when it is left, by Tab too, which puts the keyboard on the next
-            // control (PB-20).
-            let left = out.response.response.lost_focus();
+            // The keyboard back in its text on the page doesn't hold a change made here.
+            let ctx = ui.ctx();
+            let settled = settled(ctx)
+                || (typed_on_page
+                    && !egui::Popup::is_any_open(ctx)
+                    && !ctx.input(|i| i.pointer.any_down()));
             if theme::glyph_button(ui, icon::TRASH, "Delete").clicked() {
+                // What is typed on the page goes with it.
+                if typed_on_page {
+                    self.writing = None;
+                }
                 self.actions.push(Action::DeleteAnnot(a.page, a.id));
                 done = true;
-            } else if !e.same_as(&now) && (settled(ui.ctx()) || left) {
+            } else if !e.same_as(&now) && (settled || left) {
                 self.actions.push(Action::SetAnnot(a.page, a.id, e.clone()));
                 done = true;
             }
@@ -5014,7 +5078,7 @@ impl Editor {
     }
 
     pub fn inspector(&mut self, ui: &mut egui::Ui) {
-        self.insp_rect = ui.clip_rect();
+        self.insp_rect = (ui.clip_rect(), ui.ctx().cumulative_pass_nr());
         if self.selection.annot().is_some() {
             self.annot_inspector(ui);
             return;
@@ -5033,8 +5097,8 @@ impl Editor {
         // heading (`Editor::heading`); the object's again below a tool's options.
         match self.tool {
             // The look of the text being typed, or of the next, is changed in the band's
-            // Font group ([`Self::font_band`]).
-            Tool::Text => {
+            // Font group ([`Self::font_band`]). A line edited with the tool shows its own.
+            Tool::Text if self.adding_text() => {
                 let rows = match self.adding.as_mut() {
                     Some(a) => {
                         let end = a.text.text().chars().count();
@@ -5191,7 +5255,7 @@ impl Editor {
                 self.group_ui(ui);
                 return;
             }
-            Tool::Select | Tool::Read => {}
+            Tool::Select | Tool::Read | Tool::Text => {}
         }
 
         // Below a tool's options, the object's own heading.
