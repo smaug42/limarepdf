@@ -21,12 +21,16 @@ While you type:
   in the installed font it came from (when LimarePDF can embed it), or in the Helvetica, Times or Courier that
   replaces it, which switches as you type a character its font can't take.
 - What you type takes the style of the character before it (at the start of the line, the one after it).
-- Ctrl+Z and Ctrl+Y undo and redo typing and style changes in the line, in order. Once the change is kept, Undo
-  takes the whole edit back. Typing into the same line again within a few seconds, with nothing else changed in
-  between, joins the same undo step.
+- Ctrl+Z and Ctrl+Y, or Undo and Redo in the commands row, undo and redo typing and style changes in the line, in
+  order. Once the change is kept, Undo takes the whole edit back. Typing into the same line again within a few
+  seconds, with nothing else changed in between, joins the same undo step.
 - **Edit > Font** in the band shows the font, size and colour of what is selected, or of the character before the
   caret. The inspector shows the font and size too, and the line's **Source font** (see
-  [Change size, font and colour](#change-size-font-and-colour)).
+  [Change size, font and colour](#change-size-font-and-colour)). Esc in the size box (or another box there) drops
+  what you typed in it and goes back to the line.
+- The floating toolbar has **B**, ***I*** and Copy for what is selected in the line. It sits above, below or
+  beside the line, clear of other text where there is room, never over the line; clicking it leaves the line open.
+- Going to another tab and back leaves the line open, ready to go on typing.
 
 A line turned on the page (not running left to right on screen) is edited in a box over the line instead, showing
 its fonts, sizes and colours; invisible recognised (OCR) text is edited in a plain box. The caret goes by the
@@ -36,8 +40,8 @@ character you clicked along the line, and a double-click selects the word you cl
 
 1. Double-click the line, then select the words: drag over them, or hold Shift and use the arrow keys. A
    double-click selects one word.
-2. Press Ctrl+B for Bold or Ctrl+I for Italic, or use **Edit > Font** in the band: the font list, size, Bold,
-   Italic and text colour.
+2. Press Ctrl+B for Bold or Ctrl+I for Italic, use **B** and ***I*** on the floating toolbar, or use
+   **Edit > Font** in the band: the font list, size, Bold, Italic and text colour.
 3. Press Enter, Esc or Tab, or click elsewhere, to keep it.
 
 As in a word processor:
@@ -92,10 +96,12 @@ afterwards it moves and is edited line by line.
 
 While you type, Ctrl+B, Ctrl+I and **Edit > Font** style what is selected, or what you type next, as when
 [styling words in a line](#style-words-in-a-line) (the keyboard comes back to the text afterwards).
-Ctrl+Z and Ctrl+Y undo and redo typing and styles, and dragging the outline moves the text. The next text you add
+Ctrl+Z and Ctrl+Y undo and redo typing and styles, and dragging the outline moves the text (Esc during the drag
+puts it back where it was). The next text you add
 starts in the style this one ended in; before you click, **Edit > Font** sets it. A line with larger text in it
 sits further below the one before, as in a word processor. With this tool, a click on text already on the page
-edits that line instead, with the caret where you clicked, and a drag selects text, as with the read tool.
+edits that line instead, with the caret where you clicked (Edit > Font and the inspector then show that line's
+look), and a drag selects text, as with the read tool.
 
 **Fonts:** the font list in **Edit > Font** has Helvetica, Times and Courier first, then the fonts installed on the
 computer whose licence allows embedding them, each name drawn in its own font. Type in its search field to narrow

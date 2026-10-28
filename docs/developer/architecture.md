@@ -185,17 +185,27 @@ inspector's `styles_ui` changes through the `styled::Restyle` trait as it change
 Italic by Word's rule over the whole selection, blanks where any line mixes a value. Invisible lines, words in
 form XObjects and vertical writing are counted (`chosen::Left`) and said. Changes go in as `Typed::Words` (one
 `Action::Restyle`, every page's `edit_texts` in one undo step); `Editor::reselect` selects the same words again
-after the edit's `invalidate`, only if they still read the same. Ctrl+B and Ctrl+I are commands
+after the edit's `invalidate`, and after `Tab::undo` and `Tab::redo`, only if they still read the same. Ctrl+B and Ctrl+I are commands
 (`Editor::switch_style`, also for a line selected with the arrow) and page-only keys, left to a text box with
 the keyboard. Selected words are painted as word processors shade a selection (`Editor::shaded`): a band a
 reading row (`line_boxes`, what `selected_lines` gives the marks and redaction boxes made from a selection), a
 paragraph's rows meeting halfway across the space between them (painting only), in the theme's selection
 background at 45% (PB-31: perhaps too dark). Every other text box uses egui's own undo. While any
 text box has the keyboard, `App::shortcuts` leaves the undo keys to it, so the document's Undo never runs from
-inside a box. Each tab's text boxes take their ids from `Editor::scope` (the tab's id) and what they edit, and
-the inspector is drawn inside that id, so no two documents share a box's state. `page_text::fresh_history`, run
-before each frame's keys, starts a box's undo afresh whenever it gets the keyboard, except when an editor hands
-the keyboard back mid-typing (`page_text::hand_back`, a note after its colour is picked). egui keeps only the
+inside a box; with a button holding the keyboard (`text_edit_focused` false) they are the document's. The
+commands row's Undo and Redo do what the keys do there (batch 40's Q4): a press or release on them
+(`App::undo_buttons`, their places last frame) while a text box has the keyboard sets `App::undo_held`, which sets
+egui's `SurrenderFocusOn::Never` for that frame so the box keeps the keyboard, and `App::act` turns the command
+into `App::undo_in_box`, sent to the box as Ctrl+Z or Ctrl+Shift+Z at the start of the next frame, before anything
+else reads that frame's keys. They are greyed by that typing's history: `Editor::typing_history` reads the
+`History` of new text and a line being edited (`History::can_undo`, `can_redo`), `page_text::box_history` egui's
+undoer for the boxes that keep egui's own. Each tab's text boxes take their ids from `Editor::scope` (the tab's id)
+and what they edit, and the inspector is drawn inside that id, so no two documents share a box's state.
+`page_text::fresh_history`, run before each frame's keys, starts a box's undo afresh whenever it gets the
+keyboard, except when an editor hands the keyboard back mid-typing (`page_text::hand_back`, a note after its
+colour is picked) or the keyboard comes back to the box it last left with nothing kept in the document since
+(ENH-32: `App::left_box` holds that box's id, its tab's id and the tab's revision then). A new note or text box
+uses its page's one box id (`Editor::new_box`), so it never takes the history of the last one typed there. egui keeps only the
 caret of a `TextEdit` without the keyboard, so the inspector's style controls read the line's or new text's
 selection through `page_text::held`, which notes it while the box has the keyboard and gives it while a list, the
 size box or the colour picker has it; `page_text::give_back` selects it again as the box takes the keyboard back
@@ -673,6 +683,18 @@ replaces the tab and is checked like any opened file.
 In the desktop app, every command is defined once in `crates/limarepdf-gui/src/actions.rs`; the File menu, the commands
 row, the command band, the command palette, the right-click menus, the floating toolbar and the keyboard shortcuts
 are all built from that list.
+
+The floating toolbar (`Tab::floating_toolbar`, ENH-20) shows `actions::toolbar_items`: the right-click menu's
+commands that have icons, or, while a line is edited on the page (`Ctx::line_edit`), Bold, Italic and Copy.
+`tab::bar_place` places it from its size as last drawn (kept in egui's data under the bar's id), the selection's
+box on screen (for a line being edited, joined with where its editor was drawn as typed, `Editor::line_area`) and
+the page's text (`Editor::text_boxes`: its lines and words as far as they have been read): above the selection,
+below, right, then left, the first inside the view that covers no text; else just above or below it, whichever
+covers less text (`overlap`), as Word's mini toolbar sits by the selection (the user, 2026-10-28, after the first
+version docked it at the view's top by a column heading with text all round it); at the view's top or bottom edge
+only when neither is in view. Bold and Italic there change what is selected in the line editor
+(`Editor::switch_style` reads it with `page_text::held`, then sets the editor's `refocus`), and `App::act` doesn't
+keep the typing before them as it does for other commands that use the document.
 The menus show an entry's short `label` inside its `submenu`; the palette, which has no submenus, shows the
 submenu's name before it in the weak colour ("Theme › Dark"), names the row `actions::spoken_title` for screen
 readers ("Theme: Dark") and searches the label, submenu and group (`actions::matches`; BUG-34, audit A18). A test
@@ -707,12 +729,30 @@ or several arrow-selected lines (`Chosen`) and one selected or edited line (`Ins
 before the page, as the inspector is, so a press there reaches the line editor first: `band::show` returns the
 places of the groups that change typing (Font, and Clipboard for Copy and Paste), lent to `Editor::keep_typing`, and
 `keeping` treats a press or release there as in the inspector: the line being edited, or a text box being written,
-stays open and takes the keyboard back once settled. `Editor::settle_look`, run each frame from `App::ui` whether or
+stays open and takes the keyboard back once settled. The line editor counts the floating bar too
+(`Editor::bar_rect`): the bar is drawn after the pages, so its place is last frame's. The inspector's place and the
+bar's count only when drawn this frame or the last (`editor::drawn_at`), so a click where a hidden inspector was
+ends a line edit as any click away does. With the Text tool, a click on page text edits that line;
+`Editor::adding_text` is false then, so the band, the inspector's heading (`tool_heading`) and the status bar show
+the line, not the next new text. Esc in a box of the band or the inspector while typing is open on the page
+(`App::esc_to_typing`, set at the start of `App::ui` before `App::shortcuts` reads the keys, which then leaves Esc
+alone; `Editor::refocus_typing`; `size_box` ignores Esc) drops what was typed in the box and gives the keyboard
+back to the typing instead of ending it, as a word processor does. Esc while new text is dragged by its outline
+puts it back: egui stops the drag on Esc before `PageText::ui` sees it, so that checks for Esc before the grip
+(`Editor::escape` leaves the text alone). `Editor::settle_look`, run each frame from `App::ui` whether or
 not the inspector is shown, observes the selected line's history and keeps finished changes (`Typed::Words`,
 `commit_insp`) as undo steps. The inspector now shows facts for text (`inspector::facts`, `look_facts`). Copy and
 Paste in the band (`Act::Copy`, `Act::Paste`) for typing set `App::clip` and `Editor::refocus_typing`;
 `App::clipboard`, at the start of each frame, sends egui's `ViewportCommand::RequestCopy` or `RequestPaste` once that box has the keyboard
 again, so the platform's copy or paste lands in it (dropped if the typing ends first).
+
+A note or text box open for typing on the page (`Editor::writing`, drawn by `Editor::writing_ui`) closes on Esc,
+Ctrl+Enter or a click on the page outside it (a click on the page's own layer, outside the note's comment box). A
+note, new or existing, and a text box already on the page stay open through clicks in the inspector (ENH-13):
+`keeping` with the inspector's place sets `refocus`, and once settled `page_text::hand_back` gives the keyboard
+back with its undo kept. Its text is typed there alone: while it is open the annotation inspector hides its own
+Comment or Text box, its other changes still apply, and the inspector's Delete drops what was typed with it. A new
+text box ends when it loses the keyboard, unless F6 parked it or a click in the band's typing groups kept it.
 
 The accent (`crates/limarepdf-gui/src/accent.rs`) is read from the desktop: on Linux the XDG desktop portal's
 `org.freedesktop.appearance` `accent-color` (`ReadOne`, red, green and blue from 0 to 1, out of range meaning none)
@@ -803,8 +843,13 @@ control takes the keyboard. Leaving the page, `move_region` notes what had it in
 open (`Parked::Typing`, the id from `Editor::typing_id`, its selection noted by `page_text::held`), which
 `line_edit_ui` and `writing_ui` don't end while it waits, and which `App::keys_to_page` gives back with its
 selection and its undo (`give_back`, `hand_back`); or a form field's text box (`Parked::Field`, by name and
-widget), which keeps its value as it loses the keyboard and `FormUi::focus_field` opens again. A press anywhere, the
-typing getting the keyboard back, or another tab in front ends the wait (start of `App::ui`). Each panel is named
+widget), which keeps its value as it loses the keyboard and `FormUi::focus_field` opens again. A press in the tab
+in front, or its typing getting the keyboard back or ending, ends the wait (start of `App::ui`). Switching tabs
+parks typing the same way: `App::front` holds the id of the tab in front last frame; when another comes to the
+front, the tab sent behind gets `Parked::Typing` for typing still open (`Editor::typing_id`), tabs behind keep what
+is parked, and the tab brought forward gets its parked typing or field back through `keys_to_page`, so a line
+being edited (which `line_edit_ui` would otherwise end, its editor without the keyboard) stays open across the
+switch. Each panel is named
 for screen readers with its role by `regions::name`, which finds the panel's own node up `Ui::stack` (egui 0.37
 gives each panel a node, unnamed); the notices are a scope built with their role and name. A document tab is
 `Role::Tab`, its selected state set on its node (egui's `WidgetInfo::selected` gives a toggle instead).

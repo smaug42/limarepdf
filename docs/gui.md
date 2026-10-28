@@ -11,7 +11,8 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
 ## The window
 
 - **Tabs**, at the top: one per document, with a × inside it to close it. **Unsaved** beside the name means
-  unsaved changes.
+  unsaved changes. Text you are typing on a page (new text, a line, a note or text box) stays open while you look
+  at another tab; back on its tab, you go on typing where you were.
 - **The commands row**, under the tabs: at the left the File menu (☰), Open and Save, then Undo and Redo, as icons
   named by their tooltips; then the names of the command band, **Edit**, **Insert**, **Review**, **Pages**,
   **Forms and sign**, **Protect** and **View**; at the right **Print**, and a small arrow that makes the commands
@@ -217,16 +218,18 @@ another tab hides it; come back within 30 seconds and it shows again. Notices th
 are no redaction marks to apply, say) have no Undo button.
 
 While you type in a line, a note, a text box, a form field or any of the inspector's boxes, Ctrl+Z and Ctrl+Y undo
-and redo the typing there and nothing else; with nothing left to undo there, they do nothing. Once it is kept (when
-you leave the box), Undo takes the whole change back, and the box starts with nothing to undo when you come back to
-it.
+and redo the typing there and nothing else, and so do Undo and Redo in the commands row, as in a word processor:
+the keyboard stays in the box, and they are greyed when there is nothing there to undo or redo. Once the typing is
+kept (when you leave the box), Undo takes the whole change back. A box you come back to with nothing kept in the
+document meanwhile, such as a note left open while you change its colour, can still undo its typing; otherwise it
+starts with nothing to undo, and a new note or text box always does.
 
 A command that changes or uses the document (rotating or deleting a page, removing blank pages, saving, printing,
-exporting, signing, Undo itself) keeps what you are typing first, as clicking away would: a step of its own, which
-Undo takes back, before the command's step. So Undo clicked in the commands row while you type takes back what you
-typed. Text that can't be kept (a form value LimarePDF can't write) stays as typed, with the reason shown, and the
-command doesn't run. Commands that only show something (zoom, moving between pages, opening a tool or a section
-of the inspector) leave your typing as it is.
+exporting, signing) keeps what you are typing first, as clicking away would: a step of its own, which Undo takes
+back, before the command's step. Undo with typing open on the page but the keyboard elsewhere (on a button, say)
+keeps the typing and takes it back. Text that can't be kept (a form value LimarePDF can't write) stays as typed,
+with the reason shown, and the command doesn't run. Commands that only show something (zoom, moving between pages,
+opening a tool or a section of the inspector) leave your typing as it is.
 
 ## Dialogs
 
@@ -364,7 +367,10 @@ sets the passwords, which take effect when you save.
 
 Right-click a page, an object, selected words or a thumbnail for a short menu of what applies there.
 Right-clicking selects what is under the pointer first. A selected object or run of words also gets a small
-floating toolbar with the same commands. Its last button, Dock controls on the right, moves these buttons to the
+floating toolbar with the same commands. It sits by the selection: above it, below it or beside it where that
+covers no other text, or else just above or below it, over as little text as it can; it never covers the
+selection. While a line is edited on the page, it has Bold, Italic and Copy for what is selected in the line, and
+clicking it leaves the line open with the keyboard back in it. Its last button, Dock controls on the right, moves these buttons to the
 top of the inspector (or its strip, when collapsed) instead; Float controls near selection there brings the
 floating toolbar back. View > Properties ▾ > Selection controls on the right does either. The choice is remembered between
 runs; resizing the window doesn't change it.
@@ -447,7 +453,7 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Ctrl+A (arrow) | Select every object on the page |
 | Shift+click (read tool: pictures and shapes; arrow: any object) | Add an object to the selection or take it out |
 | Shift+drag (arrow) | Add what a rectangle holds to the selection |
-| Esc | Cancel: close an open list, menu or colour picker (only that), cancel a move, resize, shape, pen stroke, selection rectangle or word selection being dragged (only that), finish (and keep) new text, a line, a note, a text box or a form field being typed, clear the selection, or leave a tool for the read tool |
+| Esc | Cancel: close an open list, menu or colour picker (only that), cancel a move, resize, shape, pen stroke, selection rectangle or word selection being dragged (only that), finish (and keep) new text, a line, a note, a text box or a form field being typed, clear the selection, or leave a tool for the read tool. In a box of Edit > Font or the inspector (the font size, say) while typing is open on the page, it drops what was typed in the box and goes back to the typing |
 | Ctrl+B, Ctrl+I | Bold, Italic for the words selected with the read tool, or the lines selected with the arrow; in new text being typed (Add text) or a line being edited on the page, for the words selected there, or with nothing selected, the word at the caret, or what is typed next between words |
 | Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) while typing new text, a line, a note, a text box, a form field or in any box of the inspector | Undo, redo the typing there (and the styles, in new text and lines), not the document |
 | Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |

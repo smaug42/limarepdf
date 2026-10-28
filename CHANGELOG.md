@@ -1,5 +1,43 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- While a line is edited on the page, its floating toolbar has Bold, Italic and Copy for what is selected in the
+  line, as Ctrl+B, Ctrl+I and Ctrl+C do there. Clicking them leaves the line open, with the keyboard back in it.
+
+### Changed
+
+- Undo and Redo in the commands row act on what you are typing, as Ctrl+Z and Ctrl+Y do, in a line, new text, a
+  note, a text box, a form field or a box of the inspector: the keyboard stays where you are typing, and they are
+  greyed when there is nothing there to undo or redo. Before, Undo kept the typing and then took the whole of it
+  back.
+- The floating toolbar sits where it covers no other text: above the selection, below it or beside it, or else
+  just above or below it, over as little text as it can. It never covers a line being edited or its caret. Before,
+  it always sat just above the selection, over the line above.
+- A note or text box already on the page that you type in stays open while you change it in the inspector (its
+  colour, a text box's size, colours, background and border), as a new note already did; the keyboard comes back
+  to it. Its text is typed on the page only: the inspector's own Comment or Text box is hidden meanwhile.
+- A note, text box or other box you come back to with nothing kept in the document meanwhile can still undo its
+  typing with Ctrl+Z; before, it started with nothing to undo each time. A new note or text box still starts
+  empty.
+- Text you are typing on a page (new text, a line, a note or text box) stays open while another tab is in front,
+  and you go on typing when you come back to its tab. Before, a line being edited ended when you came back.
+- Esc in a box of Edit > Font or the inspector (the font size, say), while typing is open on the page, drops what
+  was typed in the box and goes back to the typing. Before, it ended the line being edited.
+- Esc while dragging new text by its outline puts it back where it was.
+
+### Fixed
+
+- A line clicked with the Text tool to edit it showed the look of the next new text in Edit > Font and the
+  inspector, and changes there went to that new text instead of the line. They show and change the line now.
+- Undo and Redo took the words selected with the read tool away; the words stay selected now when they still read
+  the same.
+- Ctrl+Z and Ctrl+Y did nothing while a button had the keyboard; they undo and redo the document now.
+- A click where the inspector had been, after it was hidden, didn't end a line being edited; it does now, as any
+  click away does.
+
 ## [0.11.0] - 2026-10-27
 
 ### Added

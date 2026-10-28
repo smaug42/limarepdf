@@ -48,7 +48,13 @@ More about notes and text boxes:
   once it is kept, Ctrl+Z takes the whole note or text box back. Finishing by choosing another tool keeps that
   tool.
 - While you type a note, the colour in the inspector changes the note's colour: clicks in the inspector and its
-  colour picker leave the note open, and Esc, or a click that closes the picker, closes only the picker.
+  colour picker leave the note open, and Esc, or a click that closes the picker, closes only the picker. The same
+  goes for a note or text box already on the page that you double-click to type in: the inspector changes it
+  while it stays open, and the keyboard comes back to it. Its text is typed on the page only, so the inspector's
+  own Comment or Text box is hidden meanwhile; the inspector's Delete removes it, with what you typed. Only a click
+  on the page outside it closes it.
+- Leave a note open to change it in the inspector and come back: Ctrl+Z still undoes what you typed in it. A new
+  note or text box starts with nothing to undo.
 - Notes show at the same size on screen whatever the zoom, in the note's colour and shaped like its icon: one of
   the seven standard ones (Comment, which LimarePDF's notes use, Key, Note, Help, New paragraph, Paragraph and
   Insert), or Note for any other. Printed, they keep their own drawing, or LimarePDF's, 20 points across. Hovering
@@ -92,7 +98,7 @@ and for a shape its width, fill and arrowhead, for a text box its text, size, co
 
 - **Change it** in the inspector. Changes are kept as you make them, each one a step to undo; a comment being typed
   is kept when you leave its box.
-- **Change its text:** double-click a note or text box.
+- **Change its text:** double-click a note or text box, and type on the page as when you added it.
 - **Move it** by dragging it, or with the arrow keys (1 point at a time, or 10 with Shift). **Resize it** by
   dragging a handle.
 - **Delete it** with Delete or Backspace. Esc lets it go.

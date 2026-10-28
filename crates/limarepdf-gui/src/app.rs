@@ -6747,6 +6747,13 @@ mod tests {
                 Some(typing),
                 "{case}: not back"
             );
+            // Its typing's history came back with it (ENH-32).
+            let tree = ty.key(&mut app, Key::Z, CTRL);
+            let undone = focused_text(&tree);
+            assert_ne!(undone.as_deref(), Some("Seal"), "{case}: no undo");
+            let tree = ty.key(&mut app, Key::Y, CTRL);
+            let redone = focused_text(&tree);
+            assert_eq!(redone.as_deref(), Some("Seal"), "{case}: no redo");
             ty.text(&mut app, "s");
             let tree = ty.pause(&mut app);
             assert_eq!(focused_text(&tree).as_deref(), Some("Seals"), "{case}");
