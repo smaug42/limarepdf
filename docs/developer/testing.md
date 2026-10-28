@@ -174,8 +174,9 @@ side panel's widths), was checked by the app's tests above, each failing on the 
 passing headless (`cargo test --workspace`: 1,231 passed, 39 ignored), and by screenshots of the release build
 under a virtual X server (light theme, 1280 × 800 and 1000 × 660: the document, two pages, words, Watermark,
 Headers, footers, Bates (its name on two lines) and Comments at 220 points); by hand and with a screen reader it
-is not run: deferred to the RC cycle, and the guide's screenshots that show the inspector or the side panel's text
-views were not retaken. Later additions (recent files, document notices, fit width, the theme button, crop)
+is not run: deferred to the RC cycle. The guide's four screenshots that show the inspector or the side panel's text
+views (`limarepdf`, `window-tour`, `inspector`, `signatures-panel`) were retaken after it with `docshots.sh`, its
+click points and labels still right; `create-signature` came out the same, pixel for pixel. Later additions (recent files, document notices, fit width, the theme button, crop)
 were checked by screenshot under a virtual X server; not every one has been clicked through by hand. Of the newest:
 the page layouts (facing and single page) have unit tests for pairing and fitting but were not clicked through;
 viewer preferences were checked through their core tests and `limarepdf-cli view-prefs`; following them on opening and the
