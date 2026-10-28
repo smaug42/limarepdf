@@ -4,8 +4,25 @@
 
 ### Added
 
-- While a line is edited on the page, its floating toolbar has Bold, Italic and Copy for what is selected in the
-  line, as Ctrl+B, Ctrl+I and Ctrl+C do there. Clicking them leaves the line open, with the keyboard back in it.
+- While a line is edited on the page, its floating toolbar has Bold, Italic, Cut and Copy for what is selected in
+  the line, as Ctrl+B, Ctrl+I, Ctrl+X and Ctrl+C do there. Clicking them leaves the line open, with the keyboard
+  back in it.
+- Typing over words selected with the read tool replaces them, as in a word processor: their line opens for
+  editing with what you typed in their place, and you go on typing there. Ctrl+V pastes over them the same way.
+  Over words on more than one line nothing is typed, and a note says "Type over words within one line. Paragraph
+  editing is planned."
+- Delete or Backspace removes the words selected with the read tool, across lines and pages, in one step that
+  Undo takes back. As in Word, a space beside them goes too when two would be left together, or one at the start
+  or end of a line. A line left empty is gone; lines aren't joined together.
+- Cut (Ctrl+X) for words selected with the read tool, lines of page text selected with the arrow, and text being
+  typed: in the Edit band's Clipboard group (Paste, Cut, Copy), ☰ > Edit, the right-click menus and the floating
+  toolbars. Where nothing selected can be taken out (invisible recognised text), it copies and says so.
+- Shift with the arrow keys, Home or End extends words selected with the read tool: by a word, to the line above
+  or below, or to the start or end of the line, across pages. The view scrolls just enough to keep the end of the
+  selection in sight. Also in ☰ > Edit > Extend selected text.
+- Edit text with words selected edits their line with those words selected, ready to type over them (over more
+  than one line, the line where the selection ends). It is in the words' right-click menu and floating toolbar
+  too.
 
 ### Changed
 
@@ -27,6 +44,15 @@
 - Esc in a box of Edit > Font or the inspector (the font size, say), while typing is open on the page, drops what
   was typed in the box and goes back to the typing. Before, it ended the line being edited.
 - Esc while dragging new text by its outline puts it back where it was.
+- A double-click or triple-click away from any text selects nothing. Before, it selected the nearest word or line,
+  however far away.
+- Ctrl+A selects all the text on the page with the Text tool too, as with the read tool.
+- With words selected, Shift+Home and Shift+End extend them; they no longer go to the first or last page.
+- A click on the inspector's heading, its collapse button, its collapsed strip or the heading of the inspector
+  popped out leaves a line being edited open, with the keyboard back in the line. Before, it ended the line.
+- The right-click menu of a selected picture or shape has only what applies to it (Replace image…, Delete the
+  object). A line of page text's has Edit text, Move or resize text and Copy the selected text lines, then Cut and
+  Delete the object.
 
 ### Fixed
 
@@ -37,6 +63,13 @@
 - Ctrl+Z and Ctrl+Y did nothing while a button had the keyboard; they undo and redo the document now.
 - A click where the inspector had been, after it was hidden, didn't end a line being edited; it does now, as any
   click away does.
+- Keys typed in the moment a double-click opened a line for editing were lost; they go into the line now.
+- Selecting a shape whose outline is thinner than a quarter of a point (a hairline, common in PDFs from other
+  programs) changed its outline to a quarter of a point, as a step Undo could take back, without anything being
+  done to it. With such a filled shape selected, quitting said the document had changed while the question was
+  open, every time, until the shape was let go. Selecting it changes nothing now, and the inspector shows its
+  outline width as it is. A rule thinner than a point, moved by its X or Y in the inspector, no longer moves down a
+  little too.
 
 ## [0.11.0] - 2026-10-27
 

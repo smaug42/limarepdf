@@ -128,16 +128,22 @@ More ways to select:
 
 - Dragging past the top or bottom of the view scrolls it, faster the further out the pointer is, so a selection
   can run across pages.
-- Shift+click extends the selection to where you click, on any page. Ctrl+A, or **Edit > Select > Select all text
-  on the page**, selects the whole page in view. Esc,
+- Shift+click extends the selection to where you click, on any page. Shift with the arrow keys extends it from the
+  keyboard: Left and Right by a word, Up and Down to the line above or below, Home and End to the start or end of
+  the line, across pages. Ctrl+A, or **Edit > Select > Select all text on the page**, selects the whole page in
+  view, with the read tool or the Text tool. Esc,
   or a click, clears the selection. With no words selected, Shift+click on a picture or shape adds it to those
   selected instead ([Select several objects](content-editing.md#select-several-objects)).
 - Double-clicking page text edits its line (see [Editing text and pictures](content-editing.md)). Where there is
-  no line to edit, such as recognised (OCR) text, a double-click selects one word and a triple-click a line.
+  no line to edit, such as recognised (OCR) text, a double-click selects one word and a triple-click a line. A
+  double-click or triple-click away from any text selects nothing.
+
+Selected words can also be typed over, deleted or cut, as in a word processor (see
+[Type over, delete or cut words](content-editing.md#type-over-delete-or-cut-words)).
 
 Words are copied in reading order, with spaces between words and line breaks between lines and pages. Recognised
 (OCR) text is selected and copied like any other text. **Edit > Copy** (or ☰ > Edit > Copy text) does the same as
-Ctrl+C.
+Ctrl+C, and **Edit > Cut** (Ctrl+X) copies the words and then takes them out of the page.
 
 On Linux, as in other Linux apps, the selected text can also be pasted into another app (or a LimarePDF text box)
 by clicking there with the middle mouse button, without copying it first.

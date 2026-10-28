@@ -9,7 +9,9 @@ with Ctrl; on a Mac, use ⌘ (Command) instead.
 ## Edit a line of text
 
 1. Double-click the line with the read tool (the text cursor). The word you double-clicked is selected, so typing
-   replaces it. Or choose **Edit > Edit text**, then click the line: the caret goes where you click.
+   replaces it. Or choose **Edit > Edit text**, then click the line: the caret goes where you click. With words
+   selected, **Edit > Edit text** edits their line with them selected (see
+   [Type over, delete or cut words](#type-over-delete-or-cut-words)).
 2. Type your change.
 3. Press Enter, Esc or Tab, or click elsewhere, to keep it.
 
@@ -83,6 +85,28 @@ The words around the ones you change are left exactly as they were, in their own
 write new text in. Words whose size or colour is all you change keep their font too; Bold, Italic or another font
 writes them in that font. Invisible recognised (OCR) text, text inside a block of page content reused as a whole,
 and vertical writing keep their look; a short notice says when part of the selection was left that way.
+
+## Type over, delete or cut words
+
+Words you select with the read tool can be changed as in a word processor, without opening their line first:
+
+- **Type** to replace them. Their line opens for editing with what you typed in their place, and you go on typing
+  there; press Enter, Esc or Tab, or click elsewhere, to keep it. **Ctrl+V** pastes over them the same way. Over
+  words on more than one line nothing is typed, and a note says "Type over words within one line. Paragraph editing
+  is planned."
+- **Delete** or **Backspace** removes them, across lines and pages, in one step that Undo takes back. As in Word,
+  a space beside them goes too when two would be left together, or one at the start or end of a line. A line left
+  empty is gone; the lines around it stay where they are, as lines aren't joined together.
+- **Cut** (Ctrl+X, in **Edit** in the band, the right-click menu or the floating toolbar) copies them, then removes
+  them as Delete does.
+- **Edit > Edit text** (also in the right-click menu and the floating toolbar) opens their line with them selected,
+  to type over them or style them. Over more than one line, it opens the line where the selection ends.
+
+To select them from the keyboard, hold **Shift** and use the arrow keys: Left and Right add or take off a word, Up
+and Down go to the line above or below, and Home and End to the start or end of the line, across pages; the view
+follows. Invisible recognised (OCR) text, text inside a block of page content reused as a whole, and vertical
+writing are left as they are, and a short notice says so; when none of the selection can be changed, Cut only
+copies it.
 
 ## Add text
 
@@ -169,8 +193,8 @@ Each selected object is outlined, with a dashed box round them all. Drag any one
 move them together; Delete or Backspace deletes them all. The inspector says how many there are and what they are.
 **Edit > Font** changes the lines of text among them, each line as a whole, and the inspector's Fill, Outline and
 width change the shapes; a value they don't share shows blank or mixed. X and Y under **Position** move
-them all. Right-click one of them for Copy the selected text lines (in reading order) and Delete. Each change is
-one undo step.
+them all. Right-click one of them for Copy the selected text lines (in reading order), Cut (when they are all
+lines of text) and Delete. Each change is one undo step.
 
 Several objects are selected on one page at a time. They move, restyle and delete together, but are resized one at
 a time. Comments and markup are selected one at a time, never with page objects.
@@ -233,7 +257,9 @@ detail is in [How it is built](developer/architecture.md#content-editing).
 ## Limits
 
 - Text objects are lines recovered from the content stream by heuristics, not paragraphs. There is no reflow and no
-  multi-line editing. Text boxes are estimated from font metrics, so they can be slightly off for unusual fonts.
+  multi-line editing: typing over words selected on more than one line types nothing, and deleting words leaves
+  each line where it was, an emptied one blank. Text boxes are estimated from font metrics, so they can be
+  slightly off for unusual fonts.
 - Text in embedded subset fonts, and in CID (Type 0) fonts, cannot keep its font where it is changed: a word you
   change (or change some of the letters of) is written in the installed family the font is from when LimarePDF
   can embed it, else in Helvetica, Times or Courier (or their Liberation face, as new text is), and the inspector

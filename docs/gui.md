@@ -36,7 +36,8 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
   you opened, such as Watermark (see [The inspector](#selecting-and-the-inspector)). The » at its top collapses it
   to a strip; the « at the top of the strip expands it again, and the strip's options button shows the inspector's
   contents in a pop-out over the pages (a click elsewhere or Esc closes it; what you changed in it stays). View >
-  Properties does the same.
+  Properties does the same. A line you are editing on the page stays open through all of these, and through a
+  click on the inspector's heading, with the keyboard back in the line.
 - **Narrow windows:** below about 960 points wide the inspector collapses to its strip by itself, and below about
   760 the side panel folds away, leaving its icons. They come back when the window is wide enough again, unless
   you closed them yourself; a panel you open in a narrow window stays open. Whether you closed or opened each
@@ -76,7 +77,7 @@ on. Every button names itself on hover, with its shortcut.
 
 | Name | Groups and buttons |
 | --- | --- |
-| Edit | Paste and Copy; the **Font** group: the font, size, Bold, Italic and text colour of the text selected or being typed ([Style words](content-editing.md#style-words-you-select-while-reading)); Edit text, Find, and Select ▾ (Read and select text, the arrow, select all) |
+| Edit | Paste, Cut and Copy; the **Font** group: the font, size, Bold, Italic and text colour of the text selected or being typed ([Style words](content-editing.md#style-words-you-select-while-reading)); Edit text, Find, and Select ▾ (Read and select text, the arrow, select all) |
 | Insert | Text and Image; Header and footer, Watermark; From images (a new PDF from pictures) |
 | Review | Note, Comments ▾ (your name for comments); Highlight ▾ (underline, strike out, squiggly underline and the colours), Text box, Draw ▾ (the pen, rectangle, ellipse, line or arrow), Stamp; Flatten… |
 | Pages | Rotate ▾, Extract, Delete ▾ (remove blank pages); Insert pages ▾ (a blank page, images, other PDFs), Split; Crop, Page labels; Recognise text, Optimise |
@@ -369,13 +370,15 @@ Right-click a page, an object, selected words or a thumbnail for a short menu of
 Right-clicking selects what is under the pointer first. A selected object or run of words also gets a small
 floating toolbar with the same commands. It sits by the selection: above it, below it or beside it where that
 covers no other text, or else just above or below it, over as little text as it can; it never covers the
-selection. While a line is edited on the page, it has Bold, Italic and Copy for what is selected in the line, and
-clicking it leaves the line open with the keyboard back in it. Its last button, Dock controls on the right, moves these buttons to the
+selection. While a line is edited on the page, it has Bold, Italic, Cut and Copy for what is selected in the line,
+and clicking it leaves the line open with the keyboard back in it. Its last button, Dock controls on the right, moves these buttons to the
 top of the inspector (or its strip, when collapsed) instead; Float controls near selection there brings the
 floating toolbar back. View > Properties ▾ > Selection controls on the right does either. The choice is remembered between
 runs; resizing the window doesn't change it.
 
-Delete removes the selected object, comment or mark, or the selected pages.
+Delete removes the selected words, object, comment or mark, or the selected pages. Words selected with the read
+tool can also be typed over or cut (see
+[Type over, delete or cut words](content-editing.md#type-over-delete-or-cut-words)).
 
 ### Tools in the inspector
 
@@ -446,10 +449,13 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Ctrl+0, Ctrl+1 | Fit width on or off, actual size |
 | Ctrl+scroll, pinch | Zoom |
 | PageUp, PageDown, Home, End | Previous, next, first, last page |
-| Delete, Backspace | Delete the selected objects, comment or mark, or the selected pages |
+| Delete, Backspace | Delete the selected words, objects, comment or mark, or the selected pages |
 | Ctrl+Shift+H | Highlight the selected text |
 | Arrow keys (Shift for 10 points) | Move the selected objects |
-| Ctrl+A, Ctrl+C | Select all text on the page, copy it (read tool) |
+| Shift+Left, Shift+Right; Shift+Up, Shift+Down; Shift+Home, Shift+End (words selected with the read tool) | Extend the selection by a word; to the line above or below; to the start or end of the line, across pages |
+| Ctrl+A, Ctrl+C | Select all text on the page, copy it (read tool or Text tool) |
+| Ctrl+X | Cut the words selected with the read tool, the lines of text selected with the arrow, or what is selected in text being typed |
+| Typing, Ctrl+V (words selected with the read tool, in one line) | Replace the words, in their line opened for editing |
 | Ctrl+A (arrow) | Select every object on the page |
 | Shift+click (read tool: pictures and shapes; arrow: any object) | Add an object to the selection or take it out |
 | Shift+drag (arrow) | Add what a rectangle holds to the selection |
