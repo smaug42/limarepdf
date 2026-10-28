@@ -369,6 +369,20 @@ impl Refused {
         out: &egui::text_edit::TextEditOutput,
         id: egui::Id,
     ) {
+        if self.0.is_none() {
+            return;
+        }
+        let caret = out
+            .cursor_range
+            .map(|c| out.galley.pos_from_cursor(c.primary))
+            .unwrap_or(Rect::from_min_size(Pos2::ZERO, Vec2::ZERO));
+        let pos = out.galley_pos + caret.left_bottom().to_vec2() + Vec2::new(0.0, 4.0);
+        self.show_at(ctx, pos, id);
+    }
+
+    /// Show the note with its top left at `pos` on the screen while it lasts, as under a
+    /// caret; `id` names it.
+    pub fn show_at(&mut self, ctx: &egui::Context, pos: Pos2, id: egui::Id) {
         let Some((at, note)) = self.0.clone() else {
             return;
         };
@@ -378,11 +392,6 @@ impl Refused {
             return;
         }
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(left));
-        let caret = out
-            .cursor_range
-            .map(|c| out.galley.pos_from_cursor(c.primary))
-            .unwrap_or(Rect::from_min_size(Pos2::ZERO, Vec2::ZERO));
-        let pos = out.galley_pos + caret.left_bottom().to_vec2() + Vec2::new(0.0, 4.0);
         egui::Area::new(id.with("refused"))
             .fixed_pos(pos)
             .order(egui::Order::Tooltip)

@@ -326,6 +326,12 @@ pub struct Tab {
     pub use_labels: bool,
     /// Scroll to this height on the `goto` page (points from its top), with `goto`.
     goto_y: Option<f32>,
+    /// A box on a page (its page, and page points) to bring into view, scrolling only as
+    /// far as it must, as a word processor keeps its caret in view: the end of words
+    /// selected with the keys.
+    pub reveal: Option<(usize, [f32; 4])>,
+    /// The part of the pages shown last frame, in the scroll area's own points.
+    last_view: Option<Rect>,
     pub error: Option<String>,
     /// Showing the document failed with an internal error (see [`Tab::guarded`]); the tab
     /// shows this message instead of the pages.
@@ -484,6 +490,8 @@ impl Tab {
             to_hit: None,
             use_labels: true,
             goto_y: None,
+            reveal: None,
+            last_view: None,
             error: None,
             broken: None,
             ed: Editor::for_tab(id),
@@ -2630,6 +2638,8 @@ impl Tab {
         };
         c.obj_text = (held.iter()).any(|h| matches!(h.kind, ObjKind::Text | ObjKind::HiddenText));
         c.obj_lines = held.iter().any(|h| h.kind == ObjKind::Text);
+        c.obj_only_text = (!held.is_empty())
+            && (held.iter()).all(|h| matches!(h.kind, ObjKind::Text | ObjKind::HiddenText));
         c.pages = self.ed.selection.pages().is_some();
         c.tool = Some(self.ed.tool);
         c.annot_tool = Some(self.ed.annot_tool);
@@ -2951,6 +2961,21 @@ impl Tab {
             // After a zoom change, put the same place back at the top of the view.
             let top = row_of.get(p).and_then(|&r| row_top.get(r)).copied();
             area = area.vertical_scroll_offset((top.unwrap_or(0.0) + y * scale).max(0.0));
+        } else if let Some((p, b)) = self.reveal.take() {
+            // Only as far as it must, with a little of the page beyond it.
+            if let Some((top, view)) = page_top(p).zip(self.last_view) {
+                let (y0, y1) = (top + b[1] * scale, top + b[3] * scale);
+                let to = if y0 < view.min.y {
+                    Some(y0 - 40.0)
+                } else if y1 > view.max.y {
+                    Some(y1 + 40.0 - view.height())
+                } else {
+                    None
+                };
+                if let Some(to) = to {
+                    area = area.vertical_scroll_offset(to.max(0.0));
+                }
+            }
         }
         let current = (self.hit_idx < self.hits.len()).then_some(self.hit_idx);
         let mut wanted: Vec<(Key, f32)> = Vec::new();
@@ -3082,6 +3107,8 @@ impl Tab {
         }
         let room = out.content_size.y - out.inner_rect.height();
         self.edge = (top <= 0.5, top >= room - 0.5);
+        let at = Pos2::new(out.state.clamped_offset().x, top);
+        self.last_view = Some(Rect::from_min_size(at, out.inner_rect.size()));
         let ed = &mut self.ed;
         ed.form.keys(&ctx, &mut ed.actions);
         self.apply_actions(&ctx);

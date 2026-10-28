@@ -5,7 +5,7 @@
 use crate::editor::Tool;
 use crate::icon;
 use crate::markup::{self, Mark};
-use crate::selection::{ObjKind, Selection};
+use crate::selection::{ObjKind, Selection, Toward};
 use crate::settings::{Accent, Layout, PageLook};
 use crate::signing::SignPick;
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, ThemePreference};
@@ -42,6 +42,8 @@ pub enum Act {
     /// Copy: what is selected in the text being typed, else the selected words, else the
     /// selected lines of page text.
     Copy,
+    /// Cut: what [`Act::Copy`] copies, copied and then taken out.
+    Cut,
     /// Paste into the text being typed on the page, at its caret.
     Paste,
     SelectAllText,
@@ -95,6 +97,8 @@ pub enum Act {
     DeleteObject,
     /// Move the selected object by this many points (×10 with Shift).
     Nudge(i8, i8),
+    /// Move the moving end of the words selected (Shift with an arrow, Home or End).
+    Extend(Toward),
     /// Cancel what is in progress: new text, a drawing tool, or the selection.
     Escape,
     Find,
@@ -215,6 +219,7 @@ impl Act {
             | Act::FinishSigning
             | Act::RemoveHidden
             | Act::DeleteSelection
+            | Act::Cut
             | Act::MoveText
             | Act::ReplaceImage
             | Act::DeleteObject
@@ -262,6 +267,7 @@ impl Act {
             | Act::PrevPage
             | Act::FirstPage
             | Act::LastPage
+            | Act::Extend(_)
             | Act::Layout(_)
             | Act::ToggleCover
             | Act::ToggleSide
@@ -368,6 +374,8 @@ pub struct Ctx {
     pub obj_text: bool,
     /// Some of the selected objects are lines of visible page text.
     pub obj_lines: bool,
+    /// Every selected object is a line of page text, visible or not.
+    pub obj_only_text: bool,
     /// Pages are selected in the thumbnails.
     pub pages: bool,
     pub tool: Option<Tool>,
@@ -468,6 +476,11 @@ fn words_idle(c: &Ctx) -> bool {
 fn copyable(c: &Ctx) -> bool {
     c.typing || c.words || lines_among(c)
 }
+/// Something to cut: what is selected in the text being typed, words, or lines of page
+/// text with nothing else selected, whose text Cut copies.
+fn cuttable(c: &Ctx) -> bool {
+    c.typing || ((c.words || (c.object && c.obj_only_text)) && !c.busy)
+}
 fn typing(c: &Ctx) -> bool {
     c.typing
 }
@@ -480,6 +493,9 @@ fn object(c: &Ctx) -> bool {
 /// An object or annotation that can be moved with the current tool.
 fn nudgeable(c: &Ctx) -> bool {
     c.object_moves || c.annot_moves
+}
+fn words_selected(c: &Ctx) -> bool {
+    c.words
 }
 /// Page text selected with the read tool, which moves only with the arrow.
 fn fixed_text(c: &Ctx) -> bool {
@@ -502,13 +518,14 @@ fn arrow_tool(c: &Ctx) -> bool {
     c.doc && c.tool == Some(Tool::Select)
 }
 fn deletable(c: &Ctx) -> bool {
-    c.object || c.pages || (c.annot && !c.annot_locked)
+    c.object || c.pages || (c.annot && !c.annot_locked) || (c.words && !c.busy)
 }
 fn image_object(c: &Ctx) -> bool {
     c.object && c.obj_kind == Some(ObjKind::Image)
 }
+/// The tools that select words: the read tool, and the Text tool with a drag.
 fn text_tool(c: &Ctx) -> bool {
-    c.tool == Some(Tool::Read)
+    matches!(c.tool, Some(Tool::Read | Tool::Text))
 }
 fn any_tool(c: &Ctx) -> bool {
     c.doc && c.tool.is_some()
@@ -517,6 +534,7 @@ fn any_tool(c: &Ctx) -> bool {
 const C: Modifiers = Modifiers::COMMAND;
 const CS: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
 const N: Modifiers = Modifiers::NONE;
+const S: Modifiers = Modifiers::SHIFT;
 const fn k(m: Modifiers, key: Key) -> KeyboardShortcut {
     KeyboardShortcut::new(m, key)
 }
@@ -660,13 +678,24 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::Cut,
+        group: Group::Edit,
+        label: "Cut",
+        icon: icon::SCISSORS,
+        keys: &[k(C, Key::X)],
+        enabled: cuttable,
+        sep: true,
+        hint: "Copy what is selected in the text being typed, else the selected words or \
+               lines of text, and take it out. Undo brings it back.",
+        ..BASE
+    },
+    Action {
         act: Act::Copy,
         group: Group::Edit,
         label: "Copy text",
         icon: icon::COPY,
         keys: &[k(C, Key::C)],
         enabled: copyable,
-        sep: true,
         hint: "Copy what is selected in the text being typed, else the selected words or \
                lines of text.",
         ..BASE
@@ -842,7 +871,7 @@ pub static ACTIONS: &[Action] = &[
         icon: icon::TRASH,
         keys: &[k(N, Key::Delete), k(N, Key::Backspace)],
         enabled: deletable,
-        hint: "The selected object, comment or markup, or the pages selected in the \
+        hint: "The selected words, object, comment or markup, or the pages selected in the \
                thumbnails. Undo brings them back.",
         ..BASE
     },
@@ -916,6 +945,66 @@ pub static ACTIONS: &[Action] = &[
         palette: false,
         hint: "One point; with Shift, ten.",
         submenu: "Move selected object",
+        ..BASE
+    },
+    Action {
+        act: Act::Extend(Toward::Left),
+        group: Group::Edit,
+        label: "To the word before",
+        keys: &[k(S, Key::ArrowLeft)],
+        enabled: words_selected,
+        palette: false,
+        submenu: "Extend selected text",
+        ..BASE
+    },
+    Action {
+        act: Act::Extend(Toward::Right),
+        group: Group::Edit,
+        label: "To the word after",
+        keys: &[k(S, Key::ArrowRight)],
+        enabled: words_selected,
+        palette: false,
+        submenu: "Extend selected text",
+        ..BASE
+    },
+    Action {
+        act: Act::Extend(Toward::Up),
+        group: Group::Edit,
+        label: "To the line above",
+        keys: &[k(S, Key::ArrowUp)],
+        enabled: words_selected,
+        palette: false,
+        submenu: "Extend selected text",
+        ..BASE
+    },
+    Action {
+        act: Act::Extend(Toward::Down),
+        group: Group::Edit,
+        label: "To the line below",
+        keys: &[k(S, Key::ArrowDown)],
+        enabled: words_selected,
+        palette: false,
+        submenu: "Extend selected text",
+        ..BASE
+    },
+    Action {
+        act: Act::Extend(Toward::LineStart),
+        group: Group::Edit,
+        label: "To the start of the line",
+        keys: &[k(S, Key::Home)],
+        enabled: words_selected,
+        palette: false,
+        submenu: "Extend selected text",
+        ..BASE
+    },
+    Action {
+        act: Act::Extend(Toward::LineEnd),
+        group: Group::Edit,
+        label: "To the end of the line",
+        keys: &[k(S, Key::End)],
+        enabled: words_selected,
+        palette: false,
+        submenu: "Extend selected text",
         ..BASE
     },
     // ---------------------------------------------------------------- View
@@ -1748,26 +1837,27 @@ pub fn matches(a: &Action, query: &str) -> bool {
 }
 
 /// What a right-click menu offers, in groups separated by a line, for what is selected
-/// after the click (right-clicking selects what is under the pointer first).
+/// after the click (right-clicking selects what is under the pointer first). Edit text is
+/// offered for words and lines of page text, not for pictures or shapes alone.
 pub fn context_items(sel: &Selection) -> &'static [&'static [Act]] {
     match sel {
         Selection::Words { .. } => &[
-            &[Act::Copy, Act::SelectAllText],
-            &[Act::Bold, Act::Italic],
+            &[Act::Cut, Act::Copy, Act::SelectAllText],
+            &[Act::EditObjectText, Act::Bold, Act::Italic],
             &[Act::Mark(Mark::Highlight)],
             &[Act::MarkRedact],
             &[Act::PrintSelection, Act::SaveSelection],
         ],
         Selection::Annot { .. } => &[&[Act::DeleteSelection]],
-        Selection::Objects { .. } => &[
+        Selection::Objects { held, .. }
+            if (held.iter()).any(|h| matches!(h.kind, ObjKind::Text | ObjKind::HiddenText)) =>
+        {
             &[
-                Act::EditObjectText,
-                Act::MoveText,
-                Act::ReplaceImage,
-                Act::CopyObjectText,
-            ],
-            &[Act::DeleteObject],
-        ],
+                &[Act::EditObjectText, Act::MoveText, Act::CopyObjectText],
+                &[Act::Cut, Act::DeleteObject],
+            ]
+        }
+        Selection::Objects { .. } => &[&[Act::ReplaceImage], &[Act::DeleteObject]],
         Selection::None | Selection::Pages(_) => &[
             &[Act::RotR, Act::RotL, Act::Crop],
             &[Act::Blank, Act::InsertImages, Act::Extract, Act::Delete],
@@ -1817,9 +1907,9 @@ pub fn tooltip(ctx: &egui::Context, a: &Action) -> String {
 
 /// The floating toolbar's buttons: the right-click menu's commands that are
 /// available now and have an icon, in groups. While a line is edited on the page, Bold,
-/// Italic and Copy for what is selected in it, as the keys do there (ENH-20).
+/// Italic, Cut and Copy for what is selected in it, as the keys do there (ENH-20).
 pub fn toolbar_items(sel: &Selection, c: &Ctx) -> Vec<Vec<&'static Action>> {
-    const LINE_EDIT: &[&[Act]] = &[&[Act::Bold, Act::Italic], &[Act::Copy]];
+    const LINE_EDIT: &[&[Act]] = &[&[Act::Bold, Act::Italic], &[Act::Cut, Act::Copy]];
     let items = if c.line_edit {
         LINE_EDIT
     } else {
@@ -1979,6 +2069,87 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Words' right-click menu and floating bar offer Cut and Edit text (their line, with
+    /// them selected); a line of page text's offers both; a picture's offers neither, nor
+    /// do pictures and lines together offer Cut, which copies only text. A line being
+    /// edited has Cut and Copy for what is selected in it.
+    #[test]
+    fn selections_offer_cut_and_edit_text_where_they_apply() {
+        let held = |kinds: &[ObjKind]| Selection::Objects {
+            page: 0,
+            held: (kinds.iter().enumerate())
+                .map(|(id, &kind)| crate::selection::Selected {
+                    id,
+                    kind,
+                    bbox: [0.0; 4],
+                    text: None,
+                })
+                .collect(),
+            loose: false,
+        };
+        let has = |sel: &Selection, c: &Ctx, act: Act| {
+            let menu = context_items(sel).iter().flat_map(|g| g.iter());
+            let in_menu = menu.filter(|&&a| (get(a).enabled)(c)).any(|&a| a == act);
+            let bar = toolbar_items(sel, c).into_iter().flatten();
+            let in_bar = bar.map(|a| a.act).any(|a| a == act);
+            (in_menu, in_bar)
+        };
+        let base = Ctx {
+            doc: true,
+            tool: Some(Tool::Read),
+            ..Default::default()
+        };
+        let words = Ctx {
+            words: true,
+            ..base
+        };
+        let sel = Selection::word((0, 0));
+        assert_eq!(has(&sel, &words, Act::Cut), (true, true), "words: Cut");
+        let edit = has(&sel, &words, Act::EditObjectText);
+        assert_eq!(edit, (true, true), "words: Edit");
+        let line = Ctx {
+            object: true,
+            obj_kind: Some(ObjKind::Text),
+            obj_text: true,
+            obj_lines: true,
+            obj_only_text: true,
+            ..base
+        };
+        let sel = held(&[ObjKind::Text]);
+        assert_eq!(has(&sel, &line, Act::Cut), (true, true), "a line: Cut");
+        let edit = has(&sel, &line, Act::EditObjectText);
+        assert_eq!(edit, (true, true), "a line: Edit");
+        let picture = Ctx {
+            object: true,
+            obj_kind: Some(ObjKind::Image),
+            ..base
+        };
+        let sel = held(&[ObjKind::Image]);
+        let cut = has(&sel, &picture, Act::Cut);
+        assert_eq!(cut, (false, false), "a picture: Cut");
+        let edit = has(&sel, &picture, Act::EditObjectText);
+        assert_eq!(edit, (false, false), "a picture: Edit");
+        let both = Ctx {
+            object: true,
+            obj_text: true,
+            obj_lines: true,
+            ..base
+        };
+        let sel = held(&[ObjKind::Text, ObjKind::Image]);
+        assert_eq!(has(&sel, &both, Act::Cut), (false, false), "both: Cut");
+        let editing = Ctx {
+            typing: true,
+            line_edit: true,
+            ..line
+        };
+        let sel = held(&[ObjKind::Text]);
+        let bar: Vec<Act> = (toolbar_items(&sel, &editing).into_iter().flatten())
+            .map(|a| a.act)
+            .collect();
+        let both = bar.contains(&Act::Cut) && bar.contains(&Act::Copy);
+        assert!(both, "{bar:?}");
     }
 
     /// Every command has a route in the menu, so nothing is reachable only by an icon, a

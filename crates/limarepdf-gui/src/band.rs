@@ -81,7 +81,7 @@ impl Group {
     fn keeps_typing(&self) -> bool {
         self.items.iter().any(|i| match i {
             Item::Font => true,
-            Item::Button(b) => matches!(b.act, Some(Act::Paste | Act::Copy)),
+            Item::Button(b) => matches!(b.act, Some(Act::Paste | Act::Cut | Act::Copy)),
             _ => false,
         })
     }
@@ -267,6 +267,7 @@ static EDIT: &[Group] = &[
         "Clipboard",
         &[
             b(Act::Paste, "Paste", icon::CLIPBOARD_TEXT),
+            b(Act::Cut, "Cut", icon::SCISSORS),
             b(Act::Copy, "Copy", icon::COPY),
         ],
     ),
@@ -1222,6 +1223,7 @@ mod tests {
                         | Act::ReplaceImage
                         | Act::Escape
                         | Act::Nudge(..)
+                        | Act::Extend(_)
                         | Act::NextPage
                         | Act::PrevPage
                         | Act::FirstPage

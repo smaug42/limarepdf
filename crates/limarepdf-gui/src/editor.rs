@@ -7,7 +7,7 @@ use crate::fields::FormUi;
 use crate::icon;
 use crate::inspector::{facts, note, section, section_name};
 use crate::page_text::{self, selection, PageText};
-use crate::selection::{ObjKind, Selected, Selection, WordAt};
+use crate::selection::{ObjKind, Selected, Selection, Toward, WordAt};
 use crate::signing::{SignKit, SignPane, SignPick};
 use crate::styled::{History, InLine, Restyle, Styled};
 use crate::theme;
@@ -942,9 +942,9 @@ fn keeping(ctx: &egui::Context, insp: Option<Rect>, band: &[Rect]) -> bool {
 }
 
 /// Where the inspector or the floating bar is, from where and in which pass it was drawn
-/// last ([`Editor::inspector`]): there if drawn this frame or the last (the pop-out and the
-/// bar are drawn after the pages), else nowhere, so a click where a hidden one was ends
-/// typing as any click away does.
+/// last ([`Editor::inspector_drawn`]): there if drawn this frame or the last (the pop-out
+/// and the bar are drawn after the pages), else nowhere, so a click where a hidden one was
+/// ends typing as any click away does.
 fn drawn_at(ctx: &egui::Context, (rect, pass): (Rect, u64)) -> Rect {
     if ctx.cumulative_pass_nr() <= pass + 1 {
         rect
@@ -973,6 +973,10 @@ struct LineEdit {
     refused: page_text::Refused,
     /// Where it was drawn last on the screen, as typed: the floating bar keeps clear of it.
     area: Rect,
+    /// What was typed or pasted before the line had the keyboard (with words selected with
+    /// the read tool, which it types over), given to it once it has it, before the keys
+    /// since.
+    typed: Vec<egui::Event>,
 }
 
 /// What a line editor selects when it opens.
@@ -1238,6 +1242,9 @@ pub struct Editor {
     pub adding: Option<PageText>,
     /// The note about a character a box in the inspector refused.
     text_refused: page_text::Refused,
+    /// The note at the end of the words selected with the read tool when what was typed
+    /// couldn't go over them ([`Self::type_over`]).
+    words_note: page_text::Refused,
     /// Where the inspector was drawn last, and in which pass: a click there doesn't end a
     /// line being edited ([`drawn_at`]).
     insp_rect: (Rect, u64),
@@ -1374,6 +1381,7 @@ impl Default for Editor {
             still: None,
             adding: None,
             text_refused: page_text::Refused::default(),
+            words_note: page_text::Refused::default(),
             insp_rect: (Rect::NOTHING, 0),
             bar_rect: (Rect::NOTHING, 0),
             keep_typing: Vec::new(),
@@ -1507,6 +1515,17 @@ fn union(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
         a[2].max(b[2]),
         a[3].max(b[3]),
     ]
+}
+
+/// The word of word `j`'s line among `words` whose middle is nearest `x` across (page
+/// points): where Shift+Down or Shift+Up takes a selection's end.
+fn across(words: &[PageWord], j: usize, x: f32) -> usize {
+    let middle = |w: &PageWord| ((w.bbox[0] + w.bbox[2]) / 2.0 - x).abs();
+    let line = words[j].line;
+    (0..words.len())
+        .filter(|&k| words[k].line == line)
+        .min_by(|&a, &b| middle(&words[a]).total_cmp(&middle(&words[b])))
+        .unwrap_or(j)
 }
 
 fn handle_pos(b: [f32; 4], h: usize) -> (f32, f32) {
@@ -1912,7 +1931,78 @@ impl Editor {
             refocus: false,
             refused: page_text::Refused::default(),
             area: Rect::NOTHING,
+            typed: Vec::new(),
         });
+    }
+
+    /// The line of page text to edit for the words selected with the read tool, and what of
+    /// it to select: the line where the selection's moving end is (else the last that can
+    /// change), its selected characters selected; and whether all the words are in it.
+    /// `None` when none of their lines can change (invisible text, a group, vertical
+    /// writing).
+    fn words_line(&mut self, pdf: &limarepdf_core::Pdf) -> Option<(usize, usize, Pick, bool)> {
+        let Selection::Words { end, .. } = self.selection else {
+            return None;
+        };
+        self.sync_chosen(pdf);
+        let c = self.chosen.as_ref()?;
+        let at = (self.words.get(&end.0))
+            .and_then(|w| w.get(end.1))
+            .and_then(|w| w.object);
+        let (page, id) = (at.map(|id| (end.0, id)))
+            .filter(|&(p, id)| c.selected_in(p, id).is_some())
+            .or_else(|| c.line_ids().last())?;
+        let (a, b) = c.selected_in(page, id)?;
+        Some((page, id, Pick::Chars(a, b), c.one_line()))
+    }
+
+    /// Edit the line of the words selected with the read tool on the page, with them
+    /// selected there (Edit text; across lines, the line where the selection ends, its part
+    /// selected). Whether there was such a line.
+    pub fn edit_words(&mut self, pdf: &limarepdf_core::Pdf) -> bool {
+        let Some((page, id, pick, _)) = self.words_line(pdf) else {
+            return false;
+        };
+        self.start_line_edit(page, id, pick);
+        true
+    }
+
+    /// Text `typed` or pasted (its events) with no text box having the keyboard: over the
+    /// words selected with the read tool in one line, as a word processor types over a
+    /// selection, their line opens on the page and it goes in their place; into a line
+    /// just opened, before it has the keyboard, it goes there. Across lines nothing is
+    /// typed, and a note at the selection's end says why. Whether it was taken.
+    pub fn type_over(
+        &mut self,
+        ctx: &egui::Context,
+        pdf: &limarepdf_core::Pdf,
+        typed: Vec<egui::Event>,
+    ) -> bool {
+        if let Some(le) = self.line_edit.as_mut().filter(|le| le.fresh) {
+            le.typed.extend(typed);
+            return true;
+        }
+        if self.selection.words().is_none() || !matches!(self.tool, Tool::Read | Tool::Text) {
+            return false;
+        }
+        match self.words_line(pdf) {
+            Some((page, id, pick, true)) => {
+                self.start_line_edit(page, id, pick);
+                if let Some(le) = self.line_edit.as_mut() {
+                    le.typed = typed;
+                }
+            }
+            Some((.., false)) => {
+                let note = "Type over words within one line. Paragraph editing is planned.";
+                self.words_note.mark(ctx, note.into());
+            }
+            None => {
+                if let Some(said) = self.chosen.as_ref().and_then(|c| c.left.said()) {
+                    self.words_note.mark(ctx, said);
+                }
+            }
+        }
+        true
     }
 
     /// What to select of line `id`'s text when it is double-clicked at `p`: the word
@@ -2016,6 +2106,13 @@ impl Editor {
         let to_screen = |x: f32, y: f32| Pos2::new(r.min.x + x * k, r.min.y + y * k);
         let id = line_edit_id(self.scope, page);
         let drawn = drawn_in_place(&o);
+        if ctx.memory(|m| m.has_focus(id)) && !le.typed.is_empty() {
+            // Typed as it opened, over what it selected: before the keys since, as typed.
+            let typed = std::mem::take(&mut le.typed);
+            ctx.input_mut(|i| {
+                i.events.splice(0..0, typed);
+            });
+        }
         if ctx.memory(|m| m.has_focus(id)) {
             // Before the editor sees the keys: what can't be written in the font it goes
             // into isn't typed, and Ctrl+B and Ctrl+I switch what is selected, as the
@@ -2600,6 +2697,59 @@ impl Editor {
         self.selection = Selection::Words { anchor, end };
     }
 
+    /// Move the moving end of the words selected `toward` a word or line, as Shift with an
+    /// arrow, Home or End moves a word processor's: a word left or right in reading order,
+    /// to the word nearest across on the line above or below, each across pages, or to its
+    /// line's first or last word.
+    pub fn extend_by(&mut self, pdf: &limarepdf_core::Pdf, toward: Toward) {
+        let Selection::Words { end: (page, i), .. } = self.selection else {
+            return;
+        };
+        let words = self.words(pdf, page).to_vec();
+        let Some(w) = words.get(i) else {
+            return;
+        };
+        let (first, last) = Self::line_of(&words, i).unwrap_or((i, i));
+        let x = (w.bbox[0] + w.bbox[2]) / 2.0;
+        let to = match toward {
+            Toward::LineStart => Some((page, first)),
+            Toward::LineEnd => Some((page, last)),
+            Toward::Right if i + 1 < words.len() => Some((page, i + 1)),
+            Toward::Left if i > 0 => Some((page, i - 1)),
+            Toward::Down if last + 1 < words.len() => Some((page, across(&words, last + 1, x))),
+            Toward::Up if first > 0 => Some((page, across(&words, first - 1, x))),
+            // Past the page's words: on to the next page with words, or back to the last.
+            Toward::Right | Toward::Down => {
+                let next = (page + 1..pdf.page_count()).find(|&p| !self.words(pdf, p).is_empty());
+                next.map(|p| match toward {
+                    Toward::Right => (p, 0),
+                    _ => (p, across(&self.words[&p], 0, x)),
+                })
+            }
+            Toward::Left | Toward::Up => {
+                let back = (0..page).rev().find(|&p| !self.words(pdf, p).is_empty());
+                back.map(|p| {
+                    let n = self.words[&p].len();
+                    match toward {
+                        Toward::Left => (p, n - 1),
+                        _ => (p, across(&self.words[&p], n - 1, x)),
+                    }
+                })
+            }
+        };
+        if let Some(to) = to {
+            self.extend_words(pdf, to);
+        }
+    }
+
+    /// The moving end of the words selected: its page and box (page points).
+    pub fn words_end(&self) -> Option<(usize, [f32; 4])> {
+        let Selection::Words { end, .. } = self.selection else {
+            return None;
+        };
+        Some((end.0, self.words.get(&end.0)?.get(end.1)?.bbox))
+    }
+
     /// Start selecting words with a drag pressed at `p` (page points) on `page`, from the
     /// word nearest it among the page's `words`.
     fn start_word_drag(&mut self, page: usize, p: Option<Pos2>, words: &[PageWord]) {
@@ -2654,6 +2804,33 @@ impl Editor {
         }
     }
 
+    /// The note about what was typed with words selected ([`Self::type_over`]), under
+    /// their moving end, where a word processor's caret is, when that is on `page` (whose
+    /// `words` are drawn at `screen_rect`).
+    fn words_note_at(
+        &mut self,
+        ctx: &egui::Context,
+        page: usize,
+        words: &[PageWord],
+        screen_rect: impl Fn([f32; 4]) -> Rect,
+    ) {
+        let Selection::Words { anchor, end } = self.selection else {
+            return;
+        };
+        let Some(w) = words.get(end.1).filter(|_| end.0 == page) else {
+            return;
+        };
+        let r = screen_rect(w.bbox);
+        let caret = if end >= anchor {
+            r.right_bottom()
+        } else {
+            r.left_bottom()
+        };
+        let id = self.scope.with(("words-note", page));
+        let below = caret + Vec2::new(0.0, 4.0);
+        self.words_note.show_at(ctx, below, id);
+    }
+
     /// The bands that shade `words`: one a line, the spaces between its words too (what a
     /// mark made from the selection covers, [`Self::selected_lines`]), and the lines of a
     /// paragraph meeting halfway across the space between them, with no stripe between.
@@ -2691,6 +2868,20 @@ impl Editor {
             }
         }
         boxes.into_iter().map(|(_, b)| b).collect()
+    }
+
+    /// The word a double-click or triple-click at `p` (page points) is on: the nearest of
+    /// `words`, when `p` is on its line, within `tol` of the line's box. Off the text,
+    /// none, as a word processor selects nothing there.
+    fn word_on_line(words: &[PageWord], p: Pos2, tol: f32) -> Option<usize> {
+        let i = Self::nearest_word(words, p)?;
+        let on = words.iter().filter(|w| w.line == words[i].line);
+        let line = on.fold(words[i].bbox, |u, w| union(u, w.bbox));
+        let near = p.x >= line[0] - tol
+            && p.x <= line[2] + tol
+            && p.y >= line[1] - tol
+            && p.y <= line[3] + tol;
+        near.then_some(i)
     }
 
     /// Index of the word nearest to `p` (page points), if the page has words.
@@ -3321,8 +3512,9 @@ impl Editor {
                 // starts on the selected pictures, shapes or comment moves them instead. A
                 // click clears or selects a picture, shape or comment, Shift+click
                 // extends the words or adds a picture or shape, a double-click edits a
-                // line of page text (or selects a word where there is none) and a
-                // triple-click selects a line.
+                // line of page text (or selects a word of text that isn't one, such as
+                // recognised text) and a triple-click selects a line; off the text,
+                // neither selects anything.
                 if let Some(p) = begins {
                     if grabs(self, p) {
                         start_arrange(self, p, true);
@@ -3342,8 +3534,9 @@ impl Editor {
                 }
                 self.follow_word_drag(ui, pdf, page, r, k, &resp, &words);
                 let click_at = || resp.interact_pointer_pos().map(to_pt);
+                let on_line = |p: Option<Pos2>| p.and_then(|p| Self::word_on_line(&words, p, tol));
                 if resp.triple_clicked() {
-                    let line = nearest(click_at()).and_then(|i| Self::line_of(&words, i));
+                    let line = on_line(click_at()).and_then(|i| Self::line_of(&words, i));
                     if let Some((a, b)) = line {
                         self.selection = Selection::Words {
                             anchor: (page, a),
@@ -3361,7 +3554,7 @@ impl Editor {
                     } else if let Some((p, i)) = line {
                         let pick = self.word_pick(page, i, p, &words);
                         self.start_line_edit(page, i, pick);
-                    } else if let Some(i) = nearest(click_at()) {
+                    } else if let Some(i) = on_line(click_at()) {
                         self.selection = Selection::word((page, i));
                     }
                 } else if let Some(p) = resp.clicked().then(click_at).flatten().or(still_click) {
@@ -3397,6 +3590,7 @@ impl Editor {
                     }
                 }
                 self.paint_words(&painter, page, &words, screen_rect, shading);
+                self.words_note_at(ui.ctx(), page, &words, screen_rect);
             }
             Tool::Text => {
                 ui.ctx().set_cursor_icon(CursorIcon::Text);
@@ -3409,6 +3603,7 @@ impl Editor {
                 }
                 self.follow_word_drag(ui, pdf, page, r, k, &resp, &words);
                 self.paint_words(&painter, page, &words, screen_rect, shading);
+                self.words_note_at(ui.ctx(), page, &words, screen_rect);
                 if let Some(p) = click_pt(&resp).filter(|_| resp.clicked()) {
                     self.selection.clear_words();
                     if self.adding.as_ref().is_some_and(PageText::has_text) {
@@ -4627,6 +4822,24 @@ impl Editor {
         None
     }
 
+    /// Delete the words selected with the read tool from their lines, as one undo step
+    /// across lines and pages, as Delete and Backspace take a selection out of a word
+    /// processor's text ([`crate::styled::Across::delete`]); nothing is selected after.
+    /// Returns what to say when none of them can change.
+    pub fn delete_words(&mut self, pdf: &limarepdf_core::Pdf) -> Option<String> {
+        self.selection.words()?;
+        self.sync_chosen(pdf);
+        let c = self.chosen.as_mut()?;
+        if !c.restylable() {
+            return c.left.said();
+        }
+        c.text.delete();
+        let c = self.chosen.take()?;
+        self.selection.clear_words();
+        self.actions.push(Action::Restyle(c.changes(), c.left));
+        None
+    }
+
     /// After a change to the document, select again the words `sel` selected, as the page
     /// reads now, when they still read `was`; else nothing is selected, rather than other
     /// words.
@@ -5123,8 +5336,18 @@ impl Editor {
         }
     }
 
+    /// Part of the inspector was drawn at `rect` this frame: the panel, its heading with
+    /// its Collapse button too, its strip or its pop-out. A click anywhere in them doesn't
+    /// end a line being edited. (Not the clip rect of the inspector's scrolling contents,
+    /// which in the pop-out runs the window's width.)
+    pub fn inspector_drawn(&mut self, ctx: &egui::Context, rect: Rect) {
+        let pass = ctx.cumulative_pass_nr();
+        let (was, at) = self.insp_rect;
+        let rect = if at == pass { was.union(rect) } else { rect };
+        self.insp_rect = (rect, pass);
+    }
+
     pub fn inspector(&mut self, ui: &mut egui::Ui) {
-        self.insp_rect = (ui.clip_rect(), ui.ctx().cumulative_pass_nr());
         if self.selection.annot().is_some() {
             self.annot_inspector(ui);
             return;

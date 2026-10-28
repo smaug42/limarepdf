@@ -205,6 +205,15 @@ impl Styled {
         true
     }
 
+    /// Take characters (from, to) out, their styles with them.
+    pub fn delete(&mut self, (a, b): (usize, usize)) {
+        let mut chars: Vec<char> = self.text.chars().collect();
+        chars.drain(a..b);
+        let new: String = chars.into_iter().collect();
+        // The caret where they were tells which characters went, among the same ones.
+        self.sync(&new, Some(a));
+    }
+
     /// The text as an editor has it this frame, `new`, styled as [`Self::sync`] would
     /// style it, for drawing before the caret is known.
     pub fn preview(&self, new: &str) -> Styled {
@@ -661,6 +670,30 @@ impl Across {
     fn switch(&mut self, bold: bool) {
         let all = self.each().all(|(_, s)| is_on(s.font, bold));
         self.each_range(|t, r| t.turn(r, bold, !all));
+    }
+
+    /// Take the selected characters out of each line, as Delete takes a selection out of
+    /// a word processor's text: where that would leave two spaces together, or one at the
+    /// line's start or end, a space beside them goes too (as Word's smart cut has it).
+    /// Nothing is selected after.
+    pub fn delete(&mut self) {
+        for (t, ranges) in &mut self.lines {
+            for (a, b) in std::mem::take(ranges).into_iter().rev() {
+                let chars: Vec<char> = t.text().chars().collect();
+                let space = |i: Option<usize>| {
+                    i.and_then(|i| chars.get(i))
+                        .is_some_and(|c| c.is_whitespace())
+                };
+                let (before, after) = (space(a.checked_sub(1)), space(Some(b)));
+                let range = match (a == 0, b == chars.len()) {
+                    _ if before && after => (a, b + 1),
+                    (true, _) if after => (a, b + 1),
+                    (_, true) if before => (a - 1, b),
+                    _ => (a, b),
+                };
+                t.delete(range);
+            }
+        }
     }
 }
 
