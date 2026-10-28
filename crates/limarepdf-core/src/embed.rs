@@ -440,7 +440,13 @@ pub(crate) fn box_refusal(missing: &str) -> String {
 /// ([`emoji_part`]), so choosing another font may help. A single emoji can be, in a font
 /// that draws it with an outline (Symbola, say).
 pub fn installed_could_write(c: char) -> bool {
-    !c.is_control() && !right_to_left(c) && !shaped(c) && !emoji_part(c)
+    !c.is_control() && !unwritten_script(c) && !emoji_part(c)
+}
+
+/// Whether `c` is of a script LimarePDF doesn't write in any font yet: one written right
+/// to left, or whose letters change shape or combine.
+pub fn unwritten_script(c: char) -> bool {
+    right_to_left(c) || shaped(c)
 }
 
 /// The message refusing text in `f` with the characters `missing`: an installed family

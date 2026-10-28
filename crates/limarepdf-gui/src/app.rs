@@ -609,11 +609,12 @@ const SIDE_NARROW_WIDTH: f32 = 760.0;
 /// Below this window height the commands are compact by themselves (Compact commands).
 const SHORT_HEIGHT: f32 = 600.0;
 
-/// Copy or Paste in the band, for the text being typed: asked of the system once the typing
-/// has the keyboard back ([`App::clipboard`]).
+/// Copy, Cut or Paste in the band, for the text being typed: asked of the system once the
+/// typing has the keyboard back ([`App::clipboard`]).
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Clip {
     Copy,
+    Cut,
     Paste,
 }
 
@@ -674,9 +675,24 @@ pub struct App {
     resizing: Vec<&'static str>,
     /// The band's name chosen: its commands show under the names (ENH-38).
     band: Band,
-    /// Copy or Paste clicked in the band for the text being typed (its box's id), waiting
-    /// for that box to have the keyboard back.
+    /// Copy, Cut or Paste clicked in the band for the text being typed (its box's id),
+    /// waiting for that box to have the keyboard back.
     clip: Option<(Clip, egui::Id)>,
+    /// The Undo and Redo buttons, as last drawn: a click on them leaves the keyboard in
+    /// the text box that has it.
+    undo_buttons: Vec<egui::Rect>,
+    /// This frame's click is on Undo or Redo while a text box has the keyboard.
+    undo_held: bool,
+    /// Undo or Redo clicked while a text box had the keyboard, sent to it as its key on the
+    /// next frame.
+    undo_in_box: Option<Act>,
+    /// This frame's Esc left a box of the band or the inspector, with typing open on the
+    /// page: it goes back to the typing, which stays open.
+    esc_to_typing: bool,
+    /// The text box the keyboard last left: its id, and its tab's id and revision then.
+    left_box: Option<(egui::Id, u64, u64)>,
+    /// The id of the tab that was in front last frame.
+    front: Option<u64>,
     /// The width of the status bar's controls at its right, as last drawn.
     status_width: Option<f32>,
     /// The width of Print and the compact commands button, at the commands' right, as last
@@ -803,6 +819,12 @@ impl App {
             resizing: Vec::new(),
             band: Band::default(),
             clip: None,
+            undo_buttons: Vec::new(),
+            undo_held: false,
+            undo_in_box: None,
+            esc_to_typing: false,
+            left_box: None,
+            front: None,
             status_width: None,
             commands_right: None,
             accent_read: None,
@@ -2280,11 +2302,24 @@ impl App {
     }
 
     fn act(&mut self, ctx: &egui::Context, a: Act) {
+        // Undo or Redo clicked while a text box has the keyboard: its typing, not the
+        // document, as with the keys.
+        if matches!(a, Act::Undo | Act::Redo) && self.undo_held {
+            self.undo_in_box = Some(a);
+            ctx.request_repaint();
+            return;
+        }
         let has = !self.tabs.is_empty();
         // What is being typed goes into the document before a command uses it, or the
         // command doesn't run (BUG-01). A question the command asks is then about the
-        // document with the typing in it (BUG-10).
-        if has && a.uses_document() && !self.tabs[self.active].keep_typing(ctx) {
+        // document with the typing in it (BUG-10). Bold and Italic change the line being
+        // edited on the page instead, which stays open, as Ctrl+B and Ctrl+I there do; Cut
+        // cuts from the text being typed.
+        let styles = matches!(a, Act::Bold | Act::Italic);
+        let in_line = styles && has && self.tabs[self.active].ed.editing_line();
+        let in_typing = a == Act::Cut && has && self.tabs[self.active].ed.typing_id().is_some();
+        let on_typing = in_line || in_typing;
+        if has && a.uses_document() && !on_typing && !self.tabs[self.active].keep_typing(ctx) {
             return;
         }
         match a {
@@ -2568,7 +2603,7 @@ impl App {
             }
             Act::Bold | Act::Italic => {
                 let t = &mut self.tabs[self.active];
-                if let Some(said) = t.ed.switch_style(&t.pdf, a == Act::Bold) {
+                if let Some(said) = t.ed.switch_style(ctx, &t.pdf, a == Act::Bold) {
                     t.info = Some(said);
                 }
                 t.apply_actions(ctx);
@@ -2579,6 +2614,12 @@ impl App {
                     self.act(ctx, Act::DeleteObject);
                 } else if self.tabs[self.active].ed.selection.pages().is_some() {
                     self.act(ctx, Act::Delete);
+                } else if self.tabs[self.active].ed.selection.words().is_some() {
+                    let t = &mut self.tabs[self.active];
+                    if let Some(said) = t.ed.delete_words(&t.pdf) {
+                        t.info = Some(said);
+                    }
+                    t.apply_actions(ctx);
                 } else {
                     self.tabs[self.active].ed.delete_selected();
                 }
@@ -2588,6 +2629,11 @@ impl App {
                 let step = if shift { 10.0 } else { 1.0 };
                 let (dx, dy) = (dx as f32 * step, dy as f32 * step);
                 self.tabs[self.active].ed.nudge(dx, dy);
+            }
+            Act::Extend(toward) => {
+                let t = &mut self.tabs[self.active];
+                t.ed.extend_by(&t.pdf, toward);
+                t.reveal = t.ed.words_end();
             }
             // Setting the crop on the pages: Esc closes the Crop section, showing the pages
             // as cropped again.
@@ -2640,16 +2686,16 @@ impl App {
             }
             Act::Undo => self.tabs[self.active].undo(ctx),
             Act::Redo => self.redo(ctx),
-            Act::Copy | Act::Paste => {
+            Act::Copy | Act::Cut | Act::Paste => {
                 let t = &mut self.tabs[self.active];
-                let clip = if a == Act::Copy {
-                    Clip::Copy
-                } else {
-                    Clip::Paste
+                let clip = match a {
+                    Act::Copy => Clip::Copy,
+                    Act::Cut => Clip::Cut,
+                    _ => Clip::Paste,
                 };
                 match (t.ed.typing_id(), clip) {
-                    // The typing takes the keyboard back, and then the system copies what
-                    // is selected in it, or pastes at its caret.
+                    // The typing takes the keyboard back, and then the system copies or cuts
+                    // what is selected in it, or pastes at its caret.
                     (Some(id), _) => {
                         t.ed.refocus_typing();
                         self.clip = Some((clip, id));
@@ -2661,6 +2707,33 @@ impl App {
                             self.status = "Copied the selected text.".into();
                         }
                         None => self.act(ctx, Act::CopyObjectText),
+                    },
+                    // The words copied, then deleted as Delete deletes them; lines of page
+                    // text copied, then deleted.
+                    (None, Clip::Cut) => match t.ed.selected_text() {
+                        Some(text) => {
+                            ctx.copy_text(text);
+                            self.status = match t.ed.delete_words(&t.pdf) {
+                                None => "Cut the selected text.".into(),
+                                // None of it could be taken out: copied only.
+                                Some(said) => {
+                                    t.info = Some(said);
+                                    "Copied the selected text.".into()
+                                }
+                            };
+                            t.apply_actions(ctx);
+                        }
+                        None => {
+                            let lines = t.ed.selected_line_text();
+                            if !lines.is_empty() {
+                                self.status = match lines.len() {
+                                    1 => "Cut the line.".into(),
+                                    n => format!("Cut {n} lines."),
+                                };
+                                ctx.copy_text(lines.join("\n"));
+                                t.ed.delete_selected();
+                            }
+                        }
                     },
                 }
             }
@@ -2774,12 +2847,14 @@ impl App {
             Act::Security => self.reveal(Section::Security),
             // The selected line, on the page; with none, the text tool, to click a line.
             Act::EditObjectText => {
-                let ed = &mut self.tabs[self.active].ed;
-                if ed.one_line_selected() {
+                let t = &mut self.tabs[self.active];
+                if t.ed.selection.words().is_some() && t.ed.edit_words(&t.pdf) {
+                    self.open_inspector();
+                } else if t.ed.one_line_selected() {
                     self.open_inspector();
                     self.tabs[self.active].ed.edit_selected_text();
                 } else {
-                    ed.set_tool(Tool::Text);
+                    t.ed.set_tool(Tool::Text);
                 }
             }
             Act::MoveText => self.tabs[self.active].ed.move_text(),
@@ -2848,9 +2923,9 @@ impl App {
         self.accent_read = Some(rx);
     }
 
-    /// Copy or Paste clicked in the band for the text being typed: once that text has the
-    /// keyboard back, the system copies what is selected in it, or pastes at its caret.
-    /// Dropped if the typing ends first.
+    /// Copy, Cut or Paste clicked in the band for the text being typed: once that text has
+    /// the keyboard back, the system copies or cuts what is selected in it, or pastes at its
+    /// caret. Dropped if the typing ends first.
     fn clipboard(&mut self, ctx: &egui::Context) {
         let Some((clip, id)) = self.clip else {
             return;
@@ -2863,6 +2938,7 @@ impl App {
         if ctx.memory(|m| m.has_focus(id)) && !ctx.input(|i| i.pointer.any_down()) {
             ctx.send_viewport_cmd(match clip {
                 Clip::Copy => egui::ViewportCommand::RequestCopy,
+                Clip::Cut => egui::ViewportCommand::RequestCut,
                 Clip::Paste => egui::ViewportCommand::RequestPaste,
             });
             self.clip = None;
@@ -4306,6 +4382,15 @@ impl App {
         };
         if let Some(t) = self.tabs.get(self.active) {
             t.fill_ctx(&mut c);
+            // In a text box with the keyboard, Undo and Redo are its typing's, as the keys.
+            let focused = ctx.memory(|m| m.focused());
+            if let Some(id) = focused.filter(|_| ctx.text_edit_focused()) {
+                let history = t.ed.typing_history(id);
+                if let Some((undo, redo)) = history.or_else(|| page_text::box_history(ctx, id)) {
+                    c.can_undo = undo;
+                    c.can_redo = redo;
+                }
+            }
         }
         c
     }
@@ -4478,12 +4563,19 @@ impl App {
         let c = self.state(ctx);
         // Undo and Redo in a text box take back and redo the typing there, and nothing
         // else, even with nothing left to undo there (form fields, comments and the
-        // inspector's boxes too); Undo takes back the whole edit once it is kept.
+        // inspector's boxes too); Undo takes back the whole edit once it is kept. With a
+        // button holding the keyboard, they are the document's.
         let typing = ctx.egui_wants_keyboard_input();
+        let in_text = ctx.text_edit_focused();
         // Esc with a list, menu or colour picker open only closes it (a note being typed
-        // stays open while its colour is picked).
+        // stays open while its colour is picked); Esc leaving a box for typing on the page
+        // only goes back to it.
         let picking = egui::Popup::is_any_open(ctx);
+        let back = self.esc_to_typing;
         let mut acts = Vec::new();
+        // Plain keys a command took with Shift (Shift+Home extending the words selected):
+        // with Shift, they aren't the command without it too (First page).
+        let mut shifted = Vec::new();
         ctx.input_mut(|i| {
             for (a, k) in actions::shortcuts() {
                 // Commands for what is selected on the page, which a text box with the
@@ -4491,14 +4583,15 @@ impl App {
                 let page_only = matches!(
                     a.act,
                     Act::Copy
+                        | Act::Cut
                         | Act::SelectAllText
                         | Act::SelectAllObjects
                         | Act::Bold
                         | Act::Italic
                 );
                 let global = k.modifiers.command && !page_only;
-                let in_box = typing && matches!(a.act, Act::Undo | Act::Redo);
-                let closes = picking && a.act == Act::Escape;
+                let in_box = in_text && matches!(a.act, Act::Undo | Act::Redo);
+                let closes = (picking || back) && a.act == Act::Escape;
                 // F6 leaves a text box too (in a form, Tab stays among the fields), but
                 // not an open list or menu, which Esc closes first.
                 let region = matches!(a.act, Act::NextRegion | Act::PrevRegion);
@@ -4507,27 +4600,63 @@ impl App {
                     continue;
                 }
                 let hit = if a.act == Act::Copy {
-                    // Ctrl+C arrives as a Copy event, not as a key press.
+                    // Ctrl+C arrives as a Copy event, not as a key press; Ctrl+X as a Cut.
                     i.events.iter().any(|e| matches!(e, egui::Event::Copy))
+                } else if a.act == Act::Cut {
+                    i.events.iter().any(|e| matches!(e, egui::Event::Cut))
                 } else if global {
                     i.consume_shortcut(&k)
                 } else {
                     // The key's own modifiers, not those held at the end of the frame: a
                     // quick Ctrl+A can arrive with Ctrl already let go. Shift tells F6's
                     // two directions apart.
+                    let shadowed = !k.modifiers.shift && shifted.contains(&k.logical_key);
                     i.events.iter().any(|e| {
                         matches!(e, egui::Event::Key { key, pressed: true, modifiers, .. }
                             if *key == k.logical_key && modifiers.matches_logically(k.modifiers)
-                                && (!region || modifiers.shift == k.modifiers.shift))
+                                && (!region || modifiers.shift == k.modifiers.shift)
+                                && !(shadowed && modifiers.shift))
                     })
                 };
                 if hit {
+                    if k.modifiers.shift && !global {
+                        shifted.push(k.logical_key);
+                    }
                     acts.push(a.act);
                 }
             }
         });
         for a in acts {
             self.run_command(ctx, actions::name(a), |app, ctx| app.act(ctx, a));
+        }
+    }
+
+    /// Text typed or pasted with no text box having the keyboard goes over the words
+    /// selected in the tab in front, as a word processor types over a selection, or into a
+    /// line just opened on its page ([`crate::editor::Editor::type_over`]).
+    fn type_over(&mut self, ctx: &egui::Context) {
+        if self.palette.is_some() || dlg::any_open(ctx) || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        let Some(t) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        let typed: Vec<egui::Event> = ctx.input(|i| {
+            (i.events.iter())
+                .filter(|e| matches!(e, egui::Event::Text(_) | egui::Event::Paste(_)))
+                .cloned()
+                .collect()
+        });
+        let paste = typed.iter().any(|e| matches!(e, egui::Event::Paste(_)));
+        if !typed.is_empty() && t.ed.type_over(ctx, &t.pdf, typed) {
+            ctx.request_repaint();
+        } else if paste && t.ed.typing_id().is_none() {
+            // Nowhere to paste: where to click.
+            t.info = Some(
+                "To paste, click in text being typed, or choose Add text and click where the \
+                 text goes"
+                    .into(),
+            );
         }
     }
 }
@@ -5225,27 +5354,97 @@ impl eframe::App for App {
         self.side.set_narrow(width < SIDE_NARROW_WIDTH);
         self.inspector.set_narrow(width < NARROW_WIDTH);
 
-        // F6's regions are found again as the window is drawn. A click ends what F6 left
-        // waiting on the page, as does another tab coming to the front or the typing
-        // getting the keyboard back; the ring on the page goes once anything takes it.
+        // F6's regions are found again as the window is drawn. A click in the tab in front
+        // ends what F6 left waiting on its page, as does the typing getting the keyboard
+        // back or ending; the ring on the page goes once anything takes it.
         self.regions.begin();
         let pressed = ctx.input(|i| i.pointer.any_pressed());
         let focused = ctx.memory(|m| m.focused());
         if pressed || focused.is_some() {
             self.regions.ring = false;
         }
+        // Typing open on the page of a tab sent behind waits there, as for F6, and has the
+        // keyboard again once its tab is back in front, as a word processor's document does.
+        let front = self.tabs.get(self.active).map(|t| t.id);
+        let switched = front != self.front;
+        let behind = self.front.filter(|_| switched);
+        if let Some(t) = self.tabs.iter_mut().find(|t| Some(t.id) == behind) {
+            if let Some(id) = t.ed.typing_id() {
+                t.ed.parked = Some(Parked::Typing(id));
+            }
+        }
+        self.front = front;
         for (i, t) in self.tabs.iter_mut().enumerate() {
             let back = matches!(t.ed.parked, Some(Parked::Typing(id))
                 if focused == Some(id) || t.ed.typing_id() != Some(id));
-            if pressed || back || i != self.active {
+            if back || (pressed && i == self.active) {
                 t.ed.parked = None;
             }
+        }
+        let waiting = matches!(self.tabs.get(self.active), Some(t) if t.ed.parked.is_some());
+        if switched && waiting {
+            self.keys_to_page(&ctx, focused);
+        }
+
+        // Undo and Redo in the commands act on the typing in the text box with the keyboard,
+        // as Ctrl+Z and Ctrl+Y do there: a click on them leaves the keyboard in it, and the
+        // key goes to it on the next frame, before anything else sees that frame's input.
+        self.undo_held = ctx.text_edit_focused()
+            && ctx.input(|i| {
+                let at = i.pointer.press_origin().or(i.pointer.latest_pos());
+                (i.pointer.any_pressed() || i.pointer.any_released())
+                    && at.is_some_and(|p| self.undo_buttons.iter().any(|r| r.contains(p)))
+            });
+        let surrender = if self.undo_held {
+            egui::SurrenderFocusOn::Never
+        } else {
+            egui::SurrenderFocusOn::Clicks
+        };
+        ctx.options_mut(|o| o.input_options.surrender_focus_on = surrender);
+        if let Some(a) = self.undo_in_box.take().filter(|_| ctx.text_edit_focused()) {
+            let modifiers = match a {
+                Act::Redo => egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                _ => egui::Modifiers::COMMAND,
+            };
+            ctx.input_mut(|i| {
+                i.events.push(egui::Event::Key {
+                    key: Key::Z,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                });
+            });
         }
 
         // Before anything sees this frame's keys: a text box that has just got the keyboard
         // starts with nothing to undo.
-        self.keyboard = page_text::fresh_history(&ctx, self.keyboard);
+        let before = self.keyboard;
+        // A box the keyboard comes back to, with nothing kept in the document since it left
+        // (the tab's revision), keeps its typing's history (ENH-32). A new note or text box
+        // has its page's box: one typed and let go never lends its history to the next.
+        let doc = self.tabs.get(self.active).map(|t| (t.id, t.revision));
+        let now = ctx.memory(|m| m.focused());
+        if let (Some(id), Some((tab, revision))) = (before.filter(|_| now != before), doc) {
+            self.left_box = Some((id, tab, revision));
+        }
+        let left = self.left_box;
+        let new_box = |id| self.tabs.get(self.active).is_some_and(|t| t.ed.new_box(id));
+        let kept = |id| doc.is_some_and(|(t, r)| left == Some((id, t, r))) && !new_box(id);
+        self.keyboard = page_text::fresh_history(&ctx, before, kept);
+        // Esc in a box of the band or the inspector (the font size, say), with typing open
+        // on the page, drops what was typed in the box and goes back to the typing, as in a
+        // word processor, rather than ending it.
+        let typing = self.tabs.get(self.active).and_then(|t| t.ed.typing_id());
+        let in_box = before
+            .is_some_and(|id| Some(id) != typing && egui::TextEdit::load_state(&ctx, id).is_some());
+        let esc = ctx.input(|i| i.key_pressed(Key::Escape));
+        self.esc_to_typing = esc && in_box && typing.is_some();
+        if self.esc_to_typing {
+            self.tabs[self.active].ed.refocus_typing();
+        }
         self.shortcuts(&ctx);
+        self.type_over(&ctx);
         self.clipboard(&ctx);
 
         let mut acts: Vec<Act> = Vec::new();
@@ -5257,7 +5456,7 @@ impl eframe::App for App {
         let recent: Vec<&PathBuf> = recent_files.iter().collect();
 
         // A document command's button in the commands' row: its icon and label, or its icon
-        // alone, named; its label, shortcut and hint as the tooltip.
+        // alone, named; its label, shortcut and hint as the tooltip. Returns where it is.
         let quick =
             |ui: &mut egui::Ui, act: Act, glyph: &str, label: Option<&str>, acts: &mut Vec<Act>| {
                 let a = actions::get(act);
@@ -5273,12 +5472,14 @@ impl eframe::App for App {
                 let name = a.label.trim_end_matches('…');
                 r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, name));
                 let tip = tooltip(ui.ctx(), a);
+                let at = r.rect;
                 if r.on_hover_text(tip.as_str())
-                    .on_disabled_hover_text(tip)
+                    .on_disabled_hover_text(actions::greyed_tip(ui.ctx(), a, &c))
                     .clicked()
                 {
                     acts.push(act);
                 }
+                at
             };
         // The saved signatures for Fill and sign's menu.
         let sign_menu = self
@@ -5301,7 +5502,7 @@ impl eframe::App for App {
                         for i in 0..self.tabs.len() {
                             let t = &self.tabs[i];
                             let on = i == self.active;
-                            let (pick, x, at) = tab_button(ui, &t.name(), t.dirty, on);
+                            let (pick, x, at) = tab_button(ui, &t.name(), t.unsaved(), on);
                             if on {
                                 shown = Some(at);
                             }
@@ -5345,6 +5546,7 @@ impl eframe::App for App {
         let active = self.active;
         let chosen = &mut self.band;
         let right_last = &mut self.commands_right;
+        let undo_buttons = &mut self.undo_buttons;
         let mut tab = self.tabs.get_mut(active);
         let commands = egui::Panel::top("commands")
             .frame(theme::commands_frame(ui.style()))
@@ -5375,8 +5577,10 @@ impl eframe::App for App {
                         quick(ui, Act::Open, icon::FOLDER_OPEN, None, &mut acts);
                         quick(ui, Act::Save, icon::FLOPPY_DISK, None, &mut acts);
                         divider(ui);
-                        quick(ui, Act::Undo, icon::ARROW_U_UP_LEFT, None, &mut acts);
-                        quick(ui, Act::Redo, icon::ARROW_U_UP_RIGHT, None, &mut acts);
+                        *undo_buttons = vec![
+                            quick(ui, Act::Undo, icon::ARROW_U_UP_LEFT, None, &mut acts),
+                            quick(ui, Act::Redo, icon::ARROW_U_UP_RIGHT, None, &mut acts),
+                        ];
                         divider(ui);
                         // The names, leaving room for the controls at the right as they
                         // were last drawn; then those, in reading order.
@@ -5439,7 +5643,10 @@ impl eframe::App for App {
                 let small = |text: &str| egui::RichText::new(text).size(12.0).color(muted);
                 let status = |ui: &mut egui::Ui| {
                     let mut said = Vec::new();
-                    if let Some(t) = t.filter(|t| t.ed.owns_panel()) {
+                    // A line edited on the page: how much the typing can change.
+                    if t.is_some_and(|t| t.ed.editing_line()) {
+                        said.push("Editing one line".into());
+                    } else if let Some(t) = t.filter(|t| t.ed.owns_panel()) {
                         said.push(t.ed.heading());
                     }
                     if t.is_some_and(|t| t.encryption.is_some()) {
@@ -5647,6 +5854,8 @@ impl eframe::App for App {
             });
             panels::edge_shown(ui, "inspector", "Inspector width");
             self.regions.add(Region::Inspector, shown.response.rect);
+            let ed = &mut self.tabs[self.active].ed;
+            ed.inspector_drawn(ui.ctx(), shown.response.rect);
             // The width given the panel, not its strip's (dragged closed, say).
             let held = panels::edge_held(ui, "inspector");
             match strip {
@@ -5670,6 +5879,7 @@ impl eframe::App for App {
             if let Some(strip) = strip.filter(|_| self.popout) {
                 let t = &mut self.tabs[self.active];
                 let (apply, keep, at) = inspector_popout(&ctx, strip, &mut self.settings, t, &c);
+                t.ed.inspector_drawn(&ctx, at);
                 panel_apply = panel_apply.or(apply);
                 self.popout = keep;
                 self.regions.add_over(Region::Inspector, at);
@@ -5736,6 +5946,11 @@ impl eframe::App for App {
         // is shown.
         if let Some(t) = self.tabs.get_mut(self.active) {
             t.guarded(|t| t.ed.settle_look(&ctx));
+            // A form field given the keyboard: the words selected before are let go, so
+            // the band and Ctrl+B act on the field's text alone.
+            if t.ed.form.focused_field().is_some() {
+                t.ed.selection.clear_words();
+            }
         }
 
         // Commands chosen from right-click menus on pages and thumbnails, and undoable
@@ -6595,6 +6810,65 @@ mod tests {
         }
     }
 
+    /// ENH-39: typing open on the page (new text, a line being edited, a new note or text
+    /// box) waits while another tab is in front, and has the keyboard again when its tab
+    /// comes back, to go on typing, as a word processor's document does.
+    #[test]
+    fn typing_left_in_another_tab_has_the_keyboard_again_on_return() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let none = egui::Modifiers::NONE;
+        let ty = Typist::new(&ctx);
+        let to_tab = |app: &mut App, name: &str| {
+            let tree = ty.pause(app);
+            ty.click(app, middle(&tree, name));
+        };
+        for case in ["new text", "line on the page", "new note", "new text box"] {
+            let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+            let note = typing_doc(&mut app, &ctx);
+            pages_tab(&mut app, &ctx, 1);
+            app.tabs[0].path = Some(PathBuf::from("/nonexistent/seal.pdf"));
+            app.tabs[1].path = Some(PathBuf::from("/nonexistent/otter.pdf"));
+            app.active = 0;
+            start_typing(&mut app, &ty, case, note);
+            ty.text(&mut app, "Seal");
+            let typing = app.tabs[0].ed.typing_id().expect("typing");
+            to_tab(&mut app, "otter.pdf");
+            assert_eq!(app.active, 1, "{case}");
+            to_tab(&mut app, "seal.pdf, unsaved");
+            assert_eq!(app.active, 0, "{case}");
+            assert_eq!(app.tabs[0].ed.typing_id(), Some(typing), "{case}: ended");
+            assert_eq!(
+                ctx.memory(|m| m.focused()),
+                Some(typing),
+                "{case}: not back"
+            );
+            // Its typing's history came back with it (ENH-32).
+            let tree = ty.key(&mut app, Key::Z, CTRL);
+            let undone = focused_text(&tree);
+            assert_ne!(undone.as_deref(), Some("Seal"), "{case}: no undo");
+            let tree = ty.key(&mut app, Key::Y, CTRL);
+            let redone = focused_text(&tree);
+            assert_eq!(redone.as_deref(), Some("Seal"), "{case}: no redo");
+            ty.text(&mut app, "s");
+            let tree = ty.pause(&mut app);
+            assert_eq!(focused_text(&tree).as_deref(), Some("Seals"), "{case}");
+            ty.key(&mut app, Key::Escape, none);
+            ty.pause(&mut app);
+            let lines: Vec<String> = app.tabs[0]
+                .pdf
+                .page_objects(0)
+                .unwrap()
+                .into_iter()
+                .filter_map(|o| o.text)
+                .collect();
+            let kept = lines.contains(&"Seals".to_string())
+                || comments(&app).contains(&"Seals".to_string());
+            assert!(kept, "{case}: {lines:?} {:?}", comments(&app));
+        }
+    }
+
     /// ENH-10, ENH-38: the band's Font group, reached by F6 and Tab, changes the typing left
     /// open on the page, as with the mouse: Bold for the words selected there.
     #[test]
@@ -6849,6 +7123,46 @@ mod tests {
         assert!((a[0] - b[0] - 1.0).abs() < 0.01, "{b:?} to {a:?}");
     }
 
+    /// Esc while new text is being moved by its outline cancels the move, as Esc cancels a
+    /// drag under way: the text goes back where it was, still being typed.
+    #[test]
+    fn esc_while_moving_new_text_puts_it_back() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let (min, k) = page_on_screen(&mut app, &ctx);
+        app.act(&ctx, Act::Tool(Tool::Text));
+        let at = min + egui::vec2(100.0, 200.0) * k;
+        window(&mut app, &ctx, 1400.0, click_at(at));
+        settled_at(&mut app, &ctx, 1400.0);
+        let typed = egui::Event::Text("Seal".into());
+        window(&mut app, &ctx, 1400.0, vec![typed]);
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        let place = |app: &App| app.tabs[0].ed.adding.as_ref().map(|a| a.at);
+        let start = place(&app).expect("the new text");
+        // On the band around the outline, 3 to 6 points out from the text, at its left.
+        let (text, _) = node(&tree, page_text::NAME).expect("the new text");
+        let p = egui::pos2(text.min.x - 4.5, text.center().y);
+        window(
+            &mut app,
+            &ctx,
+            1400.0,
+            vec![egui::Event::PointerMoved(p), press(p, true)],
+        );
+        for i in 1..=4 {
+            let to = p + egui::vec2(10.0, 8.0) * i as f32;
+            window(&mut app, &ctx, 1400.0, vec![egui::Event::PointerMoved(to)]);
+        }
+        assert_ne!(place(&app), Some(start), "not moved");
+        let esc = key_with(Key::Escape, egui::Modifiers::NONE);
+        window(&mut app, &ctx, 1400.0, vec![esc]);
+        let to = p + egui::vec2(40.0, 32.0);
+        window(&mut app, &ctx, 1400.0, vec![press(to, false)]);
+        settled_at(&mut app, &ctx, 1400.0);
+        assert_eq!(place(&app), Some(start), "not put back, or not still typed");
+    }
+
     /// ENH-12: Create signature and Create initials are in the command search; run from
     /// there they open the Create window with Fill and sign on. Not among the top bar's
     /// tools.
@@ -7038,11 +7352,11 @@ mod tests {
         assert!(node(&tree, name).is_some(), "not back");
     }
 
-    /// ENH-38: Paste and Copy in the band act on the text being typed on the page, which
-    /// stays open and gets the keyboard back; then the system pastes at its caret or copies
-    /// what is selected in it.
+    /// ENH-38: Paste, Cut and Copy in the band act on the text being typed on the page,
+    /// which stays open and gets the keyboard back; then the system pastes at its caret, or
+    /// cuts or copies what is selected in it.
     #[test]
-    fn paste_and_copy_in_the_band_act_on_the_typing() {
+    fn paste_cut_and_copy_in_the_band_act_on_the_typing() {
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
         theme::install(&ctx);
@@ -7068,6 +7382,7 @@ mod tests {
         for case in ["new text", "line on the page"] {
             for (button, want) in [
                 ("Paste", egui::ViewportCommand::RequestPaste),
+                ("Cut", egui::ViewportCommand::RequestCut),
                 ("Copy", egui::ViewportCommand::RequestCopy),
             ] {
                 let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
@@ -7527,6 +7842,77 @@ mod tests {
         let ed = &app.tabs[0].ed;
         assert!(ed.adding.is_none(), "new text started on page text");
         assert!(ed.typing_on_page(), "the line isn't being edited");
+        // The band, the inspector and the status bar are about the line, not the next new
+        // text the tool would add.
+        for _ in 0..3 {
+            tree = window(&mut app, &ctx, 1400.0, vec![]);
+        }
+        assert_eq!(app.tabs[0].ed.heading(), "Selected text");
+        let size = tree
+            .nodes
+            .iter()
+            .find(|(_, n)| n.label() == Some("Font size"));
+        assert_eq!(size.and_then(|(_, n)| n.value()), Some("40"));
+        let says = inspector_says(&tree);
+        assert!(says.iter().any(|s| s == "One line"), "{says:?}");
+        assert!(!says.iter().any(|s| s == "Next new text"), "{says:?}");
+    }
+
+    /// With the inspector collapsed, a click where it was ends a line being edited, as any
+    /// click away does: only a click in the inspector shown leaves it open.
+    #[test]
+    fn a_click_where_the_inspector_was_ends_a_line_edit() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        assert!(app.tabs[0].edit(&ctx, |p| {
+            p.add_text(
+                0,
+                (100.0, 200.0),
+                "Walrus",
+                FontChoice::default(),
+                40.0,
+                [0.0; 3],
+            )
+        }));
+        // A double-click on it with the read tool.
+        let ty = Typist::new(&ctx);
+        let (min, k) = ty.page(&mut app);
+        let p = min + egui::vec2(160.0, 190.0) * k;
+        ty.frame(&mut app, vec![egui::Event::PointerMoved(p), press(p, true)]);
+        ty.frame(&mut app, vec![press(p, false)]);
+        ty.frame(&mut app, vec![press(p, true)]);
+        ty.frame(&mut app, vec![press(p, false)]);
+        let tree = ty.pause(&mut app);
+        assert!(
+            app.tabs[0].ed.typing_on_page(),
+            "the line isn't being edited"
+        );
+        // Below the inspector's facts, clear of them.
+        let (_, fact) = (tree.nodes.iter())
+            .find(|(_, n)| n.value() == Some("One line"))
+            .expect("the inspector's facts");
+        let b = fact.bounds().expect("where they are");
+        let was = egui::pos2(b.x0 as f32 + 4.0, b.y1 as f32 + 200.0);
+        // The page made smaller, the click is off it, on the grey around it.
+        app.act(&ctx, Act::ToggleInspector);
+        for _ in 0..3 {
+            app.act(&ctx, Act::ZoomOut);
+        }
+        let tree = ty.pause(&mut app);
+        assert!(
+            app.tabs[0].ed.typing_on_page(),
+            "collapsing it ended the line"
+        );
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        assert!(!page.contains(was), "on the page");
+        ty.click(&mut app, was);
+        ty.pause(&mut app);
+        assert!(
+            !app.tabs[0].ed.typing_on_page(),
+            "the line is still being edited"
+        );
     }
 
     /// A line of page text is edited where it is, drawn as it will be written, over the
@@ -9259,6 +9645,39 @@ mod tests {
         assert_eq!(line_colours(&app), mixed);
     }
 
+    /// Esc in the band's size box, with a size typed there, drops what was typed and hands
+    /// the keyboard back to the line being edited, as Esc in a word processor's size box
+    /// goes back to the text: the line stays open, its sizes as they were.
+    #[test]
+    fn esc_in_the_size_box_goes_back_to_the_line() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_in_colours(&ctx, [0.0; 3], [1.0, 0.0, 0.0]);
+        let time = std::cell::Cell::new(10.0);
+        let mut frame = |app: &mut App, events| timed_frame(app, &ctx, &time, events);
+        let tree = edit_ate_fish(&mut app, &mut frame);
+        click_with(&mut app, &mut frame, &tree, "Font size");
+        frame(&mut app, vec![key_with(Key::A, CTRL)]);
+        frame(&mut app, vec![egui::Event::Text("60".into())]);
+        frame(&mut app, vec![key_with(Key::Escape, egui::Modifiers::NONE)]);
+        let mut tree = frame(&mut app, vec![]);
+        for _ in 0..4 {
+            tree = frame(&mut app, vec![]);
+        }
+        let name = "Editing text: Walrus ate fish";
+        assert_eq!(
+            node(&tree, name).map(|(_, f)| f),
+            Some(true),
+            "not back in the line"
+        );
+        // Kept as it is, the line has its sizes as before.
+        app.tabs[0].keep_typing(&ctx);
+        let (text, spans) = parts_of_line(&app);
+        assert_eq!(text, "Walrus ate fish");
+        assert!(spans.iter().all(|s| s.3 == 30.0), "{spans:?}");
+    }
+
     /// The inspector's controls change what is selected in a line edited on the page,
     /// although the line gives them the keyboard (egui then keeps only its caret): a size
     /// from the list sizes the selected characters, and the line gets them back selected.
@@ -10771,6 +11190,141 @@ mod tests {
         }
     }
 
+    /// Ctrl+B or Ctrl+I that can't apply, the family having no such face, says so at the
+    /// caret instead of doing nothing; the greyed B and I say so on hover, after their names
+    /// and keys.
+    #[test]
+    fn bold_a_family_lacks_says_so() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let serif = crate::font_list::test_family("Source Serif 4");
+        let mut app = app_with(&ctx, 1);
+        let ty = Typist::new(&ctx);
+        let (min, k) = ty.page(&mut app);
+        app.act(&ctx, Act::Tool(Tool::Text));
+        app.tabs[0].ed.tfont.family = serif;
+        ty.click(&mut app, min + egui::vec2(100.0, 200.0) * k);
+        ty.text(&mut app, "Walrus");
+        let noted = |tree: &egui::accesskit::TreeUpdate, note: &str| {
+            tree.nodes
+                .iter()
+                .any(|(_, n)| n.value().is_some_and(|v| v.contains(note)))
+        };
+        let tree = ty.key(&mut app, Key::B, CTRL);
+        assert!(noted(&tree, "Source Serif 4 has no bold."), "Ctrl+B");
+        let tree = ty.key(&mut app, Key::I, CTRL);
+        assert!(noted(&tree, "Source Serif 4 has no italic."), "Ctrl+I");
+        ty.pause(&mut app);
+        for (name, face) in [("Bold", "bold"), ("Italic", "italic")] {
+            let tree = ty.pause(&mut app);
+            let p = middle(&tree, name);
+            ty.frame(&mut app, vec![egui::Event::PointerMoved(p)]);
+            let tree = ty.pause(&mut app);
+            let key = if name == "Bold" { "B" } else { "I" };
+            let tip = format!("{name} (Ctrl+{key})\nSource Serif 4 has no {face}.");
+            assert!(noted(&tree, &tip), "{name} on hover");
+        }
+        assert!(
+            app.tabs[0].ed.adding.is_some(),
+            "the hover ended the typing"
+        );
+    }
+
+    /// The commands say what is in use: the Edit band's Select menu ticks the tool, and Edit
+    /// text is pressed while the Text tool is on. A form field with the keyboard heads the
+    /// inspector, and the words selected before it are let go, so the band and Ctrl+B act
+    /// on one thing.
+    #[test]
+    fn the_commands_and_inspector_say_what_is_in_use() {
+        use egui::accesskit::{Role, Toggled};
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        typing_doc(&mut app, &ctx);
+        let ty = Typist::new(&ctx);
+        let toggled = |tree: &egui::accesskit::TreeUpdate, name: &str, role: Role| {
+            let (_, n) = (tree.nodes.iter())
+                .find(|(_, n)| n.label() == Some(name) && n.role() == role)
+                .unwrap_or_else(|| panic!("{name}"));
+            n.toggled() == Some(Toggled::True)
+        };
+        for tool in [Tool::Read, Tool::Select] {
+            app.act(&ctx, Act::Tool(tool));
+            let tree = ty.pause(&mut app);
+            ty.click(&mut app, middle(&tree, "Select"));
+            let tree = ty.pause(&mut app);
+            let read = toggled(&tree, "Read and select text", Role::RadioButton);
+            let select = toggled(&tree, "Select, move and resize objects", Role::RadioButton);
+            assert_eq!((read, select), (tool == Tool::Read, tool == Tool::Select));
+            ty.key(&mut app, Key::Escape, egui::Modifiers::NONE);
+        }
+        app.act(&ctx, Act::Tool(Tool::Text));
+        let tree = ty.pause(&mut app);
+        assert!(
+            toggled(&tree, "Edit text", Role::Button),
+            "Edit text isn't pressed"
+        );
+        // Words selected, then a form field clicked.
+        app.act(&ctx, Act::Tool(Tool::Read));
+        app.tabs[0].ed.selection = Selection::word((0, 0));
+        ty.pause(&mut app);
+        ty.click_field(&mut app, "name", 0);
+        assert!(
+            app.tabs[0].ed.selection.words().is_none(),
+            "the words are still selected"
+        );
+        assert_eq!(inspector::title(&app.tabs[0]), "Form field");
+    }
+
+    /// Ctrl+V with nothing being typed and no words to type over says where to click,
+    /// instead of doing nothing; the document is unchanged.
+    #[test]
+    fn paste_with_nowhere_to_paste_says_where_to_click() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        lines_tab(&mut app, &ctx, 400.0, &paragraph(72.0, 100.0, 3, 1, false));
+        settled_at(&mut app, &ctx, 1400.0);
+        let revision = app.tabs[0].revision;
+        let paste = vec![egui::Event::Paste("seal".into())];
+        window(&mut app, &ctx, 1400.0, paste);
+        let said = toast(&app).expect("nothing said");
+        assert!(said.contains("Add text"), "{said}");
+        assert_eq!(app.tabs[0].revision, revision);
+    }
+
+    /// Greyed commands in the commands row and the band say why on hover, after their
+    /// names and keys.
+    #[test]
+    fn greyed_buttons_say_why_on_hover() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        lines_tab(&mut app, &ctx, 400.0, &paragraph(72.0, 100.0, 3, 1, false));
+        let ty = Typist::new(&ctx);
+        let says = |tree: &egui::accesskit::TreeUpdate, s: &str| {
+            tree.nodes
+                .iter()
+                .any(|(_, n)| n.value().is_some_and(|v| v.contains(s)))
+        };
+        let greyed = [
+            ("Undo", "Nothing to undo."),
+            ("Cut", "Select some text first."),
+        ];
+        for (name, why) in greyed {
+            let tree = ty.pause(&mut app);
+            let (r, _) = node(&tree, name).expect(name);
+            ty.frame(&mut app, vec![egui::Event::PointerMoved(r.center())]);
+            let tree = ty.pause(&mut app);
+            assert!(says(&tree, &format!("{name} (Ctrl+")), "{name}'s tooltip");
+            assert!(says(&tree, why), "{name}: no reason");
+        }
+    }
+
     /// BUG-24: new text in an installed font with outline emoji takes single emoji; one the
     /// font draws only in colour, and emoji sequences, aren't typed, each with its note.
     #[test]
@@ -11993,7 +12547,7 @@ mod tests {
         assert_eq!(t.pdf.doc.objects.values().filter(|o| type0(o)).count(), 1);
     }
 
-    /// A watermark is drawn over the pages while its section is open, and nothing is written
+    /// A watermark is shown on the pages while its section is open, and nothing is written
     /// until Add to pages; then changes update it in place. Headers and footers likewise.
     #[test]
     fn stamps_are_shown_on_the_pages_until_added() {
@@ -12003,7 +12557,13 @@ mod tests {
         let mut app = app_with(&ctx, 1);
         app.tabs[0].forms.reveal = Some(inspector::Section::Watermark);
         let tree = settle(&mut app, &ctx);
-        // On the page in view, written nowhere.
+        // On the page in view, written nowhere: drawn over it while a setting is being
+        // changed, its text field having the keyboard (once settled, the page is drawn
+        // with it instead, ENH-23).
+        let field = app.tabs[0].ed.scope().with(("stamp-text", "Text"));
+        ctx.memory_mut(|m| m.request_focus(field));
+        window(&mut app, &ctx, 1400.0, vec![]);
+        app.tabs[0].forms.wm.opacity = 0.3;
         let texts = drawn_texts(&mut app, &ctx, vec![]);
         assert_eq!(texts, ["DRAFT"]);
         let lines = |app: &App| -> Vec<String> {
@@ -12013,7 +12573,6 @@ mod tests {
         assert!(lines(&app).is_empty());
         // A character Helvetica can't write isn't typed, and as a watermark can't be set
         // in an installed font, the note doesn't point to one.
-        let field = app.tabs[0].ed.scope().with(("stamp-text", "Text"));
         ctx.memory_mut(|m| m.request_focus(field));
         window(&mut app, &ctx, 1400.0, vec![]);
         window(&mut app, &ctx, 1400.0, vec![egui::Event::Text("中".into())]);
@@ -12042,6 +12601,11 @@ mod tests {
         // Headers and footers, with their tokens filled in for each page.
         app.tabs[0].forms.reveal = Some(inspector::Section::HeaderFooter);
         settle(&mut app, &ctx);
+        let scope = app.tabs[0].ed.scope();
+        let footer = scope.with(("stamp-text", "Footer, centre"));
+        ctx.memory_mut(|m| m.request_focus(footer));
+        window(&mut app, &ctx, 1400.0, vec![]);
+        app.tabs[0].forms.hf.size = 11.0;
         assert_eq!(drawn_texts(&mut app, &ctx, vec![]), ["Page 1 of 2"]);
         assert_eq!(lines(&app), ["DRAFT"]);
     }
@@ -12658,6 +13222,163 @@ mod tests {
         assert_eq!(comments(&app), ["Walrus typed", "Seal"]);
     }
 
+    /// A note open on the page for typing stays open while its inspector changes it: the
+    /// opacity applies at once, the keyboard comes back to the note, and the inspector has
+    /// no comment box of its own for it meanwhile, so one comment has one editor (ENH-13;
+    /// the user, batch 40's Q1).
+    #[test]
+    fn an_open_note_stays_open_while_its_inspector_changes_it() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let note = typing_doc(&mut app, &ctx);
+        let ty = Typist::new(&ctx);
+        let t = &mut app.tabs[0];
+        t.ed.annots(&t.pdf, 0);
+        t.ed.selection = Selection::Annot { page: 0, id: note };
+        t.ed.write_selected();
+        ty.pause(&mut app);
+        ty.key(&mut app, Key::End, egui::Modifiers::NONE);
+        ty.text(&mut app, " ate fish");
+        let typed = |app: &App| app.tabs[0].ed.writing.as_ref().map(|w| w.text.clone());
+        let tree = ty.pause(&mut app);
+        let says = inspector_says(&tree);
+        assert!(says.iter().any(|s| s == "Opacity"), "{says:?}");
+        assert!(
+            !says.iter().any(|s| s == "Comment"),
+            "a second editor: {says:?}"
+        );
+        // The slider's middle, pressed and let go as people do, a frame apart.
+        let p = middle(&tree, "Opacity");
+        ty.frame(&mut app, vec![egui::Event::PointerMoved(p), press(p, true)]);
+        ty.frame(&mut app, vec![press(p, false)]);
+        ty.pause(&mut app);
+        assert_eq!(
+            typed(&app).as_deref(),
+            Some("Walrus ate fish"),
+            "the note closed"
+        );
+        let opacity = |app: &App| app.tabs[0].pdf.annotations()[0].opacity;
+        assert!(opacity(&app) < 0.9, "the opacity wasn't applied");
+        let focused = ctx.memory(|m| m.focused());
+        assert_eq!(focused, app.tabs[0].ed.writing_id(), "the keyboard");
+        ty.text(&mut app, "!");
+        ty.key(&mut app, Key::Escape, egui::Modifiers::NONE);
+        ty.pause(&mut app);
+        assert_eq!(comments(&app), ["Walrus ate fish!"]);
+        assert!(opacity(&app) < 0.9);
+    }
+
+    /// A new text box being typed, not on the page yet, stays open while the inspector
+    /// changes the Text box tool's look, as word processors keep a box open while its pane
+    /// is used: the keyboard comes back to it, the box shows the size chosen, and it is kept
+    /// with the look chosen (the user, with batch 40's stage 2 report).
+    #[test]
+    fn a_new_text_box_stays_open_while_the_inspector_changes_its_look() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let ty = Typist::new(&ctx);
+        let (min, k) = ty.page(&mut app);
+        app.act(&ctx, Act::Tool(Tool::TextBox));
+        ty.click(&mut app, min + egui::vec2(100.0, 100.0) * k);
+        ty.text(&mut app, "Walrus");
+        let typed = |app: &App| app.tabs[0].ed.writing.as_ref().map(|w| w.text.clone());
+        let height = |tree: &egui::accesskit::TreeUpdate| {
+            let (_, n) = tree.nodes.iter().find(|(id, _)| *id == tree.focus).unwrap();
+            n.bounds().expect("the box's place").height()
+        };
+        let tree = ty.pause(&mut app);
+        let before = height(&tree);
+        ty.click(&mut app, middle(&tree, "Background"));
+        assert_eq!(typed(&app).as_deref(), Some("Walrus"), "the box closed");
+        let focused = ctx.memory(|m| m.focused());
+        assert_eq!(focused, app.tabs[0].ed.writing_id(), "the keyboard");
+        // A bigger size, as picked in the inspector, shows on the box being typed.
+        app.tabs[0].ed.box_style.size = 48.0;
+        let tree = ty.pause(&mut app);
+        let after = height(&tree);
+        assert!(after > before * 1.4, "{after} then {before}");
+        ty.text(&mut app, " ate");
+        ty.key(&mut app, Key::Escape, egui::Modifiers::NONE);
+        ty.pause(&mut app);
+        assert_eq!(comments(&app), ["Walrus ate"]);
+        let style = app.tabs[0].pdf.annotations()[0]
+            .text_style
+            .expect("its look");
+        assert!(style.fill.is_some(), "no background");
+        assert_eq!(style.size, 48.0);
+    }
+
+    /// A box's typing history survives clicking away and back while nothing is kept in the
+    /// document meanwhile: typing undone in a field, clicked away from and back into, is
+    /// redone by Ctrl+Shift+Z. With a change to the document in between, the history is
+    /// gone, so nothing the document has since can be overwritten from it (ENH-32,
+    /// BUG-03/04's guard).
+    #[test]
+    fn a_box_keeps_its_typing_history_when_clicked_away_and_back() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let ty = Typist::new(&ctx);
+        for changed in [false, true] {
+            let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+            let pdf = form_doc(&[("Name", 1)]);
+            assert!(app.add_tab(&ctx, pdf, None, None, false));
+            let (min, k) = ty.page(&mut app);
+            ty.click_field(&mut app, "Name", 0);
+            ty.text(&mut app, "Ann");
+            ty.pause(&mut app);
+            let tree = ty.key(&mut app, Key::Z, CTRL);
+            assert_eq!(focused_text(&tree).as_deref(), Some(""), "{changed}");
+            // Away, on the page: nothing to keep.
+            ty.click(&mut app, min + egui::vec2(300.0, 600.0) * k);
+            assert_eq!(saved_field(&app.tabs[0], "Name"), "", "{changed}");
+            if changed {
+                let font = FontChoice::default();
+                let add = |p: &mut Pdf| p.add_text(0, (100.0, 700.0), "Seal", font, 12.0, [0.0; 3]);
+                assert!(app.tabs[0].edit(&ctx, add));
+            }
+            ty.click_field(&mut app, "Name", 0);
+            let tree = ty.key(&mut app, Key::Z, CTRL_SHIFT);
+            let want = if changed { "" } else { "Ann" };
+            assert_eq!(
+                focused_text(&tree).as_deref(),
+                Some(want),
+                "changed: {changed}"
+            );
+        }
+    }
+
+    /// A new note typed in, emptied and let go adds nothing; the next new note on the page,
+    /// with the same box, starts with nothing to undo: Ctrl+Z there never brings back what
+    /// was typed in the first (ENH-32's guard).
+    #[test]
+    fn a_new_note_never_takes_the_last_ones_typing_history() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let ty = Typist::new(&ctx);
+        let (min, k) = ty.page(&mut app);
+        app.act(&ctx, Act::Tool(Tool::Note));
+        ty.click(&mut app, min + egui::vec2(100.0, 100.0) * k);
+        ty.text(&mut app, "Walrus");
+        ty.pause(&mut app);
+        for _ in 0.."Walrus".len() {
+            ty.key(&mut app, Key::Backspace, egui::Modifiers::NONE);
+        }
+        ty.pause(&mut app);
+        // Away, on the page: nothing to keep. Then a new note elsewhere on it.
+        ty.click(&mut app, min + egui::vec2(300.0, 300.0) * k);
+        assert!(comments(&app).is_empty());
+        ty.click(&mut app, min + egui::vec2(100.0, 400.0) * k);
+        let tree = ty.key(&mut app, Key::Z, CTRL);
+        assert_eq!(focused_text(&tree).as_deref(), Some(""));
+    }
+
     /// Undo keys in a form field act on its typing only: with Name kept and Notes being
     /// typed, they take back and redo Notes' typing, never Name, and with nothing left to
     /// undo there they do nothing. Out of the fields, Undo and Redo are the document's
@@ -12805,6 +13526,7 @@ mod tests {
             "new note",
             "new text box",
             "new text",
+            "line on the page",
             "comment in the inspector",
             "document title",
             "watermark text",
@@ -12828,6 +13550,69 @@ mod tests {
                 let tree = ty.key(&mut app, key, modifiers);
                 let now = focused_text(&tree);
                 assert_eq!(now.as_ref(), Some(want), "{case}: {key:?} {modifiers:?}");
+                assert!(app.tabs[0].state() == state, "{case}: the document changed");
+            }
+            ty.key(&mut app, Key::Escape, egui::Modifiers::NONE);
+            ty.pause(&mut app);
+            assert!(app.tabs[0].state() == state, "{case}: something was kept");
+        }
+    }
+
+    /// Undo and Redo in the commands, clicked in each kind of text box, do what Ctrl+Z and
+    /// Ctrl+Y do there: take back and redo the box's own typing, the keyboard staying in
+    /// it, greyed when there is nothing there to take back or redo though the document has
+    /// history, and the document never touched (ENH-39; the user, batch 40's Q4).
+    #[test]
+    fn the_undo_buttons_act_on_the_typing_in_every_text_box() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let note = typing_doc(&mut app, &ctx);
+        assert!(app.tabs[0].can_undo(), "the document has nothing to undo");
+        let ty = Typist::new(&ctx);
+        let on = |tree: &egui::accesskit::TreeUpdate, name: &str| {
+            let button = |n: &egui::accesskit::Node| {
+                n.label() == Some(name) && n.role() == egui::accesskit::Role::Button
+            };
+            let (_, n) = tree.nodes.iter().find(|(_, n)| button(n)).expect(name);
+            !n.is_disabled()
+        };
+        let cases = [
+            "form field",
+            "new note",
+            "new text box",
+            "new text",
+            "line on the page",
+            "comment in the inspector",
+            "document title",
+            "watermark text",
+        ];
+        for case in cases {
+            start_typing(&mut app, &ty, case, note);
+            let tree = ty.key(&mut app, Key::End, egui::Modifiers::NONE);
+            let start = focused_text(&tree).unwrap_or_else(|| panic!("{case}: no keyboard"));
+            let state = app.tabs[0].state();
+            ty.text(&mut app, "typed");
+            let typed = format!("{start}typed");
+            let tree = ty.pause(&mut app);
+            assert_eq!(
+                (on(&tree, "Undo"), on(&tree, "Redo")),
+                (true, false),
+                "{case}"
+            );
+            let steps = [
+                ("Undo", &start, (false, true)),
+                ("Redo", &typed, (true, false)),
+                ("Undo", &start, (false, true)),
+            ];
+            for (button, want, buttons) in steps {
+                let tree = ty.pause(&mut app);
+                ty.click(&mut app, middle(&tree, button));
+                let tree = ty.pause(&mut app);
+                assert_eq!(focused_text(&tree).as_ref(), Some(want), "{case}: {button}");
+                let now = (on(&tree, "Undo"), on(&tree, "Redo"));
+                assert_eq!(now, buttons, "{case}: after {button}");
                 assert!(app.tabs[0].state() == state, "{case}: the document changed");
             }
             ty.key(&mut app, Key::Escape, egui::Modifiers::NONE);
@@ -12980,8 +13765,10 @@ mod tests {
         assert!(lines(&app, 0).contains("Seal"), "the text was lost");
     }
 
-    /// Undo clicked on the toolbar while a new note is typed takes the note back, not the
-    /// change before it, and Redo brings the note back (BUG-01, seen in batch 1).
+    /// Undo clicked in the commands while a new note is typed takes back its typing, as
+    /// Ctrl+Z does there, not the change before it (BUG-01, seen in batch 1); the note stays
+    /// open, and Redo brings the typing back. Once the note is kept, Undo takes it back
+    /// whole, and Redo brings it back (ENH-39; the user, batch 40's Q4).
     #[test]
     fn undo_on_the_toolbar_takes_back_a_note_being_typed() {
         let ctx = egui::Context::default();
@@ -12993,19 +13780,33 @@ mod tests {
         app.act(&ctx, Act::Tool(Tool::Note));
         ty.click(&mut app, min + egui::vec2(100.0, 100.0) * k);
         ty.text(&mut app, "Walrus");
+        let typed = |app: &App| app.tabs[0].ed.writing.as_ref().map(|w| w.text.clone());
         let tree = ty.pause(&mut app);
         ty.click(&mut app, middle(&tree, "Undo"));
+        ty.pause(&mut app);
         let t = &app.tabs[0];
         assert_eq!(
             t.page_count(),
             2,
             "Undo took back the change before the note"
         );
-        assert!(comments(&app).is_empty() && t.ed.writing.is_none());
+        assert!(comments(&app).is_empty());
+        assert_eq!(typed(&app).as_deref(), Some(""), "the note's typing");
         let tree = ty.pause(&mut app);
         ty.click(&mut app, middle(&tree, "Redo"));
+        ty.pause(&mut app);
+        assert_eq!(typed(&app).as_deref(), Some("Walrus"));
+        // Kept, it is one change to take back.
+        ty.key(&mut app, Key::Escape, egui::Modifiers::NONE);
+        let tree = ty.pause(&mut app);
         assert_eq!(comments(&app), ["Walrus"]);
+        ty.click(&mut app, middle(&tree, "Undo"));
+        let tree = ty.pause(&mut app);
+        assert!(comments(&app).is_empty() && app.tabs[0].ed.writing.is_none());
         assert_eq!(app.tabs[0].page_count(), 2);
+        ty.click(&mut app, middle(&tree, "Redo"));
+        ty.pause(&mut app);
+        assert_eq!(comments(&app), ["Walrus"]);
     }
 
     /// Remove blank pages run while text is being added: the text goes into the document
@@ -15248,6 +16049,90 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Shapes with outlines thinner than the inspector's smallest width (0.25 pt), selected
+    /// with the arrow and not touched, are no change: closing doesn't ask, the document stays
+    /// as it was, and quitting with other changes quits on Discard, with no "The document
+    /// changed" (the user's find, 2026-10-28: the width field raised them to 0.25 pt).
+    #[test]
+    fn thin_shapes_selected_are_no_change() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = thin_tab(&ctx);
+        let looks = |app: &App| -> Vec<_> {
+            let objs = app.tabs[0].pdf.page_objects(0).unwrap();
+            objs.iter().map(|o| (o.bbox, o.line_width)).collect()
+        };
+        let (was, before) = (looks(&app), app.tabs[0].history());
+        app.act(&ctx, Act::Tool(Tool::Select));
+        for ids in [&[0][..], &[1], &[0, 1]] {
+            select(&mut app, &ctx, ids);
+            settled_at(&mut app, &ctx, 1400.0);
+            let t = &app.tabs[0];
+            assert!(!t.unsaved(), "{ids:?}: selecting them is a change");
+            assert_eq!(t.history(), before, "{ids:?}: the document changed");
+            assert_eq!(looks(&app), was, "{ids:?}");
+        }
+        // Quitting with another change unsaved: Discard quits.
+        app.tabs[0].dirty = true;
+        close_window(&mut app, &ctx);
+        assert!(matches!(app.dialog, Dialog::ConfirmClose(_, true)));
+        click_named(&mut app, &ctx, "Discard");
+        if let Dialog::Message(_, text) = &app.dialog {
+            panic!("Discard said: {text}");
+        }
+        assert!(app.quit_ok);
+    }
+
+    /// A tab, as if just opened, whose first page has a hairline (0 pt) outlined shape at
+    /// 300,60 to 380,120 (page points, y down), a red one filled with a 0.1 pt line width
+    /// set at 300,160 to 380,220, and a 0.5 pt rule along y 292 from x 72 to 272.
+    fn thin_tab(ctx: &egui::Context) -> App {
+        let mut app = app_with(ctx, 1);
+        let thin = |p: &mut Pdf| {
+            let page = p.page_ids()[0];
+            let content = "q 0 w 0 0 1 RG 300 672 80 60 re S Q\n\
+                           q 0.1 w 1 0 0 rg 300 572 80 60 re f Q\n\
+                           q 0.5 w 0 0 0 RG 72 500 m 272 500 l S Q\n";
+            let content = lopdf::Stream::new(lopdf::Dictionary::new(), content.into());
+            let s = p.doc.add_object(content);
+            let d = p.doc.get_dictionary_mut(page)?;
+            d.set("Contents", lopdf::Object::Reference(s));
+            Ok(())
+        };
+        assert!(app.tabs[0].edit(ctx, thin));
+        app.tabs[0].dirty = false;
+        app
+    }
+
+    /// A rule thinner than the inspector's smallest height (1 pt), moved by its X in the
+    /// inspector, moves across only: its height isn't made 1 pt.
+    #[test]
+    fn a_thin_rule_moved_in_the_inspector_moves_across_only() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = thin_tab(&ctx);
+        app.act(&ctx, Act::Tool(Tool::Select));
+        app.open_inspector();
+        select(&mut app, &ctx, &[2]);
+        let was = boxes(&app, 0)[2];
+        assert!(was[3] - was[1] < 1.0, "{was:?}");
+        click_named(&mut app, &ctx, "Position and size");
+        click_named(&mut app, &ctx, "X");
+        let (ctrl, none) = (egui::Modifiers::COMMAND, egui::Modifiers::NONE);
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::A, ctrl)]);
+        let typed = vec![egui::Event::Text("100".into())];
+        window(&mut app, &ctx, 1400.0, typed);
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::Enter, none)]);
+        settle(&mut app, &ctx);
+        let now = boxes(&app, 0)[2];
+        assert!((now[0] - 100.0).abs() < 0.6, "not moved: {now:?}");
+        // Made 1 pt tall, a rule moves down by half the difference.
+        let (top, bottom) = ((now[1] - was[1]).abs(), (now[3] - was[3]).abs());
+        assert!(top < 0.05 && bottom < 0.05, "{was:?} to {now:?}");
+    }
+
     /// ENH-01: closing the window while a tab's save asks a question asks Quit first;
     /// after Cancel the save's question is back, and once answered the tab is saved and
     /// closed. Going on to quit instead asks about that document again, once.
@@ -15773,9 +16658,16 @@ mod tests {
         assert_eq!(line_fonts(&saved, 0), page_1);
         assert_eq!(line_fonts(&saved, 1), page_2);
         assert_eq!(t.history().1, undo + 1, "not one step");
+        // Undo and Redo leave the same words selected, as a word processor does.
         app.act(&ctx, Act::Undo);
         assert_eq!(line_fonts(&app.tabs[0].pdf, 0), before);
         assert_eq!(app.tabs[0].history().1, undo);
+        settle(&mut app, &ctx);
+        assert_eq!(app.tabs[0].ed.selection, selected, "not kept by Undo");
+        app.act(&ctx, Act::Redo);
+        assert_eq!(line_fonts(&app.tabs[0].pdf, 0), page_1);
+        settle(&mut app, &ctx);
+        assert_eq!(app.tabs[0].ed.selection, selected, "not kept by Redo");
     }
 
     /// Bold and Italic follow Word's rule across the whole selection: some of it bold
@@ -15998,5 +16890,977 @@ mod tests {
         let want = fonts_are(&[&[("one ", SUBSET), ("two", bold), (" three", SUBSET)]]);
         assert_eq!(lines[1], want[0]);
         assert_eq!(toast(&app), None);
+    }
+
+    /// `n` lines of 12-point text 15 points apart from `top` down, starting `x` points across
+    /// and `wide` (about 450 points long) or short (about 70); line `odd` says "otter" where
+    /// the others say "walrus", or, short, "seal", so that no other line is longer.
+    fn paragraph(x: f32, top: f32, n: usize, odd: usize, wide: bool) -> Vec<(String, egui::Pos2)> {
+        (0..n)
+            .map(|i| {
+                let who = match (i == odd, wide) {
+                    (true, _) => "otter",
+                    (false, true) => "walrus",
+                    (false, false) => "seal",
+                };
+                let text = if wide {
+                    format!("The {who} ate fish by the sea and the seal ate fish by the shore {i}")
+                } else {
+                    format!("The {who} ate")
+                };
+                (text, egui::pos2(x, top + 15.0 * i as f32))
+            })
+            .collect()
+    }
+
+    /// A tab of one page 612 points wide and `h` high, with `lines` on it (Helvetica, 12
+    /// points, each from its place), and the read tool.
+    fn lines_tab(app: &mut App, ctx: &egui::Context, h: f32, lines: &[(String, egui::Pos2)]) {
+        let mut pdf = Pdf::new();
+        pdf.insert_blank(0, 612.0, h).unwrap();
+        for (text, at) in lines {
+            let font = FontChoice::default();
+            pdf.add_text(0, (at.x, at.y), text, font, 12.0, [0.0; 3])
+                .unwrap();
+        }
+        assert!(app.add_tab(ctx, pdf, None, None, false));
+        app.act(ctx, Act::Tool(Tool::Read));
+    }
+
+    /// The floating bar's buttons, by name and place: those in the row of its Dock button,
+    /// which only the bar has, up to it.
+    fn bar_buttons(tree: &egui::accesskit::TreeUpdate) -> Vec<(String, egui::Rect)> {
+        let Some((dock, _)) = node(tree, "Dock controls on the right") else {
+            return Vec::new();
+        };
+        let button = |(_, n): &&(egui::accesskit::NodeId, egui::accesskit::Node)| {
+            n.role() == egui::accesskit::Role::Button
+        };
+        (tree.nodes.iter().filter(button))
+            .filter_map(|(_, n)| {
+                let b = n.bounds()?;
+                let r = egui::Rect::from_min_max(
+                    egui::pos2(b.x0 as f32, b.y0 as f32),
+                    egui::pos2(b.x1 as f32, b.y1 as f32),
+                );
+                let row = (r.center().y - dock.center().y).abs() < 2.0
+                    && r.max.x <= dock.max.x
+                    && dock.min.x - r.min.x < 320.0;
+                row.then(|| (n.label().unwrap_or_default().to_string(), r))
+            })
+            .collect()
+    }
+
+    /// Opens the line saying "otter" in the active tab for editing on the page, a
+    /// double-click on that word with the read tool, in windows `width` wide; returns the
+    /// window's tree then and the size of a point on screen. `case` names the test's case.
+    fn edit_otter(
+        app: &mut App,
+        ctx: &egui::Context,
+        width: f32,
+        case: &str,
+    ) -> (egui::accesskit::TreeUpdate, f32) {
+        let tree = settled_at(app, ctx, width);
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        let k = page.width() / 612.0;
+        let words = app.tabs[app.active].pdf.page_words(0).unwrap();
+        let otter = words.iter().find(|w| w.text == "otter");
+        let otter = otter.expect("otter").bbox;
+        let at = egui::vec2((otter[0] + otter[2]) / 2.0, (otter[1] + otter[3]) / 2.0);
+        let p = page.min + at * k;
+        window(app, ctx, width, vec![egui::Event::PointerMoved(p)]);
+        for _ in 0..2 {
+            window(app, ctx, width, vec![press(p, true)]);
+            window(app, ctx, width, vec![press(p, false)]);
+        }
+        let tree = settled_at(app, ctx, width);
+        let mut labels = tree.nodes.iter().filter_map(|(_, n)| n.label());
+        let editing = labels.any(|l| l.starts_with("Editing text: The otter"));
+        assert!(editing, "{case}: the line isn't being edited");
+        (tree, k)
+    }
+
+    /// The tab and the window's title say unsaved as soon as a line being edited is typed
+    /// in, as word processors mark a document changed at the first key, not only once the
+    /// line is kept; a line opened and left as it was is no change.
+    #[test]
+    fn typing_in_a_line_marks_the_tab_unsaved_at_once() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        lines_tab(&mut app, &ctx, 400.0, &paragraph(72.0, 100.0, 3, 1, false));
+        let unsaved = |tree: &egui::accesskit::TreeUpdate| {
+            let tab = |n: &egui::accesskit::Node| n.role() == egui::accesskit::Role::Tab;
+            let mut tabs = tree.nodes.iter().filter(|(_, n)| tab(n));
+            tabs.any(|(_, n)| n.label().is_some_and(|l| l.ends_with(", unsaved")))
+        };
+        let (tree, _) = edit_otter(&mut app, &ctx, 1400.0, "opened");
+        assert!(!unsaved(&tree), "opened, not typed in");
+        assert!(!app.last_title.contains('*'), "{}", app.last_title);
+        window(&mut app, &ctx, 1400.0, vec![egui::Event::Text("s".into())]);
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert!(unsaved(&tree), "the tab");
+        assert_eq!(app.last_title, "Untitled * - LimarePDF");
+        assert!(!app.tabs[0].dirty, "kept already");
+    }
+
+    /// While a line is edited the status bar says so, and the inspector names the PDF's
+    /// font and says, as the line is typed, whether it keeps that font: kept for plain
+    /// ASCII in a font that can take it; where a character can't be, the words typed are
+    /// in the nearest standard font and the rest keep theirs (ENH-39's scope and font).
+    #[test]
+    fn a_line_edit_says_its_scope_and_whether_its_font_is_kept() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        lines_tab(&mut app, &ctx, 400.0, &paragraph(72.0, 100.0, 3, 1, false));
+        let status = |tree: &egui::accesskit::TreeUpdate| {
+            let mut values = tree.nodes.iter().filter_map(|(_, n)| n.value());
+            values.any(|v| v.starts_with("Editing one line"))
+        };
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert!(!status(&tree), "said before a line was edited");
+        let (tree, _) = edit_otter(&mut app, &ctx, 1400.0, "opened");
+        assert!(status(&tree), "the status bar");
+        let says = inspector_says(&tree);
+        let has = |says: &[String], s: &str| says.iter().any(|x| x == s);
+        assert!(
+            has(&says, "PDF font") && has(&says, "Helvetica"),
+            "{says:?}"
+        );
+        assert!(has(&says, "Preserved"), "{says:?}");
+        window(&mut app, &ctx, 1400.0, vec![egui::Event::Text("s".into())]);
+        let says = inspector_says(&settled_at(&mut app, &ctx, 1400.0));
+        assert!(has(&says, "Preserved"), "plain ASCII: {says:?}");
+        window(&mut app, &ctx, 1400.0, vec![egui::Event::Text("é".into())]);
+        let says = inspector_says(&settled_at(&mut app, &ctx, 1400.0));
+        assert!(has(&says, "Partly preserved"), "{says:?}");
+        // All of it typed over.
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::A, CTRL)]);
+        window(&mut app, &ctx, 1400.0, vec![egui::Event::Text("é".into())]);
+        let says = inspector_says(&settled_at(&mut app, &ctx, 1400.0));
+        assert!(has(&says, "Nearest standard"), "{says:?}");
+        assert!(!has(&says, "Partly preserved"), "{says:?}");
+    }
+
+    /// Text typed on past the end of its line into the line beside it, or past the page's
+    /// edge, says so on a tag by its outline, in the caution colour; nothing is shrunk or
+    /// moved. New text past the edge says so too.
+    #[test]
+    fn typing_on_past_a_line_says_what_it_runs_over() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let lines = [
+            ("The otter ate", (72.0, 100.0)),
+            ("Seal", (200.0, 100.0)),
+            ("The walrus ate", (515.0, 160.0)),
+        ];
+        let lines = lines.map(|(s, (x, y))| (s.to_string(), egui::pos2(x, y)));
+        lines_tab(&mut app, &ctx, 400.0, &lines);
+        let says = |tree: &egui::accesskit::TreeUpdate, s: &str| {
+            tree.nodes.iter().any(|(_, n)| n.value() == Some(s))
+        };
+        let (over, past) = ("Over other text", "Past the page edge");
+        let page = |app: &mut App| {
+            let tree = settled_at(app, &ctx, 1400.0);
+            let (page, _) = node(&tree, "Page 1").expect("the page");
+            (page.min, page.width() / 612.0)
+        };
+        // Double-click `word` to edit its line.
+        let open = |app: &mut App, word: &str| {
+            let (min, k) = page(app);
+            let words = app.tabs[0].pdf.page_words(0).unwrap();
+            let b = words.iter().find(|w| w.text == word).expect(word).bbox;
+            let p = min + egui::vec2((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0) * k;
+            window(app, &ctx, 1400.0, vec![egui::Event::PointerMoved(p)]);
+            for _ in 0..2 {
+                window(app, &ctx, 1400.0, vec![press(p, true)]);
+                window(app, &ctx, 1400.0, vec![press(p, false)]);
+            }
+            settled_at(app, &ctx, 1400.0)
+        };
+        let typed = |app: &mut App, text: &str| {
+            window(app, &ctx, 1400.0, vec![egui::Event::Text(text.into())]);
+            settled_at(app, &ctx, 1400.0)
+        };
+        let tree = open(&mut app, "otter");
+        assert!(app.tabs[0].ed.editing_line());
+        assert!(!says(&tree, over) && !says(&tree, past), "as it was");
+        let esc = |app: &mut App| {
+            let esc = key_with(Key::Escape, egui::Modifiers::NONE);
+            window(app, &ctx, 1400.0, vec![esc]);
+        };
+        let tree = typed(&mut app, "otter and the seal ate fish by the sea");
+        assert!(says(&tree, over) && !says(&tree, past), "into Seal");
+        esc(&mut app);
+        let tree = open(&mut app, "walrus");
+        assert!(!says(&tree, over) && !says(&tree, past), "as it was");
+        let tree = typed(&mut app, "walrus and the seal");
+        assert!(says(&tree, past) && !says(&tree, over), "past the edge");
+        esc(&mut app);
+        let tree = settled_at(&mut app, &ctx, 1400.0);
+        assert!(!says(&tree, past), "the tag stayed");
+        // New text, put down near the edge.
+        app.act(&ctx, Act::Tool(Tool::Text));
+        let (min, k) = page(&mut app);
+        let edge = min + egui::vec2(560.0, 300.0) * k;
+        window(&mut app, &ctx, 1400.0, click_at(edge));
+        settled_at(&mut app, &ctx, 1400.0);
+        let tree = typed(&mut app, "Walrus and seal");
+        assert!(says(&tree, past), "new text past the edge");
+    }
+
+    /// Inside a line being edited, Ctrl+X, Ctrl+V, Ctrl+A and Shift+click act on its text,
+    /// as in a word processor, never on the page's: Cut takes the selected word out and
+    /// copies it, Paste puts text at the caret, Shift+click selects from the caret to the
+    /// click, Ctrl+A selects the line's text alone; kept, only that line has changed.
+    #[test]
+    fn keys_and_shift_click_inside_a_line_act_on_its_text() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        lines_tab(&mut app, &ctx, 400.0, &paragraph(72.0, 100.0, 3, 1, false));
+        let before = line_texts(&app.tabs[0].pdf, 0);
+        edit_otter(&mut app, &ctx, 1400.0, "cut");
+        let typed = |app: &mut App| focused_text(&settled_at(app, &ctx, 1400.0));
+        let type_in = |app: &mut App, event: egui::Event| window(app, &ctx, 1400.0, vec![event]);
+        assert_eq!(copied_by(&mut app, &ctx, vec![egui::Event::Cut]), ["otter"]);
+        assert_eq!(typed(&mut app).as_deref(), Some("The  ate"));
+        type_in(&mut app, egui::Event::Paste("walrus".into()));
+        assert_eq!(typed(&mut app).as_deref(), Some("The walrus ate"));
+        // From the line's start to a click by its end, Shift held.
+        let none = egui::Modifiers::NONE;
+        type_in(&mut app, key_with(Key::Home, none));
+        let area = app.tabs[0].ed.line_area(0).expect("the line's place");
+        let end = area.right_center() - egui::vec2(8.0, 0.0);
+        let mut click = vec![egui::Event::PointerMoved(end)];
+        click.extend([press(end, true), press(end, false)]);
+        window_held(&mut app, &ctx, click, egui::Modifiers::SHIFT);
+        window_held(&mut app, &ctx, vec![], none);
+        type_in(&mut app, egui::Event::Text("Seal".into()));
+        assert_eq!(typed(&mut app).as_deref(), Some("Seal"));
+        // Ctrl+A: all of the line, not the page's text.
+        type_in(&mut app, key_with(Key::A, CTRL));
+        type_in(&mut app, egui::Event::Text("Walrus".into()));
+        assert_eq!(typed(&mut app).as_deref(), Some("Walrus"));
+        let words = app.tabs[0].ed.selection.words();
+        assert!(words.is_none(), "the page's words selected");
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::Escape, none)]);
+        settled_at(&mut app, &ctx, 1400.0);
+        let mut want = before.clone();
+        want[1] = "Walrus".into();
+        assert_eq!(line_texts(&app.tabs[0].pdf, 0), want);
+    }
+
+    /// What is typed in a line is never lost clicking away and back: a click on the page
+    /// away from it, or on a page in the side panel, keeps it, and a double-click edits it
+    /// again (another tab and back: `typing_left_in_another_tab_has_the_keyboard_again_on_return`).
+    #[test]
+    fn a_line_typed_in_is_kept_clicking_away_and_back() {
+        use egui::accesskit::Role;
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        lines_tab(&mut app, &ctx, 400.0, &paragraph(72.0, 100.0, 3, 1, false));
+        app.show_view(Side::Pages);
+        let ty = Typist::new(&ctx);
+        let second = |app: &App| line_texts(&app.tabs[0].pdf, 0)[1].clone();
+        // Double-click `word` to edit its line, as a person does.
+        let edit = |app: &mut App, word: &str| {
+            let (min, k) = ty.page(app);
+            let words = app.tabs[0].pdf.page_words(0).unwrap();
+            let b = words.iter().find(|w| w.text == word).expect(word).bbox;
+            let p = min + egui::vec2((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0) * k;
+            ty.frame(app, click_at(p));
+            ty.frame(app, click_at(p));
+            ty.pause(app);
+            assert!(app.tabs[0].ed.editing_line(), "{word} isn't edited");
+        };
+        edit(&mut app, "otter");
+        ty.text(&mut app, "walrus");
+        // Away on the page, below the text.
+        let (min, k) = ty.page(&mut app);
+        ty.click(&mut app, min + egui::vec2(300.0, 300.0) * k);
+        assert!(!app.tabs[0].ed.editing_line(), "still edited");
+        assert_eq!(second(&app), "The walrus ate");
+        // Back, by a double-click on the word typed.
+        edit(&mut app, "walrus");
+        ty.text(&mut app, "seal");
+        let tree = ty.pause(&mut app);
+        assert_eq!(focused_text(&tree).as_deref(), Some("The seal ate"));
+        // Away to the page in the side panel: kept, as a click on the page keeps it.
+        let thumb = (tree.nodes.iter())
+            .find(|(_, n)| n.role() == Role::Button && n.label() == Some("Page 1"))
+            .and_then(|(_, n)| n.bounds())
+            .expect("the thumbnail");
+        let (x, y) = ((thumb.x0 + thumb.x1) / 2.0, (thumb.y0 + thumb.y1) / 2.0);
+        ty.click(&mut app, egui::pos2(x as f32, y as f32));
+        assert!(!app.tabs[0].ed.editing_line(), "still edited");
+        assert_eq!(second(&app), "The seal ate");
+        edit(&mut app, "seal");
+    }
+
+    /// A line being edited is kept by Save, and the file read back has the words typed in
+    /// that line and everything else on the page as it was: the other lines' words, fonts
+    /// and places.
+    #[test]
+    fn a_line_edit_saved_and_reopened_changes_only_that_line() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let dir = test_dir("line-saved");
+        let path = dir.join("lines.pdf");
+        let mut pdf = Pdf::new();
+        pdf.insert_blank(0, 612.0, 400.0).unwrap();
+        for (text, at) in paragraph(72.0, 100.0, 3, 1, false) {
+            let font = FontChoice::default();
+            pdf.add_text(0, (at.x, at.y), &text, font, 12.0, [0.0; 3])
+                .unwrap();
+        }
+        pdf.save(&path).unwrap();
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        open_and_wait(&mut app, &ctx, &path, 1);
+        app.act(&ctx, Act::Tool(Tool::Read));
+        // Each line but the edited one: its words, font and place.
+        let others = |pdf: &Pdf| {
+            let objs = pdf.page_objects(0).unwrap().into_iter();
+            let lines = objs.filter(|o| o.text.as_deref().is_some_and(|t| !t.contains("otter")));
+            let lines = lines.filter(|o| o.text.as_deref().is_some_and(|t| !t.contains("walrus")));
+            let line = |o: limarepdf_core::PageObject| {
+                let at = o.bbox.map(|v| (v * 100.0).round() as i64);
+                (o.text, o.font_name, at)
+            };
+            lines.map(line).collect::<Vec<_>>()
+        };
+        let before = others(&app.tabs[0].pdf);
+        assert_eq!(before.len(), 2);
+        edit_otter(&mut app, &ctx, 1400.0, "saved");
+        let walrus = vec![egui::Event::Text("walrus".into())];
+        window(&mut app, &ctx, 1400.0, walrus);
+        settled_at(&mut app, &ctx, 1400.0);
+        app.act(&ctx, Act::Save);
+        saves_done(&mut app, &ctx);
+        let back = Pdf::from_bytes(&std::fs::read(&path).unwrap(), None).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let want = ["The seal ate", "The walrus ate", "The seal ate"];
+        assert_eq!(line_texts(&back, 0), want);
+        assert_eq!(others(&back), before);
+        assert!(!app.tabs[0].unsaved(), "unsaved after saving");
+    }
+
+    /// A triple-click on a line, as in a word processor, takes the whole line, by the tool
+    /// in use: the read tool selects its words, the arrow the line, and the Text tool opens
+    /// it with all of it selected, so typing replaces it.
+    #[test]
+    fn a_triple_click_takes_the_line_with_each_tool() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        for tool in [Tool::Read, Tool::Select, Tool::Text] {
+            let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+            lines_tab(&mut app, &ctx, 400.0, &paragraph(72.0, 100.0, 3, 1, false));
+            app.act(&ctx, Act::Tool(tool));
+            let words = app.tabs[0].pdf.page_words(0).unwrap();
+            let otter = words.iter().position(|w| w.text == "otter").expect("otter");
+            // The words of otter's line.
+            let line: Vec<usize> = (words.iter().enumerate())
+                .filter(|(_, w)| (w.bbox[1] - words[otter].bbox[1]).abs() < 1.0)
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(line.len(), 3);
+            let b = words[line[1]].bbox;
+            let at = egui::vec2((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0);
+            clicks_on_page(&mut app, &ctx, at, 3);
+            let ed = &app.tabs[0].ed;
+            match tool {
+                Tool::Read => {
+                    let all = ((0, line[0]), (0, line[2]));
+                    assert_eq!(ed.selection.words(), Some(all), "{tool:?}");
+                }
+                Tool::Select => {
+                    assert_eq!(ed.selected_line_text(), ["The otter ate"], "{tool:?}");
+                    assert!(!ed.editing_line(), "{tool:?}");
+                }
+                _ => {
+                    assert!(ed.editing_line(), "{tool:?}");
+                    let seal = vec![egui::Event::Text("Seal".into())];
+                    window(&mut app, &ctx, 1400.0, seal);
+                    let tree = settled_at(&mut app, &ctx, 1400.0);
+                    assert_eq!(focused_text(&tree).as_deref(), Some("Seal"), "{tool:?}");
+                }
+            }
+        }
+    }
+
+    /// ENH-20: the floating bar of a line being edited keeps clear of it, next to it: above,
+    /// below or beside it where that covers no other text, else just above or below it,
+    /// over as little text as can be (the user's finding: by a heading with text all round
+    /// it, it went to the top of the view); never over the line (and its caret); at the
+    /// page's top, bottom and edges, at three zooms and in a narrow window.
+    #[test]
+    fn the_floating_bar_keeps_clear_of_the_line_being_edited() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let cases = [
+            "paragraph",
+            "paragraph at half size",
+            "paragraph at twice the size",
+            "narrow window",
+            "heading among columns",
+            "top of the page",
+            "bottom of the page",
+            "left edge",
+            "right edge",
+        ];
+        // A heading in the middle of three columns, a line across the page just above it
+        // and two lines of its column below it.
+        let mut columns = vec![(
+            "For questions about the walrus and the seal see the shore".to_string(),
+            egui::pos2(72.0, 285.0),
+        )];
+        for (x, y, who) in [(72.0, 300.0, "walrus"), (250.0, 300.0, "otter")] {
+            columns.push((format!("The {who} ate"), egui::pos2(x, y)));
+        }
+        for (x, y) in [(330.0, 300.0), (250.0, 315.0), (250.0, 330.0)] {
+            columns.push(("The walrus ate".to_string(), egui::pos2(x, y)));
+        }
+        for case in cases {
+            // The page's height and lines: a paragraph across it, short lines at an edge, or
+            // the columns.
+            let (h, lines) = match case {
+                "heading among columns" => (792.0, columns.clone()),
+                "top of the page" => (792.0, paragraph(72.0, 14.0, 3, 0, true)),
+                "bottom of the page" => (120.0, paragraph(72.0, 75.0, 3, 2, true)),
+                "left edge" => (792.0, paragraph(3.0, 300.0, 3, 1, false)),
+                "right edge" => (792.0, paragraph(538.0, 300.0, 3, 1, false)),
+                _ => (792.0, paragraph(72.0, 300.0, 9, 4, true)),
+            };
+            let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+            lines_tab(&mut app, &ctx, h, &lines);
+            match case {
+                "paragraph at half size" => app.tabs[0].set_zoom(0.5),
+                "paragraph at twice the size" => app.tabs[0].set_zoom(2.0),
+                _ => {}
+            }
+            let narrow = case == "narrow window";
+            let width = if narrow { 700.0 } else { 1400.0 };
+            // The paragraph's middle in view, or the page from its top.
+            let top = match case {
+                "paragraph" | "paragraph at twice the size" => 250.0,
+                "left edge" | "right edge" | "heading among columns" => 250.0,
+                _ => 0.0,
+            };
+            // Narrow, the panels fold away over some frames.
+            for _ in 0..40 {
+                window(&mut app, &ctx, width, vec![]);
+            }
+            app.tabs[0].go_to_at(0, top);
+            let (tree, k) = edit_otter(&mut app, &ctx, width, case);
+            let buttons = bar_buttons(&tree);
+            let bar = (buttons.iter().map(|(_, r)| *r))
+                .reduce(|a, b| a.union(b))
+                .unwrap_or_else(|| panic!("{case}: no bar"));
+            let (page, _) = node(&tree, "Page 1").expect("the page");
+            let mut objs = app.tabs[0].pdf.page_objects(0).unwrap();
+            objs.retain(|o| o.text.is_some());
+            objs.sort_by(|a, b| a.bbox[1].total_cmp(&b.bbox[1]));
+            let screen = |b: [f32; 4]| {
+                egui::Rect::from_min_max(
+                    page.min + egui::vec2(b[0], b[1]) * k,
+                    page.min + egui::vec2(b[2], b[3]) * k,
+                )
+            };
+            let i = (objs.iter())
+                .position(|o| o.text.as_deref().is_some_and(|t| t.contains("otter")))
+                .expect("the otter line");
+            let name = format!("Editing text: {}", objs[i].text.as_deref().unwrap_or(""));
+            let (editor, _) = node(&tree, &name).expect("the line editor");
+            let line = screen(objs[i].bbox).union(editor);
+            assert!(!bar.intersects(line), "{case}: over the line, {bar:?}");
+            // Next to it: the bar's frame round its buttons and the line's outline add some
+            // points to the gap.
+            let apart = (bar.min.y - line.max.y)
+                .max(line.min.y - bar.max.y)
+                .max(bar.min.x - line.max.x)
+                .max(line.min.x - bar.max.x);
+            assert!(apart < 24.0, "{case}: {apart} from the line, {bar:?}");
+            // With room by the line, over no other line.
+            let room = ["bottom of the page", "left edge", "right edge"];
+            if room.contains(&case) {
+                for (j, o) in objs.iter().enumerate().filter(|(j, _)| *j != i) {
+                    let r = screen(o.bbox);
+                    assert!(!bar.intersects(r), "{case}: over line {j}, {bar:?}");
+                }
+            }
+            let shown = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 1000.0));
+            assert!(shown.contains_rect(bar), "{case}: out of view, {bar:?}");
+        }
+    }
+
+    /// ENH-20: while a line is edited on the page, its floating bar has Bold and Italic for
+    /// what is selected in it, as Ctrl+B and Ctrl+I there, and a click on them leaves the
+    /// line open with the keyboard back in it.
+    #[test]
+    fn the_floating_bar_styles_the_line_being_edited_and_keeps_it_open() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        lines_tab(&mut app, &ctx, 792.0, &paragraph(72.0, 300.0, 3, 1, true));
+        let (tree, _) = edit_otter(&mut app, &ctx, 1400.0, "otter");
+        let typing = app.tabs[0].ed.typing_id().expect("typing");
+        let mut tree = tree;
+        for name in ["Bold", "Italic"] {
+            // Where the bar is now: the line, bolder, may move it.
+            let buttons = bar_buttons(&tree);
+            let names: Vec<&str> = buttons.iter().map(|(n, _)| n.as_str()).collect();
+            let r = (buttons.iter())
+                .find(|(n, _)| n == name)
+                .unwrap_or_else(|| panic!("no {name} in the bar: {names:?}"))
+                .1;
+            window(&mut app, &ctx, 1400.0, click_at(r.center()));
+            tree = settled_at(&mut app, &ctx, 1400.0);
+            assert_eq!(app.tabs[0].ed.typing_id(), Some(typing), "{name}: ended");
+            assert_eq!(
+                ctx.memory(|m| m.focused()),
+                Some(typing),
+                "{name}: the keyboard isn't back"
+            );
+        }
+        let esc = key_with(Key::Escape, egui::Modifiers::NONE);
+        window(&mut app, &ctx, 1400.0, vec![esc]);
+        settled_at(&mut app, &ctx, 1400.0);
+        let lines = line_fonts(&app.tabs[0].pdf, 0);
+        let otter = (lines.iter().flatten())
+            .find(|(t, _)| t.contains("otter"))
+            .expect("the otter line");
+        assert_eq!(otter.0.trim(), "otter", "{lines:?}");
+        assert_eq!(otter.1, "Helvetica-BoldOblique", "{lines:?}");
+    }
+
+    /// A click on the inspector's heading, or on its Collapse button, leaves a line being
+    /// edited on the page open with the keyboard back in it, as a panel closing in a word
+    /// processor leaves the typing open: the heading is part of the inspector's place. So
+    /// are the collapsed inspector's strip and its pop-out, heading and all.
+    #[test]
+    fn the_inspectors_heading_leaves_a_line_edit_open() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        lines_tab(&mut app, &ctx, 792.0, &paragraph(72.0, 300.0, 3, 1, true));
+        let (tree, _) = edit_otter(&mut app, &ctx, 1400.0, "otter");
+        let typing = app.tabs[0].ed.typing_id().expect("typing");
+        let (collapse, _) = node(&tree, "Collapse the inspector").expect("the collapse button");
+        // The heading's title, left of the button on its row.
+        let title = egui::pos2(collapse.min.x - 80.0, collapse.center().y);
+        let heading = inspector::title(&app.tabs[0]);
+        let options = "Options for the selection or the document";
+        let mut tree = tree;
+        // The heading, its button, the strip's Options (the pop-out) and its heading.
+        for what in ["heading", "Collapse", "Options", "pop-out"] {
+            let at = match what {
+                "heading" => title,
+                "Collapse" => collapse.center(),
+                "Options" => node(&tree, options).expect("Options").0.center(),
+                _ => {
+                    // A label's text is its node's value; the status bar's may say it too,
+                    // at the window's left.
+                    let b = (tree.nodes.iter())
+                        .filter(|(_, n)| n.value() == Some(heading.as_str()))
+                        .filter_map(|(_, n)| n.bounds())
+                        .max_by(|a, b| a.x0.total_cmp(&b.x0))
+                        .expect("the pop-out's heading");
+                    egui::pos2((b.x0 + b.x1) as f32 / 2.0, (b.y0 + b.y1) as f32 / 2.0)
+                }
+            };
+            window(&mut app, &ctx, 1400.0, click_at(at));
+            tree = settled_at(&mut app, &ctx, 1400.0);
+            assert_eq!(app.tabs[0].ed.typing_id(), Some(typing), "{what}: ended");
+            assert_eq!(
+                ctx.memory(|m| m.focused()),
+                Some(typing),
+                "{what}: the keyboard isn't back"
+            );
+        }
+        assert!(!app.inspector.shown(), "not collapsed");
+        assert!(app.popout, "the pop-out closed");
+        // A click on the page beside the pop-out, at its height, is a click away: it ends
+        // the line edit, keeping what was typed.
+        let (strip, _) = node(&tree, options).unwrap();
+        let away = egui::pos2(300.0, strip.center().y + 60.0);
+        window(&mut app, &ctx, 1400.0, click_at(away));
+        settled_at(&mut app, &ctx, 1400.0);
+        let typing = app.tabs[0].ed.typing_id();
+        assert_eq!(typing, None, "a click away kept it open");
+    }
+
+    /// `n` clicks in a row at `at` (page points) on page 1 of the active tab, in a window
+    /// 1400 points wide: two are a double-click, three a triple-click.
+    fn clicks_on_page(app: &mut App, ctx: &egui::Context, at: egui::Vec2, n: usize) {
+        let tree = settled_at(app, ctx, 1400.0);
+        let (page, _) = node(&tree, "Page 1").expect("the page");
+        let p = page.min + at * (page.width() / 612.0);
+        window(app, ctx, 1400.0, vec![egui::Event::PointerMoved(p)]);
+        for _ in 0..n {
+            window(app, ctx, 1400.0, vec![press(p, true)]);
+            window(app, ctx, 1400.0, vec![press(p, false)]);
+        }
+        settled_at(app, ctx, 1400.0);
+    }
+
+    /// A double-click or triple-click with the read tool off the text, below it or in the
+    /// margin beside it, selects nothing, as in a word processor: not the nearest word or
+    /// line, however far away.
+    #[test]
+    fn clicks_off_the_text_select_no_far_word_or_line() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        for (case, at, n) in [
+            ("double-click below", egui::vec2(300.0, 300.0), 2),
+            ("triple-click below", egui::vec2(300.0, 300.0), 3),
+            ("double-click in the margin", egui::vec2(20.0, 115.0), 2),
+            ("triple-click in the margin", egui::vec2(20.0, 115.0), 3),
+        ] {
+            let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+            lines_tab(&mut app, &ctx, 792.0, &paragraph(72.0, 100.0, 3, 1, true));
+            clicks_on_page(&mut app, &ctx, at, n);
+            let ed = &app.tabs[0].ed;
+            assert_eq!(ed.selection, Selection::None, "{case}");
+            assert_eq!(ed.typing_id(), None, "{case}");
+        }
+    }
+
+    /// Ctrl+A with the Text tool, nothing being typed, selects the page's text as with the
+    /// read tool (the Text tool selects words with a drag too); Ctrl+C copies it.
+    #[test]
+    fn ctrl_a_with_the_text_tool_selects_the_pages_text() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        lines_tab(&mut app, &ctx, 792.0, &paragraph(72.0, 100.0, 3, 1, true));
+        app.act(&ctx, Act::Tool(Tool::Text));
+        settled_at(&mut app, &ctx, 1400.0);
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::A, CTRL)]);
+        settled_at(&mut app, &ctx, 1400.0);
+        let n = app.tabs[0].pdf.page_words(0).unwrap().len();
+        let all = Selection::Words {
+            anchor: (0, 0),
+            end: (0, n - 1),
+        };
+        assert_eq!(app.tabs[0].ed.selection, all);
+        assert_eq!(app.tabs[0].ed.tool, Tool::Text);
+        let text = app.tabs[0].ed.selected_text().expect("the text");
+        let all = text.starts_with("The walrus ate") && text.contains("otter");
+        assert!(all, "{text}");
+    }
+
+    /// An app with a tab of two pages, each with the three lines of `paragraph(72.0, 100.0,
+    /// 3, 1, true)`, 16 words a line (words 16 to 31 of each page are its line saying
+    /// "otter"), and the read tool, drawn and settled.
+    fn two_pages_tab(ctx: &egui::Context) -> App {
+        ctx.enable_accesskit();
+        theme::install(ctx);
+        let mut app = App::with(Settings::from_file(None), Recent::from_file(None));
+        let mut pdf = Pdf::new();
+        for page in 0..2 {
+            pdf.insert_blank(page, 612.0, 792.0).unwrap();
+            for (text, at) in paragraph(72.0, 100.0, 3, 1, true) {
+                let font = FontChoice::default();
+                pdf.add_text(page, (at.x, at.y), &text, font, 12.0, [0.0; 3])
+                    .unwrap();
+            }
+        }
+        assert!(app.add_tab(ctx, pdf, None, None, false));
+        app.act(ctx, Act::Tool(Tool::Read));
+        settled_at(&mut app, ctx, 1400.0);
+        app
+    }
+
+    /// Each line of page text on `page` of `pdf`, top to bottom, as it reads.
+    fn line_texts(pdf: &Pdf, page: usize) -> Vec<String> {
+        let mut objs = pdf.page_objects(page).unwrap();
+        objs.retain(|o| o.text.is_some());
+        objs.sort_by(|a, b| a.bbox[1].total_cmp(&b.bbox[1]));
+        objs.into_iter().filter_map(|o| o.text).collect()
+    }
+
+    /// The lines of [`two_pages_tab`]'s pages as they read with the words `cut` (the first
+    /// and last, by line and word on its page: page 1's lines 0 to 2, page 2's 3 to 5)
+    /// deleted as a word processor deletes a selection, one space beside them going too.
+    fn two_pages_without(cut: ((usize, usize), (usize, usize))) -> [Vec<String>; 2] {
+        let ((l0, w0), (l1, w1)) = cut;
+        let mut lines: Vec<Vec<String>> = (0..6)
+            .map(|i| {
+                let text = &paragraph(72.0, 100.0, 3, 1, true)[i % 3].0;
+                text.split(' ').map(String::from).collect()
+            })
+            .collect();
+        for (l, words) in lines.iter_mut().enumerate() {
+            let from = if l == l0 { w0 } else { 0 };
+            let to = if l == l1 { w1 + 1 } else { words.len() };
+            if l >= l0 && l <= l1 {
+                words.drain(from..to);
+            }
+        }
+        let text = |l: &[Vec<String>]| -> Vec<String> {
+            (l.iter().filter(|w| !w.is_empty()))
+                .map(|w| w.join(" "))
+                .collect()
+        };
+        [text(&lines[..3]), text(&lines[3..])]
+    }
+
+    /// Delete or Backspace with words selected with the read tool takes them out of their
+    /// lines, as a word processor deletes a selection: across lines and pages in one undo
+    /// step, with one space beside them where two would be left together or one at a line's
+    /// start or end (as Word's smart cut has it); a line emptied goes. Nothing is selected
+    /// after; the same once saved; one Undo puts it all back.
+    #[test]
+    fn delete_takes_words_selected_with_the_read_tool_out() {
+        let ctx = egui::Context::default();
+        let (del, back) = (Key::Delete, Key::Backspace);
+        // The words: their first and last by page and index, and by line and index there.
+        for (case, key, anchor, end, cut) in [
+            ("a word", del, (0, 1), (0, 1), ((0, 1), (0, 1))),
+            ("across lines", back, (0, 14), (0, 17), ((0, 14), (1, 1))),
+            ("a whole line", back, (0, 16), (0, 31), ((1, 0), (1, 15))),
+            ("across pages", del, (0, 46), (1, 1), ((2, 14), (3, 1))),
+        ] {
+            let mut app = two_pages_tab(&ctx);
+            let before = [0, 1].map(|p| line_texts(&app.tabs[0].pdf, p));
+            app.tabs[0].ed.selection = Selection::Words { anchor, end };
+            settled_at(&mut app, &ctx, 1400.0);
+            let undo = app.tabs[0].history().1;
+            let key = key_with(key, egui::Modifiers::NONE);
+            window(&mut app, &ctx, 1400.0, vec![key]);
+            settled_at(&mut app, &ctx, 1400.0);
+            let want = two_pages_without(cut);
+            let t = &app.tabs[0];
+            let now = [0, 1].map(|p| line_texts(&t.pdf, p));
+            assert_eq!(now, want, "{case}");
+            assert_eq!(t.ed.selection, Selection::None, "{case}");
+            assert_eq!(t.history().1, undo + 1, "{case}: not one step");
+            let saved = saved_pdf(t);
+            assert_eq!([0, 1].map(|p| line_texts(&saved, p)), want, "{case}: saved");
+            window(&mut app, &ctx, 1400.0, vec![key_with(Key::Z, CTRL)]);
+            settled_at(&mut app, &ctx, 1400.0);
+            let back = [0, 1].map(|p| line_texts(&app.tabs[0].pdf, p));
+            assert_eq!(back, before, "{case}: Undo");
+        }
+    }
+
+    /// A frame of the window 1400 points wide with `events`, and the text it copied.
+    fn copied_by(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) -> Vec<String> {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1400.0, TEST_HEIGHT),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut f = eframe::Frame::_new_kittest();
+        let mut out = ctx.run_ui(raw, |ui| eframe::App::ui(app, ui, &mut f));
+        out.textures_delta.clear();
+        (out.platform_output.commands.into_iter())
+            .filter_map(|c| match c {
+                egui::OutputCommand::CopyText(text) => Some(text),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Ctrl+X (the system's Cut) with words selected with the read tool copies them and
+    /// takes them out, as Delete does; with lines of page text selected with the arrow, it
+    /// copies their text and deletes them. One undo step each.
+    #[test]
+    fn cut_copies_and_takes_out_words_or_lines() {
+        let ctx = egui::Context::default();
+        for case in ["words", "lines"] {
+            let mut app = two_pages_tab(&ctx);
+            let (want, copied) = match case {
+                "words" => {
+                    app.tabs[0].ed.selection = Selection::Words {
+                        anchor: (0, 1),
+                        end: (0, 2),
+                    };
+                    (two_pages_without(((0, 1), (0, 2))), "walrus ate")
+                }
+                _ => {
+                    app.act(&ctx, Act::Tool(Tool::Select));
+                    let objs = app.tabs[0].pdf.page_objects(0).unwrap();
+                    let otter = |o: &limarepdf_core::PageObject| {
+                        o.text.as_deref().is_some_and(|t| t.contains("otter"))
+                    };
+                    let id = objs.iter().position(otter).expect("the otter line");
+                    select(&mut app, &ctx, &[id]);
+                    let line = "The otter ate fish by the sea and the seal ate fish by the shore 1";
+                    (two_pages_without(((1, 0), (1, 15))), line)
+                }
+            };
+            settled_at(&mut app, &ctx, 1400.0);
+            let undo = app.tabs[0].history().1;
+            let said = copied_by(&mut app, &ctx, vec![egui::Event::Cut]);
+            settled_at(&mut app, &ctx, 1400.0);
+            assert_eq!(said, [copied], "{case}");
+            let t = &app.tabs[0];
+            assert_eq!([0, 1].map(|p| line_texts(&t.pdf, p)), want, "{case}");
+            assert_eq!(t.history().1, undo + 1, "{case}: not one step");
+        }
+    }
+
+    /// Typing with words selected with the read tool in one line types over them, as in a
+    /// word processor: their line opens for editing on the page, what is typed in their
+    /// place, the keys after it going on in the line; Ctrl+V pastes over them the same way.
+    /// Esc keeps it, one Undo takes it back. Across lines nothing is typed; a note at the
+    /// selection's end says why.
+    #[test]
+    fn typing_over_words_selected_with_the_read_tool_replaces_them() {
+        let ctx = egui::Context::default();
+        let otter = "The otter ate fish by the sea and the seal ate fish by the shore 1";
+        let seal = "The seal fish by the sea and the seal ate fish by the shore 1";
+        for case in ["typed", "pasted", "across lines"] {
+            let mut app = two_pages_tab(&ctx);
+            let (anchor, end) = match case {
+                "across lines" => ((0, 14), (0, 17)),
+                // "otter ate".
+                _ => ((0, 17), (0, 18)),
+            };
+            app.tabs[0].ed.selection = Selection::Words { anchor, end };
+            settled_at(&mut app, &ctx, 1400.0);
+            let undo = app.tabs[0].history().1;
+            match case {
+                "pasted" => {
+                    let paste = egui::Event::Paste("seal".into());
+                    window(&mut app, &ctx, 1400.0, vec![paste]);
+                }
+                _ => {
+                    for c in ["s", "e", "a", "l"] {
+                        window(&mut app, &ctx, 1400.0, vec![egui::Event::Text(c.into())]);
+                    }
+                }
+            }
+            let tree = settled_at(&mut app, &ctx, 1400.0);
+            if case == "across lines" {
+                let t = &app.tabs[0];
+                assert_eq!(t.ed.typing_id(), None, "{case}: typing");
+                assert_eq!(t.ed.selection, Selection::Words { anchor, end }, "{case}");
+                let note = "Type over words within one line. Paragraph editing is planned.";
+                assert!(shows(&tree, note), "{case}: no note");
+                assert_eq!(line_texts(&t.pdf, 0)[1], otter, "{case}");
+                continue;
+            }
+            // Named by the line as it is in the document.
+            let name = format!("Editing text: {otter}");
+            let (_, focused) = node(&tree, &name).unwrap_or_else(|| panic!("{case}: not open"));
+            assert!(focused, "{case}: the line hasn't the keyboard");
+            // The caret after what was typed.
+            let id = app.tabs[0].ed.typing_id().expect("typing");
+            assert_eq!(page_text::selection(&ctx, id), Some((8, 8)), "{case}");
+            let esc = key_with(Key::Escape, egui::Modifiers::NONE);
+            window(&mut app, &ctx, 1400.0, vec![esc]);
+            settled_at(&mut app, &ctx, 1400.0);
+            let t = &app.tabs[0];
+            assert_eq!(t.ed.typing_id(), None, "{case}: still typing");
+            assert_eq!(line_texts(&t.pdf, 0)[1], seal, "{case}");
+            assert_eq!(t.history().1, undo + 1, "{case}: not one step");
+            window(&mut app, &ctx, 1400.0, vec![key_with(Key::Z, CTRL)]);
+            settled_at(&mut app, &ctx, 1400.0);
+            assert_eq!(line_texts(&app.tabs[0].pdf, 0)[1], otter, "{case}: Undo");
+        }
+    }
+
+    /// Edit text with words selected with the read tool edits their line on the page with
+    /// them selected there; across lines, the line where the selection ends, with its part
+    /// of it selected.
+    #[test]
+    fn edit_text_edits_the_line_of_the_words_selected() {
+        let ctx = egui::Context::default();
+        for (case, anchor, end, line, chars) in [
+            // "otter ate".
+            ("one line", (0, 17), (0, 18), 1, (4, 13)),
+            // "shore 0 The otter": "The otter".
+            ("across lines", (0, 14), (0, 17), 1, (0, 9)),
+            // From "otter" back to "shore": "shore 0".
+            ("backwards", (0, 17), (0, 14), 0, (60, 67)),
+        ] {
+            let mut app = two_pages_tab(&ctx);
+            app.tabs[0].ed.selection = Selection::Words { anchor, end };
+            settled_at(&mut app, &ctx, 1400.0);
+            app.act(&ctx, Act::EditObjectText);
+            let tree = settled_at(&mut app, &ctx, 1400.0);
+            let text = &paragraph(72.0, 100.0, 3, 1, true)[line].0;
+            let name = format!("Editing text: {text}");
+            let (_, focused) = node(&tree, &name).unwrap_or_else(|| panic!("{case}: not editing"));
+            assert!(focused, "{case}: the line hasn't the keyboard");
+            let id = app.tabs[0].ed.typing_id().expect("typing");
+            let held = page_text::selection(&ctx, id).map(|(a, b)| (a.min(b), a.max(b)));
+            assert_eq!(held, Some(chars), "{case}");
+        }
+    }
+
+    /// Shift with an arrow, Home or End moves the moving end of words selected with the read
+    /// tool, as a word processor extends a selection: a word left or right in reading
+    /// order, across pages; to the word nearest across on the line below or above; to its
+    /// line's start or end. Shift+Home and Shift+End no longer go to the first or last page.
+    #[test]
+    fn shift_keys_extend_words_selected_with_the_read_tool() {
+        let ctx = egui::Context::default();
+        let mut app = two_pages_tab(&ctx);
+        // "otter".
+        app.tabs[0].ed.selection = Selection::word((0, 17));
+        settled_at(&mut app, &ctx, 1400.0);
+        let shift = egui::Modifiers::SHIFT;
+        for (key, end) in [
+            (Key::ArrowRight, (0, 18)),
+            (Key::ArrowLeft, (0, 17)),
+            (Key::ArrowLeft, (0, 16)),
+            (Key::ArrowDown, (0, 32)),
+            (Key::ArrowUp, (0, 16)),
+            (Key::ArrowUp, (0, 0)),
+            (Key::End, (0, 15)),
+            (Key::Home, (0, 0)),
+            (Key::End, (0, 15)),
+            (Key::ArrowDown, (0, 31)),
+            (Key::ArrowDown, (0, 47)),
+            (Key::ArrowRight, (1, 0)),
+            (Key::ArrowLeft, (0, 47)),
+            (Key::ArrowDown, (1, 15)),
+            (Key::ArrowUp, (0, 47)),
+        ] {
+            let page = app.tabs[0].current;
+            window(&mut app, &ctx, 1400.0, vec![key_with(key, shift)]);
+            let tree = settled_at(&mut app, &ctx, 1400.0);
+            let want = Selection::Words {
+                anchor: (0, 17),
+                end,
+            };
+            assert_eq!(app.tabs[0].ed.selection, want, "Shift+{key:?}");
+            if matches!(key, Key::Home | Key::End) {
+                let now = app.tabs[0].current;
+                assert_eq!(now, page, "Shift+{key:?} went to another page");
+            }
+            // The view follows the end, as a word processor's follows its caret: the page is
+            // shown, not only its thumbnail.
+            let name = format!("Page {}", end.0 + 1);
+            let shown = node(&tree, &name).filter(|(r, _)| r.width() > 400.0);
+            let (shown, _) = shown.unwrap_or_else(|| panic!("Shift+{key:?}: {name} not shown"));
+            let k = shown.width() / 612.0;
+            let b = app.tabs[0].pdf.page_words(end.0).unwrap()[end.1].bbox;
+            let (top, bottom) = (shown.min.y + b[1] * k, shown.min.y + b[3] * k);
+            let view = 150.0..TEST_HEIGHT - 40.0;
+            let seen = view.contains(&top) && view.contains(&bottom);
+            assert!(seen, "Shift+{key:?}: the end is out of view at {top}");
+        }
     }
 }

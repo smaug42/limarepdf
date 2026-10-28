@@ -167,6 +167,24 @@ impl Chosen {
         !self.lines.is_empty()
     }
 
+    /// The lines that can change, by page and object, in reading order.
+    pub fn line_ids(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.lines.iter().map(|&(page, id, _)| (page, id))
+    }
+
+    /// The characters selected in line `id` of page `page`, from the first to the last;
+    /// `None` when it isn't one of the lines.
+    pub fn selected_in(&self, page: usize, id: usize) -> Option<(usize, usize)> {
+        let k = self.line_ids().position(|line| line == (page, id))?;
+        let ranges = &self.text.lines[k].1;
+        Some((ranges.first()?.0, ranges.last()?.1))
+    }
+
+    /// Whether the selected words are all in one line that can change.
+    pub fn one_line(&self) -> bool {
+        self.lines.len() == 1 && self.left == Left::default()
+    }
+
     /// Whether a line looks different from how it is in the document.
     pub fn changed(&self) -> bool {
         let now = self.text.lines.iter().map(|(t, _)| t);

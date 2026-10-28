@@ -27,7 +27,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 mod previews;
+mod proofs;
 use previews::{CropDrag, Picture};
+use proofs::Proofs;
 
 const GAP: f32 = 16.0;
 /// Room left beside a fitted page, beyond the gaps, so it never meets the scroll bar.
@@ -301,6 +303,9 @@ pub struct Tab {
     crop_drag: Option<CropDrag>,
     /// The picture the watermark preview shows.
     wm_picture: Option<Picture>,
+    /// The pages drawn with the watermark or headers and footers being set put on, once
+    /// their settings settle (ENH-23).
+    proofs: Proofs,
     /// The line of page text whose words the last edit changed, the revision and undo depth
     /// just after it, and when (`egui` time). Changing its words again before anything else
     /// changes, within [`MERGE_PAUSE`], joins that undo step.
@@ -326,6 +331,12 @@ pub struct Tab {
     pub use_labels: bool,
     /// Scroll to this height on the `goto` page (points from its top), with `goto`.
     goto_y: Option<f32>,
+    /// A box on a page (its page, and page points) to bring into view, scrolling only as
+    /// far as it must, as a word processor keeps its caret in view: the end of words
+    /// selected with the keys.
+    pub reveal: Option<(usize, [f32; 4])>,
+    /// The part of the pages shown last frame, in the scroll area's own points.
+    last_view: Option<Rect>,
     pub error: Option<String>,
     /// Showing the document failed with an internal error (see [`Tab::guarded`]); the tab
     /// shows this message instead of the pages.
@@ -473,6 +484,7 @@ impl Tab {
             crop_view: None,
             crop_drag: None,
             wm_picture: None,
+            proofs: Proofs::default(),
             last_line: None,
             side: Side::Pages,
             query: String::new(),
@@ -484,6 +496,8 @@ impl Tab {
             to_hit: None,
             use_labels: true,
             goto_y: None,
+            reveal: None,
+            last_view: None,
             error: None,
             broken: None,
             ed: Editor::for_tab(id),
@@ -531,9 +545,10 @@ impl Tab {
             .unwrap_or_else(|| "Untitled".into())
     }
 
+    /// The name, marked when there is work to save: typing counts from the first key.
     pub fn title(&self) -> String {
         let name = self.name();
-        if self.dirty {
+        if self.unsaved() {
             format!("{name} *")
         } else {
             name
@@ -1525,8 +1540,11 @@ impl Tab {
             return;
         }
         if let Some(step) = self.undo.pop() {
+            let (sel, was) = (self.ed.selection.clone(), self.ed.selected_text());
             if let Some(back) = self.restore(ctx, step) {
                 self.redo.push(back);
+                // Words selected stay selected when they still read the same.
+                self.ed.reselect(&self.pdf, sel, was);
             }
         }
     }
@@ -1539,8 +1557,10 @@ impl Tab {
             return;
         }
         if let Some(step) = self.redo.pop() {
+            let (sel, was) = (self.ed.selection.clone(), self.ed.selected_text());
             if let Some(back) = self.restore(ctx, step) {
                 self.undo.push(back);
+                self.ed.reselect(&self.pdf, sel, was);
             }
         }
     }
@@ -2625,6 +2645,8 @@ impl Tab {
         };
         c.obj_text = (held.iter()).any(|h| matches!(h.kind, ObjKind::Text | ObjKind::HiddenText));
         c.obj_lines = held.iter().any(|h| h.kind == ObjKind::Text);
+        c.obj_only_text = (!held.is_empty())
+            && (held.iter()).all(|h| matches!(h.kind, ObjKind::Text | ObjKind::HiddenText));
         c.pages = self.ed.selection.pages().is_some();
         c.tool = Some(self.ed.tool);
         c.annot_tool = Some(self.ed.annot_tool);
@@ -2639,6 +2661,7 @@ impl Tab {
         c.annot_moves = self.ed.annot_moves();
         c.object_moves = self.ed.object_moves();
         c.typing = self.ed.typing_id().is_some();
+        c.line_edit = self.ed.editing_line();
     }
 
     /// A right-click menu for what is selected, its commands queued in `requested`. The
@@ -2651,13 +2674,24 @@ impl Tab {
         resp.context_menu(|ui| actions::context_menu(ui, &sel, &c, &mut self.requested));
     }
 
-    /// A small bar just above the selected object or words (below, when there is no
-    /// room above), with icon buttons for the right-click menu's commands. `page` is the
-    /// page's screen rectangle, `k` the screen size of a point, `b` the selection's box
-    /// in page points. It scrolls with the page and stays inside the view.
-    fn floating_toolbar(&mut self, ui: &egui::Ui, base: &Ctx, page: Rect, k: f32, b: [f32; 4]) {
+    /// A small bar for the selected object or words, with icon buttons for the right-click
+    /// menu's commands (for a line being edited, Bold, Italic and Copy). It goes where it
+    /// covers neither the selection nor the page's other text ([`bar_place`], ENH-20),
+    /// scrolls with the page and stays inside the view. `i` is the page, drawn at `page` on
+    /// the screen, `k` the screen size of a point, `b` the selection's box in page points.
+    fn floating_toolbar(
+        &mut self,
+        ui: &egui::Ui,
+        base: &Ctx,
+        i: usize,
+        page: Rect,
+        k: f32,
+        b: [f32; 4],
+    ) {
         let at = |x: f32, y: f32| Pos2::new(page.min.x + x * k, page.min.y + y * k);
-        let sel = Rect::from_min_max(at(b[0], b[1]), at(b[2], b[3]));
+        let on_screen = |b: [f32; 4]| Rect::from_min_max(at(b[0], b[1]), at(b[2], b[3]));
+        // The line being edited as typed, which may run past the line as it was.
+        let sel = on_screen(b).union(self.ed.line_area(i).unwrap_or(Rect::NOTHING));
         let view = ui.clip_rect();
         if !view.intersects(sel) {
             return;
@@ -2669,17 +2703,13 @@ impl Tab {
         if groups.is_empty() || c.docked {
             return;
         }
-        // Bar height plus a gap.
-        let room_above = sel.top() - view.top() > 44.0;
-        let x = sel.center().x;
-        let (pos, pivot) = if room_above {
-            (Pos2::new(x, sel.top() - 8.0), egui::Align2::CENTER_BOTTOM)
-        } else {
-            (Pos2::new(x, sel.bottom() + 8.0), egui::Align2::CENTER_TOP)
-        };
-        egui::Area::new(egui::Id::unique(("floating-toolbar", self.id)))
-            .fixed_pos(pos)
-            .pivot(pivot)
+        // Placed by its size as last drawn.
+        let id = egui::Id::unique(("floating-toolbar", self.id));
+        let size = ui.ctx().data(|d| d.get_temp(id.with("size")));
+        let size = size.unwrap_or(Vec2::new(160.0, 36.0));
+        let text: Vec<Rect> = self.ed.text_boxes(i).into_iter().map(on_screen).collect();
+        let shown = egui::Area::new(id)
+            .fixed_pos(bar_place(sel, size, view, &text))
             .constrain_to(view)
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style())
@@ -2706,6 +2736,9 @@ impl Tab {
                         });
                     });
             });
+        let (r, ctx) = (shown.response.rect, ui.ctx());
+        ctx.data_mut(|d| d.insert_temp(id.with("size"), r.size()));
+        self.ed.bar_rect = (r, ctx.cumulative_pass_nr());
     }
 
     /// Up to two banners above the pages: icon, text, the banner's button if it has one,
@@ -2935,6 +2968,21 @@ impl Tab {
             // After a zoom change, put the same place back at the top of the view.
             let top = row_of.get(p).and_then(|&r| row_top.get(r)).copied();
             area = area.vertical_scroll_offset((top.unwrap_or(0.0) + y * scale).max(0.0));
+        } else if let Some((p, b)) = self.reveal.take() {
+            // Only as far as it must, with a little of the page beyond it.
+            if let Some((top, view)) = page_top(p).zip(self.last_view) {
+                let (y0, y1) = (top + b[1] * scale, top + b[3] * scale);
+                let to = if y0 < view.min.y {
+                    Some(y0 - 40.0)
+                } else if y1 > view.max.y {
+                    Some(y1 + 40.0 - view.height())
+                } else {
+                    None
+                };
+                if let Some(to) = to {
+                    area = area.vertical_scroll_offset(to.max(0.0));
+                }
+            }
         }
         let current = (self.hit_idx < self.hits.len()).then_some(self.hit_idx);
         let mut wanted: Vec<(Key, f32)> = Vec::new();
@@ -3022,7 +3070,7 @@ impl Tab {
                     let menu_open = resp.context_menu_opened();
                     if let Some((p, b)) = self.ed.selection_box() {
                         if p == i && !self.ed.dragging() && !menu_open {
-                            self.floating_toolbar(ui, base, r, self.zoom * BASE, b);
+                            self.floating_toolbar(ui, base, i, r, self.zoom * BASE, b);
                         }
                     }
                 }
@@ -3066,6 +3114,8 @@ impl Tab {
         }
         let room = out.content_size.y - out.inner_rect.height();
         self.edge = (top <= 0.5, top >= room - 0.5);
+        let at = Pos2::new(out.state.clamped_offset().x, top);
+        self.last_view = Some(Rect::from_min_size(at, out.inner_rect.size()));
         let ed = &mut self.ed;
         ed.form.keys(&ctx, &mut ed.actions);
         self.apply_actions(&ctx);
@@ -3140,6 +3190,7 @@ impl Tab {
         // Thumbnail rectangles, for finding where a drag drops.
         let mut rects: Vec<Rect> = Vec::with_capacity(self.sizes.len());
         let (mut dropped, mut target) = (false, None);
+        let proof = self.proof_shown(&ctx);
         egui::ScrollArea::vertical()
             .id_salt(("thumbs", self.id))
             .auto_shrink([false, false])
@@ -3217,6 +3268,10 @@ impl Tab {
                                 self.worker.request(key, THUMB_W * ppp / w.max(1.0));
                             }
                         }
+                    }
+                    // A stamp being set, drawn on the pages it is for.
+                    if proof {
+                        self.proof_thumb(ui.painter(), i, img);
                     }
                     ui.painter().text(
                         Pos2::new(rect.center().x, rect.max.y - 11.0),
@@ -3340,6 +3395,70 @@ fn rows_of(n: usize, layout: Layout, cover: bool) -> Vec<Vec<(usize, Place)>> {
         rows.push(row);
     }
     rows
+}
+
+/// The floating bar's gap from the selection, and from the view's edges.
+const BAR_GAP: f32 = 8.0;
+
+/// Where the floating bar of `size` goes (its top left corner) for the selection at `sel`
+/// in the view `view`, `text` being where the page's text is, all on the screen (ENH-20):
+/// above the selection, below it, then beside it (right, then left), the first of them
+/// inside the view that covers no text. Where all of them would cover some, just above
+/// or below it, whichever covers less, as a word processor's bar sits by the selection
+/// (the user, 2026-10-28: not off at the view's edge); at the view's top or bottom edge
+/// only when neither is in view, there whichever covers less of the selection. So it
+/// never covers the selection (a line being edited, with its caret) where the view has
+/// room for both, nor other text where there is room nearby.
+fn bar_place(sel: Rect, size: Vec2, view: Rect, text: &[Rect]) -> Pos2 {
+    let g = BAR_GAP;
+    // Centred on the selection, inside the view.
+    let x = (sel.center().x - size.x / 2.0)
+        .min(view.right() - g - size.x)
+        .max(view.left() + g);
+    let y = (sel.center().y - size.y / 2.0)
+        .min(view.bottom() - g - size.y)
+        .max(view.top() + g);
+    let near = [
+        Pos2::new(x, sel.top() - g - size.y),
+        Pos2::new(x, sel.bottom() + g),
+        Pos2::new(sel.right() + g, y),
+        Pos2::new(sel.left() - g - size.x, y),
+    ];
+    let fits = |p: Pos2| view.contains_rect(Rect::from_min_size(p, size));
+    let clear = |p: Pos2| {
+        let r = Rect::from_min_size(p, size);
+        fits(p) && !r.intersects(sel) && !text.iter().any(|t| t.intersects(r))
+    };
+    if let Some(p) = near.into_iter().find(|&p| clear(p)) {
+        return p;
+    }
+    let bar = |p: Pos2| Rect::from_min_size(p, size);
+    let [above, below, ..] = near;
+    let text_under = |p: Pos2| text.iter().map(|t| overlap(bar(p), *t)).sum::<f32>();
+    match (fits(above), fits(below)) {
+        (true, true) if text_under(below) < text_under(above) => below,
+        (true, _) => above,
+        (false, true) => below,
+        (false, false) => {
+            let top = Pos2::new(x, view.top() + g);
+            let bottom = Pos2::new(x, view.bottom() - g - size.y);
+            if overlap(bar(top), sel) <= overlap(bar(bottom), sel) {
+                top
+            } else {
+                bottom
+            }
+        }
+    }
+}
+
+/// The area two rectangles share.
+fn overlap(a: Rect, b: Rect) -> f32 {
+    let over = a.intersect(b);
+    if over.is_positive() {
+        over.area()
+    } else {
+        0.0
+    }
 }
 
 /// What a page that couldn't be drawn shows instead: an icon, a line saying so, and the
@@ -4060,5 +4179,95 @@ mod tests {
         assert_eq!(t.sizes, [(612.0, 712.0); 2]);
         t.undo(&ctx);
         assert_eq!(t.sizes, [(612.0, 792.0), (612.0, 702.0)]);
+    }
+
+    /// ENH-20: the floating bar goes above the selection, below it, then beside it, where
+    /// that covers no text and is in view; else just above or below it, whichever covers
+    /// less text (the user's finding: it went to the view's top edge by a heading with
+    /// text all round it); at the view's edge only when neither is in view; never over the
+    /// selection while there is room.
+    #[test]
+    fn the_floating_bar_is_placed_clear_of_the_text() {
+        let view = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
+        let size = Vec2::new(160.0, 36.0);
+        // A line `x0` to `x1` across, 14 high from `y` down.
+        let line = |x0: f32, x1: f32, y: f32| {
+            Rect::from_min_max(Pos2::new(x0, y), Pos2::new(x1, y + 14.0))
+        };
+        // A paragraph's lines, 20 apart.
+        let para = |x0: f32, x1: f32, from: f32| -> Vec<Rect> {
+            let at = |i: usize| from + 20.0 * i as f32;
+            (0..9).map(|i| line(x0, x1, at(i))).collect()
+        };
+        let place = |sel: Rect, text: &[Rect], view: Rect| {
+            let bar = Rect::from_min_size(bar_place(sel, size, view, text), size);
+            assert!(!bar.intersects(sel), "over the selection: {bar:?}");
+            bar
+        };
+        let clear = |bar: Rect, text: &[Rect]| text.iter().all(|t| !t.intersects(bar));
+
+        // Alone: above it, centred.
+        let sel = line(300.0, 500.0, 300.0);
+        let bar = place(sel, &[sel], view);
+        assert_eq!(bar.max.y, sel.min.y - BAR_GAP);
+        assert_eq!(bar.center().x, sel.center().x);
+
+        // A line above: below.
+        let text = [line(300.0, 500.0, 270.0), sel];
+        let bar = place(sel, &text, view);
+        assert_eq!(bar.min.y, sel.max.y + BAR_GAP);
+        assert!(clear(bar, &text));
+
+        // At the top of the view with a line below: beside it, to the right.
+        let sel = line(100.0, 200.0, 4.0);
+        let text = [sel, line(100.0, 200.0, 24.0)];
+        let bar = place(sel, &text, view);
+        assert_eq!(bar.min.x, sel.max.x + BAR_GAP);
+        assert!(clear(bar, &text));
+
+        // Short lines at the right edge, one each side: beside it, to the left.
+        let text = para(700.0, 790.0, 260.0);
+        let sel = text[4];
+        let bar = place(sel, &text, view);
+        assert_eq!(bar.max.x, sel.min.x - BAR_GAP);
+        assert!(clear(bar, &text));
+
+        // A heading with a line above it, lines below it and columns either side: just
+        // above it, over the one line there rather than the lines below.
+        let sel = line(300.0, 500.0, 300.0);
+        let below = [322.0, 340.0, 358.0].map(|y| line(300.0, 480.0, y));
+        let sides = [line(100.0, 290.0, 300.0), sel, line(510.0, 700.0, 300.0)];
+        let text = [&[line(100.0, 700.0, 270.0)][..], &below, &sides].concat();
+        let bar = place(sel, &text, view);
+        assert_eq!(bar.max.y, sel.min.y - BAR_GAP);
+
+        // Two lines above it and one below: just below it.
+        let above = [line(100.0, 700.0, 270.0), line(100.0, 700.0, 285.0)];
+        let text = [&above[..], &[line(300.0, 480.0, 330.0)], &sides].concat();
+        let bar = place(sel, &text, view);
+        assert_eq!(bar.min.y, sel.max.y + BAR_GAP);
+
+        // In a paragraph across the view: just above it.
+        let text = para(20.0, 780.0, 260.0);
+        let sel = text[4];
+        let bar = place(sel, &text, view);
+        assert_eq!(bar.max.y, sel.min.y - BAR_GAP);
+
+        // Its first line at the view's top: just below it.
+        let text = para(20.0, 780.0, 10.0);
+        let sel = text[0];
+        let bar = place(sel, &text, view);
+        assert_eq!(bar.min.y, sel.max.y + BAR_GAP);
+
+        // Neither above, below nor beside it in view: at the view's top edge.
+        let sel = Rect::from_min_max(Pos2::new(20.0, 30.0), Pos2::new(780.0, 570.0));
+        let bar = Rect::from_min_size(bar_place(sel, size, view, &[sel]), size);
+        assert_eq!(bar.min.y, view.min.y + BAR_GAP);
+
+        // The bar inside a view narrower than the page.
+        let narrow = Rect::from_min_size(Pos2::new(100.0, 0.0), Vec2::new(300.0, 600.0));
+        let sel = line(0.0, 800.0, 300.0);
+        let bar = place(sel, &[sel], narrow);
+        assert!(narrow.contains_rect(bar), "{bar:?}");
     }
 }

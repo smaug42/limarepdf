@@ -11,7 +11,8 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
 ## The window
 
 - **Tabs**, at the top: one per document, with a × inside it to close it. **Unsaved** beside the name means
-  unsaved changes.
+  unsaved changes, from the first key you type. Text you are typing on a page (new text, a line, a note or text
+  box) stays open while you look at another tab; back on its tab, you go on typing where you were.
 - **The commands row**, under the tabs: at the left the File menu (☰), Open and Save, then Undo and Redo, as icons
   named by their tooltips; then the names of the command band, **Edit**, **Insert**, **Review**, **Pages**,
   **Forms and sign**, **Protect** and **View**; at the right **Print**, and a small arrow that makes the commands
@@ -20,7 +21,8 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
   Help, so every command is in it.
 - **The command band**, under the names: the buttons of the name you chose, in groups (see
   [The command band](#the-command-band)).
-- **Bottom:** what is selected or the tool in use, and messages, at the left; at the right the page you are on,
+- **Bottom:** what is selected or the tool in use (**Editing one line** while you edit a line on the page), and
+  messages, at the left; at the right the page you are on,
   **Show planned features**, and the zoom, such as "Fit width · 96%", which opens a menu of zoom and page layout
   (see [Reading and finding](reading-and-finding.md#move-around-the-pages)).
 - **Left:** a strip of icons for the side panel's views: Pages (the thumbnails), Search results, Bookmarks (the
@@ -35,7 +37,8 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
   you opened, such as Watermark (see [The inspector](#selecting-and-the-inspector)). The » at its top collapses it
   to a strip; the « at the top of the strip expands it again, and the strip's options button shows the inspector's
   contents in a pop-out over the pages (a click elsewhere or Esc closes it; what you changed in it stays). View >
-  Properties does the same.
+  Properties does the same. A line you are editing on the page stays open through all of these, and through a
+  click on the inspector's heading, with the keyboard back in the line.
 - **Narrow windows:** below about 960 points wide the inspector collapses to its strip by itself, and below about
   760 the side panel folds away, leaving its icons. They come back when the window is wide enough again, unless
   you closed them yourself; a panel you open in a narrow window stays open. Whether you closed or opened each
@@ -71,11 +74,13 @@ own, such as "Theme › Dark" and "Page colours › Dark", and typing the submen
 
 Click a name in the commands row to show its buttons. Edit is shown when LimarePDF starts. A small ▾ beside a
 button opens related commands; a button with ▾ in it opens a menu. A tool's button stays pressed while the tool is
-on. Every button names itself on hover, with its shortcut.
+on (Edit text while the Text tool is), and in the menus the tool in use is marked. Every button names itself on
+hover, with its shortcut. A greyed button or menu item says why it can't be used just now, such as "Nothing to
+undo.", "Select some text first." or "Click in a form field first."
 
 | Name | Groups and buttons |
 | --- | --- |
-| Edit | Paste and Copy; the **Font** group: the font, size, Bold, Italic and text colour of the text selected or being typed ([Style words](content-editing.md#style-words-you-select-while-reading)); Edit text, Find, and Select ▾ (Read and select text, the arrow, select all) |
+| Edit | Paste, Cut and Copy; the **Font** group: the font, size, Bold, Italic and text colour of the text selected or being typed ([Style words](content-editing.md#style-words-you-select-while-reading)); Edit text, Find, and Select ▾ (Read and select text, the arrow, select all) |
 | Insert | Text and Image; Header and footer, Watermark; From images (a new PDF from pictures) |
 | Review | Note, Comments ▾ (your name for comments); Highlight ▾ (underline, strike out, squiggly underline and the colours), Text box, Draw ▾ (the pen, rectangle, ellipse, line or arrow), Stamp; Flatten… |
 | Pages | Rotate ▾, Extract, Delete ▾ (remove blank pages); Insert pages ▾ (a blank page, images, other PDFs), Split; Crop, Page labels; Recognise text, Optimise |
@@ -143,7 +148,8 @@ Files that no longer exist are left out. The list holds 10 files and is kept on 
 `~/.config/limarepdf/recent.txt` on Linux, `~/Library/Application Support/limarepdf/recent.txt` on macOS, and
 `%APPDATA%\limarepdf\recent.txt` on Windows.
 
-Each document gets a tab. The tab shows its name, with **Unsaved** beside it while it has unsaved changes.
+Each document gets a tab. The tab shows its name, with **Unsaved** beside it while it has unsaved changes,
+including text being typed, from the first key; the window's title is marked the same way.
 
 Closing a document or quitting asks first when there are unsaved changes, including text still being typed: a
 comment or text box on the page, a form field, the selected comment's changes in the inspector, or a reply not yet
@@ -217,16 +223,18 @@ another tab hides it; come back within 30 seconds and it shows again. Notices th
 are no redaction marks to apply, say) have no Undo button.
 
 While you type in a line, a note, a text box, a form field or any of the inspector's boxes, Ctrl+Z and Ctrl+Y undo
-and redo the typing there and nothing else; with nothing left to undo there, they do nothing. Once it is kept (when
-you leave the box), Undo takes the whole change back, and the box starts with nothing to undo when you come back to
-it.
+and redo the typing there and nothing else, and so do Undo and Redo in the commands row, as in a word processor:
+the keyboard stays in the box, and they are greyed when there is nothing there to undo or redo. Once the typing is
+kept (when you leave the box), Undo takes the whole change back. A box you come back to with nothing kept in the
+document meanwhile, such as a note left open while you change its colour, can still undo its typing; otherwise it
+starts with nothing to undo, and a new note or text box always does.
 
 A command that changes or uses the document (rotating or deleting a page, removing blank pages, saving, printing,
-exporting, signing, Undo itself) keeps what you are typing first, as clicking away would: a step of its own, which
-Undo takes back, before the command's step. So Undo clicked in the commands row while you type takes back what you
-typed. Text that can't be kept (a form value LimarePDF can't write) stays as typed, with the reason shown, and the
-command doesn't run. Commands that only show something (zoom, moving between pages, opening a tool or a section
-of the inspector) leave your typing as it is.
+exporting, signing) keeps what you are typing first, as clicking away would: a step of its own, which Undo takes
+back, before the command's step. Undo with typing open on the page but the keyboard elsewhere (on a button, say)
+keeps the typing and takes it back. Text that can't be kept (a form value LimarePDF can't write) stays as typed,
+with the reason shown, and the command doesn't run. Commands that only show something (zoom, moving between pages,
+opening a tool or a section of the inspector) leave your typing as it is.
 
 ## Dialogs
 
@@ -347,7 +355,8 @@ click a section's name to open or fold it.
 | --- | --- |
 | Nothing | Headed **Document**. Facts: Pages; Paper (Letter, Legal, Tabloid, Executive, A3, A4, A5 or B5, either way round; the size in points for others; Mixed when the pages differ); Security (None, Open password or Permissions password, as the document will be saved; Removed on save for a protected document you opened, until you set a password again); Form fields, how many, for a form; Signatures, how many, for a document with signature fields. Folded: [Properties](#document-properties), [Opening view](#opening-view) and, for a form, [Form](forms.md#the-form-section) |
 | Pages (click thumbnails; Shift for a range, Ctrl for one more) | Headed **Selected page** or **Selected pages**, with which ones, such as "Pages 1–2, 5 of 9". Facts: Paper, and Orientation (Portrait, Landscape, Square or Mixed, as the pages are shown, after rotating). Buttons: rotate either way, delete, extract to a new tab, and insert images after them. Folded: **Insert blank page**, and **Page properties**, which holds **Crop** and **Page labels** ([Organising pages](organising-pages.md)) |
-| An object, a comment, or a tool that adds content | That object's or tool's options, headed by what it is (Selected text, Image, Text box, New rectangle). For a line of text, selected or being edited, or new text being typed: how it is edited (One line, New text), its font and size (Mixed where they differ) and, for a line, whether its own font is kept when it is edited (Source font); their look is changed in Edit > Font in the command band ([Style words in a line](content-editing.md#style-words-in-a-line)). An object's position and size are in its **Position and size** section, which stays open or closed as you left it |
+| An object, a comment, or a tool that adds content | That object's or tool's options, headed by what it is (Selected text, Image, Text box, New rectangle). For a line of text, selected or being edited, or new text being typed: how it is edited (One line, New text), its font and size (Mixed where they differ) and, for a line, its font as the PDF names it (PDF font) and how what you type will be written (Source font: Preserved, Installed family, Nearest standard, Partly preserved, Mixed or Font chosen; see [Change size, font and colour](content-editing.md#change-size-font-and-colour)); their look is changed in Edit > Font in the command band ([Style words in a line](content-editing.md#style-words-in-a-line)). An object's position and size are in its **Position and size** section, which stays open or closed as you left it |
+| A form field you are typing in | Headed **Form field**. Words selected on the page before are let go, so Edit > Font and Ctrl+B don't change them meanwhile |
 | Several objects | Headed by how many (3 objects), with a line saying what they are: the font and size of the lines of text among them (changed in Edit > Font), the look of the shapes, blank or mixed where they differ, their position (X and Y) and Delete ([Select several objects](content-editing.md#select-several-objects)) |
 | Words | Headed **Selected text**: Editing (Selected words), their font and size, Mixed where they differ; their look is changed in Edit > Font ([Style words you select while reading](content-editing.md#style-words-you-select-while-reading)). Invisible recognised text alone has none, and the inspector stays on the document or pages. Copy, Bold, Italic, highlight, redact, print and save the selection from the floating toolbar (or the docked buttons) and the right-click menu |
 
@@ -364,12 +373,17 @@ sets the passwords, which take effect when you save.
 
 Right-click a page, an object, selected words or a thumbnail for a short menu of what applies there.
 Right-clicking selects what is under the pointer first. A selected object or run of words also gets a small
-floating toolbar with the same commands. Its last button, Dock controls on the right, moves these buttons to the
+floating toolbar with the same commands. It sits by the selection: above it, below it or beside it where that
+covers no other text, or else just above or below it, over as little text as it can; it never covers the
+selection. While a line is edited on the page, it has Bold, Italic, Cut and Copy for what is selected in the line,
+and clicking it leaves the line open with the keyboard back in it. Its last button, Dock controls on the right, moves these buttons to the
 top of the inspector (or its strip, when collapsed) instead; Float controls near selection there brings the
 floating toolbar back. View > Properties ▾ > Selection controls on the right does either. The choice is remembered between
 runs; resizing the window doesn't change it.
 
-Delete removes the selected object, comment or mark, or the selected pages.
+Delete removes the selected words, object, comment or mark, or the selected pages. Words selected with the read
+tool can also be typed over or cut (see
+[Type over, delete or cut words](content-editing.md#type-over-delete-or-cut-words)).
 
 ### Tools in the inspector
 
@@ -440,14 +454,17 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Ctrl+0, Ctrl+1 | Fit width on or off, actual size |
 | Ctrl+scroll, pinch | Zoom |
 | PageUp, PageDown, Home, End | Previous, next, first, last page |
-| Delete, Backspace | Delete the selected objects, comment or mark, or the selected pages |
+| Delete, Backspace | Delete the selected words, objects, comment or mark, or the selected pages |
 | Ctrl+Shift+H | Highlight the selected text |
 | Arrow keys (Shift for 10 points) | Move the selected objects |
-| Ctrl+A, Ctrl+C | Select all text on the page, copy it (read tool) |
+| Shift+Left, Shift+Right; Shift+Up, Shift+Down; Shift+Home, Shift+End (words selected with the read tool) | Extend the selection by a word; to the line above or below; to the start or end of the line, across pages |
+| Ctrl+A, Ctrl+C | Select all text on the page, copy it (read tool or Text tool) |
+| Ctrl+X | Cut the words selected with the read tool, the lines of text selected with the arrow, or what is selected in text being typed |
+| Typing, Ctrl+V (words selected with the read tool, in one line) | Replace the words, in their line opened for editing |
 | Ctrl+A (arrow) | Select every object on the page |
 | Shift+click (read tool: pictures and shapes; arrow: any object) | Add an object to the selection or take it out |
 | Shift+drag (arrow) | Add what a rectangle holds to the selection |
-| Esc | Cancel: close an open list, menu or colour picker (only that), cancel a move, resize, shape, pen stroke, selection rectangle or word selection being dragged (only that), finish (and keep) new text, a line, a note, a text box or a form field being typed, clear the selection, or leave a tool for the read tool |
+| Esc | Cancel: close an open list, menu or colour picker (only that), cancel a move, resize, shape, pen stroke, selection rectangle or word selection being dragged (only that), finish (and keep) new text, a line, a note, a text box or a form field being typed, clear the selection, or leave a tool for the read tool. In a box of Edit > Font or the inspector (the font size, say) while typing is open on the page, it drops what was typed in the box and goes back to the typing |
 | Ctrl+B, Ctrl+I | Bold, Italic for the words selected with the read tool, or the lines selected with the arrow; in new text being typed (Add text) or a line being edited on the page, for the words selected there, or with nothing selected, the word at the caret, or what is typed next between words |
 | Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) while typing new text, a line, a note, a text box, a form field or in any box of the inspector | Undo, redo the typing there (and the styles, in new text and lines), not the document |
 | Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |

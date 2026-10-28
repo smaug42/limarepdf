@@ -185,17 +185,27 @@ inspector's `styles_ui` changes through the `styled::Restyle` trait as it change
 Italic by Word's rule over the whole selection, blanks where any line mixes a value. Invisible lines, words in
 form XObjects and vertical writing are counted (`chosen::Left`) and said. Changes go in as `Typed::Words` (one
 `Action::Restyle`, every page's `edit_texts` in one undo step); `Editor::reselect` selects the same words again
-after the edit's `invalidate`, only if they still read the same. Ctrl+B and Ctrl+I are commands
+after the edit's `invalidate`, and after `Tab::undo` and `Tab::redo`, only if they still read the same. Ctrl+B and Ctrl+I are commands
 (`Editor::switch_style`, also for a line selected with the arrow) and page-only keys, left to a text box with
 the keyboard. Selected words are painted as word processors shade a selection (`Editor::shaded`): a band a
 reading row (`line_boxes`, what `selected_lines` gives the marks and redaction boxes made from a selection), a
 paragraph's rows meeting halfway across the space between them (painting only), in the theme's selection
 background at 45% (PB-31: perhaps too dark). Every other text box uses egui's own undo. While any
 text box has the keyboard, `App::shortcuts` leaves the undo keys to it, so the document's Undo never runs from
-inside a box. Each tab's text boxes take their ids from `Editor::scope` (the tab's id) and what they edit, and
-the inspector is drawn inside that id, so no two documents share a box's state. `page_text::fresh_history`, run
-before each frame's keys, starts a box's undo afresh whenever it gets the keyboard, except when an editor hands
-the keyboard back mid-typing (`page_text::hand_back`, a note after its colour is picked). egui keeps only the
+inside a box; with a button holding the keyboard (`text_edit_focused` false) they are the document's. The
+commands row's Undo and Redo do what the keys do there (batch 40's Q4): a press or release on them
+(`App::undo_buttons`, their places last frame) while a text box has the keyboard sets `App::undo_held`, which sets
+egui's `SurrenderFocusOn::Never` for that frame so the box keeps the keyboard, and `App::act` turns the command
+into `App::undo_in_box`, sent to the box as Ctrl+Z or Ctrl+Shift+Z at the start of the next frame, before anything
+else reads that frame's keys. They are greyed by that typing's history: `Editor::typing_history` reads the
+`History` of new text and a line being edited (`History::can_undo`, `can_redo`), `page_text::box_history` egui's
+undoer for the boxes that keep egui's own. Each tab's text boxes take their ids from `Editor::scope` (the tab's id)
+and what they edit, and the inspector is drawn inside that id, so no two documents share a box's state.
+`page_text::fresh_history`, run before each frame's keys, starts a box's undo afresh whenever it gets the
+keyboard, except when an editor hands the keyboard back mid-typing (`page_text::hand_back`, a note after its
+colour is picked) or the keyboard comes back to the box it last left with nothing kept in the document since
+(ENH-32: `App::left_box` holds that box's id, its tab's id and the tab's revision then). A new note or text box
+uses its page's one box id (`Editor::new_box`), so it never takes the history of the last one typed there. egui keeps only the
 caret of a `TextEdit` without the keyboard, so the inspector's style controls read the line's or new text's
 selection through `page_text::held`, which notes it while the box has the keyboard and gives it while a list, the
 size box or the colour picker has it; `page_text::give_back` selects it again as the box takes the keyboard back
@@ -207,6 +217,64 @@ gamma-encoded as the page shows them, so every colour button converts at the bou
 underneath is
 covered in the colour the page worker (`worker.rs`, `Worker::sample`) finds around it, from a drawing of that
 part of the page in the current page colours.
+
+The read tool's words are also typed over, deleted and cut as in a word processor (batch 40's second stage).
+`App::type_over`, run after `App::shortcuts` while no text box, dialog or the palette has the keyboard, hands the
+frame's `Event::Text` and `Event::Paste` to `Editor::type_over`: with words in one line (`Chosen::one_line`), it
+opens that line (`Editor::words_line`: the line of the selection's moving end, its selected characters as
+`Pick::Chars`, from `Chosen::line_ids` and `selected_in`) and keeps the events in `LineEdit::typed`; `line_edit_ui`
+splices them in front of the frame's events once the line has the keyboard, so they take the line editor's own
+path (its refusals, the selection replaced, its history). Keys typed in the frame a double-click opens a line are
+kept the same way (they were lost before). Words on more than one line get Q3's note at the selection's end
+(`Editor::words_note`, drawn by `words_note_at` through `page_text::Refused::show_at`); words only in text that
+can't change get `chosen::Left`'s notice. Delete and Backspace (`deletable`) and Cut call
+`Editor::delete_words`: `Across::delete` takes each line's ranges out back to front (`Styled::delete`), and a space
+beside a range with it, by Word's smart cut, when spaces sit on both sides or the range is at a line's start or
+end; the result is one `Action::Restyle` across lines and pages, nothing left selected. A line emptied this way is
+written as an empty `() Tj` in place of its first show (core's one-style in-place path): it reads and draws as
+nothing, saved too. Lines aren't joined (paragraph editing, NEW-01). `Act::EditObjectText` with words selected is
+`Editor::edit_words` (the moving end's line, its part selected). Shift with the arrows, Home and End is
+`Act::Extend(selection::Toward)` (☰ > Edit > Extend selected text, keys only, not in the palette):
+`Editor::extend_by` moves the selection's moving end by a word, to the word on the line above or below nearest
+across (`editor::across`), or to the line's start or end, reading the next or previous page with words when it
+crosses one; `Tab::reveal` (from `Editor::words_end`) then scrolls the least that brings the end into view, against
+the view kept from the last frame's scroll area (`Tab::last_view`). The read tool's double-click and triple-click
+off a line's box select nothing (`Editor::word_on_line`: within the hit tolerance of the nearest word's line).
+
+The typing says what it does (batch 40's third stage). `page_text::field` draws the outline in two lines (ENH-22):
+the edge in the accent, or `theme::Tone::Caution` when a warning applies, and a 1-point line inside it
+(`outline.shrink(1.0)`) in `theme::halo` of the edge, white or black, whichever contrasts more, so it shows on
+paper of any colour, the accent's own too. `page_text::Style::warn` checks the text's laid-out rect each frame:
+new text (`PageText::ui`) with `page_text::past_edge` (the page's rect, a point's leeway); a line being edited
+(`line_edit_ui`'s `warn`) with that, then the part typed past the line's end (from `line.max.x` plus a point,
+the middle half of the line's height) against the page's other visible lines (`others`). A warning puts a tag
+under the outline's right end, a `Label` so screen readers have it. A line being edited has the inspector rows
+"PDF font" (`editor::pdf_fonts` of the selection, a subset's six-letter tag cut by `editor::untagged`) and "Source
+font" (`editor::source_font`: `part_font` for each part still in a font of the line's own, a part given a chosen
+font skipped, named Preserved, Installed family or Nearest standard; several, Partly preserved when one is
+Preserved, else Mixed; none, Font chosen), with its second value, a standard font standing in, giving the
+Non-standard note when the line's font isn't reusable. The status bar says "Editing one line" while
+`Editor::editing_line`. `Tab::title` (the window's title) and `tab_button` take `Tab::unsaved` (`dirty`,
+`Editor::pending` or typing in forms), so typing marks the tab from the first key. `writing_ui` keeps any box
+being written open on a press in the inspector (`insp` is always `drawn_at` the inspector's place), and a new text
+box (no annotation id, not a note) takes its size from the Text box tool's `box_style` each frame, so it shows
+what it will be added with.
+
+Greyed commands say why (`actions::why_not`). A command's `enabled` is a function of `actions::Ctx`, so `why_not`
+gives a copy of the context each thing a command may wait for, in the order people meet them (a `Fix` each: busy,
+saving, a file, undo, redo, words, typing, a line, a picture, an object, a movable one, a form, a field, the Select
+tool, the Read tool, facing pages), and returns the reason of the first that alone enables the command, else of
+the one that does with all those before it, else `NOT_NOW` ("Not available just now."); without a document, "Open
+a document first." `actions::greyed_tip` (the tooltip, then the reason) is the disabled hover text of the band's
+buttons, its menu buttons (their first item's reason), the commands row and `menu_item`. `font_list::styles` names
+B and I with their keys, and greyed says the family has no such face while the group is enabled, else the group's
+reason. Ctrl+B and Ctrl+I in new text and in a line go through `page_text::switch_styles`: `Styled::switches` says
+whether the switch would change anything, and if not `Refused` marks "<family> has no bold." at the caret.
+`page_text::note` gives `SCRIPT` for a character core's `unwritten_script` (right to left, or shaped) marks,
+outside an emoji sequence. `App::type_over` with a paste and no box to type in sets `Tab::info`, saying where to
+click. Tool commands in menus are `egui::RadioButton`s (`menu_item`), so the tool in use is marked; `band::is_on`
+presses Edit text while the Text tool is on; `inspector::title` is "Form field" while a field has the keyboard
+(`form.focused_field()`), and the app clears the selected words then, after `settle_look`.
 
 Selected objects (ENH-06, batch 25; design `limarepdf-multiselect-design.md`) are one `Selection::Objects`: a page
 and one or more `selection::Selected` (the object's index in `Pdf::page_objects`, its kind, box and a line's text),
@@ -227,7 +295,8 @@ them moved). The read tool's Shift+click toggles a picture or shape too, unless 
 extends. With both tools a drag begins (`page_ui`'s `begins`) only once the pointer is further from the press than
 egui's click distance: egui takes a press held still for 0.8 s for a drag, so it waits in `Editor::still`, and let
 go before it moves it is a click (`still_click`). Ctrl+A is `Act::SelectAllObjects` (the arrow's), sharing the
-key with the read tool's `SelectAllText` by being enabled for another tool, and a page-only key left to a text box. Several held get no handles: each is
+key with `SelectAllText` (the read tool's and the Text tool's, `actions::text_tool`) by being enabled for another
+tool, and a page-only key left to a text box. Several held get no handles: each is
 outlined and a dashed box drawn round them all. Core changes several objects of a page in one rewrite
 (`Pdf::set_object_boxes`, `transform_objects`, `delete_objects`, `set_path_styles`, the one-object functions calls
 of them), the ids as the page is before the call, refusing all if any is refused; `pick_all` maps each operator to
@@ -267,6 +336,22 @@ added, so it costs nothing while that step is kept. `held` counts every copy onc
 links kept in steps, the form's link). When the latest step and a link's copy no step holds are over the budget on
 their own, those links end (`Tab::keep_to_budget`, run after every push and after `put_stamp`) and `Tab::info`
 says so (BUG-36).
+
+While the Watermark or Headers, footers, Bates tool is open and its stamp isn't added yet, the pages show it
+(`tab/previews.rs`, `tab/proofs.rs`; ENH-23, the user's Q2 of batch 40). `Tab::stamping` says which stamps go on
+which pages this pass. While a setting is changing (`inspector::changing`: the pointer held, a text field with
+the keyboard, a pop-up open), the stamp is drawn over the pages, laid out by core's own functions
+(`Watermark::text_start`, `picture_size`, `HeaderFooter::lines`) in Liberation Sans. Once they settle,
+`Tab::sync_proofs` (once a frame, before the pages are drawn) clones the document on the window's thread and
+`Worker::spawn_from` puts the stamps on the copy off it (`stamp_onto`, the code adding uses), then starts a page
+worker of its own on the copy's snapshot. Its drawings of the pages and tiles in view and of the stamped pages'
+thumbnails (`Proof`, keyed as the tab's own) replace the tab's own in `draw_previews` (`proof_page`) and
+`show_thumbs` (`proof_thumb`, while `proof_shown`). A proof is for one `Ask` (the revision, the page colours and
+the stamps with their pages): one for anything else is dropped, never shown, and a copy finished for settings
+passed through is let go; a copy that can't be made (a picture file gone) leaves the drawn previews, logged as
+"stamp preview failed", and adding the stamp says what is wrong. The document, its undo, its revision and whether
+it has unsaved changes never change. Not done: the clone on the window's thread (once per settled change);
+drawing the pages beside those in view ahead; proof drawings are logged as "render" with the tab's own.
 
 Toasts (`App::toasts`, at most one per tab) belong to a tab by its id. One for an undoable change (`Tab::notice`)
 records the tab's `Tab::history` (revision, undo and redo depths) and goes once that moves or typing starts, so its
@@ -673,6 +758,21 @@ replaces the tab and is checked like any opened file.
 In the desktop app, every command is defined once in `crates/limarepdf-gui/src/actions.rs`; the File menu, the commands
 row, the command band, the command palette, the right-click menus, the floating toolbar and the keyboard shortcuts
 are all built from that list.
+
+The floating toolbar (`Tab::floating_toolbar`, ENH-20) shows `actions::toolbar_items`: the right-click menu's
+commands that have icons, or, while a line is edited on the page (`Ctx::line_edit`), Bold, Italic, Cut and Copy.
+`actions::context_items` gives the right-click menu by what is selected: words; objects with any line of page
+text among them (Edit text, Move or resize text, Copy the selected text lines | Cut, Delete the object); other
+objects (Replace image… | Delete the object), so a picture's menu offers nothing greyed that never applies.
+`tab::bar_place` places it from its size as last drawn (kept in egui's data under the bar's id), the selection's
+box on screen (for a line being edited, joined with where its editor was drawn as typed, `Editor::line_area`) and
+the page's text (`Editor::text_boxes`: its lines and words as far as they have been read): above the selection,
+below, right, then left, the first inside the view that covers no text; else just above or below it, whichever
+covers less text (`overlap`), as Word's mini toolbar sits by the selection (the user, 2026-10-28, after the first
+version docked it at the view's top by a column heading with text all round it); at the view's top or bottom edge
+only when neither is in view. Bold and Italic there change what is selected in the line editor
+(`Editor::switch_style` reads it with `page_text::held`, then sets the editor's `refocus`), and `App::act` doesn't
+keep the typing before them as it does for other commands that use the document.
 The menus show an entry's short `label` inside its `submenu`; the palette, which has no submenus, shows the
 submenu's name before it in the weak colour ("Theme › Dark"), names the row `actions::spoken_title` for screen
 readers ("Theme: Dark") and searches the label, submenu and group (`actions::matches`; BUG-34, audit A18). A test
@@ -705,14 +805,52 @@ Edit's Font group is `Editor::font_band`, which moved the text look controls out
 before it the next new text's look (`tfont`, `tsize`, `tcolor`; greyed with nothing to style), the read tool's words
 or several arrow-selected lines (`Chosen`) and one selected or edited line (`Insp`, `line_edit`). The band is drawn
 before the page, as the inspector is, so a press there reaches the line editor first: `band::show` returns the
-places of the groups that change typing (Font, and Clipboard for Copy and Paste), lent to `Editor::keep_typing`, and
-`keeping` treats a press or release there as in the inspector: the line being edited, or a text box being written,
-stays open and takes the keyboard back once settled. `Editor::settle_look`, run each frame from `App::ui` whether or
+places of the groups that change typing (Font, and Clipboard for Paste, Cut and Copy), lent to
+`Editor::keep_typing`, and `keeping` treats a press or release there as in the inspector: the line being edited, or
+a text box being written, stays open and takes the keyboard back once settled. The line editor counts the floating
+bar too (`Editor::bar_rect`): the bar is drawn after the pages, so its place is last frame's. The inspector's place
+is what the app draws of it, joined within each pass by `Editor::inspector_drawn`: the panel with its heading and
+collapse button, the collapsed strip, and the pop-out with its heading (before batch 40's second stage it was the
+scroll area's clip rect, which missed the heading and in the pop-out ran the window's whole width). It and the
+bar's count only when drawn this frame or the last (`editor::drawn_at`), so a click where a hidden inspector was
+ends a line edit as any click away does. With the Text tool, a click on page text edits that line;
+`Editor::adding_text` is false then, so the band, the inspector's heading (`tool_heading`) and the status bar show
+the line, not the next new text. Esc in a box of the band or the inspector while typing is open on the page
+(`App::esc_to_typing`, set at the start of `App::ui` before `App::shortcuts` reads the keys, which then leaves Esc
+alone; `Editor::refocus_typing`; `size_box` ignores Esc) drops what was typed in the box and gives the keyboard
+back to the typing instead of ending it, as a word processor does. Esc while new text is dragged by its outline
+puts it back: egui stops the drag on Esc before `PageText::ui` sees it, so that checks for Esc before the grip
+(`Editor::escape` leaves the text alone). `Editor::settle_look`, run each frame from `App::ui` whether or
 not the inspector is shown, observes the selected line's history and keeps finished changes (`Typed::Words`,
-`commit_insp`) as undo steps. The inspector now shows facts for text (`inspector::facts`, `look_facts`). Copy and
-Paste in the band (`Act::Copy`, `Act::Paste`) for typing set `App::clip` and `Editor::refocus_typing`;
-`App::clipboard`, at the start of each frame, sends egui's `ViewportCommand::RequestCopy` or `RequestPaste` once that box has the keyboard
-again, so the platform's copy or paste lands in it (dropped if the typing ends first).
+`commit_insp`) as undo steps. The inspector now shows facts for text (`inspector::facts`, `look_facts`). Paste, Cut
+and Copy in the band (`Act::Paste`, `Act::Cut`, `Act::Copy`) for typing set `App::clip` and
+`Editor::refocus_typing`; `App::clipboard`, at the start of each frame, sends egui's `ViewportCommand::RequestPaste`,
+`RequestCut` or `RequestCopy` once that box has the keyboard again, so the platform's paste, cut or copy lands in it
+(dropped if the typing ends first). `Act::Cut` uses the document, but with typing open `App::act` doesn't keep the
+typing first (as for Bold in a line). Without typing, Cut copies the read tool's words (as Copy) and then
+`Editor::delete_words`, or copies the arrow's lines (`Ctx::obj_only_text`: every object selected a line of page
+text) and deletes them; where nothing could be taken out it says it copied. Ctrl+X arrives as egui's `Event::Cut`,
+matched in `App::shortcuts` as a page-only key like Copy. A plain key's command there skips a key that a Shift
+command took in the same frame (`shifted`), since egui's `matches_logically` ignores Shift: with words selected,
+Shift+Home extends them and doesn't also go to the first page.
+
+The inspector's number fields (egui's `DragValue`) that show a document's value are built with
+`clamp_existing_to_range(false)`: one shape's outline width, several shapes' width, Position and size, several
+objects' X and Y, an annotation's line width and a text box's border. egui 0.37 clamps a value already outside a
+field's range by default and marks the field changed, so showing a hairline outline (under 0.25 pt) raised it to
+0.25: `insp_change` saw a change, `Editor::pending` made the tab unsaved, and `commit_insp` made it as soon as the
+inspector settled, an undo step nobody asked for; for a filled shape, whose width isn't written, it was made again
+every settled frame, so the revision moved under a quit question ("The document changed while the question was
+open"). A rule under 1 pt tall was likewise made 1 pt tall (moving it down) with the next X typed. A value set by
+dragging or typing is still kept in range. Any new field showing a document value needs the same.
+
+A note or text box open for typing on the page (`Editor::writing`, drawn by `Editor::writing_ui`) closes on Esc,
+Ctrl+Enter or a click on the page outside it (a click on the page's own layer, outside the note's comment box). A
+note, new or existing, and a text box already on the page stay open through clicks in the inspector (ENH-13):
+`keeping` with the inspector's place sets `refocus`, and once settled `page_text::hand_back` gives the keyboard
+back with its undo kept. Its text is typed there alone: while it is open the annotation inspector hides its own
+Comment or Text box, its other changes still apply, and the inspector's Delete drops what was typed with it. A new
+text box ends when it loses the keyboard, unless F6 parked it or a click in the band's typing groups kept it.
 
 The accent (`crates/limarepdf-gui/src/accent.rs`) is read from the desktop: on Linux the XDG desktop portal's
 `org.freedesktop.appearance` `accent-color` (`ReadOne`, red, green and blue from 0 to 1, out of range meaning none)
@@ -803,8 +941,13 @@ control takes the keyboard. Leaving the page, `move_region` notes what had it in
 open (`Parked::Typing`, the id from `Editor::typing_id`, its selection noted by `page_text::held`), which
 `line_edit_ui` and `writing_ui` don't end while it waits, and which `App::keys_to_page` gives back with its
 selection and its undo (`give_back`, `hand_back`); or a form field's text box (`Parked::Field`, by name and
-widget), which keeps its value as it loses the keyboard and `FormUi::focus_field` opens again. A press anywhere, the
-typing getting the keyboard back, or another tab in front ends the wait (start of `App::ui`). Each panel is named
+widget), which keeps its value as it loses the keyboard and `FormUi::focus_field` opens again. A press in the tab
+in front, or its typing getting the keyboard back or ending, ends the wait (start of `App::ui`). Switching tabs
+parks typing the same way: `App::front` holds the id of the tab in front last frame; when another comes to the
+front, the tab sent behind gets `Parked::Typing` for typing still open (`Editor::typing_id`), tabs behind keep what
+is parked, and the tab brought forward gets its parked typing or field back through `keys_to_page`, so a line
+being edited (which `line_edit_ui` would otherwise end, its editor without the keyboard) stays open across the
+switch. Each panel is named
 for screen readers with its role by `regions::name`, which finds the panel's own node up `Ui::stack` (egui 0.37
 gives each panel a node, unnamed); the notices are a scope built with their role and name. A document tab is
 `Role::Tab`, its selected state set on its node (egui's `WidgetInfo::selected` gives a toggle instead).
@@ -829,7 +972,8 @@ takes it; pointer moves are left out, and what is typed is never written, as it 
 length, a key by its name only when it types nothing: Enter, Esc, Tab, Backspace, Delete, Insert and the
 movement keys), `frame built` (end of `App::ui`, with egui's frame number and pass, the log
 then flushed), `page drawn` (`Tab::show_pages`, the first time a page is painted from a drawing at the scale it
-wants rather than a stand-in at another), `render start` and `end` (the worker, per page and tile), `open start`
+wants rather than a stand-in at another), `render start` and `end` (the worker, per page and tile; a stamp
+preview's worker too, ENH-23), `stamp preview failed` (its copy couldn't be made, with why), `open start`
 and `end` (the read thread), `search start`, `search first hit` and `search end` (`Tab::start_search` and
 `take_search`, the query by its length, the matches by their count) and `search index` (the search thread, the
 text kept in bytes), `save start`

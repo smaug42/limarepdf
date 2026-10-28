@@ -152,6 +152,7 @@ impl Styled {
     }
 
     /// Each character's style.
+    #[cfg(test)]
     pub fn styles(&self) -> &[CharStyle] {
         &self.styles
     }
@@ -203,6 +204,15 @@ impl Styled {
         self.text = new.to_string();
         self.next = None;
         true
+    }
+
+    /// Take characters (from, to) out, their styles with them.
+    pub fn delete(&mut self, (a, b): (usize, usize)) {
+        let mut chars: Vec<char> = self.text.chars().collect();
+        chars.drain(a..b);
+        let new: String = chars.into_iter().collect();
+        // The caret where they were tells which characters went, among the same ones.
+        self.sync(&new, Some(a));
     }
 
     /// The text as an editor has it this frame, `new`, styled as [`Self::sync`] would
@@ -286,6 +296,16 @@ impl Styled {
     fn switch(&mut self, sel: (usize, usize), bold: bool) {
         let all = self.looked_at(sel).iter().all(|s| is_on(s.font, bold));
         self.turn(sel, bold, !all);
+    }
+
+    /// Whether Bold (or with `bold` false, Italic) for `sel` changes anything: some
+    /// character it would switch has a family with that face.
+    pub fn switches(&self, sel: (usize, usize), bold: bool) -> bool {
+        let looked = self.looked_at(sel);
+        let on = !looked.iter().all(|s| is_on(s.font, bold));
+        looked.iter().any(|s| {
+            is_on(s.font, bold) != on && page_text::switched(s.font, bold, !bold) != s.font
+        })
     }
 
     /// Bold (or with `bold` false, Italic) turned `on` or off for what a style command
@@ -662,6 +682,30 @@ impl Across {
         let all = self.each().all(|(_, s)| is_on(s.font, bold));
         self.each_range(|t, r| t.turn(r, bold, !all));
     }
+
+    /// Take the selected characters out of each line, as Delete takes a selection out of
+    /// a word processor's text: where that would leave two spaces together, or one at the
+    /// line's start or end, a space beside them goes too (as Word's smart cut has it).
+    /// Nothing is selected after.
+    pub fn delete(&mut self) {
+        for (t, ranges) in &mut self.lines {
+            for (a, b) in std::mem::take(ranges).into_iter().rev() {
+                let chars: Vec<char> = t.text().chars().collect();
+                let space = |i: Option<usize>| {
+                    i.and_then(|i| chars.get(i))
+                        .is_some_and(|c| c.is_whitespace())
+                };
+                let (before, after) = (space(a.checked_sub(1)), space(Some(b)));
+                let range = match (a == 0, b == chars.len()) {
+                    _ if before && after => (a, b + 1),
+                    (true, _) if after => (a, b + 1),
+                    (_, true) if before => (a - 1, b),
+                    _ => (a, b),
+                };
+                t.delete(range);
+            }
+        }
+    }
 }
 
 impl Restyle for Across {
@@ -790,6 +834,16 @@ impl History {
         if self.undo.len() > STEPS {
             self.undo.remove(0);
         }
+    }
+
+    /// Whether there is a step to take back.
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    /// Whether there is a step taken back to redo.
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
     }
 
     /// Take `text` back a step: returns the selection it had then, or `None` with nothing

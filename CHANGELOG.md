@@ -1,5 +1,110 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- While a line is edited on the page, its floating toolbar has Bold, Italic, Cut and Copy for what is selected in
+  the line, as Ctrl+B, Ctrl+I, Ctrl+X and Ctrl+C do there. Clicking them leaves the line open, with the keyboard
+  back in it.
+- Typing over words selected with the read tool replaces them, as in a word processor: their line opens for
+  editing with what you typed in their place, and you go on typing there. Ctrl+V pastes over them the same way.
+  Over words on more than one line nothing is typed, and a note says "Type over words within one line. Paragraph
+  editing is planned."
+- Delete or Backspace removes the words selected with the read tool, across lines and pages, in one step that
+  Undo takes back. As in Word, a space beside them goes too when two would be left together, or one at the start
+  or end of a line. A line left empty is gone; lines aren't joined together.
+- Cut (Ctrl+X) for words selected with the read tool, lines of page text selected with the arrow, and text being
+  typed: in the Edit band's Clipboard group (Paste, Cut, Copy), ☰ > Edit, the right-click menus and the floating
+  toolbars. Where nothing selected can be taken out (invisible recognised text), it copies and says so.
+- Shift with the arrow keys, Home or End extends words selected with the read tool: by a word, to the line above
+  or below, or to the start or end of the line, across pages. The view scrolls just enough to keep the end of the
+  selection in sight. Also in ☰ > Edit > Extend selected text.
+- Edit text with words selected edits their line with those words selected, ready to type over them (over more
+  than one line, the line where the selection ends). It is in the words' right-click menu and floating toolbar
+  too.
+- Greyed buttons and menu items say why on hover, after their names: "Nothing to undo.", "Select some text
+  first.", "Click in a form field first.", "Open a document first." and so on. Bold and Italic in Edit > Font name
+  themselves with their shortcuts; greyed, they say the family in use has no bold or italic face, or why there is
+  nothing to style.
+- While a line is edited on the page, the status bar says "Editing one line", and the inspector shows the line's
+  font as the PDF names it (**PDF font**, without a subset's tag) above its **Source font**.
+- Text typed on the page that runs past the page's edge has its outline in the caution colour, with a tag under it
+  saying "Past the page edge". In a line being edited, typing on past its end into the text beside it says "Over
+  other text" the same way.
+
+### Changed
+
+- Undo and Redo in the commands row act on what you are typing, as Ctrl+Z and Ctrl+Y do, in a line, new text, a
+  note, a text box, a form field or a box of the inspector: the keyboard stays where you are typing, and they are
+  greyed when there is nothing there to undo or redo. Before, Undo kept the typing and then took the whole of it
+  back.
+- The floating toolbar sits where it covers no other text: above the selection, below it or beside it, or else
+  just above or below it, over as little text as it can. It never covers a line being edited or its caret. Before,
+  it always sat just above the selection, over the line above.
+- A note or text box already on the page that you type in stays open while you change it in the inspector (its
+  colour, a text box's size, colours, background and border), as a new note already did; the keyboard comes back
+  to it. Its text is typed on the page only: the inspector's own Comment or Text box is hidden meanwhile.
+- A note, text box or other box you come back to with nothing kept in the document meanwhile can still undo its
+  typing with Ctrl+Z; before, it started with nothing to undo each time. A new note or text box still starts
+  empty.
+- Text you are typing on a page (new text, a line, a note or text box) stays open while another tab is in front,
+  and you go on typing when you come back to its tab. Before, a line being edited ended when you came back.
+- Esc in a box of Edit > Font or the inspector (the font size, say), while typing is open on the page, drops what
+  was typed in the box and goes back to the typing. Before, it ended the line being edited.
+- Esc while dragging new text by its outline puts it back where it was.
+- A double-click or triple-click away from any text selects nothing. Before, it selected the nearest word or line,
+  however far away.
+- Ctrl+A selects all the text on the page with the Text tool too, as with the read tool.
+- With words selected, Shift+Home and Shift+End extend them; they no longer go to the first or last page.
+- A click on the inspector's heading, its collapse button, its collapsed strip or the heading of the inspector
+  popped out leaves a line being edited open, with the keyboard back in the line. Before, it ended the line.
+- The right-click menu of a selected picture or shape has only what applies to it (Replace image…, Delete the
+  object). A line of page text's has Edit text, Move or resize text and Copy the selected text lines, then Cut and
+  Delete the object.
+- A tab says **Unsaved**, and the window's title is marked, from the first key typed on a page, in a form field or
+  in the inspector. Before, they waited until the typing was kept.
+- A new text box stays open while you change its look in the inspector (text size and colour, background,
+  border), showing the size you pick, with the keyboard back in it, as a note already did. Before, a click in the
+  inspector finished it.
+- The inspector's **Source font** for a line being edited follows the typing: Preserved, Installed family or
+  Nearest standard when all of its changed parts are written one way, Partly preserved when some keep their font
+  and some don't, Mixed for other mixes, Font chosen when another font was picked for all of it. Before, it said
+  what the line's first font would do, whatever was typed.
+- The outline round text typed on the page is drawn in two lines, the accent colour with a white or black line
+  inside it (whichever shows more against the accent), so it shows on a page of any colour, the accent's own too.
+- Ctrl+B or Ctrl+I in text being typed, in a family with no bold or italic face, says so at the caret
+  ("… has no bold."). Before, nothing happened.
+- Typing or pasting Hebrew, Arabic, Hindi, Thai or another script written right to left or with joined letters
+  says "LimarePDF can't add this script yet", naming why. Before, the note said only Latin, Greek and Cyrillic
+  characters work, though Chinese, Japanese and Korean do in an installed font.
+- Ctrl+V with nothing being typed and no words selected says where to click to paste. Before, nothing happened.
+- In the menus, the tools (☰ > Tools, Edit > Select) mark the one in use, and Edit text in the band shows pressed
+  while the Text tool is on.
+- A click into a form field heads the inspector **Form field**, and lets go of words selected before, so Edit >
+  Font and Ctrl+B act on the field's text alone.
+- While the Watermark or Headers, footers, Bates tool is open, the pages and their thumbnails show the pages as
+  adding it would make them, once a setting stops changing: a watermark set behind the content shows behind it,
+  where before it was drawn over the content. While a setting is changing (a slider dragged, text typed, a colour
+  picked), it is drawn over the pages, as before, until the drawing for the new settings comes.
+
+### Fixed
+
+- A line clicked with the Text tool to edit it showed the look of the next new text in Edit > Font and the
+  inspector, and changes there went to that new text instead of the line. They show and change the line now.
+- Undo and Redo took the words selected with the read tool away; the words stay selected now when they still read
+  the same.
+- Ctrl+Z and Ctrl+Y did nothing while a button had the keyboard; they undo and redo the document now.
+- A click where the inspector had been, after it was hidden, didn't end a line being edited; it does now, as any
+  click away does.
+- Keys typed in the moment a double-click opened a line for editing were lost; they go into the line now.
+- Selecting a shape whose outline is thinner than a quarter of a point (a hairline, common in PDFs from other
+  programs) changed its outline to a quarter of a point, as a step Undo could take back, without anything being
+  done to it. With such a filled shape selected, quitting said the document had changed while the question was
+  open, every time, until the shape was let go. Selecting it changes nothing now, and the inspector shows its
+  outline width as it is. A rule thinner than a point, moved by its X or Y in the inspector, no longer moves down a
+  little too.
+
 ## [0.11.0] - 2026-10-27
 
 ### Added

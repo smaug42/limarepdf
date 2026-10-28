@@ -123,6 +123,16 @@ fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     Color32::from_rgb(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
 }
 
+/// White or black, whichever stands out more against `c`: a line beside one of colour `c`
+/// shows wherever that one doesn't, on paper of its colour too (ENH-22).
+pub fn halo(c: Color32) -> Color32 {
+    if contrast(c, Color32::WHITE) >= contrast(c, Color32::BLACK) {
+        Color32::WHITE
+    } else {
+        Color32::BLACK
+    }
+}
+
 /// The contrast ratio of two colours, 1 to 21, as the Web Content Accessibility Guidelines
 /// reckon it (4.5 for ordinary text).
 fn contrast(a: Color32, b: Color32) -> f32 {

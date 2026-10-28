@@ -11,6 +11,23 @@ use std::ops::RangeInclusive;
 /// A word: its page and its index in that page's words.
 pub type WordAt = (usize, usize);
 
+/// Where Shift with an arrow, Home or End moves the moving end of words selected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Toward {
+    /// The word before, in reading order.
+    Left,
+    /// The word after.
+    Right,
+    /// The line above, the word nearest across.
+    Up,
+    /// The line below.
+    Down,
+    /// The first word of its line.
+    LineStart,
+    /// The last word of its line.
+    LineEnd,
+}
+
 /// What kind of object is selected, for deciding what can be done with it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ObjKind {

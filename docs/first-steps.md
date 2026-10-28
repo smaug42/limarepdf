@@ -27,8 +27,8 @@ From a terminal, `limarepdf report.pdf --page 3` opens a document at page 3.
    **Pages**, **Forms and sign**, **Protect** and **View**: click one to show its buttons below. Edit has copying,
    the font and finding text; Insert adds text, pictures, headers and watermarks; Review has comments and markup;
    Pages rotates, removes, adds and splits pages; Forms and sign fills forms and signs; Protect redacts and sets
-   passwords; View has zoom, page layout and how the app looks. Hover over a button to see what it does. Greyed
-   buttons marked **Planned** show features still to come.
+   passwords; View has zoom, page layout and how the app looks. Hover over a button to see what it does; a greyed
+   one says why it can't be used just now. Greyed buttons marked **Planned** show features still to come.
 2. **The left side** shows the page thumbnails, and a strip of icons for Pages, Search results, Bookmarks, Comments
    and Digital signatures. Click an icon to open that view; click it again to fold the panel away.
 3. **The middle** shows the pages. Scroll with the mouse wheel or touchpad. Ctrl+scroll, Ctrl+= and Ctrl+- zoom,

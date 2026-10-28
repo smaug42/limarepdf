@@ -72,7 +72,8 @@ pub use display::{display_line, display_text, local_date, local_time, quoted_lis
 pub use doc::{existing, part_file_name, write_file, Info, Pdf, SplitBy};
 pub use edit::{PartFont, PathStyle, Shape, TextEdit, TextPart};
 pub use embed::{
-    bundled_face, emoji_sequence, installed_could_write, liberation, refusal, writable, LIBERATION,
+    bundled_face, emoji_sequence, installed_could_write, liberation, refusal, unwritten_script,
+    writable, LIBERATION,
 };
 pub use fonts::{winansi_byte, Family, FontChoice};
 pub use forms::{Field, FieldKind, FieldValue, Widget};

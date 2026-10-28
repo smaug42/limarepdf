@@ -5,7 +5,7 @@
 use crate::editor::Tool;
 use crate::icon;
 use crate::markup::{self, Mark};
-use crate::selection::{ObjKind, Selection};
+use crate::selection::{ObjKind, Selection, Toward};
 use crate::settings::{Accent, Layout, PageLook};
 use crate::signing::SignPick;
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, ThemePreference};
@@ -42,6 +42,8 @@ pub enum Act {
     /// Copy: what is selected in the text being typed, else the selected words, else the
     /// selected lines of page text.
     Copy,
+    /// Cut: what [`Act::Copy`] copies, copied and then taken out.
+    Cut,
     /// Paste into the text being typed on the page, at its caret.
     Paste,
     SelectAllText,
@@ -95,6 +97,8 @@ pub enum Act {
     DeleteObject,
     /// Move the selected object by this many points (×10 with Shift).
     Nudge(i8, i8),
+    /// Move the moving end of the words selected (Shift with an arrow, Home or End).
+    Extend(Toward),
     /// Cancel what is in progress: new text, a drawing tool, or the selection.
     Escape,
     Find,
@@ -215,6 +219,7 @@ impl Act {
             | Act::FinishSigning
             | Act::RemoveHidden
             | Act::DeleteSelection
+            | Act::Cut
             | Act::MoveText
             | Act::ReplaceImage
             | Act::DeleteObject
@@ -262,6 +267,7 @@ impl Act {
             | Act::PrevPage
             | Act::FirstPage
             | Act::LastPage
+            | Act::Extend(_)
             | Act::Layout(_)
             | Act::ToggleCover
             | Act::ToggleSide
@@ -368,6 +374,8 @@ pub struct Ctx {
     pub obj_text: bool,
     /// Some of the selected objects are lines of visible page text.
     pub obj_lines: bool,
+    /// Every selected object is a line of page text, visible or not.
+    pub obj_only_text: bool,
     /// Pages are selected in the thumbnails.
     pub pages: bool,
     pub tool: Option<Tool>,
@@ -403,6 +411,8 @@ pub struct Ctx {
     /// Text is being typed on the page: new text, a line of page text, a note or a text
     /// box, open whether or not it has the keyboard just now.
     pub typing: bool,
+    /// A line of page text is being edited on the page.
+    pub line_edit: bool,
     /// An annotation is selected, and whether it may be changed.
     pub annot: bool,
     pub annot_locked: bool,
@@ -466,6 +476,11 @@ fn words_idle(c: &Ctx) -> bool {
 fn copyable(c: &Ctx) -> bool {
     c.typing || c.words || lines_among(c)
 }
+/// Something to cut: what is selected in the text being typed, words, or lines of page
+/// text with nothing else selected, whose text Cut copies.
+fn cuttable(c: &Ctx) -> bool {
+    c.typing || ((c.words || (c.object && c.obj_only_text)) && !c.busy)
+}
 fn typing(c: &Ctx) -> bool {
     c.typing
 }
@@ -478,6 +493,9 @@ fn object(c: &Ctx) -> bool {
 /// An object or annotation that can be moved with the current tool.
 fn nudgeable(c: &Ctx) -> bool {
     c.object_moves || c.annot_moves
+}
+fn words_selected(c: &Ctx) -> bool {
+    c.words
 }
 /// Page text selected with the read tool, which moves only with the arrow.
 fn fixed_text(c: &Ctx) -> bool {
@@ -500,13 +518,14 @@ fn arrow_tool(c: &Ctx) -> bool {
     c.doc && c.tool == Some(Tool::Select)
 }
 fn deletable(c: &Ctx) -> bool {
-    c.object || c.pages || (c.annot && !c.annot_locked)
+    c.object || c.pages || (c.annot && !c.annot_locked) || (c.words && !c.busy)
 }
 fn image_object(c: &Ctx) -> bool {
     c.object && c.obj_kind == Some(ObjKind::Image)
 }
+/// The tools that select words: the read tool, and the Text tool with a drag.
 fn text_tool(c: &Ctx) -> bool {
-    c.tool == Some(Tool::Read)
+    matches!(c.tool, Some(Tool::Read | Tool::Text))
 }
 fn any_tool(c: &Ctx) -> bool {
     c.doc && c.tool.is_some()
@@ -515,6 +534,7 @@ fn any_tool(c: &Ctx) -> bool {
 const C: Modifiers = Modifiers::COMMAND;
 const CS: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
 const N: Modifiers = Modifiers::NONE;
+const S: Modifiers = Modifiers::SHIFT;
 const fn k(m: Modifiers, key: Key) -> KeyboardShortcut {
     KeyboardShortcut::new(m, key)
 }
@@ -658,13 +678,24 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::Cut,
+        group: Group::Edit,
+        label: "Cut",
+        icon: icon::SCISSORS,
+        keys: &[k(C, Key::X)],
+        enabled: cuttable,
+        sep: true,
+        hint: "Copy what is selected in the text being typed, else the selected words or \
+               lines of text, and take it out. Undo brings it back.",
+        ..BASE
+    },
+    Action {
         act: Act::Copy,
         group: Group::Edit,
         label: "Copy text",
         icon: icon::COPY,
         keys: &[k(C, Key::C)],
         enabled: copyable,
-        sep: true,
         hint: "Copy what is selected in the text being typed, else the selected words or \
                lines of text.",
         ..BASE
@@ -840,7 +871,7 @@ pub static ACTIONS: &[Action] = &[
         icon: icon::TRASH,
         keys: &[k(N, Key::Delete), k(N, Key::Backspace)],
         enabled: deletable,
-        hint: "The selected object, comment or markup, or the pages selected in the \
+        hint: "The selected words, object, comment or markup, or the pages selected in the \
                thumbnails. Undo brings them back.",
         ..BASE
     },
@@ -914,6 +945,66 @@ pub static ACTIONS: &[Action] = &[
         palette: false,
         hint: "One point; with Shift, ten.",
         submenu: "Move selected object",
+        ..BASE
+    },
+    Action {
+        act: Act::Extend(Toward::Left),
+        group: Group::Edit,
+        label: "To the word before",
+        keys: &[k(S, Key::ArrowLeft)],
+        enabled: words_selected,
+        palette: false,
+        submenu: "Extend selected text",
+        ..BASE
+    },
+    Action {
+        act: Act::Extend(Toward::Right),
+        group: Group::Edit,
+        label: "To the word after",
+        keys: &[k(S, Key::ArrowRight)],
+        enabled: words_selected,
+        palette: false,
+        submenu: "Extend selected text",
+        ..BASE
+    },
+    Action {
+        act: Act::Extend(Toward::Up),
+        group: Group::Edit,
+        label: "To the line above",
+        keys: &[k(S, Key::ArrowUp)],
+        enabled: words_selected,
+        palette: false,
+        submenu: "Extend selected text",
+        ..BASE
+    },
+    Action {
+        act: Act::Extend(Toward::Down),
+        group: Group::Edit,
+        label: "To the line below",
+        keys: &[k(S, Key::ArrowDown)],
+        enabled: words_selected,
+        palette: false,
+        submenu: "Extend selected text",
+        ..BASE
+    },
+    Action {
+        act: Act::Extend(Toward::LineStart),
+        group: Group::Edit,
+        label: "To the start of the line",
+        keys: &[k(S, Key::Home)],
+        enabled: words_selected,
+        palette: false,
+        submenu: "Extend selected text",
+        ..BASE
+    },
+    Action {
+        act: Act::Extend(Toward::LineEnd),
+        group: Group::Edit,
+        label: "To the end of the line",
+        keys: &[k(S, Key::End)],
+        enabled: words_selected,
+        palette: false,
+        submenu: "Extend selected text",
         ..BASE
     },
     // ---------------------------------------------------------------- View
@@ -1746,26 +1837,27 @@ pub fn matches(a: &Action, query: &str) -> bool {
 }
 
 /// What a right-click menu offers, in groups separated by a line, for what is selected
-/// after the click (right-clicking selects what is under the pointer first).
+/// after the click (right-clicking selects what is under the pointer first). Edit text is
+/// offered for words and lines of page text, not for pictures or shapes alone.
 pub fn context_items(sel: &Selection) -> &'static [&'static [Act]] {
     match sel {
         Selection::Words { .. } => &[
-            &[Act::Copy, Act::SelectAllText],
-            &[Act::Bold, Act::Italic],
+            &[Act::Cut, Act::Copy, Act::SelectAllText],
+            &[Act::EditObjectText, Act::Bold, Act::Italic],
             &[Act::Mark(Mark::Highlight)],
             &[Act::MarkRedact],
             &[Act::PrintSelection, Act::SaveSelection],
         ],
         Selection::Annot { .. } => &[&[Act::DeleteSelection]],
-        Selection::Objects { .. } => &[
+        Selection::Objects { held, .. }
+            if (held.iter()).any(|h| matches!(h.kind, ObjKind::Text | ObjKind::HiddenText)) =>
+        {
             &[
-                Act::EditObjectText,
-                Act::MoveText,
-                Act::ReplaceImage,
-                Act::CopyObjectText,
-            ],
-            &[Act::DeleteObject],
-        ],
+                &[Act::EditObjectText, Act::MoveText, Act::CopyObjectText],
+                &[Act::Cut, Act::DeleteObject],
+            ]
+        }
+        Selection::Objects { .. } => &[&[Act::ReplaceImage], &[Act::DeleteObject]],
         Selection::None | Selection::Pages(_) => &[
             &[Act::RotR, Act::RotL, Act::Crop],
             &[Act::Blank, Act::InsertImages, Act::Extract, Act::Delete],
@@ -1800,6 +1892,80 @@ pub fn context_menu(ui: &mut egui::Ui, sel: &Selection, c: &Ctx, acts: &mut Vec<
     }
 }
 
+/// What a greyed command says when nothing else explains it.
+const NOT_NOW: &str = "Not available just now.";
+
+/// Why command `a` can't be used in `c`, for its greyed button or menu item: the first of
+/// the things it may wait for, in the order people meet them, that would let it be used.
+pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
+    if !c.doc {
+        return "Open a document first.";
+    }
+    // What a command may wait for, given, and what it says then.
+    type Fix = (fn(&mut Ctx), &'static str);
+    let fixes: [Fix; 16] = [
+        (
+            |d| d.busy = false,
+            "Waits until the task under way finishes.",
+        ),
+        (|d| d.saving = false, "Waits until the document is saved."),
+        (|d| d.file = true, "Save the document as a file first."),
+        (|d| d.can_undo = true, "Nothing to undo."),
+        (|d| d.can_redo = true, "Nothing to redo."),
+        (|d| d.words = true, "Select some text first."),
+        (
+            |d| d.typing = true,
+            "Click in text being typed, or where new text goes, first.",
+        ),
+        (
+            |d| {
+                (d.object, d.obj_kind) = (true, Some(ObjKind::Text));
+                (d.obj_text, d.obj_lines, d.obj_only_text) = (true, true, true);
+            },
+            "Select a line of text first.",
+        ),
+        (
+            |d| (d.object, d.obj_kind) = (true, Some(ObjKind::Image)),
+            "Select a picture first.",
+        ),
+        (|d| d.object = true, "Select something on the page first."),
+        (
+            |d| (d.object_moves, d.annot_moves) = (true, true),
+            "Select something the tool in use can move first.",
+        ),
+        (|d| d.form = true, "This document has no form fields."),
+        (|d| d.field = true, "Click in a form field first."),
+        (
+            |d| d.tool = Some(Tool::Select),
+            "Choose the Select tool first.",
+        ),
+        (|d| d.tool = Some(Tool::Read), "Choose the Read tool first."),
+        (|d| d.layout = Layout::Facing, "Shown only in facing pages."),
+    ];
+    let helps = |fix: fn(&mut Ctx)| {
+        let mut d = *c;
+        fix(&mut d);
+        (a.enabled)(&d)
+    };
+    if let Some((_, why)) = fixes.iter().find(|(fix, _)| helps(*fix)) {
+        return why;
+    }
+    // It waits for several: the one that, with those before it, lets it be used.
+    let mut d = *c;
+    for (fix, why) in fixes {
+        fix(&mut d);
+        if (a.enabled)(&d) {
+            return why;
+        }
+    }
+    NOT_NOW
+}
+
+/// Tooltip for a greyed command: its [`tooltip`], then why it can't be used in `c`.
+pub fn greyed_tip(ctx: &egui::Context, a: &Action, c: &Ctx) -> String {
+    format!("{}\n{}", tooltip(ctx, a), why_not(c, a))
+}
+
 /// Tooltip for a command: its label and first shortcut, then its hint on a line of its own.
 pub fn tooltip(ctx: &egui::Context, a: &Action) -> String {
     let name = match a.keys.first() {
@@ -1814,9 +1980,16 @@ pub fn tooltip(ctx: &egui::Context, a: &Action) -> String {
 }
 
 /// The floating toolbar's buttons: the right-click menu's commands that are
-/// available now and have an icon, in groups.
+/// available now and have an icon, in groups. While a line is edited on the page, Bold,
+/// Italic, Cut and Copy for what is selected in it, as the keys do there (ENH-20).
 pub fn toolbar_items(sel: &Selection, c: &Ctx) -> Vec<Vec<&'static Action>> {
-    context_items(sel)
+    const LINE_EDIT: &[&[Act]] = &[&[Act::Bold, Act::Italic], &[Act::Cut, Act::Copy]];
+    let items = if c.line_edit {
+        LINE_EDIT
+    } else {
+        context_items(sel)
+    };
+    items
         .iter()
         .map(|g| {
             let usable = |a: &&Action| (a.enabled)(c) && !a.icon.is_empty();
@@ -1875,12 +2048,17 @@ pub fn context_buttons(
 /// A click queues the command in `acts`.
 pub fn menu_item(ui: &mut egui::Ui, a: &Action, c: &Ctx, acts: &mut Vec<Act>) {
     let enabled = (a.enabled)(c);
-    let r = match a.checked {
-        Some(on) => {
+    let r = match (a.checked, a.act) {
+        (Some(on), _) => {
             let mut v = on(c);
             ui.add_enabled(enabled, egui::Checkbox::new(&mut v, a.label))
         }
-        None => {
+        // A tool: one of a set, the one in use ticked.
+        (None, Act::Tool(t)) => {
+            let on = c.tool == Some(t);
+            ui.add_enabled(enabled, egui::RadioButton::new(on, a.label))
+        }
+        (None, _) => {
             let key = a.keys.first().map(|k| ui.ctx().format_shortcut(k));
             let b = egui::Button::new(a.label).shortcut_text(key.unwrap_or_default());
             ui.add_enabled(enabled, b)
@@ -1891,6 +2069,7 @@ pub fn menu_item(ui: &mut egui::Ui, a: &Action, c: &Ctx, acts: &mut Vec<Act>) {
     } else {
         r.on_hover_text(a.hint)
     };
+    let r = r.on_disabled_hover_text(why_not(c, a));
     if r.clicked() {
         acts.push(a.act);
         if a.checked.is_none() {
@@ -1902,6 +2081,78 @@ pub fn menu_item(ui: &mut egui::Ui, a: &Action, c: &Ctx, acts: &mut Vec<Act>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A greyed command says why on hover: the first thing it waits for, in the order
+    /// people meet them, and never only that it can't be used (for the usual states: no
+    /// document; one open with each tool and nothing selected; words, a line or a picture
+    /// selected; busy; saved).
+    #[test]
+    fn greyed_commands_say_why() {
+        let open = Ctx {
+            doc: true,
+            tool: Some(Tool::Read),
+            ..Ctx::default()
+        };
+        let why = |a: Act, c: &Ctx| {
+            assert!(!(get(a).enabled)(c), "{a:?} can be used");
+            why_not(c, get(a))
+        };
+        assert_eq!(why(Act::Bold, &Ctx::default()), "Open a document first.");
+        assert_eq!(why(Act::Bold, &open), "Select some text first.");
+        assert_eq!(why(Act::Undo, &open), "Nothing to undo.");
+        assert_eq!(why(Act::Redo, &open), "Nothing to redo.");
+        assert_eq!(why(Act::Copy, &open), "Select some text first.");
+        let paste = why(Act::Paste, &open);
+        assert_eq!(
+            paste,
+            "Click in text being typed, or where new text goes, first."
+        );
+        let busy = Ctx {
+            words: true,
+            busy: true,
+            ..open
+        };
+        assert_eq!(
+            why(Act::Bold, &busy),
+            "Waits until the task under way finishes."
+        );
+        let line = Ctx {
+            object: true,
+            obj_kind: Some(ObjKind::Text),
+            obj_text: true,
+            obj_lines: true,
+            obj_only_text: true,
+            ..open
+        };
+        assert_eq!(why(Act::ReplaceImage, &line), "Select a picture first.");
+        // Every greyed command in those states has a reason of its own.
+        let tools = [Tool::Read, Tool::Select, Tool::Text, Tool::Rect, Tool::Note];
+        let mut states: Vec<Ctx> = tools
+            .iter()
+            .map(|&t| Ctx {
+                tool: Some(t),
+                ..open
+            })
+            .collect();
+        states.extend([Ctx::default(), busy, line]);
+        states.push(Ctx {
+            words: true,
+            ..open
+        });
+        states.push(Ctx {
+            obj_kind: Some(ObjKind::Image),
+            obj_text: false,
+            obj_lines: false,
+            obj_only_text: false,
+            ..line
+        });
+        for c in &states {
+            for a in ACTIONS.iter().filter(|a| !(a.enabled)(c)) {
+                let why = why_not(c, a);
+                assert!(!why.is_empty() && why != NOT_NOW, "{:?}: {why:?}", a.act);
+            }
+        }
+    }
 
     #[test]
     fn every_act_is_listed_once() {
@@ -1970,6 +2221,87 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Words' right-click menu and floating bar offer Cut and Edit text (their line, with
+    /// them selected); a line of page text's offers both; a picture's offers neither, nor
+    /// do pictures and lines together offer Cut, which copies only text. A line being
+    /// edited has Cut and Copy for what is selected in it.
+    #[test]
+    fn selections_offer_cut_and_edit_text_where_they_apply() {
+        let held = |kinds: &[ObjKind]| Selection::Objects {
+            page: 0,
+            held: (kinds.iter().enumerate())
+                .map(|(id, &kind)| crate::selection::Selected {
+                    id,
+                    kind,
+                    bbox: [0.0; 4],
+                    text: None,
+                })
+                .collect(),
+            loose: false,
+        };
+        let has = |sel: &Selection, c: &Ctx, act: Act| {
+            let menu = context_items(sel).iter().flat_map(|g| g.iter());
+            let in_menu = menu.filter(|&&a| (get(a).enabled)(c)).any(|&a| a == act);
+            let bar = toolbar_items(sel, c).into_iter().flatten();
+            let in_bar = bar.map(|a| a.act).any(|a| a == act);
+            (in_menu, in_bar)
+        };
+        let base = Ctx {
+            doc: true,
+            tool: Some(Tool::Read),
+            ..Default::default()
+        };
+        let words = Ctx {
+            words: true,
+            ..base
+        };
+        let sel = Selection::word((0, 0));
+        assert_eq!(has(&sel, &words, Act::Cut), (true, true), "words: Cut");
+        let edit = has(&sel, &words, Act::EditObjectText);
+        assert_eq!(edit, (true, true), "words: Edit");
+        let line = Ctx {
+            object: true,
+            obj_kind: Some(ObjKind::Text),
+            obj_text: true,
+            obj_lines: true,
+            obj_only_text: true,
+            ..base
+        };
+        let sel = held(&[ObjKind::Text]);
+        assert_eq!(has(&sel, &line, Act::Cut), (true, true), "a line: Cut");
+        let edit = has(&sel, &line, Act::EditObjectText);
+        assert_eq!(edit, (true, true), "a line: Edit");
+        let picture = Ctx {
+            object: true,
+            obj_kind: Some(ObjKind::Image),
+            ..base
+        };
+        let sel = held(&[ObjKind::Image]);
+        let cut = has(&sel, &picture, Act::Cut);
+        assert_eq!(cut, (false, false), "a picture: Cut");
+        let edit = has(&sel, &picture, Act::EditObjectText);
+        assert_eq!(edit, (false, false), "a picture: Edit");
+        let both = Ctx {
+            object: true,
+            obj_text: true,
+            obj_lines: true,
+            ..base
+        };
+        let sel = held(&[ObjKind::Text, ObjKind::Image]);
+        assert_eq!(has(&sel, &both, Act::Cut), (false, false), "both: Cut");
+        let editing = Ctx {
+            typing: true,
+            line_edit: true,
+            ..line
+        };
+        let sel = held(&[ObjKind::Text]);
+        let bar: Vec<Act> = (toolbar_items(&sel, &editing).into_iter().flatten())
+            .map(|a| a.act)
+            .collect();
+        let both = bar.contains(&Act::Cut) && bar.contains(&Act::Copy);
+        assert!(both, "{bar:?}");
     }
 
     /// Every command has a route in the menu, so nothing is reachable only by an icon, a

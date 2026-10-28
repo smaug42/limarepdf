@@ -60,9 +60,11 @@ them.
 
 ## Change it after adding
 
-While the Watermark or Headers, footers, Bates tool is open, the pages in its Pages box show what it describes as
-you set it, drawn over them. Nothing is added to the document until you press Add to pages, and closing the tool
-before then adds nothing.
+While the Watermark or Headers, footers, Bates tool is open, the pages in its Pages box, and their thumbnails, show
+what it describes as you set it. Once you stop changing a setting (let go of a slider, leave the box you typed in,
+close the colour picker), they show the pages as adding it would make them: a watermark set behind the content
+shows behind it. While you change one, and for a moment after, it is drawn over the pages. Nothing is added to the
+document until you press Add to pages, and closing the tool before then adds nothing.
 
 After that, the tool says "Changes update the watermark just added" (or the headers and footers): each change
 updates what you added instead of adding a second copy, one undo step each (a colour when its picker closes). Undo
@@ -83,8 +85,9 @@ Header, footer, Bates and watermark text is written in Helvetica, and characters
 Vietnamese, Greek, Cyrillic and so on) in its Liberation Sans face, embedded in the file. Other scripts (Chinese,
 Hebrew, Arabic and so on) and emoji can't be typed or pasted: a note at the caret says so.
 
-While one of these tools is open, the pages show its text in Liberation Sans, which has Helvetica's widths, over the
-content even when it is set to go behind it. Once added, the pages show it as written.
+While you change a setting in one of these tools, the pages show its text drawn in Liberation Sans, which has
+Helvetica's widths, over the content even when it is set to go behind it. Once the setting stops changing, and once
+added, the pages show it as written.
 
 ## Stamps
 
