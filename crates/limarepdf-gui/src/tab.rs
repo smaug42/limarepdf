@@ -64,7 +64,7 @@ const MAX_ZOOM: f32 = 64.0;
 /// drawn whole at this size, with tiles at full size over the part in view.
 const WHOLE_MAX: f32 = 4096.0;
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum Side {
     Pages,
     Search,
@@ -307,6 +307,8 @@ pub struct Tab {
     last_line: Option<((usize, usize), u64, usize, f64)>,
     pub side: Side,
     pub query: String,
+    /// Put the keyboard in Search results' field when next drawn (Find, Ctrl+F).
+    pub focus_query: bool,
     /// The search's matches so far, in page order, for the query and the document as they
     /// are (see [`Tab::poll_search`]).
     pub hits: Vec<SearchHit>,
@@ -474,6 +476,7 @@ impl Tab {
             last_line: None,
             side: Side::Pages,
             query: String::new(),
+            focus_query: false,
             hits: Vec::new(),
             hit_idx: 0,
             search: Search::new(ctx),
@@ -1496,7 +1499,7 @@ impl Tab {
             Stamp::HeaderFooter => "The headers and footers just added",
         };
         self.info = Some(format!(
-            "{what} can't be changed from its section any more: this document is too \
+            "{what} can't be changed from its tool any more: this document is too \
              large to keep the copy that needs. What was added stays on the pages"
         ));
     }
@@ -2222,10 +2225,14 @@ impl Tab {
         use egui::text::{LayoutJob, TextFormat, TextWrapping};
         let r = ui.add(
             egui::TextEdit::singleline(&mut self.query)
+                .hint_text("Search")
                 .desired_width(f32::INFINITY)
                 .return_key(None),
         );
         crate::dialogs::set_name(&r, "Search for");
+        if std::mem::take(&mut self.focus_query) {
+            r.request_focus();
+        }
         self.search_keys(ui, &r);
         // A query just typed, here or in the top bar, takes the old matches away before
         // they are drawn.
@@ -2631,6 +2638,7 @@ impl Tab {
         c.annot_locked = annot.is_some_and(|a| a.locked());
         c.annot_moves = self.ed.annot_moves();
         c.object_moves = self.ed.object_moves();
+        c.typing = self.ed.typing_id().is_some();
     }
 
     /// A right-click menu for what is selected, its commands queued in `requested`. The
@@ -3136,13 +3144,17 @@ impl Tab {
             .id_salt(("thumbs", self.id))
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                // Cards, as the workspace has them: the page and its number, outlined.
+                let dark = ui.visuals().dark_mode;
+                let tw = THUMB_W.min(ui.available_width() - 18.0).max(24.0);
                 for i in 0..self.sizes.len() {
                     let (w, h) = self.sizes[i];
-                    let th = THUMB_W * h / w.max(1.0);
+                    let th = tw * h / w.max(1.0);
                     let (rect, resp) = ui.allocate_exact_size(
-                        Vec2::new(ui.available_width(), th + 22.0),
+                        Vec2::new(ui.available_width(), th + 30.0),
                         Sense::click_and_drag(),
                     );
+                    ui.add_space(8.0);
                     let name = format!("Page {}", self.page_name(i));
                     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &name));
                     rects.push(rect);
@@ -3163,19 +3175,24 @@ impl Tab {
                         continue;
                     }
                     let img = Rect::from_center_size(
-                        Pos2::new(rect.center().x, rect.min.y + 4.0 + th / 2.0),
-                        Vec2::new(THUMB_W, th),
+                        Pos2::new(rect.center().x, rect.min.y + 8.0 + th / 2.0),
+                        Vec2::new(tw, th),
                     );
+                    // Selected pages tinted, and they and the page being read edged in the
+                    // accent.
                     let sel = self.ed.selection.pages().is_some_and(|s| s.contains(&i));
-                    if sel || i == self.current {
-                        let c = if sel {
-                            ui.visuals().selection.bg_fill
-                        } else {
-                            ui.visuals().faint_bg_color
-                        };
-                        ui.painter().rect_filled(rect, 4.0, c);
-                    }
-                    ui.painter().rect_filled(img, 0.0, paper);
+                    let (fill, edge) = match (sel, i == self.current) {
+                        (true, _) => (theme::accent_bg(dark), theme::accent(dark)),
+                        (false, true) => (theme::surface(dark), theme::accent(dark)),
+                        (false, false) => (theme::surface(dark), theme::border(dark)),
+                    };
+                    let p = ui.painter();
+                    p.rect_filled(rect, 5.0, fill);
+                    let card = egui::Stroke::new(1.0, edge);
+                    p.rect_stroke(rect, 5.0, card, egui::StrokeKind::Inside);
+                    p.rect_filled(img, 0.0, paper);
+                    let outline = egui::Stroke::new(1.0, theme::border(dark));
+                    p.rect_stroke(img, 0.0, outline, egui::StrokeKind::Outside);
                     match self.thumbs.get(&i) {
                         Some(t) => {
                             ui.painter().image(
@@ -3202,10 +3219,10 @@ impl Tab {
                         }
                     }
                     ui.painter().text(
-                        Pos2::new(rect.center().x, rect.max.y - 9.0),
+                        Pos2::new(rect.center().x, rect.max.y - 11.0),
                         egui::Align2::CENTER_CENTER,
                         self.page_name(i),
-                        egui::FontId::proportional(12.0),
+                        egui::FontId::proportional(14.0),
                         ui.visuals().text_color(),
                     );
                     if resp.clicked() {

@@ -6,16 +6,19 @@ Protect a document with a password, open a protected one, or take the protection
 
 ## Protect a document
 
-1. Clear any selection (Esc), and open **Password security** in the inspector (or choose ☰ > Document > Password
-   security…).
+1. Choose **Protect > Passwords** (or ☰ > Document > Password security…). **Password security** opens in the
+   inspector.
 2. Tick **Protect with passwords when saving**.
 3. Type an **Open** password, which is needed to open the document, a **Permissions** password, which is needed to
    change what others may do with it, or both.
 4. Choose the **Encryption**: 256-bit AES (the default) unless an old PDF reader needs another. Under **Allow**,
    untick what others may not do.
-5. Press **Apply**, then save. Save As (Ctrl+Shift+S) keeps the original unprotected.
+5. Press **Apply**, then close the tool with the × at the top of the inspector, and save. Save As (Ctrl+Shift+S)
+   keeps the original unprotected.
 
-The passwords take effect when you save. Applying them can be undone with Ctrl+Z, like any other change.
+The passwords take effect when you save. Applying them can be undone with Ctrl+Z, like any other change. With
+nothing selected, the inspector's **Security** line says how the document will be saved: None, Open password or
+Permissions password; for a protected document you opened, Removed on save, until you set a password again.
 
 The encryptions are RC4 40-bit and 128-bit (both weak, for old readers only), and AES 128-bit and 256-bit. What
 others may be allowed to do: printing, high-resolution printing, modifying, copying content, commenting, filling

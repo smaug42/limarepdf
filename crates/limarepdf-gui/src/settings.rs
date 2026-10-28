@@ -15,6 +15,7 @@ use eframe::egui::ThemePreference;
 use limarepdf_core::page_colours::PageColours;
 pub use limarepdf_core::settings_dir;
 use limarepdf_core::{OpenLayout, StampColor};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Writes one of LimarePDF's own files (settings, saved signatures, recent files), making
@@ -95,6 +96,15 @@ impl Layout {
     }
 }
 
+/// The accent colour: the desktop's where it says one, else LimarePDF's teal; or always
+/// LimarePDF's.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Accent {
+    #[default]
+    Desktop,
+    LimarePdf,
+}
+
 /// How pages are coloured on screen: a fixed mode, or Dark while the app's theme is dark.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PageLook {
@@ -149,6 +159,9 @@ pub const STAMP_WORDINGS: usize = 5;
 pub const WINDOW_DEFAULT: [f32; 2] = [1200.0, 850.0];
 pub const WINDOW_MIN: [f32; 2] = [640.0, 420.0];
 pub const WINDOW_MAX: [f32; 2] = [3840.0, 2160.0];
+/// The panel widths kept, in points: from the narrowest a panel goes
+/// ([`crate::panels::NARROWEST`]) to half the widest window.
+const PANEL_WIDTHS: std::ops::RangeInclusive<f32> = crate::panels::NARROWEST..=WINDOW_MAX[0] / 2.0;
 
 /// A window size within [`WINDOW_MIN`] and [`WINDOW_MAX`], in whole points; `None` when it
 /// isn't a real size (not a number, or under 100 points either way, as when minimized).
@@ -192,6 +205,10 @@ pub struct Settings {
     /// unless closed). A narrow window may fold them away for now without changing this.
     pub navigation_panel: bool,
     pub inspector_panel: bool,
+    /// The widths the user gave the inspector and the side panel's views by moving their
+    /// edges, in points, by the app's id for the panel ("inspector", "side-comments"); the
+    /// others start at the workspace's widths (ENH-08).
+    pub panel_widths: BTreeMap<String, f32>,
     /// The selection's controls are in the inspector instead of a bar floating by the
     /// selection.
     pub controls_docked: bool,
@@ -202,6 +219,12 @@ pub struct Settings {
     /// Pages are called by the document's page labels, where it has them, rather than by
     /// their numbers (on unless turned off).
     pub page_labels: bool,
+    /// Features planned but not built show, greyed, where they will be (ENH-41; on unless
+    /// turned off).
+    pub show_planned: bool,
+    /// The band's commands on one row, as icons (their names on hover); off unless chosen.
+    pub compact_commands: bool,
+    pub accent: Accent,
     /// The window's size in points when it isn't maximized, and whether it was maximized,
     /// when the app last closed.
     pub window: [f32; 2],
@@ -263,10 +286,14 @@ impl Settings {
             recovery: true,
             navigation_panel: true,
             inspector_panel: true,
+            panel_widths: BTreeMap::new(),
             controls_docked: false,
             keep_tools: Vec::new(),
             fields_shown: true,
             page_labels: true,
+            show_planned: true,
+            compact_commands: false,
+            accent: Accent::Desktop,
             window: WINDOW_DEFAULT,
             window_maximized: false,
             file,
@@ -320,6 +347,13 @@ impl Settings {
                 "recovery_copies" => s.recovery = value != "false",
                 "navigation_panel" => s.navigation_panel = value != "closed",
                 "inspector_panel" => s.inspector_panel = value != "closed",
+                "panel_width" => {
+                    let width = value.split_once(' ').and_then(|(panel, w)| {
+                        let w = w.trim().parse::<f32>().ok()?;
+                        (PANEL_WIDTHS.contains(&w)).then(|| (panel.to_string(), w.round()))
+                    });
+                    s.panel_widths.extend(width);
+                }
                 "selection_controls" => s.controls_docked = value == "docked",
                 "keep_tool_active" => {
                     s.keep_tools.clear();
@@ -331,6 +365,14 @@ impl Settings {
                 }
                 "form_fields" => s.fields_shown = value != "plain",
                 "page_names" => s.page_labels = value != "numbers",
+                "planned_features" => s.show_planned = value != "hidden",
+                "commands" => s.compact_commands = value == "compact",
+                "accent_colour" => {
+                    s.accent = match value {
+                        "limarepdf" => Accent::LimarePdf,
+                        _ => Accent::Desktop,
+                    }
+                }
                 "window" => {
                     let size = value.split_once('x').and_then(|(w, h)| {
                         window_size([w.trim().parse().ok()?, h.trim().parse().ok()?])
@@ -370,6 +412,17 @@ impl Settings {
         if let Some(size) = size.filter(|_| !maximized).and_then(window_size) {
             self.window = size;
         }
+    }
+
+    /// Keeps the width the user gave panel `panel` (in points, whole), and saves it when
+    /// it changed.
+    pub fn keep_width(&mut self, panel: &str, width: f32) {
+        let width = width.round();
+        if !PANEL_WIDTHS.contains(&width) || self.panel_widths.get(panel) == Some(&width) {
+            return;
+        }
+        self.panel_widths.insert(panel.to_string(), width);
+        self.save();
     }
 
     /// What couldn't be saved last, said once taken.
@@ -446,10 +499,25 @@ impl Settings {
                 "numbers"
             }
         );
+        let planned = if self.show_planned { "shown" } else { "hidden" };
+        text += &format!("planned_features = {planned}\n");
+        let commands = if self.compact_commands {
+            "compact"
+        } else {
+            "full"
+        };
+        let accent = match self.accent {
+            Accent::Desktop => "desktop",
+            Accent::LimarePdf => "limarepdf",
+        };
+        text += &format!("commands = {commands}\naccent_colour = {accent}\n");
         text += &format!(
             "window = {} x {}\nwindow_maximized = {}\n",
             self.window[0], self.window[1], self.window_maximized
         );
+        for (panel, width) in &self.panel_widths {
+            text += &format!("panel_width = {panel} {width}\n");
+        }
         for p in &self.stamp_pictures {
             text += &format!("stamp_picture = {}\n", p.display());
         }
@@ -615,6 +683,38 @@ mod tests {
         assert!(Settings::from_file(Some(f)).page_labels);
     }
 
+    /// ENH-41: planned features show unless turned off, and the choice is kept.
+    #[test]
+    fn planned_features_shown_or_hidden_are_remembered() {
+        let f = file("planned");
+        let mut s = Settings::from_file(Some(f.clone()));
+        assert!(s.show_planned);
+        s.show_planned = false;
+        s.save();
+        assert!(!Settings::from_file(Some(f.clone())).show_planned);
+        std::fs::write(&f, "planned_features = walrus\n").unwrap();
+        assert!(Settings::from_file(Some(f)).show_planned);
+    }
+
+    /// The band's commands full unless made compact, and the desktop's accent unless
+    /// LimarePDF's is chosen; both kept.
+    #[test]
+    fn compact_commands_and_the_accent_are_remembered() {
+        let f = file("commands");
+        let mut s = Settings::from_file(Some(f.clone()));
+        assert!(!s.compact_commands);
+        assert_eq!(s.accent, Accent::Desktop);
+        (s.compact_commands, s.accent) = (true, Accent::LimarePdf);
+        s.save();
+        let s = Settings::from_file(Some(f.clone()));
+        assert!(s.compact_commands);
+        assert_eq!(s.accent, Accent::LimarePdf);
+        std::fs::write(&f, "commands = walrus\naccent_colour = walrus\n").unwrap();
+        let s = Settings::from_file(Some(f));
+        assert!(!s.compact_commands);
+        assert_eq!(s.accent, Accent::Desktop);
+    }
+
     #[test]
     fn pinned_tools_and_field_highlights_are_remembered() {
         let f = file("pins");
@@ -673,6 +773,29 @@ mod tests {
         s.keep_window(Some([0.0, 0.0]), false);
         s.keep_window(None, false);
         assert_eq!((s.window, s.window_maximized), ([1400.0, 900.0], false));
+    }
+
+    /// ENH-08 (batch 39): the widths given to the inspector and the side panel's views are
+    /// saved and read back, each by its panel; widths that aren't real are left out.
+    #[test]
+    fn panel_widths_are_saved_and_read_back() {
+        let f = file("panel-widths");
+        let s = Settings::from_file(Some(f.clone()));
+        assert!(s.panel_widths.is_empty());
+        let mut s = Settings::from_file(Some(f.clone()));
+        s.keep_width("inspector", 312.4);
+        s.keep_width("side-comments", 260.0);
+        let s = Settings::from_file(Some(f.clone()));
+        let widths: Vec<(&str, f32)> = (s.panel_widths.iter())
+            .map(|(k, v)| (k.as_str(), *v))
+            .collect();
+        assert_eq!(widths, [("inspector", 312.0), ("side-comments", 260.0)]);
+        let lines = "panel_width = side 12\npanel_width = side-search wide\n\
+                     panel_width = inspector NaN\npanel_width = side-bookmarks 180\n";
+        std::fs::write(&f, lines).unwrap();
+        let s = Settings::from_file(Some(f));
+        let widths: Vec<&str> = s.panel_widths.keys().map(String::as_str).collect();
+        assert_eq!(widths, ["side-bookmarks"]);
     }
 
     #[test]

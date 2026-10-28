@@ -346,7 +346,9 @@ colour; and `typing_fonts.rs` draws typed text from the family's file with egui'
 
 The inspector's heading is `inspector::title`: for the editor's section, `Editor::heading` (a selected comment,
 else the tool's options, else the selected object; the object's own heading is drawn again in the panel only below a
-tool's options). An object's X, Y, width and height are in a `CollapsingHeader` with a fixed id
+tool's options; `Editor::object_heading` calls a line of page text "Selected text", as selected words are, since
+batch 39); else the task open (`Section::title`), else "Selected page", "Selected pages" or "Document" (see the
+workspace's inspector below). An object's X, Y, width and height are in a `CollapsingHeader` with a fixed id
 (`position-and-size`), so it starts closed and keeps its state from one object to the next; one field a row, as
 the section's indent leaves no room for two in the default width (two widened the panel). A line of page text has no
 text box in the inspector: its words are typed only on the page (`line_edit_ui`), which the arrow opens too (a
@@ -668,12 +670,122 @@ field or a dragged box); the app then gathers what to sign: a document opened wi
 (`SigState`) and signs those plus its edits, any other document is written out in full first. The signed file
 replaces the tab and is checked like any opened file.
 
-In the desktop app, every command is defined once in `crates/limarepdf-gui/src/actions.rs`; the menu, the top bar, the
-command palette, the right-click menus, the floating toolbar and the keyboard shortcuts are all built from that list.
+In the desktop app, every command is defined once in `crates/limarepdf-gui/src/actions.rs`; the File menu, the commands
+row, the command band, the command palette, the right-click menus, the floating toolbar and the keyboard shortcuts
+are all built from that list.
 The menus show an entry's short `label` inside its `submenu`; the palette, which has no submenus, shows the
 submenu's name before it in the weak colour ("Theme › Dark"), names the row `actions::spoken_title` for screen
 readers ("Theme: Dark") and searches the label, submenu and group (`actions::matches`; BUG-34, audit A18). A test
 keeps every palette entry's name its own.
+
+The workspace (batch 39, ENH-38 and ENH-41; build plan 2.2's approved mockup, adjusted by the user's checks) is
+drawn by `App::ui` as panels from the top: the tabs (`tab_button`, the line under them broken under the tab shown),
+then the commands panel: one row of the document's commands (`quick`, icons named in words; the File menu,
+`App::menu`, lists File's commands then one submenu per `Group`, so every command is in it, with `band::FILE_PLANNED`
+greyed in place), the band's names (`band::names`) and, at the right in reading order (`dialogs::reading_order`, its
+width from the last frame in `App::commands_right`), Print and `band::compact_toggle`; under it `band::show`.
+`crates/limarepdf-gui/src/band.rs` holds the seven bands as static tables of groups of `Item`s: `Button` (a
+registered `Act` with the band's own short label and icon, and a `menu` of related `Act`s behind a caret; no `act`
+makes a button that only opens its menu), `Font`, `Sign` and `Marks` (drawn by the editor, `signing::menu_ui` and
+`markup::menu`) and `Planned` (a label, icon, the build plan's item and what it will do). A button's enabled state,
+tooltip and shortcut come from the registry; it shows pressed while its command is on or a tool in its menu is in
+use, not for a menu's ticked choices. Planned items are disabled buttons named "… — Planned" (no Tab stop, never
+dispatched), hidden with `Settings::show_planned` (`Act::TogglePlanned`). `planned_button` draws one with
+`Button::atom_ui`: its tag (thin spaces either side) carries an atom id (`tag_id`), whose laid-out rect
+`outline_tag` outlines with a dashed line, as the mockup's chip; in Compact commands there is no tag. Each group's width, open or folded, is kept
+in egui's memory from the last frame; `band::fold_level` folds them in `band::fold_order` (groups of planned
+features alone first, left out rather than folded; then from the right) with a 12-point margin before one comes back,
+a folded group being a menu button with its name holding its controls. `Parts::compact` (`Settings::compact_commands`,
+`Act::ToggleCompact`, or a window under `SHORT_HEIGHT`) draws icons alone and the Font group on one row (`controls`
+gives the row's height). Tests: `band`'s own (every button a registered command; every command placed in a band, the
+File menu, a right-click menu or a key; planned items named for plan items; folding), and the app's band tests.
+
+Edit's Font group is `Editor::font_band`, which moved the text look controls out of the inspector: the same
+`styles_ui` acts on new text being typed (`PageText`, with `page_text::held`'s selection, `refocus` after a change),
+before it the next new text's look (`tfont`, `tsize`, `tcolor`; greyed with nothing to style), the read tool's words
+or several arrow-selected lines (`Chosen`) and one selected or edited line (`Insp`, `line_edit`). The band is drawn
+before the page, as the inspector is, so a press there reaches the line editor first: `band::show` returns the
+places of the groups that change typing (Font, and Clipboard for Copy and Paste), lent to `Editor::keep_typing`, and
+`keeping` treats a press or release there as in the inspector: the line being edited, or a text box being written,
+stays open and takes the keyboard back once settled. `Editor::settle_look`, run each frame from `App::ui` whether or
+not the inspector is shown, observes the selected line's history and keeps finished changes (`Typed::Words`,
+`commit_insp`) as undo steps. The inspector now shows facts for text (`inspector::facts`, `look_facts`). Copy and
+Paste in the band (`Act::Copy`, `Act::Paste`) for typing set `App::clip` and `Editor::refocus_typing`;
+`App::clipboard`, at the start of each frame, sends egui's `ViewportCommand::RequestCopy` or `RequestPaste` once that box has the keyboard
+again, so the platform's copy or paste lands in it (dropped if the typing ends first).
+
+The accent (`crates/limarepdf-gui/src/accent.rs`) is read from the desktop: on Linux the XDG desktop portal's
+`org.freedesktop.appearance` `accent-color` (`ReadOne`, red, green and blue from 0 to 1, out of range meaning none)
+through zbus's blocking API with a 2-second method timeout, on a thread (`App::read_accent`; `App::new` waits for it
+300 ms so the first frame has it, else it comes in as the window is drawn); on macOS `NSColor.controlAccentColor` in
+sRGB; on Windows the DWM `AccentColor` value (ABGR) from the current user's registry. It is read at start, when
+the window gets the focus back and when View > Accent colour changes (`Settings::accent`). `theme::set_accent`
+keeps it in a process-wide `RwLock` and installs both themes' styles again; `Palette::with_accent` puts it in for the
+teal, darkened (light theme, against white) or lightened (dark theme, against its surface) in 8% steps until its
+contrast is at least 4.5:1, its faint and pressed backgrounds mixed with the surface, and `text_shading` a light tint
+of it. Without one, the approved mockup's teal palette stays.
+
+The side panel's views are the icon strip at the window's left edge (`SIDE_VIEWS`, each button's selected state a
+toggle for screen readers), the panel's heading a plain label (`side_name`); Find (`Act::Find`) shows Search
+results and sets `Tab::focus_query`, which `Tab::show_results` gives the keyboard. `side_panel(Side)` gives each
+view a panel id of its own, so egui keeps each view's width apart, and its starting width: `SIDE_WIDTH` (132
+points, the workspace's) for Pages, `SIDE_TEXT_WIDTH` (220) for Search results, Bookmarks, Comments and Digital
+signatures, whose lines wrapped a word or two at a time at 132. A width the user gives a panel is remembered
+between runs (ENH-08, batch 39's third stage): `Settings::panel_widths`, by panel id ("inspector", "side",
+"side-comments" and so on; `panel_width = <id> <points>` lines, kept from `panels::NARROWEST` to half the widest
+window), is each panel's `default_size`, which egui uses until it has a width of its own. `App::keep_width`
+watches each panel's edge with `panels::edge_held` (dragged, or with the keyboard on it) and, the frame it is let
+go, keeps the panel's width (`Settings::keep_width`, saved when it changed); a panel widened by what it holds
+(Watermark's controls) keeps the width given, and the inspector's strip, dragged closed, keeps nothing.
+`panels::edge_keys` and `edge_shown` take that id. The panel sets its minimum width to its available width, since
+egui narrows a panel to its contents, such as one short line wrapped ("This document has no comments or markup.").
+The status bar says what is selected or the tool in use (`Editor::heading` while the editor owns the panel), and its
+zoom is `zoom_menu`.
+
+The inspector (batch 39's second stage: PF-40, with ENH-38 and ENH-41) shows the editor's section for a selection
+or a tool that adds content (`Editor::owns_panel`), else `inspector::show`, which draws the task open alone, else
+the selected pages, else the document. A task is a `Section` for which `Section::is_task` holds (all but
+`Properties`, a section of the document's inspector), headed by `Section::title`, and kept in `Forms::task` until
+closed. `Forms::choose` makes a task the one open, in place of another, or closes it for Properties, and sets
+`reveal`; `show` does the same with a section revealed, and a `Forms::close` naming the task closes it (Esc on Crop, `Act::Escape` while
+`Tab::crop_view`, or `Tab::set_crop_view` when typing on the page can't be kept). Each section's controls are one
+function, `tool_ui`, used for the task alone and inside the selected pages' Page properties, where Crop and Page
+labels are each a section of their own (a second `Sections`, whose open list joins the outer one, so the pages show
+the crop box while either Crop is open); `split_ui` is Split's. The facts are `document_facts` (pages; paper;
+security from `Tab::encryption`, the protection saving will write, or "Removed on save" for a protected file
+opened (lopdf's `was_encrypted`) until a password is set again, as its notice says; form fields when there are any; signatures from
+`Tab::sigs`' `Check` for a file with signature fields) and `page_facts` (paper, and `orientation`: Portrait,
+Landscape, Square or Mixed), from `Tab::sizes`, the pages as shown, after rotation. `paper_of` names their paper
+with `paper` (Letter, Legal, Tabloid, Executive, A3, A4, A5 and B5, either way round, within 2 points; else "W × H
+pt"), "Mixed" when they differ, and `pages_of` writes the selection as people do ("Pages 1–2, 5 of 9"). The look is
+four functions the editor's section uses too: `facts` (moved from `editor.rs`: muted 12-point labels at the left,
+values at the right), `note` (a 12-point muted line, in place of `ui.weak`), `section` (a thin separator, then a
+`CollapsingHeader`) and `section_name` (its 12-point name); the heading stays 15-point medium (`inspector_heading`),
+and `inspector_body` sets the indent to 10 points. `facts` rows are at least 17 points high (egui's grid would make
+them the interact height, 24), 8 apart, as the mockup's. The panel is `theme::inspector_frame`: the band's surface
+colour (white, or the dark theme's surface), 14 points either side, 10 above (its strip keeps egui's 8 × 2);
+`theme::inspector_style`, set in `inspector_body` (the panel and the pop-out), fills text boxes with the number
+boxes' colour, as the surface's own would hide them. `act_button`'s label is its button's shrinking atom
+(`atom_shrink`) and wraps (egui would otherwise take the icon, the first text atom, as the one to shrink), so a long
+name such as "Extract pages to a new tab" never widens the panel, which would change the pages' zoom.
+
+`App::reveal` opens the inspector, lets go of an object, word or comment selection (a comment's section otherwise
+kept the panel from the tool), gives a content-adding tool way to the read tool, drops a page selection only for
+Properties, then calls `Forms::choose`; a tool kept with a page selection fills its Pages box from it
+(`sync_forms`), Export pages as images included. Each frame, before the panel is drawn, a selection or tool that
+`Editor::owns_panel` closes the task, shown or not, so it doesn't come back when that is let go. `inspector_head`
+draws the heading row for the panel (`collapse`) and the pop-out with `egui::Sides`: the title (wrapped onto a
+second line when long, whole, as the menu names the tool), then, in
+`dialogs::reading_order` so that Tab goes in the order shown, the close button (`icon::X`, named "Close" and the
+task's title) and, in the panel, the collapse button. The buttons' width is kept from the last frame with how many
+there were; when that changes it starts at 48 points a button, more than they take, so they never show past their
+place and widen the panel, which egui would then keep (`the_inspector_keeps_its_width`). The collapse button has a
+scope id of its own (`COLLAPSE`), the same with or without the close button before it, so a close from the keyboard
+(no pointer click that frame) can give it the keyboard; in the pop-out the keyboard goes to the strip's button that
+opens it (`POPOUT_OPENER`). `inspector_body` lends `Editor::planned` from Show planned features:
+`Editor::planned_text_tools` draws Future text tools at the end of selected words' and a visible text line's
+inspector, a `section` whose name is a `LayoutJob` with the 11-point Planned tag, named "Future text tools —
+Planned" for screen readers (a Tab stop, unlike the planned buttons, as it opens to show its note).
 
 F6 and Shift+F6 (ENH-10, batch 26) are `Act::NextRegion` and `PrevRegion`, the one shortcut `App::shortcuts` runs
 while a text box has the keyboard (and never while a list or menu is open), with Shift told apart exactly, as egui

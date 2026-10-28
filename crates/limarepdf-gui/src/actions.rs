@@ -6,7 +6,7 @@ use crate::editor::Tool;
 use crate::icon;
 use crate::markup::{self, Mark};
 use crate::selection::{ObjKind, Selection};
-use crate::settings::{Layout, PageLook};
+use crate::settings::{Accent, Layout, PageLook};
 use crate::signing::SignPick;
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, ThemePreference};
 use limarepdf_core::page_colours::PageColours;
@@ -39,7 +39,11 @@ pub enum Act {
     Quit,
     Undo,
     Redo,
+    /// Copy: what is selected in the text being typed, else the selected words, else the
+    /// selected lines of page text.
     Copy,
+    /// Paste into the text being typed on the page, at its caret.
+    Paste,
     SelectAllText,
     /// Select every object on the page in front, with the arrow.
     SelectAllObjects,
@@ -102,6 +106,7 @@ pub enum Act {
     PrevPage,
     FirstPage,
     LastPage,
+    /// The page layout; Facing pages again, when on, goes back to continuous pages.
     Layout(Layout),
     /// In the facing layout, show the first page alone, or pair it with the second.
     ToggleCover,
@@ -141,6 +146,12 @@ pub enum Act {
     ToggleFields,
     /// Call pages by the document's page labels, or by their numbers.
     TogglePageLabels,
+    /// Show the features planned but not built where they will be, greyed (ENH-41).
+    TogglePlanned,
+    /// The band's commands on one row, as icons, or full.
+    ToggleCompact,
+    /// The accent colour: the desktop's, or LimarePDF's.
+    Accent(Accent),
     NextField,
     PrevField,
     /// Empty the form field with the keyboard.
@@ -232,6 +243,7 @@ impl Act {
             | Act::ShowRecoveryFile
             | Act::Quit
             | Act::Copy
+            | Act::Paste
             | Act::SelectAllText
             | Act::SelectAllObjects
             | Act::MarkColor { .. }
@@ -267,6 +279,9 @@ impl Act {
             | Act::ToggleHidden
             | Act::ToggleFields
             | Act::TogglePageLabels
+            | Act::TogglePlanned
+            | Act::ToggleCompact
+            | Act::Accent(_)
             | Act::NextField
             | Act::PrevField
             | Act::ClearField
@@ -380,6 +395,14 @@ pub struct Ctx {
     pub recovery: bool,
     /// See [`Act::TogglePageLabels`].
     pub page_labels: bool,
+    /// See [`Act::TogglePlanned`].
+    pub planned: bool,
+    /// See [`Act::ToggleCompact`]: the setting, whatever a short window does.
+    pub compact: bool,
+    pub accent: Accent,
+    /// Text is being typed on the page: new text, a line of page text, a note or a text
+    /// box, open whether or not it has the keyboard just now.
+    pub typing: bool,
     /// An annotation is selected, and whether it may be changed.
     pub annot: bool,
     pub annot_locked: bool,
@@ -436,11 +459,15 @@ fn undo(c: &Ctx) -> bool {
 fn redo(c: &Ctx) -> bool {
     c.can_redo
 }
-fn words(c: &Ctx) -> bool {
-    c.words
-}
 fn words_idle(c: &Ctx) -> bool {
     c.words && !c.busy
+}
+/// Something to copy: the text being typed (what is selected in it), words or lines.
+fn copyable(c: &Ctx) -> bool {
+    c.typing || c.words || lines_among(c)
+}
+fn typing(c: &Ctx) -> bool {
+    c.typing
 }
 fn doc_idle(c: &Ctx) -> bool {
     c.doc && !c.busy
@@ -636,8 +663,19 @@ pub static ACTIONS: &[Action] = &[
         label: "Copy text",
         icon: icon::COPY,
         keys: &[k(C, Key::C)],
-        enabled: words,
+        enabled: copyable,
         sep: true,
+        hint: "Copy what is selected in the text being typed, else the selected words or \
+               lines of text.",
+        ..BASE
+    },
+    Action {
+        act: Act::Paste,
+        group: Group::Edit,
+        label: "Paste",
+        icon: icon::CLIPBOARD_TEXT,
+        enabled: typing,
+        hint: "Paste into the text being typed, at its caret (Ctrl+V there does the same).",
         ..BASE
     },
     Action {
@@ -763,9 +801,10 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Edit,
         label: "Edit text",
         icon: icon::PENCIL_SIMPLE,
-        enabled: one_line,
+        enabled: doc_idle,
         sep: true,
-        hint: "Change the words of the selected line of page text.",
+        hint: "Change the words of the selected line of page text. With none selected, click \
+               a line to change it, or somewhere empty to add text.",
         ..BASE
     },
     Action {
@@ -1076,6 +1115,27 @@ pub static ACTIONS: &[Action] = &[
         ..BASE
     },
     Action {
+        act: Act::TogglePlanned,
+        group: Group::View,
+        label: "Show planned features",
+        icon: icon::EYE,
+        enabled: always,
+        checked: Some(|c| c.planned),
+        hint: "Show features not built yet, greyed, where they will be.",
+        ..BASE
+    },
+    Action {
+        act: Act::ToggleCompact,
+        group: Group::View,
+        label: "Compact commands",
+        icon: icon::CARET_UP,
+        enabled: always,
+        checked: Some(|c| c.compact),
+        hint: "The commands on one row, as icons: their names show on hover. Short windows \
+               show them so anyway.",
+        ..BASE
+    },
+    Action {
         act: Act::ToggleFields,
         group: Group::View,
         label: "Highlight fields",
@@ -1136,6 +1196,26 @@ pub static ACTIONS: &[Action] = &[
         enabled: always,
         checked: Some(|c| c.theme == ThemePreference::Dark),
         submenu: "Theme",
+        ..BASE
+    },
+    Action {
+        act: Act::Accent(Accent::Desktop),
+        group: Group::View,
+        label: "Desktop",
+        enabled: always,
+        checked: Some(|c| c.accent == Accent::Desktop),
+        hint: "The accent colour your desktop uses, where it says one; else LimarePDF's.",
+        submenu: "Accent colour",
+        ..BASE
+    },
+    Action {
+        act: Act::Accent(Accent::LimarePdf),
+        group: Group::View,
+        label: "LimarePDF",
+        enabled: always,
+        checked: Some(|c| c.accent == Accent::LimarePdf),
+        hint: "LimarePDF's own teal.",
+        submenu: "Accent colour",
         ..BASE
     },
     Action {

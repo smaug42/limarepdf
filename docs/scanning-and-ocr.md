@@ -9,13 +9,13 @@ the pictures in LimarePDF.
 ## Turn scans into a searchable PDF
 
 1. Scan the pages with your system's scanning app, or take photos of them, as PNG, JPEG or TIFF files.
-2. Choose **Make a PDF from images…** on the start screen (or ☰ > File) and pick the files. They open as a new
-   document, one page per picture.
-3. Optional: open **Optimise scanned pages** in the inspector and press **Optimise**, to make the file smaller and
-   straighten tilted pages.
-4. Open **Recognise text (OCR)** in the inspector and press **Recognise**. The pages look the same, but their text
-   can now be searched, selected and copied.
-5. Save.
+2. Choose **Make a PDF from images…** on the start screen (or **Insert > From images**, or ☰ > Make a PDF from
+   images…) and pick the files. They open as a new document, one page per picture.
+3. Optional: choose **Pages > Optimise**, which opens **Optimise scanned pages** in the inspector, and press
+   **Optimise**, to make the file smaller and straighten tilted pages.
+4. Choose **Pages > Recognise text**, which opens **Recognise text (OCR)** in the inspector, and press
+   **Recognise**. The pages look the same, but their text can now be searched, selected and copied.
+5. Close the tool with the × at the top of the inspector, and save.
 
 A PDF that is already a scan works the same way: start at step 3. When a document's pages are scans without text,
 a notice above the pages says so, with a **Recognise text** button.
@@ -29,8 +29,9 @@ Optimise before recognising text: pages with text over them, such as recognised 
 - **Orientation:** pages are turned upright from the EXIF or TIFF orientation.
 - **Quality:** JPEGs are embedded as they are, without recompression.
 
-Where: ☰ > File > Make a PDF from images (also on the start screen); Insert images in the inspector, the right-click menu or ☰ > Pages; or drop
-images on the window. On the command line: `limarepdf-cli images` and `limarepdf-cli insert-images`.
+Where: **Insert > From images** or ☰ > Make a PDF from images… (also on the start screen); Insert images in
+**Pages > Insert pages**, the inspector, the right-click menu or ☰ > Pages; or drop images on the window. On the
+command line: `limarepdf-cli images` and `limarepdf-cli insert-images`.
 
 ## Optimising scanned pages
 
@@ -49,8 +50,8 @@ Works on pages that are one image covering the page.
   largest, and not straightened if any of them has text over it. The report lists the other pages as optimised with
   the first.
 
-Where: the inspector's Optimise scanned pages section, for the selected pages or all. It runs in the background and
-can be undone. On the command line: `limarepdf-cli optimize-scans`.
+Where: **Pages > Optimise**, which opens the Optimise scanned pages tool in the inspector, for the selected pages
+or all. It runs in the background and can be undone. On the command line: `limarepdf-cli optimize-scans`.
 
 ## Recognising text (OCR)
 
@@ -64,14 +65,15 @@ looks the same.
 - **Text layer:** Helvetica with WinAnsi characters; other characters become `?`.
 - **Not handled:** text in pictures, handwriting, vertical text.
 
-Where: the inspector's Recognise text (OCR) section, for the selected pages or all. It runs in the background and can
-be undone. On the command line: `limarepdf-cli ocr`.
+Where: **Pages > Recognise text**, which opens the Recognise text (OCR) tool in the inspector, for the selected
+pages or all. It runs in the background and can be undone. On the command line: `limarepdf-cli ocr`.
 
 ### Seeing and correcting recognised text
 
-☰ > View > Show recognised text outlines each recognised line and shows its text on hover. With the arrow tool, a line
-can be selected and its text corrected in the inspector; it stays invisible and in place, and clearing it removes the
-line. `limarepdf-cli objects` lists these lines as "(hidden)".
+**View > Show > Show recognised text** (or ☰ > View > Show recognised text) outlines each recognised line and shows
+its text on hover. With the arrow tool, select a line and choose **Edit > Edit text** to correct its text on the
+page; it stays invisible and in place, and clearing it removes the line. `limarepdf-cli objects` lists these lines
+as "(hidden)".
 
 ### Accuracy and speed
 
@@ -93,7 +95,7 @@ parallel.
 
 Importing, optimising and OCR have automated tests, and were tried by hand on made-up scans (CMYK JPEG and 300 dpi
 TIFF among them) and one real scan. The black-and-white or greyscale choice hasn't been tried on real scanner
-output yet, and the app's inspector sections for these weren't clicked through. The full record is in
+output yet, and the app's inspector tools for these weren't clicked through. The full record is in
 [Testing](developer/testing.md#scanning-and-ocr).
 
 ## Licence of the OCR model

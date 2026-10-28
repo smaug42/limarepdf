@@ -8,7 +8,7 @@ This is a from-scratch implementation (with AI assistance): it contains no other
 It runs on Windows 10 and 11 (x64), macOS 11 or later (Apple Silicon and Intel), and 64-bit Linux with glibc 2.39 or
 later. Support for each is provisional until the release checks by hand have passed there ([requirements](docs/install.md#requirements)).
 
-![The LimarePDF window: the top bar, page thumbnails on the left, a report with a highlight, a note, a pen tick and an arrow with a text box in the middle, and the inspector on the right](docs/images/limarepdf.png)
+![The LimarePDF window: the commands under the document's tab, page thumbnails on the left, a report with a highlight, a note, a pen tick and an arrow with a text box in the middle, and the inspector on the right](docs/images/limarepdf.png)
 
 ## Documentation
 

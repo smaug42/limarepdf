@@ -12,19 +12,20 @@ written with Ctrl; on a Mac, use ⌘ (Command) instead.
   a drag selects text.
 - **Go to a page** by clicking its thumbnail in the Pages view on the left. The status bar at the bottom shows the
   page you are on.
-- **Zoom** with Ctrl+scroll, a pinch, Ctrl+= and Ctrl+-, or the zoom at the bottom right. Ctrl+1 shows the pages
+- **Zoom** with Ctrl+scroll, a pinch, Ctrl+= and Ctrl+-, or the zoom at the bottom right of the status bar (such as
+  "96%"), a menu with Zoom in, Zoom out, Actual size and Fit width (also **View > Zoom**). Ctrl+1 shows the pages
   at their actual size. Zoom goes from 10% to 6400%.
 - **Fit width:** pages open fitted to the width between the side panels, and keep fitting as you resize the window
-  or open and close the panels. Zooming turns fitting off, and your zoom then stays as it is; the Fit width button
-  at the bottom right (highlighted while fitting is on), or Ctrl+0, turns it back on.
+  or open and close the panels; the zoom then reads "Fit width · 96%". Zooming turns fitting off, and your zoom
+  then stays as it is; **View > Fit width**, Fit width in the zoom menu, or Ctrl+0, turns it back on.
 
 At high zoom, the part of the page in view is drawn in tiles as you scroll, over a softer view of the whole page
 until they arrive.
 
 ### Page layout
 
-The page layout button at the bottom right (its icon shows the current layout), or ☰ > View > Page layout,
-chooses how the pages are laid out:
+The zoom menu at the bottom right, **View > Facing pages ▾**, or ☰ > View > Page layout, chooses how the pages are
+laid out:
 
 - **Continuous pages:** one column, scrolling. This is the default.
 - **Facing pages:** two pages side by side, still scrolling; Fit width fits both. **Show cover page alone** (on by
@@ -37,7 +38,8 @@ sets its own [opening view](gui.md#opening-view) opens in its layout instead.
 
 ### Page colours for reading
 
-☰ > View > Page colours changes how pages look on screen, for reading in the dark or with low vision:
+**View > Page colours** (or ☰ > View > Page colours) changes how pages look on screen, for reading in the dark or
+with low vision:
 
 | Choice | Pages look like |
 |---|---|
@@ -54,17 +56,18 @@ exported images and everything else keep the page's own colours.
 
 ## Find words
 
-1. Press Ctrl+F and type what you are looking for. (Or type in the Search field at the top right.)
-2. As soon as you pause typing, the Search results view on the left lists the matches, under a heading for each
-   page, with the words around each match and the match in bold. The matches are highlighted on the pages, and the
+1. Press Ctrl+F, or choose **Edit > Find**. Search results opens on the left with the cursor in its search box:
+   type what you are looking for.
+2. As soon as you pause typing, Search results lists the matches, under a heading for each page, with the words
+   around each match and the match in bold. The matches are highlighted on the pages, and the
    view goes to the first one on or after the page you were reading.
 3. Press Enter to go to the next match, and Shift+Enter for the one before; or click a match, or use ◀ and ▶
    (Previous match and Next match). After the last match, Enter goes back to the first.
 
 On a long document the matches come in page by page, with "Searching…" and the count so far; when it is done, the
 count reads "1 match", "12 matches" or "No matches". Changing what you typed starts again, and the old matches go at
-once. Emptying the field clears the results. If you change the document while searching, the results are brought
-up to date, and the match you were on stays the current one.
+once. Emptying the search box clears the results. If you change the document while searching, the results are
+brought up to date, and the match you were on stays the current one.
 
 Search ignores capitals, and treats any run of spaces as one space. A phrase can run across a line break, or from
 the bottom of one page to the top of the next: the break counts as a space, and the part on each line is
@@ -77,7 +80,8 @@ match from the document for good, press **Mark all for redaction** in Search res
 
 The headings in Search results, like the page thumbnails, use the document's own page numbering when it has one
 (such as iii or A-1; see [Number pages your own way](organising-pages.md#number-pages-your-own-way)). To number the pages 1, 2, 3 from the first
-page instead, turn off ☰ > View > **Use the document's page labels**. The status bar shows both.
+page instead, turn off View > Show > **Use the document's page labels** (also in ☰ > View). The status bar shows
+both.
 
 On the command line, `limarepdf-cli search` lists the matches, one a line, as `page 3: …the words around it…`, then
 the count; `--boxes` also prints where each one is on its page.
@@ -124,14 +128,16 @@ More ways to select:
 
 - Dragging past the top or bottom of the view scrolls it, faster the further out the pointer is, so a selection
   can run across pages.
-- Shift+click extends the selection to where you click, on any page. Ctrl+A selects the whole page in view. Esc,
+- Shift+click extends the selection to where you click, on any page. Ctrl+A, or **Edit > Select > Select all text
+  on the page**, selects the whole page in view. Esc,
   or a click, clears the selection. With no words selected, Shift+click on a picture or shape adds it to those
   selected instead ([Select several objects](content-editing.md#select-several-objects)).
 - Double-clicking page text edits its line (see [Editing text and pictures](content-editing.md)). Where there is
   no line to edit, such as recognised (OCR) text, a double-click selects one word and a triple-click a line.
 
 Words are copied in reading order, with spaces between words and line breaks between lines and pages. Recognised
-(OCR) text is selected and copied like any other text. ☰ > Edit > Copy text does the same as Ctrl+C.
+(OCR) text is selected and copied like any other text. **Edit > Copy** (or ☰ > Edit > Copy text) does the same as
+Ctrl+C.
 
 On Linux, as in other Linux apps, the selected text can also be pasted into another app (or a LimarePDF text box)
 by clicking there with the middle mouse button, without copying it first.

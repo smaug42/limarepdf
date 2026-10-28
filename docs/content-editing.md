@@ -9,7 +9,7 @@ with Ctrl; on a Mac, use ⌘ (Command) instead.
 ## Edit a line of text
 
 1. Double-click the line with the read tool (the text cursor). The word you double-clicked is selected, so typing
-   replaces it.
+   replaces it. Or choose **Edit > Edit text**, then click the line: the caret goes where you click.
 2. Type your change.
 3. Press Enter, Esc or Tab, or click elsewhere, to keep it.
 
@@ -24,7 +24,9 @@ While you type:
 - Ctrl+Z and Ctrl+Y undo and redo typing and style changes in the line, in order. Once the change is kept, Undo
   takes the whole edit back. Typing into the same line again within a few seconds, with nothing else changed in
   between, joins the same undo step.
-- The inspector shows the font, size and colour of what is selected, or of the character before the caret.
+- **Edit > Font** in the band shows the font, size and colour of what is selected, or of the character before the
+  caret. The inspector shows the font and size too, and the line's **Source font** (see
+  [Change size, font and colour](#change-size-font-and-colour)).
 
 A line turned on the page (not running left to right on screen) is edited in a box over the line instead, showing
 its fonts, sizes and colours; invisible recognised (OCR) text is edited in a plain box. The caret goes by the
@@ -34,7 +36,8 @@ character you clicked along the line, and a double-click selects the word you cl
 
 1. Double-click the line, then select the words: drag over them, or hold Shift and use the arrow keys. A
    double-click selects one word.
-2. Press Ctrl+B for Bold or Ctrl+I for Italic, or pick a font, size or colour in the inspector.
+2. Press Ctrl+B for Bold or Ctrl+I for Italic, or use **Edit > Font** in the band: the font list, size, Bold,
+   Italic and text colour.
 3. Press Enter, Esc or Tab, or click elsewhere, to keep it.
 
 As in a word processor:
@@ -43,20 +46,20 @@ As in a word processor:
   the change applies to what you type next there.
 - Bold over words that are partly bold makes them all bold; over words that are all bold, it takes the bold off.
   Italic works the same way. Words in a family without a bold or italic face stay as they are.
-- Where the selection mixes fonts, sizes or colours, the inspector shows that one blank: the font list with no
+- Where the selection mixes fonts, sizes or colours, **Edit > Font** shows that one blank: the font list with no
   name, the size box empty, the colour button (an **A** over a bar of the text's colour) with the colours side by
   side in its bar. A colour picked then makes the
   selection all that colour, even the one the picker starts from (the first); the picker also offers the colours
   in the text (**In the text**), to make it all one of them in a click. Opening and closing the picker changes
   nothing. Bold and Italic show on only when all
   of it is bold or italic. Picking a value there sets all of it.
-- A change in the inspector shows on the line at once, the line stays in editing, and the keyboard comes back to
+- A change in **Edit > Font** shows on the line at once, the line stays in editing, and the keyboard comes back to
   it; the change is kept with the typing.
 
 Finishing (Esc, Enter, Tab or clicking elsewhere) leaves nothing selected, as in a word processor. A line selected
-as a whole with the arrow takes the inspector's font, size and colour, and Ctrl+B and Ctrl+I, as a whole, with the
-same blanks for what it mixes; to change its words, double-click it or use **Edit text**, and it is edited on the
-page here too. With the arrow, the line stays selected when you finish.
+as a whole with the arrow takes the font, size and colour in **Edit > Font**, and Ctrl+B and Ctrl+I, as a whole,
+with the same blanks for what it mixes; to change its words, double-click it or choose **Edit > Edit text**, and it
+is edited on the page here too. With the arrow, the line stays selected when you finish.
 
 ## Style words you select while reading
 
@@ -65,10 +68,11 @@ over them, across lines and pages if you like), then:
 
 - press Ctrl+B for Bold or Ctrl+I for Italic, or use **B** and ***I*** on the floating toolbar or in the right-click
   menu;
-- or pick a font, size or colour in the inspector, headed **Selected text**.
+- or pick a font, size or colour in **Edit > Font** in the band. The inspector, headed **Selected text**, shows
+  their font and size.
 
 The words stay selected, so you can go on changing them. Bold and Italic work over the whole selection as they do in
-a line, and the inspector shows a value blank where the selection mixes it. Each change is one undo step, however
+a line, and **Edit > Font** shows a value blank where the selection mixes it. Each change is one undo step, however
 many lines and pages it covers.
 
 The words around the ones you change are left exactly as they were, in their own font, even one LimarePDF can't
@@ -78,7 +82,7 @@ and vertical writing keep their look; a short notice says when part of the selec
 
 ## Add text
 
-1. Pick **Add text** in the top bar.
+1. Pick **Insert > Text** (the Add text tool), or **Edit > Edit text** with nothing selected.
 2. Click where the text starts, and type. The line sits on the point you clicked; Enter starts a new line.
 3. Press Esc, click elsewhere on the page, or choose another tool, to finish.
 
@@ -86,16 +90,16 @@ The text appears as you type, in the font, size and colour it will have, with a 
 is added as one undo step, and nothing typed adds nothing. Each line becomes its own line of page text, so
 afterwards it moves and is edited line by line.
 
-While you type, Ctrl+B, Ctrl+I and the inspector's font, size and colour style what is selected, or what you type
-next, as when [styling words in a line](#style-words-in-a-line) (the keyboard comes back to the text afterwards).
+While you type, Ctrl+B, Ctrl+I and **Edit > Font** style what is selected, or what you type next, as when
+[styling words in a line](#style-words-in-a-line) (the keyboard comes back to the text afterwards).
 Ctrl+Z and Ctrl+Y undo and redo typing and styles, and dragging the outline moves the text. The next text you add
-starts in the style this one ended in. A line with larger text in it sits further below the one before, as in a
-word processor. With this tool, a click on text already on the page edits that line instead, with the caret where
-you clicked, and a drag selects text, as with the read tool.
+starts in the style this one ended in; before you click, **Edit > Font** sets it. A line with larger text in it
+sits further below the one before, as in a word processor. With this tool, a click on text already on the page
+edits that line instead, with the caret where you clicked, and a drag selects text, as with the read tool.
 
-**Fonts:** the font list has Helvetica, Times and Courier first, then the fonts installed on the computer whose
-licence allows embedding them, each name drawn in its own font. Type in its search field to narrow it; Enter picks
-the first. Bold and Italic are off for a family that has no such face.
+**Fonts:** the font list in **Edit > Font** has Helvetica, Times and Courier first, then the fonts installed on the
+computer whose licence allows embedding them, each name drawn in its own font. Type in its search field to narrow
+it; Enter picks the first. Bold and Italic are off for a family that has no such face.
 
 Some fonts are installed under code names, such as the URW fonts many Linux systems have. The list shows these by
 the typeface they stand in for, with the font's own name after it: "Palatino (P052)", "New Century Schoolbook
@@ -119,7 +123,7 @@ To put the same text on every page, such as page numbers or DRAFT, use
 
 ## Add a picture
 
-1. Pick **Add image** in the top bar, and choose a PNG, JPEG or TIFF file.
+1. Pick **Insert > Image**, and choose a PNG, JPEG or TIFF file.
 2. Drag a box on the page where it goes.
 
 A photo shows upright, the way it was taken, even when the camera or phone was turned.
@@ -138,9 +142,9 @@ With the read tool:
 A picture or shape covering most of the page, such as a scanned page or a background, isn't selected by a click,
 so that clicking a scan doesn't pick it up. A drag that starts anywhere else still selects text.
 
-**The arrow** (☰ > Tools > Select, move and resize objects) selects any object, page text and full-page pictures
-included: click to select, drag to move, drag a handle to resize (Shift keeps the proportions), and arrow keys to
-nudge.
+**The arrow** (**Edit > Select > Select, move and resize objects**, or ☰ > Tools > Select, move and resize objects)
+selects any object, page text and full-page pictures included: click to select, drag to move, drag a handle to
+resize (Shift keeps the proportions), and arrow keys to nudge.
 
 ## Select several objects
 
@@ -153,26 +157,32 @@ With the arrow you can also:
 - Drag a rectangle from an empty part of the page: everything wholly inside it is selected, nothing it only
   touches. Hold Shift to add what it holds to the selection. A drag that starts on a background or a scanned page
   that isn't selected draws a rectangle too, so it isn't moved by accident.
-- Press **Ctrl+A** to select everything on the page.
+- Press **Ctrl+A**, or choose **Edit > Select > Select all on the page**, to select everything on the page.
 
 Each selected object is outlined, with a dashed box round them all. Drag any one of them, or use the arrow keys, to
 move them together; Delete or Backspace deletes them all. The inspector says how many there are and what they are.
-Its font, size, colour, Bold and Italic change the lines of text among them, each line as a whole, and Fill,
-Outline and width change the shapes; a value they don't share shows blank or mixed. X and Y under **Position** move
+**Edit > Font** changes the lines of text among them, each line as a whole, and the inspector's Fill, Outline and
+width change the shapes; a value they don't share shows blank or mixed. X and Y under **Position** move
 them all. Right-click one of them for Copy the selected text lines (in reading order) and Delete. Each change is
 one undo step.
 
 Several objects are selected on one page at a time. They move, restyle and delete together, but are resized one at
 a time. Comments and markup are selected one at a time, never with page objects.
 
-## Change size, font and colour in the inspector
+## Change size, font and colour
 
-The inspector is headed by what is selected (Text, Image, Shape). For text it shows the font list, then Bold,
-Italic, size and colour in a row (the words themselves are changed on the page); for shapes, the fill, outline and
-width; for pictures,
+For text, **Edit > Font** in the band has the font list, then size, Bold, Italic and colour (the words themselves
+are changed on the page). Pointing at the font list shows the names of the fonts the selected text uses in the PDF.
+
+The inspector is headed by what is selected (Selected text, Image, Shape). For text it shows what is being edited
+(One line, Selected words or New text), its font and size (Mixed where they differ) and, for a line, its **Source
+font**: Preserved when the line keeps its own font, Installed family when changes are written in the installed
+family its font comes from, Nearest standard when they are written in the nearest of Helvetica, Times and Courier
+(see [How it works](#how-it-works)). For shapes it shows the fill, outline and width; for pictures,
 **Replace image…**. Below these, **Position and size** opens to show the object's X, Y, width and height; it
-stays open or closed as you left it. Pointing at the font list shows the names of the fonts the selected text
-uses in the PDF. Changes there are kept as you make them,
+stays open or closed as you left it. For selected text, **Future text tools**, marked Planned, comes last: open it
+to see what is planned (paragraphs that reflow, underline and strike-through). Changes in the band and the
+inspector are kept as you make them,
 without an Apply button: typed text when you press Enter or leave the box, a number when you stop dragging it or
 leave its box, a colour when its picker closes. Each is one undo step.
 
@@ -205,8 +215,8 @@ the page itself.
   line above's largest size and three quarters of its own. Text in Helvetica, Times or Courier with characters
   those fonts lack (Polish, Czech, Vietnamese, Greek, Cyrillic and so on) is written in the bundled Liberation
   face of that font, which has the same widths, embedded in the file and cut down to the characters used.
-- **Installed fonts** (the inspector's font list after the three standard ones) are the families whose licence
-  allows embedding, with up to four styles each. Text in one is always embedded in the file, cut down to the
+- **Installed fonts** (the font list in **Edit > Font**, after the three standard ones) are the families whose
+  licence allows embedding, with up to four styles each. Text in one is always embedded in the file, cut down to the
   characters used, so it looks the same on any computer.
 - **Recognised (OCR) text** stays invisible and in place when edited, and text after a changed line stays where
   it was.

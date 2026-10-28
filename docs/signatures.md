@@ -22,9 +22,11 @@ forth between them; round trips with Acrobat itself are still to be tested (see 
 
 ## Sign with a digital ID
 
-1. The first time, make a digital ID: ☰ > Document > Digital signatures > **Digital IDs…**, then **Create…** (or
-   **Import…** one you have). See [Digital IDs](#digital-ids).
-2. Choose ☰ > Document > Digital signatures > **Sign with digital ID…**.
+1. The first time, make a digital ID: **Forms and sign > Digital signature > Digital IDs…** (or ☰ > Document >
+   Digital signatures > Digital IDs…), then **Create…** (or **Import…** one you have). See
+   [Digital IDs](#digital-ids).
+2. Choose **Forms and sign > Digital signature > Sign with digital ID…** (or ☰ > Document > Digital signatures >
+   Sign with digital ID…).
 3. Click an empty signature field, or drag a box where the signature goes.
 4. Pick your digital ID, type its password, and press **Sign…**.
 5. Choose where to save the signed copy. It opens in place of the document.
@@ -76,7 +78,8 @@ digital signatures…" meanwhile, and then gives the result, coloured by the wor
 With one signature the banner gives its result in a sentence, such as "Not changed since Jane Doe signed it. LimarePDF
 can't confirm who Jane Doe is."; with several it sums them up. A certified document's banner starts with who
 certified it and what the certification allows. The banner's **Signatures** button opens the **Digital signatures** view of
-the navigation panel (also Document > Digital signatures > Signatures in this document).
+the side panel (also its icon on the left, **Forms and sign > Digital signature > Signatures in this
+document**, or ☰ > Document > Digital signatures > Signatures in this document).
 
 The Digital signatures view lists the signatures in the order they were made. For each: what it is and who made it (click to
 go to it on the page), its result in a sentence, the changes made after it (those the signer didn't allow in red;
@@ -161,7 +164,8 @@ signer's own Acrobat knows nothing about your list.
 **In the app:** in a valid signature's Details, **Trust this signer…** shows the signer's certificate with its
 SHA-256 fingerprint, asks for the name to keep it under in your list, and trusts it when you choose Trust. **Trust
 an authority…** does the same for an authority from the certificates the signature carries (choose one when there
-are several). **Document > Digital signatures > Trusted certificates…** (also at the bottom of the Digital signatures view) shows your list, removes
+are several). **Forms and sign > Digital signature > Trusted certificates…** (also ☰ > Document > Digital
+signatures > Trusted certificates…, and at the bottom of the Digital signatures view) shows your list, removes
 an entry (Remove…, then Stop trusting), and adds a certificate from a file (Add certificate file…; as a signer
 unless you choose certificate authority, which only an authority's certificate allows). Every open document is
 judged again as soon as the list changes. A change made with `limarepdf-cli trust` while the app is open counts for documents
@@ -238,7 +242,8 @@ line.
 
 A digital ID is what you sign with: a private key, which stays secret, and a certificate naming you, which goes
 into every signature you make. LimarePDF keeps your IDs, each protected by its own password. You make, import, export,
-list and remove them in the app's **Digital IDs** window (☰ > Document > Digital signatures > Digital IDs…) or with `limarepdf-cli id`, and
+list and remove them in the app's **Digital IDs** window (Forms and sign > Digital signature > Digital IDs…, or ☰ >
+Document > Digital signatures > Digital IDs…) or with `limarepdf-cli id`, and
 [sign](#signing) with them.
 
 **In the app**, the Digital IDs window lists your IDs; pick one to see its certificate, key, validity and SHA-256
@@ -332,8 +337,9 @@ have an exported copy. Signatures already made with it stay valid.
 
 ### In the app
 
-1. Choose ☰ > Document > Digital signatures > **Sign with digital ID…**, or **Certify…** to
-   [certify](#what-signing-does) the document (only before anyone has signed it).
+1. Choose **Forms and sign > Digital signature > Sign with digital ID…** (or ☰ > Document > Digital signatures >
+   Sign with digital ID…), or **Certify…** in the same menus to [certify](#what-signing-does) the document (only
+   before anyone has signed it).
 2. Click an empty signature field on the page, or drag a box where the signature goes (at least 12 points each
    way). The pane also lists the document's empty signature fields to pick from. Esc, or another tool, stops.
 3. In the window, pick the digital ID (the default is picked; expired IDs can't sign), type its password (leave

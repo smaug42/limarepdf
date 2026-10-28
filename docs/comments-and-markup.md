@@ -9,9 +9,11 @@ or in another app. To make them part of the pages for good, [flatten](#flatten-c
 ## Highlight text
 
 1. Select text with the read tool (the text cursor).
-2. Click **Highlight** on the small toolbar above it, or right-click > Highlight, or press Ctrl+Shift+H.
+2. Click **Review > Highlight**, or **Highlight** on the small toolbar above it, or right-click > Highlight, or press
+   Ctrl+Shift+H.
 
-The small arrow next to Highlight, or right-click > Underline, strike out, colour, has:
+**Review > Highlight ▾**, the small arrow next to Highlight on the toolbar, or right-click > Underline, strike out,
+colour, has:
 
 - Underline, Strike out and Squiggly underline.
 - The highlight colour (yellow, green, blue, pink, orange) and the line colour (red, blue, green, black). The
@@ -21,19 +23,18 @@ A selection across pages gets one highlight on each page, all in one undo step.
 
 ## Add a note or a text box
 
-The **Comment** button in the top bar holds the commenting tools: notes, text boxes, rectangles, ellipses, lines,
-the pen and stamps (also in ☰ > Tools > Commenting). It shows the tool you used last; the small arrow beside it
-lists them all.
+**Review** in the command band holds the commenting tools: **Note**, **Text box**, **Draw** (the pen; its ▾ has
+rectangles, ellipses and lines) and **Stamp** (also in ☰ > Tools > Commenting).
 
 **A note** (a sticky note with a comment):
 
-1. Pick Note, and click on the page.
+1. Pick **Review > Note**, and click on the page.
 2. Type your comment in the box that opens beside the note.
 3. Click on the page outside it, or press Esc or Ctrl+Enter, to keep it. That click doesn't put down another note.
 
 **A text box** (text shown on the page):
 
-1. Pick Text box, then drag a box on the page, or click for a default size.
+1. Pick **Review > Text box**, then drag a box on the page, or click for a default size.
 2. Type straight onto the page. Enter starts a new line.
 3. Click outside the box, or press Esc or Ctrl+Enter, to finish.
 
@@ -66,7 +67,7 @@ More about notes and text boxes:
 
 ## Draw shapes, lines and freehand
 
-The Comment button's menu also holds the rectangle, ellipse, line and pen tools.
+**Review > Draw** turns on the pen, and **Review > Draw ▾** has the rectangle, ellipse and line tools too.
 
 - **Rectangle, ellipse, line:** drag on the page, or click for a default size. Shift keeps to squares, circles,
   and lines at multiples of 45°. Before you start, the inspector sets the outline (or line) colour and width, the fill
@@ -80,7 +81,7 @@ The Comment button's menu also holds the rectangle, ellipse, line and pen tools.
   into the page content instead, as part of the page rather than as comments. Those shapes are selected with the
   arrow as page objects (see [Editing text and pictures](content-editing.md)).
 
-Stamps (Approved, Draft, your own wording or a picture) are in the same menu: see
+Stamps (Approved, Draft, your own wording or a picture) are **Review > Stamp**: see
 [Stamps](headers-footers-watermarks.md#stamps).
 
 ## Change, move or delete a comment
@@ -112,8 +113,8 @@ Some things to know:
 ## See every comment, and reply
 
 The **Comments** view lists the document's annotations page by page, with replies indented under the comment they
-answer: click its icon on the left, or choose ☰ > View > Comments. Each row shows the author and the first line of
-the comment; hover over it for the type, date and the whole comment.
+answer: click its icon on the left or **Review > Comments**, or choose ☰ > View > Comments. Each row shows the
+author and the first line of the comment; hover over it for the type, date and the whole comment.
 
 - Click a row to go to the annotation and select it.
 - Right-click a row to delete it, along with any replies. Undo brings it back.
@@ -123,15 +124,15 @@ the comment; hover over it for the type, date and the whole comment.
 
 ## Your name on comments
 
-New comments are saved with your name, which is the computer's user name until you set it with ☰ > Edit > Your name
-for comments…. Leave it empty to save no name.
+New comments are saved with your name, which is the computer's user name until you set it with **Review >
+Comments ▾ > Your name for comments…** (or ☰ > Edit > Your name for comments…). Leave it empty to save no name.
 
 ## Flatten comments into the pages
 
-☰ > Document > Flatten annotations… draws all the annotations into the pages as they look now and removes them, so
-they are no longer comments in any reader: they can't be changed or removed as comments. Their comment text is
-dropped. What was drawn is page content, so content editing can still move, resize or delete each as a whole
-([Move, resize or delete](content-editing.md#move-resize-or-delete)). Links and form fields stay,
+**Review > Flatten…** (or ☰ > Document > Flatten annotations…) draws all the annotations into the pages as they look
+now and removes them, so they are no longer comments in any reader: they can't be changed or removed as comments.
+Their comment text is dropped. What was drawn is page content, so content editing can still move, resize or delete
+each as a whole ([Move, resize or delete](content-editing.md#move-resize-or-delete)). Links and form fields stay,
 and so do file attachments. Undo brings them back until you close the document.
 
 ## How comments are drawn

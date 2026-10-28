@@ -87,13 +87,13 @@ installed font that has it, such as Symbola or DejaVu Sans.
 ### "Helvetica can't write this character; choose an installed font that has it"
 
 Helvetica, Times and Courier have no Chinese, Japanese or Korean, and no emoji (and lack some other characters).
-Choose an installed font that has them in the inspector's font list, such as Noto Sans CJK, or Symbola for emoji,
-then type again.
+Choose an installed font that has them in the font list in **Edit > Font**, such as Noto Sans CJK, or Symbola for
+emoji, then type again.
 
 ### "… has no …; choose another font"
 
 The installed font you chose doesn't have that character, or draws it only in colour (some fonts have colour
-emoji), which LimarePDF can't write into a PDF. Choose another font in the inspector's font list.
+emoji), which LimarePDF can't write into a PDF. Choose another font in the font list in **Edit > Font**.
 
 ### "LimarePDF can't draw this text box again"
 
@@ -116,7 +116,7 @@ in LimarePDF never show `?`: what Helvetica can't write isn't typed.
 ### An edited line looks different
 
 When LimarePDF can't keep a line's own font (common for fonts embedded in the file), it writes the line in the
-installed font it came from, or in Helvetica, Times or Courier. The inspector says so. See
+installed font it came from, or in Helvetica, Times or Courier. The inspector says so, under **Source font**. See
 [Editing text and pictures](content-editing.md#limits).
 
 ### Undo doesn't go back far enough
@@ -128,7 +128,7 @@ Undo keeps up to 20 steps, and at most 1 GB per document, so very large document
 ### Saving removed the document's password
 
 A protected document is saved without its password unless you set it again: a notice says so when it opens. Set
-it under Password security in the inspector before saving.
+it with **Protect > Passwords**, which opens Password security in the inspector, before saving.
 
 ### "The file was saved, but your system couldn't confirm it is safely on disk"
 
