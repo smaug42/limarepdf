@@ -15846,6 +15846,90 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Shapes with outlines thinner than the inspector's smallest width (0.25 pt), selected
+    /// with the arrow and not touched, are no change: closing doesn't ask, the document stays
+    /// as it was, and quitting with other changes quits on Discard, with no "The document
+    /// changed" (the user's find, 2026-10-28: the width field raised them to 0.25 pt).
+    #[test]
+    fn thin_shapes_selected_are_no_change() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = thin_tab(&ctx);
+        let looks = |app: &App| -> Vec<_> {
+            let objs = app.tabs[0].pdf.page_objects(0).unwrap();
+            objs.iter().map(|o| (o.bbox, o.line_width)).collect()
+        };
+        let (was, before) = (looks(&app), app.tabs[0].history());
+        app.act(&ctx, Act::Tool(Tool::Select));
+        for ids in [&[0][..], &[1], &[0, 1]] {
+            select(&mut app, &ctx, ids);
+            settled_at(&mut app, &ctx, 1400.0);
+            let t = &app.tabs[0];
+            assert!(!t.unsaved(), "{ids:?}: selecting them is a change");
+            assert_eq!(t.history(), before, "{ids:?}: the document changed");
+            assert_eq!(looks(&app), was, "{ids:?}");
+        }
+        // Quitting with another change unsaved: Discard quits.
+        app.tabs[0].dirty = true;
+        close_window(&mut app, &ctx);
+        assert!(matches!(app.dialog, Dialog::ConfirmClose(_, true)));
+        click_named(&mut app, &ctx, "Discard");
+        if let Dialog::Message(_, text) = &app.dialog {
+            panic!("Discard said: {text}");
+        }
+        assert!(app.quit_ok);
+    }
+
+    /// A tab, as if just opened, whose first page has a hairline (0 pt) outlined shape at
+    /// 300,60 to 380,120 (page points, y down), a red one filled with a 0.1 pt line width
+    /// set at 300,160 to 380,220, and a 0.5 pt rule along y 292 from x 72 to 272.
+    fn thin_tab(ctx: &egui::Context) -> App {
+        let mut app = app_with(ctx, 1);
+        let thin = |p: &mut Pdf| {
+            let page = p.page_ids()[0];
+            let content = "q 0 w 0 0 1 RG 300 672 80 60 re S Q\n\
+                           q 0.1 w 1 0 0 rg 300 572 80 60 re f Q\n\
+                           q 0.5 w 0 0 0 RG 72 500 m 272 500 l S Q\n";
+            let content = lopdf::Stream::new(lopdf::Dictionary::new(), content.into());
+            let s = p.doc.add_object(content);
+            let d = p.doc.get_dictionary_mut(page)?;
+            d.set("Contents", lopdf::Object::Reference(s));
+            Ok(())
+        };
+        assert!(app.tabs[0].edit(ctx, thin));
+        app.tabs[0].dirty = false;
+        app
+    }
+
+    /// A rule thinner than the inspector's smallest height (1 pt), moved by its X in the
+    /// inspector, moves across only: its height isn't made 1 pt.
+    #[test]
+    fn a_thin_rule_moved_in_the_inspector_moves_across_only() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut app = thin_tab(&ctx);
+        app.act(&ctx, Act::Tool(Tool::Select));
+        app.open_inspector();
+        select(&mut app, &ctx, &[2]);
+        let was = boxes(&app, 0)[2];
+        assert!(was[3] - was[1] < 1.0, "{was:?}");
+        click_named(&mut app, &ctx, "Position and size");
+        click_named(&mut app, &ctx, "X");
+        let (ctrl, none) = (egui::Modifiers::COMMAND, egui::Modifiers::NONE);
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::A, ctrl)]);
+        let typed = vec![egui::Event::Text("100".into())];
+        window(&mut app, &ctx, 1400.0, typed);
+        window(&mut app, &ctx, 1400.0, vec![key_with(Key::Enter, none)]);
+        settle(&mut app, &ctx);
+        let now = boxes(&app, 0)[2];
+        assert!((now[0] - 100.0).abs() < 0.6, "not moved: {now:?}");
+        // Made 1 pt tall, a rule moves down by half the difference.
+        let (top, bottom) = ((now[1] - was[1]).abs(), (now[3] - was[3]).abs());
+        assert!(top < 0.05 && bottom < 0.05, "{was:?} to {now:?}");
+    }
+
     /// ENH-01: closing the window while a tab's save asks a question asks Quit first;
     /// after Cancel the save's question is back, and once answered the tab is saved and
     /// closed. Going on to quit instead asks about that document again, once.

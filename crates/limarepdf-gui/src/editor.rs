@@ -4686,7 +4686,8 @@ impl Editor {
                 egui::Grid::new("geom").num_columns(2).show(ui, |ui| {
                     for (label, v) in [("X", &mut x), ("Y", &mut y)] {
                         ui.label(label);
-                        let r = ui.add(egui::DragValue::new(v).range(-5000.0..=20000.0).speed(0.5));
+                        let field = egui::DragValue::new(v).range(-5000.0..=20000.0);
+                        let r = ui.add(field.clamp_existing_to_range(false).speed(0.5));
                         dialogs::set_name(&r, label);
                         done |= r.drag_stopped() || r.lost_focus();
                         ui.end_row();
@@ -5062,6 +5063,7 @@ impl Editor {
                             let r = ui.add(
                                 egui::DragValue::new(&mut s.width)
                                     .range(0.0..=40.0)
+                                    .clamp_existing_to_range(false)
                                     .speed(0.1)
                                     .suffix(" pt"),
                             );
@@ -5592,9 +5594,12 @@ impl Editor {
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut insp.stroke_on, "Outline");
                     color_button(ui, &mut insp.stroke, "Outline colour");
+                    // A width outside the range (a hairline) is shown as it is: raised to
+                    // the range, it would be a change never made.
                     let r = ui.add(
                         egui::DragValue::new(&mut insp.width)
                             .range(0.25..=100.0)
+                            .clamp_existing_to_range(false)
                             .speed(0.1)
                             .suffix(" pt"),
                     );
@@ -5636,7 +5641,10 @@ impl Editor {
                         ("Height", &mut h, 1.0),
                     ] {
                         ui.label(label);
-                        let r = ui.add(egui::DragValue::new(v).range(lo..=20000.0).speed(0.5));
+                        // A rule's height under 1 pt is shown as it is: raised, it would
+                        // be made with the next change.
+                        let field = egui::DragValue::new(v).range(lo..=20000.0);
+                        let r = ui.add(field.clamp_existing_to_range(false).speed(0.5));
                         dialogs::set_name(&r, label);
                         done |= r.drag_stopped() || r.lost_focus();
                         ui.end_row();
@@ -5745,7 +5753,11 @@ fn shapes_ui(ui: &mut egui::Ui, g: &mut Group) {
         // Widths compared to a hundredth of a point, as a change is.
         let widths = g.all(|l| (l.width * 100.0).round() as i64);
         let mut w = g.shapes.first().map_or(1.0, |(.., l)| l.width);
-        let mut value = egui::DragValue::new(&mut w).range(0.25..=100.0).speed(0.1);
+        // A hairline is shown as it is, as for one shape.
+        let mut value = egui::DragValue::new(&mut w)
+            .range(0.25..=100.0)
+            .clamp_existing_to_range(false)
+            .speed(0.1);
         value = match widths {
             Some(_) => value.suffix(" pt"),
             None => value.custom_formatter(|_, _| String::new()),
@@ -5781,6 +5793,7 @@ fn text_style_ui(ui: &mut egui::Ui, s: &mut TextStyle) {
         let r = ui.add(
             egui::DragValue::new(&mut s.border)
                 .range(0.0..=20.0)
+                .clamp_existing_to_range(false)
                 .speed(0.1)
                 .suffix(" pt"),
         );
