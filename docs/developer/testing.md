@@ -225,8 +225,10 @@ headless. The status bar's zoom
 staying put (`the_status_bar_zoom_stays_put_when_zooming`, the user's find while stage 2 was built) failed on the
 code before: Zoom in moved 56 points when Fit width left the label. Two earlier tests changed with it: Tab's order
 reaches the thumbnails' list, not the first thumbnail; `the_inspectors_heading_leaves_a_line_edit_open` waits out
-the inspector's fold (architecture.md). By hand: not run, deferred to the RC cycle, with stage 3's captures (narrow,
-short, dark and scaled, beside the mockup's Organise state) and a 10,000-page grid still to come.
+the inspector's fold (architecture.md). The user tried stage 2 on a Linux release build, 2026-10-28: "Tested and
+it all looks OK. Everything works as expected." The acceptance row's steps, Windows and macOS: not run, deferred to
+the RC cycle, with stage 3's captures (narrow, short, dark and scaled, beside the mockup's Organise state) and a
+10,000-page grid still to come.
 
 D6's routes (build plan 6.4, ENH-37), from the normal workspace with Edit's band showing, in band or menu
 openings, kept by `band.rs`'s `common_actions_are_two_openings_away_at_most`:
