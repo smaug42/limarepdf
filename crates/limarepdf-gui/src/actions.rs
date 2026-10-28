@@ -188,6 +188,11 @@ pub enum Act {
     Extract,
     Blank,
     InsertImages,
+    /// Insert the pages of other PDFs where the insertion bar is in Organise, else after
+    /// the selected pages or the current page.
+    InsertPdf,
+    /// Move the selected pages, as Word moves paragraphs with Alt+Shift and an arrow.
+    MovePages(PageMove),
     Scans,
     Ocr,
     Merge,
@@ -199,6 +204,18 @@ pub enum Act {
     Props,
     Security,
     About,
+}
+
+/// Where [`Act::MovePages`] moves the selected pages: a place earlier or later, a row up or
+/// down (in Organise's grid; in the thumbnails a row is a page), or to the start or end.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PageMove {
+    Earlier,
+    Later,
+    Up,
+    Down,
+    Start,
+    End,
 }
 
 impl Act {
@@ -244,6 +261,8 @@ impl Act {
             | Act::Extract
             | Act::Blank
             | Act::InsertImages
+            | Act::InsertPdf
+            | Act::MovePages(_)
             | Act::Merge => true,
             Act::Open
             | Act::OpenRecent(_)
@@ -390,6 +409,8 @@ pub struct Ctx {
     pub pages: bool,
     /// The active tab shows its pages as Organise's grid (NEW-14).
     pub organise: bool,
+    /// Pages are cut, waiting to be pasted.
+    pub cut: bool,
     pub tool: Option<Tool>,
     /// The Annotate button's tool, the one last used.
     pub annot_tool: Option<Tool>,
@@ -488,13 +509,18 @@ fn words_idle(c: &Ctx) -> bool {
 fn copyable(c: &Ctx) -> bool {
     c.typing || c.words || lines_among(c)
 }
-/// Something to cut: what is selected in the text being typed, words, or lines of page
-/// text with nothing else selected, whose text Cut copies.
+/// Something to cut: what is selected in the text being typed, words, lines of page text
+/// with nothing else selected, whose text Cut copies, or pages, to paste elsewhere.
 fn cuttable(c: &Ctx) -> bool {
-    c.typing || ((c.words || (c.object && c.obj_only_text)) && !c.busy)
+    c.typing || ((c.words || (c.object && c.obj_only_text) || c.pages) && !c.busy)
 }
-fn typing(c: &Ctx) -> bool {
-    c.typing
+/// Somewhere to paste: the text being typed, or pages cut to put elsewhere.
+fn pasteable(c: &Ctx) -> bool {
+    c.typing || (c.cut && !c.busy)
+}
+/// Pages selected, to move.
+fn pages_selected(c: &Ctx) -> bool {
+    c.pages && !c.busy
 }
 fn doc_idle(c: &Ctx) -> bool {
     c.doc && !c.busy
@@ -551,6 +577,7 @@ const C: Modifiers = Modifiers::COMMAND;
 const CS: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
 const N: Modifiers = Modifiers::NONE;
 const S: Modifiers = Modifiers::SHIFT;
+const AS: Modifiers = Modifiers::ALT.plus(Modifiers::SHIFT);
 const fn k(m: Modifiers, key: Key) -> KeyboardShortcut {
     KeyboardShortcut::new(m, key)
 }
@@ -702,7 +729,8 @@ pub static ACTIONS: &[Action] = &[
         enabled: cuttable,
         sep: true,
         hint: "Copy what is selected in the text being typed, else the selected words or \
-               lines of text, and take it out. Undo brings it back.",
+               lines of text, and take it out. Undo brings it back. Pages selected are cut \
+               to paste elsewhere in the document.",
         ..BASE
     },
     Action {
@@ -721,8 +749,11 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Edit,
         label: "Paste",
         icon: icon::CLIPBOARD_TEXT,
-        enabled: typing,
-        hint: "Paste into the text being typed, at its caret (Ctrl+V there does the same).",
+        // Shown, not matched: the system sends the key as a paste (App::type_over).
+        keys: &[k(C, Key::V)],
+        enabled: pasteable,
+        hint: "Paste into the text being typed, at its caret. Pages cut go where the \
+               insertion bar is in Organise, else after the selected pages.",
         ..BASE
     },
     Action {
@@ -1628,7 +1659,8 @@ pub static ACTIONS: &[Action] = &[
         sep: true,
         label: "Insert blank page",
         icon: icon::FILE_PLUS,
-        hint: "After the selected pages, or the current page, at its size.",
+        hint: "Where the insertion bar is in Organise, else after the selected pages or the \
+               current page, at the size of the page before it.",
         ..BASE
     },
     Action {
@@ -1636,7 +1668,80 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Pages,
         label: "Insert images…",
         icon: icon::IMAGES,
-        hint: "After the selected pages, or the current page.",
+        hint: "Where the insertion bar is in Organise, else after the selected pages or the \
+               current page.",
+        ..BASE
+    },
+    Action {
+        act: Act::InsertPdf,
+        group: Group::Pages,
+        label: "Insert PDF pages…",
+        icon: icon::FILE_PDF,
+        hint: "The pages of other PDFs, where the insertion bar is in Organise, else after \
+               the selected pages or the current page.",
+        // Files are read in the background, as for Append PDFs.
+        enabled: idle,
+        ..BASE
+    },
+    Action {
+        act: Act::MovePages(PageMove::Earlier),
+        group: Group::Pages,
+        label: "Earlier",
+        keys: &[k(AS, Key::ArrowLeft)],
+        enabled: pages_selected,
+        hint: "The selected pages, one place earlier.",
+        submenu: "Move pages",
+        sep: true,
+        ..BASE
+    },
+    Action {
+        act: Act::MovePages(PageMove::Later),
+        group: Group::Pages,
+        label: "Later",
+        keys: &[k(AS, Key::ArrowRight)],
+        enabled: pages_selected,
+        hint: "The selected pages, one place later.",
+        submenu: "Move pages",
+        ..BASE
+    },
+    Action {
+        act: Act::MovePages(PageMove::Up),
+        group: Group::Pages,
+        label: "Up a row",
+        keys: &[k(AS, Key::ArrowUp)],
+        enabled: pages_selected,
+        hint: "The selected pages, a row up in Organise; one place earlier in the thumbnails.",
+        submenu: "Move pages",
+        ..BASE
+    },
+    Action {
+        act: Act::MovePages(PageMove::Down),
+        group: Group::Pages,
+        label: "Down a row",
+        keys: &[k(AS, Key::ArrowDown)],
+        enabled: pages_selected,
+        hint: "The selected pages, a row down in Organise; one place later in the thumbnails.",
+        submenu: "Move pages",
+        ..BASE
+    },
+    Action {
+        act: Act::MovePages(PageMove::Start),
+        group: Group::Pages,
+        label: "To the start",
+        keys: &[k(AS, Key::Home)],
+        enabled: pages_selected,
+        hint: "The selected pages, before the first page.",
+        submenu: "Move pages",
+        ..BASE
+    },
+    Action {
+        act: Act::MovePages(PageMove::End),
+        group: Group::Pages,
+        label: "To the end",
+        keys: &[k(AS, Key::End)],
+        enabled: pages_selected,
+        hint: "The selected pages, after the last page.",
+        submenu: "Move pages",
         ..BASE
     },
     Action {
@@ -1895,11 +2000,28 @@ pub fn context_items(sel: &Selection) -> &'static [&'static [Act]] {
         }
         Selection::Objects { .. } => &[&[Act::ReplaceImage], &[Act::DeleteObject]],
         Selection::None | Selection::Pages(_) => &[
+            &[Act::Cut, Act::Paste],
             &[Act::RotR, Act::RotL, Act::Crop],
-            &[Act::Blank, Act::InsertImages, Act::Extract, Act::Delete],
+            &MOVES,
+            &[
+                Act::Blank,
+                Act::InsertImages,
+                Act::InsertPdf,
+                Act::Extract,
+                Act::Delete,
+            ],
         ],
     }
 }
+
+/// The page moves in the band's Move menu and the pages' right-click menu: the row moves
+/// are keys (and the Pages menu's), since a row is the grid's.
+pub const MOVES: [Act; 4] = [
+    Act::MovePages(PageMove::Earlier),
+    Act::MovePages(PageMove::Later),
+    Act::MovePages(PageMove::Start),
+    Act::MovePages(PageMove::End),
+];
 
 /// Fill a right-click menu: only the commands that are available now.
 pub fn context_menu(ui: &mut egui::Ui, sel: &Selection, c: &Ctx, acts: &mut Vec<Act>) {
@@ -1917,6 +2039,15 @@ pub fn context_menu(ui: &mut egui::Ui, sel: &Selection, c: &Ctx, acts: &mut Vec<
             ui.separator();
         }
         first = false;
+        // The moves as one submenu, as in the Pages menu.
+        if group == &MOVES {
+            ui.menu_button("Move pages", |ui| {
+                for a in &items {
+                    menu_item(ui, a, c, acts);
+                }
+            });
+            continue;
+        }
         for a in &items {
             menu_item(ui, a, c, acts);
         }
@@ -1939,7 +2070,7 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
     }
     // What a command may wait for, given, and what it says then.
     type Fix = (fn(&mut Ctx), &'static str);
-    let fixes: [Fix; 18] = [
+    let fixes: [Fix; 21] = [
         (
             |d| d.busy = false,
             "Waits until the task under way finishes.",
@@ -1948,11 +2079,15 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
         (|d| d.file = true, "Save the document as a file first."),
         (|d| d.can_undo = true, "Nothing to undo."),
         (|d| d.can_redo = true, "Nothing to redo."),
+        // In Organise's grid, where nothing is typed or selected but pages, these first.
+        (|d| d.cut |= d.organise, "Cut pages first."),
+        (|d| d.pages |= d.organise, "Select pages first."),
         (|d| d.words = true, "Select some text first."),
         (
             |d| d.typing = true,
             "Click in text being typed, or where new text goes, first.",
         ),
+        (|d| d.pages = true, "Select pages first."),
         (
             |d| {
                 (d.object, d.obj_kind) = (true, Some(ObjKind::Text));

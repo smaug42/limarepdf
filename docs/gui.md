@@ -4,7 +4,8 @@
 
 A reference for every part of the desktop app: the window, the tools, opening and saving, recovery copies, the
 inspector, keyboard shortcuts and settings. For step-by-step help with a task, see the
-[everyday tasks](README.md#everyday-tasks). Shortcuts are written with Ctrl; on a Mac, use ⌘ (Command) instead.
+[everyday tasks](README.md#everyday-tasks). Shortcuts are written with Ctrl and Alt; on a Mac, use ⌘ (Command) and
+⌥ (Option) instead.
 
 ![The LimarePDF window with a three-page report open](images/limarepdf.png)
 
@@ -22,17 +23,21 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
 - **The command band**, under the names: the buttons of the name you chose, in groups (see
   [The command band](#the-command-band)).
 - **Bottom:** what is selected or the tool in use (**Editing one line** while you edit a line on the page), and
-  messages, at the left; at the right the page you are on,
-  **Show planned features**, and the zoom, such as "Fit width · 96%", which opens a menu of zoom and page layout
-  (see [Reading and finding](reading-and-finding.md#move-around-the-pages)).
+  messages, at the left; at the right the page you are on (in Organise, how many pages are selected, such as
+  "4 of 12 pages selected"), **Show planned features**, the view buttons **Page view** and **Organise pages**, and
+  the zoom: − and + (Zoom out and Zoom in) with a slider between them (in windows 900 points wide or more), then
+  the zoom level, such as "96%", which opens a menu of zoom and page layout (see
+  [Reading and finding](reading-and-finding.md#move-around-the-pages)). In Organise, the zoom sizes the cards.
 - **Left:** a strip of icons for the side panel's views: Pages (the thumbnails), Search results, Bookmarks (the
   document's outline), Comments and Digital signatures. Clicking a view opens it; clicking the open one folds the
   panel away, and clicking it again brings it back. Documents open on Pages, unless the file asks to open on its
-  bookmarks. Pages are called by the document's page labels where it has them, unless View > Show > Use the
-  document's page labels is off. See [Bookmarks](reading-and-finding.md#bookmarks), [Search](reading-and-finding.md#find-words),
+  bookmarks. While you organise pages the Pages view folds away, and its icon goes back to the page view. Pages are
+  called by the document's page labels where it has them, unless View > Show > Use the document's page labels is
+  off. See [Bookmarks](reading-and-finding.md#bookmarks), [Search](reading-and-finding.md#find-words),
   [Comments](comments-and-markup.md#see-every-comment-and-reply) and [Digital signatures](signatures.md).
 - **Middle:** the pages, scrolling continuously. By default they fit the width between the side panels; zooming
-  turns that off. Continuous, facing or single pages: see [Page layout](reading-and-finding.md#page-layout).
+  turns that off. Continuous, facing or single pages: see [Page layout](reading-and-finding.md#page-layout). In
+  Organise, every page as a card instead (see [Organising pages](organising-pages.md#see-every-page-at-once)).
 - **Right:** the inspector, which shows what is selected and its options, the document when nothing is, or a tool
   you opened, such as Watermark (see [The inspector](#selecting-and-the-inspector)). The » at its top collapses it
   to a strip; the « at the top of the strip expands it again, and the strip's options button shows the inspector's
@@ -80,17 +85,17 @@ undo.", "Select some text first." or "Click in a form field first."
 
 | Name | Groups and buttons |
 | --- | --- |
-| Edit | Paste, Cut and Copy; the **Font** group: the font, size, Bold, Italic and text colour of the text selected or being typed ([Style words](content-editing.md#style-words-you-select-while-reading)); Edit text, Find, and Select ▾ (Read and select text, the arrow, select all) |
+| Edit | Paste, Cut and Copy; the **Font** group: the font, size, Bold, Italic and text colour of the text selected or being typed ([Style words](content-editing.md#style-words-you-select-while-reading)); Edit text, Find, and Select ▾ (Read and select text, the arrow, select all text, objects or pages) |
 | Insert | Text and Image; Header and footer, Watermark; From images (a new PDF from pictures) |
 | Review | Note, Comments ▾ (your name for comments); Highlight ▾ (underline, strike out, squiggly underline and the colours), Text box, Draw ▾ (the pen, rectangle, ellipse, line or arrow), Stamp; Flatten… |
-| Pages | Rotate ▾, Extract, Delete ▾ (remove blank pages); Insert pages ▾ (a blank page, images, other PDFs), Split; Crop, Page labels; Recognise text, Optimise |
+| Pages | Rotate ▾, Extract, Delete ▾ (remove blank pages); Insert pages ▾ (a blank page, images, other PDFs' pages, or other PDFs at the end), Move ▾ (earlier, later, to the start or the end), Split, Organise ([every page at once](organising-pages.md#see-every-page-at-once)); Crop, Page labels; Recognise text, Optimise |
 | Forms and sign | Fill fields ▾ (next and previous field, highlight fields, clear, reset or flatten the form), Fill and sign ▾ (saved signatures and initials, Create signature…, the date, your name, text, marks); Digital signature ▾ (sign, certify, the signatures in this document, digital IDs, trusted certificates) |
 | Protect | Mark redaction ▾ (the area tool, the selected words, all search results), Apply redactions…; Passwords, Remove hidden data |
 | View | Fit width, Facing pages ▾ (the page layouts), Zoom ▾; Pages panel ▾ (show or hide it, and its views), Properties ▾ (the inspector, and where the selection's buttons go); Theme ▾, Accent colour ▾, Page colours ▾, Show ▾ (recognised text, field highlights, page labels, planned features, compact commands) |
 
 **Planned features.** Buttons marked **Planned**, greyed, are features not built yet, shown where they will be:
 Underline, Replace, Paragraph and Align in Edit; Link and Blank document in Insert; Spelling and Export comments in
-Review; Organise in Pages; Create fields in Forms and sign; Your AI in View; Print preview and Reduce file size in
+Review; Create fields in Forms and sign; Your AI in View; Print preview and Reduce file size in
 the File menu. They do nothing, and Tab passes them by. In the inspector, selected text ends with **Future text
 tools**, marked Planned: open it to see which text tools are coming. Turn off **Show planned features** in the
 status bar (or View > Show) to hide them all; the choice is remembered.
@@ -300,7 +305,8 @@ copies are not autosave: **your own files are never written by them.**
 - Saving or closing a document deletes its copy, and quitting normally deletes them all.
 - Password-protected documents get no copies: not one opened with a password, not one you set a password on (its
   copy is deleted first), not pages taken from one, and not a document you add a protected document's pages to
-  with Append PDFs (its copy is deleted first too; this includes protected files that open without a password).
+  with Insert PDF pages or Append PDFs (its copy is deleted first too; this includes protected files that open
+  without a password).
 - The copies are kept in a folder only you can read: `~/.local/state/limarepdf/recovery` on Linux (or
   `$XDG_STATE_HOME/limarepdf/recovery`), `~/Library/Application Support/limarepdf/recovery` on macOS, and
   `%LOCALAPPDATA%\limarepdf\recovery` on Windows. At the start, LimarePDF looks only in real folders of yours there:
@@ -354,7 +360,7 @@ click a section's name to open or fold it.
 | Selected | Inspector |
 | --- | --- |
 | Nothing | Headed **Document**. Facts: Pages; Paper (Letter, Legal, Tabloid, Executive, A3, A4, A5 or B5, either way round; the size in points for others; Mixed when the pages differ); Security (None, Open password or Permissions password, as the document will be saved; Removed on save for a protected document you opened, until you set a password again); Form fields, how many, for a form; Signatures, how many, for a document with signature fields. Folded: [Properties](#document-properties), [Opening view](#opening-view) and, for a form, [Form](forms.md#the-form-section) |
-| Pages (click thumbnails; Shift for a range, Ctrl for one more) | Headed **Selected page** or **Selected pages**, with which ones, such as "Pages 1–2, 5 of 9". Facts: Paper, and Orientation (Portrait, Landscape, Square or Mixed, as the pages are shown, after rotating). Buttons: rotate either way, delete, extract to a new tab, and insert images after them. Folded: **Insert blank page**, and **Page properties**, which holds **Crop** and **Page labels** ([Organising pages](organising-pages.md)) |
+| Pages (click thumbnails or Organise's cards; Shift for a range, Ctrl for one more) | Headed **Selected page** or **Selected pages**, with which ones, such as "Pages 1–2, 5 of 9". Facts: Paper, and Orientation (Portrait, Landscape, Square or Mixed, as the pages are shown, after rotating). Buttons: rotate either way, delete, extract to a new tab, and insert images after them. Folded: **Insert blank page**, and **Page properties**, which holds **Crop** and **Page labels** ([Organising pages](organising-pages.md)) |
 | An object, a comment, or a tool that adds content | That object's or tool's options, headed by what it is (Selected text, Image, Text box, New rectangle). For a line of text, selected or being edited, or new text being typed: how it is edited (One line, New text), its font and size (Mixed where they differ) and, for a line, its font as the PDF names it (PDF font) and how what you type will be written (Source font: Preserved, Installed family, Nearest standard, Partly preserved, Mixed or Font chosen; see [Change size, font and colour](content-editing.md#change-size-font-and-colour)); their look is changed in Edit > Font in the command band ([Style words in a line](content-editing.md#style-words-in-a-line)). An object's position and size are in its **Position and size** section, which stays open or closed as you left it |
 | A form field you are typing in | Headed **Form field**. Words selected on the page before are let go, so Edit > Font and Ctrl+B don't change them meanwhile |
 | Several objects | Headed by how many (3 objects), with a line saying what they are: the font and size of the lines of text among them (changed in Edit > Font), the look of the shapes, blank or mixed where they differ, their position (X and Y) and Delete ([Select several objects](content-editing.md#select-several-objects)) |
@@ -371,8 +377,8 @@ text when you press Enter or leave the field, a choice at once, a number when yo
 box. Saving, printing and other commands keep a field you are still typing in. Password security is the exception: its Apply button
 sets the passwords, which take effect when you save.
 
-Right-click a page, an object, selected words or a thumbnail for a short menu of what applies there.
-Right-clicking selects what is under the pointer first. A selected object or run of words also gets a small
+Right-click a page, an object, selected words, a thumbnail or a card in Organise for a short menu of what applies
+there. Right-clicking selects what is under the pointer first. A selected object or run of words also gets a small
 floating toolbar with the same commands. It sits by the selection: above it, below it or beside it where that
 covers no other text, or else just above or below it, over as little text as it can; it never covers the
 selection. While a line is edited on the page, it has Bold, Italic, Cut and Copy for what is selected in the line,
@@ -436,7 +442,7 @@ all three from how you are viewing the document now; Undo reverses any of them.
 
 ## Keyboard shortcuts
 
-Shortcuts show ⌘ instead of Ctrl on macOS.
+Shortcuts show ⌘ instead of Ctrl, and ⌥ instead of Alt, on macOS.
 
 | Keys | Action |
 | --- | --- |
@@ -450,25 +456,30 @@ Shortcuts show ⌘ instead of Ctrl on macOS.
 | Ctrl+K | Command palette |
 | F6, Shift+F6 | Move the keyboard to the next, previous part of the window: the tabs, the commands, notices, navigation, the page, the inspector, the status bar |
 | Left, Right on a panel's edge (Shift for 50 points); Home, End | Make the panel narrower or wider by 10 points; as narrow as it goes, half the window wide |
-| Ctrl+= , Ctrl+- | Zoom in, zoom out |
-| Ctrl+0, Ctrl+1 | Fit width on or off, actual size |
-| Ctrl+scroll, pinch | Zoom |
+| Ctrl+= , Ctrl+- | Zoom in, zoom out (in Organise, the cards) |
+| Ctrl+0, Ctrl+1 | Fit width on or off, actual size (in Organise, cards at 20%) |
+| Ctrl+scroll, pinch | Zoom (in Organise, the cards) |
 | PageUp, PageDown, Home, End | Previous, next, first, last page |
+| Arrow keys, Home, End, PageUp, PageDown (in Organise's grid or the thumbnails) | Go to the next card or thumbnail, a row, the first or last, a screen of rows, selecting it; with Shift, select from where you started; with Ctrl, go there without selecting |
+| Space (or Ctrl+Space), Enter (in Organise's grid or the thumbnails) | Add the page the keys are at to the pages selected, or take it out; show that page |
+| Alt+Shift+Left, Alt+Shift+Right; Alt+Shift+Up, Alt+Shift+Down; Alt+Shift+Home, Alt+Shift+End | Move the selected pages a place earlier or later; a row up or down (a place, in the thumbnails); to the start or the end |
+| Ctrl+A (Organise) | Select every page |
 | Delete, Backspace | Delete the selected words, objects, comment or mark, or the selected pages |
 | Ctrl+Shift+H | Highlight the selected text |
 | Arrow keys (Shift for 10 points) | Move the selected objects |
 | Shift+Left, Shift+Right; Shift+Up, Shift+Down; Shift+Home, Shift+End (words selected with the read tool) | Extend the selection by a word; to the line above or below; to the start or end of the line, across pages |
 | Ctrl+A, Ctrl+C | Select all text on the page, copy it (read tool or Text tool) |
-| Ctrl+X | Cut the words selected with the read tool, the lines of text selected with the arrow, or what is selected in text being typed |
+| Ctrl+X | Cut the words selected with the read tool, the lines of text selected with the arrow, or what is selected in text being typed; or cut the selected pages, to paste elsewhere in the document |
+| Ctrl+V (pages cut) | Move the pages cut to Organise's insertion bar, or after the selected pages (or the page you are on) |
 | Typing, Ctrl+V (words selected with the read tool, in one line) | Replace the words, in their line opened for editing |
 | Ctrl+A (arrow) | Select every object on the page |
 | Shift+click (read tool: pictures and shapes; arrow: any object) | Add an object to the selection or take it out |
 | Shift+drag (arrow) | Add what a rectangle holds to the selection |
-| Esc | Cancel: close an open list, menu or colour picker (only that), cancel a move, resize, shape, pen stroke, selection rectangle or word selection being dragged (only that), finish (and keep) new text, a line, a note, a text box or a form field being typed, clear the selection, or leave a tool for the read tool. In a box of Edit > Font or the inspector (the font size, say) while typing is open on the page, it drops what was typed in the box and goes back to the typing |
+| Esc | Cancel: close an open list, menu or colour picker (only that), cancel a move, resize, shape, pen stroke, selection rectangle, word selection or pages being dragged (only that), finish (and keep) new text, a line, a note, a text box or a form field being typed, take back pages cut, take away Organise's insertion bar, clear the selection, or leave a tool for the read tool. In a box of Edit > Font or the inspector (the font size, say) while typing is open on the page, it drops what was typed in the box and goes back to the typing |
 | Ctrl+B, Ctrl+I | Bold, Italic for the words selected with the read tool, or the lines selected with the arrow; in new text being typed (Add text) or a line being edited on the page, for the words selected there, or with nothing selected, the word at the caret, or what is typed next between words |
 | Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z) while typing new text, a line, a note, a text box, a form field or in any box of the inspector | Undo, redo the typing there (and the styles, in new text and lines), not the document |
 | Tab, Shift+Tab | Next, previous form field; Space ticks a checkbox or opens a list |
-| Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the tabs, the commands, the bottom bar and panels left to right; inside a dialog, its fields and then its buttons, from the last straight back to the first. Leaving one of the inspector's boxes by Tab keeps what was typed. Space or Enter presses the button. In a form, Tab moves between its fields; F6 reaches the rest of the window, and Ctrl+K every command |
+| Tab, Shift+Tab (a document without fillable fields) | Next, previous button or field: the tabs, the commands, the bottom bar and panels left to right (the thumbnails are one stop, and so is Organise's grid); inside a dialog, its fields and then its buttons, from the last straight back to the first. Leaving one of the inspector's boxes by Tab keeps what was typed. Space or Enter presses the button. In a form, Tab moves between its fields; F6 reaches the rest of the window, and Ctrl+K every command |
 
 ### Screen readers
 
@@ -480,11 +491,14 @@ list with a button on each row, the button names its row: Restore Report.pdf in 
 Jane Example… in Trusted certificates. Each part of the window that F6 goes to is named (Tabs, the commands by the
 name shown, such as Edit commands, Notices, Navigation, Document, Inspector, Status bar), the side panel by the
 view it shows, and each document's tab says whether it is the one shown and whether it is unsaved. The command
-band's names are tabs that say which is shown, the side panel's icons say which view is shown, a planned feature's
-name ends in "Planned", and icon-only buttons are named in words, such as Close Watermark for a tool's ×. The
-inspector's Future text tools is named "Future text tools — Planned"; unlike the planned buttons, Tab stops on it,
-as it opens to show its note. The edges of the side panel and the inspector are named Side panel width and
-Inspector width; they move with the arrow keys, and a screen reader can set them too.
+band's names are tabs that say which is shown, the side panel's icons say which view is shown, and so do the
+status bar's Page view and Organise pages. The thumbnails are one stop, Page thumbnails, and Organise's grid
+another, Page grid, where the arrow keys move between the pages; each card is named after its page (Page 3) and
+says whether it is selected, and its checkbox is named Select page 3. A planned feature's name ends in "Planned",
+and icon-only buttons are named in words, such as Close Watermark for a tool's ×. The inspector's Future text tools
+is named "Future text tools — Planned"; unlike the planned buttons, Tab stops on it, as it opens to show its note.
+The edges of the side panel and the inspector are named Side panel width and Inspector width; they move with the
+arrow keys, and a screen reader can set them too.
 
 The names are checked by the app's tests on Linux. LimarePDF hasn't been tried with a screen reader yet (Orca,
 Narrator or VoiceOver).

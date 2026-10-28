@@ -73,15 +73,24 @@ enum Unlock {
     Append(Box<Appending>),
 }
 
-/// PDFs whose pages are being added to the end of a tab's document, read in the background
-/// one after another (BUG-20).
+/// PDFs whose pages are being added to a tab's document, read in the background one after
+/// another (BUG-20).
 struct Appending {
-    /// The tab they go to.
+    /// The tab they go to, and where in it.
     tab: u64,
+    to: PagesGo,
     /// The files, in order.
     files: Vec<PathBuf>,
     /// The documents read so far, one per file in order; `None` for a file left out.
     read: Vec<Option<Pdf>>,
+}
+
+/// Where pages read from files go: after the last page (Append PDFs), or after a page,
+/// by its object, or first (Insert PDF pages), wherever that page goes meanwhile.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum PagesGo {
+    End,
+    After(Option<(u32, u16)>),
 }
 
 /// The documents read to add to a tab's document, some with form fields, waiting for the
@@ -90,6 +99,7 @@ struct Appending {
 /// would show blank.
 struct AppendForms {
     asked: Asked,
+    to: PagesGo,
     /// The documents, in order.
     docs: Vec<Pdf>,
     /// The names of the files with form fields.
@@ -1779,7 +1789,10 @@ impl App {
                             self.ask_password(Dialog::Password(ask, Unlock::Append(a)), again);
                         }
                         Some(AppendStop::Failed(why)) => self.show(Dialog::Message(
-                            "Append failed".into(),
+                            match a.to {
+                                PagesGo::End => "Append failed".into(),
+                                PagesGo::After(_) => "Insert failed".into(),
+                            },
                             format!("{why}\n\nNothing was added."),
                         )),
                     }
@@ -2646,11 +2659,14 @@ impl App {
             Act::Escape if self.tabs[self.active].crop_view() => {
                 self.tabs[self.active].forms.close = Some(inspector::Section::Crop);
             }
-            // Organising, Esc lets go of the pages selected.
-            Act::Escape if has && self.tabs[self.active].organising() => {
-                self.tabs[self.active].ed.selection = Selection::None;
+            // Pages dragged stay, pages cut are no longer, then the insertion bar goes, then
+            // in Organise the pages selected are let go (Tab::escape_pages).
+            Act::Escape => {
+                let t = &mut self.tabs[self.active];
+                if !t.escape_pages() {
+                    t.ed.escape();
+                }
             }
-            Act::Escape => self.tabs[self.active].ed.escape(),
             Act::NextPage | Act::PrevPage | Act::FirstPage | Act::LastPage => {
                 let t = &mut self.tabs[self.active];
                 let (layout, cover) = (t.layout, t.cover);
@@ -2710,7 +2726,29 @@ impl App {
                         t.ed.refocus_typing();
                         self.clip = Some((clip, id));
                     }
-                    (None, Clip::Paste) => {}
+                    // Pages cut move to where pages go: the insertion bar, else after the
+                    // pages selected.
+                    (None, Clip::Paste) => {
+                        if let Some(said) = t.has_cut().then(|| t.paste_pages(ctx)).flatten() {
+                            t.info = Some(said.into());
+                        }
+                    }
+                    // Pages are cut to paste elsewhere; the system's clipboard gets their
+                    // names, so that the paste keys work wherever the clipboard was empty.
+                    (None, Clip::Cut) if t.ed.selection.pages().is_some() => {
+                        let chosen = t.ed.selection.pages().cloned().unwrap_or_default();
+                        let names: Vec<String> = chosen.iter().map(|&p| t.page_name(p)).collect();
+                        let n = t.cut_selected_pages();
+                        let what = match n {
+                            1 => "1 page".to_string(),
+                            n => format!("{n} pages"),
+                        };
+                        ctx.copy_text(format!("Pages {} of {}", names.join(", "), t.name()));
+                        self.status = format!(
+                            "Cut {what}: paste to put them where the insertion bar is, or after \
+                             the pages selected."
+                        );
+                    }
                     (None, Clip::Copy) => match t.ed.selected_text() {
                         Some(text) => {
                             ctx.copy_text(text);
@@ -2844,17 +2882,24 @@ impl App {
                 }
             }
             Act::Split => self.reveal(Section::Split),
+            // At the page before's size, or the first page's at the start.
             Act::Blank => {
                 let t = &self.tabs[self.active];
-                let after = t.targets().last().copied().unwrap_or(t.current);
-                let size = t.sizes.get(after).copied().unwrap_or((612.0, 792.0));
-                self.insert_blank(ctx, after, size);
+                let at = t.insert_at();
+                let size = t.sizes.get(at.saturating_sub(1)).copied();
+                self.insert_blank(ctx, at, size.unwrap_or((612.0, 792.0)));
             }
             Act::Merge => {
                 if let Some(files) = Self::pdf_dialog().pick_files() {
                     self.merge_files(ctx, &files);
                 }
             }
+            Act::InsertPdf => {
+                if let Some(files) = Self::pdf_dialog().pick_files() {
+                    self.insert_files(ctx, &files);
+                }
+            }
+            Act::MovePages(to) => self.tabs[self.active].move_pages(ctx, to),
             Act::InsertImages => {
                 let Some(files) = Self::pick_images() else {
                     return;
@@ -2863,13 +2908,10 @@ impl App {
                     return;
                 };
                 let t = &mut self.tabs[self.active];
-                // After the selected pages, or the current page.
-                let after = t.targets().last().copied().unwrap_or(t.current);
-                let (at, before) = (after + 1, t.page_count());
+                // At the insertion bar, else after the selected pages or the current page.
+                let (at, before) = (t.insert_at(), t.page_count());
                 t.arrange(ctx, &[], |p| insert_images(p, at, &data));
-                if t.page_count() > before {
-                    t.go_to(at);
-                }
+                t.placed(at, t.page_count() - before);
             }
             Act::Scans => self.reveal(Section::Scans),
             Act::Ocr => self.reveal(Section::Ocr),
@@ -3219,14 +3261,12 @@ impl App {
         self.toasts.push(toast);
     }
 
-    /// Insert a blank page of `size` points after page `after` (0-based) and go to it.
-    fn insert_blank(&mut self, ctx: &egui::Context, after: usize, size: (f32, f32)) {
+    /// Insert a blank page of `size` points as page `at` (0-based) and show it.
+    fn insert_blank(&mut self, ctx: &egui::Context, at: usize, size: (f32, f32)) {
         let t = &mut self.tabs[self.active];
         let before = t.page_count();
-        t.arrange(ctx, &[], |p| p.insert_blank(after + 1, size.0, size.1));
-        if t.page_count() > before {
-            t.go_to(after + 1);
-        }
+        t.arrange(ctx, &[], |p| p.insert_blank(at, size.0, size.1));
+        t.placed(at, t.page_count() - before);
     }
 
     /// Removes everything under the active tab's redaction marks, once its recovery copies
@@ -3272,6 +3312,21 @@ impl App {
     fn merge_files(&mut self, ctx: &egui::Context, files: &[PathBuf]) {
         let a = Appending {
             tab: self.tabs[self.active].id,
+            to: PagesGo::End,
+            files: files.to_vec(),
+            read: Vec::new(),
+        };
+        self.read_appending(ctx, Box::new(a), None);
+    }
+
+    /// Inserts the pages of `files` in the active tab where pages go
+    /// ([`Tab::insert_at`]), reading them in the background as [`App::merge_files`] does.
+    fn insert_files(&mut self, ctx: &egui::Context, files: &[PathBuf]) {
+        let t = &self.tabs[self.active];
+        let at = t.insert_at();
+        let a = Appending {
+            tab: t.id,
+            to: PagesGo::After(at.checked_sub(1).and_then(|p| t.page_id(p))),
             files: files.to_vec(),
             read: Vec::new(),
         };
@@ -3286,6 +3341,10 @@ impl App {
         mut a: Box<Appending>,
         mut password: Option<String>,
     ) {
+        let what = match a.to {
+            PagesGo::End => "Append PDFs…",
+            PagesGo::After(_) => "Insert PDF pages…",
+        };
         let (tx, ctx) = (self.tx.clone(), ctx.clone());
         std::thread::spawn(move || {
             let mut stop = None;
@@ -3308,10 +3367,10 @@ impl App {
             ctx.request_repaint();
         });
         self.busy = true;
-        self.status = "Append PDFs…".into();
+        self.status = what.into();
     }
 
-    /// Adds the pages of the files read for `a` to the end of its tab, in one step. Pages
+    /// Adds the pages of the files read for `a` to its tab, where they go, in one step. Pages
     /// from a password-protected document make the tab protected: its recovery copies are
     /// withdrawn first, as for a password, and it gets no more. Files with form fields are
     /// asked about first; with an answer LimarePDF can't draw, nothing is added.
@@ -3357,16 +3416,18 @@ impl App {
             let asked = Asked::of(&self.tabs[i]);
             self.show(Dialog::ConfirmAppendForms(Box::new(AppendForms {
                 asked,
+                to: a.to,
                 docs,
                 names,
             })));
             return;
         }
-        self.add_pages(ctx, i, docs);
+        self.add_pages(ctx, i, docs, a.to);
     }
 
-    /// Adds the pages of `docs` to the end of tab `i`'s document, in one step.
-    fn add_pages(&mut self, ctx: &egui::Context, i: usize, docs: Vec<Pdf>) {
+    /// Adds the pages of `docs` to tab `i`'s document where they go, in one step: after the
+    /// page named, first, or at the end (also when that page has gone since).
+    fn add_pages(&mut self, ctx: &egui::Context, i: usize, docs: Vec<Pdf>, to: PagesGo) {
         let protected = docs.iter().any(Pdf::encrypted);
         if protected {
             let done = "added the pages of the password-protected document";
@@ -3376,8 +3437,17 @@ impl App {
             }
         }
         let t = &mut self.tabs[i];
-        if t.arrange(ctx, &[], |p| p.append(docs)) && protected {
-            t.copy.protected = true;
+        let n = t.page_count();
+        let at = match to {
+            PagesGo::End => n,
+            PagesGo::After(None) => 0,
+            PagesGo::After(Some(id)) => t.page_of(id).map_or(n, |p| p + 1),
+        };
+        if t.arrange(ctx, &[], |p| p.insert_pages(at, docs)) {
+            t.copy.protected |= protected;
+            if to != PagesGo::End {
+                t.placed(at, t.page_count() - n);
+            }
         }
     }
 
@@ -3420,7 +3490,7 @@ impl App {
             Apply::Act(a) => self.act(ctx, a),
             Apply::Blank(after) => {
                 let size = self.tabs[active].forms.blank;
-                self.insert_blank(ctx, after, size);
+                self.insert_blank(ctx, after + 1, size);
             }
             Apply::Label(joins) => self.tabs[active].keep_label(ctx, joins),
             Apply::RemoveLabels => {
@@ -4324,7 +4394,7 @@ impl App {
                                 .filter(|d| !d.form_fields().is_empty())
                                 .try_for_each(|d| d.flatten_form(None).map(|_| ()));
                             match drawn {
-                                Ok(()) => self.add_pages(ctx, self.active, docs),
+                                Ok(()) => self.add_pages(ctx, self.active, docs, q.to),
                                 Err(e) => self.show(Dialog::Message(
                                     "Pages not added".into(),
                                     format!("{e:#}\n\nNothing was added."),
@@ -4604,18 +4674,30 @@ impl App {
             }
             return;
         }
-        let c = self.state(ctx);
-        // Undo and Redo in a text box take back and redo the typing there, and nothing
-        // else, even with nothing left to undo there (form fields, comments and the
-        // inspector's boxes too); Undo takes back the whole edit once it is kept. With a
-        // button holding the keyboard, they are the document's.
-        let typing = ctx.egui_wants_keyboard_input();
-        let in_text = ctx.text_edit_focused();
         // Esc with a list, menu or colour picker open only closes it (a note being typed
         // stays open while its colour is picked); Esc leaving a box for typing on the page
         // only goes back to it.
         let picking = egui::Popup::is_any_open(ctx);
         let back = self.esc_to_typing;
+        // Organise's grid and the thumbnails take their keys first (the arrows, Home and
+        // End, Page Up and Down, Space and Enter); with them holding the keyboard, the
+        // commands' plain keys (Delete, Esc, Alt+Shift and an arrow) work as with nothing.
+        let lists = self
+            .tabs
+            .get(self.active)
+            .is_some_and(|t| t.holds_keys(ctx));
+        if !picking {
+            if let Some(t) = self.tabs.get_mut(self.active) {
+                t.list_keys(ctx);
+            }
+        }
+        let c = self.state(ctx);
+        // Undo and Redo in a text box take back and redo the typing there, and nothing
+        // else, even with nothing left to undo there (form fields, comments and the
+        // inspector's boxes too); Undo takes back the whole edit once it is kept. With a
+        // button holding the keyboard, they are the document's.
+        let typing = ctx.egui_wants_keyboard_input() && !lists;
+        let in_text = ctx.text_edit_focused();
         let mut acts = Vec::new();
         // Plain keys a command took with Shift (Shift+Home extending the words selected):
         // with Shift, they aren't the command without it too (First page).
@@ -4640,7 +4722,8 @@ impl App {
                 // not an open list or menu, which Esc closes first.
                 let region = matches!(a.act, Act::NextRegion | Act::PrevRegion);
                 let skip = if region { picking } else { typing && !global };
-                if skip || in_box || closes || !(a.enabled)(&c) {
+                // Ctrl+V arrives as a paste, which App::type_over takes.
+                if skip || in_box || closes || a.act == Act::Paste || !(a.enabled)(&c) {
                     continue;
                 }
                 let hit = if a.act == Act::Copy {
@@ -4653,11 +4736,13 @@ impl App {
                 } else {
                     // The key's own modifiers, not those held at the end of the frame: a
                     // quick Ctrl+A can arrive with Ctrl already let go. Shift tells F6's
-                    // two directions apart.
+                    // two directions apart; Alt with Shift moves pages, so Alt is never
+                    // extra.
                     let shadowed = !k.modifiers.shift && shifted.contains(&k.logical_key);
                     i.events.iter().any(|e| {
                         matches!(e, egui::Event::Key { key, pressed: true, modifiers, .. }
                             if *key == k.logical_key && modifiers.matches_logically(k.modifiers)
+                                && modifiers.alt == k.modifiers.alt
                                 && (!region || modifiers.shift == k.modifiers.shift)
                                 && !(shadowed && modifiers.shift))
                     })
@@ -4679,12 +4764,15 @@ impl App {
     /// selected in the tab in front, as a word processor types over a selection, or into a
     /// line just opened on its page ([`crate::editor::Editor::type_over`]).
     fn type_over(&mut self, ctx: &egui::Context) {
-        if self.palette.is_some() || dlg::any_open(ctx) || ctx.egui_wants_keyboard_input() {
+        if self.palette.is_some() || dlg::any_open(ctx) {
             return;
         }
         let Some(t) = self.tabs.get_mut(self.active) else {
             return;
         };
+        if ctx.egui_wants_keyboard_input() && !t.holds_keys(ctx) {
+            return;
+        }
         let typed: Vec<egui::Event> = ctx.input(|i| {
             (i.events.iter())
                 .filter(|e| matches!(e, egui::Event::Text(_) | egui::Event::Paste(_)))
@@ -4692,8 +4780,16 @@ impl App {
                 .collect()
         });
         let paste = typed.iter().any(|e| matches!(e, egui::Event::Paste(_)));
-        if !typed.is_empty() && t.ed.type_over(ctx, &t.pdf, typed) {
+        // Pages cut go where pages are selected, or in Organise where the bar is; with
+        // nothing selected or typed, after the current page, as the band's Paste puts them.
+        let none = matches!(t.ed.selection, Selection::None) && t.ed.typing_id().is_none();
+        let pages = t.organising() || t.ed.selection.pages().is_some() || none;
+        if paste && pages && t.has_cut() {
+            self.act(ctx, Act::Paste);
+        } else if !typed.is_empty() && t.ed.type_over(ctx, &t.pdf, typed) {
             ctx.request_repaint();
+        } else if paste && t.organising() {
+            t.info = Some("To move pages, cut them, then paste them where they go".into());
         } else if paste && t.ed.typing_id().is_none() {
             // Nowhere to paste: where to click.
             t.info = Some(
@@ -4876,6 +4972,7 @@ fn of_the_page(a: Act) -> bool {
             | Act::Layout(_)
             | Act::ToggleCover
             | Act::PagesView
+            | Act::Crop
     )
 }
 
@@ -4900,34 +4997,38 @@ fn side_name(side: Side) -> &'static str {
         .map_or("", |(.., name)| name)
 }
 
-/// The zoom in the status bar, "Fit width · 96%" while it follows the width: a menu of the
-/// zoom and the page layouts.
+/// The zoom in the status bar, "96%": a menu of the zoom (Fit width ticked while it
+/// follows the width) and the page layouts. It is as wide for any zoom, so the buttons
+/// beside it stay where they are as the zoom changes.
 fn zoom_menu(ui: &mut egui::Ui, zoom: f32, c: &Ctx, acts: &mut Vec<Act>) {
     let level = format!("{:.0}%", zoom * 100.0);
-    let text = if c.fit {
-        format!("Fit width · {level}")
-    } else {
-        level.clone()
-    };
     let muted = theme::muted(ui.visuals().dark_mode);
-    let b = egui::Button::new(egui::RichText::new(text).size(12.0).color(muted))
+    let font = egui::FontId::proportional(12.0);
+    let widest = ui.painter().layout_no_wrap("1000%".into(), font, muted);
+    let room = widest.size().x + 2.0 * ui.spacing().button_padding.x;
+    let b = egui::Button::new(egui::RichText::new(&level).size(12.0).color(muted))
         .frame_when_inactive(false);
-    egui::containers::menu::MenuButton::from_button(b)
-        .ui(ui, |ui| {
-            for act in [Act::ZoomIn, Act::ZoomOut, Act::Actual, Act::FitWidth] {
-                menu_item(ui, actions::get(act), c, acts);
-            }
-            ui.separator();
-            for a in ACTIONS.iter().filter(|a| a.submenu == "Page layout") {
-                if a.sep {
-                    ui.separator();
+    // The menu at the box's right, the end of the bar.
+    let size = egui::vec2(room, ui.spacing().interact_size.y);
+    let layout = egui::Layout::right_to_left(egui::Align::Center);
+    ui.allocate_ui_with_layout(size, layout, |ui| {
+        egui::containers::menu::MenuButton::from_button(b)
+            .ui(ui, |ui| {
+                for act in [Act::ZoomIn, Act::ZoomOut, Act::Actual, Act::FitWidth] {
+                    menu_item(ui, actions::get(act), c, acts);
                 }
-                menu_item(ui, a, c, acts);
-            }
-        })
-        .0
-        .on_hover_text("Zoom and page layout")
-        .widget_info(|| named(&format!("Zoom {level}")));
+                ui.separator();
+                for a in ACTIONS.iter().filter(|a| a.submenu == "Page layout") {
+                    if a.sep {
+                        ui.separator();
+                    }
+                    menu_item(ui, a, c, acts);
+                }
+            })
+            .0
+            .on_hover_text("Zoom and page layout")
+            .widget_info(|| named(&format!("Zoom {level}")));
+    });
 }
 
 /// The window's width under which the status bar's zoom has no slider, only its buttons.
@@ -6783,7 +6884,8 @@ mod tests {
         reached.retain(|name| !name.ends_with('%'));
         // Redo is disabled, as nothing was undone, and Paste, Copy and the Font group as
         // nothing is typed or selected; planned features are no Tab stops. The status
-        // bar's view buttons and zoom (NEW-14) before the strip.
+        // bar's view buttons and zoom (NEW-14) before the strip; the thumbnails are one
+        // stop, their list.
         let bars = [
             "Untitled, unsaved",
             "Close Untitled",
@@ -6814,9 +6916,43 @@ mod tests {
             "Bookmarks",
             "Comments",
             "Digital signatures",
-            "Page 1",
+            "Page thumbnails",
         ];
         assert_eq!(reached[..bars.len()], bars);
+    }
+
+    /// The status bar's zoom stays where it is as it is used: its menu says the zoom alone,
+    /// in room for any zoom, so Zoom in and out don't move when the zoom stops following the
+    /// width (the user's find, batch 41) or gains a figure. Fit width is ticked in its menu.
+    #[test]
+    fn the_status_bar_zoom_stays_put_when_zooming() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let ty = Typist::new(&ctx);
+        let mut app = app_with(&ctx, 1);
+        let tree = ty.pause(&mut app);
+        assert!(app.tabs[0].fit, "not fitting the width at first");
+        let said = |tree: &egui::accesskit::TreeUpdate| -> Vec<String> {
+            (tree.nodes.iter())
+                .filter_map(|(_, n)| n.label().map(str::to_string))
+                .filter(|l| l.starts_with("Zoom ") && l.ends_with('%'))
+                .collect()
+        };
+        let menu = said(&tree);
+        assert!(menu.len() == 1 && !menu[0].contains("Fit"), "{menu:?}");
+        let (zoom_in, _) = node(&tree, "Zoom in").expect("Zoom in");
+        let p = zoom_in.center();
+        // Zoomed in past 100%, then much further: the buttons stay.
+        for clicks in [1, 4] {
+            for _ in 0..clicks {
+                ty.click(&mut app, p);
+            }
+            let tree = ty.pause(&mut app);
+            let (now, _) = node(&tree, "Zoom in").expect("Zoom in");
+            assert_eq!(now, zoom_in, "Zoom in moved, at {:?}", said(&tree));
+        }
+        assert!(!app.tabs[0].fit);
     }
 
     /// The name of the control with the keyboard in `tree`; `None` with nothing.
@@ -11869,6 +12005,7 @@ mod tests {
                     },
                     Unlock::Append(Box::new(Appending {
                         tab: app.tabs[0].id,
+                        to: PagesGo::End,
                         files: vec![PathBuf::from(format!("/home/sam/{long}.pdf"))],
                         read: Vec::new(),
                     })),
@@ -11910,6 +12047,7 @@ mod tests {
                 two("Add pages"),
                 Dialog::ConfirmAppendForms(Box::new(AppendForms {
                     asked: app.asked(),
+                    to: PagesGo::End,
                     docs: Vec::new(),
                     names: vec![format!("{long}.pdf"), "form.pdf".into()],
                 })),
@@ -17675,6 +17813,8 @@ mod tests {
                 }
             };
             window(&mut app, &ctx, 1400.0, click_at(at));
+            // The inspector folds away over more frames than one settling.
+            settled_at(&mut app, &ctx, 1400.0);
             tree = settled_at(&mut app, &ctx, 1400.0);
             assert_eq!(app.tabs[0].ed.typing_id(), Some(typing), "{what}: ended");
             assert_eq!(

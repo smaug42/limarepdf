@@ -786,16 +786,28 @@ impl Pdf {
     /// own show blank: callers first ask to draw them onto the pages with
     /// [`Pdf::flatten_form`] ([`Pdf::undrawable_fields`] names what it would refuse).
     pub fn append(&mut self, others: Vec<Pdf>) -> Result<()> {
+        self.insert_pages(self.page_count(), others)
+    }
+
+    /// Insert the pages of `others`, in order, so that the first becomes page `at`
+    /// (0-based; the page count puts them at the end). Their forms aren't merged, as for
+    /// [`Pdf::append`].
+    pub fn insert_pages(&mut self, at: usize, others: Vec<Pdf>) -> Result<()> {
+        if at > self.page_count() {
+            bail!("position {at} is beyond the end of the document");
+        }
         self.flatten()?;
         let mut ids = self.page_ids();
+        let mut added = Vec::new();
         for mut o in others {
             o.flatten()?;
             o.doc.renumber_objects_with(self.doc.max_id + 1);
             let new_ids = o.page_ids();
             self.doc.max_id = self.doc.max_id.max(o.doc.max_id);
             self.doc.objects.extend(o.doc.objects);
-            ids.extend(new_ids);
+            added.extend(new_ids);
         }
+        ids.splice(at..at, added);
         self.set_page_order(&ids)
     }
 
@@ -1272,6 +1284,30 @@ mod tests {
         assert_eq!(p.page_size(0).unwrap(), (300.0, 200.0));
         p.rotate_pages(&[0], 270).unwrap();
         assert_eq!(p.page_size(0).unwrap(), (200.0, 300.0));
+    }
+
+    /// Another document's pages go in at the place asked for, in their order: first, in
+    /// the middle and at the end; past the end is refused, with nothing changed.
+    #[test]
+    fn insert_pages_puts_them_where_asked() {
+        let widths = |p: &Pdf| -> Vec<f32> {
+            (0..p.page_count())
+                .map(|i| p.page_size(i).unwrap().0)
+                .collect()
+        };
+        // sample(n)'s page i is 200 + i points wide.
+        let mut p = sample(3);
+        p.insert_pages(1, vec![sample(2)]).unwrap();
+        assert_eq!(widths(&p), [200.0, 200.0, 201.0, 201.0, 202.0]);
+        p.insert_pages(0, vec![sample(1)]).unwrap();
+        assert_eq!(widths(&p)[..2], [200.0, 200.0]);
+        let n = p.page_count();
+        p.insert_pages(n, vec![sample(1), sample(2)]).unwrap();
+        assert_eq!(widths(&p)[n..], [200.0, 200.0, 201.0]);
+        let bytes = p.to_bytes().unwrap();
+        assert_eq!(Pdf::from_bytes(&bytes, None).unwrap().page_count(), 9);
+        assert!(p.insert_pages(10, vec![sample(1)]).is_err());
+        assert_eq!(p.page_count(), 9);
     }
 
     #[test]

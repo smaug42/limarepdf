@@ -10,13 +10,16 @@ written with Ctrl; on a Mac, use ⌘ (Command) instead.
 - **Scroll** with the mouse wheel, the touchpad or the scroll bars. PageUp and PageDown go to the previous and next
   page, Home and End to the first and last. Dragging the page itself doesn't scroll it (except on a touch screen):
   a drag selects text.
-- **Go to a page** by clicking its thumbnail in the Pages view on the left. The status bar at the bottom shows the
-  page you are on.
-- **Zoom** with Ctrl+scroll, a pinch, Ctrl+= and Ctrl+-, or the zoom at the bottom right of the status bar (such as
-  "96%"), a menu with Zoom in, Zoom out, Actual size and Fit width (also **View > Zoom**). Ctrl+1 shows the pages
-  at their actual size. Zoom goes from 10% to 6400%.
+- **Go to a page** by clicking its thumbnail in the Pages view on the left; with the keyboard in the thumbnails, Up
+  and Down go to the page before or after. The status bar at the bottom shows the page you are on.
+- **See every page at once** with **Pages > Organise**, or **Organise pages** in the status bar: see
+  [Organising pages](organising-pages.md#see-every-page-at-once). **Page view**, beside it, brings the pages back.
+- **Zoom** with Ctrl+scroll, a pinch, Ctrl+= and Ctrl+-, or the zoom at the bottom right of the status bar: − and +
+  zoom out and in, the slider between them sets the zoom (in windows 900 points wide or more), and the zoom level
+  (such as "96%") opens a menu with Zoom in, Zoom out, Actual size and Fit width (also **View > Zoom**). Ctrl+1
+  shows the pages at their actual size. Zoom goes from 10% to 6400%.
 - **Fit width:** pages open fitted to the width between the side panels, and keep fitting as you resize the window
-  or open and close the panels; the zoom then reads "Fit width · 96%". Zooming turns fitting off, and your zoom
+  or open and close the panels; Fit width is then ticked in the zoom menu. Zooming turns fitting off, and your zoom
   then stays as it is; **View > Fit width**, Fit width in the zoom menu, or Ctrl+0, turns it back on.
 
 At high zoom, the part of the page in view is drawn in tiles as you scroll, over a softer view of the whole page

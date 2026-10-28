@@ -97,6 +97,17 @@ struct Step {
     removal: bool,
     /// The stamp the inspector's form was linked to in this state, if any.
     stamp: Option<Stamped>,
+    /// The change between this step and the state it was taken from only moved, added,
+    /// removed or turned pages ([`Tab::arrange`]): these pages (their objects) were turned.
+    /// Going back or forth keeps the other pages' pictures.
+    arranged: Option<Vec<(u32, u16)>>,
+}
+
+/// Pages' pictures and thumbnails kept by the pages' objects, through a change that moves
+/// pages ([`Tab::arrange`]).
+struct Pictures {
+    pictures: HashMap<(u32, u16), (u32, TextureHandle)>,
+    thumbs: HashMap<(u32, u16), TextureHandle>,
 }
 
 /// A watermark or headers and footers just added, which the inspector's form keeps
@@ -262,6 +273,16 @@ pub struct Tab {
     ids: Vec<(u32, u16)>,
     /// Organise's grid, while it shows in place of the pages (NEW-14).
     organise: Option<Organise>,
+    /// The pages cut, by their objects, in page order: shown faded until pasted, which
+    /// moves them (NEW-14).
+    cut: Vec<(u32, u16)>,
+    /// The thumbnail the keyboard is at, and whether to ring it (the keys were used).
+    thumb_focus: usize,
+    thumb_keyed: bool,
+    /// How many thumbnails were in view last drawn: Page Up and Page Down's step.
+    thumb_screen: usize,
+    /// Bring this thumbnail into view when next drawn (the keys moved to it).
+    thumb_seek: Option<usize>,
     /// The zoom of Organise's cards (the app's setting, lent).
     pub grid_zoom: f32,
     pages: HashMap<usize, (u32, TextureHandle)>,
@@ -450,6 +471,11 @@ impl Tab {
         Ok(Self {
             ids: pdf.page_ids(),
             organise: None,
+            cut: Vec::new(),
+            thumb_focus: 0,
+            thumb_keyed: false,
+            thumb_screen: 1,
+            thumb_seek: None,
             grid_zoom: crate::settings::ORGANISE_ZOOM,
             labels,
             banners,
@@ -1508,6 +1534,7 @@ impl Tab {
             scrubbed: self.scrubbed,
             removal,
             stamp,
+            arranged: None,
         });
         // Redo is emptied here, so the undo steps are all the budget covers.
         self.redo.clear();
@@ -1600,8 +1627,13 @@ impl Tab {
         }
         self.dirty = true;
         if pdf.is_some() {
+            // Pages only moved, came or went: the others keep their pictures.
+            let kept = step.arranged.as_deref().map(|t| self.pictures_by_page(t));
             self.revision += 1;
             self.refresh(ctx);
+            if let Some(kept) = kept {
+                self.put_pictures(kept);
+            }
         }
         Some(Step {
             pdf,
@@ -1609,6 +1641,7 @@ impl Tab {
             scrubbed,
             removal: step.removal,
             stamp,
+            arranged: step.arranged,
         })
     }
 
@@ -1658,8 +1691,15 @@ impl Tab {
             self.ed.selection = Selection::pages_from(set);
         }
         self.ed.selection.retain_pages(n);
+        // Pages cut and deleted since are no longer to paste.
+        self.cut.retain(|id| now.contains_key(id));
         let last = n.saturating_sub(1);
-        if self.organise.is_some() {
+        self.thumb_focus = moved(self.thumb_focus)
+            .unwrap_or(self.thumb_focus)
+            .min(last);
+        if let Some(o) = self.organise.as_mut() {
+            o.focus = moved(o.focus).unwrap_or(o.focus).min(last);
+            o.bar = None;
             self.current = moved(self.current).unwrap_or(self.current).min(last);
             self.anchor = moved(self.anchor).unwrap_or(self.anchor).min(last);
         } else {
@@ -1677,25 +1717,44 @@ impl Tab {
         changed: &[usize],
         f: impl FnOnce(&mut Pdf) -> limarepdf_core::Result<()>,
     ) -> bool {
-        let id = |i: &usize| self.ids.get(*i).copied().filter(|_| !changed.contains(i));
-        let pictures: HashMap<(u32, u16), (u32, TextureHandle)> = (self.pages.iter())
-            .filter_map(|(i, p)| Some((id(i)?, p.clone())))
+        let turned: Vec<(u32, u16)> = (changed.iter())
+            .filter_map(|&i| self.ids.get(i).copied())
             .collect();
-        let thumbs: HashMap<(u32, u16), TextureHandle> = (self.thumbs.iter())
-            .filter_map(|(i, t)| Some((id(i)?, t.clone())))
-            .collect();
+        let kept = self.pictures_by_page(&turned);
         let done = self.edit(ctx, f);
         if done {
-            for (i, id) in self.ids.iter().enumerate() {
-                if let Some(p) = pictures.get(id) {
-                    self.pages.insert(i, p.clone());
-                }
-                if let Some(t) = thumbs.get(id) {
-                    self.thumbs.insert(i, t.clone());
-                }
+            self.put_pictures(kept);
+            // Undo and Redo keep them too.
+            if let Some(step) = self.undo.last_mut() {
+                step.arranged = Some(turned);
             }
         }
         done
+    }
+
+    /// The pages' pictures and thumbnails, by the pages' objects, but those of `except`.
+    fn pictures_by_page(&self, except: &[(u32, u16)]) -> Pictures {
+        let id = |i: &usize| self.ids.get(*i).copied().filter(|id| !except.contains(id));
+        let pictures = (self.pages.iter())
+            .filter_map(|(i, p)| Some((id(i)?, p.clone())))
+            .collect();
+        let thumbs = (self.thumbs.iter())
+            .filter_map(|(i, t)| Some((id(i)?, t.clone())))
+            .collect();
+        Pictures { pictures, thumbs }
+    }
+
+    /// The pictures kept by [`Tab::pictures_by_page`] back on their pages, wherever they
+    /// went.
+    fn put_pictures(&mut self, kept: Pictures) {
+        for (i, id) in self.ids.iter().enumerate() {
+            if let Some(p) = kept.pictures.get(id) {
+                self.pages.insert(i, p.clone());
+            }
+            if let Some(t) = kept.thumbs.get(id) {
+                self.thumbs.insert(i, t.clone());
+            }
+        }
     }
 
     /// The Bookmarks side tab: the outline indented by level, with a caret to show or
@@ -2719,6 +2778,7 @@ impl Tab {
             && (held.iter()).all(|h| matches!(h.kind, ObjKind::Text | ObjKind::HiddenText));
         c.pages = self.ed.selection.pages().is_some();
         c.organise = self.organising();
+        c.cut = !self.cut.is_empty();
         c.tool = Some(self.ed.tool);
         c.annot_tool = Some(self.ed.annot_tool);
         c.fit = self.fit;
@@ -3262,6 +3322,29 @@ impl Tab {
         let mut rects: Vec<Rect> = Vec::with_capacity(self.sizes.len());
         let (mut dropped, mut target) = (false, None);
         let proof = self.proof_shown(&ctx);
+        // The list is one stop for Tab, which takes the arrows and Esc for the pages; the
+        // thumbnails take clicks only.
+        let list = self.list_id();
+        let stop = ui.interact(ui.available_rect_before_wrap(), list, Sense::FOCUSABLE);
+        stop.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::Role::ListBox, true, "Page thumbnails")
+        });
+        if stop.has_focus() {
+            let keep = egui::EventFilter {
+                horizontal_arrows: true,
+                vertical_arrows: true,
+                escape: true,
+                tab: false,
+            };
+            ctx.memory_mut(|m| m.set_focus_lock_filter(list, keep));
+        }
+        if stop.gained_focus() && !ctx.input(|i| i.pointer.any_pressed()) {
+            self.thumb_keyed = true;
+        }
+        let ring = stop.has_focus() && self.thumb_keyed;
+        let cut = self.cut_pages();
+        let seek = self.thumb_seek.take();
+        let mut in_view = 0;
         egui::ScrollArea::vertical()
             .id_salt(("thumbs", self.id))
             .auto_shrink([false, false])
@@ -3274,12 +3357,15 @@ impl Tab {
                     let th = tw * h / w.max(1.0);
                     let (rect, resp) = ui.allocate_exact_size(
                         Vec2::new(ui.available_width(), th + 30.0),
-                        Sense::click_and_drag(),
+                        Sense::CLICK | Sense::DRAG,
                     );
                     ui.add_space(8.0);
                     let name = format!("Page {}", self.page_name(i));
                     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &name));
                     rects.push(rect);
+                    if seek == Some(i) {
+                        resp.scroll_to_me(None);
+                    }
                     // Dragging a thumbnail moves it, or the selected pages if it is one
                     // of them.
                     if resp.drag_started() {
@@ -3296,6 +3382,12 @@ impl Tab {
                     if !ui.is_rect_visible(rect) {
                         continue;
                     }
+                    in_view += 1;
+                    // A page cut is faint until it is pasted.
+                    let faint = |c: Color32| match cut.contains(&i) {
+                        true => c.gamma_multiply(0.35),
+                        false => c,
+                    };
                     let img = Rect::from_center_size(
                         Pos2::new(rect.center().x, rect.min.y + 8.0 + th / 2.0),
                         Vec2::new(tw, th),
@@ -3312,8 +3404,13 @@ impl Tab {
                     p.rect_filled(rect, 5.0, fill);
                     let card = egui::Stroke::new(1.0, edge);
                     p.rect_stroke(rect, 5.0, card, egui::StrokeKind::Inside);
-                    p.rect_filled(img, 0.0, paper);
-                    let outline = egui::Stroke::new(1.0, theme::border(dark));
+                    // The thumbnail the keyboard is at.
+                    if ring && i == self.thumb_focus {
+                        let ring = egui::Stroke::new(2.0, theme::accent(dark));
+                        p.rect_stroke(rect.shrink(1.0), 5.0, ring, egui::StrokeKind::Inside);
+                    }
+                    p.rect_filled(img, 0.0, faint(paper));
+                    let outline = egui::Stroke::new(1.0, faint(theme::border(dark)));
                     p.rect_stroke(img, 0.0, outline, egui::StrokeKind::Outside);
                     match self.thumbs.get(&i) {
                         Some(t) => {
@@ -3321,7 +3418,7 @@ impl Tab {
                                 t.id(),
                                 img,
                                 Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                                Color32::WHITE,
+                                faint(Color32::WHITE),
                             );
                         }
                         None if self.failed.contains_key(&i) => {
@@ -3380,6 +3477,12 @@ impl Tab {
             // Released outside any thumbnail's response: cancel.
             self.thumb_drag = None;
         }
+        self.thumb_screen = in_view.max(1);
+        // A click or drag on a thumbnail gives the list the keyboard, there.
+        if let Some(i) = click.map(|(i, _)| i).or(self.thumb_drag) {
+            (self.thumb_focus, self.thumb_keyed) = (i, false);
+            ctx.memory_mut(|m| m.request_focus(list));
+        }
         if let Some((i, m)) = click {
             // Shift adds a range from the last click, Ctrl/Cmd toggles one page; either
             // way a selected object or words give way to the pages.
@@ -3414,20 +3517,8 @@ impl Tab {
         let Some(moving) = self.ed.selection.pages().cloned() else {
             return;
         };
-        let n = self.page_count();
-        let order = moved_order(n, &moving, to);
-        if order.iter().copied().eq(0..n) {
-            return;
-        }
-        let at = (0..to).filter(|p| !moving.contains(p)).count();
-        let before = self.revision;
-        self.arrange(ctx, &[], |p| p.reorder(&order));
-        if self.revision != before {
-            let placed: BTreeSet<usize> = (at..at + moving.len()).collect();
-            self.ed.selection = Selection::pages_from(placed);
-            self.anchor = at;
-            self.go_to(at);
-        }
+        let order = moved_order(self.page_count(), &moving, to);
+        self.reorder_pages(ctx, &order);
     }
 }
 
@@ -3675,6 +3766,12 @@ fn drag_feedback(ui: &egui::Ui, rects: &[Rect], target: Option<usize>, p: Pos2, 
     } else if p.y > view.bottom() - 32.0 {
         ui.scroll_with_delta(Vec2::new(0.0, -8.0));
     }
+    moving_label(ui, p, n);
+}
+
+/// While pages are dragged: "Move N pages" by the pointer, at `p`.
+fn moving_label(ui: &egui::Ui, p: Pos2, n: usize) {
+    let accent = ui.visuals().selection.stroke.color;
     let text = if n == 1 {
         "Move 1 page".to_string()
     } else {
@@ -3743,6 +3840,7 @@ mod tests {
             scrubbed: false,
             removal,
             stamp: None,
+            arranged: None,
         }
     }
 

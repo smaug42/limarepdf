@@ -14,7 +14,8 @@ no network connection, no subscription. This guide takes you from installing it 
 ## Everyday tasks
 
 - [Reading and finding](reading-and-finding.md): move around, zoom, search, bookmarks, links and copying text.
-- [Organising pages](organising-pages.md): reorder, rotate, insert, delete, extract, merge, split and crop pages.
+- [Organising pages](organising-pages.md): see every page at once; reorder, rotate, insert, delete, extract,
+  merge, split and crop pages.
 - [Comments and markup](comments-and-markup.md): highlights, notes, text boxes, shapes, drawings and replies.
 - [Editing text and pictures](content-editing.md): change what is on the page, and add text and pictures.
 - [Filling in forms](forms.md): fill in, reset and flatten forms.

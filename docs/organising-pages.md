@@ -3,23 +3,97 @@
 # Organising pages
 
 Put pages in a new order, turn them, add and remove them, take some out into a new document, join documents and
-split one into several files. Every change here is one step to undo with Ctrl+Z.
+split one into several files. Work in the thumbnails beside the pages, or in Organise, which shows every page at
+once. Every change here is one step to undo with Ctrl+Z. Shortcuts are written with Ctrl and Alt; on a Mac, use ⌘
+(Command) and ⌥ (Option) instead.
+
+## See every page at once
+
+Choose **Pages > Organise**, or **Organise pages** at the right of the status bar (also ☰ > View > Organise pages
+and the command palette). The pages make way for a grid of cards, one for each page, as in a slide sorter: the
+page, with a checkbox and its name under it. The heading above the cards counts the pages and those selected,
+such as "12 pages · 4 selected", and so does the status bar ("4 of 12 pages selected"). The command band shows
+**Pages**, and the Pages view on the left folds away while you organise.
+
+![Organise: a report's pages as cards in rows, each with a checkbox and its name; pages 2 and 4 are selected, and the heading says "12 pages · 2 selected"](images/organise.png)
+
+- **Back to reading:** **Page view** in the status bar, or **Pages > Organise** again, shows the pages where you
+  were reading. A double-click on a card shows its page instead. Choosing a tool (Edit text, say), Crop, Fit width
+  or a page layout goes back to the pages too, at the first page selected.
+- **Card size:** the cards have a zoom of their own, from 8% to 60%: Ctrl+scroll, Ctrl+= and Ctrl+-, or the zoom
+  in the status bar; Ctrl+1 sets it back to 20%. The size is remembered. Every card is the size of most of the
+  document's pages, and a page of another size is fitted inside its card.
+- **Long documents:** only the cards in view are drawn, so the grid of a long document opens and scrolls quickly.
+- **Bookmarks and search results** still work: the page they go to comes into view in the grid.
 
 ## Select pages
 
-Click a page's thumbnail in the Pages view on the left to select it. Shift+click selects a range, and Ctrl+click
-adds or removes one page. The inspector on the right then says which pages they are, their paper size and which
-way round they are, and shows what you can do with them; so does right-clicking a thumbnail. **Pages** in the
-command band and ☰ > Pages have the same commands, which work on the page you are on when no pages are selected.
+In Organise:
 
-## Reorder pages
+- Click a card to select its page, Shift+click another to select the range between them, and Ctrl+click to add a
+  page or take it out. A card's checkbox adds its page or takes it out too.
+- Drag across an empty part of the grid to select the cards the drag touches; hold Ctrl or Shift to add them to
+  the pages already selected.
+- Ctrl+A (or **Edit > Select > Select all pages**) selects every page, and Esc lets go of them.
 
-Drag thumbnails to put pages in a new order. A line shows where they will go. Dragging a selected thumbnail moves
-all the selected pages.
+In the page view, click a page's thumbnail in the Pages view on the left, which also goes to that page.
+Shift+click selects a range, and Ctrl+click adds or removes one page.
+
+The inspector on the right then says which pages they are, their paper size and which way round they are, and
+shows what you can do with them; so does right-clicking a card or a thumbnail. **Pages** in the command band and
+☰ > Pages have the same commands, which work on the page you are on when no pages are selected.
+
+### With the keyboard
+
+In Organise the keys go to the grid, unless a button or box has the keyboard: click a card, or press Tab until
+the grid has it. Once you use the keys, a ring shows the card they are at. In the page view, click a thumbnail or
+Tab to the thumbnails: they take the same keys, in a column, and the page view goes to each page they select.
+
+| Keys | What they do |
+| --- | --- |
+| Arrow keys | Go to the next card, selecting it: Left and Right a page, Up and Down a row |
+| Home, End; PageUp, PageDown | Go to the first or last page; a screen of rows up or down |
+| Shift with any of these | Select the pages from where you started to the card reached |
+| Ctrl with any of these | Go there without selecting |
+| Space (or Ctrl+Space) | Add the card the keys are at to the pages selected, or take it out |
+| Enter | Show that page |
+| Delete | Delete the selected pages |
+
+## Move pages
+
+- **Drag** a card or a thumbnail to where its page goes: a line shows where it will land, with "Move 1 page" by
+  the pointer, and the view scrolls when the pointer nears its top or bottom. A selected card or thumbnail takes
+  every selected page with it, in their order; one that isn't selected moves alone. Esc while dragging, or letting
+  go of the cards outside the grid, leaves the pages where they were.
+- **Alt+Shift with an arrow key** moves the selected pages, as Word moves paragraphs: Left and Right a place
+  earlier or later, Up and Down a row up or down (a place, in the thumbnails), and Alt+Shift+Home or
+  Alt+Shift+End to the start or the end.
+- **Pages > Move** has Earlier, Later, To the start and To the end. ☰ > Pages > Move pages also has Up a row and
+  Down a row, and the right-click menu has **Move pages**.
+
+Moved a place or a row, pages that are apart stay apart, each going as far as it can; moved to the start or the
+end, they go together. The pages moved stay selected, and each move is one step for Undo.
+
+### Cut and paste pages
+
+To move pages a long way, cut them and paste them where they go:
+
+1. Select the pages and press Ctrl+X (or **Edit > Cut**, or **Cut** in the right-click menu). They stay where
+   they are, faint, until you paste them.
+2. Choose where they go: in Organise, click between two cards to put the insertion bar there (see
+   [Add pages](#add-pages-and-merge-documents)), or select the page to put them after; in the page view, select
+   that page's thumbnail, or with nothing selected go to that page.
+3. Press Ctrl+V (or **Edit > Paste**, or **Paste** in the right-click menu). The pages move there in their order,
+   selected, in one step that Undo takes back.
+
+Esc takes the cut back, and the pages stay selected; Esc again lets go of them. Pasting with no new place chosen
+changes nothing, and a message says what to do. The clipboard gets the pages' names, such as "Pages 2, 3 of
+report.pdf", not the pages themselves. Pages can't be copied yet (to have them twice), nor pasted into another
+document.
 
 ## Rotate, delete and extract pages
 
-Select the pages, then use **Pages** in the band (the inspector has the same buttons):
+Select the pages, then use **Pages** in the band (the inspector and the right-click menu have the same commands):
 
 - **Pages > Rotate** turns them a quarter turn clockwise, and **Pages > Rotate ▾ > Rotate counter-clockwise** the
   other way.
@@ -28,26 +102,31 @@ Select the pages, then use **Pages** in the band (the inspector has the same but
 
 ## Add pages, and merge documents
 
-- **A blank page:** select the page to insert after, open **Insert blank page** in the inspector, pick Letter, A4
-  or Legal (or type a width and height in points), and press **Insert after page N**. **Pages > Insert pages >
-  Insert blank page** (or ☰ > Pages > Insert blank page) inserts one the size of the page you are on.
-- **Pictures:** **Insert images…** (in **Pages > Insert pages**) adds PNG, JPEG or TIFF pictures after the selected
-  pages, one page each (see [Scans and OCR](scanning-and-ocr.md#importing-images)).
-- **Other PDFs:** **Append PDFs…** (in **Pages > Insert pages**, or ☰ > Pages) adds the pages of the PDFs you
-  choose at the end of the document. To merge documents, open the first one and append the others; drag
-  thumbnails afterwards to put the pages elsewhere.
+New pages go after the selected pages, or after the page you are on. In Organise you can choose the place instead:
+click between two cards, or before the first one, and the insertion bar shows there. The pages selected are let
+go, as in a slide sorter; a click on a card, Esc, or any change to the pages takes the bar away. Pages added in
+Organise are selected there. The bar is set with the mouse only: from the keyboard, select the page to add after.
+
+- **A blank page:** **Pages > Insert pages > Insert blank page** (or ☰ > Pages > Insert blank page) inserts one the
+  size of the page before it. For another size, select the page to insert after, open **Insert blank page** in the
+  inspector, pick Letter, A4 or Legal (or type a width and height in points), and press **Insert after page N**.
+- **Pictures:** **Insert images…** (in **Pages > Insert pages**) adds PNG, JPEG or TIFF pictures, one page each
+  (see [Scans and OCR](scanning-and-ocr.md#importing-images)).
+- **Other PDFs:** **Insert PDF pages…** (in **Pages > Insert pages**, ☰ > Pages or the right-click menu) adds the
+  pages of the PDFs you choose there. **Append PDFs…** (in **Pages > Insert pages**, or ☰ > Pages) adds them at the
+  end of the document instead. To merge documents, open the first one and append the others.
 
 The files are added in the order chosen, in one step that Ctrl+Z takes back. A password-protected file asks for its
 password: **Add pages** adds its pages, **Skip this file** leaves it out and adds the others, and **Cancel** adds
 nothing. A file that can't be read adds nothing either, and a message names it.
 
-Appending adds the pages only: the bookmarks and named destinations of the files added aren't carried over, and
-LimarePDF can't combine forms yet. When a file added has form fields, **Add pages with form fields?** asks first:
-**Add pages** draws its fields onto its pages with their answers, as they look now, so they show everywhere but
-can no longer be filled in; **Cancel** adds nothing. The document's own fields stay fillable. If LimarePDF can't
-draw an answer (text in characters it can't write in a field yet, say), nothing is added, and a message names
-the field and the file. Pages from a password-protected file make the whole document count as protected, so it
-gets no [recovery copies](gui.md#recovery-copies).
+Inserting or appending PDFs adds the pages only: the bookmarks and named destinations of the files added aren't
+carried over, and LimarePDF can't combine forms yet. When a file added has form fields, **Add pages with form
+fields?** asks first: **Add pages** draws its fields onto its pages with their answers, as they look now, so they
+show everywhere but can no longer be filled in; **Cancel** adds nothing. The document's own fields stay fillable.
+If LimarePDF can't draw an answer (text in characters it can't write in a field yet, say), nothing is added, and a
+message names the field and the file. Pages from a password-protected file make the whole document count as
+protected, so it gets no [recovery copies](gui.md#recovery-copies).
 
 ## Split into files
 
@@ -103,8 +182,8 @@ numbered apart from the rest. They don't change what is printed on the pages.
 
 The numbering runs to the next labelled range, and each change applies at once. Page labels shows the numbering
 the page has now. When a document has labels, the status bar shows the label with the page's place, such as
-"Page i (3 of 477)", and the thumbnails, search results and new bookmarks use the labels. Labels stay with their
-pages when pages are deleted or moved.
+"Page i (3 of 477)", and the thumbnails, Organise's cards, search results and new bookmarks use the labels. Labels
+stay with their pages when pages are deleted or moved.
 
 To have LimarePDF number every document's pages 1, 2, 3 from the first page instead, turn off View > Show > **Use
 the document's page labels** (also in ☰ > View). The labels stay in the document, and the status bar still shows

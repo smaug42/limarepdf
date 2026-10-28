@@ -32,6 +32,36 @@
 - Text typed on the page that runs past the page's edge has its outline in the caution colour, with a tag under it
   saying "Past the page edge". In a line being edited, typing on past its end into the text beside it says "Over
   other text" the same way.
+- Organise: **Pages > Organise**, ☰ > View > Organise pages or **Organise pages** in the status bar shows every
+  page of the document as a card in a grid, in place of the pages, as a slide sorter does: the page, with a
+  checkbox and its name. The heading and the status bar count the pages and those selected ("12 pages · 4
+  selected", "4 of 12 pages selected"). Click, Shift+click, Ctrl+click, the checkboxes, a drag across the grid and
+  Ctrl+A (Edit > Select > Select all pages) select pages, Esc lets go of them, and the page commands (rotate,
+  delete, extract, crop, page labels and the others) act on them. A double-click shows a card's page; **Page
+  view** in the status bar goes back to where you were reading, and choosing a tool, Crop, Fit width or a page
+  layout goes back to the pages at the first one selected. The cards zoom on their own, from 8% to 60%, remembered.
+  Only the cards in view are drawn, so long documents stay quick.
+- Drag cards in Organise to move their pages: a bar shows where they will land, with "Move 2 pages" by the
+  pointer, and the grid scrolls at its edges. A selected card takes every selected page with it. Esc, or letting
+  go outside the grid, leaves the pages where they were; a move is one step for Undo.
+- Alt+Shift with an arrow key moves the selected pages, as Word moves paragraphs: Left and Right a place, Up and
+  Down a row (a place in the thumbnails), Home and End to the start or the end. Also in **Pages > Move**, ☰ >
+  Pages > Move pages and the pages' right-click menu. Pages apart stay apart, and the pages moved stay selected.
+- Cut and Paste move pages within their document: Ctrl+X (or Cut in Edit and the right-click menu) leaves the
+  pages where they are, faint, until Ctrl+V moves them to Organise's insertion bar, or after the selected pages
+  or the page you are on, in one step. Esc takes the cut back. The clipboard gets the pages' names, such as
+  "Pages 2, 3 of report.pdf". Pages can't be copied, or pasted into another document, yet.
+- In Organise, a click between cards (or before the first) puts an insertion bar there: Insert blank page,
+  Insert images…, Insert PDF pages… and Paste put their pages where it is, and the pages added are selected.
+- Insert PDF pages… (Pages > Insert pages, ☰ > Pages and the pages' right-click menu) adds the pages of other PDFs
+  at Organise's insertion bar, or after the selected pages or the page you are on, asking about passwords and
+  form fields as Append PDFs… does.
+- Organise's grid and the side panel's thumbnails take the keys as a file manager does: the arrow keys go from
+  page to page selecting each, Shift selects from where you started, Ctrl goes without selecting and Space then
+  adds the page or takes it out; Home, End, PageUp and PageDown go further, Enter shows the page and Delete
+  deletes the selected pages. A ring shows where the keys are. In the thumbnails, the page view follows them.
+- The status bar has the two views' buttons, **Page view** and **Organise pages**, and a word processor's zoom:
+  − and + with a slider between them (left out in windows under 900 points wide), beside the zoom's menu.
 
 ### Changed
 
@@ -87,6 +117,17 @@
   adding it would make them, once a setting stops changing: a watermark set behind the content shows behind it,
   where before it was drawn over the content. While a setting is changing (a slider dragged, text typed, a colour
   picked), it is drawn over the pages, as before, until the drawing for the new settings comes.
+- The status bar's zoom reads the percentage alone, such as "96%", in room for any zoom, so the buttons beside it
+  stay where they are as the zoom changes; Fit width is ticked in its menu while it is on. Before, it read "Fit
+  width · 96%".
+- The side panel's thumbnails are one stop for Tab, named Page thumbnails, where the arrow keys move between the
+  pages. Before, Tab stopped at each thumbnail. Pages cut show faint there, and Esc cancels a thumbnail being
+  dragged.
+- Pages selected stay selected wherever their pages go when pages are moved, added or deleted, and through Undo and
+  Redo; pages deleted are no longer selected. Before, the same page numbers stayed selected, which could be other
+  pages: after deleting pages, the ones that took their places.
+- Moving, adding, deleting or turning pages, and Undo and Redo of it, keep the other pages' pictures and
+  thumbnails, so they don't flicker as they are drawn again. Before, every page was drawn again.
 
 ### Fixed
 
@@ -104,6 +145,7 @@
   open, every time, until the shape was let go. Selecting it changes nothing now, and the inspector shows its
   outline width as it is. A rule thinner than a point, moved by its X or Y in the inspector, no longer moves down a
   little too.
+- Paste's tooltip shows its key as the system writes it, ⌘V on a Mac. Before, its text named Ctrl+V everywhere.
 
 ## [0.11.0] - 2026-10-27
 

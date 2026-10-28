@@ -877,8 +877,73 @@ go, keeps the panel's width (`Settings::keep_width`, saved when it changed); a p
 (Watermark's controls) keeps the width given, and the inspector's strip, dragged closed, keeps nothing.
 `panels::edge_keys` and `edge_shown` take that id. The panel sets its minimum width to its available width, since
 egui narrows a panel to its contents, such as one short line wrapped ("This document has no comments or markup.").
-The status bar says what is selected or the tool in use (`Editor::heading` while the editor owns the panel), and its
-zoom is `zoom_menu`.
+The status bar says what is selected or the tool in use (`Editor::heading` while the editor owns the panel), then
+(batch 41) `view_buttons` (Page view and Organise pages, `Act::Organise`) and `zoom_bar`: − (`icon::MINUS`), a
+logarithmic `Slider` (10–1000 %, the grid's 8–60 % while organising, `SliderClamping::Never` so a zoom past its ends
+isn't changed by being drawn; hidden under `SLIDER_ROOM`, 900 points), + and `zoom_menu`, which says the zoom alone
+("96%", Fit width ticked in its menu) in a box as wide as "1000%", right-aligned: the row is laid out from the right,
+so a label that changed width (it said "Fit width · 96%" until zooming turned fitting off) moved every button left
+of it (the user's find, `the_status_bar_zoom_stays_put_when_zooming`). The box is an `allocate_ui_with_layout`
+round the menu button, whose hover frame stays the text's. With the label's width fixed the status bar's `dialogs::reading_order`
+no longer redoes the frames of a fit zoom changing as a panel folds (`request_discard`), so the inspector's fold
+takes its own seven frames; `the_inspectors_heading_leaves_a_line_edit_open` settles twice for it.
+
+**Organise** (NEW-14, batch 41, `tab/organise.rs`) shows a tab's pages as a grid of cards in place of the pages
+while `Tab::organise` holds its state (`Tab::set_organise`; `Ctx::organise`; `App::act` sends the page view's own
+commands, `of_the_page`, back to it at the first selected page: tools, Fit width, the layouts, the Pages view and
+Crop, whose box is dragged on the pages). `Tab::show_grid` lays the cards out from the left
+(`Cards`: a card is the document's median page size, `typical_size`, times `Tab::grid_zoom`, which is
+`Settings::organise_zoom` lent and kept by `App::keep_grid_zoom`), draws and asks for pictures only for the rows in
+view and one more (`AHEAD`), lets go of those beyond two (`KEEP`), and registers every card's and checkbox's
+interaction before skipping the ones out of view (a click egui is following on a widget left out of a pass is
+dropped). The background is the grid's one Tab stop (`Tab::grid_id`, a list box "Page grid", `Sense::click_and_drag`)
+with a focus lock filter for the arrows and Esc; the cards (`Sense::CLICK | Sense::DRAG`, named "Page N", selected
+state) and checkboxes take clicks only, and a click on either gives the grid the keyboard. The keys are
+`Tab::list_keys`, called from `App::shortcuts` before the commands' keys when the grid has the keyboard or nothing
+has (or the thumbnails' list has it): `list_key` takes one press with exactly the modifiers asked for (never Alt) of
+the arrows, Home, End, Page Up and Down (a screen is `Organise::screen` rows, a row `Organise::cols`), Space
+(with Ctrl/Cmd too) and Enter; `key_to` selects the card reached alone, from `Tab::anchor` (Shift), or nothing
+(Ctrl/Cmd), and `Organise::focus` is the card the keys are at, ringed once `keyed`. `take_keyboard` requests the
+grid's focus and cancels egui's own arrow-key focus move, which egui decided from the press at the start of the frame
+when nothing had the keyboard and would apply at its end, taking the keyboard straight on from the grid. While the
+grid or the list holds the keyboard (`Tab::holds_keys`), `App::shortcuts` and `App::type_over` treat it as nothing
+holding it, so Delete, Esc, Ctrl+X and Ctrl+V and the Alt+Shift moves work there; the commands' plain keys now need
+Alt to match exactly (egui's `matches_logically` ignores an extra Alt, so Alt+Shift+Left was also Nudge's Left).
+
+Moving pages: a card's `drag_started` selects it alone unless it is selected and sets `Organise::dragging`; each
+frame `Cards::gap` finds the gap nearest the pointer (over a card, the side of its half; past a row's end, after its
+last card) as the place to land (`Organise::drop`), drawn as a bar (`Cards::bar`) with `moving_label` ("Move N
+pages", shared with the thumbnails' `drag_feedback`) and `edge_scroll`; the pointer let go over the grid moves the
+pages there with `Tab::move_selected_pages`, outside it (or after Esc, `Tab::escape_pages`) nothing. `Act::MovePages`
+(`PageMove`: Earlier, Later, Up and Down a row, Start, End; Alt+Shift with an arrow, Home or End) is
+`Tab::move_pages`: a place or a row by `shifted_order`, each selected page as far as it goes without passing the
+ends or another selected page, so pages apart stay apart; to the start or end by `moved_order`, together. Both go
+through `Tab::reorder_pages` (one `Tab::arrange` step); the selection follows its pages by object id
+(`follow_pages`), and `show_placed` brings the first into view (the card while organising, else `go_to`). Cut with
+pages selected (grid or thumbnails) keeps their objects in `Tab::cut` and puts "Pages 2, 3 of name" on the system
+clipboard: egui-winit sends Ctrl+V as a paste only when the clipboard holds text or an image, and the page names
+make sure it does. Paste (`Act::Paste`, never matched as a key: the paste arrives through `App::type_over`, which
+gives it to the pages cut while organising, with pages selected, or with nothing selected or typed, as the band's
+Paste does) is `Tab::paste_pages`, a move to
+`Tab::insert_at`; with nowhere else for them it says so. `Ctx::cut` enables Paste; `why_not` tries "Cut pages first."
+and "Select pages first." before the page view's reasons while organising. A click on the background between cards
+puts the insertion bar there (`Organise::bar`, the place and whether it is drawn after the card before it) and lets
+go of the selection, as a slide sorter; `Tab::insert_at` is the bar, else after the selected pages, else after the
+current page, for Insert blank page (at the page before's size), Insert images…, Paste and Insert PDF pages…
+(`Act::InsertPdf`: `App::insert_files` reads the files in the background as Append PDFs does, `Appending::to` a
+`PagesGo` naming the page after which they go by its object, so a change meanwhile doesn't misplace them, through the
+form-fields question too; core's `Pdf::insert_pages`, which `append` now calls at the end). `Tab::placed` selects
+the pages added while organising. `follow_pages` drops cut pages that went, follows the keys' place and the
+thumbnails' by object, and clears the bar; `escape_pages` takes back, in turn, a drag (cards or thumbnails), a cut,
+the bar and, organising, the selection.
+
+Pictures: `Tab::arrange` keeps every other page's picture and thumbnail by object (`pictures_by_page`,
+`put_pictures`) and marks its undo step `Step::arranged` with the pages it turned; `Tab::restore` keeps them the same
+way when it goes back or forth over such a step, so Undo and Redo of page moves, additions and removals draw again
+only the pages turned. The side panel's thumbnails (`show_thumbs`) are one Tab stop too (`Tab::list_id`, "Page
+thumbnails", `Sense::FOCUSABLE` over the panel, the thumbnails `Sense::CLICK | Sense::DRAG`), with `list_keys` in a
+column (`Tab::thumb_focus`, `thumb_screen` thumbnails to a screen, `thumb_seek` to scroll one into view); a key that
+selects goes to its page.
 
 The inspector (batch 39's second stage: PF-40, with ENH-38 and ENH-41) shows the editor's section for a selection
 or a tool that adds content (`Editor::owns_panel`), else `inspector::show`, which draws the task open alone, else

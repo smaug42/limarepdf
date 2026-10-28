@@ -31,8 +31,8 @@ again. Opening several protected documents at once asks for each in turn, and **
 unopened. A document with only a permissions password opens without asking, as it does in other readers, and a
 notice says it has one.
 
-**Append PDFs…** asks for a protected file's password in the same way: **Add pages** adds its pages, **Skip this
-file** goes on without it, and **Cancel** adds nothing
+**Insert PDF pages…** and **Append PDFs…** ask for a protected file's password in the same way: **Add pages** adds
+its pages, **Skip this file** goes on without it, and **Cancel** adds nothing
 ([Organising pages](organising-pages.md#add-pages-and-merge-documents)).
 
 ## Take the protection off

@@ -381,8 +381,9 @@ static PAGES: &[Group] = &[
             menu(
                 "Insert pages",
                 icon::FILE_PLUS,
-                &[Act::Blank, Act::InsertImages, Act::Merge],
+                &[Act::Blank, Act::InsertImages, Act::InsertPdf, Act::Merge],
             ),
+            menu("Move", icon::ARROWS_OUT_CARDINAL, &actions::MOVES),
             b(Act::Split, "Split", icon::SCISSORS),
             b(Act::Organise, "Organise", icon::SQUARES_FOUR),
         ],
@@ -1058,6 +1059,7 @@ pub fn all_planned() -> Vec<&'static Planned> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actions::PageMove;
 
     /// A band of 5 groups where each folded one saves 40 points: 400 with none folded.
     fn need(folded: usize) -> f32 {
@@ -1171,6 +1173,10 @@ mod tests {
             (Act::Extract, 1),
             (Act::Delete, 1),
             (Act::InsertImages, 2),
+            (Act::InsertPdf, 2),
+            (Act::Organise, 1),
+            (Act::MovePages(PageMove::Earlier), 2),
+            (Act::MovePages(PageMove::End), 2),
             (Act::Tool(Tool::Sign), 1),
             (Act::SignDigital, 2),
             (Act::Find, 0),
@@ -1227,6 +1233,7 @@ mod tests {
                         | Act::Escape
                         | Act::Nudge(..)
                         | Act::Extend(_)
+                        | Act::MovePages(PageMove::Up | PageMove::Down)
                         | Act::NextPage
                         | Act::PrevPage
                         | Act::FirstPage

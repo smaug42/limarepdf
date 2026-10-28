@@ -61,8 +61,8 @@ shows the field you are in: its name, its description and whether it is required
   through their ordinary fields.
 - Form data files (FDF, XFDF) can't be imported or exported, and form JavaScript doesn't run, so fields that
   calculate or check values don't.
-- Forms can't be combined: appending a file with form fields draws its fields onto its pages with their answers,
-  after asking, and they can't be filled in afterwards (see
+- Forms can't be combined: inserting or appending a file with form fields (Insert PDF pages… or Append PDFs…)
+  draws its fields onto its pages with their answers, after asking, and they can't be filled in afterwards (see
   [Add pages, and merge documents](organising-pages.md#add-pages-and-merge-documents)).
 
 ## How values are written
