@@ -2322,6 +2322,12 @@ impl App {
         if has && a.uses_document() && !on_typing && !self.tabs[self.active].keep_typing(ctx) {
             return;
         }
+        // The page view's commands go back to it first, at the page selected (NEW-14).
+        if has && self.tabs[self.active].organising() && of_the_page(a) {
+            let t = &mut self.tabs[self.active];
+            let p = t.targets()[0];
+            t.open_page(ctx, p);
+        }
         match a {
             Act::Open => {
                 if let Some(files) = Self::pdf_dialog().pick_files() {
@@ -2640,6 +2646,10 @@ impl App {
             Act::Escape if self.tabs[self.active].crop_view() => {
                 self.tabs[self.active].forms.close = Some(inspector::Section::Crop);
             }
+            // Organising, Esc lets go of the pages selected.
+            Act::Escape if has && self.tabs[self.active].organising() => {
+                self.tabs[self.active].ed.selection = Selection::None;
+            }
             Act::Escape => self.tabs[self.active].ed.escape(),
             Act::NextPage | Act::PrevPage | Act::FirstPage | Act::LastPage => {
                 let t = &mut self.tabs[self.active];
@@ -2751,6 +2761,20 @@ impl App {
                 self.show_view(Side::Search);
                 self.tabs[self.active].focus_query = true;
             }
+            // Organise's cards have a zoom of their own (NEW-14).
+            Act::ZoomIn | Act::ZoomOut | Act::Actual | Act::ZoomTo(_)
+                if has && self.tabs[self.active].organising() =>
+            {
+                let z = self.settings.organise_zoom;
+                let z = match a {
+                    Act::ZoomIn => z * 1.2,
+                    Act::ZoomOut => z / 1.2,
+                    Act::ZoomTo(percent) => percent as f32 / 100.0,
+                    _ => crate::settings::ORGANISE_ZOOM,
+                };
+                self.tabs[self.active].zoom_grid(z);
+                self.keep_grid_zoom();
+            }
             Act::ZoomIn => {
                 let t = &mut self.tabs[self.active];
                 t.set_zoom(t.zoom * 1.2);
@@ -2759,23 +2783,32 @@ impl App {
                 let t = &mut self.tabs[self.active];
                 t.set_zoom(t.zoom / 1.2);
             }
+            Act::ZoomTo(percent) => self.tabs[self.active].set_zoom(percent as f32 / 100.0),
             Act::Actual => self.tabs[self.active].set_zoom(1.0),
             // On: the zoom follows the view's width (see Tab::show_pages); off: it stays.
             Act::FitWidth => {
                 let t = &mut self.tabs[self.active];
                 t.fit = !t.fit;
             }
+            Act::Organise if has => {
+                let t = &mut self.tabs[self.active];
+                let on = !t.organising();
+                if t.set_organise(ctx, on) && on {
+                    self.band = Band::Pages;
+                }
+            }
+            Act::SelectAllPages if has => self.tabs[self.active].select_all_pages(),
             Act::RotL | Act::RotR => {
                 let deg = if matches!(a, Act::RotR) { 90 } else { 270 };
                 let t = &mut self.tabs[self.active];
                 let idx = t.targets();
-                t.edit(ctx, |p| p.rotate_pages(&idx, deg));
+                t.arrange(ctx, &idx, |p| p.rotate_pages(&idx, deg));
             }
             Act::Delete => {
                 let t = &mut self.tabs[self.active];
                 let idx = t.targets();
                 let before = t.revision;
-                t.edit(ctx, |p| p.delete_pages(&idx));
+                t.arrange(ctx, &[], |p| p.delete_pages(&idx));
                 if t.revision != before {
                     let n = idx.len();
                     let what = if n == 1 {
@@ -2833,7 +2866,7 @@ impl App {
                 // After the selected pages, or the current page.
                 let after = t.targets().last().copied().unwrap_or(t.current);
                 let (at, before) = (after + 1, t.page_count());
-                t.edit(ctx, |p| insert_images(p, at, &data));
+                t.arrange(ctx, &[], |p| insert_images(p, at, &data));
                 if t.page_count() > before {
                     t.go_to(at);
                 }
@@ -2950,6 +2983,17 @@ impl App {
         self.side.set_open(true);
         self.keep_panels();
         self.tabs[self.active].side = side;
+    }
+
+    /// Organise's zoom, as the active tab has it now, kept for next time.
+    fn keep_grid_zoom(&mut self) {
+        let Some(t) = self.tabs.get(self.active) else {
+            return;
+        };
+        if t.grid_zoom != self.settings.organise_zoom {
+            self.settings.organise_zoom = t.grid_zoom;
+            self.settings.save();
+        }
     }
 
     /// Open the inspector, as the user's choice.
@@ -3179,7 +3223,7 @@ impl App {
     fn insert_blank(&mut self, ctx: &egui::Context, after: usize, size: (f32, f32)) {
         let t = &mut self.tabs[self.active];
         let before = t.page_count();
-        t.edit(ctx, |p| p.insert_blank(after + 1, size.0, size.1));
+        t.arrange(ctx, &[], |p| p.insert_blank(after + 1, size.0, size.1));
         if t.page_count() > before {
             t.go_to(after + 1);
         }
@@ -3332,7 +3376,7 @@ impl App {
             }
         }
         let t = &mut self.tabs[i];
-        if t.edit(ctx, |p| p.append(docs)) && protected {
+        if t.arrange(ctx, &[], |p| p.append(docs)) && protected {
             t.copy.protected = true;
         }
     }
@@ -4812,6 +4856,29 @@ const SIDE_VIEWS: [(Side, Act, &str); 5] = [
     (Side::Signatures, Act::Signatures, "Digital signatures"),
 ];
 
+/// Commands that work on the page view: chosen while organising, they go back to it
+/// (NEW-14). The Pages view is the thumbnails beside it.
+fn of_the_page(a: Act) -> bool {
+    matches!(
+        a,
+        Act::Tool(_)
+            | Act::EditObjectText
+            | Act::MoveText
+            | Act::ReplaceImage
+            | Act::NextField
+            | Act::PrevField
+            | Act::ClearField
+            | Act::SignWith(_)
+            | Act::CreateSign(_)
+            | Act::SignDigital
+            | Act::Certify
+            | Act::FitWidth
+            | Act::Layout(_)
+            | Act::ToggleCover
+            | Act::PagesView
+    )
+}
+
 /// The side panel showing view `side`: its id, so that each view keeps the width it is
 /// given, and the width it starts at: the pages' as the workspace has it, the views of text
 /// wider, so that their lines don't wrap a word or two at a time (ENH-38).
@@ -4861,6 +4928,77 @@ fn zoom_menu(ui: &mut egui::Ui, zoom: f32, c: &Ctx, acts: &mut Vec<Act>) {
         .0
         .on_hover_text("Zoom and page layout")
         .widget_info(|| named(&format!("Zoom {level}")));
+}
+
+/// The window's width under which the status bar's zoom has no slider, only its buttons.
+const SLIDER_ROOM: f32 = 900.0;
+
+/// The status bar's view buttons, as a word processor's: the pages as they read, and
+/// Organise's grid (NEW-14), the one showing marked.
+fn view_buttons(ui: &mut egui::Ui, organise: bool, acts: &mut Vec<Act>) {
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        let views = [
+            (icon::FILE_TEXT, "Page view", !organise),
+            (icon::SQUARES_FOUR, "Organise pages", organise),
+        ];
+        for (glyph, name, on) in views {
+            let b = egui::Button::new(theme::icon(glyph).size(14.0))
+                .selected(on)
+                .frame_when_inactive(on)
+                .min_size(egui::vec2(22.0, 20.0));
+            let r = ui.add(b);
+            r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, name));
+            if r.on_hover_text(name).clicked() && !on {
+                acts.push(Act::Organise);
+            }
+        }
+    });
+}
+
+/// The status bar's zoom, as a word processor's: − and + beside a slider, then the zoom's
+/// menu with its level. Organising, they size the grid's cards. The slider changes the
+/// zoom only when moved: one beyond its ends (a key's 6400%) stays as it is.
+fn zoom_bar(ui: &mut egui::Ui, zoom: f32, organise: bool, c: &Ctx, acts: &mut Vec<Act>) {
+    use crate::settings::{ORGANISE_MAX, ORGANISE_MIN};
+    let button = |ui: &mut egui::Ui, glyph: &str, name: &str| {
+        let b = egui::Button::new(theme::icon(glyph).size(14.0))
+            .frame_when_inactive(false)
+            .min_size(egui::vec2(20.0, 20.0));
+        let r = ui.add(b);
+        r.widget_info(|| named(name));
+        r.on_hover_text(name).clicked()
+    };
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        if button(ui, icon::MINUS, "Zoom out") {
+            acts.push(Act::ZoomOut);
+        }
+        if ui.ctx().content_rect().width() >= SLIDER_ROOM {
+            let (lo, hi) = match organise {
+                true => (ORGANISE_MIN, ORGANISE_MAX),
+                false => (0.1, 10.0),
+            };
+            let mut percent = zoom * 100.0;
+            ui.spacing_mut().slider_width = 96.0;
+            let slider = egui::Slider::new(&mut percent, lo * 100.0..=hi * 100.0)
+                .logarithmic(true)
+                .show_value(false)
+                .clamping(egui::SliderClamping::Never);
+            let r = ui.add(slider);
+            let level = f64::from(zoom * 100.0);
+            r.widget_info(|| egui::WidgetInfo::slider(true, level, "Zoom"));
+            if r.changed() {
+                acts.push(Act::ZoomTo(percent.round().max(1.0) as u32));
+            }
+        }
+        if button(ui, icon::PLUS, "Zoom in") {
+            acts.push(Act::ZoomIn);
+        }
+    });
+    let mut c = *c;
+    c.fit &= !organise;
+    zoom_menu(ui, zoom, &c, acts);
 }
 
 /// An icon button with its name as tooltip and accessible name.
@@ -5664,6 +5802,7 @@ impl eframe::App for App {
                     ui.label(small(&said.join(" · ")));
                 };
                 let last = &mut self.status_width;
+                let grid_zoom = self.settings.organise_zoom;
                 let show_planned = &mut self.settings.show_planned;
                 let mut planned_changed = false;
                 let view = |ui: &mut egui::Ui| {
@@ -5672,16 +5811,23 @@ impl eframe::App for App {
                         ui.spacing_mut().item_spacing.x = 16.0;
                         // Both, whichever the rest of the window shows.
                         let (n, name) = (t.current + 1, t.page_label(t.current));
-                        ui.label(small(&if name == n.to_string() {
-                            format!("Page {n} of {}", t.page_count())
-                        } else {
-                            format!("Page {name} ({n} of {})", t.page_count())
+                        let count = t.page_count();
+                        let chosen = t.ed.selection.pages().map_or(0, |s| s.len());
+                        ui.label(small(&match (t.organising(), chosen) {
+                            // Organise: the pages, and those selected.
+                            (true, 0) if count == 1 => "1 page".into(),
+                            (true, 0) => format!("{count} pages"),
+                            (true, m) => format!("{m} of {count} pages selected"),
+                            _ if name == n.to_string() => format!("Page {n} of {count}"),
+                            _ => format!("Page {name} ({n} of {count})"),
                         }));
                         let text = small("Show planned features");
                         let r = ui.add(egui::Checkbox::new(show_planned, text));
                         planned_changed = r.changed();
                         r.on_hover_text(actions::get(Act::TogglePlanned).hint);
-                        zoom_menu(ui, t.zoom, &c, &mut acts);
+                        view_buttons(ui, t.organising(), &mut acts);
+                        let zoom = if t.organising() { grid_zoom } else { t.zoom };
+                        zoom_bar(ui, zoom, t.organising(), &c, &mut acts);
                     }));
                 };
                 egui::Sides::new()
@@ -5700,7 +5846,8 @@ impl eframe::App for App {
         // it stays when the panel is closed or folded away by a narrow window).
         if has {
             let t = &self.tabs[self.active];
-            let open = self.side.shown();
+            // While organising, the grid shows the pages: the Pages view folds away.
+            let open = self.side.shown() && !(t.organising() && t.side == Side::Pages);
             let mut pick = None;
             let strip = egui::Panel::left("nav-rail")
                 .resizable(false)
@@ -5731,14 +5878,18 @@ impl eframe::App for App {
                 if open && t.side == side {
                     self.side.set_open(false);
                     self.keep_panels();
+                } else if side == Side::Pages {
+                    acts.push(Act::PagesView);
                 } else {
                     self.show_view(side);
                 }
             }
         }
 
-        // The side panel, beside the strip: pages first.
-        if has && self.side.shown() {
+        // The side panel, beside the strip: pages first, folded away while organising.
+        let t = self.tabs.get(self.active);
+        let grid = t.is_some_and(|t| t.organising() && t.side == Side::Pages);
+        if has && self.side.shown() && !grid {
             let active = self.active;
             let (panel, width) = side_panel(self.tabs[active].side);
             let given = self.settings.panel_widths.get(panel).copied();
@@ -5897,6 +6048,7 @@ impl eframe::App for App {
         let author = self.settings.author();
         let (keep, fields) = (&self.settings.keep_tools, self.settings.fields_shown);
         let ring = self.regions.ring;
+        let grid_zoom = self.settings.organise_zoom;
         let pages = egui::CentralPanel::default().frame(canvas).show(ui, |ui| {
             if let Some(t) = self.tabs.get_mut(self.active) {
                 regions::name(ui, Region::Page);
@@ -5905,7 +6057,11 @@ impl eframe::App for App {
                 t.ed.keep.clone_from(keep);
                 t.ed.form.highlight = fields;
                 t.page_ring = ring;
-                t.guarded(|t| t.show_pages(ui, &c));
+                t.grid_zoom = grid_zoom;
+                t.guarded(|t| match t.organising() {
+                    true => t.show_grid(ui, &c),
+                    false => t.show_pages(ui, &c),
+                });
                 if let Some(why) = &t.broken {
                     broken_state(ui, why, &mut acts);
                 }
@@ -5915,6 +6071,8 @@ impl eframe::App for App {
             }
         });
         self.regions.add(Region::Page, pages.response.rect);
+        // Ctrl with the wheel over the grid changed its zoom.
+        self.keep_grid_zoom();
         if let Some(at) = self.tabs.get(self.active).and_then(|t| t.banners_at) {
             self.regions.add(Region::Notices, at);
         }
@@ -6116,6 +6274,8 @@ mod tests {
     use super::*;
     use crate::page_text;
     use limarepdf_core::{Cipher, Encryption, FontChoice, Restrictions, SignPlace};
+
+    mod organise;
 
     /// The height of the window the tests draw: room for the commands above the pages.
     const TEST_HEIGHT: f32 = 1000.0;
@@ -6618,11 +6778,12 @@ mod tests {
         ctx.enable_accesskit();
         theme::install(&ctx);
         let mut app = app_with(&ctx, 1);
-        let mut reached = tab_walk(&mut app, &ctx, 1400.0, 30);
+        let mut reached = tab_walk(&mut app, &ctx, 1400.0, 36);
         // Not the zoom level, which depends on the window.
         reached.retain(|name| !name.ends_with('%'));
         // Redo is disabled, as nothing was undone, and Paste, Copy and the Font group as
-        // nothing is typed or selected; planned features are no Tab stops.
+        // nothing is typed or selected; planned features are no Tab stops. The status
+        // bar's view buttons and zoom (NEW-14) before the strip.
         let bars = [
             "Untitled, unsaved",
             "Close Untitled",
@@ -6643,6 +6804,11 @@ mod tests {
             "Find",
             "Select",
             "Show planned features",
+            "Page view",
+            "Organise pages",
+            "Zoom out",
+            "Zoom",
+            "Zoom in",
             "Pages",
             "Search results",
             "Bookmarks",

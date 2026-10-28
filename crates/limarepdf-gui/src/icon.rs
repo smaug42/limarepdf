@@ -67,6 +67,7 @@ pub const MAGIC_WAND: &str = "\u{E6B6}";
 pub const MAGNIFYING_GLASS: &str = "\u{E30C}";
 pub const MAGNIFYING_GLASS_MINUS: &str = "\u{E30E}";
 pub const MAGNIFYING_GLASS_PLUS: &str = "\u{E310}";
+pub const MINUS: &str = "\u{E32A}";
 pub const NOTE: &str = "\u{E348}";
 pub const NOT_EQUALS: &str = "\u{EDA6}";
 pub const PALETTE: &str = "\u{E6C8}";

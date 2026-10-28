@@ -26,8 +26,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod organise;
 mod previews;
 mod proofs;
+use organise::Organise;
 use previews::{CropDrag, Picture};
 use proofs::Proofs;
 
@@ -255,6 +257,13 @@ pub struct Tab {
     /// The colour around the line being edited, found for that box in those colours.
     line_cover: Option<(Sample, Colours, Color32)>,
     pub sizes: Vec<(f32, f32)>,
+    /// Each page's object, in page order: who a page is, wherever it moves, for the
+    /// selection and the pictures to follow it (NEW-14).
+    ids: Vec<(u32, u16)>,
+    /// Organise's grid, while it shows in place of the pages (NEW-14).
+    organise: Option<Organise>,
+    /// The zoom of Organise's cards (the app's setting, lent).
+    pub grid_zoom: f32,
     pages: HashMap<usize, (u32, TextureHandle)>,
     /// At high zoom, the parts of the pages in view drawn at full size, over `pages`. The
     /// flag is cleared when a tile goes out of date; it is still shown until the new one
@@ -439,6 +448,9 @@ impl Tab {
         let sizes = sizes_of(&pdf);
         let labels = pdf.page_labels();
         Ok(Self {
+            ids: pdf.page_ids(),
+            organise: None,
+            grid_zoom: crate::settings::ORGANISE_ZOOM,
             labels,
             banners,
             banners_at: None,
@@ -1619,13 +1631,71 @@ impl Tab {
                 self.ed.selection.clear_object();
                 self.ed.adding = None;
                 self.search_changed(None);
-                let n = self.page_count();
-                self.ed.selection.retain_pages(n);
-                self.current = self.current.min(n.saturating_sub(1));
-                self.goto = Some(self.current);
+                let old = std::mem::replace(&mut self.ids, self.pdf.page_ids());
+                self.follow_pages(&old);
             }
             Err(e) => self.error = Some(e.to_string()),
         }
+    }
+
+    /// After the pages changed (`old`, their objects before): the pages selected stay
+    /// selected wherever they went, those deleted no longer; while organising, the page
+    /// being read is followed too, or the one in its place when it went. The page view
+    /// goes back to the page being read.
+    fn follow_pages(&mut self, old: &[(u32, u16)]) {
+        let n = self.page_count();
+        let now: HashMap<(u32, u16), usize> = self
+            .ids
+            .iter()
+            .enumerate()
+            .map(|(i, &id)| (id, i))
+            .collect();
+        let moved = |p: usize| old.get(p).and_then(|id| now.get(id)).copied();
+        // A document read anew, whose pages are other objects: by their numbers.
+        let same = old.iter().any(|id| now.contains_key(id));
+        if let (true, Some(s)) = (same, self.ed.selection.pages()) {
+            let set = s.iter().filter_map(|&p| moved(p)).collect();
+            self.ed.selection = Selection::pages_from(set);
+        }
+        self.ed.selection.retain_pages(n);
+        let last = n.saturating_sub(1);
+        if self.organise.is_some() {
+            self.current = moved(self.current).unwrap_or(self.current).min(last);
+            self.anchor = moved(self.anchor).unwrap_or(self.anchor).min(last);
+        } else {
+            self.current = self.current.min(last);
+            self.goto = Some(self.current);
+        }
+    }
+
+    /// Like [`Tab::edit`], for a change that moves, adds, removes or turns pages: the
+    /// pictures of the pages it leaves as they were (all but `changed`, before the change)
+    /// are kept, wherever the pages went, rather than drawn again.
+    pub fn arrange(
+        &mut self,
+        ctx: &egui::Context,
+        changed: &[usize],
+        f: impl FnOnce(&mut Pdf) -> limarepdf_core::Result<()>,
+    ) -> bool {
+        let id = |i: &usize| self.ids.get(*i).copied().filter(|_| !changed.contains(i));
+        let pictures: HashMap<(u32, u16), (u32, TextureHandle)> = (self.pages.iter())
+            .filter_map(|(i, p)| Some((id(i)?, p.clone())))
+            .collect();
+        let thumbs: HashMap<(u32, u16), TextureHandle> = (self.thumbs.iter())
+            .filter_map(|(i, t)| Some((id(i)?, t.clone())))
+            .collect();
+        let done = self.edit(ctx, f);
+        if done {
+            for (i, id) in self.ids.iter().enumerate() {
+                if let Some(p) = pictures.get(id) {
+                    self.pages.insert(i, p.clone());
+                }
+                if let Some(t) = thumbs.get(id) {
+                    self.thumbs.insert(i, t.clone());
+                }
+            }
+        }
+        done
     }
 
     /// The Bookmarks side tab: the outline indented by level, with a caret to show or
@@ -2648,6 +2718,7 @@ impl Tab {
         c.obj_only_text = (!held.is_empty())
             && (held.iter()).all(|h| matches!(h.kind, ObjKind::Text | ObjKind::HiddenText));
         c.pages = self.ed.selection.pages().is_some();
+        c.organise = self.organising();
         c.tool = Some(self.ed.tool);
         c.annot_tool = Some(self.ed.annot_tool);
         c.fit = self.fit;
@@ -3350,7 +3421,7 @@ impl Tab {
         }
         let at = (0..to).filter(|p| !moving.contains(p)).count();
         let before = self.revision;
-        self.edit(ctx, |p| p.reorder(&order));
+        self.arrange(ctx, &[], |p| p.reorder(&order));
         if self.revision != before {
             let placed: BTreeSet<usize> = (at..at + moving.len()).collect();
             self.ed.selection = Selection::pages_from(placed);

@@ -228,12 +228,6 @@ const EXPORT_COMMENTS: Planned = Planned {
     item: "PF-05",
     what: "Save the comments as a summary or for another app.",
 };
-const ORGANISE: Planned = Planned {
-    label: "Organise",
-    icon: icon::SQUARES_FOUR,
-    item: "NEW-14",
-    what: "Arrange, move and choose pages in a grid of the whole document.",
-};
 const CREATE_FIELDS: Planned = Planned {
     label: "Create fields",
     icon: icon::LIST_PLUS,
@@ -286,6 +280,7 @@ static EDIT: &[Group] = &[
                     Act::Tool(Tool::Select),
                     Act::SelectAllText,
                     Act::SelectAllObjects,
+                    Act::SelectAllPages,
                 ],
             ),
         ],
@@ -389,7 +384,7 @@ static PAGES: &[Group] = &[
                 &[Act::Blank, Act::InsertImages, Act::Merge],
             ),
             b(Act::Split, "Split", icon::SCISSORS),
-            Item::Planned(&ORGANISE),
+            b(Act::Organise, "Organise", icon::SQUARES_FOUR),
         ],
     ),
     group(

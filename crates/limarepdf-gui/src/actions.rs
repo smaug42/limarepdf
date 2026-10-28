@@ -49,6 +49,8 @@ pub enum Act {
     SelectAllText,
     /// Select every object on the page in front, with the arrow.
     SelectAllObjects,
+    /// Select every page, in Organise.
+    SelectAllPages,
     /// Print the selected words, as cropped pages or as plain text.
     PrintSelection,
     /// Save the selected words as a PDF (cropped pages or plain text) or a text file.
@@ -104,8 +106,13 @@ pub enum Act {
     Find,
     ZoomIn,
     ZoomOut,
+    /// Zoom to this percentage: the status bar's slider. Not in [`ACTIONS`].
+    ZoomTo(u32),
     FitWidth,
     Actual,
+    /// Show the document's pages as a grid to select, move, turn and remove them, or
+    /// the pages again (NEW-14).
+    Organise,
     NextPage,
     PrevPage,
     FirstPage,
@@ -251,6 +258,7 @@ impl Act {
             | Act::Paste
             | Act::SelectAllText
             | Act::SelectAllObjects
+            | Act::SelectAllPages
             | Act::MarkColor { .. }
             | Act::CommentName
             | Act::CopyObjectText
@@ -261,8 +269,10 @@ impl Act {
             | Act::Find
             | Act::ZoomIn
             | Act::ZoomOut
+            | Act::ZoomTo(_)
             | Act::FitWidth
             | Act::Actual
+            | Act::Organise
             | Act::NextPage
             | Act::PrevPage
             | Act::FirstPage
@@ -376,8 +386,10 @@ pub struct Ctx {
     pub obj_lines: bool,
     /// Every selected object is a line of page text, visible or not.
     pub obj_only_text: bool,
-    /// Pages are selected in the thumbnails.
+    /// Pages are selected in the thumbnails or Organise's grid.
     pub pages: bool,
+    /// The active tab shows its pages as Organise's grid (NEW-14).
+    pub organise: bool,
     pub tool: Option<Tool>,
     /// The Annotate button's tool, the one last used.
     pub annot_tool: Option<Tool>,
@@ -515,7 +527,11 @@ fn styleable(c: &Ctx) -> bool {
     (c.words || (c.object && c.obj_lines)) && !c.busy
 }
 fn arrow_tool(c: &Ctx) -> bool {
-    c.doc && c.tool == Some(Tool::Select)
+    c.doc && c.tool == Some(Tool::Select) && !c.organise
+}
+/// Organise's grid shows the pages (NEW-14).
+fn organising(c: &Ctx) -> bool {
+    c.doc && c.organise
 }
 fn deletable(c: &Ctx) -> bool {
     c.object || c.pages || (c.annot && !c.annot_locked) || (c.words && !c.busy)
@@ -525,7 +541,7 @@ fn image_object(c: &Ctx) -> bool {
 }
 /// The tools that select words: the read tool, and the Text tool with a drag.
 fn text_tool(c: &Ctx) -> bool {
-    matches!(c.tool, Some(Tool::Read | Tool::Text))
+    matches!(c.tool, Some(Tool::Read | Tool::Text)) && !c.organise
 }
 fn any_tool(c: &Ctx) -> bool {
     c.doc && c.tool.is_some()
@@ -727,6 +743,15 @@ pub static ACTIONS: &[Action] = &[
         enabled: arrow_tool,
         hint: "Every picture, shape and line of text on the page, to move, restyle or \
                delete together.",
+        ..BASE
+    },
+    Action {
+        act: Act::SelectAllPages,
+        group: Group::Edit,
+        label: "Select all pages",
+        icon: icon::SELECTION_ALL,
+        keys: &[k(C, Key::A)],
+        enabled: organising,
         ..BASE
     },
     Action {
@@ -1040,6 +1065,17 @@ pub static ACTIONS: &[Action] = &[
         group: Group::View,
         label: "Actual size",
         keys: &[k(C, Key::Num1)],
+        ..BASE
+    },
+    Action {
+        act: Act::Organise,
+        group: Group::View,
+        label: "Organise pages",
+        icon: icon::SQUARES_FOUR,
+        sep: true,
+        checked: Some(|c| c.organise),
+        hint: "Every page as a card, to select, move, turn, take out and delete pages; again \
+               for the pages as they read.",
         ..BASE
     },
     Action {
@@ -1903,7 +1939,7 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
     }
     // What a command may wait for, given, and what it says then.
     type Fix = (fn(&mut Ctx), &'static str);
-    let fixes: [Fix; 16] = [
+    let fixes: [Fix; 18] = [
         (
             |d| d.busy = false,
             "Waits until the task under way finishes.",
@@ -1941,6 +1977,8 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
         ),
         (|d| d.tool = Some(Tool::Read), "Choose the Read tool first."),
         (|d| d.layout = Layout::Facing, "Shown only in facing pages."),
+        (|d| d.organise = true, "Choose Organise pages first."),
+        (|d| d.organise = false, "Go back to the page view first."),
     ];
     let helps = |fix: fn(&mut Ctx)| {
         let mut d = *c;
@@ -2169,18 +2207,26 @@ mod tests {
         let tools = [Tool::Read, Tool::Select, Tool::Text, Tool::Rect, Tool::Note];
         let both = |a: &Action, b: &Action| {
             tools.iter().any(|&t| {
-                let c = Ctx {
-                    doc: true,
-                    tool: Some(t),
-                    ..Ctx::default()
-                };
-                (a.enabled)(&c) && (b.enabled)(&c)
+                [false, true].into_iter().any(|organise| {
+                    let c = Ctx {
+                        doc: true,
+                        tool: Some(t),
+                        organise,
+                        ..Ctx::default()
+                    };
+                    (a.enabled)(&c) && (b.enabled)(&c)
+                })
             })
         };
+        let select_all = [
+            Act::SelectAllText,
+            Act::SelectAllObjects,
+            Act::SelectAllPages,
+        ];
         let all = shortcuts();
         for (i, (a, k)) in all.iter().enumerate() {
             for (b, j) in &all[i + 1..] {
-                let apart = a.act == Act::SelectAllText && b.act == Act::SelectAllObjects;
+                let apart = select_all.contains(&a.act) && select_all.contains(&b.act);
                 assert!(
                     k != j || apart,
                     "{:?} and {:?} share a shortcut",
