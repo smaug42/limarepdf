@@ -28,6 +28,8 @@ themselves, so they can be checked first, by you or by someone else in another a
 After marking one area, the Redact tool gives way to the read tool; pin it to mark several areas in a row (see
 [Keep tool active](gui.md#keep-tool-active)).
 
+<img src="images/redaction.png" width="835" alt="Two marks for redaction outlined in red: the words “twelve monitoring stations” and a box drawn over the heading's “Northern Water Survey”, which is selected with its handles and a small toolbar; the notice above the page says 2 areas are marked but nothing under them has been removed yet, with an Apply redactions… button, and the inspector shows the redaction mark's options">
+
 **Changing marks:** select a mark (click it with the read tool, Ctrl+click it with another tool, or click it in the
 Comments view), then:
 

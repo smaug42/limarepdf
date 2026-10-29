@@ -597,9 +597,13 @@ Dates people see (Fill and sign's Today, the date under a signature, a stamp's n
 footers' `{date}`) come from `overlay::local_today` and `today_iso`, the computer's calendar date through chrono's
 `Local`, asked for each time rather than kept, so an app left open overnight writes the new day. Times written for
 other programs stay in UTC (`overlay::utc_now`: an annotation's `/M`); a digital signature's `/M` is local time
-with its offset. `tests/local_dates.rs` reruns itself with `TZ` set to UTC+14 and UTC−11 (POSIX TZ strings, no
-time zone files needed), 25 hours apart, so at any moment at least one is on a different date from UTC; Unix
-only, as Windows ignores `TZ`.
+with its offset. A date read back for people to see (`Annot::modified`, shown on the comment cards, in the
+inspector and by `annot list`) goes through `annots::pdf_date`: one that says its time zone (`Z`, `+hh'mm'`,
+`-hh'mm'`) is parsed by `sig_verify::parse_pdf_date` and shown in chrono's `Local`, so LimarePDF's own UTC times
+read as the computer's clock; one without a zone, whose clock is unknown, is shown as written (batch 42; before,
+every date was shown as written). `tests/local_dates.rs` reruns itself with `TZ` set to UTC+14 and UTC−11 (POSIX
+TZ strings, no time zone files needed), 25 hours apart, so at any moment at least one is on a different date from
+UTC (`comment_dates_are_shown_in_local_time` checks fixed comment dates there); Unix only, as Windows ignores `TZ`.
 
 Annotation drawings LimarePDF makes are built in `annot_ap.rs`. A line's endings (`line_end`) are painted with a
 pen of their own: on a dashed line it sets an empty dash pattern (`[] 0 d`) before the ending, as `Pen::paint`

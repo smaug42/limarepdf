@@ -167,6 +167,8 @@
   with the tasks most people need next. The guide now says plainly what recovery copies cover (none for any
   protected file, a permissions password alone too, for the rest of the session), that saving a protected
   document drops its password unless it is set again, and what happens to form fields when files are merged.
+  New screenshots show Fill and sign, the Comments view, a form being filled in and redaction marks, and every
+  screenshot in the guide is sharper on high-resolution screens.
 
 ### Fixed
 
@@ -181,6 +183,9 @@
   comment now, as a draft.
 - The Comments view and the selected comment's inspector named pages by their numbers; they use the page labels,
   as the rest of the app does (☰ > View > Use the document's page labels).
+- Comments' dates (in the Comments view, the inspector, replies and `limarepdf-cli annot list`) showed the time as
+  written in the file, so a comment made in LimarePDF, which writes UTC's time, was as many hours off as the
+  computer is from UTC, often on the wrong day. A date that says its time zone is now shown in this computer's.
 
 - A line clicked with the Text tool to edit it showed the look of the next new text in Edit > Font and the
   inspector, and changes there went to that new text instead of the line. They show and change the line now.

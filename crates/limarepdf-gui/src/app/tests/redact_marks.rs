@@ -297,3 +297,99 @@ fn apply_redactions_is_greyed_with_no_marks() {
     assert!(!greyed(&tree), "greyed with a mark");
     assert!((a.enabled)(&app.state(&ctx)), "the command is greyed");
 }
+
+/// Whether box `b` is inside `area`, but for half a point.
+fn inside(b: [f32; 4], area: [f32; 4]) -> bool {
+    area[0] <= b[0] + 0.5 && area[1] <= b[1] + 0.5 && area[2] >= b[2] - 0.5 && area[3] >= b[3] - 0.5
+}
+
+/// Whether boxes `a` and `b` overlap by more than a twentieth of a point each way.
+fn overlap(a: [f32; 4], b: [f32; 4]) -> bool {
+    a[0].max(b[0]) + 0.05 < a[2].min(b[2]) && a[1].max(b[1]) + 0.05 < a[3].min(b[3])
+}
+
+/// Journey B, the marking step: words selected with the read tool by a drag across
+/// "Walrus two", then Mark for redaction. One mark is made, in one Undo step, with one area
+/// over both words and over no other text, and nothing else is added; the words are let go
+/// so the mark shows. Applied, it takes those words and no others.
+#[test]
+fn selected_words_are_marked_for_redaction() {
+    let ctx = test_ctx();
+    let mut app = objects_tab(&ctx);
+    assert_eq!(app.tabs[0].ed.tool, Tool::Read);
+    let annots = app.tabs[0].pdf.annotations().len();
+    // From inside its "W" to inside the "o" of "two".
+    drag_page(&mut app, &ctx, (74.0, 116.0), (158.0, 116.0), false);
+    let words = app.tabs[0].ed.selection.words();
+    assert!(words.is_some(), "no words: {:?}", app.tabs[0].ed.selection);
+    let before = steps(&app);
+    app.act(&ctx, Act::MarkRedact);
+    settle(&mut app, &ctx);
+    let m = mark(&app);
+    let now = app.tabs[0].pdf.annotations().len();
+    assert_eq!(now, annots + 1, "more added");
+    assert_eq!(steps(&app), before + 1, "not one Undo step");
+    assert_eq!(m.quads.len(), 1, "{:?}", m.quads);
+    let area = m.quads[0];
+    let page = app.tabs[0].pdf.page_words(0).unwrap();
+    let two = page.iter().find(|w| w.text == "two").expect("the word two");
+    for w in &page {
+        let (b, word) = (w.bbox, &w.text);
+        if w.line == two.line {
+            assert!(inside(b, area), "{word} at {b:?} not under {area:?}");
+        } else {
+            assert!(!overlap(b, area), "{word} at {b:?} under {area:?}");
+        }
+    }
+    let sel = &app.tabs[0].ed.selection;
+    assert!(sel.words().is_none(), "still selected: {sel:?}");
+    let mut applied = app.tabs[0].pdf.clone();
+    applied.apply_redactions().unwrap();
+    let text = applied.page_text(0);
+    assert!(!text.contains("two"), "{text:?}");
+    assert_eq!(text.matches("Walrus").count(), 2, "{text:?}");
+    for kept in ["Walrus one", "Walrus three", "hidden words"] {
+        assert!(text.contains(kept), "{kept} went: {text:?}");
+    }
+}
+
+/// Journey B, the applying step: a mark applied (the question answered) takes its text
+/// off the page and the mark with it, in one Undo step; one Undo brings back the text
+/// and the mark where it was, and Redo takes them away again.
+#[test]
+fn one_undo_takes_back_applied_redactions() {
+    let ctx = test_ctx();
+    let (mut app, _) = marked(&ctx, &[TWO]);
+    let text = |app: &App| app.tabs[0].pdf.page_text(0);
+    let all = ["Walrus one", "Walrus two", "Walrus three"];
+    let was = text(&app);
+    assert!(all.iter().all(|l| was.contains(l)), "{was:?}");
+    let before = steps(&app);
+    app.act(&ctx, Act::ApplyRedactions);
+    click(&mut app, &ctx, "Apply redactions");
+    let gone = |app: &App, when: &str| {
+        let now = text(app);
+        assert!(!now.contains("two"), "{when}: {now:?}");
+        let kept = now.contains("Walrus one") && now.contains("Walrus three");
+        assert!(kept, "{when}: {now:?}");
+        let marks = app.tabs[0].pdf.redaction_marks();
+        assert!(marks.is_empty(), "{when}: marks left {marks:?}");
+    };
+    gone(&app, "applied");
+    assert_eq!(steps(&app), before + 1, "not one Undo step");
+    assert_eq!(message(&app).0, "Redactions applied");
+    click(&mut app, &ctx, "OK");
+    assert!(matches!(app.dialog, Dialog::None));
+
+    app.act(&ctx, Act::Undo);
+    let now = text(&app);
+    assert!(all.iter().all(|l| now.contains(l)), "Undo: {now:?}");
+    let back = areas(&app);
+    let one = back.len() == 1 && same(back[0], TWO);
+    assert!(one, "Undo: the mark at {back:?}");
+    assert_eq!(steps(&app), before, "Undo");
+
+    app.act(&ctx, Act::Redo);
+    gone(&app, "Redo");
+    assert_eq!(steps(&app), before + 1, "Redo");
+}

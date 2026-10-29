@@ -303,7 +303,10 @@ fn lists_comments_and_markup_but_not_links_widgets_or_popups() {
     assert_eq!(a[0].kind, AnnotKind::Note);
     assert_eq!(a[0].contents, "Check this");
     assert_eq!(a[0].author, "Sam");
-    assert_eq!(a[0].modified, "2024-03-05 14:22");
+    // In this computer's time zone (tests/local_dates.rs tries others).
+    let utc = "2024-03-05T14:22:33Z".parse::<chrono::DateTime<chrono::Utc>>();
+    let local = utc.unwrap().with_timezone(&chrono::Local);
+    assert_eq!(a[0].modified, local.format("%Y-%m-%d %H:%M").to_string());
     assert_eq!(a[0].color, Some([1.0, 0.0, 0.0]));
     // Displayed coordinates run down from the top of the 200 pt page.
     assert_eq!(a[0].bbox, [10.0, 10.0, 30.0, 30.0]);

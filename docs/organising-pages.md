@@ -15,7 +15,7 @@ page, with a checkbox and its name under it. The heading above the cards counts 
 such as "12 pages · 4 selected", and so does the status bar ("4 of 12 pages selected"). The command band shows
 **Pages**, and the Pages view on the left folds away while you organise.
 
-![Organise: a report's pages as cards in rows, each with a checkbox and its name; pages 2 and 4 are selected, and the heading says "12 pages · 2 selected"](images/organise.png)
+<img src="images/organise.png" width="766" alt="Organise: a report's pages as cards in rows, each with a checkbox and its name; pages 2 and 4 are selected, and the heading says “12 pages · 2 selected”">
 
 - **Back to reading:** **Page view** in the status bar, or **Pages > Organise** again, shows the pages where you
   were reading. A double-click on a card shows its page instead. Choosing a tool (Edit text, say), Crop, Fit width

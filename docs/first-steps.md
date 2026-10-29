@@ -20,7 +20,7 @@ From a terminal, `limarepdf report.pdf --page 3` opens a document at page 3.
 
 ## Find your way around
 
-![The LimarePDF window with a report open, numbered: 1 the commands under the document's tab, 2 the page thumbnails at the left, 3 the pages in the middle, 4 the inspector at the right, 5 the bottom bar](images/window-tour.png)
+<img src="images/window-tour.png" width="1000" alt="The LimarePDF window with a report open, numbered: 1 the commands under the document's tab, 2 the page thumbnails at the left, 3 the pages in the middle, 4 the inspector at the right, 5 the bottom bar">
 
 1. **The commands**, under the document's tab. At the left, the File menu ☰, which holds every command, then
    Open, Save, Undo and Redo; at the right, Print. In between are the names **Edit**, **Insert**, **Review**,
@@ -62,7 +62,7 @@ Documents open with the read tool, the text cursor. It does most things:
 Tools such as **Insert > Watermark**, **Pages > Crop** and **Protect > Passwords** open in the inspector on their
 own. The × at the top of the inspector closes the tool.
 
-![A text box selected on the page, with its handles and a small toolbar, and its options in the inspector at the right: text size and colour, background, border, opacity, its text, Delete and a reply box](images/inspector.png)
+<img src="images/inspector.png" width="500" alt="A text box selected on the page, with its handles and a small toolbar, and its options in the inspector at the right: text size and colour, background, border, opacity, its text, Delete and a reply box">
 
 Right-click anything for a short menu of what you can do with it.
 

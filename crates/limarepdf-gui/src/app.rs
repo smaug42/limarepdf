@@ -6412,6 +6412,7 @@ mod tests {
     use crate::page_text;
     use limarepdf_core::{Cipher, Encryption, FontChoice, Restrictions, SignPlace};
 
+    mod forms;
     mod organise;
     mod redact_marks;
     mod review;

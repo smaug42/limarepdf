@@ -1,6 +1,7 @@
 //! The dates people see (headers and footers, Fill and sign's Today, stamps' name-and-date
-//! lines, the date under a signature) are this computer's calendar date, not UTC's. Each
-//! time zone is tried in a child test process of its own, with `TZ` set.
+//! lines, the date under a signature) are this computer's calendar date, not UTC's, and a
+//! comment's date is shown in this computer's time zone. Each time zone is tried in a child
+//! test process of its own, with `TZ` set.
 
 #![cfg(unix)]
 
@@ -124,5 +125,76 @@ fn visible_dates_are_local() {
                 "{what} in TZ {tz}: {date}, want {before}"
             );
         }
+    }
+}
+
+/// When comments were last changed, as written in the file: in UTC, as LimarePDF writes
+/// them; an hour ahead of UTC; with no time zone; and a date alone.
+const WRITTEN: [&str; 4] = [
+    "D:20261029033300Z",
+    "D:20240305142233+01'00'",
+    "D:20240305142233",
+    "D:20240305",
+];
+
+/// Run by [`comment_dates_are_shown_in_local_time`] in a time zone of its own.
+#[test]
+#[ignore = "run by comment_dates_are_shown_in_local_time with TZ set"]
+fn print_comment_dates() {
+    if std::env::var_os(CHILD).is_none() {
+        return;
+    }
+    let mut p = Pdf::new();
+    p.insert_blank(0, 300.0, 200.0).unwrap();
+    for (i, written) in WRITTEN.into_iter().enumerate() {
+        let at = (40.0 + 50.0 * i as f32, 100.0);
+        let id = p.add_note(0, at, [1.0, 0.8, 0.0], "A note", "Sam").unwrap();
+        let note = p.doc.get_object_mut(id).unwrap().as_dict_mut().unwrap();
+        note.set("M", lopdf::Object::string_literal(written));
+    }
+    for a in p.annotations() {
+        println!("date|{}", a.modified);
+    }
+}
+
+#[test]
+fn comment_dates_are_shown_in_local_time() {
+    // A note made at 03:33 UTC on 29 October is shown at that moment's time there; a date
+    // without a time zone, as written.
+    for (tz, want) in [
+        (
+            "<+14>-14",
+            [
+                "2026-10-29 17:33",
+                "2024-03-06 03:22",
+                "2024-03-05 14:22",
+                "2024-03-05",
+            ],
+        ),
+        (
+            "<-11>11",
+            [
+                "2026-10-28 16:33",
+                "2024-03-05 02:22",
+                "2024-03-05 14:22",
+                "2024-03-05",
+            ],
+        ),
+    ] {
+        let out = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "print_comment_dates", "--ignored"])
+            .args(["--nocapture", "--test-threads", "1"])
+            .env("TZ", tz)
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        let errors = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{text}{errors}");
+        let shown: Vec<&str> = text
+            .lines()
+            .filter_map(|l| l.split_once("date|").map(|(_, d)| d))
+            .collect();
+        assert_eq!(shown, want, "in TZ {tz}, for {WRITTEN:?}");
     }
 }

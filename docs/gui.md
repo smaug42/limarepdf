@@ -7,7 +7,7 @@ inspector, keyboard shortcuts and settings. For step-by-step help with a task, s
 [everyday tasks](README.md#everyday-tasks). Shortcuts are written with Ctrl and Alt; on a Mac, use ⌘ (Command) and
 ⌥ (Option) instead.
 
-![The LimarePDF window with a three-page report open](images/limarepdf.png)
+<img src="images/limarepdf.png" width="1000" alt="The LimarePDF window with a three-page report open">
 
 ## The window
 
@@ -368,7 +368,7 @@ LimarePDF manages to delete it, or you do. The limits of this promise:
 
 What you select decides what the inspector, the right-click menu and the floating toolbar offer.
 
-![A text box selected on the page, with its handles and the floating toolbar, and its options in the inspector at the right: text size and colour, background, border, opacity, its text, Delete and a reply box](images/inspector.png)
+<img src="images/inspector.png" width="500" alt="A text box selected on the page, with its handles and the floating toolbar, and its options in the inspector at the right: text size and colour, background, border, opacity, its text, Delete and a reply box">
 
 The inspector is headed by what it shows. Under the heading come a few facts, then buttons, then folded sections:
 click a section's name to open or fold it.

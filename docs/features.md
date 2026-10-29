@@ -8,7 +8,7 @@ shouldn't be seen, then print it or send it on. There is no account to make, no 
 uploaded: your documents never leave your computer. It runs on Linux, Windows and macOS, and it is free and open
 source.
 
-![The LimarePDF window: page thumbnails on the left, a report with a highlight, a note, a tick and an arrow with a text box in the middle, and the inspector on the right](images/limarepdf.png)
+<img src="images/limarepdf.png" width="1000" alt="The LimarePDF window: page thumbnails on the left, a report with a highlight, a note, a tick and an arrow with a text box in the middle, and the inspector on the right">
 
 ## What you can do
 

@@ -27,6 +27,8 @@ each with your saved ones and one button to make another (**Create signature…*
 marks**: the date, your name, text of your own, and a tick, cross or dot; the ink; and **Finish signing…**, the
 main button once something is down (greyed until then; hover over it to see why).
 
+<img src="images/fill-and-sign.png" width="835" alt="Fill and sign: a typed signature, the date and a tick put down on a report, the notice above the page saying they can still be moved or removed, with Finish signing…, and the Fill and sign pane at the right: 3 items, movable; two saved signatures and saved initials, each with a bin button, and Create signature… and Create initials…; the date, your name and text; and the tick picked under Marks">
+
 **Fill and sign ▾**, the small arrow beside the Fill and sign button, opens a menu of everything it can put down:
 Signature and Initials, each listing the saved ones and Create…, then Date, Your name, Text, Tick, Cross and Dot,
 and **Finish signing…** at the end. Picking one turns the tool on with it; the button itself turns the tool on with
@@ -54,7 +56,7 @@ the command palette (Ctrl+K), opens a window with three ways to make one (Create
   picture file isn't changed, and a saved signature keeps the part chosen. CMYK JPEGs (from some print workflows)
   work as other pictures do.
 
-![The Create signature window on its Type tab: a name typed and shown in the four handwriting styles, the first one picked, the ink colour (Black or Blue), Save for next time ticked, and the Use signature and Cancel buttons](images/create-signature.png)
+<img src="images/create-signature.png" width="530" alt="The Create signature window on its Type tab: a name typed and shown in the four handwriting styles, the first one picked, the ink colour (Black or Blue), Save for next time ticked, and the Use signature and Cancel buttons">
 
 The window also has the ink colour (the same choice as the pane's). **Use signature** puts it in the list. Esc
 closes the window only while nothing is drawn, typed (beyond the name it starts with) or chosen; picking another

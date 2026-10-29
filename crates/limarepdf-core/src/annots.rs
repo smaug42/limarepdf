@@ -709,15 +709,20 @@ fn rgb(c: &[f32]) -> [f32; 3] {
     }
 }
 
-/// A PDF date (`D:YYYYMMDDHHmmSS…`) as `YYYY-MM-DD HH:MM`; the time is left out when
-/// the date has none.
+/// A PDF date (`D:YYYYMMDDHHmmSS…`) as `YYYY-MM-DD HH:MM`: in this computer's time zone
+/// when the date says its own (LimarePDF writes UTC's), else as written; the time is left
+/// out when the date has none.
 fn pdf_date(s: &str) -> Option<String> {
     let s = s.strip_prefix("D:").unwrap_or(s);
-    let digits: String = s
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .take(12)
-        .collect();
+    let all = s.chars().take_while(char::is_ascii_digit).count();
+    let zoned = matches!(s[all..].chars().next(), Some('Z' | '+' | '-'));
+    if all >= 12 && zoned {
+        if let Some(t) = crate::sig_verify::parse_pdf_date(s) {
+            let local = t.with_timezone(&chrono::Local);
+            return Some(local.format("%Y-%m-%d %H:%M").to_string());
+        }
+    }
+    let digits: String = s.chars().take(all.min(12)).collect();
     if digits.len() < 8 {
         return None;
     }
@@ -734,8 +739,9 @@ mod tests {
 
     #[test]
     fn dates() {
+        // Dates with a time zone are shown in this computer's: tests/local_dates.rs.
         assert_eq!(
-            pdf_date("D:20240305142233+01'00'").as_deref(),
+            pdf_date("D:20240305142233").as_deref(),
             Some("2024-03-05 14:22")
         );
         assert_eq!(pdf_date("20240305").as_deref(), Some("2024-03-05"));

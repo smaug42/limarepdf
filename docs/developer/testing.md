@@ -360,15 +360,59 @@ ENH-40's flow (the review journey), each step with its test:
 | Drafts kept per comment, per tab; added by Save and page commands; asked about on close and Reload; left by Undo and Redo | `a_reply_typed_stays_with_its_comment_when_another_is_selected`, `a_draft_shows_on_its_card_and_stays_with_its_tab`, `save_adds_every_draft_and_closing_with_one_asks`, `a_page_command_adds_the_drafts_first`, `reload_with_a_draft_asks_first`, `undo_and_redo_leave_drafts_as_drafts` |
 | Deleted comments lose their cards; Undo brings them back | `deleted_comments_take_their_cards_away` |
 
-D2's flow (build plan 6.4; batch 42, ENH-09) for a photographed or flat form, each step with its test:
+Batch 42's third stage recorded the form and redaction journeys the same way, each step with its test. A survey
+of the tests found seven steps with none, and a test agent wrote them (`app/tests/forms.rs`, two more in
+`app/tests/redact_marks.rs`, two in core's `tests/redact.rs` and the command line's `tests/redact.rs`):
+`save_keeps_a_field_still_being_typed_in` (Ctrl+S and Save as with the keyboard still in a field: the files hold
+the typing, the field stays open), `a_mixed_form_is_filled_saved_and_stays_fillable` (12 fields of every kind
+filled by clicks, typing and Tab, saved, closed and opened again: every value as filled, the form and its 14
+widgets still there, typing and ticking working again), `selected_words_are_marked_for_redaction`,
+`one_undo_takes_back_applied_redactions`, `a_character_goes_when_a_quarter_of_it_is_under_the_marks` (at 60
+points, 30 % of a letter's width or height under a mark removes it, 20 % keeps it),
+`an_earlier_revision_of_the_file_leaves_nothing_in_the_redacted_output` (a file of two revisions, the word in
+the current content, its older version and a stream nothing uses: none of it in the saved bytes or any decoded
+stream), and the command line's `redact_removes_the_text_under_the_area_and_keeps_the_rest` (`--area` and
+`--text`, the input never replaced) and `marks_made_with_mark_only_are_applied_later`. They guard what was
+already built: all passed on the code as it was, so nothing was fixed. Shift+Tab through fields is checked only
+by `fields.rs`'s unit test, and saved field values only by LimarePDF's own reading (another reader's view of a
+filled, unflattened form is the acceptance rows' hand check).
+
+The same stage took the guide's screenshots again at scale 2 (`WINIT_X11_SCALE_FACTOR=2`, a 1000 × 660-point
+window, light theme, LimarePDF's teal, made-up documents; shown at half size with `<img width>`, so each is the
+size it was), the six there before and four new ones: `fill-and-sign.png`, `comments.png`, `forms.png` and
+`redaction.png` (the scripts are `target/dialog-shots/docshots.sh`'s scale-2 version). Each was looked at for a
+wrong state, a stray tooltip, a missing glyph or a control cut off; `limarepdf.png` is the scale-1 one doubled,
+pixel for pixel. The run found that comments' dates were shown as written, so LimarePDF's own, in UTC, were hours
+off the computer's clock: `comment_dates_are_shown_in_local_time` (`tests/local_dates.rs`, a note's date in UTC,
+an hour ahead, without a zone and a date alone, in UTC+14 and UTC−11) failed first, at "2026-10-29 03:33" for
+"17:33"; core's `lists_comments_and_markup_but_not_links_widgets_or_popups` now expects the computer's time. The run's other
+findings are in the backlog (PB-39 to PB-42).
+
+D2's flow (build plan 6.4): fields filled in one flow (BUG-03, BUG-04, BUG-10), and a photographed or flat form
+finished in Fill and sign (batch 42, ENH-09), each step with its test:
 
 | Flow and step | Tests |
 | --- | --- |
+| D2: click and type in text fields; tick boxes, choose radio buttons, pick from lists | `clicks_tick_boxes_choose_radios_and_open_text_and_lists`, `a_multi_select_list_applies_as_clicked_and_closes_without_done` (`fields.rs`); core's `sets_text_and_draws_it_inside_the_field`, `ticks_checkboxes_and_chooses_radio_buttons`, `chooses_from_lists` |
+| D2: Tab goes through the fields in order | `tab_goes_through_fillable_fields_in_page_order`, `a_mixed_form_is_filled_saved_and_stays_fillable` |
+| D2: Save, Save as and Print with typing still in a field | `save_keeps_a_field_still_being_typed_in`, `print_right_after_typing_prints_the_typed_value`, `printing_asks_first_when_fields_would_print_empty`, core's `form_values_are_sent_drawn_in` |
+| D2: a 12-field mixed form saved with no blank values and still fillable when opened again; drawn into the pages only when that is chosen | `a_mixed_form_is_filled_saved_and_stays_fillable`; core's `draws_the_fields_where_they_were_and_removes_the_form`, `flattens_some_pages_and_keeps_the_rest_fillable`, `appended_forms_drawn_onto_their_pages_keep_their_answers` |
+| D2: Undo in a field takes back its typing only; fields of the same name in two documents kept apart | `undo_in_a_form_field_stays_in_the_field`, `a_field_shown_twice_starts_each_box_with_nothing_to_undo`, `same_named_fields_in_two_documents_keep_their_typing_apart` |
 | D2: Fill and sign from the band; one way to make a signature or initials; saved ones taken off the list | `fill_and_sign_offers_one_way_to_create_each`, `a_saved_signature_has_a_visible_remove_button` |
 | D2: signature, date and tick put down with clicks, the tool kept on; one moved with the read tool | `a_flat_form_is_signed_finished_saved_and_reopened` |
 | D2: finished from the pane (greyed, saying why, until something is down), the question naming Fill and sign; drawn into the page; one Undo and Redo | `a_greyed_finish_signing_says_why`, `the_finish_signing_question_names_fill_and_sign`, `finish_signing_is_in_the_fill_and_sign_menu`, `a_flat_form_is_signed_finished_saved_and_reopened` |
 | D2: saved and opened again: no fill-and-sign annotations left, the date in the page's text | `a_flat_form_is_signed_finished_saved_and_reopened` |
-| The redaction journey's check step: marks moved and resized, Apply where they now are (PF-37) | `a_redaction_mark_moves_with_a_drag`, `a_one_area_mark_resizes_by_its_handles`, `a_mark_over_several_lines_moves_whole_without_handles`, `the_arrow_keys_move_a_selected_mark`, `a_moved_mark_is_saved_where_it_was_moved`, `a_locked_mark_stays_put` |
+
+The redaction journey (mark, check, then apply on purpose), each step with its test:
+
+| Flow and step | Tests |
+| --- | --- |
+| Mark an area, the words selected, or every search result | core's `marks_survive_saving_and_are_not_flattened`, `selected_words_are_marked_for_redaction`, `mark_all_for_redaction_marks_every_match_even_before_the_search_ends` |
+| Check: marks moved and resized, Apply where they now are (PF-37); the banner; Apply redactions… greyed, saying why, with no marks | `a_redaction_mark_moves_with_a_drag`, `a_one_area_mark_resizes_by_its_handles`, `a_mark_over_several_lines_moves_whole_without_handles`, `the_arrow_keys_move_a_selected_mark`, `a_moved_mark_is_saved_where_it_was_moved`, `a_locked_mark_stays_put`, `the_banner_for_one_mark_says_it`, `apply_redactions_is_greyed_with_no_marks` |
+| Apply after the question; one Undo takes it back, Redo applies it again | `a_redaction_mark_moves_with_a_drag`, `one_undo_takes_back_applied_redactions`, `redoing_a_removal_withdraws_the_copy_made_after_undoing_it` (`app/recover.rs`) |
+| What goes: text (a character a quarter under the marks), drawings, comments and links, pictures blacked out there | core's `removes_the_marked_characters_and_keeps_the_rest_in_place`, `a_character_goes_when_a_quarter_of_it_is_under_the_marks`, `removes_drawings_under_a_mark_and_clips_those_crossing_it`, `removes_annotations_touching_a_mark`, `blacks_out_the_covered_part_of_a_picture`, `redacting_removes_every_annotation_touching_a_mark` |
+| Saved: nothing of it anywhere in the file, an earlier revision's copy included; the recovery copy replaced at once | core's `the_saved_output_holds_nothing_of_the_marked_text_or_what_touches_it`, `an_earlier_revision_of_the_file_leaves_nothing_in_the_redacted_output`; `the_copy_after_removing_content_has_none_of_it`, `removing_content_withdraws_the_copy_and_writes_a_new_one_at_once` (`app/recover.rs`); opt-in, with poppler and Ghostscript: `cross_check_redacted_output_with_poppler_and_ghostscript`, `cross_check_a_redacted_public_pdf_with_poppler_and_ghostscript` |
+| The same from the command line (`limarepdf-cli redact`: an area, a search, marks only, applied later) | `redact_removes_the_text_under_the_area_and_keeps_the_rest`, `marks_made_with_mark_only_are_applied_later` |
 
 The human runs of D2 and of the redaction journey are the acceptance rows' (deferred to the RC cycle).
 

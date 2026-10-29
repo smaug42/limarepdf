@@ -125,6 +125,8 @@ indented under the comment they answer: click its icon on the left or **Review >
 Comments. Each card shows who made it, what it is and when, and the first lines of its comment; a highlight or
 other text markup with no comment shows the words it marks. Hover over a card for the whole comment.
 
+<img src="images/comments.png" width="1000" alt="The Comments view at the left, with cards under the name of their page: Alex Kim's highlight is selected, with its Reply button and Sam Lee's reply indented under it, and a card further down says Draft reply; the highlighted words are selected on the page, and the inspector at the right shows the highlight's colour, opacity and comment box, Sam Lee's reply, and the Reply box with Add reply">
+
 - **Click a card** to select its annotation and show it on the page. Selecting an annotation on the page selects its
   card too, and brings it into view.
 - **Previous and Next:** **Review > Previous** and **Review > Next** (or ☰ > View > Previous comment, Next comment)

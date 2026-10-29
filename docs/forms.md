@@ -12,6 +12,8 @@ When a document has a form, a notice above the pages says so, and its fields are
    **Forms and sign > Fill fields** also goes to the next field.
 4. Save with Ctrl+S, or use Save As (Ctrl+Shift+S) to keep the empty form as it was.
 
+<img src="images/forms.png" width="630" alt="A Site visit request form being filled in: name, organisation and email typed, a station chosen from a drop-down, the visit date and number of visitors filled in, two of the three checkboxes ticked, and the Notes field outlined with the text cursor after what is being typed">
+
 Each kind of field:
 
 - **Text fields:** a click opens a text box over the field. Enter (in a one-line field), Esc, Tab or clicking

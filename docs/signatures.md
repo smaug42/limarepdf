@@ -19,7 +19,7 @@ password-protected documents (see [Limitations](#limitations)).
 3. To see a signer as trusted, check their certificate's fingerprint with them, then use **Trust this signer…** in
    Details (see [Trusting signers](#trusting-signers)).
 
-![A document signed by two people: a green banner above the page says "Signed, and all signatures are valid." with a Signatures button, and the Digital signatures view at the left lists each signature with what changed after it, Details… and Signed version](images/signatures-panel.png)
+<img src="images/signatures-panel.png" width="740" alt="A document signed by two people: a green banner above the page says “Signed, and all signatures are valid.” with a Signatures button, and the Digital signatures view at the left lists each signature with what changed after it, Details… and Signed version">
 
 The **Digital signatures** view (also its icon on the left, or **Forms and sign > Digital signature > Signatures
 in this document**) lists the signatures in the order they were made: who made each one (click to go to it on the
