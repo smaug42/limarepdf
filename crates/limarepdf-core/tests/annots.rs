@@ -771,6 +771,67 @@ fn moving_and_resizing_take_the_geometry_along() {
     );
 }
 
+/// PF-37: a redaction mark's areas move with it; a mark of one area stretched keeps its
+/// area a point inside its box, however far, so the outline and what Apply removes are
+/// where the box shows; one too small for the gap keeps an area at its middle.
+#[test]
+fn redaction_marks_move_and_stretch_with_their_areas() {
+    let mut p = page();
+    let one = p
+        .add_redaction_mark(0, &[[50.0, 50.0, 100.0, 70.0]], "")
+        .unwrap();
+    let two = p
+        .add_redaction_mark(
+            0,
+            &[[50.0, 120.0, 150.0, 135.0], [50.0, 140.0, 90.0, 155.0]],
+            "",
+        )
+        .unwrap();
+    let marks = |p: &Pdf| {
+        p.annotations()
+            .into_iter()
+            .filter(|a| a.kind == AnnotKind::Redact)
+    };
+    let at = |p: &Pdf, id| marks(p).find(|a| a.id == id).unwrap();
+    // Three times as wide and twice as tall: the area a point inside, not three.
+    let b = at(&p, one).bbox;
+    let to = [
+        b[0],
+        b[1],
+        b[0] + (b[2] - b[0]) * 3.0,
+        b[1] + (b[3] - b[1]) * 2.0,
+    ];
+    p.move_annotation(0, one, to).unwrap();
+    let a = at(&p, one);
+    let inside = [to[0] + 1.0, to[1] + 1.0, to[2] - 1.0, to[3] - 1.0];
+    for (q, w) in a.quads[0].iter().zip(inside) {
+        assert!((q - w).abs() < 0.01, "{:?} not {inside:?}", a.quads[0]);
+    }
+    // Two areas move together, each as far.
+    let before = at(&p, two);
+    let b = before.bbox;
+    p.move_annotation(0, two, [b[0] + 30.0, b[1] - 40.0, b[2] + 30.0, b[3] - 40.0])
+        .unwrap();
+    let after = at(&p, two);
+    for (q, w) in after.quads.iter().zip(&before.quads) {
+        let moved = [w[0] + 30.0, w[1] - 40.0, w[2] + 30.0, w[3] - 40.0];
+        for (a, b) in q.iter().zip(moved) {
+            assert!((a - b).abs() < 0.01, "{q:?} not {moved:?}");
+        }
+    }
+    // Squeezed to a point and a half across: its area at the middle, not past its edges.
+    p.move_annotation(0, one, [10.0, 10.0, 11.5, 30.0]).unwrap();
+    let q = at(&p, one).quads[0];
+    assert!(
+        (q[0] - 10.75).abs() < 0.01 && (q[2] - 10.75).abs() < 0.01,
+        "{q:?}"
+    );
+    assert!(
+        (q[1] - 11.0).abs() < 0.01 && (q[3] - 29.0).abs() < 0.01,
+        "{q:?}"
+    );
+}
+
 #[test]
 fn shapes_and_lines_are_annotations_that_can_be_restyled() {
     let mut p = page();

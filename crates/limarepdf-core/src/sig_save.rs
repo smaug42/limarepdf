@@ -3,7 +3,7 @@
 //! Acrobat saves signed files. Before the result is handed out every signature is checked
 //! again: each must check as it did before, and the changes it reports are compared with
 //! what it reported before, so the caller can ask first when the edits are changes a
-//! signer didn't allow. See docs/signatures.md.
+//! signer didn't allow. See docs/signatures-in-depth.md.
 //!
 //! Everything in the opened file stays in it, so whatever the edits delete can still be
 //! read from the earlier version. Edits meant to remove information for good (applied

@@ -76,4 +76,4 @@ generate the list).
 
 ---
 
-[← Rendering](rendering.md) · [User guide](README.md) · [Troubleshooting →](troubleshooting.md)
+[← Digital signatures in depth](signatures-in-depth.md) · [User guide](README.md) · [Troubleshooting →](troubleshooting.md)

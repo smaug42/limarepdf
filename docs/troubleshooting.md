@@ -134,7 +134,9 @@ Undo keeps up to 20 steps, and at most 1 GB per document, so very large document
 ### Saving removed the document's password
 
 A protected document is saved without its password unless you set it again: a notice says so when it opens. Set
-it with **Protect > Passwords**, which opens Password security in the inspector, before saving.
+it with **Protect > Passwords**, which opens Password security in the inspector, before saving (see
+[Save a protected document](security.md#save-a-protected-document-and-keep-it-protected)). If you saved over the
+file already, set the password and save again.
 
 ### "The file was saved, but your system couldn't confirm it is safely on disk"
 
@@ -202,7 +204,8 @@ the signer, then choose Trust this signer…, or trust their organisation's auth
 There is no way back in, by design. Make a new digital ID, and send the people who trusted the old one your new
 certificate. Keep a backup of each ID (Export) with a password you will remember.
 
-More messages and what they mean are in [Digital signatures: troubleshooting](signatures.md#troubleshooting).
+More messages and what they mean are in
+[Digital signatures in depth: troubleshooting](signatures-in-depth.md#troubleshooting).
 
 ## Where LimarePDF keeps things
 

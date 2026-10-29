@@ -30,7 +30,7 @@ env:
 
 jobs:
   # Known security advisories (RustSec) against every crate in Cargo.lock. Ignored, with
-  # the reason in docs/signatures.md: RUSTSEC-2023-0071, an RSA timing leak in `rsa` with
+  # the reason in docs/signatures-in-depth.md: RUSTSEC-2023-0071, an RSA timing leak in `rsa` with
   # no fixed version, which needs someone timing many signings on the signer's machine.
   # The release job waits for it: a release never ships with a known advisory.
   audit:

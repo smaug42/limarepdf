@@ -12,7 +12,9 @@ It uses:
 
 - [`lopdf`](https://crates.io/crates/lopdf) for the document structure and encryption;
 - [`hayro`](https://crates.io/crates/hayro) to draw pages, on the CPU (see [Rendering](../rendering.md)), and
-  [`fontdb`](https://crates.io/crates/fontdb) to find installed fonts for fonts a file doesn't embed;
+  [`fontdb`](https://crates.io/crates/fontdb) to find installed fonts for fonts a file doesn't embed
+  (`crates/limarepdf-core/src/installed_fonts.rs`, the lookup order in
+  [Fonts that aren't embedded](../rendering.md#fonts-that-arent-embedded));
 - [`egui`](https://crates.io/crates/egui) for the interface, and [`rfd`](https://crates.io/crates/rfd) for file
   dialogs. eframe's default features are off and the ones used listed (the workspace's `Cargo.toml`), so a new
   default isn't taken unseen (0.37's `system_fonts` isn't, and `NativeOptions::system_font_fallback` is off with
@@ -89,6 +91,20 @@ A document's pages are its page tree's entries whose object is a `/Type /Page` d
 entry whose object is missing or isn't a typed dictionary, as a blank stand-in page; hayro passes over a missing one,
 so taking lopdf's list would shift page numbers between editing and drawing, and a tree with no real page would
 no longer be repaired.
+
+The page colour modes (View > Page colours; [Rendering](../rendering.md#page-colour-modes)) are worked out on the
+drawn page, pixel by pixel, in `crates/limarepdf-core/src/page_colours.rs` (`PageColours::pixel`, `recolour`). Only
+`Renderer::render_in` and `render_region_in`, which draw pages and tiles for display, call it, so printing, exports
+and `limarepdf-cli render` keep the page's own colours. Dark shifts the three channels by the same amount, so the
+largest and smallest swap places around 255, which inverts lightness and keeps hue and chroma; High contrast takes
+the weakest channel as the amount of ink (so yellow counts as much as black) and stretches it, pale tints going
+black and anything stronger white; Sepia maps white to warm paper and black to dark brown. To leave pictures alone,
+`page_colours::picture_boxes` runs the page through hayro's interpreter a second time with a device (`Boxes`) that
+draws nothing and notes the box of each raster image, clipped to the clip in force (the crop box first), and
+`recolour` skips those boxes. So a turned picture keeps the colours of everything inside its upright bounding box,
+text or lines drawn over a picture keep their own colours there, and stencil masks (one-colour shapes painted in the
+fill colour, such as some logos and Type 3 glyphs) are drawing, not pictures, and are recoloured. With Recolour
+pictures too on (`keep_pictures` false), no boxes are kept.
 
 Page content is read by LimarePDF's own parser (`crates/limarepdf-core/src/objects.rs`), which splits it into the objects that
 editing works on and reads the text that search, copying and export use, with its own reader for fonts' ToUnicode
@@ -262,7 +278,8 @@ what it will be added with.
 
 Greyed commands say why (`actions::why_not`). A command's `enabled` is a function of `actions::Ctx`, so `why_not`
 gives a copy of the context each thing a command may wait for, in the order people meet them (a `Fix` each: busy,
-saving, a file, undo, redo, words, typing, a line, a picture, an object, a movable one, a form, a field, the Select
+saving, a file, undo, redo, words, typing, a line, a picture, an object, a movable one, items put down with Fill
+and sign, redaction marks, a form, a field, the Select
 tool, the Read tool, facing pages), and returns the reason of the first that alone enables the command, else of
 the one that does with all those before it, else `NOT_NOW` ("Not available just now."); without a document, "Open
 a document first." `actions::greyed_tip` (the tooltip, then the reason) is the disabled hover text of the band's
@@ -454,6 +471,18 @@ first mapped length) against the codespace's, it fails a code that also starts a
 PB-03): a longer code the CMap maps (poppler reads that) or a longer codespace range (pdf.js reads by those). Not
 caught: a longer mapping that starts with the same bytes but doesn't match the string's next ones (poppler then
 reads a longer unmapped code), as hayro-cmap can't list mappings; a CMap like that breaks its own codespace.
+
+Redaction marks move and resize as other comments do (PF-37, batch 42): `editor::movable` lets a mark through
+although it has areas (`Annot::quads`; other text markup stays on its text), and `resizable` gives handles only to a
+mark of one area, as a mark's areas over several lines follow their text. A press anywhere in a selected mark's box
+grabs it (`in_mark_box`, in `grabs` for the read tool and `start_arrange` for the arrow), between its lines too,
+as its outline shows. The move is `Action::MoveAnnot` through core's `move_annotation`, which maps `QuadPoints` with
+the box; for a mark of one area that is resized, `inset_quad` puts the area back `PAD` (1 point) inside the new box,
+corner by corner, so stretching doesn't widen the gap (the outline, drawn from the areas, is what Apply removes:
+`redact.rs` reads the same quads). Arrow keys go through `Editor::nudge` as for other comments. Apply redactions…
+and Finish signing… are enabled by `Ctx::marked` and `Ctx::signing`, from `Editor::redact_marks` and `sign_items`,
+which `Tab::refresh_marks_banner` counts once per revision; `why_not` gives their reasons (`signing::NOTHING_PLACED`
+is shared with the pane's greyed button).
 Character and drawing-part coverage is the share of the box under the marks' union (`share_under`, Q14): each
 mark clipped to the box (`part_1d`; a flat box is all in or all out by its middle), the union's area summed in
 vertical slabs between the marks' edges. It was the sum of each mark's share, capped at 1, which counted a part
@@ -505,6 +534,17 @@ under the pointer from the last frame's response, the accent when chosen), as a 
 style's hover fill. Certify with digital ID's "Others may" is a list, not three choices, so it fits 800 points
 high as Sign does (PB-10, `digital::tests::sign_and_certify_fit_800_points_high` compares the space above their
 buttons).
+
+The Fill and sign pane (`SignPane::ui`, ENH-09, batch 42) is the task top to bottom: `inspector::facts` (Placed,
+from `Editor::sign_items`; Signature, a picture, not digital), then `group`s that never fold (a thin line and the
+section's name): Signature and Initials, each with its saved previews and one Create button whether or not any are
+saved, Text and marks, the ink, and Finish signing (`theme::primary_button` once something is down). A saved
+preview's row is its picture sized to the room its remove button leaves, the picture button's padding counted: a
+row wider than the panel widens it every frame. The marks (`MARKS`, `mark_glyph`) are Phosphor glyphs, the tick and
+cross from the outline font (the filled ones are cut out of a square), the dot from the filled one; Inter has no ✔
+or ✖, which egui drew as boxes. The Keep tool active pin is drawn by `inspector_head` (`Editor::keeps_pin`, a
+placing tool with no comment selected, and `keep_button`), first of the heading's buttons, so F6 to the inspector
+reaches it first.
 
 A picture's paper is made transparent by `clear_paper` (BUG-21): `paper_shade` finds the paper's shade in blocks of
 about a 24th of the picture (each block's 90th percentile, a block much darker than its neighbours taking theirs),
@@ -732,7 +772,7 @@ signature object (where that section says it is), patches the byte range, makes 
 by hand, so the pre-release `cms` crate isn't needed) and fills it in, and checks the result with
 `verify_signatures` before returning it. When the edits would make an earlier signature report a change it
 doesn't allow, it returns a `DisallowedChanges` error naming each signer and change, so the app can ask before
-signing again with `accept_disallowed`. See [Digital signatures](../signatures.md).
+signing again with `accept_disallowed`. See [Digital signatures in depth](../signatures-in-depth.md#what-signing-does).
 
 Saving a signed document (`sig_save.rs`, `append_edits`) uses the same writer without a signature: nothing is
 appended when no object changed; otherwise every signature is checked before and after, each must check as it did
@@ -1151,7 +1191,7 @@ An edit that fails leaves the document unchanged.
 
 ## Signature crates
 
-Checking and digital IDs use these pure-Rust crates (moved from [Digital signatures](../signatures.md#security-notes)),
+Checking and digital IDs use these pure-Rust crates (moved from [Digital signatures in depth](../signatures-in-depth.md#security-notes)),
 from the RustCrypto project unless noted, pinned to exact versions where they are pre-releases:
 
 | Crate | Version | Status | Used for |
@@ -1170,4 +1210,4 @@ from the RustCrypto project unless noted, pinned to exact versions where they ar
 
 "Pre-release" means their programming interface may still change, not that they are untested; they come from the
 same project and review as the stable crates. LimarePDF's own reader and writer handle the signature data (see
-[Digital signatures](../signatures.md#security-notes)), so the pre-release `cms` crate isn't used.
+[Digital signatures in depth](../signatures-in-depth.md#security-notes)), so the pre-release `cms` crate isn't used.

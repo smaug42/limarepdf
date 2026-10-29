@@ -312,6 +312,39 @@ it (scripted behaviour, not unaided users' success):
 Labels move with their pages (core's `set_page_order`, as before batch 41), so a page keeps its label wherever it
 goes. The human run of D7 is the acceptance row's (deferred to the RC cycle).
 
+Batch 42's first stage (ENH-09, PF-37) was built test-first: a test agent wrote `app/tests/sign.rs` and
+`app/tests/redact_marks.rs` from the plan's spec while the code was written, and ran them first on a copy of the
+code before (bbfeca6, `target/oldcheck-b42`): 14 failed there on their assertions (one Create button per group,
+the remove buttons, no missing glyphs, the pin in the heading row, Finish signing in the menu and greyed with its
+reason, the question's wording; a mark moved by a drag, resized by its handles, moved whole over several lines,
+moved by the keys and saved where moved, the one-mark banner, Apply redactions… greyed with its reason), and two
+passed as guards (D2's flow below, a locked mark staying put). `no_character_in_fill_and_sign_lacks_a_glyph` draws
+the window and checks every character of every text drawn has a glyph in its font (it named ✔ and ✖ on the old
+code). Core's `redaction_marks_move_and_stretch_with_their_areas` (annots.rs) failed on the old code too: a
+stretched mark's area was 2 to 3 points inside its box, not 1. One existing test changed:
+`f6_leaves_typing_open_on_the_page_and_comes_back_to_it`, as F6 to the inspector reaches the pin first when a tool
+that puts things down is on. Captures of the release build (light, 1280 × 800) showed the pane with saved
+signatures widening the inspector, and the tests on the new code found three bugs in it before it was reported:
+the pin couldn't be turned on (`inspector_body` lent the settings' tools over the click the heading had just
+taken; the heading now lends and saves them itself), the preview's row was still 8 points too wide (the remove
+button was 30 points, not the 24 counted, and the picture's outline 2 points a side;
+`saved_signatures_leave_the_inspector_its_width` records the width every frame as signatures are added, at the
+default width and at a remembered 150), and the Your name tooltip's ▾ had no glyph (none of the interface's fonts
+has it; the glyph test shows that tooltip too). `the_pin_shows_for_placing_tools_but_not_for_a_comment` covers the
+Stamp tool and a comment selected. The whole suite: 1341 passed, 39 ignored, headless.
+
+D2's flow (build plan 6.4; batch 42, ENH-09) for a photographed or flat form, each step with its test:
+
+| Flow and step | Tests |
+| --- | --- |
+| D2: Fill and sign from the band; one way to make a signature or initials; saved ones taken off the list | `fill_and_sign_offers_one_way_to_create_each`, `a_saved_signature_has_a_visible_remove_button` |
+| D2: signature, date and tick put down with clicks, the tool kept on; one moved with the read tool | `a_flat_form_is_signed_finished_saved_and_reopened` |
+| D2: finished from the pane (greyed, saying why, until something is down), the question naming Fill and sign; drawn into the page; one Undo and Redo | `a_greyed_finish_signing_says_why`, `the_finish_signing_question_names_fill_and_sign`, `finish_signing_is_in_the_fill_and_sign_menu`, `a_flat_form_is_signed_finished_saved_and_reopened` |
+| D2: saved and opened again: no fill-and-sign annotations left, the date in the page's text | `a_flat_form_is_signed_finished_saved_and_reopened` |
+| The redaction journey's check step: marks moved and resized, Apply where they now are (PF-37) | `a_redaction_mark_moves_with_a_drag`, `a_one_area_mark_resizes_by_its_handles`, `a_mark_over_several_lines_moves_whole_without_handles`, `the_arrow_keys_move_a_selected_mark`, `a_moved_mark_is_saved_where_it_was_moved`, `a_locked_mark_stays_put` |
+
+The human runs of D2 and of the redaction journey are the acceptance rows' (deferred to the RC cycle).
+
 Later additions (recent files, document notices, fit width, the theme button, crop)
 were checked by screenshot under a virtual X server; not every one has been clicked through by hand. Of the newest:
 the page layouts (facing and single page) have unit tests for pairing and fitting but were not clicked through;
@@ -572,7 +605,7 @@ signatures by such keys, a different digest or mask, a salt shorter, equal and l
 limits given as defaults or left out, limits that can't be read, and a signature whose own RSA-PSS parameters
 are empty (the defaults: valid), left out or NULL (both refused: RFC 4055 requires them; 2026-10-24, BUG-27).
 On a 16th, a limit to an undefined trailer
-field, LimarePDF is stricter (see [Limitations](../signatures.md#limitations)).
+field, LimarePDF is stricter (see [Limitations](../signatures-in-depth.md#limitations)).
 
 Where LimarePDF and `pdfsig` differ, LimarePDF follows the PDF rules: it refuses byte ranges with gaps or uncovered parts that
 `pdfsig` accepts, refuses two signers in one signature, and accepts signers named by key identifier, which `pdfsig`
@@ -600,7 +633,7 @@ PBMAC1 integrity checks, unencrypted parts, P-256 and P-384 keys, non-ASCII and 
 authority), and Windows' BER encoding, made from those files. OpenSSL reads the files LimarePDF writes, both its own and
 exported ones, takes out the same certificate and a key that signs a PDF LimarePDF then checks as valid and, once
 trusted, trusted. `openssl x509` shows the extensions described under
-[making a digital ID](../signatures.md#making-a-digital-id).
+[making a digital ID](../signatures-in-depth.md#making-a-digital-id).
 
 LimarePDF's own signatures were checked with `pdfsig` and OpenSSL (`openssl cms -verify` over the signed bytes): RSA-3072,
 P-256, P-384 and a CA-issued ID with its chain, a second and third signature on a signed file, a certification, and
@@ -723,6 +756,7 @@ before this table had a Status column, and wasn't run again on the date given.
 | Everyday gestures: type over, delete and cut words, Edit text from words, Shift keys, clicks off text, Ctrl+A with the Text tool, the inspector's heading; thin shapes (ENH-39's second stage, batch 40) | The app's batch 40 second-stage tests and `actions.rs`'s `selections_offer_cut_and_edit_text_where_they_apply` (Automated tests above), each failing on the code before | Select words in one line with the read tool and type: they are replaced in the line, which stays open; Ctrl+V over others. Select across lines and type: the note, nothing typed. Delete, then Undo; Ctrl+X, then paste elsewhere; the band's Cut. Select words, Edit text: their line opens with them selected. Shift+arrows, Shift+Home and Shift+End from a word near a page's end: the selection grows across the page, the view following, the page not jumping. Double-click and triple-click in a margin: nothing selected. Text tool, Ctrl+A. Edit a line, then click the inspector's heading, collapse it, open its pop-out: the line stays open. Select a hairline shape with the arrow and quit: no question about changes | Pass, 2026-10-28, Linux release build, by the user's own checks rather than this row's full list: their try found the thin-shape quit question (fixed in 1523c52), then "tested and works". Windows and macOS: not run, deferred to the RC cycle |
 | Feedback and look: a new text box with the inspector, unsaved at the first key, a line's scope and fonts, the outline and its warnings, greyed commands' reasons, what is in use, stamps previewed as added (ENH-39's third stage, ENH-22, ENH-23, batch 40) | The app's batch 40 third-stage tests, `page_text.rs`'s, `actions.rs`'s `greyed_commands_say_why` and ENH-23's in `tab/previews.rs` (Automated tests above) | Insert a text box, type, change its size, background and border in the inspector: it stays open, at the size picked, and is added so. Type one key in a line: the tab says Unsaved and the title has its mark. Edit a line in an embedded font: "Editing one line" in the status bar, PDF font and Source font in the inspector; type a character the font lacks, then select all and type: Partly preserved, then Nearest standard. Edit a line on an accent-coloured page: the outline shows. Type on past a line into a column beside it, and past the page's right edge: the caution outline and its tag. Hover greyed Undo, Copy, Bold in a family without bold, a menu's greyed item: each says why. Ctrl+B in a family without bold: the note at the caret. Type Hebrew: the script note. Ctrl+V with nothing selected: where to click. ☰ > Tools: the tool in use marked; the Text tool: Edit text pressed. Click into a form field with words selected: Form field, the words let go. Open Watermark, set Behind the content: once a slider is let go, the pages and thumbnails show it behind the text; drag the opacity: drawn over meanwhile. With a screen reader, hear a greyed button's reason and the overflow tag | The user committed it (15e6e4e) after the report and asked for its records, reporting no find; this row's list not run as such. Windows and macOS: not run, deferred to the RC cycle |
 | Organise pages: the grid, its keys, dragging, Move, Cut and Paste, the insertion bar, Insert PDF pages; the thumbnails' keys; the status bar's zoom; long documents (NEW-14, PB-36, batch 41; D7) | `app/tests/organise.rs` and `tab/organise.rs`'s unit tests, `the_status_bar_zoom_stays_put_when_zooming`, core's `insert_pages_puts_them_where_asked` and `page_sizes_and_margins_are_each_pages` (Automated tests above; D7's flow) | Open a 12-page document with page labels and bookmarks, Organise it: select with clicks, Shift, Ctrl and a sweep; drag two cards elsewhere, then Undo; use only the keys (arrows, Shift, Ctrl and Space, Home, End, Page Down, Enter, Delete, Alt+Shift moves); cut two pages, click between cards, paste; Insert PDF pages there; turn a page and extract two; leave Organise and find the page you were reading; zoom with + and − and see the bar stay still; save, reopen and check the order, labels and bookmarks. Open a document of several thousand pages: it opens without a pause, and the grid scrolls, selects and zooms smoothly | Not run: deferred to the RC cycle |
+| Fill and sign as a few clear tasks; redaction marks moved and resized (ENH-09, PF-37, batch 42's first stage; D2) | `app/tests/sign.rs` and `app/tests/redact_marks.rs`, core's `redaction_marks_move_and_stretch_with_their_areas` (D2's flow above) | Photograph or scan a paper form with no fields and open it: Forms and sign > Fill and sign; create a signature, put it, the date and a tick down, move one, then Finish signing from the pane; save, reopen in another reader and check the marks are part of the page. Remove a saved signature with its bin button. Mark text over two lines and an area for redaction, drag both, resize the area by a handle and with the arrow keys, apply, and check with another reader that only the text under the moved marks is gone | Not run: deferred to the RC cycle |
 | Signature pictures: keyboard, command line, CMYK (PB-21, PB-19) | The core's `cmyk_jpegs_are_read` (failed on the old code) and `cmyk_jpegs_become_pages_and_are_added_and_replace_pictures` (passed on the old code: the guide's "not supported" was out of date, so only the guide changed), the app's `the_arrow_keys_choose_the_part_used`, and the command line's `sign_picture.rs` | Create signature, Image, with a CMYK JPEG photo of a signature on a sheet: the paper cleared, the part chosen with the arrow keys and Shift; `limarepdf-cli sign --image sheet.jpg --crop` with the signature's pixels from an image viewer | Not run: deferred to the RC cycle |
 | Text another program wrote in UTF-8 (PB-18) | The core's `unmarked_utf8_is_read_where_text_is_only_shown` (failed on the old code) | Open a file whose title and bookmarks a tool wrote in UTF-8 without a byte order mark (`qpdf --qdf`, then the title's bytes edited): they read as written in LimarePDF, Document properties and the Bookmarks view | Not run: deferred to the RC cycle |
 | Windows printing that the spooler doesn't take (PB-17) | The core's `a_job_is_waited_for_while_it_gets_on` (the waiter on Linux: a job beating is waited for, one that stops is let go within the wait and runs on, one that panics is said); Windows clippy and PR CI | On Windows, print to a paused printer or one whose network is unplugged: after two minutes the message saying it may still print; Append PDFs runs meanwhile | Not run: deferred to the RC cycle |
@@ -757,7 +791,7 @@ This is how the dropped form fields were found.
 
 From the digital signatures design. Each row is done in the order given, on Windows. "Reader" rows need only the free
 Acrobat Reader; "Acrobat" rows need Acrobat Pro or Standard. Results go into [Digital signatures](#digital-signatures)
-above, summed up in the user page's [Compatibility](../signatures.md#compatibility); a failure is fixed or written
+above, summed up in the user page's [Compatibility](../signatures-in-depth.md#compatibility); a failure is fixed or written
 down as a limit.
 
 | Check | Needs | Result |
@@ -794,7 +828,7 @@ happened in everyday use but no result was written down.
 | HiDPI screen (scale 2) | Not run | Not run | Not run |
 | Screen reader (Orca, Narrator, VoiceOver): the bars, panels, each dialog, filling in a form, F6 between the window's regions and the panels' edges; what is said and where the keyboard goes | Not run (names checked by the app's tests only) | Not run | Not run |
 | Dialogs: open each, Tab through it, Esc; in a narrow and a short window | Screenshots under a virtual X server (2026-10-22), not clicked through on a desktop | Not run | Not run |
-| Window size remembered: resize, close, reopen; maximize, close, reopen, restore | KDE Wayland (2026-10-19): size and maximized kept; restoring a window that started maximized puts it at the top-left (KDE's placement) | Not run | Not run |
+| Window size remembered: resize, close, reopen; maximise, close, reopen, restore | KDE Wayland (2026-10-19): size and maximised kept; restoring a window that started maximised puts it at the top-left (KDE's placement) | Not run | Not run |
 | Name and icon in the taskbar, dock and Open with | Not recorded | Icon checked by hand (0.5) | Not run |
 | A damaged file and a file that fails to draw: message, no crash | Not recorded | Not run | Not run |
 | A page whose drawing asks for gigabytes at once (PDFBox 2363, below): drawn, or a message, without closing | Drawn (2026-10-20; the 7.6 GB asked for is never used, so Linux doesn't need it) | Not run | Not run |

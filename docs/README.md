@@ -34,6 +34,8 @@ no network connection, no subscription. This guide takes you from installing it 
   keyboard shortcuts and settings.
 - [The command line](cli.md): `limarepdf-cli`, for scripts and batches.
 - [Rendering](rendering.md): how pages are drawn, and what isn't drawn right yet.
+- [Digital signatures in depth](signatures-in-depth.md): what each result means, which changes after signing are
+  allowed, what signing writes, compatibility, limits, security notes and troubleshooting.
 - [Licence](licence.md): LimarePDF's licence and the works it includes.
 
 ## Help

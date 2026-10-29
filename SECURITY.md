@@ -41,7 +41,7 @@ A crash, a hang, or a document that is drawn wrongly is an ordinary bug: report 
 describes, unless it leads to one of the problems above.
 
 Already known, so not needed as reports: the RSA timing advisory RUSTSEC-2023-0071, explained in
-[Digital signatures](docs/signatures.md#security-notes), and the macOS and Windows builds not being code-signed
+[Digital signatures in depth](docs/signatures-in-depth.md#security-notes), and the macOS and Windows builds not being code-signed
 ([Install](docs/install.md)). [Features and status](docs/developer/feature-status.md#what-doesnt-work-yet) lists what
 doesn't work yet.
 

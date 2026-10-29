@@ -54,7 +54,8 @@ such a file as the PDF standard says (the parts it deletes stay deleted). Since 
 one thing in LimarePDF and another elsewhere, the app shows a notice saying other apps may show the file
 differently, with a Save as… button: the saved copy is written the way LimarePDF shows it, which every app reads
 the same. `limarepdf-cli` prints a note on stderr. Repaired files get the repair notice instead, and signed files
-the signatures notice, whose signatures show *can't check* with the reason ([details](signatures.md)). Of about
+the signatures notice, whose signatures show *can't check* with the reason
+([details](signatures-in-depth.md#security-notes)). Of about
 1,100 test files collected from bug reports, 31 that open without repair get the notice.
 
 Limits:
@@ -73,13 +74,14 @@ Limits:
 
 ## Page colour modes
 
-The app's Dark, High contrast and Sepia page colours (View > Page colours) are worked out on the drawn page, pixel
-by pixel, in `crates/limarepdf-core/src/page_colours.rs`. Dark swaps light and dark but keeps each colour's hue. High
-contrast turns anything inked, in any colour, white on black. Sepia maps white to warm paper and black to dark
-brown. Printing, exports, `limarepdf-cli render` and the file itself always use the page's own colours.
+The app's Dark, High contrast and Sepia page colours (View > Page colours; see
+[Page colours for reading](reading-and-finding.md#page-colours-for-reading)) change the drawn page on screen only.
+Dark swaps light and dark but keeps each colour's hue. High contrast turns anything inked, in any colour, white on
+black. Sepia maps white to warm paper and black to dark brown. Printing, exports, `limarepdf-cli render` and the
+file itself always use the page's own colours.
 
-To leave pictures alone, the page goes through hayro's interpreter a second time with a device that draws nothing
-and notes the box of each raster image, clipped to the clip in force. The colour pass skips those boxes, so:
+Pictures keep their own colours unless **Recolour pictures too** is on. LimarePDF leaves the whole box each photo or
+other raster picture is drawn in as it is (the part of it that shows), so:
 
 - a turned picture keeps the colours of everything inside its upright bounding box;
 - text or lines drawn on top of a picture keep their own colours there;
@@ -128,7 +130,7 @@ fonts installed on the computer.
 - **The 14 standard fonts** (Helvetica, Times, Courier, Symbol, ZapfDingbats and their styles) always use the copies
   bundled with hayro, so they look the same on every computer.
 - **CID fonts**, which Chinese, Japanese and Korean text uses (and some programs use for Latin text too), are
-  looked up among the installed fonts (`crates/limarepdf-core/src/installed_fonts.rs`):
+  looked up among the installed fonts:
   1. by the font's name (`MSMincho` finds MS Mincho), ignoring spaces, hyphens and case;
   2. by its family, the face closest to the weight and style asked for (`MSGothic,Bold` finds MS Gothic's bold);
   3. among free fonts with the same character widths as common Windows fonts: Liberation Sans or Arimo for Arial,
@@ -218,4 +220,4 @@ For timings and how the app keeps drawing responsive, see [Performance](develope
 
 ---
 
-[← The command line](cli.md) · [User guide](README.md) · [Licence →](licence.md)
+[← The command line](cli.md) · [User guide](README.md) · [Digital signatures in depth →](signatures-in-depth.md)

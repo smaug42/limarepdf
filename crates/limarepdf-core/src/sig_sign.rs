@@ -1,7 +1,7 @@
 //! Signing with a digital ID: an ordinary (approval) signature or a certification, in an
 //! empty signature field or a new box, written as Acrobat writes it (`adbe.pkcs7.detached`,
 //! SHA-256 or SHA-384) in a revision appended to the file (see [`crate::incremental`]),
-//! so signatures already in it stay valid. See docs/signatures.md.
+//! so signatures already in it stay valid. See docs/signatures-in-depth.md.
 //!
 //! The document's own rules are honoured: a certification that allows no changes, or one
 //! that allows only signing in existing fields, and fields locked by earlier signers. A

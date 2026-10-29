@@ -372,16 +372,24 @@ impl AnnotEdit {
     }
 }
 
-/// Whether the annotation can be moved with the arrow tool: not locked, and not text
-/// markup, which stays on its text.
+/// Whether the annotation can be moved: not locked, and not text markup, which stays on
+/// its text. A redaction mark moves, all its areas together (PF-37).
 pub fn movable(a: &Annot) -> bool {
-    !a.locked() && a.quads.is_empty()
+    !a.locked() && (a.quads.is_empty() || a.kind == AnnotKind::Redact)
 }
 
-/// Whether it can also be resized by its box: a note's icon keeps its size, and a line
-/// has handles on its ends instead.
+/// Whether it can also be resized by its box: a note's icon keeps its size, a line has
+/// handles on its ends instead, and a redaction mark's areas over several lines follow
+/// their text.
 pub fn resizable(a: &Annot) -> bool {
-    movable(a) && !matches!(a.kind, AnnotKind::Note | AnnotKind::Line)
+    movable(a) && !matches!(a.kind, AnnotKind::Note | AnnotKind::Line) && a.quads.len() <= 1
+}
+
+/// Whether `p` (page points) is in a redaction mark's box, which its outline shows when it
+/// is selected: a press there moves it, between the lines it marks too.
+fn in_mark_box(a: &Annot, p: Pos2) -> bool {
+    let b = a.bbox;
+    a.kind == AnnotKind::Redact && p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3]
 }
 
 #[derive(Clone, Copy)]
@@ -3339,8 +3347,10 @@ impl Editor {
         // With the read tool, a press on the selected item (or its handles) moves it.
         let grabs = |ed: &mut Self, p: Pos2| {
             let on_handle = sized_box.is_some_and(|b| ed.handle_hit(b, p, htol).is_some());
-            let on_annot = sel_annot
-                .is_some_and(|(id, _, _)| ed.annot_at(pdf, page, p).is_some_and(|a| a.id == id));
+            let on_annot = sel_annot.is_some_and(|(id, _, _)| {
+                ed.annot_at(pdf, page, p).is_some_and(|a| a.id == id)
+                    || ed.selected_annot().is_some_and(|a| in_mark_box(a, p))
+            });
             let on_object = ed.arrangeable() && on_held(p);
             on_handle || on_annot || on_object || rotate_hit(p) || end_hit(p).is_some()
         };
@@ -3399,6 +3409,8 @@ impl Editor {
                     Some(_) => ed.start_move(page, p),
                     None => ed.start_marquee(page, p, true),
                 }
+            } else if let Some(a) = selected.as_ref().filter(|a| in_mark_box(a, p)) {
+                ed.drag = Some(annot_drag(a, Mode::Move, p));
             } else if let Some(a) = ed.annot_at(pdf, page, p).cloned() {
                 ed.selection = Selection::Annot { page, id: a.id };
                 if movable(&a) {
@@ -4640,35 +4652,36 @@ impl Editor {
 
     /// The pin at the top of a placing tool's options: on, the tool stays active after
     /// putting something down, until Esc or another tool.
-    fn keep_ui(&mut self, ui: &mut egui::Ui) {
+    /// Whether the inspector's heading has the Keep tool active pin: a tool that puts
+    /// things down is in use and its options are shown (no comment selected).
+    pub fn keeps_pin(&self) -> bool {
+        Tool::PLACING.contains(&self.tool) && self.selection.annot().is_none()
+    }
+
+    /// The Keep tool active pin, in the inspector's heading row beside its other buttons
+    /// (ENH-09: no row of its own between the heading and the tool's options).
+    pub fn keep_button(&mut self, ui: &mut egui::Ui) {
         let tool = self.tool;
-        if !Tool::PLACING.contains(&tool) {
-            return;
-        }
         let on = self.keep.contains(&tool);
-        // One row, the pin at its right.
-        let row = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
-        let right = egui::Layout::right_to_left(egui::Align::Center);
-        ui.allocate_ui_with_layout(row, right, |ui| {
-            let r = ui
-                .add(egui::Button::new(theme::icon(icon::PUSH_PIN).size(16.0)).selected(on))
-                .on_hover_text(if on {
-                    "Keep tool active: on. It stays after putting something down, until Esc \
-                     or another tool."
-                } else {
-                    "Keep tool active"
-                });
-            r.widget_info(|| {
-                egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, "Keep tool active")
-            });
-            if r.clicked() {
-                if on {
-                    self.keep.retain(|t| *t != tool);
-                } else {
-                    self.keep.push(tool);
-                }
-            }
+        let pin = egui::Button::new(theme::icon(icon::PUSH_PIN))
+            .selected(on)
+            .frame_when_inactive(false);
+        let r = ui.add(pin).on_hover_text(if on {
+            "Keep tool active: on. It stays after putting something down, until Esc or \
+             another tool."
+        } else {
+            "Keep tool active"
         });
+        r.widget_info(|| {
+            egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, "Keep tool active")
+        });
+        if r.clicked() {
+            if on {
+                self.keep.retain(|t| *t != tool);
+            } else {
+                self.keep.push(tool);
+            }
+        }
     }
 
     // ------------------------------------------------------------ inspector
@@ -5340,7 +5353,9 @@ impl Editor {
                 ui.label("Name");
                 let r = ui
                     .add(egui::TextEdit::singleline(&mut self.author).hint_text("No name"))
-                    .on_hover_text("Also signs your comments (Edit > Your name for comments)");
+                    .on_hover_text(
+                        "Also signs your comments (Review > Comments > Your name for comments)",
+                    );
                 dialogs::set_name(&r, "Your name");
             });
         });
@@ -5419,7 +5434,6 @@ impl Editor {
                 format!("Editing is unavailable on this page: {e}"),
             );
         }
-        self.keep_ui(ui);
         // A tool's options and the selected object's properties are headed by the panel's
         // heading (`Editor::heading`); the object's again below a tool's options.
         match self.tool {

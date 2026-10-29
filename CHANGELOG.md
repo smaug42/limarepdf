@@ -62,6 +62,10 @@
   deletes the selected pages. A ring shows where the keys are. In the thumbnails, the page view follows them.
 - The status bar has the two views' buttons, **Page view** and **Organise pages**, and a word processor's zoom:
   − and + with a slider between them (left out in windows under 900 points wide), beside the zoom's menu.
+- Redaction marks can be moved and resized, as other comments can: drag a selected mark (anywhere inside its
+  outline), or press the arrow keys; drag the handles of a mark of one area to resize it. A mark over several lines
+  moves as one. Applying removes what is under each mark where it then is. Before, a mark could only be deleted
+  and made again.
 
 ### Changed
 
@@ -128,8 +132,30 @@
   pages: after deleting pages, the ones that took their places.
 - Moving, adding, deleting or turning pages, and Undo and Redo of it, keep the other pages' pictures and
   thumbnails, so they don't flicker as they are drawn again. Before, every page was drawn again.
+- The Fill and sign pane follows the task from top to bottom: how many items are put down and that they make a
+  picture, not a digital signature; Signature and Initials, each with your saved ones and one Create button (before,
+  both New… and Create signature… showed); Text and marks (the date, your name, text, tick, cross and dot); the
+  ink; and Finish signing…, the main button once something is down. A bin button beside a saved signature takes it
+  off the list, as a right-click on it does.
+- Finish signing… is greyed until something is put down with Fill and sign, and Apply redactions… until something
+  is marked, each saying why on hover. Finish signing… is also at the end of the Fill and sign ▾ menu.
+- The Keep tool active pin is in the inspector's heading, beside its other buttons, for every tool that puts things
+  down. Before, it took a row of its own between the heading and the tool's options.
+- The user guide puts the everyday task first: Digital signatures is a short task page (check, sign, trust,
+  digital IDs, certify), with the detail on a new reference page, Digital signatures in depth. First steps ends
+  with the tasks most people need next. The guide now says plainly what recovery copies cover (none for any
+  protected file, a permissions password alone too, for the rest of the session), that saving a protected
+  document drops its password unless it is set again, and what happens to form fields when files are merged.
 
 ### Fixed
+
+- The tick and cross in the Fill and sign pane and its menu showed as empty boxes; they are drawn now.
+- The Finish signing question, its notice when nothing is put down and its command's tooltip named "the Sign
+  tool"; they say Fill and sign, the tool's name. The notice for Apply redactions with no marks named a menu that
+  no longer exists; it says Protect > Mark redaction.
+- The notice for one redaction mark said "nothing under them has been removed"; it says "under it".
+- The tooltip of Your name in the Fill and sign and stamp panes pointed to Edit > Your name for comments, which
+  isn't in the Edit band; it says Review > Comments > Your name for comments.
 
 - A line clicked with the Text tool to edit it showed the look of the next new text in Edit > Font and the
   inspector, and changes there went to that new text instead of the line. They show and change the line now.

@@ -19,7 +19,8 @@ themselves, so they can be checked first, by you or by someone else in another a
    - **Every match of a search:** search (Ctrl+F, or **Edit > Find**), then press **Mark all for redaction** in
      Search results (or choose **Protect > Mark redaction ▾ > Mark all search results for redaction**, or ☰ > Edit >
      Mark all search results for redaction).
-2. Check the marks. They are listed in the Comments view as "Redaction mark".
+2. Check the marks. They are listed in the Comments view as "Redaction mark". A mark that isn't quite where it
+   should be can be moved or resized (below).
 3. Choose **Apply redactions…** in the notice above the pages, or **Protect > Apply redactions…** (or ☰ > Document >
    Apply redactions…), and confirm.
 4. Read the report, then save. Save As (Ctrl+Shift+S) keeps the original as it was.
@@ -28,13 +29,22 @@ After marking one area, the Redact tool gives way to the read tool; pin it to ma
 [Keep tool active](gui.md#keep-tool-active)).
 
 **Changing marks:** select a mark (click it with the read tool, Ctrl+click it with another tool, or click it in the
-Comments view) to delete it or add a comment. Like highlights, marks can't be moved or resized: to change one,
-delete it and mark again.
+Comments view), then:
+
+- **Move it:** drag it, or press the arrow keys (Shift with an arrow moves further). A mark over several lines of
+  text moves as one, all its lines together; press anywhere inside its outline.
+- **Resize it:** drag its handles. A mark of one area (a box you drew, or text on one line) has them; a mark over
+  several lines doesn't, as its areas follow the lines: delete it and mark again instead.
+- **Delete it** or add a comment, in the inspector or with Delete.
+
+Each move or resize is one step for Undo. Applying removes what is under each mark where it is when you apply, not
+where it was first made. A mark locked by the app that made it can't be moved.
 
 **The notice:** while a document has marks, a notice above the pages says how many and has an **Apply
 redactions…** button. It comes first, and goes once the marks are applied or deleted; dismissed, it comes back when
-another area is marked. The Redact tool's pane has the same button with the count. Saving a document that still
-has marks asks first, since nothing under them has been removed.
+another area is marked. The Redact tool's pane has the same button with the count. With no marks, Apply
+redactions… is greyed and says why. Saving a document that still has marks asks first, since nothing under them
+has been removed.
 
 **Applying** asks first, then removes everything under the marks, paints the areas black and removes the marks. It
 then checks that nothing readable is left under them; if anything is, nothing is changed and an error says what was

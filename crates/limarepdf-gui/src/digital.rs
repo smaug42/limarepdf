@@ -1,7 +1,7 @@
 //! Digital IDs and signing with them in the app: the Digital IDs window (create, import,
 //! export, remove, choose the default) and the signing window. Making keys, opening IDs
 //! with their passwords and signing all run on a background thread. The work itself is
-//! limarepdf-core's (`IdStore`, `sign_document`); see docs/signatures.md.
+//! limarepdf-core's (`IdStore`, `sign_document`); see docs/signatures-in-depth.md.
 //!
 //! Passwords are typed into the windows, handed to the background thread and overwritten
 //! there once used; they are never saved or logged. A wrong password, or any failure,

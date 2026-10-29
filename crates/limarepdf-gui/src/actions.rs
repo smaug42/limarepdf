@@ -451,6 +451,10 @@ pub struct Ctx {
     pub annot_locked: bool,
     /// The selected annotation can be moved with the current tool.
     pub annot_moves: bool,
+    /// Fill and sign items are on the pages, not yet finished.
+    pub signing: bool,
+    /// Areas are marked for redaction, not yet applied.
+    pub marked: bool,
     /// The markup colours last chosen; see [`Act::MarkColor`].
     pub highlight: usize,
     pub line: usize,
@@ -524,6 +528,12 @@ fn pages_selected(c: &Ctx) -> bool {
 }
 fn doc_idle(c: &Ctx) -> bool {
     c.doc && !c.busy
+}
+fn signing(c: &Ctx) -> bool {
+    doc_idle(c) && c.signing
+}
+fn marked(c: &Ctx) -> bool {
+    doc_idle(c) && c.marked
 }
 fn object(c: &Ctx) -> bool {
     c.object
@@ -1834,7 +1844,7 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Document,
         label: "Apply redactions…",
         icon: icon::EYE_SLASH,
-        enabled: doc_idle,
+        enabled: marked,
         hint: "Remove the text, pictures and drawings under the redaction marks for good, \
                and paint the areas black.",
         ..BASE
@@ -1844,9 +1854,9 @@ pub static ACTIONS: &[Action] = &[
         group: Group::Document,
         label: "Finish signing…",
         icon: icon::SIGNATURE,
-        enabled: doc_idle,
-        hint: "Draw the signatures, dates, ticks and other items put down with the Sign \
-               tool into the pages, so they can no longer be moved or removed as items.",
+        enabled: signing,
+        hint: "Draw the signatures, dates, ticks and other items put down with Fill and \
+               sign into the pages, so they can no longer be moved or removed as items.",
         ..BASE
     },
     Action {
@@ -2070,7 +2080,7 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
     }
     // What a command may wait for, given, and what it says then.
     type Fix = (fn(&mut Ctx), &'static str);
-    let fixes: [Fix; 21] = [
+    let fixes: [Fix; 23] = [
         (
             |d| d.busy = false,
             "Waits until the task under way finishes.",
@@ -2104,6 +2114,8 @@ pub fn why_not(c: &Ctx, a: &Action) -> &'static str {
             |d| (d.object_moves, d.annot_moves) = (true, true),
             "Select something the tool in use can move first.",
         ),
+        (|d| d.signing = true, crate::signing::NOTHING_PLACED),
+        (|d| d.marked = true, "Mark something for redaction first."),
         (|d| d.form = true, "This document has no form fields."),
         (|d| d.field = true, "Click in a form field first."),
         (

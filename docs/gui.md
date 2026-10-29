@@ -130,9 +130,9 @@ hold Ctrl and click to follow a link, fill in a field or select a comment.
 
 The tools that put something down (Add text, Add image, the note, text box, rectangle, ellipse and line, stamps,
 Redact and Fill and sign) go back to the read tool once they have put one thing down, with the new item selected
-so you can adjust it. The pin at the top right of a tool's options, Keep tool active, keeps that tool on instead,
-so you can put down several in a row; Esc or another tool leaves it. Each tool's pin is its own (pinning Redact
-doesn't pin Fill and sign) and is remembered between runs. The Note tool has no pin: kept on, every click would put
+so you can adjust it. The pin in the inspector's heading, beside the tool's name and its ×, is Keep tool active: it
+keeps that tool on instead, so you can put down several in a row; Esc or another tool leaves it. Each tool's pin is
+its own (pinning Redact doesn't pin Fill and sign) and is remembered between runs. The Note tool has no pin: kept on, every click would put
 down a note, so existing notes couldn't be opened or deleted. The pen always stays on until Esc or another tool,
 since a drawing takes several strokes.
 
@@ -271,7 +271,7 @@ something to do and × to dismiss it. At most two show at a time.
 
 | Notice | Button |
 | --- | --- |
-| Its digital signatures are being checked, and then how they checked, coloured green, amber, grey or red (always first; see [Digital signatures](signatures.md#checking-a-signed-pdf)) | Signatures |
+| Its digital signatures are being checked, and then how they checked, coloured green, amber, grey or red (always first; see [Check a signed document](signatures.md#check-a-signed-document)) | Signatures |
 | Another app or tab changed its file since LimarePDF opened or saved it: checked when you come back to the window, when you open the file again and when you save ([Saving](#saving)) | Reload |
 | It was restored from a recovery copy, as it was at the time shown, and isn't saved; a signed document's signatures aren't checked ([Recovery copies](#recovery-copies)) | Save as… |
 | An earlier recovery copy, made before content was removed, couldn't be deleted, and where it is | Show file |
@@ -298,15 +298,30 @@ While you work, LimarePDF keeps a private copy of each document with unsaved cha
 closing normally (a crash, the system ending it, a power cut), the next start can offer the documents back. These
 copies are not autosave: **your own files are never written by them.**
 
+**What a copy holds:**
+
 - A copy is made about a minute after you change a document, then at most once a minute while you go on changing it.
-  It holds the document as it was then, so changes made in the last minute or so before a crash can be lost. Text
-  still being typed (a comment, a form field, a reply) isn't in a copy until it is kept, by clicking away,
-  applying it, or a command that keeps it first (saving, printing, a page command).
-- Saving or closing a document deletes its copy, and quitting normally deletes them all.
-- Password-protected documents get no copies: not one opened with a password, not one you set a password on (its
-  copy is deleted first), not pages taken from one, and not a document you add a protected document's pages to
-  with Insert PDF pages or Append PDFs (its copy is deleted first too; this includes protected files that open
-  without a password).
+  It holds the document as it was then, so changes made in the last minute or so before a crash can be lost.
+- Text still being typed (a line, a comment, a form field, a reply) isn't in a copy until it is kept, by clicking
+  away, applying it, or a command that keeps it first (saving, printing, a page command).
+- Saving a document deletes its copy once the save is done, unless your system couldn't confirm the save is on disk
+  or you changed the document while it saved: it then stays unsaved, and keeps its copy. Closing a document deletes
+  its copy, and quitting normally deletes them all.
+
+**What gets no copy:**
+
+- A document with no unsaved changes.
+- Password-protected documents, for as long as they stay open: one that was protected when opened (with an open
+  password, or only a permissions password), one you set a password on (its copy is deleted first), pages taken
+  from one with Extract, and a document you add a protected document's pages to with Insert PDF pages or Append
+  PDFs (its copy is deleted first too). Taking the password off again, or saving without it, doesn't bring copies
+  back until the document is closed and opened again.
+- A document showing its error page (LimarePDF failed while showing it): its last copy stays, and no new one is
+  made.
+- Every document while recovery copies are turned off, or when a copy can't be written (below).
+
+**Where they are, and turning them off:**
+
 - The copies are kept in a folder only you can read: `~/.local/state/limarepdf/recovery` on Linux (or
   `$XDG_STATE_HOME/limarepdf/recovery`), `~/Library/Application Support/limarepdf/recovery` on macOS, and
   `%LOCALAPPDATA%\limarepdf\recovery` on Windows. At the start, LimarePDF looks only in real folders of yours there:
@@ -333,8 +348,8 @@ them invalid, so LimarePDF asks first.
 
 **Redactions, hidden information and passwords.** Once you apply redactions, remove hidden information or set a
 password, no recovery copy made before can be offered after a crash: LimarePDF deletes the document's copy first,
-and for a restored document the copy it came from, and makes a new one afterwards (none for a password), which
-holds none of what was removed. Undoing a redaction or removal brings the content back, and the next copy holds it;
+and for a restored document the copy it came from, and makes a new one at once afterwards (none for a password),
+which holds none of what was removed. Undoing a redaction or removal brings the content back, and the next copy holds it;
 Redo then deletes that copy first too. If it can't delete a copy, the command (or Redo) doesn't run, and a message
 says where the copy is, with Show file: delete it, or turn off recovery copies (which doesn't remove the copy a
 restored document came from), then try again. If the copy was deleted but the disk can't confirm it (a power cut
@@ -518,10 +533,10 @@ The app uses the Inter font and Phosphor icons. It also includes the Liberation 
 Helvetica, Times and Courier, to show text in its own look while it is typed on the page and to write characters
 Helvetica, Times and Courier lack; they don't add to the fonts you can choose.
 
-The window opens at the size it had when the app last closed, and maximized if it was; a maximized window keeps
+The window opens at the size it had when the app last closed, and maximised if it was; a maximised window keeps
 the size it had before, for when you restore it. A size kept on a larger monitor is shrunk to fit a smaller one.
 Its position isn't remembered: on Linux Wayland sessions the desktop places windows, not the app, and tiling window
-managers choose the size themselves. On KDE Wayland, restoring a window that opened maximized puts it at the
+managers choose the size themselves. On KDE Wayland, restoring a window that opened maximised puts it at the
 top-left of the screen, since the desktop never placed it at its normal size; a later start places it as usual.
 
 ☰ > Help > About shows the version (the Copy button next to it copies the version and system, for a bug report),

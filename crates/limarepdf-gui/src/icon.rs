@@ -27,6 +27,7 @@ pub const CARET_UP: &str = "\u{E13C}";
 pub const CERTIFICATE: &str = "\u{E766}";
 pub const CHATS: &str = "\u{E17C}";
 pub const CHAT_TEXT: &str = "\u{E17A}";
+pub const CHECK: &str = "\u{E182}";
 pub const CIRCLE: &str = "\u{E18A}";
 pub const CIRCLE_HALF: &str = "\u{E18C}";
 pub const CLIPBOARD_TEXT: &str = "\u{E198}";

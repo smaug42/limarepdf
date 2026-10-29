@@ -68,8 +68,8 @@ Right-click anything for a short menu of what you can do with it.
 
 The other tools put something new on the page: pick one in the commands (Insert > Text or Image, Review > Note,
 Text box or Draw, Protect > Mark redaction, Forms and sign > Fill and sign), then click or drag on the page. After
-putting one thing down, a tool goes back to the read tool (the pin in its options keeps it on). Esc always
-returns to the read tool.
+putting one thing down, a tool goes back to the read tool (the pin in the inspector's heading, beside the tool's
+name, keeps it on). Esc always returns to the read tool.
 
 ## Find any command
 
@@ -124,8 +124,18 @@ Every command lists its options with `limarepdf-cli <command> --help`; the
 
 ## Where to go next
 
-See [everything LimarePDF can do](features.md) next, then go to the task you need in the
-[user guide](README.md#everyday-tasks).
+The tasks most people need next:
+
+- [Find words, zoom and copy text](reading-and-finding.md)
+- [Add highlights, notes and other comments](comments-and-markup.md)
+- [Change the text on a page](content-editing.md#edit-a-line-of-text)
+- [Fill in a form](forms.md)
+- [Put your signature on a document](fill-and-sign.md)
+- [Put pages in order, turn or delete them](organising-pages.md)
+- [Save your work](gui.md#saving), and [get it back after a crash](gui.md#recovery-copies)
+
+Every other task is on the [user guide's home page](README.md#everyday-tasks), and [Features](features.md), next,
+sums up everything LimarePDF can do.
 
 ---
 

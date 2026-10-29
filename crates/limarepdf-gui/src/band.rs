@@ -851,7 +851,7 @@ fn items(ui: &mut egui::Ui, g: &Group, parts: &mut Parts, acts: &mut Vec<Act>) {
                 button(ui, &sign, acts);
                 if let Some(m) = parts.sign {
                     caret(ui, "Fill and sign choices", |ui| {
-                        crate::signing::menu_ui(ui, m, acts);
+                        crate::signing::menu_ui(ui, m, c, acts);
                     });
                 } else {
                     let create = [

@@ -2447,8 +2447,8 @@ impl App {
                 let n = self.tabs[self.active].pdf.redaction_marks().len();
                 if n == 0 {
                     self.tabs[self.active].info = Some(
-                        "There are no redaction marks: mark areas with Annotate > Mark areas for \
-                         redaction, or mark selected text or search results"
+                        "There are no redaction marks: mark areas with Protect > Mark redaction, \
+                         or mark selected text or search results"
                             .into(),
                     );
                 } else {
@@ -2460,7 +2460,7 @@ impl App {
                 if n == 0 {
                     self.tabs[self.active].info = Some(
                         "There is nothing to finish: put down a signature, the date or a tick \
-                         with the Sign tool first"
+                         with Fill and sign first"
                             .into(),
                     );
                 } else {
@@ -4078,8 +4078,8 @@ impl App {
                          document.",
                         plural(
                             *n,
-                            "The item you put down with the Sign tool is",
-                            "The {n} items you put down with the Sign tool are"
+                            "The item you put down with Fill and sign is",
+                            "The {n} items you put down with Fill and sign are"
                         ),
                         if *n == 1 { "it looks" } else { "they look" },
                         if *n == 1 { "it" } else { "they" },
@@ -4882,19 +4882,21 @@ fn inspector_heading(title: &str) -> egui::RichText {
 }
 
 /// The inspector's heading row, in the panel (`collapse`) or its pop-out: what it shows, then
-/// a button that closes the task open (PF-40) and, in the panel, the one that collapses it,
-/// in reading order for Tab. Closing from the keyboard leaves the keyboard in the inspector:
-/// on the collapse button, or the strip's button that opens the pop-out. Returns whether
-/// the collapse button was clicked.
-fn inspector_head(ui: &mut egui::Ui, t: &mut Tab, collapse: bool) -> bool {
+/// the Keep tool active pin of a tool that puts things down, a button that closes the task
+/// open (PF-40) and, in the panel, the one that collapses it, in reading order for Tab.
+/// Closing from the keyboard leaves the keyboard in the inspector: on the collapse button,
+/// or the strip's button that opens the pop-out. The pin's choice is app-wide: lent from
+/// `s` and saved there when changed. Returns whether the collapse button was clicked.
+fn inspector_head(ui: &mut egui::Ui, s: &mut Settings, t: &mut Tab, collapse: bool) -> bool {
     let title = inspector::title(t);
     let task = t.forms.task;
+    let pin = t.ed.keeps_pin();
     let mut collapsed = false;
     // The buttons' width when last drawn, for `dialogs::reading_order`; with another number
     // of them, more than they will take, so that the panel is never widened by them showing
     // past their place, and keeps that width.
     let measured = ui.scope_id().with("inspector-head-buttons");
-    let buttons = usize::from(task.is_some()) + usize::from(collapse);
+    let buttons = usize::from(pin) + usize::from(task.is_some()) + usize::from(collapse);
     let last = ui
         .data(|d| d.get_temp::<(usize, f32)>(measured))
         .filter(|(n, _)| *n == buttons)
@@ -4907,6 +4909,14 @@ fn inspector_head(ui: &mut egui::Ui, t: &mut Tab, collapse: bool) -> bool {
         |ui| {
             let width = dlg::reading_order(ui, Some(last), |ui| {
                 let mut keys_back = false;
+                if pin {
+                    t.ed.keep.clone_from(&s.keep_tools);
+                    t.ed.keep_button(ui);
+                    if t.ed.keep != s.keep_tools {
+                        s.keep_tools.clone_from(&t.ed.keep);
+                        s.save();
+                    }
+                }
                 if let Some(task) = task {
                     let name = format!("Close {}", task.title());
                     let b = egui::Button::new(theme::icon(icon::X)).frame_when_inactive(false);
@@ -5176,12 +5186,9 @@ fn inspector_body(
         t.ed.stamp_pictures = s.stamp_pictures.clone();
         t.ed.stamp_wordings = s.stamp_wordings.clone();
         t.ed.sign_kit = s.sign.clone();
+        // Lent for the tools' placing; the pin in the heading changes it (`inspector_head`).
         t.ed.keep.clone_from(&s.keep_tools);
         t.ed.inspector(ui);
-        if t.ed.keep != s.keep_tools {
-            s.keep_tools.clone_from(&t.ed.keep);
-            s.save();
-        }
         if std::mem::take(&mut t.ed.apply_redactions) {
             t.requested.push(Act::ApplyRedactions);
         }
@@ -5244,7 +5251,7 @@ fn inspector_popout(
             regions::name(ui, Region::Inspector);
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.set_width(INSPECTOR_WIDTH);
-                inspector_head(ui, t, false);
+                inspector_head(ui, s, t, false);
                 ui.add_space(4.0);
                 let scope = t.ed.scope();
                 egui::ScrollArea::vertical()
@@ -6086,7 +6093,7 @@ impl eframe::App for App {
                 }
                 // The heading stays put above the scrolling content, with the
                 // button that hides the panel at its right.
-                toggle = inspector_head(ui, t, true);
+                toggle = inspector_head(ui, s, t, true);
                 if !groups.is_empty() {
                     ui.horizontal_wrapped(|ui| {
                         actions::context_buttons(ui, &groups, &c, &mut panel_acts);
@@ -6377,6 +6384,8 @@ mod tests {
     use limarepdf_core::{Cipher, Encryption, FontChoice, Restrictions, SignPlace};
 
     mod organise;
+    mod redact_marks;
+    mod sign;
 
     /// The height of the window the tests draw: room for the commands above the pages.
     const TEST_HEIGHT: f32 = 1000.0;
@@ -7084,7 +7093,13 @@ mod tests {
             let tree = ty.key(&mut app, Key::F6, none);
             ty.pause(&mut app);
             let away = focused_name(&ctx, &tree);
-            assert_eq!(away.as_deref(), Some("Collapse the inspector"), "{case}");
+            // The inspector's first control: its heading's pin, with a tool that puts
+            // things down (batch 42), else its collapse button.
+            let first = match app.tabs[0].ed.keeps_pin() {
+                true => "Keep tool active",
+                false => "Collapse the inspector",
+            };
+            assert_eq!(away.as_deref(), Some(first), "{case}");
             assert_eq!(app.tabs[0].ed.typing_id(), Some(typing), "{case}: ended");
             let tree = ty.key(&mut app, Key::F6, egui::Modifiers::SHIFT);
             assert_eq!(

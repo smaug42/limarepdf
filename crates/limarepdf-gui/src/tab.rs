@@ -2789,6 +2789,8 @@ impl Tab {
         c.annot_locked = annot.is_some_and(|a| a.locked());
         c.annot_moves = self.ed.annot_moves();
         c.object_moves = self.ed.object_moves();
+        c.signing = self.ed.sign_items > 0;
+        c.marked = self.ed.redact_marks > 0;
         c.typing = self.ed.typing_id().is_some();
         c.line_edit = self.ed.editing_line();
     }

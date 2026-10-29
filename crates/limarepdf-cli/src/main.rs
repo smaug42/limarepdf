@@ -1390,7 +1390,7 @@ fn open_io(io: &Io) -> Result<(Pdf, Vec<u8>)> {
 
 /// Writes `pdf`, edited from `original` (the input's bytes), to `io.output`. A digitally
 /// signed input keeps its signatures: the edits are added after what was signed (see
-/// docs/signatures.md). That is refused when the signatures don't allow the edits, unless
+/// docs/signatures-in-depth.md). That is refused when the signatures don't allow the edits, unless
 /// `--accept-disallowed`, and when the edits can't be added that way, unless
 /// `--break-signatures` (the whole file is written, and the signatures break). `removes`
 /// marks edits that remove information for good, which the signed version would still

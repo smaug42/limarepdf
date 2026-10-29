@@ -121,12 +121,23 @@ password: **Add pages** adds its pages, **Skip this file** leaves it out and add
 nothing. A file that can't be read adds nothing either, and a message names it.
 
 Inserting or appending PDFs adds the pages only: the bookmarks and named destinations of the files added aren't
-carried over, and LimarePDF can't combine forms yet. When a file added has form fields, **Add pages with form
-fields?** asks first: **Add pages** draws its fields onto its pages with their answers, as they look now, so they
-show everywhere but can no longer be filled in; **Cancel** adds nothing. The document's own fields stay fillable.
-If LimarePDF can't draw an answer (text in characters it can't write in a field yet, say), nothing is added, and a
-message names the field and the file. Pages from a password-protected file make the whole document count as
-protected, so it gets no [recovery copies](gui.md#recovery-copies).
+carried over. Pages from a password-protected file make the whole document count as protected, so it gets no
+[recovery copies](gui.md#recovery-copies) while it is open.
+
+### When the files added have form fields
+
+LimarePDF can't combine forms yet: the fields of the files you add can't stay fillable. When a file added has form
+fields, **Add pages with form fields?** asks first, naming the files:
+
+- **Add pages** draws their fields onto their pages with their answers, as they look now, so they show in every
+  reader but can no longer be filled in. The document's own fields stay as they are. Undo removes the added pages.
+- **Cancel** adds nothing, not even the files without fields.
+
+If LimarePDF can't draw an answer (text in characters it can't write in a field yet, say), it doesn't ask: nothing
+is added, and a message names the field and the file. A digital signature in a file added doesn't carry over
+either, as a signature covers only its own file: its field is drawn onto the page like the others. On the command
+line, `limarepdf-cli merge` refuses a later file with form fields unless `--flatten-forms` is given, which draws
+them the same way ([Pages](cli.md#pages)).
 
 ## Split into files
 
